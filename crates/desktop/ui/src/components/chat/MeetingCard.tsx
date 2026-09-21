@@ -1,10 +1,14 @@
 // 53 §4.4: the `[meeting …]` lines in a meeting's session get their own card — a left-aligned notice with a
 // chip naming what it is (transcript batch, request, tap, dismissal, deeper, start) instead of a user bubble,
-// as harness nudges do. The text stays literal; nothing is hidden from the record.
+// as harness nudges do. The text stays literal; nothing is hidden from the record. 57 §3.4: a transcript
+// batch the decision oracle handled gets one dim `⚡` status row under it (expandable to the probabilities),
+// from the live meeting store — batches of past meetings show none.
 
 import { Mic } from 'lucide-react'
-import type { MeetingLine } from '@/lib/meeting-line'
+import { type MeetingLine, batchStamps, oracleRow } from '@/lib/meeting-line'
 import { cn } from '@/lib/utils'
+import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import { useMeeting } from '@/store/meeting'
 
 /** One `them:`/`me:` row of a batch, or the `live:/dismissed:` header. */
 function BatchRow({ line }: { line: string }) {
@@ -19,7 +23,29 @@ function BatchRow({ line }: { line: string }) {
   )
 }
 
+/** 57 §3.4: `⚡ topic 0.12 · skip · 78 ms`; open for every label's probability. */
+export function OracleRow({ decision }: { decision: OracleDecision }) {
+  return (
+    <details className="mt-1 text-[11px] leading-5 text-fg-tertiary">
+      <summary className="cursor-pointer list-none truncate [&::-webkit-details-marker]:hidden" title={`${decision.mode} · ${decision.family}`}>
+        {decision.batch_id !== '' && <span className="mr-1 tabular-nums">{decision.batch_id}</span>}
+        {oracleRow(decision)}
+      </summary>
+      <ul className="ml-4 list-disc font-mono text-[11px]">
+        {decision.top.map(([label, prob]) => (
+          <li key={label}>
+            {label} {prob.toFixed(3)}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
 export function MeetingCard({ line }: { line: MeetingLine }) {
+  const stamps = line.kind === 'batch' ? batchStamps(line) : []
+  const oracle = useMeeting((s) => s.oracle)
+  const rows = stamps.length > 0 ? oracle.filter((d) => stamps.includes(d.batch_id)) : []
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <div className="flex items-center gap-2 text-xs text-fg-secondary">
@@ -36,6 +62,9 @@ export function MeetingCard({ line }: { line: MeetingLine }) {
               : line.body}
         </div>
       )}
+      {rows.map((d) => (
+        <OracleRow key={d.batch_id} decision={d} />
+      ))}
     </div>
   )
 }

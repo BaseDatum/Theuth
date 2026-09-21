@@ -3,9 +3,9 @@
 // non-activating `NSPanel` webview; the shell shows/hides/places it through `lib/tauri.ts`. State is
 // `store/meeting.ts`; `Level` bypasses React (CSS variables on a ref).
 
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, ZoomIn } from 'lucide-react'
+import { ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, Zap, ZoomIn } from 'lucide-react'
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -21,7 +21,8 @@ import {
 import { cn } from '@/lib/utils'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import { current, elapsed, live, useMeeting } from '@/store/meeting'
+import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import { current, elapsed, live, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 
@@ -176,6 +177,7 @@ export function Island() {
       <div ref={measure} data-tauri-drag-region className="flex h-11 shrink-0 items-center gap-1.5 px-2">
         <Meters />
         <Clock state={state} />
+        <OracleChip />
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
           {menu ? (
             <>
@@ -207,8 +209,12 @@ export function Island() {
                   }}
                 >
                   <span className="truncate">{t.label}</span>
-                  {t.cached !== null && (
-                    <span className="size-1.5 shrink-0 rounded-full bg-fg-accent" aria-label="cached brief" title="cached — the brief is ready" />
+                  {t.source === 'Oracle' ? (
+                    <Zap className="size-2.5 shrink-0 text-fg-accent" aria-label="published by the decision oracle" />
+                  ) : (
+                    t.cached !== null && (
+                      <span className="size-1.5 shrink-0 rounded-full bg-fg-accent" aria-label="cached brief" title="cached — the brief is ready" />
+                    )
                   )}
                   <X
                     className="hidden size-3 shrink-0 text-fg-tertiary group-hover:block"
@@ -299,6 +305,49 @@ export function Island() {
       )}
       <RequestBox measure={measure} />
     </div>
+  )
+}
+
+/** How long the last verdict stays on the chip before it fades back to the bare mode badge. */
+const VERDICT_MS = 4000
+
+/**
+ * 57 §3.4 state chip beside the clock: the mode badge (`shadow` / `active`; nothing when off) and the live
+ * indicator `⚡ deciding` → `skip` (fades) / `brief` / `→ model`. The tooltip carries the session counters.
+ */
+function OracleChip() {
+  const api = useApi()
+  const mode = useQuery({ queryKey: queryKeys.meetingOracleMode, queryFn: () => api.meeting_oracle_mode(), refetchInterval: 30_000 })
+  const oracle = useMeeting((s) => s.oracle)
+  const deciding = useMeeting((s) => s.deciding)
+  const last: OracleDecision | undefined = oracle[oracle.length - 1]
+  const [faded, setFaded] = useState(false)
+  const lastKey = last ? `${last.batch_id}:${last.outcome ? 'o' : 'v'}` : ''
+  useEffect(() => {
+    setFaded(false)
+    if (!lastKey) return
+    const t = window.setTimeout(() => setFaded(true), VERDICT_MS)
+    return () => clearTimeout(t)
+  }, [lastKey])
+  const effective = last?.mode ?? mode.data?.effective ?? 'off'
+  if (effective === 'off' && !deciding && !last) return null
+  const verdict = deciding
+    ? '⚡ deciding'
+    : last && !faded
+      ? last.disposition.kind === 'skip'
+        ? 'skip'
+        : last.disposition.kind === 'brief'
+          ? 'brief'
+          : '→ model'
+      : null
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 rounded-full bg-layer-2 px-1.5 text-[10px] leading-4 text-fg-tertiary"
+      title={oracleSummary(oracle) ?? `decision oracle ${effective}`}
+    >
+      {effective !== 'off' && <span className="uppercase tracking-wide">{effective}</span>}
+      {verdict && <span className={cn('transition-opacity', deciding && 'text-fg-accent', last?.disposition.kind === 'skip' && !deciding && 'opacity-60')}>{verdict}</span>}
+    </span>
   )
 }
 

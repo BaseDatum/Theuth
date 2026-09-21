@@ -2,7 +2,8 @@ import { expect, test } from 'vitest'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefSource } from '@/rpc/bindings/BriefSource'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
-import { type MeetingSlice, current, reduce, useMeeting } from './meeting'
+import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
+import { type MeetingSlice, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting } from './meeting'
 
 const M = 'm1'
 const brief = (id: string, source: BriefSource, topic: string | null = null): Brief => ({
@@ -50,7 +51,7 @@ test('Auto briefs at the top replace the view; stepped back they queue behind th
 
 test('a brief the user asked for jumps into view and clears the badge; its topic button goes on TopicRemoved{Viewed}', () => {
   let s = fresh()
-  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0n, brief: null, cached: null } })
+  s = reduce(s, { type: 'TopicAdded', meeting: M, topic: { id: 't1', label: 'KEDA', at_ms: 0n, brief: null, cached: null, source: null } })
   for (const id of ['a', 'b']) s = reduce(s, ev({ type: 'Brief', brief: brief(id, 'Auto') }))
   useMeeting.setState(s)
   useMeeting.getState().move(-1)
@@ -91,4 +92,38 @@ test('PostProgress moves the state into Post with its pct; ReviewReady lands on 
   expect(s.progress?.pct).toBe(70)
   s = reduce(s, { type: 'ReviewReady', meeting: M })
   expect([s.state, s.progress]).toEqual(['Review', null])
+})
+
+const verdict = (batch_id: string, kind: 'skip' | 'brief' | 'model', outcome: OracleDecision['outcome'] = null): OracleDecision => ({
+  batch_id,
+  family: 'meeting.topic',
+  mode: 'shadow',
+  disposition: kind === 'skip' ? { kind } : kind === 'brief' ? { kind, brief: 'b1', title: 'SRE-2386' } : { kind, reason: 'low margin' },
+  top: [['topic', 0.12]],
+  latency_ms: 78n,
+  tier: 1,
+  outcome,
+})
+
+test('57 §3.4: OracleDeciding lights the chip; a verdict replaces it and an outcome replaces its row; counters fold', () => {
+  let s = fresh()
+  s = reduce(s, { type: 'OracleDeciding', meeting: M, batch_id: '00:14:32' })
+  expect(s.deciding).toBe('00:14:32')
+  s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:14:32', 'skip') })
+  expect([s.deciding, s.oracle.length]).toEqual([null, 1])
+  s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:15:01', 'model') })
+  s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:15:30', 'brief') })
+  // The outcome update keeps the row's place and count.
+  s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:15:01', 'model', { agreed: false, published: 'HR-12' }) })
+  expect(s.oracle.map((d) => d.batch_id)).toEqual(['00:14:32', '00:15:01', '00:15:30'])
+  expect(s.oracle[1]?.outcome?.published).toBe('HR-12')
+  s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:14:32', 'skip', { agreed: true, published: null }) })
+  expect(oracleCounters(s.oracle)).toEqual({ skipped: 1, briefs: 1, escalated: 1, agreed: 50 })
+  expect(oracleSummary(s.oracle)).toBe('⚡ 1 skipped · 1 brief · 1 escalated · agreed 50 %')
+  // Another meeting's verdicts are ignored; the ring keeps the last ORACLE_KEEP.
+  s = reduce(s, { type: 'OracleDecision', meeting: 'other', decision: verdict('00:16:00', 'skip') })
+  expect(s.oracle.length).toBe(3)
+  for (let i = 0; i < ORACLE_KEEP + 5; i++) s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict(`01:00:${String(i).padStart(2, '0')}`, 'skip') })
+  expect(s.oracle.length).toBe(ORACLE_KEEP)
+  expect(oracleSummary([])).toBeNull()
 })

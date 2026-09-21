@@ -11,10 +11,14 @@ import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
+import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
 import type { PostStage } from '@/rpc/bindings/PostStage'
 import { on } from '@/store/sessions'
+
+/** Oracle verdicts kept per meeting (57 §3.4 data path). */
+export const ORACLE_KEEP = 50
 
 export type MeetingSlice = {
   meeting: string | null
@@ -38,6 +42,10 @@ export type MeetingSlice = {
   activity: string | null
   /** Post pipeline (04 §7): the stage `state` is in and its 0–100 progress; `null` outside `Post`. */
   progress: { stage: PostStage; pct: number } | null
+  /** 57 §3.4: the last `ORACLE_KEEP` oracle verdicts, oldest first; an outcome update replaces its batch's row. */
+  oracle: OracleDecision[]
+  /** The batch the oracle is deciding right now (`⚡ deciding`), until its verdict lands. */
+  deciding: string | null
 }
 
 type MeetingStore = MeetingSlice & {
@@ -64,6 +72,36 @@ const EMPTY: MeetingSlice = {
   approvalWaiting: false,
   activity: null,
   progress: null,
+  oracle: [],
+  deciding: null,
+}
+
+/** 57 §3.4 counters: `⚡ 14 skipped · 3 briefs · 2 escalated · agreed 92 %`. */
+export function oracleCounters(oracle: OracleDecision[]): { skipped: number; briefs: number; escalated: number; agreed: number | null } {
+  let skipped = 0
+  let briefs = 0
+  let escalated = 0
+  let judged = 0
+  let agreed = 0
+  for (const d of oracle) {
+    if (d.disposition.kind === 'skip') skipped++
+    else if (d.disposition.kind === 'brief') briefs++
+    else escalated++
+    if (d.outcome) {
+      judged++
+      if (d.outcome.agreed) agreed++
+    }
+  }
+  return { skipped, briefs, escalated, agreed: judged > 0 ? Math.round((100 * agreed) / judged) : null }
+}
+
+/** The counters as one line; `null` when nothing ran yet. */
+export function oracleSummary(oracle: OracleDecision[]): string | null {
+  if (oracle.length === 0) return null
+  const c = oracleCounters(oracle)
+  const parts = [`${c.skipped} skipped`, `${c.briefs} brief${c.briefs === 1 ? '' : 's'}`, `${c.escalated} escalated`]
+  if (c.agreed !== null) parts.push(`agreed ${c.agreed} %`)
+  return `⚡ ${parts.join(' · ')}`
 }
 
 /** The recording clock is on while recording (pauses are gaps, 01 §3). */
@@ -121,6 +159,14 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
       return s.meeting === e.meeting ? { ...s, state: 'Review', progress: null } : s
     case 'Deleted':
       return s.meeting === e.meeting ? EMPTY : s
+    case 'OracleDeciding':
+      return s.meeting === e.meeting ? { ...s, deciding: e.batch_id } : s
+    case 'OracleDecision': {
+      if (s.meeting !== e.meeting) return s
+      const i = s.oracle.findIndex((d) => d.batch_id === e.decision.batch_id)
+      const oracle = i >= 0 ? s.oracle.map((d, j) => (j === i ? e.decision : d)) : [...s.oracle, e.decision].slice(-ORACLE_KEEP)
+      return { ...s, oracle, deciding: s.deciding === e.decision.batch_id ? null : s.deciding }
+    }
     default:
       return s
   }
@@ -184,6 +230,8 @@ export function installMeetingListeners(): () => void {
         'PostProgress',
         'ReviewReady',
         'Deleted',
+        'OracleDeciding',
+        'OracleDecision',
       ] as const
     ).map((t) =>
       on(t, apply),

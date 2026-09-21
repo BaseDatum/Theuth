@@ -34,6 +34,9 @@ import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingId } from '@/rpc/bindings/MeetingId'
 import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
 import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
+import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
+import type { Mode } from '@/rpc/bindings/Mode'
+import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
 import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
@@ -302,6 +305,8 @@ export interface Api {
   meeting_list(limit: number | null): Promise<MeetingSummary[]>
   /** `live.jsonl`, last 2 000 utterances. */
   meeting_live(id: MeetingId): Promise<Utterance[]>
+  /** 57 §3.4: the meeting families' decision-oracle switch (`mode` as configured, `effective` with a `reason` when forced off). */
+  meeting_oracle_mode(): Promise<ModeInfo>
   meeting_pause(): Promise<null>
   meeting_permissions(): Promise<Permissions>
   /** Re-run the post pipeline from `Transcribing` after `Failed` (or over a finished meeting). */
@@ -327,6 +332,10 @@ export interface Api {
   meeting_summarize(id: MeetingId): Promise<null>
   /** `summary.md`. */
   meeting_summary(id: MeetingId): Promise<string>
+  /** Persist `decision.families.meeting: { mode }` and apply it live; effective from the next batch (57 §3.4). */
+  set_meeting_oracle_mode(mode: Mode): Promise<ModeInfo>
+  /** 57 §7: today's decision log folded per family (mode, asks, accepts, escalations, tier-2 rows, p50/p95, shadow agreement). */
+  decision_stats(): Promise<FamilyStats[]>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
   /** `transcript.json` (04 §3). */
@@ -485,6 +494,7 @@ export const METHODS = [
   'computer_permissions',
   'context_items',
   'create_session',
+  'decision_stats',
   'delete_secret',
   'delete_session',
   'dictation_audio',
@@ -562,6 +572,7 @@ export const METHODS = [
   'meeting_get',
   'meeting_list',
   'meeting_live',
+  'meeting_oracle_mode',
   'meeting_pause',
   'meeting_permissions',
   'meeting_post_retry',
@@ -617,6 +628,7 @@ export const METHODS = [
   'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
+  'set_meeting_oracle_mode',
   'set_model',
   'set_peer_scope',
   'set_secret',

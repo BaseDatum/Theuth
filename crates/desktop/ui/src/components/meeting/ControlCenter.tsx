@@ -20,7 +20,7 @@ import type { Brief } from '@/rpc/bindings/Brief'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { PostStage } from '@/rpc/bindings/PostStage'
 import type { Track } from '@/rpc/bindings/Track'
-import { current, live, useMeeting } from '@/store/meeting'
+import { current, live, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 type LogRow = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean }
@@ -53,6 +53,11 @@ export function ControlCenter({ id }: { id: string }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <MeetingHeader title={title}>
         {state && !isLive && <span className="text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
+        {isLive && oracleSummary(store.oracle) && (
+          <span className="text-[12px] text-fg-tertiary" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
+            {oracleSummary(store.oracle)}
+          </span>
+        )}
         {session && isLive && (
           <Button variant="outline" size="sm" asChild>
             <Link to="/c/$session" params={{ session }}>

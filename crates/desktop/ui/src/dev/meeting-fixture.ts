@@ -10,7 +10,7 @@ const M = 'fixture-meeting'
 const topic = (id: string, label: string, at_ms: number): MeetingEvent => ({
   type: 'TopicAdded',
   meeting: M,
-  topic: { id, label, at_ms: BigInt(at_ms), brief: `b-${id}`, cached: id === 't2' ? 'row-keda' : null },
+  topic: { id, label, at_ms: BigInt(at_ms), brief: `b-${id}`, cached: id === 't2' ? 'row-keda' : null, source: id === 't2' ? 'Cache' : 'Auto' },
 })
 
 const brief = (id: string, source: 'Auto' | 'Tap', title: string, bullets: string[], topic: string | null = null): MeetingEvent => ({
