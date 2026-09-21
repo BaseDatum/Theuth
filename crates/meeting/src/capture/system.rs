@@ -10,10 +10,14 @@ use std::thread::JoinHandle;
 use super::Feed;
 use crate::ProcessInfo;
 
-/// Start the tap on `pid`; returns once the stream runs (the TCC prompt fires
-/// here on first use) or with the open error. The thread pumps chunks into
-/// the rings until stopped. If the process goes away the thread logs and
-/// exits; the encoder keeps writing silence for the track (01 §4.1).
+/// Start the tap on `pid` — or, for [`crate::SYSTEM_AUDIO`] (pid 0), a global
+/// tap on the default output device minus our own process; returns once the
+/// stream runs (the TCC prompt fires here on first use) or with the open
+/// error. The thread pumps chunks into the rings until stopped. If the
+/// process goes away the thread logs and exits; the encoder keeps writing
+/// silence for the track (01 §4.1).
+// ponytail: the global tap follows the *default* output device; an app routed to a non-default
+// headset is silent to it. Per-app pick remains the escape hatch; `device_id` would be the upgrade.
 #[cfg(target_os = "macos")]
 pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<JoinHandle<()>> {
     use std::sync::atomic::Ordering;
@@ -26,14 +30,26 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
     let thread = std::thread::Builder::new()
         .name("meeting-system".into())
         .spawn(move || {
-            let cfg = StreamConfig {
-                kind: SourceKind::ProcessLoopback,
-                target_pid: Some(pid),
-                output: OutputFormat {
-                    sample_rate: super::RATE,
-                    channels: 1,
-                },
-                ..Default::default()
+            let cfg = if pid == crate::SYSTEM_AUDIO {
+                StreamConfig {
+                    kind: SourceKind::SystemLoopback,
+                    exclude_self: true,
+                    output: OutputFormat {
+                        sample_rate: super::RATE,
+                        channels: 1,
+                    },
+                    ..Default::default()
+                }
+            } else {
+                StreamConfig {
+                    kind: SourceKind::ProcessLoopback,
+                    target_pid: Some(pid),
+                    output: OutputFormat {
+                        sample_rate: super::RATE,
+                        channels: 1,
+                    },
+                    ..Default::default()
+                }
             };
             let mut stream = match flexaudio::open(cfg).and_then(|mut s| s.start().map(|()| s)) {
                 Ok(s) => s,

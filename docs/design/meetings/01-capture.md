@@ -119,7 +119,7 @@ Messages (`ask` unless noted; all `Result<_, String>`):
 | message | reply | notes |
 |---|---|---|
 | `ListProcesses` | `Vec<ProcessInfo>` | `capture::system::processes()` (§4.1), active first, then by name |
-| `StartMeeting { process: Option<u32>, title: Option<String>, context: Option<String>, consent: bool, session_model: Option<String> }` | `Started { meeting, session }` | `consent == false` → `Err`; `process: None` → `Err` in v1 (a meeting is a meeting app) |
+| `StartMeeting { process: Option<u32>, title: Option<String>, context: Option<String>, consent: bool, session_model: Option<String> }` | `Started { meeting, session }` | `consent == false` → `Err`; `process: None` → all system audio (global tap on the default output minus our own process, manifest `process` = pid 0 "System audio") |
 | `PauseMeeting` / `ResumeMeeting` / `StopMeeting` | `()` | wrong state → `Err(state name)` |
 | `MeetingStatus` | `Status { state, meeting: Option<MeetingId>, session: Option<SessionId>, elapsed_ms, degraded }` | for the UI on reconnect |
 | `ListMeetings { limit: Option<u32> }` | `Vec<MeetingSummary>` | from the index, newest first |
@@ -336,7 +336,7 @@ notch or not, QuickTime Player or Music playing a known clip as the
 6. Kill the daemon (`kill -9`) mid-recording; the three files play up to
    the last second; restart; `meeting_list` shows the row (index rebuilt
    from the manifest; `state` is what the manifest last said).
-7. `consent: false` → error; `process: None` → error; second `meeting_start`
+7. `consent: false` → error; `process: None` → records all system audio; second `meeting_start`
    while recording → error.
 8. Force the fallback (set an aggregate output device in Audio MIDI Setup)
    → `State.degraded` contains `MicNoAec`, recording proceeds.
@@ -394,9 +394,9 @@ on a dock with the laptop lid closed, built-in speakers.
    pages), manifest says `Recording`; `meetings.sqlite*` deleted; restart →
    `meeting_list` shows both rows, the crashed one as `Recording` with
    `duration_ms: null` (rebuilt from the manifests).
-7. `consent: false` → "consent is required"; `process: None` → "a meeting
-   needs a process to record"; second start → "a meeting is already
-   recording"; `meeting_stop` when idle → `Idle`.
+7. `consent: false` → "consent is required"; `process: None` → a "System audio"
+   meeting; second start → "a meeting is already recording"; `meeting_stop`
+   when idle → `Idle`.
 9. `meeting_delete` of the crashed meeting → directory gone, row gone,
    session gone from `list_sessions`, `Deleted` event; refused for the
    current recording.

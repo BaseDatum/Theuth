@@ -209,6 +209,20 @@ pub struct ProcessInfo {
     pub active: bool,
 }
 
+/// [`StartMeeting::process`] `None`: every app's audio on the default output device (a global
+/// tap minus our own process). Pid 0 is the sentinel `capture::system::spawn` switches on.
+pub const SYSTEM_AUDIO: u32 = 0;
+
+/// The [`ProcessInfo`] a system-audio meeting's manifest records.
+pub fn system_audio() -> ProcessInfo {
+    ProcessInfo {
+        pid: SYSTEM_AUDIO,
+        name: "System audio".into(),
+        bundle_id: None,
+        active: true,
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -507,13 +521,13 @@ impl Default for MeetingConfig {
 pub struct ListProcesses;
 
 /// `ask` → `Result<Started, String>`. `consent == false` → `Err`; `process:
-/// None` → `Err` (a meeting is a meeting app); a meeting already recording →
+/// None` → all system audio ([`system_audio`]); a meeting already recording →
 /// `Err`. Replies once the devices are open; `State{Recording}` and `Started`
 /// are published just before.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct StartMeeting {
-    /// Pid of the meeting app (`meeting_processes`).
+    /// Pid of the meeting app (`meeting_processes`); `None` records all system audio.
     pub process: Option<u32>,
     /// Optional title; the session is named `Meeting <yyyy-mm-dd hh:mm>` regardless.
     #[serde(default)]
@@ -1299,30 +1313,29 @@ impl Message<StartMeeting> for Meeting {
             tx.send(Err("consent is required".into()));
             return reply;
         }
-        let Some(pid) = m.process else {
-            tx.send(Err("a meeting needs a process to record".into()));
-            return reply;
-        };
         if self.current.is_some() || self.starting.is_some() {
             tx.send(Err("a meeting is already recording".into()));
             return reply;
         }
-        let process = match tokio::task::spawn_blocking(capture::system::processes).await {
-            Ok(Ok(list)) => match list.into_iter().find(|p| p.pid == pid) {
-                Some(p) => p,
-                None => {
-                    tx.send(Err(format!("pid {pid} is not playing audio")));
+        let process = match m.process {
+            None => system_audio(),
+            Some(pid) => match tokio::task::spawn_blocking(capture::system::processes).await {
+                Ok(Ok(list)) => match list.into_iter().find(|p| p.pid == pid) {
+                    Some(p) => p,
+                    None => {
+                        tx.send(Err(format!("pid {pid} is not playing audio")));
+                        return reply;
+                    }
+                },
+                Ok(Err(e)) => {
+                    tx.send(Err(format!("{e:#}")));
+                    return reply;
+                }
+                Err(e) => {
+                    tx.send(Err(e.to_string()));
                     return reply;
                 }
             },
-            Ok(Err(e)) => {
-                tx.send(Err(format!("{e:#}")));
-                return reply;
-            }
-            Err(e) => {
-                tx.send(Err(e.to_string()));
-                return reply;
-            }
         };
         let now = chrono::Local::now();
         let mut manifest = Manifest::new(MeetingId::new(), process, now.to_rfc3339());

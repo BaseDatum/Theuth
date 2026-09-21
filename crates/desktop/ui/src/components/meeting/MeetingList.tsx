@@ -1,4 +1,6 @@
 // 03 §3: `/meetings` — the recorded meetings (date, title, duration, state, process) and *Start meeting…*.
+// Every device (phones over the relay included) reads meetings, summaries and transcripts; only the Mac
+// shell talking to its own daemon records — the tap and the mic are this machine's.
 
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -11,6 +13,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import { MeetingPill } from '@/components/meeting/MeetingPill'
 
@@ -46,6 +49,9 @@ export function MeetingHeader({ title, children }: { title: ReactNode; children?
   )
 }
 
+/** Recording is the local Mac daemon's: not iOS, not a browser, not a harness reached over the relay. */
+export const useCanRecord = (): boolean => useHarnesses((s) => s.active) === LOCAL && isMacDesktop()
+
 /** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. */
 export function MeetingTabs() {
   const tab = 'rounded-md px-2 py-1 text-fg-tertiary hover:text-foreground'
@@ -66,12 +72,15 @@ export function MeetingList() {
   const api = useApi()
   const navigate = useNavigate()
   const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
+  const canRecord = useCanRecord()
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MeetingHeader title={<MeetingTabs />}>
-        <Button size="sm" asChild>
-          <Link to="/meetings/new">Start meeting…</Link>
-        </Button>
+        {canRecord && (
+          <Button size="sm" asChild>
+            <Link to="/meetings/new">Start meeting…</Link>
+          </Button>
+        )}
       </MeetingHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
         {list.isError && <Empty>{errorText(list.error)}</Empty>}

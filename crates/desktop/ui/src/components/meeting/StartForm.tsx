@@ -1,12 +1,12 @@
-// 53 §4.1 / 03 §3: the start form — process picker (active first, last bundle id remembered), title, a
-// dictated context box, the consent checkbox (decision 14), the session's model, the permissions row.
-// `Start` → `meeting_start` → the control center.
+// 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
+// audio first), title, a dictated context box, the consent checkbox (decision 14), the session's
+// model, the permissions row. `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, LoaderCircle, Mic, RefreshCw, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { LevelMeter } from '@/components/chat/LevelMeter'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
@@ -22,7 +22,8 @@ import { cn } from '@/lib/utils'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
 import { useConnection } from '@/store/connection'
 
-const LAST_PROCESS = 'meeting-last-process'
+/** The picker's "System audio" row; `meeting_start` gets `process: null`. */
+const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 /** 53 decision 14, verbatim. */
 export const CONSENT = 'I acknowledge I understand the law and this recording is legal.'
@@ -34,25 +35,16 @@ export function StartForm() {
   const processes = useQuery({ queryKey: queryKeys.meetingProcesses, queryFn: () => api.meeting_processes() })
   const perms = useQuery({ queryKey: queryKeys.meetingPermissions, queryFn: () => api.meeting_permissions() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
-  const [pid, setPid] = useState<number | null>(null)
+  const [pid, setPid] = useState(SYSTEM)
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
   const [consent, setConsent] = useState(false)
   const [model, setModel] = useState<string | null>(null)
 
-  // First list: the remembered bundle id if it is running, else the first active process.
-  useEffect(() => {
-    const list = processes.data
-    if (!list || pid !== null) return
-    const last = localStorage.getItem(LAST_PROCESS)
-    const pick = list.find((p) => p.bundle_id !== null && p.bundle_id === last) ?? list.find((p) => p.active) ?? list[0]
-    if (pick) setPid(pick.pid)
-  }, [processes.data, pid])
-
   const start = useAction(
     (_: void) =>
       api.meeting_start({
-        process: pid,
+        process: pid === SYSTEM ? null : pid,
         title: title.trim() || null,
         context: context.trim() || null,
         consent,
@@ -60,11 +52,7 @@ export function StartForm() {
       }),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
-      onSuccess: (started) => {
-        const p = processes.data?.find((x) => x.pid === pid)
-        if (p?.bundle_id) localStorage.setItem(LAST_PROCESS, p.bundle_id)
-        void navigate({ to: '/meetings/$id', params: { id: started.meeting } })
-      },
+      onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
     },
   )
 
@@ -72,16 +60,17 @@ export function StartForm() {
   return (
     <div className="mx-auto w-full max-w-2xl px-6 pb-10">
       <Section title="Start meeting">
-        {disabled && <Empty>{errorText(processes.error)}</Empty>}
+        {processes.isError && <Empty>{errorText(processes.error)}</Empty>}
         <Row
-          label="Meeting app"
-          description="The process whose audio is recorded (Core Audio tap); apps playing audio first."
+          label="Source"
+          description="System audio records every app on the default output; pick one app to record only it (Core Audio tap)."
         >
-          <Select value={pid === null ? undefined : String(pid)} disabled={disabled} onValueChange={(v) => setPid(Number(v))}>
+          <Select value={String(pid)} onValueChange={(v) => setPid(Number(v))}>
             <SelectTrigger className="w-64">
-              <SelectValue placeholder="Choose an app" />
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value={String(SYSTEM)}>System audio</SelectItem>
               {processes.data?.map((p) => (
                 <SelectItem key={p.pid} value={String(p.pid)}>
                   {p.name}
@@ -135,7 +124,7 @@ export function StartForm() {
           </Label>
         </div>
         <div className="flex justify-end">
-          <Button disabled={!consent || pid === null || disabled || start.isPending} onClick={() => start.mutate()}>
+          <Button disabled={!consent || disabled || start.isPending} onClick={() => start.mutate()}>
             {start.isPending && <LoaderCircle className="animate-spin" />} Start
           </Button>
         </div>

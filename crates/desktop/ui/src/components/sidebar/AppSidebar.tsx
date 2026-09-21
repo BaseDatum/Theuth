@@ -94,15 +94,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          {isMacDesktop() && (
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                <Link to="/meetings">
-                  <Mic /> Meetings
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          )}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/meetings">
+                <Mic /> Meetings
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} active={session} />
       </SidebarContent>

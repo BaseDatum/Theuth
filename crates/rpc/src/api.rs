@@ -814,11 +814,12 @@ pub trait Api {
     /// the picker for `meeting_start`. "meetings are disabled" when the plugin is off.
     #[method(name = "meeting_processes")]
     async fn meeting_processes(&self) -> RpcResult<Vec<meeting::ProcessInfo>>;
-    /// Start recording `process` (a pid from `meeting_processes`); `consent`
-    /// must be `true`. Replies once the devices are open, after `Started` and
-    /// `State{Recording}` went out on `subscribe_events`. Error strings: consent
-    /// missing, no process, "a meeting is already recording", a device or
-    /// permission failure (the meeting is then `Failed` in `meeting_list`).
+    /// Start recording `process` (a pid from `meeting_processes`; `null` = all
+    /// system audio); `consent` must be `true`. Replies once the devices are
+    /// open, after `Started` and `State{Recording}` went out on
+    /// `subscribe_events`. Error strings: consent missing, pid not playing,
+    /// "a meeting is already recording", a device or permission failure (the
+    /// meeting is then `Failed` in `meeting_list`).
     #[method(name = "meeting_start")]
     async fn meeting_start(&self, start: meeting::StartMeeting) -> RpcResult<meeting::Started>;
     /// Pause the recording: devices stay open, the clock stops, a gap is recorded.
