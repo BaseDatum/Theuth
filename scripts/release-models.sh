@@ -56,6 +56,10 @@ REQUIRED=(
   decision/encoder/config.json                     # convaiinnovations/laya root layout, loaded by candle/mod.rs Loaded::open
   decision/tokenizer/tokenizer.json
   decision/rl_agent_config.json
+  decision-browser/model.safetensors               # decision.checkpoints.browser (57 §4.1 item 6): cklxx/laya-browser v10, same layout;
+  decision-browser/encoder/config.json             # fetched into ~/.theuth/models/decision-browser by scripts/fetch-laya-browser.sh
+  decision-browser/tokenizer/tokenizer.json
+  decision-browser/rl_agent_config.json
 )
 
 # Runtime platforms: Microsoft's archive name → rust target triple, archive member, on-disk name,
