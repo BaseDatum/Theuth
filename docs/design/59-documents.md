@@ -1377,3 +1377,200 @@ every frame — a harness quirk, not investigated). Not observed:
   every rebuild; `THEUTH_SECRETS__KEY_STORE=file` for smoke data dirs.
 - Flake: `test/helper.test.ts` spawned `bun run src/helper.ts` per test under bun's 5 s default; at load average >100 the spawn took 28 s and all 6 failed while `dist/theuth-documents` answered in 1 s.
 - Fix (19cb77a): the tests spawn `dist/theuth-documents` (built in `beforeAll` via `bun run build:helper` when missing, source entry only as fallback) with a 60 s timeout each; one process per test stays — every test is a stdin→EOF session asserting exit code and full output. Three consecutive `bun test` runs at load 180/92/56: 75 pass, 0 fail (14.3 s, 19.9 s, 11.9 s).
+
+## 19. As built — step 3 (2026-09-21)
+
+Step 3 of §14 on `feature/documents`, base 99058ea: 78b4e3f (document + rpc:
+notes), 7a40a50 (desktop: attach documents, chat panel), c036a19 (desktop:
+Notes pages, `DocumentPage`), d3e4ef9 (fixes from the smoke). §17–§18
+deviations stand. Where §6–§7 and this section differ, this is what exists.
+The desktop commits landed token path first, pages second: the pages import
+the pickers and `prefillDraft`, so that order keeps `tsc` green at each.
+
+### 19.1 What was built
+
+**Document crate + RPC.** `DocSummary` gains `created_ms` (`doc_list` stays
+`updated_ms` desc; `Store::touch` already ran after every accepted update,
+not only on export). `Rename{doc, title}` — notes only, else
+`title_owned_by_binding`: meta + index title first, then a spawned task asks
+`Outline{depth:1}` and, when the first block is a heading whose outline text
+starts `[h1] `, one `Edit::Replace{blocks:[id], markdown:"# <title>"}` as
+`Principal::Owner{device: None}` (an ordinary owner update: fanned out,
+exported, no `Authored`). `DeleteNote{doc}` — notes only, else
+`delete_via_owner`; it and the owners' `Delete` (knowledge's
+`Handle::delete`) share `delete_doc`: unload + helper close,
+`Closed{deleted}` to subscribers, `Store::delete` (`documents/.trash/<id>/`,
+`deleted_ms`). `Store::sweep_trash(30 d)` runs from `Tick` once an hour
+(first tick at start) and removes both the directory and the row.
+`CreateNote` heads a body with no level-1 heading with `# <title>`
+(`with_heading`) and now replies a `DocSummary`; the `doc_create` tool and
+the new RPC `doc_create(title, markdown?) → DocSummary` share it
+(`Owner{device: None}` for the RPC). Bus event `DocumentChanged{doc, kind,
+title, updated_ms, deleted}` (`#[serde(tag="type")]`, ts-exported) on
+create, on every export (so ≥ 400 ms debounced, never per keystroke), on
+rename and on delete; `rpc::bridge` forwards it like `ArtifactShown`. RPC
+`doc_rename`, `doc_delete`. Prompt block: "Several `[doc …]` lines mean
+several documents are attached; ask which one when the request is
+ambiguous." Tests: `store::tests::trash_sweep_removes_only_old_deletions`,
+`actor::tests::with_heading_adds_the_title_once`,
+`tests/actor.rs::notes_create_list_rename_delete` (create with/without own
+heading → list order follows an `ApplyUpdate` → rename rewrites the h1 and
+the index; empty title, knowledge rename, knowledge delete refused → delete
+closes a subscriber, moves to `.trash`, drops from the list, `OpenDoc` fails).
+
+**Desktop — pages (§7.3).** Sidebar row **Notes** (`StickyNote`) between
+Knowledge and Artifacts. `routes/notes.tsx` → `components/notes/NotesList`
+(52 px bar like the artifacts explorer: sidebar toggle when collapsed,
+"New note" → `doc_create('Untitled')` → navigate; rows title + `ago(updated)`
++ a kind badge only when not `note`; `⋯` menu Rename (inline input,
+Enter/blur → `doc_rename`) and "Delete now" (one click); empty state; the
+list is `queryKeys.notes`, invalidated by `DocumentChanged` in
+`useInvalidateOn`). `routes/notes_.$id.tsx` (path `/notes/$id`, un-nested —
+nested under `/notes` it rendered the list) → `components/notes/NotePage`:
+inline-editable title in the bar (`doc_rename`; the provider's `meta.title`
+patched locally), actions Rename · Attach to chat… · Snapshots…
+(`doc_snapshots` + Restore = `doc_restore`) · Undo last agent edit
+(`UndoAgentAction`, shared with knowledge) · Delete · Chat toggle
+(`aria-pressed`); a `closed · deleted` provider renders "This note was
+deleted." with actions disabled. `components/editor/DocumentPage.tsx`
+generalises the knowledge page's live branch: `Frame{backTo, backLabel,
+title, actions}` (bar + back chevron + `SearchTrigger` + `MeetingPill`),
+`Action`, `Live` (skeleton / error / `Editor`) and `DocumentPage{live, onAsk,
+columnRef, above, rail, below, children}`; `knowledge/Document.tsx` uses
+`DocumentPage` for the live branch and `Frame` for draft/historical/
+pending/error, keeping Open raw, History, Copy id, Delete, links rail and
+the search focus (`columnRef`). `useDocument(target: Binding | {doc})` skips
+`doc_resolve` for a known id. The status line (§9.4) is the `Editor` footer
+from step 1, unchanged.
+
+**Desktop — attach and chat (§7.3, §5.4).** `lib/pastes.ts`: `Paste` kind
+`doc {ref, title}` → token `[⎘ doc N: <title>]`; `attachDoc` (same `ref`
+twice is a no-op), `docMarker` (`[doc <ref> "<title>"]`, quotes escaped),
+`expand` removes doc tokens like file tokens and prepends one marker line
+per document ahead of the text (`ref` = the DocId for notes,
+`knowledge:<id>` for concepts; the tools accept both). `Composer`: `+` →
+"Attach note…" opens `NotePicker` (`CommandDialog` over
+`doc_list('note')`, filter as you type, "New note" at the bottom creates
+`Untitled` and picks it); doc chips (title, ×) sit beside file chips; drafts
+now keep `{text, pastes}` across remounts (file tokens used to lose their
+paste); `prefillDraft(session, text, docs, panel)` seeds chips — the step-2
+"Ask theuth…" on knowledge goes through it (deviation 10 of §18 replaced).
+New props for hosts: `pinned: DocRef` (its marker leads every message;
+chip without ×), `sessionTitle` (`rename_session` right after
+`new_session`), `onCreated(id)` (instead of navigating to `/c/$session`),
+`compact`. `ChatPicker` = the reverse: a document page's "Attach to chat…"
+lists recent top-level chats (or New chat) and prefills that composer's
+draft with the chip. `NoteChat` (`below` on the note page): a bottom panel
+with a `cursor-row-resize` top edge (pointer capture; `MIN_HEIGHT` 160,
+clamped to the pane), header (session title · open in chat list · New chat ·
+close), `Transcript` with the new `compact` prop (no ruler, no centred
+column) and the pinned `Composer`; `lib/note-chat.ts` remembers `{open,
+height, session}` per note in `localStorage` (`note-chat`, the
+`meeting-settings.ts` pattern). The panel loads the session page once
+(`useLoadSession`: `ensure` + `load_session` + `loadHistory`). The slash
+"Ask theuth…" in a note seeds the panel composer with `about block <id>: `
+and opens it (`prefillDraft(…, panel=true)` + a `theuth:note-ask` event
+that remounts an already-open panel's composer).
+
+### 19.2 The `DocumentPage` refactor and the token path
+
+Frame/Action/Live were private to `knowledge/Document.tsx`; they moved to
+`components/editor/DocumentPage.tsx` unchanged in markup (the bar keeps
+`data-tauri-drag-region`, the `md:hidden` back chevron, the mobile rail
+rule). `DocumentPage` owns the column layout: `above` (knowledge's
+`SearchReturn`), `Live`, the rail under `md` / `aside` beside it, `below`
+(the chat panel), then `children` (sheets and dialogs — portals, position
+irrelevant). Knowledge keeps its four non-live branches on `Frame`.
+
+Token path: chip in the box ⇄ `[⎘ doc N: title]` in the textarea (deleting
+either drops the paste via `prune`), `expand` on send → marker lines first,
+then the text; a `pinned` document is not a paste at all — `submit`
+prepends `docMarker(pinned)` to every message, so the id survives
+compaction without the user re-attaching. Observed in the smoke: both
+sessions' user messages start `[doc <id> "Groceries"]`; the model passed
+that id as `doc`.
+
+### 19.3 Deviations from §6–§7
+
+1. No `notes` search category. `SearchCategory` is a closed enum matched
+   exhaustively in `rpc/search.rs` (~8 arms), `tui/search.rs` (~10) and the
+   UI (`lib/search.ts`, `SearchDialog.tsx`); a `notes` owner message in
+   `document` plus those arms is ≈160–180 lines — over the brief's cap. The
+   note picker filters client-side; 49's dialog does not search notes yet.
+2. `DocSummary` has `created_ms` but no `attached_meeting` (step 5).
+3. `DocumentPage` props are `{live, title, actions, backTo, backLabel,
+   above, rail, below, columnRef, children}`, not `{binding | docId,
+   frontmatter, header, actions: MenuItem[]}`: the resolve stays in
+   `useDocument`, no `frontmatter` switch is needed (the editor's side-menu
+   override keys on the block, which notes do not have), and actions stay
+   the icon-button row knowledge already had.
+4. No `components/chat/Messages.tsx`: `Transcript` already takes a
+   `session`; it gained `compact`.
+5. The owners' `Delete` message stays (knowledge deletes concepts through
+   it); the UI's `doc_delete` is `DeleteNote` with the kind check. Both share
+   `delete_doc`.
+6. `DocumentChanged` rides the export, so a list row's `updated_ms` and
+   title move once per settled edit, not per update.
+7. The bar title is `DocMeta.title` (notes keep their created title on
+   export — §18 deviation 8). Renaming rewrites the h1 block; editing the
+   h1 block does not rename. The auto-titler renames the *session* after
+   the first turn ("Groceries" → "Editing Groceries document"); the panel
+   follows.
+8. "Ask theuth…" on a knowledge page still opens a *new* chat (now by chip,
+   not prefilled text); the new "Attach to chat…" on both pages picks the
+   chat. On a note page "Ask theuth…" opens the chat panel (§9.3).
+9. Notes-list delete is one click labelled "Delete now"; no Undo toast
+   (there is no restore, and the brief said not to fake one). Trash is the
+   safety net (30 days).
+10. `/notes/$id` is `routes/notes_.$id.tsx`: the TanStack file convention's
+    un-nesting underscore, because `/notes` renders the list with no
+    `Outlet`.
+11. Composer drafts persist `pastes` too (pre-existing gap: a remount kept
+    the `[⎘ image …]` token text but forgot the file).
+12. ts-rs exports `i64` as `bigint`; the UI wraps `*_ms` in `Number()` as
+    `settings/Link.tsx` does.
+
+### 19.4 Checks (§14 row 3 / brief "done when")
+
+Harness: `t --headless` on `127.0.0.1:7793` (7791 was taken by another
+worktree's harness), `THEUTH_DATA_DIR=/tmp/theuth-59-data`,
+`THEUTH_SECRETS__KEY_STORE=file`, `THEUTH_TOOLS__APPROVALS=false`; Vite dev
+on 1421 with `VITE_THEUTH_URL/TOKEN`; headless Chromium via the omp
+`browser`; model `anthropic/claude-sonnet-4-5`. Load average 55–60
+throughout (other builds).
+
+| # | Check | Outcome |
+|---|-------|---------|
+| 1 | `cargo check --workspace`; `cargo build -p theuth`; `cargo clippy -p document --no-deps --all-targets -D warnings`; `cargo test -p document` (15 unit + 3 integration); helper `bun test` 75; UI `tsc -b --noEmit`, vitest 198 (pastes +1), `vite build` | all green |
+| 2 | Sidebar → Notes → New note → type a heading edit and two paragraphs | `/notes/<id>` opened on `# Untitled`; `documents/<id>/note.md` = `# Untitled Groceries\n\nFirst paragraph…\n\nSecond paragraph…` — 1073 ms after the last keystroke on a re-measure (the first read landed 3.97 s after a 3-line burst under load); footer `live · exported hh:mm` |
+| 2b | Rename from the bar ("Groceries", Enter) | h1 block rewritten in the editor 133 ms, file `# Groceries` 653 ms, `doc_list` title `Groceries`, list row updated live (`DocumentChanged`) |
+| 3 | New chat: `+` → Attach note… → "Groc" → Enter → "add a bullet list of three fruits at the end" | composer text `[⎘ doc 1: Groceries] `, chip `Groceries ×`; sent as `[doc <id> "Groceries"]\nadd a bullet…`; model: `doc_read` then ONE `doc_insert(at="end")` (3 ids); file gained `* Bananas\n* Oranges\n* Strawberries` 7.05 s after send; note page showed the list |
+| 4 | Note page → Chat toggle → "replace the second paragraph with 'X'" | panel 320 px with the pinned chip; session created and titled "Groceries" (sidebar row appeared); `doc_read` + ONE `doc_replace`; file `X` 6.1 s after send; panel showed the tool card and "Done"; footer `theuth` chip; Undo enabled. Second message re-attached the marker (both user turns start `[doc <id> "Groceries"]`). Reload → panel open on the same session (6 rows; `localStorage.note-chat` = `{open, height:320, session}`) |
+| 5 | Notes list → ⋯ → Delete now (a second tab had the note open) | `.trash/<id>/note.md` present and `documents/<id>` gone 23 ms after the click; list dropped the row live; the open page showed "This note was deleted." with actions disabled (status `closed · deleted`) |
+| 6 | Knowledge regression (step 1 items 2–3) on `decisions/prod-dr-scale-to-zero` | frontmatter block, links rail and all actions present (+ "Attach to chat…"); typed text → file 519 ms with the header intact; `sed` → editor 343 ms, footer `updated from file hh:mm` |
+| 7 | Knowledge "Attach to chat…" → New chat; "Ask theuth…" | both land at `/` with `[⎘ doc 1: ICD prod DR…] ` and the chip (`ref` = `knowledge:decisions/…`) |
+| 8 | Note slash `/ask` → "Ask theuth…" (panel closed, then open) | panel opens; its composer reads `about block <id>: ` in both cases |
+
+Not observed: `pointer: coarse` on the new pages (nothing new required),
+the hourly sweep firing on a 30-day-old directory in the live harness
+(unit-tested with a shifted `deleted_ms`), the Snapshots dialog's Restore
+against a real snapshot (RPC unchanged from step 1).
+
+### 19.5 Left for step 4 (link devices) and 5 (artifacts/meetings)
+
+- Step 4: IndexedDB offline queue (`HarnessProvider.#queue` is in memory),
+  chunked `doc_open` over mode 0, base64 overhead measurement; `daily`
+  snapshot and the awareness rate limit are still open from §17.6.
+- Step 5: `attached_meeting` on `DocSummary`, meeting badge on the notes
+  list, `Artifact.doc`, meeting note pane.
+- Search category `notes` (deviation 1) — a cross-cutting change worth its
+  own commit when 49 next moves.
+- The notes list is not virtualised (`ponytail`: fine to a few hundred
+  rows; `doc_list` is capped at 500 here).
+- The panel composer's `⇧Esc` focus hook keys on the focused pane; a panel
+  under a note is not a pane, so the shortcut lands elsewhere.
+- Renaming a note while offline updates the bar optimistically only after
+  the RPC returns; no optimistic UI.
+- `CommandDialog` renders its sr-only title/description outside
+  `DialogContent`, so a closed picker leaves "Attach note / Pick a note…"
+  in the page's accessibility text — the ui kit's shape, not ours.
