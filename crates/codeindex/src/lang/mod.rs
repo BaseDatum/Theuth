@@ -1,10 +1,11 @@
 //! Languages, extension map and one [`TagsConfiguration`] per language (60 §5.2–5.3).
 //!
 //! The grammar crates' shipped `TAGS_QUERY` is the whole per-language parse
-//! logic; TS/TSX = the JS query + the TS supplement (60 §2.B). The one edit
-//! we make is §5.3: `(#is-not? local)` on every `@reference.call` pattern so a
-//! call to a parameter or `let` binding is not a reference to every symbol of
-//! that name, with a small locals query for the grammars that ship none.
+//! logic; TS/TSX = the JS query + the TS supplement (60 §2.B). Edits: §5.3
+//! `(#is-not? local)` on bare-identifier `@reference.call` patterns (not on
+//! receiver calls — 60 §20), a small locals query for the grammars that ship
+//! none, and a few prepended patterns so a reference tag's range covers its
+//! qualifier (`a::b()`, `obj.f()`, `pkg.T`) for 60 §6.2 rule 2.
 
 use std::sync::LazyLock;
 
@@ -107,7 +108,7 @@ impl Language {
                 (
                     l.into(),
                     format!(
-                        "{}\n{}",
+                        "{JS_PRE}\n{}\n{}",
                         tree_sitter_javascript::TAGS_QUERY,
                         tree_sitter_typescript::TAGS_QUERY
                     ),
@@ -116,17 +117,17 @@ impl Language {
             }
             Self::JavaScript => (
                 tree_sitter_javascript::LANGUAGE.into(),
-                tree_sitter_javascript::TAGS_QUERY.to_owned(),
+                format!("{JS_PRE}\n{}", tree_sitter_javascript::TAGS_QUERY),
                 tree_sitter_javascript::LOCALS_QUERY,
             ),
             Self::Python => (
                 tree_sitter_python::LANGUAGE.into(),
-                tree_sitter_python::TAGS_QUERY.to_owned(),
+                PY_TAGS.to_owned(),
                 PY_LOCALS,
             ),
             Self::Go => (
                 tree_sitter_go::LANGUAGE.into(),
-                tree_sitter_go::TAGS_QUERY.to_owned(),
+                format!("{GO_PRE}\n{}", tree_sitter_go::TAGS_QUERY),
                 "",
             ),
             Self::Other => return Err(tree_sitter_tags::Error::InvalidCapture("other".into())),
@@ -169,6 +170,33 @@ const RUST_POST: &str = "\
 (call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call
 ";
 
+/// Prepended to the JS query (and so to TS/TSX): the shipped method-call
+/// pattern puts `@reference.call` on the *arguments* node, so the tag's range
+/// starts at the name and the receiver text (`obj.`) is not in it. This one
+/// tags the whole `call_expression` for the same name range and wins the tie,
+/// so `parse` can read the qualifier (60 §6.2 rule 2) from the tag's range.
+const JS_PRE: &str = "\
+(call_expression function: (member_expression property: (property_identifier) @name)) @reference.call
+";
+
+/// Prepended to the Go query: `pkg.Type` as one `reference.type` tag spanning
+/// the qualifier (the shipped `(type_identifier)` pattern sees only `Type`).
+const GO_PRE: &str = "\
+(qualified_type package: (package_identifier) name: (type_identifier) @name) @reference.type
+";
+
+/// The shipped Python query, with its one `reference.call` alternation split
+/// in two so the §5.3 locals predicate can go on bare calls only: `x.f()` is
+/// a different namespace from a local `f`. Otherwise verbatim
+/// (`tree-sitter-python` 0.25 `queries/tags.scm`).
+const PY_TAGS: &str = "\
+(module (expression_statement (assignment left: (identifier) @name) @definition.constant))
+(class_definition name: (identifier) @name) @definition.class
+(function_definition name: (identifier) @name) @definition.function
+(call function: (identifier) @name) @reference.call
+(call function: (attribute attribute: (identifier) @name)) @reference.call
+";
+
 /// Rust ships no locals query: parameters, closure parameters and `let`
 /// bindings are locals inside functions, closures and blocks (60 §5.3).
 const RUST_LOCALS: &str = "\
@@ -209,10 +237,15 @@ const TS_LOCALS: &str = "\
 (optional_parameter (identifier) @local.definition)
 ";
 
+/// Receiver shapes: a method name is its own namespace, so a local variable
+/// `len` must not hide `x.len()` (60 §19.3 deviation 11, reversed in step 2).
+const RECEIVER_NODES: [&str; 4] = ["(field_expression", "(member_expression", "(attribute", "(selector_expression"];
+
 /// Append `(#is-not? local)` to every top-level pattern carrying
-/// `@reference.call`. A pattern that is already a group `((…) @x (#pred))`
-/// gets the predicate inside; a bare node pattern is wrapped in a group.
-/// Comments (`;`) and strings are skipped when balancing parentheses.
+/// `@reference.call` except the receiver shapes in [`RECEIVER_NODES`]. A
+/// pattern that is already a group `((…) @x (#pred))` gets the predicate
+/// inside; a bare node pattern is wrapped in a group. Comments (`;`) and
+/// strings are skipped when balancing parentheses.
 pub fn not_local_calls(query: &str) -> String {
     let mut out = String::with_capacity(query.len() + 256);
     let b = query.as_bytes();
@@ -243,7 +276,7 @@ pub fn not_local_calls(query: &str) -> String {
                     }
                 }
                 let expr = &query[i..end];
-                if expr.contains("@reference.call") {
+                if expr.contains("@reference.call") && !RECEIVER_NODES.iter().any(|n| expr.contains(n)) {
                     let inner = expr[1..].trim_start();
                     if b[i] == b'(' && inner.starts_with('(') && expr.ends_with(')') {
                         // Already a group: insert before the closing paren.
@@ -324,11 +357,11 @@ mod tests {
 
     #[test]
     fn not_local_wraps_bare_and_grouped_patterns() {
-        let q = "; c\n(a (b) @name) @reference.call\n(\n  (c) @reference.call\n  (#not-match? @name \"x\")\n)\n(d) @definition.function\n";
+        let q = "; c\n(a (b) @name) @reference.call\n(\n  (c) @reference.call\n  (#not-match? @name \"x\")\n)\n(d) @definition.function\n(call_expression function: (field_expression field: (field_identifier) @name)) @reference.call\n";
         let out = not_local_calls(q);
         assert_eq!(
             out,
-            "; c\n((a (b) @name) @reference.call (#is-not? local))\n(\n  (c) @reference.call\n  (#not-match? @name \"x\")\n (#is-not? local))\n(d) @definition.function\n"
+            "; c\n((a (b) @name) @reference.call (#is-not? local))\n(\n  (c) @reference.call\n  (#not-match? @name \"x\")\n (#is-not? local))\n(d) @definition.function\n(call_expression function: (field_expression field: (field_identifier) @name)) @reference.call\n"
         );
     }
 }

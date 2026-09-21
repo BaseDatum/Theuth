@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { double } = require("./util");
 
 /** A queue. */
 class Queue {
@@ -21,6 +22,6 @@ const helper = (x) => x + 1;
 
 exports.run = function run() {
   const q = new Queue();
-  q.push(apply((v) => v * 2, 3));
+  q.push(double(apply((v) => v * 2, 3)));
   return fs.existsSync(".");
 };

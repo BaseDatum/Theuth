@@ -28,6 +28,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+cargo_toml = { workspace = true }
+globset = { workspace = true }
+oxc_resolver = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

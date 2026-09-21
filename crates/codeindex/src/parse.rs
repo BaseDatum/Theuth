@@ -1,17 +1,44 @@
-//! One file → tags → `symbols` and `refs` rows (60 §5.2). Parents and
-//! enclosing definitions are computed by byte range after the file's tags
-//! are collected; tags from an erroring tree are kept.
+//! One file → tags → `symbols` and `refs` rows (60 §5.2), plus the import
+//! statements (`lang::imports`). Parents and enclosing definitions are
+//! computed by byte range after the file's tags are collected; tags from an
+//! erroring tree are kept.
 
 use std::cmp::Reverse;
 
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 use crate::lang::Language;
+use crate::lang::imports::{self, Import};
 
 /// Signature cap (60 §4).
 const SIGNATURE_CHARS: usize = 200;
 /// Bytes checked for NUL (60 §5.1).
 const NUL_CHECK: usize = 8 * 1024;
+/// Go predeclared type names: a `reference.type` to one of these is dropped
+/// (there is no definition to resolve to; `none` rows would be noise).
+const GO_BUILTIN_TYPES: &[&str] = &[
+    "any", "bool", "byte", "comparable", "complex64", "complex128", "error", "float32", "float64",
+    "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16",
+    "uint32", "uint64", "uintptr",
+];
+
+/// The parsers one worker owns: the tags runner (which holds its own
+/// `Parser` and exposes no tree) and a second `Parser` for the import query.
+pub struct Parsers {
+    /// tree-sitter-tags context.
+    pub tags: TagsContext,
+    /// For [`imports::imports`].
+    pub tree: tree_sitter::Parser,
+}
+
+impl Default for Parsers {
+    fn default() -> Self {
+        Self {
+            tags: TagsContext::new(),
+            tree: tree_sitter::Parser::new(),
+        }
+    }
+}
 
 /// A definition tag.
 #[derive(Clone, Debug)]
@@ -49,6 +76,9 @@ pub struct Ref<'c> {
     pub line: i64,
     /// Index of the innermost enclosing definition; `None` at module scope.
     pub from: Option<usize>,
+    /// The receiver/path text before the name when it is a plain identifier
+    /// chain (`a::b` in `a::b::c()`, `obj` in `obj.f()`); `None` otherwise.
+    pub qualifier: Option<String>,
 }
 
 /// Parse output for one file.
@@ -58,6 +88,8 @@ pub struct ParsedFile<'c> {
     pub symbols: Vec<Symbol<'c>>,
     /// References in source order.
     pub refs: Vec<Ref<'c>>,
+    /// Import statements in source order.
+    pub imports: Vec<Import>,
     /// Line count.
     pub lines: i64,
     /// tree-sitter `has_errors`.
@@ -67,7 +99,7 @@ pub struct ParsedFile<'c> {
 /// Parse `src` with `cfg`. `None`: binary (NUL in the first 8 KiB) or not
 /// UTF-8 — the file is skipped (60 §5.1).
 pub fn parse<'c>(
-    ctx: &mut TagsContext,
+    p: &mut Parsers,
     cfg: &'c TagsConfiguration,
     lang: Language,
     src: &[u8],
@@ -80,12 +112,20 @@ pub fn parse<'c>(
     } else {
         src.iter().filter(|&&b| b == b'\n').count() as i64 + i64::from(src[src.len() - 1] != b'\n')
     };
-    let (tags, has_errors) = match ctx.generate_tags(cfg, src, None) {
+    let imports = match imports::query(lang) {
+        Some(q) if p.tree.set_language(&cfg.language).is_ok() => p
+            .tree
+            .parse(src, None)
+            .map_or_else(Vec::new, |t| imports::imports(lang, q, t.root_node(), src)),
+        _ => Vec::new(),
+    };
+    let (tags, has_errors) = match p.tags.generate_tags(cfg, src, None) {
         Ok(t) => t,
         Err(e) => {
             tracing::debug!(error = %e, "tags failed");
             return Some(ParsedFile {
                 lines,
+                imports,
                 has_errors: true,
                 ..Default::default()
             });
@@ -131,6 +171,9 @@ pub fn parse<'c>(
         });
         open.push((i, d.range.end));
     }
+    if lang == Language::Rust {
+        attach_impl_methods(&mut symbols, &refs, cfg, src);
+    }
     // Second sweep for references: innermost enclosing definition by range.
     let mut out_refs: Vec<Ref<'c>> = Vec::with_capacity(refs.len());
     let mut di = 0;
@@ -147,9 +190,15 @@ pub fn parse<'c>(
         while open.last().is_some_and(|&(_, end)| end <= p) {
             open.pop();
         }
+        let name = text(r.name_range.clone());
+        let kind = cfg.syntax_type_name(r.syntax_type_id);
+        if lang == Language::Go && kind == "type" && GO_BUILTIN_TYPES.contains(&name.as_str()) {
+            continue;
+        }
         out_refs.push(Ref {
-            name: text(r.name_range.clone()),
-            kind: cfg.syntax_type_name(r.syntax_type_id),
+            qualifier: qualifier(&src[r.range.start..p]),
+            name,
+            kind,
             line: r.span.start.row as i64 + 1,
             from: open.last().map(|&(i, _)| i),
         });
@@ -157,9 +206,80 @@ pub fn parse<'c>(
     Some(ParsedFile {
         symbols,
         refs: out_refs,
+        imports,
         lines,
         has_errors,
     })
+}
+
+/// Rust `impl` blocks are not definition tags, so methods have no parent
+/// (60 §19.3 deviation 10). The `reference.implementation` tags span the
+/// whole block and name the type (`impl Foo {`) or the trait (`impl Tr for
+/// Foo {`, the type follows ` for `): a method inside such a block gets the
+/// same-file `class` symbol of that type as its parent, so `code_outline`
+/// groups it and 60 §6.2 rule 2 can pick `Foo::new` among many `new`.
+fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag], cfg: &TagsConfiguration, src: &[u8]) {
+    let text = |r: std::ops::Range<usize>| String::from_utf8_lossy(&src[r]).into_owned();
+    let impls: Vec<(std::ops::Range<usize>, String)> = refs
+        .iter()
+        .filter(|r| cfg.syntax_type_name(r.syntax_type_id) == "implementation")
+        .map(|r| {
+            let line = text(r.line_range.clone());
+            let owner = line
+                .split_once(" for ")
+                .map(|(_, t)| t.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| text(r.name_range.clone()));
+            (r.range.clone(), owner)
+        })
+        .collect();
+    if impls.is_empty() {
+        return;
+    }
+    let types: Vec<(String, usize)> = symbols
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == "class")
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
+    // The type must come first in source order: `store::apply` inserts in
+    // 500-row batches and `parent_id` is checked at each statement's end.
+    for (mi, s) in symbols.iter_mut().enumerate().filter(|(_, s)| s.kind == "method" && s.parent.is_none()) {
+        let at = s.byte_start as usize;
+        let owner = impls
+            .iter()
+            .filter(|(r, _)| r.start <= at && at < r.end)
+            .min_by_key(|(r, _)| r.end - r.start)
+            .map(|(_, o)| o.as_str());
+        if let Some(o) = owner
+            && let Some(&(_, i)) = types.iter().find(|(n, ti)| n == o && *ti < mi)
+        {
+            s.parent = Some(i);
+        }
+    }
+}
+
+/// The text between a reference tag's start and its name, when it is an
+/// identifier chain ending in `::` or `.`: `a::b::` → `a::b`, `self.` →
+/// `self`, `::tools::` → `::tools` (global path, kept for the resolver).
+/// Generics, calls and casts in the prefix (`Vec::<T>::`, `f().`) → `None`.
+fn qualifier(prefix: &[u8]) -> Option<String> {
+    let (chain, sep): (&[u8], &[u8]) = if let Some(c) = prefix.strip_suffix(b"::") {
+        (c, b"::")
+    } else if let Some(c) = prefix.strip_suffix(b".") {
+        (c, b".")
+    } else {
+        return None;
+    };
+    let is_ident = |s: &[u8]| {
+        s.first().is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_')
+            && s.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
+    };
+    let chain = std::str::from_utf8(chain).ok()?;
+    let sep = std::str::from_utf8(sep).ok()?;
+    let body = if sep == "::" { chain.strip_prefix("::").unwrap_or(chain) } else { chain };
+    (!body.is_empty() && body.split(sep).all(|s| is_ident(s.as_bytes())))
+        .then(|| chain.to_owned())
 }
 
 /// 60 §4: rust `pub`, ts/js `export`, go Uppercase, py not `_`-prefixed.
@@ -198,5 +318,23 @@ impl LineIndex {
     }
     fn row(&self, byte: usize) -> usize {
         self.0.partition_point(|&nl| nl < byte)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qualifier;
+
+    #[test]
+    fn qualifier_accepts_plain_chains_only() {
+        assert_eq!(qualifier(b"a::b::").as_deref(), Some("a::b"));
+        assert_eq!(qualifier(b"::tools::").as_deref(), Some("::tools"));
+        assert_eq!(qualifier(b"self.items.").as_deref(), Some("self.items"));
+        assert_eq!(qualifier(b"pkg.").as_deref(), Some("pkg"));
+        assert_eq!(qualifier(b""), None);
+        assert_eq!(qualifier(b"impl Foo for "), None);
+        assert_eq!(qualifier(b"Vec::<T>::"), None);
+        assert_eq!(qualifier(b"f(x)."), None);
+        assert_eq!(qualifier(b"a.b()."), None);
     }
 }

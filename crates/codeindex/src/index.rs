@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use anyhow::Context;
 use sqlx::SqlitePool;
-use tree_sitter_tags::TagsContext;
 
 use crate::lang::Language;
-use crate::parse::{ParsedFile, parse};
+use crate::parse::{ParsedFile, Parsers, parse};
+use crate::resolve::{self, Workspace};
 use crate::store::{self, FileWrite};
 use crate::walk::{self, Entry};
 use crate::{CodeindexConfig, IndexStats};
@@ -192,13 +192,14 @@ impl Codeindex {
     }
 
     /// Parse `changed` on `available_parallelism()` blocking workers, each
-    /// owning one `TagsContext`, then one transaction. Returns the number
-    /// of files written.
+    /// owning its parsers, then one transaction, then 60 §6 resolution for
+    /// the changed files plus the affected set (§5.4). Returns the number of
+    /// files written.
     async fn write(&self, ri: &RootIndex, changed: Vec<Entry>, delete: Vec<i64>) -> anyhow::Result<usize> {
         let enabled: HashSet<&str> = self.cfg.languages.iter().map(String::as_str).collect();
         let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
         let chunk = changed.len().div_ceil(workers).max(1);
-        let mut tasks = Vec::with_capacity(workers);
+        let mut tasks = Vec::with_capacity(workers + 1);
         for entries in changed.chunks(chunk) {
             let entries: Vec<(Entry, bool)> = entries
                 .iter()
@@ -213,10 +214,15 @@ impl Codeindex {
             let root = ri.root.clone();
             tasks.push(tokio::task::spawn_blocking(move || parse_chunk(&root, entries)));
         }
+        let root = ri.root.clone();
+        let ws = tokio::task::spawn_blocking(move || Workspace::load(&root));
+        let t = Instant::now();
         let mut parsed: Vec<Parsed> = Vec::with_capacity(changed.len());
         for t in tasks {
             parsed.extend(t.await??);
         }
+        let ws = ws.await?;
+        let parse_ms = t.elapsed().as_millis();
         let writes: Vec<FileWrite<'_>> = parsed
             .iter()
             .map(|p| FileWrite {
@@ -225,10 +231,18 @@ impl Codeindex {
                 size: p.entry.size,
                 language: p.entry.language.as_str(),
                 is_test: walk::is_test_path(&p.entry.path),
+                package: ws.package(&p.entry.path, p.entry.language),
                 parsed: p.file.as_ref(),
             })
             .collect();
-        store::apply(&ri.pool, &delete, &writes).await?;
+        let t = Instant::now();
+        let affected = store::apply(&ri.pool, &delete, &writes).await?;
+        let apply_ms = t.elapsed().as_millis();
+        let mut targets: HashSet<String> = affected.into_iter().collect();
+        targets.extend(writes.iter().filter(|w| w.parsed.is_some()).map(|w| w.path.to_owned()));
+        let t = Instant::now();
+        resolve::resolve(&ri.pool, &ws, &targets).await?;
+        tracing::debug!(parse_ms, apply_ms, resolve_ms = t.elapsed().as_millis(), resolved_files = targets.len(), "codeindex write phases");
         Ok(writes.len())
     }
 
@@ -244,8 +258,8 @@ impl Codeindex {
             files: c.files,
             symbols: c.symbols,
             refs: c.refs,
-            resolved: 0,
-            ambiguous: 0,
+            resolved: c.resolved,
+            ambiguous: c.ambiguous,
             last_reconcile: last.and_then(|s| s.parse().ok()),
             stale: ri.background.load(Ordering::Acquire),
             pending: ri.pending.load(Ordering::Acquire),
@@ -276,7 +290,7 @@ struct Parsed {
 /// One worker: read and parse its entries. A file that vanished or is
 /// binary/non-UTF-8 is dropped from the write (60 §5.1).
 fn parse_chunk(root: &Path, entries: Vec<(Entry, bool)>) -> anyhow::Result<Vec<Parsed>> {
-    let mut ctx = TagsContext::new();
+    let mut parsers = Parsers::default();
     let mut out = Vec::with_capacity(entries.len());
     for (entry, parse_it) in entries {
         if !parse_it {
@@ -288,7 +302,7 @@ fn parse_chunk(root: &Path, entries: Vec<(Entry, bool)>) -> anyhow::Result<Vec<P
             continue;
         };
         let Ok(src) = std::fs::read(root.join(&entry.path)) else { continue };
-        match parse(&mut ctx, cfg, entry.language, &src) {
+        match parse(&mut parsers, cfg, entry.language, &src) {
             Some(file) => out.push(Parsed {
                 entry,
                 file: Some(file),

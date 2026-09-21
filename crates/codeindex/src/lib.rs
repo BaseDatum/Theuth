@@ -1,7 +1,8 @@
 //! Code index plugin (design doc 60): symbols and references of a source tree
 //! from tree-sitter's shipped tags queries, in one derived SQLite per root
-//! under `<data_dir>/codeindex/`, reconciled by mtime on every call. Step 1
-//! of 60 §16: store, parse, `code_find`, `code_outline`.
+//! under `<data_dir>/codeindex/`, reconciled by mtime on every call. Steps 1–2
+//! of 60 §16: store, parse, import/name resolution, `code_find`,
+//! `code_outline`, `code_refs`.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`CODEINDEX_ACTOR`] actor ([`CodeindexActor`]): [`Handle`],
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub mod index;
 pub mod lang;
 pub mod parse;
+pub mod resolve;
 pub mod root;
 pub mod store;
 pub mod tools;
