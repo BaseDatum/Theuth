@@ -5,7 +5,10 @@
 //! path on `Escalate`; every family ships in `shadow` until its log says otherwise.
 //!
 //! Public surface consumed by other plugins: messages on the [`DECISION_ACTOR`] actor
-//! ([`Engine`]): [`Ask`] → [`Decision`], [`Report`], [`Stats`] → [`FamilyStats`].
+//! ([`Engine`]): [`Ask`] → [`Decision`], [`AskMany`] → `Vec<Decision>`, [`Report`],
+//! [`Stats`] → [`FamilyStats`]. One engine per checkpoint (57 §4.1 item 6): the `default`
+//! one is [`DECISION_ACTOR`], the others `decision/<name>` ([`actor_name`]); an `Ask` sent to
+//! any of them is routed to the one its family's gate names.
 
 pub mod candle;
 pub mod engine;
@@ -25,8 +28,8 @@ use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
 pub use engine::{
-    AllStats, Capture, Engine, GetMode, GetTrain, Loader, Oracle, Record, Report, SetMode,
-    SetTrain, Stats, Warm,
+    AllStats, AskMany, Capture, Engine, GetMode, GetTrain, Loader, Oracle, Record, Report,
+    SetMode, SetTrain, Stats, Warm,
 };
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
@@ -36,12 +39,30 @@ pub use question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
 
-/// Registry name of the [`Engine`] actor.
+/// Registry name of the `default` checkpoint's [`Engine`] actor.
 pub const DECISION_ACTOR: &str = "decision";
 
 /// The checkpoint under `<data_dir>/models/` (57 §2), published by `release-models.sh`: the
 /// Hugging Face `convaiinnovations/laya` layout (`engine::MODEL_FILES`).
 pub const MODEL_SUBDIR: &str = "decision";
+
+/// The checkpoint name a family runs on when its gate names none (`decision.checkpoints.default`
+/// = `model_dir`).
+pub const DEFAULT_CHECKPOINT: &str = "default";
+
+/// The browser head's checkpoint name (57 §4.1 item 6): cklxx/laya-browser v10 under
+/// `<data_dir>/models/decision-browser/` unless `decision.checkpoints.browser` says otherwise.
+pub const BROWSER_CHECKPOINT: &str = "browser";
+
+/// Registry name of the [`Engine`] for `checkpoint`: [`DECISION_ACTOR`] for `default`, else
+/// `decision/<name>`.
+pub fn actor_name(checkpoint: &str) -> String {
+    if checkpoint == DEFAULT_CHECKPOINT {
+        DECISION_ACTOR.to_owned()
+    } else {
+        format!("{DECISION_ACTOR}/{checkpoint}")
+    }
+}
 
 /// Where the model runs (`decision.device`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -73,9 +94,14 @@ impl Device {
 pub struct DecisionConfig {
     /// `false`: the actor answers every `Ask` with `Escalate(Disabled)`.
     pub enabled: bool,
-    /// Checkpoint directory (`model.safetensors`, `encoder/config.json`,
+    /// The `default` checkpoint directory (`model.safetensors`, `encoder/config.json`,
     /// `tokenizer/tokenizer.json`, `rl_agent_config.json`); `None` → `<data_dir>/models/decision`.
+    /// Kept for old config files; `checkpoints.default` wins when both are set.
     pub model_dir: Option<PathBuf>,
+    /// Checkpoint directories by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
+    /// (`<data_dir>/models/decision-browser`) exist unless overridden; any other name is a
+    /// new checkpoint a family may point at with `checkpoint: <name>`.
+    pub checkpoints: BTreeMap<String, PathBuf>,
     /// `auto` (Metal on an Apple-silicon Mac, else CPU) | `cpu` | `metal`.
     pub device: Device,
     /// Unload the model after this long unused (humantime, e.g. `10m`).
@@ -95,6 +121,7 @@ impl Default for DecisionConfig {
         DecisionConfig {
             enabled: true,
             model_dir: None,
+            checkpoints: BTreeMap::new(),
             device: Device::Auto,
             idle_unload: Duration::from_secs(600),
             log_text: false,
@@ -104,11 +131,46 @@ impl Default for DecisionConfig {
 }
 
 impl DecisionConfig {
-    /// `model_dir`, or `<data_dir>/models/decision`.
+    /// The `default` checkpoint: `checkpoints.default`, else `model_dir`, else
+    /// `<data_dir>/models/decision`.
     pub fn model_dir_in(&self, data_dir: &Path) -> PathBuf {
-        self.model_dir
-            .clone()
+        self.checkpoints
+            .get(DEFAULT_CHECKPOINT)
+            .or(self.model_dir.as_ref())
+            .cloned()
             .unwrap_or_else(|| data_dir.join("models").join(MODEL_SUBDIR))
+    }
+
+    /// Every checkpoint directory by name, given the `default` one: `browser` is
+    /// `<default's parent>/decision-browser` unless configured, every configured entry is
+    /// included, and every checkpoint some family points at is present (an unconfigured name
+    /// resolves to `<default's parent>/decision-<name>`, so the engine reports it missing
+    /// instead of the family failing closed on a registry miss).
+    pub fn checkpoint_dirs(&self, default_dir: &Path) -> BTreeMap<String, PathBuf> {
+        let models = default_dir.parent().unwrap_or(default_dir);
+        let mut dirs = BTreeMap::new();
+        dirs.insert(DEFAULT_CHECKPOINT.to_owned(), default_dir.to_path_buf());
+        dirs.insert(
+            BROWSER_CHECKPOINT.to_owned(),
+            models.join(format!("{MODEL_SUBDIR}-{BROWSER_CHECKPOINT}")),
+        );
+        for name in self.families.values().map(FamilyGate::checkpoint) {
+            dirs.entry(name.to_owned())
+                .or_insert_with(|| models.join(format!("{MODEL_SUBDIR}-{name}")));
+        }
+        for (name, dir) in &self.checkpoints {
+            if name != DEFAULT_CHECKPOINT {
+                dirs.insert(name.clone(), dir.clone());
+            }
+        }
+        dirs
+    }
+
+    /// The directory of `checkpoint`, given the `default` one (see [`Self::checkpoint_dirs`]).
+    pub fn checkpoint_dir(&self, default_dir: &Path, checkpoint: &str) -> PathBuf {
+        self.checkpoint_dirs(default_dir)
+            .remove(checkpoint)
+            .unwrap_or_else(|| default_dir.to_path_buf())
     }
 }
 
@@ -117,13 +179,19 @@ impl DecisionConfig {
 /// `meeting.subject` the tier-2 subject extraction (never asked of the oracle; listed so its
 /// rows fold into `decision_stats` and the `meeting` prefix switch covers it). `meeting.topic`
 /// (step 4's `Bool`) is gone: the bench showed it confidently wrong, not uncertain.
+///
+/// 57 §4.1 item 4: the browser System-1 loop's three jev-shaped questions on the `browser`
+/// checkpoint — `browser.operation` executes at P ≥ 0.5, `browser.target` /
+/// `browser.type_target` at P ≥ 0.25 (cklxx shipped ungated; the bench decides), no margin, no
+/// `none`, state cut allowed. Shadow by default: `browser_run` decides but does not act.
 fn default_families() -> BTreeMap<String, FamilyGate> {
     [
         ("meeting.kind", FamilyGate::shadow(0.60, 0.20)),
         ("meeting.brief", FamilyGate::shadow(0.60, 0.30)),
         ("meeting.subject", FamilyGate::shadow(0.50, 0.0)),
-        ("browser.target", FamilyGate::shadow(0.90, 0.50)),
-        ("browser.wait", FamilyGate::shadow(0.80, 0.30)),
+        ("browser.operation", FamilyGate::browser(0.50)),
+        ("browser.target", FamilyGate::browser(0.25)),
+        ("browser.type_target", FamilyGate::browser(0.25)),
         ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
     ]
     .into_iter()
@@ -143,6 +211,9 @@ struct FamilyPatch {
     #[serde(default, deserialize_with = "opt_duration")]
     escalate_budget: Option<Duration>,
     train: Option<bool>,
+    checkpoint: Option<String>,
+    none: Option<bool>,
+    cut_ok: Option<bool>,
 }
 
 impl FamilyPatch {
@@ -164,6 +235,15 @@ impl FamilyPatch {
         }
         if let Some(t) = self.train {
             g.train = t;
+        }
+        if let Some(c) = &self.checkpoint {
+            g.checkpoint = (c != DEFAULT_CHECKPOINT).then(|| c.clone());
+        }
+        if let Some(n) = self.none {
+            g.none = n;
+        }
+        if let Some(c) = self.cut_ok {
+            g.cut_ok = c;
         }
     }
 }
@@ -229,7 +309,9 @@ pub struct ModeInfo {
     pub escalate_budget_ms: u64,
 }
 
-/// The switch position for the families under `prefix` (see [`ModeInfo`]).
+/// The switch position for the families under `prefix` (see [`ModeInfo`]). `model_dir` is the
+/// `default` checkpoint; the files checked are those of the checkpoint the prefix's first
+/// family names (`browser` → `decision-browser/` beside it, 57 §4.1 item 6).
 pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInfo {
     let dot = format!("{prefix}.");
     let gates: Vec<&FamilyGate> = cfg
@@ -252,6 +334,9 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
         (Duration::from_millis(400), Duration::from_secs(3)),
         |g| (g.budget, g.escalate_budget),
     );
+    let model_dir = gates
+        .first()
+        .map_or_else(|| model_dir.to_path_buf(), |g| cfg.checkpoint_dir(model_dir, g.checkpoint()));
     let missing: Vec<&str> = engine::MODEL_FILES
         .into_iter()
         .filter(|f| !model_dir.join(f).is_file())
@@ -281,9 +366,12 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
     }
 }
 
-/// The plugin: reads `decision`, spawns [`Engine`] as [`DECISION_ACTOR`]. The actor is
-/// registered even when disabled so callers get a fast `Escalate(Disabled)` instead of a
-/// registry miss. No tool and no prompt block in this step (57 §6 step 7).
+/// The plugin: reads `decision`, spawns one [`Engine`] per checkpoint directory
+/// ([`DecisionConfig::checkpoint_dirs`]) — `default` as [`DECISION_ACTOR`], the others as
+/// [`actor_name`] — each lazily loaded and idle-unloaded on its own. The actors are registered
+/// even when disabled so callers get a fast `Escalate(Disabled)` instead of a registry miss.
+/// Only the default engine writes `config.yaml`; it relays `SetMode` / `SetTrain` to the
+/// others so every engine's live table agrees.
 pub struct DecisionPlugin;
 
 #[async_trait::async_trait]
@@ -302,9 +390,14 @@ impl runtime::Plugin for DecisionPlugin {
         }
         let model_dir = cfg.model_dir_in(&rt.data_dir);
         let log = log::Log::new(rt.data_dir.join("decisions"));
-        let engine =
-            Engine::new(cfg, model_dir, log).with_config_path(rt.data_dir.join("config.yaml"));
-        Engine::spawn(engine).register(DECISION_ACTOR)?;
+        for (name, dir) in cfg.checkpoint_dirs(&model_dir) {
+            let mut engine =
+                Engine::new(cfg.clone(), model_dir.clone(), log.clone()).with_checkpoint(&name, dir);
+            if name == DEFAULT_CHECKPOINT {
+                engine = engine.with_config_path(rt.data_dir.join("config.yaml"));
+            }
+            Engine::spawn(engine).register(actor_name(&name))?;
+        }
         Ok(())
     }
 }
@@ -316,10 +409,16 @@ mod tests {
     #[test]
     fn config_defaults_and_yaml() {
         let d = DecisionConfig::default();
-        assert_eq!(d.families.len(), 6);
+        assert_eq!(d.families.len(), 7);
         assert!(d.families.values().all(|g| g.mode == Mode::Shadow));
         assert!(!d.families.contains_key("meeting.topic"), "step 4's topic family is gone (57 §3.5)");
-        assert_eq!(d.families["browser.target"].tau_top, 0.90);
+        // 57 §4.1 item 4/6: the three jev-shaped questions on the `browser` checkpoint.
+        let op = &d.families["browser.operation"];
+        assert_eq!((op.tau_top, op.tau_margin, op.checkpoint(), op.none, op.cut_ok), (0.50, 0.0, "browser", false, true));
+        assert_eq!(d.families["browser.target"].tau_top, 0.25);
+        assert_eq!(d.families["browser.type_target"].budget, Duration::from_secs(2));
+        assert_eq!(d.families["meeting.kind"].checkpoint(), DEFAULT_CHECKPOINT);
+        assert!(d.families["meeting.kind"].none && !d.families["meeting.kind"].cut_ok);
         assert_eq!((d.families["meeting.kind"].tau_top, d.families["meeting.brief"].tau_margin), (0.60, 0.30));
         assert_eq!(d.families["meeting.kind"].budget, Duration::from_millis(400));
         assert_eq!(d.families["meeting.kind"].escalate_budget, Duration::from_secs(3));
@@ -333,12 +432,45 @@ mod tests {
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
         // A listed family patches its default row; a fully specified new one is added.
-        assert_eq!(cfg.families.len(), 7);
+        assert_eq!(cfg.families.len(), 8);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Active);
         assert_eq!(cfg.families["meeting.kind"].tau_top, 0.7);
         assert_eq!(cfg.families["meeting.kind"].budget, Duration::from_secs(1));
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Shadow);
         assert_eq!(cfg.families["new.family"].tau_top, 0.5);
+        // `checkpoint`, `none`, `cut_ok` patch like the rest; `checkpoint: default` clears.
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "families:\n  meeting.kind: { checkpoint: browser, none: false, cut_ok: true }\n  browser.target: { checkpoint: default }\n",
+        )
+        .unwrap();
+        let k = &cfg.families["meeting.kind"];
+        assert_eq!((k.checkpoint(), k.none, k.cut_ok), ("browser", false, true));
+        assert_eq!(cfg.families["browser.target"].checkpoint, None);
+    }
+
+    #[test]
+    fn checkpoint_dirs_default_browser_and_overrides() {
+        let data = std::path::Path::new("/d");
+        let cfg = DecisionConfig::default();
+        let default = cfg.model_dir_in(data);
+        assert_eq!(default, data.join("models/decision"));
+        let dirs = cfg.checkpoint_dirs(&default);
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs["browser"], data.join("models/decision-browser"));
+        assert_eq!(cfg.checkpoint_dir(&default, "browser"), dirs["browser"]);
+        // `checkpoints.default` wins over `model_dir`; `checkpoints.<x>` overrides the sibling
+        // convention; a family on an unknown checkpoint gets the convention's dir.
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "model_dir: /old\ncheckpoints: { default: /new, browser: /b, x: /x }\nfamilies:\n  agent.readable: { checkpoint: y }\n",
+        )
+        .unwrap();
+        let default = cfg.model_dir_in(data);
+        assert_eq!(default, std::path::Path::new("/new"));
+        let dirs = cfg.checkpoint_dirs(&default);
+        assert_eq!(dirs["browser"], std::path::Path::new("/b"));
+        assert_eq!(dirs["x"], std::path::Path::new("/x"));
+        assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
+        assert_eq!((actor_name("default").as_str(), actor_name("browser").as_str()), ("decision", "decision/browser"));
     }
 
     #[test]
@@ -347,7 +479,7 @@ mod tests {
             "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
         )
         .unwrap();
-        assert_eq!(cfg.families.len(), 6);
+        assert_eq!(cfg.families.len(), 7);
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
@@ -358,7 +490,7 @@ mod tests {
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
-        assert_eq!(cfg.families.len(), 6);
+        assert_eq!(cfg.families.len(), 7);
         // 57 §11: `train` patches like `mode`, default false everywhere.
         assert!(cfg.families.values().all(|g| !g.train));
         let train: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { train: true }\n").unwrap();

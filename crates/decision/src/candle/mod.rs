@@ -316,6 +316,8 @@ mod tests {
             marker_mask: vec![true; markers.len()],
             qtype,
             truncated: false,
+            state_cut: false,
+            markers_lost: false,
         }
     }
 

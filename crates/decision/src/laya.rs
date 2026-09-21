@@ -67,6 +67,9 @@ pub struct LayaConfig {
     pub max_len: usize,
     /// Budget for instructions + options.
     pub head_max_len: usize,
+    /// The head budget a fine-tune was trained with (cklxx/laya-browser: 768); wins over
+    /// `head_max_len` when present, as their systemone server does (57 §12.4).
+    pub head_max_len_train: Option<usize>,
     /// Per-qtype temperature, index = [`QType`].
     pub temperature: [f32; 3],
     /// Per-cardinality temperature, keyed like `choice:3-5`; wins over `temperature`.
@@ -78,6 +81,7 @@ impl Default for LayaConfig {
         LayaConfig {
             max_len: 512,
             head_max_len: 192,
+            head_max_len_train: None,
             temperature: [1.0; 3],
             temperature_by_options: BTreeMap::new(),
         }
@@ -98,6 +102,11 @@ impl LayaConfig {
             .copied()
             .unwrap_or(self.temperature[qtype as usize])
     }
+
+    /// The head budget in force: `head_max_len_train` when the checkpoint records one.
+    pub fn head_budget(&self) -> usize {
+        self.head_max_len_train.unwrap_or(self.head_max_len)
+    }
 }
 
 /// One model row.
@@ -113,8 +122,14 @@ pub struct Sequence {
     pub marker_mask: Vec<bool>,
     /// [`QType`] as the model reads it.
     pub qtype: i64,
-    /// The state was cut, or an option's marker fell past `max_len` (57 §0.5 hard failure).
+    /// The state was cut, or an option's marker fell past `max_len` (57 §0.5 hard failure) —
+    /// `state_cut || markers_lost`.
     pub truncated: bool,
+    /// The state was right-truncated (laya's own behaviour; a hard error only for families
+    /// without `cut_ok`).
+    pub state_cut: bool,
+    /// An option's `[MASK]` fell past `max_len`: that option cannot be scored. Always hard.
+    pub markers_lost: bool,
 }
 
 /// Option texts in label order (`render_options`). Bool is always `[false, true]`.
@@ -183,14 +198,15 @@ pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result
         opts.push(ids);
     }
     let used = |opts: &[Vec<i64>]| opts.iter().map(Vec::len).sum::<usize>();
-    let mut budget = cfg.head_max_len as isize - used(&opts) as isize;
+    let head_max = cfg.head_budget();
+    let mut budget = head_max as isize - used(&opts) as isize;
     if budget < 16 {
         // Too many / too long options: shrink every option evenly.
-        let per = ((cfg.head_max_len.saturating_sub(16)) / opts.len().max(1)).max(4);
+        let per = ((head_max.saturating_sub(16)) / opts.len().max(1)).max(4);
         for o in &mut opts {
             o.truncate(per);
         }
-        budget = cfg.head_max_len as isize - used(&opts) as isize;
+        budget = head_max as isize - used(&opts) as isize;
     }
     head.truncate(budget.max(8) as usize);
     let mut ids = Vec::with_capacity(cfg.max_len);
@@ -212,14 +228,16 @@ pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result
     ids.truncate(cfg.max_len);
     let k = markers.len();
     markers.retain(|&m| (m as usize) < cfg.max_len);
-    let truncated = state_cut || markers.len() < k;
+    let markers_lost = markers.len() < k;
     Ok(Sequence {
         attention_mask: vec![1; ids.len()],
         marker_mask: vec![true; markers.len()],
         input_ids: ids,
         marker_pos: markers,
         qtype: qtype as i64,
-        truncated,
+        truncated: state_cut || markers_lost,
+        state_cut,
+        markers_lost,
     })
 }
 
@@ -595,6 +613,8 @@ mod tests {
             marker_pos: markers,
             qtype,
             truncated: false,
+            state_cut: false,
+            markers_lost: false,
         }
     }
 

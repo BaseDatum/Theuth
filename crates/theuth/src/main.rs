@@ -241,10 +241,14 @@ agent:
 #                            # accepts or escalates to today's model turn. Every family starts in shadow (runs, logs, changes nothing).
 #   enabled: true            # false: the actor answers every ask with escalate(disabled); nothing loads
 #   device: auto             # auto (Metal f16 on an Apple-silicon Mac, else CPU f32) | cpu | metal (warns and falls back to CPU)
-#   model_dir: ~             # checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
+#   model_dir: ~             # the `default` checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
 #                            # tokenizer/tokenizer.json, rl_agent_config.json — the Hugging Face convaiinnovations/laya layout.
 #                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
+#   checkpoints:             # one engine per checkpoint (57 §4.1 item 6), each lazily loaded and idle-unloaded on its own
+#     default: ~             # = model_dir
+#     browser: ~             # cklxx/laya-browser v10, same layout; default <data_dir>/models/decision-browser
+#                            # (scripts/fetch-laya-browser.sh until release-models publishes it). A family's `checkpoint: <name>` picks one.
 #   idle_unload: 10m         # drop the model after this long unused (~1 GiB back)
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
 #   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin;
@@ -257,8 +261,12 @@ agent:
 #     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
 #     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
 #     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
-#     browser.target: { mode: shadow, tau_top: 0.90, tau_margin: 0.50 }
-#     browser.wait:   { mode: shadow, tau_top: 0.80, tau_margin: 0.30 }
+#     browser.operation:   { mode: shadow, tau_top: 0.50, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#     browser.target:      { mode: shadow, tau_top: 0.25, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#     browser.type_target: { mode: shadow, tau_top: 0.25, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#                            # ^ the browser System-1 loop's three jev-shaped questions (57 §4.1): `browser: { mode: active }` lets
+#                            # `browser_run` act; shadow decides and hands back; off hides the tool. none/cut_ok: the fine-tune
+#                            # learned a closed option list and right-cut states, so no `none` control and a cut state is not an error.
 #     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits

@@ -2,7 +2,8 @@
 //! first `Ask`, inference in `spawn_blocking`, `Ask.budget` honoured (a late result is
 //! still logged, never acted on), idle unload, every answer logged. A missing checkpoint
 //! escalates `ModelMissing` and is re-checked on every `Ask` (the desktop app may download
-//! it while the daemon runs).
+//! it while the daemon runs). One engine per checkpoint (57 §4.1 item 6): an `Ask` whose
+//! family names another checkpoint is forwarded to that engine's actor ([`crate::actor_name`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
@@ -57,6 +59,17 @@ pub type Loader =
     Arc<dyn Fn(&Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
+
+/// `ask` → `Vec<Decision>`, one per ask in order (57 §4.1 item 1): every question rendered,
+/// **one** collate and **one** forward pass, then the per-question gate and log row exactly as
+/// for a single [`Ask`]. All asks must name the same checkpoint (the first one's is used; any
+/// other escalates `HardError`); the budget is the largest one asked. `browser_run` asks its
+/// three questions this way; the meeting oracle's two asks are two round trips today.
+#[derive(Clone, Debug)]
+pub struct AskMany {
+    /// The questions, answered in this order.
+    pub asks: Vec<Ask>,
+}
 
 /// `tell`: what happened after a decision, appended to the log against `log_id`.
 #[derive(Clone, Debug)]
@@ -150,16 +163,21 @@ pub struct Warm {
 #[derive(Clone, Copy, Debug)]
 struct Unload;
 
-/// The `decision` actor.
+/// The `decision` actor — one per checkpoint.
 #[derive(kameo::Actor)]
 pub struct Engine {
     cfg: DecisionConfig,
+    /// This engine's checkpoint name (`default` unless [`Engine::with_checkpoint`]).
+    checkpoint: String,
+    /// This engine's checkpoint directory.
     model_dir: PathBuf,
+    /// The `default` checkpoint directory, which `mode_for` resolves the others from.
+    default_dir: PathBuf,
     log: Log,
     /// `<data_dir>/decisions/training`, beside the log.
     training: Store,
     loader: Loader,
-    /// `config.yaml`, for `SetMode`; `None` = live only (tests).
+    /// `config.yaml`, for `SetMode`; `None` = live only (tests, non-default checkpoints).
     config_path: Option<PathBuf>,
     /// Warm session, shared with in-flight blocking runs.
     loaded: Option<Shared>,
@@ -176,7 +194,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine over `cfg` with the real [`Loaded`]; nothing loads until the first `Ask`.
+    /// The `default` engine over `cfg` with the real [`Loaded`]; nothing loads until the
+    /// first `Ask`.
     pub fn new(cfg: DecisionConfig, model_dir: PathBuf, log: Log) -> Self {
         Self::with_loader(cfg, model_dir, log, Arc::new(open))
     }
@@ -185,6 +204,8 @@ impl Engine {
     pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
         Engine {
             cfg,
+            checkpoint: crate::DEFAULT_CHECKPOINT.to_owned(),
+            default_dir: model_dir.clone(),
             model_dir,
             training: Store::new(log.dir().join("training")),
             log,
@@ -198,6 +219,14 @@ impl Engine {
             pending_load_ms: None,
             model_sha: Arc::default(),
         }
+    }
+
+    /// Make this the engine of checkpoint `name` living in `dir` (57 §4.1 item 6); `new`'s
+    /// `model_dir` stays the `default` one for `mode_for`.
+    pub fn with_checkpoint(mut self, name: &str, dir: PathBuf) -> Self {
+        self.checkpoint = name.to_owned();
+        self.model_dir = dir;
+        self
     }
 
     /// Where `SetMode` persists (`<data_dir>/config.yaml`).
@@ -244,7 +273,27 @@ impl Engine {
 
     /// See [`crate::mode_for`].
     pub fn mode(&self, prefix: &str) -> crate::ModeInfo {
-        crate::mode_for(&self.cfg, &self.model_dir, prefix)
+        crate::mode_for(&self.cfg, &self.default_dir, prefix)
+    }
+
+    /// The engine that answers `family`: `None` when it is this one, else the sibling's
+    /// registry name (57 §4.1 item 6). Unknown families stay here and fail closed.
+    fn route(&self, family: &Family) -> Option<String> {
+        let name = self.cfg.families.get(&family.0)?.checkpoint();
+        (name != self.checkpoint).then(|| crate::actor_name(name))
+    }
+
+    /// The other checkpoints' engines, for relaying `SetMode` / `SetTrain` (default only).
+    fn siblings(&self) -> Vec<ActorRef<Engine>> {
+        if self.checkpoint != crate::DEFAULT_CHECKPOINT {
+            return Vec::new();
+        }
+        self.cfg
+            .checkpoint_dirs(&self.default_dir)
+            .keys()
+            .filter(|n| *n != crate::DEFAULT_CHECKPOINT)
+            .filter_map(|n| ActorRef::<Engine>::lookup(crate::actor_name(n).as_str()).ok().flatten())
+            .collect()
     }
 
     /// The files that are not in the model dir, checked fresh each time.
@@ -405,7 +454,8 @@ pub fn with_none(q: Question) -> Question {
 }
 
 /// One run's result folded into a [`Decision`]: labels zipped with probabilities, argmax
-/// choice, the gate's verdict (truncation is a hard error), then the family's mode.
+/// choice, the gate's verdict (a lost option marker is always a hard error, a cut state one
+/// unless the family says `cut_ok`), then the family's mode.
 fn decide(
     gate: &FamilyGate,
     family: &Family,
@@ -423,7 +473,8 @@ fn decide(
         .iter()
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or_else(|| NONE_ID.to_owned(), |(l, _)| l.clone());
-    let hard = seq.truncated.then_some(Reason::Truncated);
+    let hard =
+        (seq.markers_lost || (seq.state_cut && !gate.cut_ok)).then_some(Reason::Truncated);
     let d = Decision {
         family: family.clone(),
         choice,
@@ -440,127 +491,312 @@ fn decide(
     gate.finish(d)
 }
 
-impl Message<Ask> for Engine {
-    type Reply = Decision;
+/// A decision that never ran: no probabilities, `choice = none`. The engine's `escalate`
+/// logs one; the late-row task and the forwarder build theirs here.
+fn escalated(
+    family: Family,
+    gate: &FamilyGate,
+    reason: Reason,
+    latency: Duration,
+    sha: &str,
+) -> Decision {
+    Decision {
+        family,
+        choice: NONE_ID.to_owned(),
+        probabilities: Vec::new(),
+        confidence: 0.0,
+        act_probability: 0.0,
+        disposition: Disposition::Escalate(reason),
+        latency,
+        gate_version: gate.version(sha),
+        log_id: LogId::new(),
+        tier: 1,
+        calibrated: true,
+    }
+}
 
-    async fn handle(&mut self, ask: Ask, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+/// One question of a batch: its ask, its gate and the question as rendered (`none` applied).
+struct Item {
+    ask: Ask,
+    gate: FamilyGate,
+    q: Question,
+}
+
+impl Engine {
+    /// The batch core behind [`Ask`] and [`AskMany`]: gate lookup per question, one session,
+    /// one `build` per question, **one** forward, one decision + log row per question. The
+    /// budget is the largest asked; over it every question answers `Escalate(Timeout)` now
+    /// and the late rows are still logged (57 §2).
+    async fn run_batch(&mut self, asks: Vec<Ask>, me: ActorRef<Self>) -> Vec<Decision> {
         let t = Instant::now();
         if !self.cfg.enabled {
-            return self.escalate(&ask, None, Reason::Disabled, t);
+            return asks
+                .iter()
+                .map(|a| self.escalate(a, None, Reason::Disabled, t))
+                .collect();
         }
-        // Unknown families fail closed: only configured gates run (57 §0.5).
-        let gate = self.cfg.families.get(&ask.family.0).copied();
-        let Some(gate) = gate.filter(|g| g.mode != Mode::Off) else {
-            return self.escalate(&ask, gate.as_ref(), Reason::Disabled, t);
-        };
-        let shared = match self.session(ask.budget).await {
-            Ok(s) => s,
-            Err(reason) => return self.escalate(&ask, Some(&gate), reason, t),
-        };
-        self.touch(ctx.actor_ref().clone());
-
-        let q = with_none(ask.question.clone());
-        let mut run = {
-            let (shared, q) = (shared.clone(), q.clone());
-            tokio::task::spawn_blocking(move || -> Result<(Sequence, RowOut, String), Reason> {
-                let mut o = shared.lock();
-                let seq = o.build(&q).map_err(Reason::HardError)?;
-                let out = o
-                    .run(std::slice::from_ref(&seq))
-                    .map_err(|e| Reason::HardError(format!("{e:#}")))?;
-                let out = out
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| Reason::HardError("no row".into()))?;
-                Ok((seq, out, o.model_sha().lock().clone()))
-            })
-        };
-        let text = self.cfg.log_text.then(|| ask.question.clone());
-        let elapsed = ask.budget.saturating_sub(t.elapsed());
-        match tokio::time::timeout(elapsed, &mut run).await {
-            Ok(Ok(Ok((seq, out, sha)))) => {
-                let d = decide(&gate, &ask.family, &q, &seq, &out, t.elapsed(), &sha);
-                let mut row = AskRow::new(
-                    &d,
-                    gate.mode,
-                    &sha,
-                    &seq.input_ids,
-                    out.logits.clone(),
-                    out.temperature,
-                    text,
-                );
-                row.load_ms = self.pending_load_ms.take();
-                self.append(Row::Ask(Box::new(row)));
-                d
+        // Unknown families fail closed: only configured gates run (57 §0.5). A family on
+        // another checkpoint is a routing mistake upstream, named as such.
+        let mut items = Vec::with_capacity(asks.len());
+        let mut out: Vec<Option<Decision>> = Vec::with_capacity(asks.len());
+        for ask in asks {
+            match self.cfg.families.get(&ask.family.0).cloned() {
+                Some(g) if g.checkpoint() != self.checkpoint => {
+                    let reason = Reason::HardError(format!(
+                        "family {} is on checkpoint `{}`, this engine is `{}`",
+                        ask.family,
+                        g.checkpoint(),
+                        self.checkpoint
+                    ));
+                    out.push(Some(self.escalate(&ask, Some(&g), reason, t)));
+                }
+                Some(g) if g.mode != Mode::Off => {
+                    let q = if g.none {
+                        with_none(ask.question.clone())
+                    } else {
+                        ask.question.clone()
+                    };
+                    items.push(Item { ask, gate: g, q });
+                    out.push(None);
+                }
+                g => out.push(Some(self.escalate(&ask, g.as_ref(), Reason::Disabled, t))),
             }
-            Ok(Ok(Err(reason))) => self.escalate(&ask, Some(&gate), reason, t),
-            Ok(Err(e)) => self.escalate(
-                &ask,
-                Some(&gate),
-                Reason::HardError(format!("run panicked: {e}")),
-                t,
-            ),
+        }
+        if items.is_empty() {
+            return out.into_iter().flatten().collect();
+        }
+        let budget = items.iter().map(|i| i.ask.budget).max().unwrap_or_default();
+        let shared = match self.session(budget).await {
+            Ok(s) => s,
+            Err(reason) => {
+                let ds: Vec<Decision> = items
+                    .iter()
+                    .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                    .collect();
+                return merge(out, ds);
+            }
+        };
+        self.touch(me);
+
+        let qs: Vec<Question> = items.iter().map(|i| i.q.clone()).collect();
+        let mut run = tokio::task::spawn_blocking(
+            move || -> Result<(Vec<(Sequence, RowOut)>, String), Reason> {
+                let mut o = shared.lock();
+                let seqs = qs
+                    .iter()
+                    .map(|q| o.build(q))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Reason::HardError)?;
+                let outs = o
+                    .run(&seqs)
+                    .map_err(|e| Reason::HardError(format!("{e:#}")))?;
+                if outs.len() != seqs.len() {
+                    return Err(Reason::HardError(format!(
+                        "{} rows for {} questions",
+                        outs.len(),
+                        seqs.len()
+                    )));
+                }
+                Ok((seqs.into_iter().zip(outs).collect(), o.model_sha().lock().clone()))
+            },
+        );
+        let texts: Vec<Option<Question>> = items
+            .iter()
+            .map(|i| self.cfg.log_text.then(|| i.ask.question.clone()))
+            .collect();
+        let elapsed = budget.saturating_sub(t.elapsed());
+        let ds: Vec<Decision> = match tokio::time::timeout(elapsed, &mut run).await {
+            Ok(Ok(Ok((rows, sha)))) => {
+                let load_ms = self.pending_load_ms.take();
+                items
+                    .iter()
+                    .zip(rows)
+                    .zip(texts)
+                    .map(|((i, (seq, row)), text)| {
+                        let d =
+                            decide(&i.gate, &i.ask.family, &i.q, &seq, &row, t.elapsed(), &sha);
+                        let mut r = AskRow::new(
+                            &d,
+                            i.gate.mode,
+                            &sha,
+                            &seq.input_ids,
+                            row.logits.clone(),
+                            row.temperature,
+                            text,
+                        );
+                        r.load_ms = load_ms;
+                        self.append(Row::Ask(Box::new(r)));
+                        d
+                    })
+                    .collect()
+            }
+            Ok(Ok(Err(reason))) => items
+                .iter()
+                .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                .collect(),
+            Ok(Err(e)) => {
+                let reason = Reason::HardError(format!("run panicked: {e}"));
+                items
+                    .iter()
+                    .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                    .collect()
+            }
             Err(_) => {
-                // Over budget: answer now, log the late result when it lands (57 §2). The
-                // late row keeps the real probabilities under `timeout`, so fitting sees them.
-                let (log, family, mode, sha) = (
-                    self.log.clone(),
-                    ask.family.clone(),
-                    gate.mode,
-                    self.model_sha(),
-                );
+                // Over budget: answer now, log the late rows when they land (57 §2). The late
+                // rows keep the real probabilities under `timeout`, so fitting sees them.
+                let (log, sha) = (self.log.clone(), self.model_sha());
+                let now: Vec<Decision> = items
+                    .iter()
+                    .map(|i| {
+                        escalated(i.ask.family.clone(), &i.gate, Reason::Timeout, t.elapsed(), &sha)
+                    })
+                    .collect();
                 tokio::spawn(async move {
-                    let row = match run.await {
-                        Ok(Ok((seq, out, sha))) => {
-                            let mut d = decide(&gate, &family, &q, &seq, &out, t.elapsed(), &sha);
-                            d.disposition = Disposition::Escalate(Reason::Timeout);
-                            AskRow::new(
-                                &d,
-                                mode,
-                                &sha,
-                                &seq.input_ids,
-                                out.logits,
-                                out.temperature,
-                                text,
-                            )
-                        }
-                        Ok(Err(reason)) => {
-                            let d = Decision {
-                                family,
-                                choice: NONE_ID.to_owned(),
-                                probabilities: Vec::new(),
-                                confidence: 0.0,
-                                act_probability: 0.0,
-                                disposition: Disposition::Escalate(reason),
-                                latency: t.elapsed(),
-                                gate_version: gate.version(&sha),
-                                log_id: LogId::new(),
-                                tier: 1,
-                                calibrated: true,
-                            };
-                            AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, text)
-                        }
+                    let rows: Vec<Row> = match run.await {
+                        Ok(Ok((rows, sha))) => items
+                            .iter()
+                            .zip(rows)
+                            .zip(texts)
+                            .map(|((i, (seq, row)), text)| {
+                                let mut d = decide(
+                                    &i.gate,
+                                    &i.ask.family,
+                                    &i.q,
+                                    &seq,
+                                    &row,
+                                    t.elapsed(),
+                                    &sha,
+                                );
+                                d.disposition = Disposition::Escalate(Reason::Timeout);
+                                Row::Ask(Box::new(AskRow::new(
+                                    &d,
+                                    i.gate.mode,
+                                    &sha,
+                                    &seq.input_ids,
+                                    row.logits,
+                                    row.temperature,
+                                    text,
+                                )))
+                            })
+                            .collect(),
+                        Ok(Err(reason)) => items
+                            .iter()
+                            .zip(texts)
+                            .map(|(i, text)| {
+                                let d = escalated(
+                                    i.ask.family.clone(),
+                                    &i.gate,
+                                    reason.clone(),
+                                    t.elapsed(),
+                                    &sha,
+                                );
+                                Row::Ask(Box::new(AskRow::new(
+                                    &d,
+                                    i.gate.mode,
+                                    &sha,
+                                    &[],
+                                    Vec::new(),
+                                    0.0,
+                                    text,
+                                )))
+                            })
+                            .collect(),
                         Err(_) => return,
                     };
-                    if let Err(e) = log.append(&Row::Ask(Box::new(row))) {
-                        tracing::warn!("decision log: {e}");
+                    for row in rows {
+                        if let Err(e) = log.append(&row) {
+                            tracing::warn!("decision log: {e}");
+                        }
                     }
                 });
-                Decision {
-                    family: ask.family.clone(),
-                    choice: NONE_ID.to_owned(),
-                    probabilities: Vec::new(),
-                    confidence: 0.0,
-                    act_probability: 0.0,
-                    disposition: Disposition::Escalate(Reason::Timeout),
-                    latency: t.elapsed(),
-                    gate_version: gate.version(&self.model_sha()),
-                    log_id: LogId::new(),
-                    tier: 1,
-                    calibrated: true,
-                }
+                now
             }
-        }
+        };
+        merge(out, ds)
+    }
+
+    /// What forwarded asks answer when the sibling engine `to` is not running: `HardError`
+    /// per ask, nothing logged (the sibling owns those rows).
+    fn unreachable(&self, to: &str, asks: &[Ask]) -> Vec<Decision> {
+        let sha = self.model_sha();
+        asks.iter()
+            .map(|a| {
+                let gate = self
+                    .cfg
+                    .families
+                    .get(&a.family.0)
+                    .cloned()
+                    .unwrap_or_else(|| FamilyGate::shadow(1.0, 1.0));
+                let reason = Reason::HardError(format!("checkpoint engine `{to}` is not running"));
+                escalated(a.family.clone(), &gate, reason, Duration::ZERO, &sha)
+            })
+            .collect()
+    }
+}
+
+/// The sibling engine registered as `to`, if it is running.
+fn sibling(to: &str) -> Option<ActorRef<Engine>> {
+    ActorRef::<Engine>::lookup(to).ok().flatten()
+}
+
+/// Fill the `None` slots of `out` (the questions that ran) with `ds`, in order.
+fn merge(out: Vec<Option<Decision>>, ds: Vec<Decision>) -> Vec<Decision> {
+    let mut ds = ds.into_iter();
+    out.into_iter()
+        .map(|d| d.unwrap_or_else(|| ds.next().expect("one decision per ran question")))
+        .collect()
+}
+
+impl Message<Ask> for Engine {
+    type Reply = DelegatedReply<Decision>;
+
+    async fn handle(&mut self, ask: Ask, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(to) = self.route(&ask.family) else {
+            let me = ctx.actor_ref().clone();
+            let d = self.run_batch(vec![ask], me).await.remove(0);
+            return ctx.reply(d);
+        };
+        // Another checkpoint's family: forward off this mailbox (57 §4.1 item 6).
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let fallback = self.unreachable(&to, std::slice::from_ref(&ask)).remove(0);
+        tokio::spawn(async move {
+            let d = match sibling(&to) {
+                Some(s) => s.ask(ask).await.unwrap_or_else(|e| {
+                    tracing::warn!("decision: forward to {to}: {e}");
+                    fallback
+                }),
+                None => fallback,
+            };
+            tx.send(d);
+        });
+        reply
+    }
+}
+
+impl Message<AskMany> for Engine {
+    type Reply = DelegatedReply<Vec<Decision>>;
+
+    async fn handle(&mut self, m: AskMany, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(to) = m.asks.first().and_then(|a| self.route(&a.family)) else {
+            let me = ctx.actor_ref().clone();
+            let ds = self.run_batch(m.asks, me).await;
+            return ctx.reply(ds);
+        };
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let fallback = self.unreachable(&to, &m.asks);
+        tokio::spawn(async move {
+            let ds = match sibling(&to) {
+                Some(s) => s.ask(m).await.unwrap_or_else(|e| {
+                    tracing::warn!("decision: forward to {to}: {e}");
+                    fallback
+                }),
+                None => fallback,
+            };
+            tx.send(ds);
+        });
+        reply
     }
 }
 
@@ -655,6 +891,10 @@ impl Message<SetMode> for Engine {
             g.mode = m.mode;
         }
         tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
+        // The siblings have no `config_path`, so the relay is live-only there.
+        for s in self.siblings() {
+            let _ = s.tell(m.clone()).await;
+        }
         Ok(self.mode(&m.prefix))
     }
 }
@@ -683,6 +923,9 @@ impl Message<SetTrain> for Engine {
             g.train = m.on;
         }
         tracing::info!("decision: {}.* train → {}", m.prefix, m.on);
+        for s in self.siblings() {
+            let _ = s.tell(m.clone()).await;
+        }
         Ok(self.training.info(&m.prefix, m.on))
     }
 }
@@ -803,6 +1046,8 @@ mod tests {
                 marker_pos: markers,
                 qtype: 2,
                 truncated: false,
+                state_cut: false,
+                markers_lost: false,
             })
         }
         fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
@@ -952,6 +1197,168 @@ mod tests {
         };
         assert_eq!(candidates.iter().filter(|c| c.id == "none").count(), 1);
         assert_eq!(candidates.len(), 3);
+    }
+
+    /// Counts `run` calls and the rows per call; answers like [`Fake`].
+    struct Counting {
+        calls: Arc<Mutex<Vec<usize>>>,
+        cut: bool,
+    }
+
+    impl Oracle for Counting {
+        fn model_sha(&self) -> ModelSha {
+            Arc::new(Mutex::new("fake".into()))
+        }
+        fn build(&self, q: &Question) -> Result<Sequence, String> {
+            let mut s = Fake {
+                delay: Duration::ZERO,
+            }
+            .build(q)?;
+            s.state_cut = self.cut;
+            s.truncated = self.cut;
+            Ok(s)
+        }
+        fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
+            self.calls.lock().push(rows.len());
+            Fake {
+                delay: Duration::ZERO,
+            }
+            .run(rows)
+        }
+        fn load_time(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    fn jev_question(n: usize) -> Question {
+        Question::Choice {
+            instructions: "op".into(),
+            candidates: (1..=n)
+                .map(|i| Candidate {
+                    id: i.to_string(),
+                    text: format!("[{i}] link"),
+                })
+                .collect(),
+            state: "page".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_many_is_one_forward_with_per_question_rows_and_closed_option_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(dir.path());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let loader: Loader = {
+            let calls = calls.clone();
+            Arc::new(move |_, _| {
+                Ok(Box::new(Counting {
+                    calls: calls.clone(),
+                    cut: true,
+                }) as Box<dyn Oracle>)
+            })
+        };
+        // Both families on this (default) engine: one jev-shaped (no `none`, cut ok), one classic.
+        let mut jev = FamilyGate::browser(0.5);
+        jev.checkpoint = None;
+        jev.mode = Mode::Active;
+        let cfg = DecisionConfig {
+            families: [
+                ("browser.operation".to_owned(), jev),
+                ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
+                ("meeting.off".to_owned(), FamilyGate { mode: Mode::Off, ..FamilyGate::shadow(0.5, 0.1) }),
+            ]
+            .into(),
+            ..DecisionConfig::default()
+        };
+        let log = Log::new(dir.path().join("d"));
+        let engine = Engine::spawn(Engine::with_loader(cfg, dir.path().into(), log, loader));
+        let ds = engine
+            .ask(AskMany {
+                asks: vec![
+                    Ask::new("browser.operation", jev_question(3)),
+                    Ask::new("meeting.off", jev_question(2)),
+                    Ask::new("meeting.brief", jev_question(2)),
+                ],
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock(), vec![2], "one forward for the two questions that ran");
+        assert_eq!(ds.len(), 3);
+        // Order kept, the off family escalated in place.
+        assert_eq!(ds[0].family.0, "browser.operation");
+        assert_eq!(ds[1].disposition, Disposition::Escalate(Reason::Disabled));
+        assert_eq!(ds[2].family.0, "meeting.brief");
+        // No `none` on the closed set; the cut state was not a hard error; argmax accepted.
+        let labels: Vec<&str> = ds[0].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3"]);
+        assert_eq!((ds[0].choice.as_str(), &ds[0].disposition), ("3", &Disposition::Accept));
+        // The classic family got `none` and the cut state is its hard error (57 §0.5).
+        let labels: Vec<&str> = ds[2].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "none"]);
+        assert_eq!(ds[2].disposition.reason(), Some(&Reason::Truncated));
+        // Two log rows, one per question that ran, plus the disabled one.
+        let s = engine.ask(AllStats).await.unwrap();
+        assert_eq!(s.iter().map(|f| f.asks).sum::<u64>(), 3);
+    }
+
+    #[tokio::test]
+    async fn family_on_another_checkpoint_is_forwarded_or_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(&dir.path().join("decision"));
+        touch_files(&dir.path().join("decision-browser"));
+        let cfg = DecisionConfig {
+            families: [
+                ("browser.operation".to_owned(), FamilyGate { mode: Mode::Active, ..FamilyGate::browser(0.5) }),
+                ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
+            ]
+            .into(),
+            ..DecisionConfig::default()
+        };
+        let log = Log::new(dir.path().join("d"));
+        let default_dir = dir.path().join("decision");
+        let main = Engine::spawn(Engine::with_loader(
+            cfg.clone(),
+            default_dir.clone(),
+            log.clone(),
+            fake_loader(Duration::ZERO),
+        ));
+        // No sibling registered yet: fail closed, named.
+        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert!(
+            matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("decision/browser")),
+            "{d:?}"
+        );
+        // With the sibling up, the default engine forwards and the sibling answers (no `none`).
+        let browser = Engine::spawn(
+            Engine::with_loader(cfg, default_dir.clone(), log, fake_loader(Duration::ZERO))
+                .with_checkpoint("browser", dir.path().join("decision-browser")),
+        );
+        browser.register(crate::actor_name("browser")).unwrap();
+        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert_eq!((d.choice.as_str(), &d.disposition), ("2", &Disposition::Accept));
+        assert_eq!(d.probabilities.len(), 2);
+        let ds = main
+            .ask(AskMany {
+                asks: vec![Ask::new("browser.operation", jev_question(2)); 3],
+            })
+            .await
+            .unwrap();
+        assert_eq!(ds.len(), 3);
+        assert!(ds.iter().all(|d| d.disposition == Disposition::Accept));
+        // A default-checkpoint family sent to the sibling is forwarded the other way; with no
+        // `decision` actor registered in this test it fails closed, naming it.
+        let d = browser.ask(Ask::new("meeting.brief", jev_question(2))).await.unwrap();
+        assert!(matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("`decision`")), "{d:?}");
+        // `mode_for` at the default engine checks the browser checkpoint's files for `browser`.
+        std::fs::remove_file(dir.path().join("decision-browser/model.safetensors")).unwrap();
+        let m = main.ask(GetMode { prefix: "browser".into() }).await.unwrap();
+        assert!(m.reason.as_deref().unwrap().contains("decision-browser"), "{m:?}");
+        assert_eq!(main.ask(GetMode { prefix: "meeting".into() }).await.unwrap().reason, None);
+        // SetMode on the default relays live to the sibling.
+        main.ask(SetMode { prefix: "browser".into(), mode: Mode::Off }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let d = browser.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert_eq!(d.disposition, Disposition::Escalate(Reason::Disabled));
     }
 
     #[tokio::test]
@@ -1123,7 +1530,7 @@ mod tests {
         assert!(
             cfg.families["meeting.kind"].train
                 && cfg.families["meeting.brief"].train
-                && !cfg.families["browser.wait"].train
+                && !cfg.families["browser.target"].train
         );
         assert_eq!(cfg.families["meeting.kind"].mode, Mode::Shadow);
         engine
