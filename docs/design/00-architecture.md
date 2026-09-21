@@ -164,7 +164,10 @@ pub struct Runtime {
 `theuth/main.rs` is, in full: build `Runtime`, `for p in plugins { p.start(&rt).await? }`,
 wait for shutdown. Plugin order is the vector order; a plugin needing another
 looks it up by name at first use. A plugin may wait for a named actor at
-start (`Runtime::lookup_when`, 12 §2); it must not assume vector order.
+start (`Runtime::lookup_when`, 12 §2); it must not assume vector order. A plugin
+may consult another plugin's classifier through the registry (`decision`'s
+`Ask → Decision`, 57 §2), but a `Tool` must not hide a paid model call behind
+that — the oracle is local and its cost is latency only.
 
 Shared crate `runtime` contains exactly `Plugin`, `Runtime` (+ the three
 helpers above), `SessionId`, `TurnId`. Nothing else. The tool and approval
@@ -714,7 +717,11 @@ next start — 35 §3.4), `models/pocket-tts/` (the Pocket TTS checkpoint and
 elsewhere — 43 §4.2), `models/parakeet-tdt/` (the Parakeet TDT ONNX
 checkpoint plus `libonnxruntime.{dylib,so}`; `voice.stt_model_dir` — 45 §4.6)
 and `models/nemotron-streaming-en/` (the Nemotron streaming STT ONNX
-checkpoint for live dictation; `voice.dictation_model_dir` — 54 §4.1)
+checkpoint for live dictation; `voice.dictation_model_dir` — 54 §4.1),
+`models/decision/` (laya `model.onnx`, `tokenizer.json`, `rl_agent_config.json` —
+published by `release-models.sh`, fetched by the desktop model downloader like the
+speech models; `decision.model_dir` — 57 §2) and `decisions/*.jsonl` (the oracle's
+append-only decision log, hashes not text — 57 §2)
 beside it — `10-knowledge.md`. No shared `Config` struct: each plugin
 extracts its own section
 (`rt.config.extract_inner::<AgentConfig>("agent")`), so `runtime` never knows
@@ -768,6 +775,7 @@ crates/
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `theuth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43); live dictation (Nemotron streaming) into the composer (54)
+  decision/           plugin: local typed-probability oracle (laya via ONNX Runtime) with selective gate; consumers `meeting`, `browser`, `agent` (readability) (57; step 1 skeleton 2026-09-21)
   relay/              bin: theuth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)
@@ -783,7 +791,7 @@ the `theuth` bin; the rest were added by the docs named beside them, each as the
 the loop must own (store, frame, compact, repl); frontends do not grow it.
 New subsystems earn a plugin. `agent/src/lib.rs` re-exports; command structs
 live next to the handler that answers them (12 §8). Dependency order:
-`runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
+`runtime ← tools ← decision ← {meeting, browser}`; `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice, a2a} ← rpc ← tui ← theuth`
 (`update` depends on `agent` and `runtime` only, `rpc` forwards
 `UpdateReady` and answers `update_status`, 39 §4.3; `voice` depends on
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
@@ -807,7 +815,11 @@ runs without the listener, 49 §4.4;
 no cycle; `rpc` and `tui` depend on `scrape` only for the `ScrapeProgress`
 event type they forward and render, 38 §0.2; `a2a` depends on `agent`,
 `secrets` and `runtime` only — `agent` owns intake, exchange and task rows,
-the plugin owns the listener, clients and `peers.yaml`, 50 §4).
+the plugin owns the listener, clients and `peers.yaml`, 50 §4; `models` owns the
+process-wide ONNX Runtime initialiser `models::onnx::ort_lib` and `voice`,
+`meeting`, `decision` depend on it for that, 57 §6 step 1; `decision` depends on
+`runtime`, `tools`, `models` and never on `agent` — beat: a router inside `agent`
+(god-wiring, §1.4) and a model-family crate name (branding, §1.1), 57 §10).
 
 `app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
 `expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
