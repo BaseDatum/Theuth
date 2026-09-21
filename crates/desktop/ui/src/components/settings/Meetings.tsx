@@ -3,16 +3,13 @@
 // the enrolled speaker profiles (04 §7), which are the daemon's.
 
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
-import { toast } from 'sonner'
-import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
+import { ChordInput, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { chordOf, probeShortcut } from '@/lib/meeting-hotkeys'
-import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { probeShortcut } from '@/lib/shortcuts'
 import { setHiddenFromCapture } from '@/lib/tauri'
 
 export function Meetings() {
@@ -59,33 +56,14 @@ export function Meetings() {
   )
 }
 
-/** A chord reader: focus, press the chord, done. A conflicting chord (register throws) toasts and keeps the old one. */
+/** A meeting global shortcut: probed with the plugin (a conflict rejects) before it is saved. */
 function Hotkey({ kind, value, fallback }: { kind: 'ptt' | 'eye'; value: string; fallback: string }) {
   const setHotkey = useMeetingSettings((s) => s.setHotkey)
-  const [reading, setReading] = useState(false)
   return (
-    <Input
-      readOnly
-      className="w-40 text-center font-mono"
-      value={reading ? 'press a chord…' : value}
-      onFocus={() => setReading(true)}
-      onBlur={() => setReading(false)}
-      onKeyDown={(e) => {
-        e.preventDefault()
-        if (e.key === 'Escape') return e.currentTarget.blur()
-        if (e.key === 'Backspace') {
-          setHotkey(kind, fallback)
-          return e.currentTarget.blur()
-        }
-        const chord = chordOf(e.nativeEvent)
-        if (!chord) return
-        const el = e.currentTarget
-        if (chord === value) return el.blur()
-        void probeShortcut(chord)
-          .then(() => setHotkey(kind, chord))
-          .catch(() => toast.error(`Could not register ${chord}; another app holds it`))
-          .finally(() => el.blur())
-      }}
+    <ChordInput
+      value={value}
+      fallback={fallback}
+      commit={(chord) => (chord === fallback ? setHotkey(kind, chord) : probeShortcut(chord).then(() => setHotkey(kind, chord)))}
     />
   )
 }

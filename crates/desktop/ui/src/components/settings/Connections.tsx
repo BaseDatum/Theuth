@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -94,6 +94,7 @@ function Logins() {
           key={`${r.mcp ? 'mcp' : 'provider'}:${r.name}`}
           label={
             <span className="flex items-center gap-2">
+              <Dot on={r.on} />
               {r.name}
               <Badge variant="outline" className="font-normal">
                 {r.mcp ? 'mcp' : 'provider'}

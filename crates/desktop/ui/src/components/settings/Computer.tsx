@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Check, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { Empty, Row, Section, errorText } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -69,11 +68,7 @@ function Permission({ label, granted, pane }: { label: string; granted: boolean;
     <Row
       label={
         <span className="flex items-center gap-2">
-          {granted ? (
-            <Check className="size-4 text-fg-secondary" />
-          ) : (
-            <X className="size-4 text-fg-secondary" />
-          )}
+          <Dot on={granted} />
           {label}
         </span>
       }

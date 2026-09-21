@@ -11,21 +11,6 @@ import { isIsland, setHiddenFromCapture } from '@/lib/tauri'
 import { live, useMeeting } from '@/store/meeting'
 import { useConnection } from '@/store/connection'
 
-/** `Alt+Shift+E`-style chord from a keydown; `null` for a bare modifier or a chord without one. */
-export function chordOf(e: KeyboardEvent): string | null {
-  const mods = [e.altKey && 'Alt', e.ctrlKey && 'Control', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean)
-  if (mods.length === 0 || ['Alt', 'Control', 'Shift', 'Meta'].includes(e.key)) return null
-  // `global_hotkey` reads `KeyE`/`Digit1` as `E`/`1`, and every other `KeyboardEvent.code` by name (`Backquote`, `F5`, `Space`).
-  const key = e.code.replace(/^Key|^Digit/, '')
-  return key ? [...mods, key].join('+') : null
-}
-
-/** Can this chord be registered right now? A conflict (another app, or our own live binding) throws. */
-export async function probeShortcut(chord: string): Promise<void> {
-  await register(chord, () => {})
-  await unregister(chord)
-}
-
 /** Mount once in the main webview beside `useTauri()`. */
 export function useMeetingHotkeys(): void {
   const active = useMeeting((s) => live(s.state))

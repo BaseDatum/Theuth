@@ -3,7 +3,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { type Action, Empty, Section, toastSync, useAction } from '@/components/settings/shared'
+import { type Action, Dot, Empty, Section, toastSync, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -214,14 +214,8 @@ function ServerRow({
   const [open, setOpen] = useState(false)
   const sw = serverSwitch(s)
   const live = s.tools.some((t) => t.registered !== null)
-  const status =
-    sw === 'always'
-      ? '○ off'
-      : s.connected
-        ? '● connected'
-        : s.auth === 'required'
-          ? '○ login required'
-          : '○ not connected'
+  const on = sw !== 'always' && s.connected
+  const status = sw === 'always' ? 'off' : s.connected ? 'connected' : s.auth === 'required' ? 'login required' : 'not connected'
   const sessionHint = !session ? 'Open a chat first' : !live ? 'Not connected' : undefined
   return (
     <Collapsible
@@ -250,7 +244,10 @@ function ServerRow({
             )}
           </button>
         </CollapsibleTrigger>
-        <span className="shrink-0 text-[13px] text-fg-secondary">{status}</span>
+        <span className="flex shrink-0 items-center gap-1.5 text-[13px] text-fg-secondary">
+          <Dot on={on} />
+          {status}
+        </span>
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label={`Remove ${s.name}`}>

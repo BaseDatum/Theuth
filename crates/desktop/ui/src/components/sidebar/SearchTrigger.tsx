@@ -1,7 +1,8 @@
 import { Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { modKey } from '@/lib/hotkeys'
+import { label } from '@/lib/chord'
+import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 
 /**
@@ -10,6 +11,7 @@ import { cn } from '@/lib/utils'
  * unmounted the trigger that opened search.
  */
 export function SearchTrigger({ className }: { className?: string }) {
+  const search = useShortcuts((s) => s.chords.search)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -24,7 +26,7 @@ export function SearchTrigger({ className }: { className?: string }) {
           <Search className="size-[18px]" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Search ({modKey()}K)</TooltipContent>
+      <TooltipContent>Search ({label(search)})</TooltipContent>
     </Tooltip>
   )
 }

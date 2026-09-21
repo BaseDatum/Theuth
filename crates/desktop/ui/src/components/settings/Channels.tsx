@@ -3,7 +3,7 @@ import { Copy, X } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { type Action, Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { type Action, Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,7 +91,15 @@ function Signal() {
     <Section title="Signal">
       {s && (
         <>
-          <Row label="Account" description={s.number ? `${s.number} · ${signalState(s)}` : signalState(s)}>
+          <Row
+            label="Account"
+            description={
+              <span className="flex items-center gap-1.5">
+                <Dot on={s.state?.type === 'Connected' || s.state?.type === 'Linked'} />
+                {s.number ? `${s.number} · ${signalState(s)}` : signalState(s)}
+              </span>
+            }
+          >
             {s.registered ? (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -192,9 +200,12 @@ function Slack() {
         <>
           <Row
             label="Bot"
-            description={[slackState(s), s.bot_user && `user ${s.bot_user}`, s.team && `team ${s.team}`]
-              .filter(Boolean)
-              .join(' · ')}
+            description={
+              <span className="flex items-center gap-1.5">
+                <Dot on={s.state?.type === 'Connected' || s.state?.type === 'StreamFallback'} />
+                {[slackState(s), s.bot_user && `user ${s.bot_user}`, s.team && `team ${s.team}`].filter(Boolean).join(' · ')}
+              </span>
+            }
           />
           <Row label="Owner" description="Messages from this user always reach the agent.">
             <span className="font-mono text-sm">{s.owner}</span>

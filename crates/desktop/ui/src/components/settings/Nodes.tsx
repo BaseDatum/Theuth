@@ -4,7 +4,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Countdown, Editable } from '@/components/settings/Link'
-import { Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import {
   AlertDialog,
@@ -93,10 +93,6 @@ export function Nodes() {
       </p>
     </>
   )
-}
-
-function Dot({ on }: { on: boolean }) {
-  return <span className={`inline-block size-2 shrink-0 rounded-full ${on ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
 }
 
 function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name: string) => void; onRemove: () => void }) {

@@ -3,7 +3,7 @@ import { Copy, Pencil } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import {
   AlertDialog,
@@ -164,10 +164,6 @@ export function Link() {
       </p>
     </>
   )
-}
-
-function Dot({ on }: { on: boolean }) {
-  return <span className={`inline-block size-2 shrink-0 rounded-full ${on ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
 }
 
 /** `expires in m:ss`, ticking once a second; `expired` past `until`. */

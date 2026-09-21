@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { Copy, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Peers } from '@/components/chat/Peers'
-import { Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, errorText, refreshInfo, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -147,11 +147,9 @@ export function Communication({ session, focus }: { session: string | null; focu
         {s && (
           <Row
             label={
-              <span className="flex items-center gap-2">
-                Effective
-                <Badge variant={s.effective ? 'default' : 'secondary'} aria-live="polite">
-                  {s.effective ? 'On' : 'Off'}
-                </Badge>
+              <span className="flex items-center gap-2" aria-live="polite">
+                <Dot on={s.effective} />
+                Effective: {s.effective ? 'on' : 'off'}
               </span>
             }
             description={
@@ -295,10 +293,8 @@ function Network({ state }: { state: CommunicationState | undefined }) {
           <Row
             label={
               <span className="flex items-center gap-2">
-                Status
-                <Badge variant={a.listening ? 'default' : 'secondary'}>
-                  {!a.enabled ? 'Disabled' : a.listening ? 'Listening' : 'Not listening'}
-                </Badge>
+                <Dot on={a.listening} />
+                {!a.enabled ? 'Disabled' : a.listening ? 'Listening' : 'Not listening'}
               </span>
             }
             description={
@@ -322,11 +318,11 @@ function Network({ state }: { state: CommunicationState | undefined }) {
               key={p.name}
               label={
                 <span className="flex flex-wrap items-center gap-2">
+                  <Dot on={p.binding !== null} />
                   {p.name}
                   {p.card && <span className="text-fg-secondary">({p.card})</span>}
                   {p.outbound && <Badge variant="outline">outbound</Badge>}
                   {p.inbound && <Badge variant="outline">inbound</Badge>}
-                  {!p.binding && <Badge variant="secondary">not bound</Badge>}
                 </span>
               }
               description={
@@ -343,9 +339,10 @@ function Network({ state }: { state: CommunicationState | undefined }) {
               key={x.name}
               label={
                 <span className="flex flex-wrap items-center gap-2">
+                  <Dot on={x.peer !== null} />
                   {x.name}
                   <Badge variant="outline">export</Badge>
-                  {x.peer ? <span className="text-fg-secondary">granted to {x.peer}</span> : <Badge variant="secondary">no peer</Badge>}
+                  <span className="text-fg-secondary">{x.peer ? `granted to ${x.peer}` : 'no peer'}</span>
                 </span>
               }
               description={<span className="break-all font-mono text-xs">{x.url}</span>}

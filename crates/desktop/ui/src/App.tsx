@@ -3,6 +3,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/rea
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
+import { useShortcuts } from '@/lib/shortcuts'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { StartupScreen } from '@/components/launch/StartupScreen'
@@ -59,8 +60,6 @@ declare module '@tanstack/react-router' {
 
 /** rAF is paused while the window is hidden; a timer keeps events (and notifications) flowing then. */
 const HIDDEN_DRAIN_MS = 250
-const TOGGLE_SHORTCUT = 'Alt+Space'
-const CANCEL_SHORTCUT = 'Alt+Escape'
 
 /** Set by the local boot: 18 §3 — quitting `shutdown`s a daemon we started, not one we reused. */
 let owned = false
@@ -212,7 +211,7 @@ async function cancelAll(): Promise<void> {
 }
 
 /**
- * Tray / menu navigation, the quit handshake, ⌥Space and ⌥Esc (macOS); notification permission (iOS); mounted once.
+ * Tray / menu navigation, the quit handshake (macOS); notification permission (iOS); mounted once.
  * The island webview registers nothing: a second registration of a global shortcut throws, and the quit handshake is the main window's.
  */
 function useTauri(): void {
@@ -232,31 +231,40 @@ function useTauri(): void {
     ]
     const onQuit = () => void quit()
     window.addEventListener('theuth:quit', onQuit)
-    const desktop = container() === 'macos'
     void primeNotifications()
-    if (desktop) {
+    if (container() === 'macos') {
       startUpdateListener()
       // 53 decision 9: the eye applies to both windows from startup, not only on toggle.
       void setHiddenFromCapture(useMeetingSettings.getState().hidden)
-      void register(TOGGLE_SHORTCUT, async (e) => {
-        if (e.state !== 'Pressed') return
-        const win = getCurrentWindow()
-        if (await win.isVisible()) await win.hide()
-        else {
-          await win.show()
-          await win.setFocus()
-        }
-      }).catch(() => toast.error(`Could not register ${TOGGLE_SHORTCUT}; another app holds it`))
-      void register(CANCEL_SHORTCUT, (e) => {
-        if (e.state === 'Pressed') void cancelAll()
-      }).catch(() => toast.error(`Could not register ${CANCEL_SHORTCUT}; another app holds it`))
     }
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('theuth:quit', onQuit)
-      if (desktop) void unregister([TOGGLE_SHORTCUT, CANCEL_SHORTCUT])
     }
   }, [])
+  useGlobalShortcuts()
+}
+
+/** ⌥Space (show/hide) and ⌥Esc (cancel all) as the user bound them (Settings › Shortcuts); macOS main window only. */
+function useGlobalShortcuts(): void {
+  const toggle = useShortcuts((s) => s.chords['toggle-window'])
+  const cancel = useShortcuts((s) => s.chords['cancel-all'])
+  useEffect(() => {
+    if (ISLAND || container() !== 'macos') return
+    void register(toggle, async (e) => {
+      if (e.state !== 'Pressed') return
+      const win = getCurrentWindow()
+      if (await win.isVisible()) await win.hide()
+      else {
+        await win.show()
+        await win.setFocus()
+      }
+    }).catch(() => toast.error(`Could not register ${toggle}; another app holds it`))
+    void register(cancel, (e) => {
+      if (e.state === 'Pressed') void cancelAll()
+    }).catch(() => toast.error(`Could not register ${cancel}; another app holds it`))
+    return () => void unregister([toggle, cancel]).catch(() => undefined)
+  }, [toggle, cancel])
 }
 
 /** `session` is on screen: the URL's chat, or any pane split beside it. */

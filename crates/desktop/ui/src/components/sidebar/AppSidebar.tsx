@@ -15,7 +15,9 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { settings } from '@/components/chat/slash'
-import { isMacDesktop, modKey } from '@/lib/hotkeys'
+import { isMacDesktop } from '@/lib/hotkeys'
+import { label } from '@/lib/chord'
+import { useShortcuts } from '@/lib/shortcuts'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
 import { SearchTrigger } from './SearchTrigger'
@@ -39,6 +41,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
+  const newChat = useShortcuts((s) => s.chords['new-chat'])
 
   return (
     <Sidebar collapsible="offcanvas" className="border-r-0">
@@ -73,7 +76,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/">
                 <SquarePen /> New chat
-                <span className="ml-auto text-xs text-fg-tertiary">⇧{modKey()}O</span>
+                <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

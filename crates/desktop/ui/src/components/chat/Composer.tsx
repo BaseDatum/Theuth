@@ -25,6 +25,8 @@ import { container, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
+import { matches as chord } from '@/lib/chord'
+import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
@@ -103,6 +105,8 @@ export function Composer({
   const fileInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const running = useSessionField(session ?? '', 'running') ?? false
+  const queued = useSessionField(session ?? '', 'queued')
+  const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
   const defaultModel = useConnection((s) => s.info?.default_model)
@@ -480,10 +484,35 @@ export function Composer({
         return
       }
     }
-    // Fingers: Enter breaks a line and only the send button sends (31 §8.1).
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch()) {
+    const k = e.nativeEvent
+    if (session && running && chord(keys.stop, k)) {
       e.preventDefault()
-      void submit(undefined, e.metaKey || e.ctrlKey)
+      void api.cancel(session)
+      return
+    }
+    if (session && queued?.length && chord(keys.withdraw, k)) {
+      e.preventDefault()
+      const last = queued[queued.length - 1]
+      if (last) void api.withdraw(session, last.id).then(setText, (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)))
+      return
+    }
+    if (e.nativeEvent.isComposing) return
+    // A rebindable New line (`insertLineBreak` keeps undo); the defaults leave the textarea's own Enter/Shift+Enter alone.
+    if (chord(keys.newline, k)) {
+      if (k.key !== 'Enter' || k.altKey || k.ctrlKey || k.metaKey) {
+        e.preventDefault()
+        document.execCommand('insertLineBreak')
+      }
+      return
+    }
+    // Fingers: Enter breaks a line and only the send button sends (31 §8.1).
+    if (touch()) return
+    if (chord(keys.interject, k)) {
+      e.preventDefault()
+      void submit(undefined, true)
+    } else if (chord(keys.send, k)) {
+      e.preventDefault()
+      void submit(undefined, false)
     }
   }
 

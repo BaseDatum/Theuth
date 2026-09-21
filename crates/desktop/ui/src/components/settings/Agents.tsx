@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Radar, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 
@@ -59,7 +59,8 @@ export function Agents() {
               </>
             }
           >
-            <span className="text-[13px] text-fg-secondary">
+            <span className="flex items-center gap-1.5 text-[13px] text-fg-secondary">
+              {!probe.isPending && e.status !== null && <Dot on={e.status === 'ok'} />}
               {probe.isPending ? 'probing…' : e.status}
             </span>
             <Button

@@ -1,9 +1,61 @@
 import { type QueryKey, type UseMutationResult, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
+import { Input } from '@/components/ui/input'
+import { chordOf } from '@/lib/chord'
 import type { Api } from '@/rpc/api'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import { useConnection } from '@/store/connection'
+
+/** The one connected / logged-in / online indicator of every settings pane: green on, faint grey off. */
+export function Dot({ on }: { on: boolean }) {
+  return <span className={`inline-block size-2 shrink-0 rounded-full ${on ? 'bg-success' : 'bg-fg-tertiary/40'}`} />
+}
+
+/**
+ * A chord reader: focus, press the chord, done. Backspace restores `fallback`; a bare Escape cancels (so bind
+ * Escape itself only as a default). `commit` may reject (a global shortcut another app holds, a chord already
+ * bound): the message toasts and the old chord stays. `bare` accepts a key with no modifier (the composer's editor keys).
+ */
+export function ChordInput({
+  value,
+  fallback,
+  bare,
+  display,
+  commit,
+}: {
+  value: string
+  fallback: string
+  bare?: boolean
+  display?: (chord: string) => string
+  commit: (chord: string) => Promise<void> | void
+}) {
+  const [reading, setReading] = useState(false)
+  return (
+    <Input
+      readOnly
+      className="w-40 text-center font-mono"
+      value={reading ? 'press a chord…' : (display?.(value) ?? value)}
+      onFocus={() => setReading(true)}
+      onBlur={() => setReading(false)}
+      onKeyDown={(e) => {
+        e.preventDefault()
+        const el = e.currentTarget
+        if (e.key === 'Escape' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) return el.blur()
+        if (e.key === 'Backspace') {
+          void Promise.resolve(commit(fallback)).finally(() => el.blur())
+          return
+        }
+        const chord = chordOf(e.nativeEvent, bare)
+        if (!chord) return
+        if (chord === value) return el.blur()
+        void Promise.resolve(commit(chord))
+          .catch((err: unknown) => toast.error(err instanceof Error ? err.message : `Could not bind ${chord}; another app holds it`))
+          .finally(() => el.blur())
+      }}
+    />
+  )
+}
 
 /** One `label / description / control` line of a settings pane. */
 export function Row({ label, description, children }: { label: ReactNode; description?: ReactNode; children?: ReactNode }) {
