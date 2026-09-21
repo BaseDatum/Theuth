@@ -246,10 +246,57 @@ pub struct DocSummary {
     pub title: String,
     /// Binding.
     pub binding: Binding,
+    /// Created, unix ms.
+    pub created_ms: i64,
     /// Last update, unix ms.
     pub updated_ms: i64,
     /// Approximate Yjs state size.
     pub bytes: i64,
+}
+
+impl From<&DocMeta> for DocSummary {
+    fn from(m: &DocMeta) -> Self {
+        Self {
+            id: m.id.clone(),
+            kind: m.kind,
+            title: m.title.clone(),
+            binding: m.binding.clone(),
+            created_ms: m.created_ms,
+            updated_ms: m.updated_ms,
+            bytes: 0,
+        }
+    }
+}
+
+/// Bus event (§7.3, `subscribe_events`): a document was created, exported (title/`updated_ms`
+/// current), renamed or deleted — the notes list refreshes on it. Wire shape `{ "type": "DocumentChanged", … }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct DocumentChanged {
+    /// Document.
+    pub doc: DocId,
+    /// What it is.
+    pub kind: DocKind,
+    /// Title after the change.
+    pub title: String,
+    /// Last update, unix ms.
+    pub updated_ms: i64,
+    /// Moved to the trash.
+    pub deleted: bool,
+}
+
+impl DocumentChanged {
+    /// The event for `meta` as it stands.
+    pub fn of(meta: &DocMeta, deleted: bool) -> Self {
+        Self {
+            doc: meta.id.clone(),
+            kind: meta.kind,
+            title: meta.title.clone(),
+            updated_ms: meta.updated_ms,
+            deleted,
+        }
+    }
 }
 
 /// One kept snapshot (§4.6).

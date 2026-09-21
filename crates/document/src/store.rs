@@ -301,10 +301,10 @@ impl Store {
 
     /// Live documents, newest update first.
     pub async fn list(&self, kind: Option<DocKind>, limit: u32) -> anyhow::Result<Vec<DocSummary>> {
-        let rows: Vec<(String, String, String, String, i64, i64)> = match kind {
+        let rows: Vec<(String, String, String, String, i64, i64, i64)> = match kind {
             Some(k) => {
                 sqlx::query_as(
-                    "SELECT id, kind, title, binding, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC LIMIT ?",
+                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC LIMIT ?",
                 )
                 .bind(k.to_string())
                 .bind(limit)
@@ -313,7 +313,7 @@ impl Store {
             }
             None => {
                 sqlx::query_as(
-                    "SELECT id, kind, title, binding, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC LIMIT ?",
+                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC LIMIT ?",
                 )
                 .bind(limit)
                 .fetch_all(&self.db)
@@ -322,12 +322,13 @@ impl Store {
         };
         Ok(rows
             .into_iter()
-            .filter_map(|(id, kind, title, binding, updated_ms, bytes)| {
+            .filter_map(|(id, kind, title, binding, created_ms, updated_ms, bytes)| {
                 Some(DocSummary {
                     id: DocId(id),
                     kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
                     title,
                     binding: serde_json::from_str(&binding).ok()?,
+                    created_ms,
                     updated_ms,
                     bytes,
                 })
@@ -351,6 +352,33 @@ impl Store {
             .execute(&self.db)
             .await?;
         Ok(())
+    }
+
+    /// Remove `.trash/<id>` directories deleted more than `max_age` ago, and their rows (§7.3). Returns how many.
+    pub async fn sweep_trash(&self, max_age: Duration) -> anyhow::Result<usize> {
+        let cutoff = now_ms() - max_age.as_millis() as i64;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM docs WHERE deleted_ms IS NOT NULL AND deleted_ms < ?")
+                .bind(cutoff)
+                .fetch_all(&self.db)
+                .await?;
+        let mut n = 0;
+        for (id,) in rows {
+            let dir = self.root.join(TRASH).join(&id);
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => n += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(doc = %id, error = %e, "trash sweep: directory kept");
+                    continue;
+                }
+            }
+            sqlx::query("DELETE FROM docs WHERE id = ?")
+                .bind(&id)
+                .execute(&self.db)
+                .await?;
+        }
+        Ok(n)
     }
 }
 
@@ -574,6 +602,34 @@ mod tests {
             .map(|s| s.label)
             .collect();
         assert_eq!(labels, vec!["daily", "daily", "manual"]);
+    }
+
+    #[tokio::test]
+    async fn trash_sweep_removes_only_old_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let old = meta(Binding::Note);
+        let young = meta(Binding::Note);
+        store.create(&old).await.unwrap();
+        store.create(&young).await.unwrap();
+        store.delete(&old.id).await.unwrap();
+        store.delete(&young.id).await.unwrap();
+        let trash = store.root().join(TRASH);
+        assert!(trash.join(old.id.as_str()).is_dir());
+        // Only `old` was deleted before the cutoff.
+        sqlx::query("UPDATE docs SET deleted_ms = deleted_ms - 100000 WHERE id = ?")
+            .bind(old.id.as_str())
+            .execute(&store.db)
+            .await
+            .unwrap();
+        assert_eq!(store.sweep_trash(Duration::from_millis(50000)).await.unwrap(), 1);
+        assert!(!trash.join(old.id.as_str()).exists());
+        assert!(trash.join(young.id.as_str()).is_dir());
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM docs")
+            .fetch_all(&store.db)
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![(young.id.0.clone(),)]);
     }
 
     #[test]

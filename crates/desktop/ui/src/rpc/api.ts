@@ -201,6 +201,12 @@ export interface Api {
   doc_restore(doc: DocId, snapshot: string): Promise<null>
   /** Revert the last agent edit of `doc` as the owner (59 §5.5 page menu); rejects when there is none. */
   doc_undo_agent(doc: DocId): Promise<null>
+  /** A new note (59 §7.3): `# <title>` heads it unless `markdown` has a level-1 heading. */
+  doc_create(title: string, markdown: string | null): Promise<DocSummary>
+  /** Retitle a note (meta, index, and its first block when that is an h1); other kinds reject `title_owned_by_binding`. */
+  doc_rename(doc: DocId, title: string): Promise<null>
+  /** Move a note to the trash (swept after 30 days); other kinds reject `delete_via_owner`. */
+  doc_delete(doc: DocId): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -525,9 +531,12 @@ export const METHODS = [
   'dictation_status',
   'dictation_stop',
   'doc_awareness',
+  'doc_create',
+  'doc_delete',
   'doc_list',
   'doc_open',
   'doc_resolve',
+  'doc_rename',
   'doc_restore',
   'doc_snapshots',
   'doc_undo_agent',

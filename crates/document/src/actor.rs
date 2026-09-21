@@ -26,8 +26,8 @@ use yrs::{ReadTxn, StateVector, Transact, Update};
 
 use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
 use crate::meta::{
-    AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, Principal,
-    SnapshotInfo, Who,
+    AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, DocumentChanged,
+    Principal, SnapshotInfo, Who,
 };
 use crate::store::{self, Store, now_ms, sha256, write_atomic};
 use crate::{DocumentsConfig, Exported, FRAGMENT};
@@ -48,6 +48,10 @@ const CHUNK: usize = 36 * 1024;
 const SUB_QUEUE: usize = 256;
 /// The agent's awareness state outlives its update by this (§6.4: the reveal runs ≤ 1.5 s).
 const AGENT_PRESENCE: Duration = Duration::from_secs(2);
+/// `.trash/` is swept this often (§7.3) …
+const TRASH_SWEEP: Duration = Duration::from_secs(3600);
+/// … of directories deleted longer ago than this.
+const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 
 /// One loaded document.
 struct Open {
@@ -101,6 +105,7 @@ enum ImportReply {
     None,
     Outcome(ReplySender<Result<ImportOutcome, String>>),
     Created(DocId, ReplySender<Result<DocId, String>>),
+    CreatedNote(DocSummary, ReplySender<Result<DocSummary, String>>),
 }
 
 /// What an import did (§4.4).
@@ -135,6 +140,7 @@ pub struct DocumentActor {
     subs: HashMap<DocId, Vec<Subscriber>>,
     imports: HashMap<u64, Import>,
     edits: HashMap<u64, PendingEdit>,
+    last_sweep: Option<Instant>,
 }
 
 impl DocumentActor {
@@ -150,6 +156,7 @@ impl DocumentActor {
             subs: HashMap::new(),
             imports: HashMap::new(),
             edits: HashMap::new(),
+            last_sweep: None,
         }
     }
 
@@ -520,6 +527,32 @@ impl DocumentActor {
             }
         }
     }
+
+    /// Close, move the directory to `.trash/<id>`, mark deleted, tell subscribers (§7.1, §7.3).
+    async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
+        let meta = match self.open.remove(doc) {
+            Some(o) => {
+                self.helper.close(doc).log("close");
+                Some(o.meta)
+            }
+            None => self.store.read_meta(doc).ok(),
+        };
+        if let Some(subs) = self.subs.remove(doc) {
+            for s in subs {
+                let _ = s.tx.try_send(DocEvent::Closed {
+                    reason: "deleted".into(),
+                });
+            }
+        }
+        self.store
+            .delete(doc)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if let Some(meta) = meta {
+            self.rt.publish(DocumentChanged::of(&meta, true)).await;
+        }
+        Ok(())
+    }
 }
 
 fn finish_reply(reply: ImportReply, r: Result<ImportOutcome, String>) {
@@ -531,6 +564,7 @@ fn finish_reply(reply: ImportReply, r: Result<ImportOutcome, String>) {
         }
         ImportReply::Outcome(tx) => tx.send(r),
         ImportReply::Created(id, tx) => tx.send(r.map(|_| id)),
+        ImportReply::CreatedNote(summary, tx) => tx.send(r.map(|_| summary)),
     }
 }
 
@@ -857,6 +891,7 @@ impl Message<ExportDone> for DocumentActor {
                     tracing::warn!(doc = %m.doc, error = %e, "meta.json write failed");
                 }
                 self.fan_out(&m.doc, DocEvent::Exported, None);
+                self.rt.publish(DocumentChanged::of(&meta, false)).await;
                 self.rt
                     .publish(Exported {
                         doc: m.doc,
@@ -1073,20 +1108,34 @@ impl Message<Markdown> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<DocId, String>`: a new `kind: note` document (§5.3) with derived file
-/// `documents/<id>/note.md`, its body imported from `markdown` and stamped `by`.
+/// `ask` → `Result<DocSummary, String>`: a new `kind: note` document (§5.3) with derived file
+/// `documents/<id>/note.md`, its body imported from `markdown` and stamped `by`. A body with no
+/// level-1 heading gets `# <title>` as its first block so the title is visible in the editor (§7.3).
 #[derive(Clone, Debug)]
 pub struct CreateNote {
     /// Display title.
     pub title: String,
-    /// Initial body; empty → one empty paragraph.
+    /// Initial body; empty → the heading alone.
     pub markdown: String,
     /// Who created it.
     pub by: Principal,
 }
 
+/// `markdown`, headed by `# title` unless it already has a level-1 heading.
+pub fn with_heading(title: &str, markdown: &str) -> String {
+    if markdown.lines().any(|l| l.starts_with("# ")) {
+        return markdown.to_owned();
+    }
+    let body = markdown.trim_start_matches('\n');
+    if body.is_empty() {
+        format!("# {title}\n")
+    } else {
+        format!("# {title}\n\n{body}")
+    }
+}
+
 impl Message<CreateNote> for DocumentActor {
-    type Reply = DelegatedReply<Result<DocId, String>>;
+    type Reply = DelegatedReply<Result<DocSummary, String>>;
 
     async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
@@ -1113,14 +1162,110 @@ impl Message<CreateNote> for DocumentActor {
             tx.send(Err(format!("{e:#}")));
             return reply;
         }
+        self.rt.publish(DocumentChanged::of(&meta, false)).await;
+        let markdown = with_heading(&meta.title, &m.markdown);
         self.start_import(
             &id,
-            m.markdown,
+            markdown,
             m.by,
             ImportMode::Replace,
-            ImportReply::Created(id.clone(), tx),
+            ImportReply::CreatedNote(DocSummary::from(&meta), tx),
         );
         reply
+    }
+}
+
+/// `ask` → `Result<(), String>`: retitle a note (§7.3): meta + index, and the first block when it is
+/// a level-1 heading (one owner transaction). Other kinds: `title_owned_by_binding` — the knowledge
+/// title lives in the frontmatter, the artifact's in the artifact.
+#[derive(Clone, Debug)]
+pub struct Rename {
+    /// Document.
+    pub doc: DocId,
+    /// New title.
+    pub title: String,
+}
+
+impl Message<Rename> for DocumentActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(&mut self, m: Rename, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let title = m.title.trim().to_owned();
+        if title.is_empty() {
+            tx.send(Err("title must not be empty".into()));
+            return reply;
+        }
+        let meta = match self.load(&m.doc) {
+            Ok(o) if o.meta.kind != DocKind::Note => {
+                tx.send(Err("title_owned_by_binding".into()));
+                return reply;
+            }
+            Ok(o) => {
+                o.meta.title = title.clone();
+                o.meta.clone()
+            }
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        if let Err(e) = self.store.write_meta(&meta).await {
+            tx.send(Err(format!("{e:#}")));
+            return reply;
+        }
+        self.rt.publish(DocumentChanged::of(&meta, false)).await;
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let outline = match me.ask(Outline { doc: m.doc.clone(), depth: Some(1) }).await {
+                Ok(o) => o,
+                Err(e) => return tx.send(Err(e.to_string())),
+            };
+            let Some(first) = outline.blocks.first() else {
+                return tx.send(Ok(()));
+            };
+            let is_h1 = first["type"] == "heading"
+                && first["text"].as_str().is_some_and(|t| t.starts_with("[h1] "));
+            let Some(id) = first["id"].as_str().filter(|_| is_h1) else {
+                return tx.send(Ok(()));
+            };
+            let r = me
+                .ask(Edit {
+                    doc: m.doc,
+                    edits: vec![BlockEdit::Replace {
+                        blocks: vec![id.to_owned()],
+                        markdown: format!("# {title}"),
+                    }],
+                    by: Principal::Owner { device: None },
+                })
+                .await;
+            tx.send(r.map(|_| ()).map_err(|e| e.to_string()));
+        });
+        reply
+    }
+}
+
+/// `ask` → `Result<(), String>`: delete a note (§7.3 UI). Other kinds answer `delete_via_owner`
+/// (`knowledge_delete`, the artifact store); their owners use [`Delete`].
+#[derive(Clone, Debug)]
+pub struct DeleteNote {
+    /// Document.
+    pub doc: DocId,
+}
+
+impl Message<DeleteNote> for DocumentActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: DeleteNote, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let kind = match self.open.get(&m.doc) {
+            Some(o) => o.meta.kind,
+            None => self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?.kind,
+        };
+        if kind != DocKind::Note {
+            return Err("delete_via_owner".into());
+        }
+        self.delete_doc(&m.doc).await
     }
 }
 
@@ -1232,7 +1377,8 @@ impl Message<Restore> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<(), String>`: close, move the directory to `.trash/<id>`, mark deleted (§7.1).
+/// `ask` → `Result<(), String>`: an owner (knowledge, artifacts) drops its document: close, move the
+/// directory to `.trash/<id>`, mark deleted (§7.1). The UI deletes notes through [`DeleteNote`].
 #[derive(Clone, Debug)]
 pub struct Delete {
     /// Document.
@@ -1243,21 +1389,7 @@ impl Message<Delete> for DocumentActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Delete, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Some(o) = self.open.remove(&m.doc) {
-            drop(o);
-            self.helper.close(&m.doc).log("close");
-        }
-        if let Some(subs) = self.subs.remove(&m.doc) {
-            for s in subs {
-                let _ = s.tx.try_send(DocEvent::Closed {
-                    reason: "deleted".into(),
-                });
-            }
-        }
-        self.store
-            .delete(&m.doc)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        self.delete_doc(&m.doc).await
     }
 }
 
@@ -1361,7 +1493,7 @@ impl Message<HelperEvent> for DocumentActor {
     }
 }
 
-/// `tell` every 250 ms: exports due, snapshot policy, idle unload (§4.1, §4.3, §4.7).
+/// `tell` every 250 ms: exports due, snapshot policy, idle unload, hourly trash sweep (§4.1, §4.3, §4.7, §7.3).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tick;
 
@@ -1407,6 +1539,14 @@ impl Message<Tick> for DocumentActor {
             subs.retain(|s| !s.tx.is_closed());
         }
         self.subs.retain(|_, s| !s.is_empty());
+        if self.last_sweep.is_none_or(|t| now.duration_since(t) >= TRASH_SWEEP) {
+            self.last_sweep = Some(now);
+            match self.store.sweep_trash(TRASH_KEEP).await {
+                Ok(n) if n > 0 => tracing::info!(removed = n, "documents trash swept"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "documents trash sweep failed"),
+            }
+        }
     }
 }
 
@@ -1432,5 +1572,13 @@ mod tests {
             "first line here"
         );
         assert_eq!(title_of(DocKind::Note, ""), "");
+    }
+
+    #[test]
+    fn with_heading_adds_the_title_once() {
+        assert_eq!(with_heading("T", ""), "# T\n");
+        assert_eq!(with_heading("T", "\n\nbody\n"), "# T\n\nbody\n");
+        assert_eq!(with_heading("T", "# Own\n\nbody\n"), "# Own\n\nbody\n");
+        assert_eq!(with_heading("T", "## sub\n"), "# T\n\n## sub\n");
     }
 }

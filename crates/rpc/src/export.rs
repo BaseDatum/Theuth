@@ -106,6 +106,7 @@ async fn export_bindings() {
         document::DocSummary,
         document::DocOpen,
         document::DocEvent,
+        document::DocumentChanged,
         document::SnapshotInfo,
         document::Who,
         document::Member,

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use document::actor::DocumentActor;
 use document::tools::{CreateTool, DeleteTool, Docs, InsertTool, ReadTool, ReplaceTool};
 use document::{
-    ApplyUpdate, Binding, BlockEdit, DOCUMENT_ACTOR, DocEvent, DocKind, DocumentsConfig, Edit,
-    EditError, Ensure, ImportMarkdown, ImportMode, ListDocs, OpenDoc, Outline, Principal,
-    Subscribe, Tick, UndoLastAgentEdit, Who, helper, store,
+    ApplyUpdate, Binding, BlockEdit, CreateNote, DOCUMENT_ACTOR, DeleteNote, DocEvent, DocKind,
+    DocumentsConfig, Edit, EditError, Ensure, ImportMarkdown, ImportMode, ListDocs, OpenDoc, Outline,
+    Principal, Rename, Subscribe, Tick, UndoLastAgentEdit, Who, helper, store,
 };
 use kameo::actor::{ActorRef, Spawn};
 use tools::{Tool, ToolCx};
@@ -588,5 +588,80 @@ async fn agent_tools_edit_attribute_and_undo() {
     assert_eq!(notes[0].title, "Scratch");
     let all = actor.ask(ListDocs::default()).await.unwrap();
     assert_eq!(all.len(), 2);
+    stop(actor).await;
+}
+
+/// Design 59 §7.3 / §14 row 3: notes from the UI side — created with a visible heading, listed newest
+/// first, renamed in meta and in the first block, deleted into `.trash` with subscribers closed.
+#[tokio::test]
+async fn notes_create_list_rename_delete() {
+    let _serial = SERIAL.lock().await;
+    let _ = tracing_subscriber::fmt().with_env_filter("document=debug").with_test_writer().try_init();
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let owner = Principal::Owner { device: None };
+
+    // No heading in the body → `# <title>` is inserted; an own heading is kept.
+    let a = actor
+        .ask(CreateNote { title: "First".into(), markdown: "para\n".into(), by: owner.clone() })
+        .await
+        .unwrap();
+    assert_eq!((a.kind, a.title.as_str(), &a.binding), (DocKind::Note, "First", &Binding::Note));
+    let a_md = dir.path().join(format!("documents/{}/note.md", a.id));
+    assert_eq!(wait_for(&a_md, |s| s.contains("para"), Duration::from_secs(3)).await, "# First\n\npara\n");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let b = actor
+        .ask(CreateNote { title: "Second".into(), markdown: "# Own heading\n\nbody\n".into(), by: owner.clone() })
+        .await
+        .unwrap();
+    let b_md = dir.path().join(format!("documents/{}/note.md", b.id));
+    assert_eq!(wait_for(&b_md, |s| s.contains("body"), Duration::from_secs(3)).await, "# Own heading\n\nbody\n");
+
+    // Newest update first; an update to `a` moves it to the top.
+    let ids = |v: Vec<document::DocSummary>| v.into_iter().map(|d| d.id).collect::<Vec<_>>();
+    let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+    assert!(list.iter().all(|d| d.created_ms > 0 && d.updated_ms >= d.created_ms));
+    assert_eq!(ids(list), vec![b.id.clone(), a.id.clone()]);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    actor
+        .ask(ApplyUpdate { doc: a.id.clone(), update: scratch_update("x"), by: owner.clone() })
+        .await
+        .unwrap();
+    let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+    assert_eq!(ids(list), vec![a.id.clone(), b.id.clone()]);
+
+    // Rename: meta/index title and the heading block; `b`'s own heading is rewritten too (it is an h1).
+    actor.ask(Rename { doc: a.id.clone(), title: "Renamed".into() }).await.unwrap();
+    assert_eq!(wait_for(&a_md, |s| s.starts_with("# Renamed"), Duration::from_secs(3)).await, "# Renamed\n\npara\n");
+    let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+    assert_eq!(list.iter().find(|d| d.id == a.id).unwrap().title, "Renamed");
+    let e = actor.ask(Rename { doc: a.id.clone(), title: "  ".into() }).await.unwrap_err().to_string();
+    assert!(e.contains("title must not be empty"), "{e}");
+
+    // A knowledge document's title belongs to its frontmatter.
+    std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+    let k = actor
+        .ask(Ensure { binding: Binding::Knowledge("k".into()), markdown: MD.into() })
+        .await
+        .unwrap();
+    let e = actor.ask(Rename { doc: k.clone(), title: "X".into() }).await.unwrap_err().to_string();
+    assert!(e.contains("title_owned_by_binding"), "{e}");
+    let e = actor.ask(DeleteNote { doc: k }).await.unwrap_err().to_string();
+    assert!(e.contains("delete_via_owner"), "{e}");
+
+    // Delete: subscribers see `Closed{deleted}`, the directory is in `.trash`, the list drops it.
+    let mut sub = actor.ask(Subscribe { doc: b.id.clone(), conn: Some(1) }).await.unwrap();
+    actor.ask(DeleteNote { doc: b.id.clone() }).await.unwrap();
+    assert_eq!(next_event(&mut sub).await, DocEvent::Closed { reason: "deleted".into() });
+    assert!(!b_md.exists());
+    assert!(dir.path().join(format!("documents/.trash/{}/note.md", b.id)).is_file());
+    let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+    assert_eq!(ids(list), vec![a.id.clone()]);
+    // Loading the deleted note fails (its directory is gone from `documents/`).
+    assert!(actor.ask(OpenDoc { doc: b.id.clone(), sv: None }).await.is_err());
     stop(actor).await;
 }

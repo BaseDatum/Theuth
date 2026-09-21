@@ -24,7 +24,8 @@ just read (ids stay stable across edits you did not make; a replaced block gets 
 later inserts on it, or put everything in the one `doc_replace` markdown). One tool call per request when possible. Never \
 rewrite text a person typed unless asked to change that text; edit knowledge metadata with `knowledge_put`, \
 not the frontmatter block. `doc` is a document id or `knowledge:<concept id>`. A user line starting \
-`[doc <id> \"<title>\"]` means that document is attached to the conversation: pass `<id>` as `doc`.";
+`[doc <id> \"<title>\"]` means that document is attached to the conversation: pass `<id>` as `doc`. Several \
+`[doc …]` lines mean several documents are attached; ask which one when the request is ambiguous.";
 
 /// What the tools hold: the actor and where the knowledge files are.
 #[derive(Clone)]
@@ -362,7 +363,8 @@ impl Tool for CreateTool {
                 by: Principal::Agent { session: cx.session.0 },
             })
             .await
-            .map_err(anyhow::Error::msg)?;
+            .map_err(anyhow::Error::msg)?
+            .id;
         let url = format!("theuth://notes/{id}");
         Ok(structured(
             format!("created note {id} ({url})\n"),

@@ -10,6 +10,7 @@ use agent::{AgentEvent, CommunicationChanged, LoginFinished, PeerDelivered, Peer
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use browser::BrowserEvent;
+use document::DocumentChanged;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -101,6 +102,7 @@ forward!(
     SignalEvent,
     SlackEvent,
     KnowledgeChanged,
+    DocumentChanged,
     BrowserEvent,
     LinkEvent,
     NodeEvent,
@@ -145,6 +147,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, SignalEvent>(&actor).await;
     rt.subscribe::<Bridge, SlackEvent>(&actor).await;
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
+    rt.subscribe::<Bridge, DocumentChanged>(&actor).await;
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     rt.subscribe::<Bridge, LinkEvent>(&actor).await;
     rt.subscribe::<Bridge, NodeEvent>(&actor).await;

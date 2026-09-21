@@ -5,14 +5,14 @@
 //! reads (§4.3), with edits to that file imported back by block diff (§4.4)
 //! through the headless BlockNote helper `packages/documents` (§3.2).
 //!
-//! Step 1 (§14): knowledge documents, single user, in-process only.
+//! Steps 1–3 (§14): knowledge documents and notes, single user, in-process only.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`DOCUMENT_ACTOR`] actor ([`DocumentActor`]): [`OpenDoc`],
 //!   [`ApplyUpdate`], [`Subscribe`], [`AwarenessUpdateMsg`], [`Lookup`],
 //!   [`Ensure`], [`ImportMarkdown`], [`ListDocs`], [`Snapshot`], [`Snapshots`],
-//!   [`Restore`], [`Delete`] — or the [`Handle`] wrapper `knowledge` uses
-//! - event: [`Exported`], published after every derived-file write
+//!   [`Restore`], [`Delete`], [`CreateNote`], [`Rename`], [`DeleteNote`] — or the [`Handle`] wrapper `knowledge` uses
+//! - events: [`Exported`], published after every derived-file write; [`DocumentChanged`] for lists
 
 use std::path::PathBuf;
 
@@ -28,9 +28,10 @@ pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, CreateNote, Delete, DocumentActor, Edit, EditOutcome, Ensure,
-    ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc, Outline, Restore,
-    Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
+    ApplyUpdate, AwarenessUpdateMsg, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
+    EditOutcome, Ensure, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
+    Outline, Rename, Restore, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
+    with_heading,
 };
 pub use helper::{Edit as BlockEdit, EditError, ImportMode, helper_path, protocol_version};
 pub use meta::*;

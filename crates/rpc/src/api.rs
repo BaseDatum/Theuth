@@ -666,6 +666,15 @@ pub trait Api {
     /// Revert the last agent edit of `doc` as the owner (59 §5.5 page menu); one level, in memory.
     #[method(name = "doc_undo_agent")]
     async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()>;
+    /// A new note (59 §5.3, §7.3): `kind: note`, derived `documents/<id>/note.md`, headed `# <title>` unless `markdown` has one.
+    #[method(name = "doc_create")]
+    async fn doc_create(&self, title: String, markdown: Option<String>) -> RpcResult<document::DocSummary>;
+    /// Retitle a note: meta, index and its first block when that is a level-1 heading. Other kinds: `title_owned_by_binding`.
+    #[method(name = "doc_rename")]
+    async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()>;
+    /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
+    #[method(name = "doc_delete")]
+    async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -2376,6 +2385,37 @@ impl ApiServer for Server {
         send(&documents()?, document::UndoLastAgentEdit { doc })
             .await
             .map(|_| ())
+    }
+
+    async fn doc_create(
+        &self,
+        title: String,
+        markdown: Option<String>,
+    ) -> RpcResult<document::DocSummary> {
+        if title.trim().is_empty() {
+            return Err(ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                "title must not be empty",
+                None::<()>,
+            ));
+        }
+        send(
+            &documents()?,
+            document::CreateNote {
+                title: title.trim().to_owned(),
+                markdown: markdown.unwrap_or_default(),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await
+    }
+
+    async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()> {
+        send(&documents()?, document::Rename { doc, title }).await
+    }
+
+    async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()> {
+        send(&documents()?, document::DeleteNote { doc }).await
     }
 
     async fn knowledge_harvest(
