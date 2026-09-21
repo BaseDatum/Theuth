@@ -428,6 +428,258 @@ impl Store {
     }
 }
 
+// ---- Export (57 §11.4 item 4) -------------------------------------------------------------
+
+/// One example with its amendments folded in (`amend` rows, last one per kind wins).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Folded {
+    /// The example.
+    pub example: Example,
+    /// Tier 3's outcome, when a turn ran: what it published.
+    pub outcome: Option<Option<Brief>>,
+    /// The user's reaction, when there was one.
+    pub user: Option<Reaction>,
+}
+
+/// Fold `example` + `amend` rows by id, file order kept; an amend without its example is dropped.
+pub fn fold(rows: Vec<Row>) -> Vec<Folded> {
+    let mut out: Vec<Folded> = Vec::new();
+    for row in rows {
+        match row {
+            Row::Example(e) => out.push(Folded {
+                example: *e,
+                outcome: None,
+                user: None,
+            }),
+            Row::Amend(a) => {
+                if let Some(f) = out.iter_mut().rev().find(|f| f.example.id == a.id) {
+                    match a.what {
+                        Amendment::Outcome { published } => f.outcome = Some(published),
+                        Amendment::User(r) => f.user = Some(r),
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The bench fixture's `kind` (57 §3.5 / §11.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Greetings, scheduling, goodbyes: nothing to look up.
+    SmallTalk,
+    /// A subject was named or a brief published.
+    NamedSubject,
+    /// Neither settled.
+    General,
+}
+
+/// Who produced the label (57 §11.4 item 1): the trainer chooses what to trust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// The user tapped or dismissed the brief.
+    User,
+    /// A model turn ran and its publication is the label.
+    Tier3,
+    /// Tier 2's subject answer is the label.
+    Tier2,
+    /// Only the oracle's own verdict (a tier-1 skip or publish, nothing else heard).
+    OracleOnly,
+}
+
+/// The labels derived from one folded example.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    /// See [`Kind`].
+    pub kind: Kind,
+    /// What was published: tier 3's outcome when a turn ran, else the oracle's own publish.
+    pub published: Option<Brief>,
+    /// The brief question's truth: the candidate id (`b1..`) of the published cached brief,
+    /// confirmed by publication or a tap; `None` = `none` (or the user dismissed it).
+    pub brief: Option<String>,
+    /// See [`Source`].
+    pub source: Source,
+}
+
+/// The label derivation as implemented: `published` = the outcome amend when present, else a
+/// `publish` verdict; `named_subject` ⇐ a tier-2 subject ∨ a publication; `small_talk` ⇐ tier 2
+/// said `subject: null` (or tier 1 skipped without tier 2) ∧ nothing published; else `general`.
+/// `brief` = the published cached brief's candidate id (matched by title among the brief
+/// question's candidates), cleared by a dismiss. `source` = user > tier3 > tier2 > oracle_only.
+pub fn label(f: &Folded) -> Label {
+    let e = &f.example;
+    let published = match (&f.outcome, &e.verdict) {
+        (Some(o), _) => o.clone(),
+        (None, Verdict::Publish { id, title }) => Some(Brief {
+            id: Some(id.clone()),
+            title: title.clone(),
+        }),
+        (None, _) => None,
+    };
+    let subject = match &e.tier2 {
+        Some(Tier2::Answer { subject, .. }) => Some(subject.as_deref()),
+        _ => None,
+    };
+    let kind = match (&published, subject) {
+        (Some(_), _) | (None, Some(Some(_))) => Kind::NamedSubject,
+        (None, Some(None)) => Kind::SmallTalk,
+        (None, None) if e.tier2.is_none() && e.verdict == Verdict::Skip => Kind::SmallTalk,
+        (None, None) => Kind::General,
+    };
+    let brief = match (f.user, &published) {
+        (Some(Reaction::Dismissed), _) | (_, None) => None,
+        (_, Some(b)) if b.id.is_none() => None,
+        (_, Some(b)) => e
+            .questions
+            .iter()
+            .filter(|q| q.kind == "choice")
+            .flat_map(|q| &q.candidates)
+            .find(|c| c.text == b.title)
+            .map(|c| c.id.clone()),
+    };
+    let source = match (f.user, f.outcome.is_some(), &e.tier2) {
+        (Some(_), _, _) => Source::User,
+        (None, true, _) => Source::Tier3,
+        (None, false, Some(Tier2::Answer { .. })) => Source::Tier2,
+        (None, false, _) => Source::OracleOnly,
+    };
+    Label {
+        kind,
+        published,
+        brief,
+        source,
+    }
+}
+
+/// Output shape of [`export`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// `crates/decision/tests/fixtures/meeting-batches.json` — what the phrasing bench reads.
+    Fixture,
+    /// laya's `typed-decisions` rows: `state`, `questions`, `gold`, `<q>__label`.
+    Laya,
+}
+
+impl std::str::FromStr for Format {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "fixture" => Ok(Format::Fixture),
+            "laya" => Ok(Format::Laya),
+            other => Err(format!("unknown format {other:?}: fixture | laya")),
+        }
+    }
+}
+
+/// The phrasing-bench fixture shape: `{ _doc, batches: [{ id, source, kind, state, published,
+/// expected_brief, candidates, mentions, subject, cached, user }] }`. `source` is the label's
+/// origin; `published` is `[{ title, cached }]` like the hand-built fixture; `candidates` are
+/// the brief question's (`b1..` ids, titles, no aliases).
+pub fn fixture(folded: &[Folded]) -> serde_json::Value {
+    let batches: Vec<serde_json::Value> = folded
+        .iter()
+        .map(|f| {
+            let l = label(f);
+            let e = &f.example;
+            let candidates: Vec<serde_json::Value> = e
+                .questions
+                .iter()
+                .filter(|q| q.kind == "choice")
+                .flat_map(|q| &q.candidates)
+                .map(|c| serde_json::json!({ "id": c.id, "title": c.text, "aliases": [] }))
+                .collect();
+            let (subject, cached) = match &e.tier2 {
+                Some(Tier2::Answer { subject, cached, .. }) => (subject.clone(), cached.clone()),
+                _ => (None, None),
+            };
+            serde_json::json!({
+                "id": e.id,
+                "source": l.source,
+                "kind": l.kind,
+                "state": e.text,
+                "published": l.published.as_ref().map(|b| vec![serde_json::json!({ "title": b.title, "cached": b.id })]),
+                "expected_brief": l.brief,
+                "candidates": candidates,
+                "mentions": e.mentions,
+                "subject": subject,
+                "cached": cached,
+                "user": f.user.unwrap_or(Reaction::Ignored),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "_doc": format!(
+            "57 §11.4 export of captured {SCHEMA} rows: `kind` and `expected_brief` derived from tier 2 / tier 3 / the user (`source`), `state` as the oracle read it, `candidates` = the brief question's b1.. ids and titles. Run the bench on it: cargo run --release -p decision --example phrasing -- --fixture FILE"
+        ),
+        "batches": batches,
+    })
+}
+
+/// laya `typed-decisions` rows (the `LocalLLaMA/typed-decisions` columns: `id`, `workflow`,
+/// `state`, `questions`, `gold`, `<question>__label`): one row per example, `kind` as a `noul`
+/// (true = small talk), `brief` as a `choice` over the candidates + `none`, gold one-hot on
+/// the derived label.
+pub fn laya(folded: &[Folded]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = folded
+        .iter()
+        .map(|f| {
+            let l = label(f);
+            let e = &f.example;
+            let mut questions = serde_json::Map::new();
+            let mut gold = serde_json::Map::new();
+            let mut row = serde_json::Map::new();
+            for q in &e.questions {
+                let name = q.family.rsplit('.').next().unwrap_or(&q.family).to_owned();
+                match q.kind.as_str() {
+                    "bool" => {
+                        let truth = l.kind == Kind::SmallTalk;
+                        questions.insert(name.clone(), serde_json::json!({ "type": "noul", "instructions": q.instructions }));
+                        gold.insert(name.clone(), serde_json::json!({ "label": truth, "probability_true": if truth { 1.0 } else { 0.0 } }));
+                        row.insert(format!("{name}__label"), serde_json::json!(truth));
+                    }
+                    "choice" => {
+                        let mut criteria = serde_json::Map::new();
+                        for c in &q.candidates {
+                            criteria.insert(c.id.clone(), serde_json::json!(c.text));
+                        }
+                        criteria.insert(crate::engine::NONE_ID.to_owned(), serde_json::json!("no listed brief fits"));
+                        let truth = l.brief.clone().unwrap_or_else(|| crate::engine::NONE_ID.to_owned());
+                        let probabilities: serde_json::Map<String, serde_json::Value> = criteria
+                            .keys()
+                            .map(|k| (k.clone(), serde_json::json!(if *k == truth { 1.0 } else { 0.0 })))
+                            .collect();
+                        questions.insert(name.clone(), serde_json::json!({ "type": "choice", "instructions": q.instructions, "criteria": criteria }));
+                        gold.insert(name.clone(), serde_json::json!({ "label": truth, "probabilities": probabilities }));
+                        row.insert(format!("{name}__label"), serde_json::json!(truth));
+                    }
+                    _ => {}
+                }
+            }
+            row.insert("id".into(), serde_json::json!(e.id));
+            row.insert("workflow".into(), serde_json::json!(e.family));
+            row.insert("state".into(), serde_json::json!(e.text));
+            row.insert("questions".into(), serde_json::Value::Object(questions));
+            row.insert("gold".into(), serde_json::Value::Object(gold));
+            row.insert("label_source".into(), serde_json::json!(l.source));
+            serde_json::Value::Object(row)
+        })
+        .collect();
+    serde_json::Value::Array(rows)
+}
+
+/// `t --decision-export <prefix> [--since DATE] [--format fixture|laya]`: the captured rows of
+/// `prefix` from `since` on, folded and shaped.
+pub fn export(store: &Store, prefix: &str, since: Option<NaiveDate>, format: Format) -> std::io::Result<serde_json::Value> {
+    let folded = fold(store.read(prefix, since)?);
+    Ok(match format {
+        Format::Fixture => fixture(&folded),
+        Format::Laya => laya(&folded),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -658,5 +910,137 @@ mod tests {
                 .is_empty()
         );
         assert!(store.read("browser", None).unwrap().is_empty());
+    }
+
+    fn folded(tier2: Option<Tier2>, verdict: Verdict, outcome: Option<Option<Brief>>, user: Option<Reaction>) -> Folded {
+        let mut example = example("them: some talk");
+        example.tier2 = tier2;
+        example.verdict = verdict;
+        Folded { example, outcome, user }
+    }
+
+    fn answer(subject: Option<&str>, cached: Option<&str>) -> Option<Tier2> {
+        Some(Tier2::Answer {
+            subject: subject.map(str::to_owned),
+            cached: cached.map(str::to_owned),
+            lookup: subject.is_some() && cached.is_none(),
+        })
+    }
+
+    fn brief(id: Option<&str>, title: &str) -> Brief {
+        Brief {
+            id: id.map(str::to_owned),
+            title: title.into(),
+        }
+    }
+
+    #[test]
+    fn label_derivation_table() {
+        let model = |r: &str| Verdict::Model { reason: r.into() };
+        let publish = || Verdict::Publish {
+            id: "row-1".into(),
+            title: "SRE-2386".into(),
+        };
+        // small_talk: tier 2 said null and the turn published nothing (tier3 source).
+        let l = label(&folded(answer(None, None), Verdict::Skip, Some(None), None));
+        assert_eq!((l.kind, l.brief.as_deref(), l.source, l.published), (Kind::SmallTalk, None, Source::Tier3, None));
+        // small_talk: a tier-1 skip, nothing else heard (oracle_only).
+        let l = label(&folded(None, Verdict::Skip, None, None));
+        assert_eq!((l.kind, l.source), (Kind::SmallTalk, Source::OracleOnly));
+        // named_subject from tier 2's subject, nothing published; tier2 is the source.
+        let l = label(&folded(answer(Some("Planet Nine"), None), model("subject"), None, None));
+        assert_eq!((l.kind, l.brief.as_deref(), l.source, l.published), (Kind::NamedSubject, None, Source::Tier2, None));
+        // named_subject from a publication: the oracle's own cached publish → brief = its candidate id.
+        let l = label(&folded(None, publish(), None, None));
+        assert_eq!((l.kind, l.brief.as_deref(), l.source), (Kind::NamedSubject, Some("b1"), Source::OracleOnly));
+        assert_eq!(l.published, Some(brief(Some("row-1"), "SRE-2386")));
+        // … and from the turn's outcome: a new (uncached) brief is a publication but no cached pick.
+        let l = label(&folded(answer(Some("Planet Nine"), None), model("subject"), Some(Some(brief(None, "Planet Nine"))), None));
+        assert_eq!((l.kind, l.brief.as_deref(), l.source), (Kind::NamedSubject, None, Source::Tier3));
+        // The outcome wins over the verdict: shadow "would publish" but the turn published nothing.
+        let l = label(&folded(None, publish(), Some(None), None));
+        assert_eq!((l.kind, l.published, l.source), (Kind::General, None, Source::Tier3));
+        // general: tier 2 failed, tier 3 published nothing.
+        let l = label(&folded(Some(Tier2::Error { error: "timed out".into() }), model("tier 2: timed out"), Some(None), None));
+        assert_eq!((l.kind, l.source), (Kind::General, Source::Tier3));
+        // general: tier 2 failed and no turn outcome recorded.
+        let l = label(&folded(Some(Tier2::Error { error: "timed out".into() }), model("x"), None, None));
+        assert_eq!((l.kind, l.source), (Kind::General, Source::OracleOnly));
+        // A published cached brief whose title is not among the candidates → brief none.
+        let l = label(&folded(None, model("x"), Some(Some(brief(Some("row-9"), "HR-12"))), None));
+        assert_eq!((l.kind, l.brief), (Kind::NamedSubject, None));
+        // User override: a tap keeps the brief and marks the source; a dismiss clears the brief.
+        let l = label(&folded(None, publish(), None, Some(Reaction::Tapped)));
+        assert_eq!((l.brief.as_deref(), l.source), (Some("b1"), Source::User));
+        let l = label(&folded(None, publish(), None, Some(Reaction::Dismissed)));
+        assert_eq!((l.kind, l.brief, l.source), (Kind::NamedSubject, None, Source::User));
+    }
+
+    #[test]
+    fn fold_keys_amends_by_id_and_keeps_the_last() {
+        let a = example("them: a");
+        let b = example("them: b");
+        let stray = ExampleId::new();
+        let rows = vec![
+            Row::Example(Box::new(a.clone())),
+            Row::Amend(Amend::new(a.id, Amendment::Outcome { published: Some(brief(None, "x")) })),
+            Row::Amend(Amend::new(a.id, Amendment::User(Reaction::Tapped))),
+            Row::Example(Box::new(b.clone())),
+            // User without an outcome; then a duplicate outcome — the last one wins.
+            Row::Amend(Amend::new(b.id, Amendment::User(Reaction::Dismissed))),
+            Row::Amend(Amend::new(a.id, Amendment::Outcome { published: None })),
+            Row::Amend(Amend::new(stray, Amendment::User(Reaction::Tapped))),
+        ];
+        let f = fold(rows);
+        assert_eq!(f.len(), 2);
+        assert_eq!((f[0].example.id, f[0].outcome.clone(), f[0].user), (a.id, Some(None), Some(Reaction::Tapped)));
+        assert_eq!((f[1].example.id, f[1].outcome.clone(), f[1].user), (b.id, None, Some(Reaction::Dismissed)));
+    }
+
+    #[test]
+    fn export_shapes() {
+        let f = vec![
+            folded(answer(Some("Planet Nine"), None), Verdict::Model { reason: "s".into() }, Some(Some(brief(None, "Planet Nine"))), None),
+            folded(None, Verdict::Skip, None, None),
+        ];
+        let v = fixture(&f);
+        let batches = v["batches"].as_array().unwrap();
+        assert_eq!(batches.len(), 2);
+        let b0 = &batches[0];
+        assert_eq!(b0["kind"], "named_subject");
+        assert_eq!(b0["source"], "tier3");
+        assert_eq!(b0["state"], "them: some talk");
+        assert_eq!(b0["published"], serde_json::json!([{ "title": "Planet Nine", "cached": null }]));
+        assert_eq!(b0["expected_brief"], serde_json::Value::Null);
+        assert_eq!(b0["candidates"][0], serde_json::json!({ "id": "b1", "title": "SRE-2386", "aliases": [] }));
+        assert_eq!(b0["mentions"], serde_json::json!(["Planet Nine"]));
+        assert_eq!((&b0["subject"], &b0["cached"], &b0["user"]), (&serde_json::json!("Planet Nine"), &serde_json::Value::Null, &serde_json::json!("ignored")));
+        assert_eq!((&batches[1]["kind"], &batches[1]["published"], &batches[1]["source"]), (&serde_json::json!("small_talk"), &serde_json::Value::Null, &serde_json::json!("oracle_only")));
+        // The bench's reader accepts it.
+        #[derive(Deserialize)]
+        struct Batch {
+            kind: String,
+            state: String,
+            published: Option<Vec<serde_json::Value>>,
+            expected_brief: Option<String>,
+            candidates: Vec<serde_json::Value>,
+        }
+        let parsed: Vec<Batch> = serde_json::from_value(v["batches"].clone()).unwrap();
+        assert_eq!((parsed[1].kind.as_str(), parsed[1].published.is_none(), parsed[1].expected_brief.is_none()), ("small_talk", true, true));
+        assert_eq!((parsed[0].state.as_str(), parsed[0].candidates.len()), ("them: some talk", 2));
+
+        let v = laya(&f);
+        let rows = v.as_array().unwrap();
+        assert_eq!(rows[0]["workflow"], "meeting");
+        assert_eq!(rows[0]["questions"]["kind"]["type"], "noul");
+        assert_eq!(rows[0]["questions"]["brief"]["criteria"]["b2"], "DR cutover");
+        assert_eq!(rows[0]["questions"]["brief"]["criteria"]["none"], "no listed brief fits");
+        assert_eq!(rows[0]["gold"]["kind"], serde_json::json!({ "label": false, "probability_true": 0.0 }));
+        assert_eq!(rows[0]["gold"]["brief"]["label"], "none");
+        assert_eq!(rows[0]["gold"]["brief"]["probabilities"]["none"], 1.0);
+        assert_eq!((&rows[0]["kind__label"], &rows[0]["brief__label"]), (&serde_json::json!(false), &serde_json::json!("none")));
+        assert_eq!((&rows[1]["kind__label"], &rows[1]["label_source"]), (&serde_json::json!(true), &serde_json::json!("oracle_only")));
+        assert_eq!("laya".parse::<Format>(), Ok(Format::Laya));
+        assert!("csv".parse::<Format>().is_err());
     }
 }

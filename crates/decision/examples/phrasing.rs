@@ -4,8 +4,9 @@
 //! hand-written small talk, narratives and brief-matching batches.
 //!
 //! `cargo run --release -p decision --example phrasing -- [model_dir] [--device metal|cpu]
-//! [--only 1a|1b] [--verbose]`. Model-gated: prints a reason and exits 0 when the checkpoint
-//! is not there.
+//! [--only 1a|1b] [--verbose] [--fixture PATH]`. Model-gated: prints a reason and exits 0 when
+//! the checkpoint is not there. `--fixture` replaces the built-in fixture with an exported one
+//! (`t --decision-export meeting --out FILE`, 57 §11.4), so captured data is benched the same way.
 //!
 //! - **1a `meeting.kind`**: every variant — 3-way `Choice` phrasings × label sets, 2-way
 //!   `Choice`s, and `Bool` statements — with the confusion matrix, mean P(correct), and the
@@ -223,6 +224,7 @@ fn main() -> anyhow::Result<()> {
     let mut verbose = false;
     let mut only: Option<String> = None;
     let mut variant: Option<usize> = None;
+    let mut fixture_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -230,6 +232,7 @@ fn main() -> anyhow::Result<()> {
             "--verbose" => verbose = true,
             "--only" => only = args.next(),
             "--variant" => variant = args.next().and_then(|v| v.parse().ok()),
+            "--fixture" => fixture_path = args.next().map(PathBuf::from),
             _ => positional.push(a),
         }
     }
@@ -242,7 +245,10 @@ fn main() -> anyhow::Result<()> {
         println!("phrasing: no checkpoint in {} — nothing to bench", dir.display());
         return Ok(());
     }
-    let fixture: Fixture = serde_json::from_str(include_str!("../tests/fixtures/meeting-batches.json"))?;
+    let fixture: Fixture = match &fixture_path {
+        Some(p) => serde_json::from_str(&std::fs::read_to_string(p)?)?,
+        None => serde_json::from_str(include_str!("../tests/fixtures/meeting-batches.json"))?,
+    };
     let batches = &fixture.batches;
     let published = batches.iter().filter(|b| b.published.is_some()).count();
     println!(
