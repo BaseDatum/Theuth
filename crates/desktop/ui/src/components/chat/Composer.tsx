@@ -349,8 +349,8 @@ export function Composer({
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
     try {
       if (line.startsWith('/')) {
-        await run(line, ctx)
         reset()
+        await run(line, ctx)
         return
       }
       const { text: body, files } = expand(line, pastes)
@@ -470,9 +470,8 @@ export function Composer({
     setText(`${name} `)
     setSelected(0)
     if (hint === '') {
-      void run(name, ctx)
-        .then(reset)
-        .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
+      reset()
+      void run(name, ctx).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
     }
   }
 
