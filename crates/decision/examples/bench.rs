@@ -1,7 +1,8 @@
 //! `decision bench` (57 §6 step 2): cold load, RSS, warm p50/p95 per K × S, and the
 //! published README example next to ours.
 //!
-//! `cargo run --release -p decision --example bench -- [model_dir] [threads]`
+//! `cargo run --release -p decision --example bench -- [model_dir] [threads]`; the ONNX
+//! Runtime is found under `$THEUTH_DATA_DIR` (default `~/.theuth`) like the daemon does.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -57,12 +58,13 @@ fn choice(k: usize, state: String) -> Question {
 }
 
 fn main() -> anyhow::Result<()> {
+    let data_dir = std::env::var_os("THEUTH_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth"));
     let dir = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth/models/decision")
-        });
+        .unwrap_or_else(|| data_dir.join("models/decision"));
     let threads: usize = std::env::args()
         .nth(2)
         .and_then(|t| t.parse().ok())
@@ -74,7 +76,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let t = Instant::now();
-    let mut m = Loaded::open(&dir, threads, false)?;
+    let mut m = Loaded::open(&dir, &data_dir, threads, false)?;
     println!(
         "cold load: {} ms (sha256 {}…)  rss after load: {:.0} MiB",
         t.elapsed().as_millis(),

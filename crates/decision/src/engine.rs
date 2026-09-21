@@ -53,9 +53,9 @@ impl Oracle for Loaded {
     }
 }
 
-/// Opens an [`Oracle`] from the model dir; blocking.
+/// Opens an [`Oracle`] from `(model_dir, data_dir, cfg)`; blocking.
 pub type Loader =
-    Arc<dyn Fn(&Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
+    Arc<dyn Fn(&Path, &Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
 
@@ -84,6 +84,8 @@ struct Unload;
 pub struct Engine {
     cfg: DecisionConfig,
     model_dir: PathBuf,
+    /// `<data_dir>`: the runtime's home (`models::onnx::ort_lib`).
+    data_dir: PathBuf,
     log: Log,
     loader: Loader,
     /// Warm session, shared with in-flight blocking runs.
@@ -102,22 +104,31 @@ pub struct Engine {
 
 impl Engine {
     /// An engine over `cfg` with the real [`Loaded`]; nothing loads until the first `Ask`.
-    pub fn new(cfg: DecisionConfig, model_dir: PathBuf, log: Log) -> Self {
+    pub fn new(cfg: DecisionConfig, model_dir: PathBuf, data_dir: PathBuf, log: Log) -> Self {
         Self::with_loader(
             cfg,
             model_dir,
+            data_dir,
             log,
-            Arc::new(|dir, cfg| {
-                Loaded::open(dir, cfg.threads, cfg.coreml).map(|l| Box::new(l) as Box<dyn Oracle>)
+            Arc::new(|dir, data_dir, cfg| {
+                Loaded::open(dir, data_dir, cfg.threads, cfg.coreml)
+                    .map(|l| Box::new(l) as Box<dyn Oracle>)
             }),
         )
     }
 
     /// An engine whose checkpoint comes from `loader` (tests).
-    pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
+    pub fn with_loader(
+        cfg: DecisionConfig,
+        model_dir: PathBuf,
+        data_dir: PathBuf,
+        log: Log,
+        loader: Loader,
+    ) -> Self {
         Engine {
             cfg,
             model_dir,
+            data_dir,
             log,
             loader,
             loaded: None,
@@ -203,12 +214,13 @@ impl Engine {
                     return Err(Reason::ModelMissing);
                 }
                 self.missing_logged = false;
-                let (loader, dir, cfg) = (
+                let (loader, dir, data_dir, cfg) = (
                     self.loader.clone(),
                     self.model_dir.clone(),
+                    self.data_dir.clone(),
                     self.cfg.clone(),
                 );
-                tokio::task::spawn_blocking(move || loader(&dir, &cfg))
+                tokio::task::spawn_blocking(move || loader(&dir, &data_dir, &cfg))
             }
         };
         let mut handle = handle;
@@ -556,7 +568,7 @@ mod tests {
     }
 
     fn fake_loader(delay: Duration) -> Loader {
-        Arc::new(move |_, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
+        Arc::new(move |_, _, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
     }
 
     #[tokio::test]
@@ -571,6 +583,7 @@ mod tests {
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
             model_dir.clone(),
+            dir.path().into(),
             log.clone(),
             fake_loader(Duration::ZERO),
         ));
@@ -636,6 +649,7 @@ mod tests {
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
             dir.path().into(),
+            dir.path().into(),
             Log::new(dir.path().join("d")),
             fake_loader(Duration::ZERO),
         ));
@@ -681,6 +695,7 @@ mod tests {
         };
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
+            dir.path().into(),
             dir.path().into(),
             log.clone(),
             fake_loader(Duration::from_millis(300)),
@@ -734,7 +749,7 @@ mod tests {
         };
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let n = loads.clone();
-        let loader: Loader = Arc::new(move |_, _| {
+        let loader: Loader = Arc::new(move |_, _, _| {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(Fake {
                 delay: Duration::ZERO,
@@ -742,6 +757,7 @@ mod tests {
         });
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
+            dir.path().into(),
             dir.path().into(),
             Log::new(dir.path().join("d")),
             loader,
@@ -763,6 +779,7 @@ mod tests {
         };
         let engine = Engine::spawn(Engine::new(
             cfg,
+            dir.path().into(),
             dir.path().into(),
             Log::new(dir.path().join("d")),
         ));

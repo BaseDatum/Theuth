@@ -148,10 +148,11 @@ pub struct Engine(Mutex<ParakeetTDT>);
 
 impl Engine {
     /// Load the TDT checkpoint in `dir` (`encoder-model.onnx`, `decoder_joint-model.onnx`,
-    /// `vocab.txt`) after the process-wide ONNX Runtime init.
-    pub fn load(dir: &Path) -> anyhow::Result<Engine> {
+    /// `vocab.txt`) after the process-wide ONNX Runtime init (`models::onnx::ort_lib`,
+    /// which finds the runtime under `<data_dir>/models/onnxruntime/` among other places).
+    pub fn load(dir: &Path, data_dir: &Path) -> anyhow::Result<Engine> {
         let t = Instant::now();
-        models::onnx::ort_lib(&[dir]).map_err(anyhow::Error::msg)?;
+        models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
         let m = ParakeetTDT::from_pretrained(dir, None)
             .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
@@ -216,11 +217,11 @@ impl Stream {
     /// Load the session from `dir` (`encoder.onnx`, `decoder_joint.onnx`,
     /// `tokenizer.model`) after the process-wide ONNX Runtime init. A missing
     /// directory is a distinct, path-bearing error so the caller can report `Missing`.
-    pub fn open(dir: &Path) -> anyhow::Result<Stream> {
+    pub fn open(dir: &Path, data_dir: &Path) -> anyhow::Result<Stream> {
         if !dir.is_dir() {
             anyhow::bail!("dictation model not found at {}", dir.display());
         }
-        models::onnx::ort_lib(&[dir]).map_err(anyhow::Error::msg)?;
+        models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
         let t = Instant::now();
         let m = Nemotron::from_pretrained(dir, None)
             .map_err(|e| anyhow::anyhow!("no streaming STT model in {}: {e}", dir.display()))?;
@@ -249,16 +250,18 @@ pub struct Transcriber {
     model: Arc<Mutex<Option<Engine>>>,
     last_used: Arc<Mutex<Instant>>,
     dir: PathBuf,
+    data_dir: PathBuf,
     /// Zero: never unload.
     idle: Duration,
 }
 
 impl Transcriber {
-    pub(crate) fn new(dir: PathBuf, idle: Duration) -> Self {
+    pub(crate) fn new(dir: PathBuf, data_dir: PathBuf, idle: Duration) -> Self {
         let this = Self {
             model: Arc::new(Mutex::new(None)),
             last_used: Arc::new(Mutex::new(Instant::now())),
             dir,
+            data_dir,
             idle,
         };
         if !idle.is_zero() {
@@ -292,7 +295,7 @@ impl Transcriber {
         let mut guard = self.model.lock();
         let model = match guard.as_ref() {
             Some(m) => m,
-            None => guard.insert(Engine::load(&self.dir)?),
+            None => guard.insert(Engine::load(&self.dir, &self.data_dir)?),
         };
         let mut parts = Vec::new();
         for piece in pcm.chunks(PIECE) {
@@ -315,6 +318,7 @@ impl Message<Transcribe> for Transcriber {
             model: self.model.clone(),
             last_used: self.last_used.clone(),
             dir: self.dir.clone(),
+            data_dir: self.data_dir.clone(),
             idle: self.idle,
         };
         tokio::task::spawn_blocking(move || {
@@ -394,10 +398,11 @@ mod tests {
     /// times inside the clip. Skips without the checkpoint, `say` or the dylib.
     #[test]
     fn engine_returns_words_with_monotonic_times() {
-        let dir = match std::env::var_os("HOME") {
-            Some(h) => PathBuf::from(h).join(".theuth/models").join(crate::TDT_MODEL_SUBDIR),
+        let data_dir = match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h).join(".theuth"),
             None => return,
         };
+        let dir = data_dir.join("models").join(crate::TDT_MODEL_SUBDIR);
         if !dir.is_dir() {
             eprintln!("skipped: no TDT model at {}", dir.display());
             return;
@@ -417,7 +422,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
         let (pcm, rate) = decode(bytes, "wav").unwrap();
         let pcm = resample(pcm, rate, MODEL_RATE).unwrap();
-        let engine = match Engine::load(&dir) {
+        let engine = match Engine::load(&dir, &data_dir) {
             Ok(e) => e,
             Err(e) if format!("{e:#}").contains("libonnxruntime") => {
                 eprintln!("skipped: {e:#}");

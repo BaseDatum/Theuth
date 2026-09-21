@@ -15,7 +15,7 @@ use std::time::Instant;
 use half::f16;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::value::{Outlet, Tensor, TensorElementType, ValueType};
+use ort::value::{Tensor, TensorElementType, ValueType};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
@@ -357,8 +357,11 @@ pub fn f16_to_f32(v: &[f16]) -> Vec<f32> {
     v.iter().map(|x| x.to_f32()).collect()
 }
 
+/// One graph outlet as `(name, type)`; `Outlet` itself needs the runtime loaded to construct.
+pub type Port = (String, ValueType);
+
 /// The graph 57 §1 describes: names, element types and ranks, checked on load.
-pub fn verify_graph(inputs: &[Outlet], outputs: &[Outlet]) -> Result<(), String> {
+pub fn verify_graph(inputs: &[Port], outputs: &[Port]) -> Result<(), String> {
     const INPUTS: [(&str, TensorElementType, usize); 5] = [
         ("input_ids", TensorElementType::Int64, 2),
         ("attention_mask", TensorElementType::Int64, 2),
@@ -370,12 +373,15 @@ pub fn verify_graph(inputs: &[Outlet], outputs: &[Outlet]) -> Result<(), String>
         ("logits", TensorElementType::Float16, 2),
         ("act_logits", TensorElementType::Float16, 2),
     ];
-    let check = |what: &str, have: &[Outlet], want: &[(&str, TensorElementType, usize)]| {
+    let check = |what: &str, have: &[Port], want: &[(&str, TensorElementType, usize)]| {
         if have.len() != want.len() {
             return Err(format!(
                 "model.onnx: {} {what}s ({}), expected {} ({})",
                 have.len(),
-                have.iter().map(Outlet::name).collect::<Vec<_>>().join(", "),
+                have.iter()
+                    .map(|p| p.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 want.len(),
                 want.iter().map(|w| w.0).collect::<Vec<_>>().join(", ")
             ));
@@ -383,9 +389,9 @@ pub fn verify_graph(inputs: &[Outlet], outputs: &[Outlet]) -> Result<(), String>
         for (name, ty, rank) in want {
             let o = have
                 .iter()
-                .find(|o| o.name() == *name)
+                .find(|o| o.0 == *name)
                 .ok_or_else(|| format!("model.onnx: no {what} `{name}`"))?;
-            match o.dtype() {
+            match &o.1 {
                 ValueType::Tensor { ty: t, shape, .. } if t == ty && shape.len() == *rank => {}
                 other => {
                     return Err(format!(
@@ -416,14 +422,16 @@ pub struct Loaded {
 
 impl Loaded {
     /// Open `dir/{model.onnx,tokenizer.json,rl_agent_config.json}` after the process-wide
-    /// ONNX Runtime init, verify the graph, hash the model. `coreml` is read and refused
-    /// (57 §2: a step-2 experiment; CPU EP until it is measured).
-    pub fn open(dir: &Path, threads: usize, coreml: bool) -> anyhow::Result<Loaded> {
+    /// ONNX Runtime init (`models::onnx::ort_lib(data_dir)`), verify the graph, hash the
+    /// model. `coreml` is read and refused (57 §2: a step-2 experiment; CPU EP until it is measured).
+    pub fn open(
+        dir: &Path,
+        data_dir: &Path,
+        threads: usize,
+        coreml: bool,
+    ) -> anyhow::Result<Loaded> {
         let t = Instant::now();
-        // The dylib ships beside the Parakeet TDT checkpoint (54 §9, `release-models.sh`
-        // header), so a fresh daemon whose first `ort` user is this crate still finds it.
-        let tdt = dir.join("..").join("parakeet-tdt");
-        models::onnx::ort_lib(&[dir, &tdt]).map_err(anyhow::Error::msg)?;
+        models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
         if coreml {
             tracing::warn!(
                 "decision: coreml: true is not implemented; running on the CPU execution provider"
@@ -446,7 +454,14 @@ impl Loaded {
             .map_err(ort_err)?
             .commit_from_file(&model)
             .map_err(|e| anyhow::anyhow!("load {}: {e}", model.display()))?;
-        verify_graph(session.inputs(), session.outputs()).map_err(anyhow::Error::msg)?;
+        let ports = |outlets: &[ort::value::Outlet]| -> Vec<Port> {
+            outlets
+                .iter()
+                .map(|o| (o.name().to_owned(), o.dtype().clone()))
+                .collect()
+        };
+        verify_graph(&ports(session.inputs()), &ports(session.outputs()))
+            .map_err(anyhow::Error::msg)?;
         Ok(Loaded {
             session,
             tokenizer,
@@ -824,53 +839,54 @@ mod tests {
     #[test]
     fn graph_verification() {
         use ort::value::{Shape, SymbolicDimensions};
-        let t = |ty, rank: usize| ValueType::Tensor {
-            ty,
-            shape: Shape::new(vec![-1; rank]),
-            dimension_symbols: SymbolicDimensions::empty(rank),
+        let t = |name: &str, ty, rank: usize| -> Port {
+            (
+                name.to_owned(),
+                ValueType::Tensor {
+                    ty,
+                    shape: Shape::new(vec![-1; rank]),
+                    dimension_symbols: SymbolicDimensions::empty(rank),
+                },
+            )
         };
-        let good_in = || {
-            vec![
-                Outlet::new("input_ids", t(TensorElementType::Int64, 2)),
-                Outlet::new("attention_mask", t(TensorElementType::Int64, 2)),
-                Outlet::new("marker_pos", t(TensorElementType::Int64, 2)),
-                Outlet::new("marker_mask", t(TensorElementType::Bool, 2)),
-                Outlet::new("qtype", t(TensorElementType::Int64, 1)),
-            ]
-        };
-        let good_out = || {
-            vec![
-                Outlet::new("logits", t(TensorElementType::Float16, 2)),
-                Outlet::new("act_logits", t(TensorElementType::Float16, 2)),
-            ]
-        };
-        assert_eq!(verify_graph(&good_in(), &good_out()), Ok(()));
+        let good_in = vec![
+            t("input_ids", TensorElementType::Int64, 2),
+            t("attention_mask", TensorElementType::Int64, 2),
+            t("marker_pos", TensorElementType::Int64, 2),
+            t("marker_mask", TensorElementType::Bool, 2),
+            t("qtype", TensorElementType::Int64, 1),
+        ];
+        let good_out = vec![
+            t("logits", TensorElementType::Float16, 2),
+            t("act_logits", TensorElementType::Float16, 2),
+        ];
+        assert_eq!(verify_graph(&good_in, &good_out), Ok(()));
         // fp32 export: refused, names the output.
-        let mut out = good_out();
-        out[0] = Outlet::new("logits", t(TensorElementType::Float32, 2));
-        let e = verify_graph(&good_in(), &out).unwrap_err();
+        let mut out = good_out.clone();
+        out[0] = t("logits", TensorElementType::Float32, 2);
+        let e = verify_graph(&good_in, &out).unwrap_err();
         assert!(e.contains("`logits`") && e.contains("f16"), "{e}");
         // Missing / renamed input.
-        let mut inp = good_in();
-        inp[4] = Outlet::new("question_type", t(TensorElementType::Int64, 1));
+        let mut inp = good_in.clone();
+        inp[4] = t("question_type", TensorElementType::Int64, 1);
         assert!(
-            verify_graph(&inp, &good_out())
+            verify_graph(&inp, &good_out)
                 .unwrap_err()
                 .contains("`qtype`")
         );
         // Wrong rank.
-        let mut inp = good_in();
-        inp[4] = Outlet::new("qtype", t(TensorElementType::Int64, 2));
+        let mut inp = good_in.clone();
+        inp[4] = t("qtype", TensorElementType::Int64, 2);
         assert!(
-            verify_graph(&inp, &good_out())
+            verify_graph(&inp, &good_out)
                 .unwrap_err()
                 .contains("rank 1")
         );
         // Extra input.
-        let mut inp = good_in();
-        inp.push(Outlet::new("past", t(TensorElementType::Int64, 2)));
+        let mut inp = good_in.clone();
+        inp.push(t("past", TensorElementType::Int64, 2));
         assert!(
-            verify_graph(&inp, &good_out())
+            verify_graph(&inp, &good_out)
                 .unwrap_err()
                 .contains("6 inputs")
         );

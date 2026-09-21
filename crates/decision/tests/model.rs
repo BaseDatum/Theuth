@@ -13,14 +13,21 @@ use decision::{
 };
 use kameo::actor::Spawn;
 
-fn model_dir() -> Option<PathBuf> {
+/// `$THEUTH_DATA_DIR` or `~/.theuth`: the runtime lives under it (`models/onnxruntime/`).
+fn data_dir() -> Option<PathBuf> {
+    std::env::var_os("THEUTH_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".theuth")))
+}
+
+/// `(data_dir, model_dir)`, or `None` with a printed reason.
+fn model_dir() -> Option<(PathBuf, PathBuf)> {
+    let data = data_dir()?;
     let dir = std::env::var_os("DECISION_MODEL_DIR")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".theuth/models/decision"))
-        })?;
+        .unwrap_or_else(|| data.join("models/decision"));
     if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
-        Some(dir)
+        Some((data, dir))
     } else {
         eprintln!("skipped: no laya checkpoint in {}", dir.display());
         None
@@ -33,8 +40,10 @@ fn billing_state() -> String {
 
 #[test]
 fn open_verifies_graph_and_answers() {
-    let Some(dir) = model_dir() else { return };
-    let mut m = Loaded::open(&dir, 4, false).expect("open");
+    let Some((data, dir)) = model_dir() else {
+        return;
+    };
+    let mut m = Loaded::open(&dir, &data, 4, false).expect("open");
     assert_eq!(m.model_sha.len(), 64);
     assert!(m.load_time > Duration::ZERO);
     assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
@@ -98,7 +107,9 @@ fn open_verifies_graph_and_answers() {
 
 #[tokio::test]
 async fn actor_end_to_end_with_report() {
-    let Some(dir) = model_dir() else { return };
+    let Some((data, dir)) = model_dir() else {
+        return;
+    };
     // `--nocapture` shows the engine's "model loaded" / "unloaded" info lines.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
@@ -121,7 +132,7 @@ async fn actor_end_to_end_with_report() {
         .into(),
         ..DecisionConfig::default()
     };
-    let engine = Engine::spawn(Engine::new(cfg, dir, log));
+    let engine = Engine::spawn(Engine::new(cfg, dir, data, log));
     // First ask: the cold load outruns a 400 ms budget → Timeout, then loaded.
     let mut ask = Ask::new(
         "meeting.topic",

@@ -683,6 +683,7 @@ impl runtime::Plugin for VoicePlugin {
             .unwrap_or_else(|| rt.data_dir.join("models").join(TDT_MODEL_SUBDIR));
         let stt = Transcriber::spawn(Transcriber::new(
             stt_dir,
+            rt.data_dir.clone(),
             Duration::from_secs(cfg.stt_idle_secs),
         ));
         stt.register(TRANSCRIBER_ACTOR)?;

@@ -179,10 +179,10 @@ impl Dictation {
             return;
         }
         self.set_model(ModelState::Loading).await;
-        let dir = self.dir.clone();
+        let (dir, data_dir) = (self.dir.clone(), self.rt.data_dir.clone());
         tokio::spawn(async move {
             let t = Instant::now();
-            let r = tokio::task::spawn_blocking(move || Utterer::open(&dir))
+            let r = tokio::task::spawn_blocking(move || Utterer::open(&dir, &data_dir))
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("dictation model load task panicked: {e}")));
             if r.is_ok() {

@@ -106,7 +106,8 @@ impl runtime::Plugin for DecisionPlugin {
             .clone()
             .unwrap_or_else(|| rt.data_dir.join("models").join(MODEL_SUBDIR));
         let log = log::Log::new(rt.data_dir.join("decisions"));
-        Engine::spawn(Engine::new(cfg, model_dir, log)).register(DECISION_ACTOR)?;
+        Engine::spawn(Engine::new(cfg, model_dir, rt.data_dir.clone(), log))
+            .register(DECISION_ACTOR)?;
         Ok(())
     }
 }

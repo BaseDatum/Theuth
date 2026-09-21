@@ -1046,6 +1046,7 @@ impl Meeting {
                 .clone()
                 .unwrap_or_else(|| models.join("pyannote")),
             speakers: self.rt.data_dir.join(DIR).join(speakers::DIR),
+            data_dir: self.rt.data_dir.clone(),
         }
     }
 
@@ -1365,6 +1366,7 @@ impl Message<StartMeeting> for Meeting {
                     .join("models")
                     .join(voice::STREAMING_MODEL_SUBDIR)
             }),
+            data_dir: self.rt.data_dir.clone(),
         };
         tokio::spawn(async move {
             let begun = start_task(&store, manifest, &setup).await;
@@ -1389,6 +1391,8 @@ struct Setup {
     context_tokens: u32,
     toolset: agent::Toolset,
     live_model_dir: PathBuf,
+    /// Locates the ONNX Runtime (`models::onnx::ort_lib`).
+    data_dir: PathBuf,
 }
 
 /// Session → directory + manifest → devices → STT sessions (01 §3, 02 §4, off
@@ -1467,10 +1471,10 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         Err(e) => return Begun::failed(manifest, e),
     };
     // Two streaming sessions, one per track (02 §2); ≈ 0.9 GB each, int8.
-    let model_dir = setup.live_model_dir.clone();
+    let (model_dir, data_dir) = (setup.live_model_dir.clone(), setup.data_dir.clone());
     let t = Instant::now();
     let engines = tokio::task::spawn_blocking(move || -> anyhow::Result<(Utterer, Utterer)> {
-        Ok((Utterer::open(&model_dir)?, Utterer::open(&model_dir)?))
+        Ok((Utterer::open(&model_dir, &data_dir)?, Utterer::open(&model_dir, &data_dir)?))
     })
     .await
     .map_err(|e| anyhow::anyhow!("STT load task panicked: {e}"))

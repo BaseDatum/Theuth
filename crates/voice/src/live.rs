@@ -59,9 +59,10 @@ pub struct Utterer {
 
 impl Utterer {
     /// Load the streaming model from `dir`, then the VAD (the `ort` init order,
-    /// 02-live §0.1c). Source rate starts at [`MODEL_RATE`]; see [`Utterer::set_rate`].
-    pub fn open(dir: &Path) -> anyhow::Result<Utterer> {
-        let stream = Stream::open(dir)?;
+    /// 02-live §0.1c); `data_dir` locates the runtime. Source rate starts at
+    /// [`MODEL_RATE`]; see [`Utterer::set_rate`].
+    pub fn open(dir: &Path, data_dir: &Path) -> anyhow::Result<Utterer> {
+        let stream = Stream::open(dir, data_dir)?;
         let vad = Vad::new()?;
         Ok(Utterer {
             stream,
@@ -265,12 +266,11 @@ impl Utterer {
 mod tests {
     use super::*;
 
-    /// The dictation checkpoint where the daemon keeps it; `None` skips the test.
-    fn model_dir() -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(std::env::var_os("HOME")?)
-            .join(".theuth/models")
-            .join(crate::STREAMING_MODEL_SUBDIR);
-        dir.is_dir().then_some(dir)
+    /// The daemon's data dir and the dictation checkpoint under it; `None` skips the test.
+    fn model_dir() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let data_dir = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".theuth");
+        let dir = data_dir.join("models").join(crate::STREAMING_MODEL_SUBDIR);
+        dir.is_dir().then_some((data_dir, dir))
     }
 
     /// `say` renders `text` as 16-bit mono 48 kHz PCM; `None` off macOS or without `say`.
@@ -298,13 +298,13 @@ mod tests {
     /// the sentence back, cased and punctuated; the start lands inside the leading silence.
     #[test]
     fn utterer_returns_the_spoken_sentence_punctuated() {
-        let (Some(dir), Some(pcm)) = (model_dir(), speech("The deploy is blocked on the image tags."))
+        let (Some((data_dir, dir)), Some(pcm)) = (model_dir(), speech("The deploy is blocked on the image tags."))
         else {
             eprintln!("skipped: no streaming model or no `say`");
             return;
         };
-        // `models::onnx::ort_lib` needs the dylib beside the checkpoint or `$ORT_DYLIB_PATH` (54 §2.1).
-        let mut u = match Utterer::open(&dir) {
+        // `models::onnx::ort_lib` needs the dylib in `<data_dir>/models/onnxruntime/` or `$ORT_DYLIB_PATH`.
+        let mut u = match Utterer::open(&dir, &data_dir) {
             Ok(u) => u,
             Err(e) if format!("{e:#}").contains("libonnxruntime") => {
                 eprintln!("skipped: {e:#}");

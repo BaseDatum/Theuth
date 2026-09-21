@@ -31,6 +31,8 @@ pub struct Paths {
     pub models: PathBuf,
     /// `<data_dir>/meetings/speakers/`.
     pub speakers: PathBuf,
+    /// `<data_dir>`, for `models::onnx::ort_lib`.
+    pub data_dir: PathBuf,
 }
 
 /// A running pipeline.
@@ -136,9 +138,9 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
     // 1. Transcribing (0–60 %). The Engine loads first: it runs the process-wide ort init.
     stage(cx, m, PostStage::Transcribing, 0).await;
     let progress = cx.progress.clone();
-    let tdt = cx.paths.tdt.clone();
+    let (tdt, data_dir) = (cx.paths.tdt.clone(), cx.paths.data_dir.clone());
     let mut t = tokio::task::spawn_blocking(move || -> anyhow::Result<Transcribed> {
-        let engine = Engine::load(&tdt)?;
+        let engine = Engine::load(&tdt, &data_dir)?;
         let mic_pcm = transcribe::pcm16k(&mic_path)?;
         let system_pcm = transcribe::pcm16k(&system_path)?;
         let total = (mic_pcm.len() + system_pcm.len()).max(1);
@@ -166,7 +168,7 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
     .and_then(|r| r.map_err(|e| (PostStage::Transcribing, e)))?;
 
     // 2. Diarizing (60–90 %), skipped without the models (04 §0.1).
-    let models = diarize::models(&cx.paths.models);
+    let models = diarize::models(&cx.paths.models, &cx.paths.data_dir);
     let note = models.is_none().then(|| {
         format!(
             "Diarization skipped: pyannote models not found in {} ({} and {}). \
@@ -276,6 +278,6 @@ fn me_embedding(
     if speech.len() < rate {
         return Ok(None);
     }
-    let mut e = diarize::Embedder::open(&models.embedding)?;
+    let mut e = diarize::Embedder::open(models)?;
     e.compute(&diarize::to_i16(&speech)).map(Some)
 }

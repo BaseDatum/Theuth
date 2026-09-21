@@ -4,7 +4,7 @@
 //! directly with the two ONNX files `pyannote-rs` 0.3.4 loads (`BUILDING.md`)
 //! and the same windowing as its `segment.rs`; that crate itself does not
 //! compile against the workspace `ort` (04 §10). [`session`] runs the
-//! process-wide `models::onnx::ort_lib` first (a no-op once voice has).
+//! process-wide `models::onnx::ort_lib(data_dir)` first (a no-op once voice has).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,20 +38,23 @@ const WINDOW: usize = 10 * RATE as usize;
 const FRAME: usize = 270;
 const FRAME_START: usize = 721;
 
-/// The two model files, both present.
+/// The two model files, both present, and the data dir that locates the runtime.
 #[derive(Clone, Debug)]
 pub struct Models {
     /// `segmentation-3.0.onnx`.
     pub segmentation: PathBuf,
     /// `wespeaker_en_voxceleb_CAM++.onnx`.
     pub embedding: PathBuf,
+    /// `<data_dir>`, for `models::onnx::ort_lib`.
+    pub data_dir: PathBuf,
 }
 
 /// Both files under `dir`, or `None` (04 §0.1: the pipeline then runs without diarization).
-pub fn models(dir: &Path) -> Option<Models> {
+pub fn models(dir: &Path, data_dir: &Path) -> Option<Models> {
     let m = Models {
         segmentation: dir.join(SEGMENTATION),
         embedding: dir.join(EMBEDDING),
+        data_dir: data_dir.to_path_buf(),
     };
     (m.segmentation.is_file() && m.embedding.is_file()).then_some(m)
 }
@@ -70,8 +73,8 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
-fn session(path: &Path) -> anyhow::Result<Session> {
-    models::onnx::ort_lib(&[path.parent().unwrap_or(path)]).map_err(anyhow::Error::msg)?;
+fn session(path: &Path, data_dir: &Path) -> anyhow::Result<Session> {
+    models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
     Session::builder()
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -94,9 +97,10 @@ pub fn to_i16(pcm: &[f32]) -> Vec<i16> {
 pub fn speech(
     pcm: &[i16],
     model: &Path,
+    data_dir: &Path,
     mut progress: impl FnMut(usize, usize),
 ) -> anyhow::Result<Vec<(usize, usize)>> {
-    let mut sess = session(model)?;
+    let mut sess = session(model, data_dir)?;
     let windows = pcm.len().div_ceil(WINDOW).max(1);
     let mut spans = Vec::new();
     let mut offset = FRAME_START;
@@ -158,8 +162,8 @@ pub struct Embedder(Session);
 
 impl Embedder {
     /// Open the embedding model.
-    pub fn open(model: &Path) -> anyhow::Result<Self> {
-        Ok(Self(session(model)?))
+    pub fn open(models: &Models) -> anyhow::Result<Self> {
+        Ok(Self(session(&models.embedding, &models.data_dir)?))
     }
 
     /// One embedding for `pcm` (16 kHz); at least a few hundred ms of audio.
@@ -239,14 +243,14 @@ pub fn cluster(embs: &[Vec<f32>]) -> (Vec<usize>, Vec<Vec<f32>>) {
 
 /// The whole stage. `progress(pct)` 0–100 within the stage.
 pub fn run(pcm: &[i16], models: &Models, mut progress: impl FnMut(u8)) -> anyhow::Result<Diarized> {
-    let spans = speech(pcm, &models.segmentation, |done, total| {
+    let spans = speech(pcm, &models.segmentation, &models.data_dir, |done, total| {
         progress((done * 50 / total.max(1)) as u8);
     })?;
     if spans.is_empty() {
         return Ok(Diarized::default());
     }
     let ms = |s: usize| s as u64 * 1000 / u64::from(RATE);
-    let mut embedder = Embedder::open(&models.embedding)?;
+    let mut embedder = Embedder::open(models)?;
     // Embeddings for the spans long enough to carry one.
     let long: Vec<usize> = spans
         .iter()
