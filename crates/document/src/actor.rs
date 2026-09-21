@@ -52,6 +52,8 @@ const AGENT_PRESENCE: Duration = Duration::from_secs(2);
 const TRASH_SWEEP: Duration = Duration::from_secs(3600);
 /// … of directories deleted longer ago than this.
 const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
+/// A replied import waits this long for its update before it is forgotten (none comes when nothing changed).
+const IMPORT_GRACE: Duration = Duration::from_secs(10);
 
 /// One loaded document.
 struct Open {
@@ -92,13 +94,21 @@ struct Subscriber {
     tx: mpsc::Sender<DocEvent>,
 }
 
-/// An import the helper is running; keyed by the helper request id.
+/// An import the helper is running; keyed by the helper request id. The update
+/// (`ev: update`) and the reply arrive on two tasks: the entry lives until both
+/// did, else the update could land after the reply and pass as a bare helper
+/// transaction — stamped `Helper` and exported, when the import's `File` never
+/// exports (that stray export is what made a `show` look like an edit, §7.2).
 struct Import {
     doc: DocId,
     by: Principal,
     mode: ImportMode,
     sha: String,
     reply: ImportReply,
+    /// The reply arrived, at this instant.
+    done_at: Option<Instant>,
+    /// The update arrived. An import that changed nothing never sends one: `Tick` sweeps those.
+    applied: bool,
 }
 
 enum ImportReply {
@@ -336,6 +346,8 @@ impl DocumentActor {
                 mode,
                 sha,
                 reply,
+                done_at: None,
+                applied: false,
             },
         );
         let me = self.actor_ref();
@@ -838,23 +850,31 @@ impl Message<ImportDone> for DocumentActor {
     type Reply = ();
 
     async fn handle(&mut self, m: ImportDone, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(imp) = self.imports.remove(&m.req) else {
+        let Some(imp) = self.imports.get_mut(&m.req) else {
             return;
         };
+        let reply = std::mem::replace(&mut imp.reply, ImportReply::None);
+        let (doc, sha) = (imp.doc.clone(), imp.sha.clone());
+        // A failed import sends no update; a successful one that changed nothing may not either.
+        if m.result.is_err() || imp.applied {
+            self.imports.remove(&m.req);
+        } else {
+            imp.done_at = Some(Instant::now());
+        }
         match m.result {
             Ok(r) => {
-                if let Some(o) = self.open.get_mut(&imp.doc) {
+                if let Some(o) = self.open.get_mut(&doc) {
                     // The text and the doc agree now unless an edit is still waiting to be exported.
                     if o.export_due.is_none() && !o.exporting {
-                        o.meta.last_export = Some(imp.sha);
+                        o.meta.last_export = Some(sha);
                     }
                     let meta = o.meta.clone();
                     if let Err(e) = self.store.write_meta(&meta).await {
-                        tracing::warn!(doc = %imp.doc, error = %e, "meta.json write failed");
+                        tracing::warn!(doc = %doc, error = %e, "meta.json write failed");
                     }
                 }
                 finish_reply(
-                    imp.reply,
+                    reply,
                     Ok(ImportOutcome {
                         changed: r.changed,
                         total: r.total,
@@ -862,7 +882,7 @@ impl Message<ImportDone> for DocumentActor {
                     }),
                 );
             }
-            Err(e) => finish_reply(imp.reply, Err(e.to_string())),
+            Err(e) => finish_reply(reply, Err(e.to_string())),
         }
     }
 }
@@ -1552,21 +1572,29 @@ impl Message<HelperEvent> for DocumentActor {
                 req,
                 ratio,
             } => {
-                let mut edit_done = false;
-                let (by, snapshot_first) = match (self.imports.get(&req), self.edits.get_mut(&req)) {
-                    (Some(imp), _) => (
-                        imp.by.clone(),
-                        imp.mode == ImportMode::Diff
-                            && ratio.is_some_and(|(c, t)| t > 0 && c * 2 > t),
-                    ),
+                let mut done = false;
+                let (by, snapshot_first) = match (self.imports.get_mut(&req), self.edits.get_mut(&req)) {
+                    (Some(imp), _) => {
+                        imp.applied = true;
+                        done = imp.done_at.is_some();
+                        (
+                            imp.by.clone(),
+                            imp.mode == ImportMode::Diff
+                                && ratio.is_some_and(|(c, t)| t > 0 && c * 2 > t),
+                        )
+                    }
                     (None, Some(e)) => {
                         e.applied = true;
-                        edit_done = e.reply.is_none();
+                        done = e.reply.is_none();
                         (e.by.clone(), false)
                     }
-                    (None, None) => (Principal::Helper, false),
+                    (None, None) => {
+                        tracing::warn!(doc = %doc, req, "helper update matches no import or edit; stamped Helper");
+                        (Principal::Helper, false)
+                    }
                 };
-                if edit_done {
+                if done {
+                    self.imports.remove(&req);
                     self.edits.remove(&req);
                 }
                 if snapshot_first && let Err(e) = self.snapshot(&doc, Some("import-file")) {
@@ -1624,6 +1652,9 @@ impl Message<Tick> for DocumentActor {
         for id in unloads {
             self.unload(&id, "unloaded");
         }
+        // Imports that replied but changed nothing send no update: forget them after a grace period.
+        self.imports
+            .retain(|_, i| i.done_at.is_none_or(|t| now.duration_since(t) < IMPORT_GRACE));
         // Subscribers whose receiver went away.
         for subs in self.subs.values_mut() {
             subs.retain(|s| !s.tx.is_closed());
