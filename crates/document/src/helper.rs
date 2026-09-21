@@ -127,6 +127,20 @@ pub enum Edit {
         /// Ids to remove.
         blocks: Vec<String>,
     },
+    /// Move `blocks` (ids kept) after/before a block or to `start`/`end`; exactly one of the three (§7.4).
+    Move {
+        /// Ids to move, in any order (document order is kept).
+        blocks: Vec<String>,
+        /// Sibling to land after.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        /// Sibling to land before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// `start` or `end` of the top level.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+    },
     /// The inverse the helper computed for an earlier edit (§5.5); opaque here, passed back verbatim.
     Restore {
         /// Ids the edit inserted.

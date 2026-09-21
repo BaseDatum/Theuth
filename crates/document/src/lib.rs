@@ -5,7 +5,7 @@
 //! reads (§4.3), with edits to that file imported back by block diff (§4.4)
 //! through the headless BlockNote helper `packages/documents` (§3.2).
 //!
-//! Steps 1–3 (§14): knowledge documents and notes, single user, in-process only.
+//! Steps 1–3 and 5 (§14): knowledge documents, notes, markdown artifacts and meeting notes, single user, in-process only.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`DOCUMENT_ACTOR`] actor ([`DocumentActor`]): [`OpenDoc`],
@@ -28,9 +28,9 @@ pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
+    ApplyUpdate, AwarenessUpdateMsg, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
     EditOutcome, Ensure, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
-    Outline, Rename, Restore, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
+    Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
     with_heading,
 };
 pub use helper::{Edit as BlockEdit, EditError, ImportMode, helper_path, protocol_version};

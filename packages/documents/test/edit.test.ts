@@ -370,3 +370,34 @@ pub struct ArtifactActor {
     expect(md).not.toContain("---\n");
   });
 });
+
+describe("edit: move (59 §7.4)", () => {
+  test("after a block keeps ids and text; nothing is touched; undo puts them back", async () => {
+    const o = await doc();
+    const before = ids(o);
+    const [h, one, two, three, last] = before;
+    const beforeLines = lines(o);
+    const r = await edit(o, [{ op: "move", blocks: [one!, two!], after: last! }]);
+    expect(r.inserted).toEqual([]);
+    expect(r.removed).toEqual([]);
+    expect(r.touched).toEqual([]);
+    expect(ids(o)).toEqual([h!, three!, last!, one!, two!]);
+    expect(lines(o)).toEqual([beforeLines[0]!, beforeLines[4]!, beforeLines[5]!, beforeLines[1]!, beforeLines[2]!, beforeLines[3]!]);
+    await edit(o, r.undo);
+    expect(ids(o)).toEqual(before);
+    expect(lines(o)).toEqual(beforeLines);
+  });
+
+  test("to the start lands after the frontmatter; before a block; anchor must not be moved", async () => {
+    const o = await doc();
+    const [h, one, , , last] = ids(o);
+    await edit(o, [{ op: "move", blocks: [last!], at: "start" }]);
+    expect(blocks(o)[0]!.type).toBe("frontmatter");
+    expect(ids(o)[0]).toBe(last!);
+    await edit(o, [{ op: "move", blocks: [h!], before: one! }]);
+    expect(ids(o).slice(0, 3)).toEqual([last!, h!, one!]);
+    expect(await failure(edit(o, [{ op: "move", blocks: [h!, one!], after: one! }]))).toMatchObject({ code: "bad_edit" });
+    expect(await failure(edit(o, [{ op: "move", blocks: [h!] }]))).toMatchObject({ code: "bad_edit" });
+    expect(await failure(edit(o, [{ op: "move", blocks: ["nope"], at: "end" }]))).toMatchObject({ code: "unknown_block" });
+  });
+});

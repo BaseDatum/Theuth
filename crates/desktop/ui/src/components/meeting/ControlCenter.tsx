@@ -1,19 +1,22 @@
 // 53 §4.3 / 03 §3: `/meetings/$id` — while recording: state, elapsed, degradations, pause/resume/stop, the
 // live log (`me:`/`them:`; a `final: false` utterance replaces the open row of its track, `final: true`
-// commits it), a typed request box, the brief log with the island's cursor mirrored, and the session
-// link. After the meeting (04 §7): the post-pipeline progress bar, then the review pane, the summarizing
-// spinner, the summary — and the manifest for everything else (incl. `Failed` with *Re-run post pipeline*).
+// commits it), a typed request box, the brief log with the island's cursor mirrored, the session link, and the
+// meeting's note beside them (59 §7.4; tabs under `md`). After the meeting (04 §7): the post-pipeline progress
+// bar, then the review pane, the summarizing spinner, the summary (the note, when there is one) — and the
+// manifest for everything else (incl. `Failed` with *Re-run post pipeline*).
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArrowUp, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
+import { MeetingNote } from '@/components/meeting/Note'
 import { Review } from '@/components/meeting/Review'
 import { Summary } from '@/components/meeting/Summary'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Brief } from '@/rpc/bindings/Brief'
@@ -48,6 +51,9 @@ export function ControlCenter({ id }: { id: string }) {
   const progress = store.meeting === id ? store.progress : null
   const post = progress?.stage ?? (typeof state === 'object' ? state.Post : null)
   const retry = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })
+  const note = manifest.data?.note ?? null
+  const mobile = useIsMobile()
+  const [pane, setPane] = useState<'transcript' | 'note'>('transcript')
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -71,9 +77,32 @@ export function ControlCenter({ id }: { id: string }) {
         <div className="px-6 pb-2 text-[12px] text-fg-tertiary">{degraded.map(degradationText).join(' · ')}</div>
       )}
       {isLive ? (
-        <div className="flex min-h-0 flex-1 gap-4 px-6 pb-4">
-          <LiveLog id={id} />
-          <BriefLog id={id} cursor={current(store)?.id ?? null} />
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 pb-4">
+          {note && mobile && (
+            <div className="flex gap-1 text-[12px]" role="tablist">
+              {(['transcript', 'note'] as const).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  role="tab"
+                  aria-selected={pane === p}
+                  className={cn('rounded-lg px-3 py-1', pane === p ? 'bg-accent font-semibold text-fg' : 'text-fg-tertiary')}
+                  onClick={() => setPane(p)}
+                >
+                  {p === 'transcript' ? 'Transcript' : 'Note'}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex min-h-0 flex-1 gap-4">
+            {(!note || !mobile || pane === 'transcript') && (
+              <div className="flex min-h-0 min-w-0 flex-1 gap-4">
+                <LiveLog id={id} />
+                <BriefLog id={id} cursor={current(store)?.id ?? null} />
+              </div>
+            )}
+            {note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:w-[45%] md:flex-none" />}
+          </div>
         </div>
       ) : (
         manifest.data && (
@@ -90,7 +119,7 @@ export function ControlCenter({ id }: { id: string }) {
                 )}
               </div>
             ) : state === 'Done' ? (
-              <Summary id={id} session={session ?? null} />
+              <Summary id={id} session={session ?? null} note={note} />
             ) : (
               <>
                 {post && (
@@ -166,7 +195,10 @@ function LiveLog({ id }: { id: string }) {
       })
     })
   }, [api, id])
-  useEffect(() => end.current?.scrollIntoView({ block: 'end' }), [rows])
+  // Braces on purpose: with the editor mounted, a scroll polyfill makes `scrollIntoView` return a Promise, which React rejects as a cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' })
+  }, [rows])
   const request = useAction((t: string) => api.meeting_request(t), { onSuccess: () => setText('') })
   return (
     <div className="flex min-w-0 flex-1 flex-col rounded-xl border border-border-subtle">

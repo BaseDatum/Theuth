@@ -54,6 +54,8 @@ const AWARENESS_RATE: u8 = 4;
 const TRASH_SWEEP: Duration = Duration::from_secs(3600);
 /// … of directories deleted longer ago than this.
 const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
+/// A replied import waits this long for its update before it is forgotten (none comes when nothing changed).
+const IMPORT_GRACE: Duration = Duration::from_secs(10);
 
 /// One loaded document.
 struct Open {
@@ -115,13 +117,21 @@ struct Subscriber {
     tx: mpsc::Sender<DocEvent>,
 }
 
-/// An import the helper is running; keyed by the helper request id.
+/// An import the helper is running; keyed by the helper request id. The update
+/// (`ev: update`) and the reply arrive on two tasks: the entry lives until both
+/// did, else the update could land after the reply and pass as a bare helper
+/// transaction — stamped `Helper` and exported, when the import's `File` never
+/// exports (that stray export is what made a `show` look like an edit, §7.2).
 struct Import {
     doc: DocId,
     by: Principal,
     mode: ImportMode,
     sha: String,
     reply: ImportReply,
+    /// The reply arrived, at this instant.
+    done_at: Option<Instant>,
+    /// The update arrived. An import that changed nothing never sends one: `Tick` sweeps those.
+    applied: bool,
 }
 
 enum ImportReply {
@@ -360,6 +370,8 @@ impl DocumentActor {
                 mode,
                 sha,
                 reply,
+                done_at: None,
+                applied: false,
             },
         );
         let me = self.actor_ref();
@@ -470,8 +482,8 @@ impl DocumentActor {
             .expect("the document actor is registered before it serves")
     }
 
-    /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`].
-    fn export(&mut self, doc: &DocId) {
+    /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`]; `done` hears the outcome.
+    fn export(&mut self, doc: &DocId, done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
         let Some(o) = self.open.get_mut(doc) else {
             return;
         };
@@ -490,6 +502,9 @@ impl DocumentActor {
                     .map_err(|e| format!("write {}: {e}", path.display())),
                 Err(e) => Err(e.to_string()),
             };
+            if let Some(done) = done {
+                let _ = done.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
+            }
             let _ = me.tell(ExportDone { doc, result }).await;
         });
     }
@@ -868,23 +883,31 @@ impl Message<ImportDone> for DocumentActor {
     type Reply = ();
 
     async fn handle(&mut self, m: ImportDone, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(imp) = self.imports.remove(&m.req) else {
+        let Some(imp) = self.imports.get_mut(&m.req) else {
             return;
         };
+        let reply = std::mem::replace(&mut imp.reply, ImportReply::None);
+        let (doc, sha) = (imp.doc.clone(), imp.sha.clone());
+        // A failed import sends no update; a successful one that changed nothing may not either.
+        if m.result.is_err() || imp.applied {
+            self.imports.remove(&m.req);
+        } else {
+            imp.done_at = Some(Instant::now());
+        }
         match m.result {
             Ok(r) => {
-                if let Some(o) = self.open.get_mut(&imp.doc) {
+                if let Some(o) = self.open.get_mut(&doc) {
                     // The text and the doc agree now unless an edit is still waiting to be exported.
                     if o.export_due.is_none() && !o.exporting {
-                        o.meta.last_export = Some(imp.sha);
+                        o.meta.last_export = Some(sha);
                     }
                     let meta = o.meta.clone();
                     if let Err(e) = self.store.write_meta(&meta).await {
-                        tracing::warn!(doc = %imp.doc, error = %e, "meta.json write failed");
+                        tracing::warn!(doc = %doc, error = %e, "meta.json write failed");
                     }
                 }
                 finish_reply(
-                    imp.reply,
+                    reply,
                     Ok(ImportOutcome {
                         changed: r.changed,
                         total: r.total,
@@ -892,7 +915,7 @@ impl Message<ImportDone> for DocumentActor {
                     }),
                 );
             }
-            Err(e) => finish_reply(imp.reply, Err(e.to_string())),
+            Err(e) => finish_reply(reply, Err(e.to_string())),
         }
     }
 }
@@ -1154,6 +1177,20 @@ pub struct CreateNote {
     pub by: Principal,
 }
 
+/// `ask` → `Result<DocSummary, String>`: a new document bound to `binding` (a meeting's note, §7.4),
+/// headed `# <title>` like a note; fails when the binding is already bound. Notes use [`CreateNote`].
+#[derive(Clone, Debug)]
+pub struct Create {
+    /// What it is bound to.
+    pub binding: Binding,
+    /// Display title.
+    pub title: String,
+    /// Initial body; empty → the heading alone.
+    pub markdown: String,
+    /// Who created it.
+    pub by: Principal,
+}
+
 /// `markdown`, headed by `# title` unless it already has a level-1 heading.
 pub fn with_heading(title: &str, markdown: &str) -> String {
     if markdown.lines().any(|l| l.starts_with("# ")) {
@@ -1173,14 +1210,42 @@ impl Message<CreateNote> for DocumentActor {
     async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        self.create_doc(Binding::Note, m.title, m.markdown, m.by, tx)
+            .await;
+        reply
+    }
+}
+
+impl Message<Create> for DocumentActor {
+    type Reply = DelegatedReply<Result<DocSummary, String>>;
+
+    async fn handle(&mut self, m: Create, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        self.create_doc(m.binding, m.title, m.markdown, m.by, tx)
+            .await;
+        reply
+    }
+}
+
+impl DocumentActor {
+    /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import.
+    async fn create_doc(
+        &mut self,
+        binding: Binding,
+        title: String,
+        markdown: String,
+        by: Principal,
+        tx: ReplySender<Result<DocSummary, String>>,
+    ) {
         let id = DocId::new();
         let now = now_ms();
         let meta = DocMeta {
-            derived: Binding::Note.derived(&id),
+            derived: binding.derived(&id),
             id: id.clone(),
-            kind: DocKind::Note,
-            title: m.title,
-            binding: Binding::Note,
+            kind: binding.kind(),
+            title,
+            binding,
             fragment: FRAGMENT.to_owned(),
             members: vec![],
             links: vec![],
@@ -1193,18 +1258,17 @@ impl Message<CreateNote> for DocumentActor {
         };
         if let Err(e) = self.store.create(&meta).await {
             tx.send(Err(format!("{e:#}")));
-            return reply;
+            return;
         }
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        let markdown = with_heading(&meta.title, &m.markdown);
+        let markdown = with_heading(&meta.title, &markdown);
         self.start_import(
             &id,
             markdown,
-            m.by,
+            by,
             ImportMode::Replace,
             ImportReply::CreatedNote(DocSummary::from(&meta), tx),
         );
-        reply
     }
 }
 
@@ -1340,6 +1404,51 @@ impl Message<Snapshot> for DocumentActor {
     }
 }
 
+/// `ask` → `Result<(), String>`: move a document's derived file (§7.4: a meeting's `notes.md` becomes
+/// `summary.md` once the summary is in it): meta + index, the old file removed, the new path written
+/// before the reply so its readers find it at once.
+#[derive(Clone, Debug)]
+pub struct SetDerived {
+    /// Document.
+    pub doc: DocId,
+    /// New derived path relative to the data dir.
+    pub derived: String,
+}
+
+impl Message<SetDerived> for DocumentActor {
+    type Reply = DelegatedReply<Result<(), String>>;
+
+    async fn handle(&mut self, m: SetDerived, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let o = match self.load(&m.doc) {
+            Ok(o) => o,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        let old = std::mem::replace(&mut o.meta.derived, m.derived);
+        let meta = o.meta.clone();
+        if let Err(e) = self.store.write_meta(&meta).await {
+            tx.send(Err(format!("meta.json: {e:#}")));
+            return reply;
+        }
+        if old != meta.derived && !old.is_empty() {
+            let _ = std::fs::remove_file(self.data_dir.join(&old));
+        }
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.export(&m.doc, Some(done_tx));
+        tokio::spawn(async move {
+            tx.send(match done_rx.await {
+                Ok(r) => r,
+                Err(_) => Err("export task dropped".into()),
+            });
+        });
+        reply
+    }
+}
+
 /// `ask` → `Result<Vec<SnapshotInfo>, String>`.
 #[derive(Clone, Debug)]
 pub struct Snapshots {
@@ -1384,7 +1493,8 @@ impl Message<Restore> for DocumentActor {
                 return reply;
             }
         };
-        // The snapshot's markdown comes from a throwaway mirror in the helper.
+        // The snapshot's markdown comes from a throwaway mirror in the helper. The import is the
+        // owner's (not `File`): a restore changes the document, so the derived file must follow it.
         let helper = self.helper.clone();
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
@@ -1397,7 +1507,7 @@ impl Message<Restore> for DocumentActor {
                     .ask(ImportMarkdown {
                         doc: m.doc,
                         markdown,
-                        by: Principal::File,
+                        by: Principal::Owner { device: None },
                         mode: ImportMode::Diff,
                     })
                     .await
@@ -1495,21 +1605,29 @@ impl Message<HelperEvent> for DocumentActor {
                 req,
                 ratio,
             } => {
-                let mut edit_done = false;
-                let (by, snapshot_first) = match (self.imports.get(&req), self.edits.get_mut(&req)) {
-                    (Some(imp), _) => (
-                        imp.by.clone(),
-                        imp.mode == ImportMode::Diff
-                            && ratio.is_some_and(|(c, t)| t > 0 && c * 2 > t),
-                    ),
+                let mut done = false;
+                let (by, snapshot_first) = match (self.imports.get_mut(&req), self.edits.get_mut(&req)) {
+                    (Some(imp), _) => {
+                        imp.applied = true;
+                        done = imp.done_at.is_some();
+                        (
+                            imp.by.clone(),
+                            imp.mode == ImportMode::Diff
+                                && ratio.is_some_and(|(c, t)| t > 0 && c * 2 > t),
+                        )
+                    }
                     (None, Some(e)) => {
                         e.applied = true;
-                        edit_done = e.reply.is_none();
+                        done = e.reply.is_none();
                         (e.by.clone(), false)
                     }
-                    (None, None) => (Principal::Helper, false),
+                    (None, None) => {
+                        tracing::warn!(doc = %doc, req, "helper update matches no import or edit; stamped Helper");
+                        (Principal::Helper, false)
+                    }
                 };
-                if edit_done {
+                if done {
+                    self.imports.remove(&req);
                     self.edits.remove(&req);
                 }
                 if snapshot_first && let Err(e) = self.snapshot(&doc, Some("import-file")) {
@@ -1557,7 +1675,7 @@ impl Message<Tick> for DocumentActor {
             }
         }
         for id in exports {
-            self.export(&id);
+            self.export(&id, None);
         }
         for id in snapshots {
             if let Err(e) = self.snapshot(&id, None) {
@@ -1567,6 +1685,9 @@ impl Message<Tick> for DocumentActor {
         for id in unloads {
             self.unload(&id, "unloaded");
         }
+        // Imports that replied but changed nothing send no update: forget them after a grace period.
+        self.imports
+            .retain(|_, i| i.done_at.is_none_or(|t| now.duration_since(t) < IMPORT_GRACE));
         // Subscribers whose receiver went away.
         for subs in self.subs.values_mut() {
             subs.retain(|s| !s.tx.is_closed());

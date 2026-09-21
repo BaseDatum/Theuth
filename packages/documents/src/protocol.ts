@@ -5,7 +5,7 @@
  */
 
 /** Bumped whenever a request/response shape or an op's semantics change. */
-export const PROTOCOL_VERSION = "59.2";
+export const PROTOCOL_VERSION = "59.5";
 
 export type ImportMode = "diff" | "replace" | "append";
 
@@ -44,6 +44,12 @@ export type Edit =
   /** Remove `blocks` and put the parsed blocks where the first removed one was. */
   | { op: "replace"; blocks: string[]; markdown: string }
   | { op: "delete"; blocks: string[] }
+  /**
+   * Move `blocks` (ids kept, so attribution survives — 59 §7.4 regroups a person's notes under headings)
+   * after/before a block or to the start/end of the top level; exactly one of after/before/at. The moved
+   * ids are not `touched`: nothing was authored.
+   */
+  | { op: "move"; blocks: string[]; after?: string; before?: string; at?: "start" | "end" }
   /**
    * The inverse the helper computes for §5.5 "Undo last agent edit": remove `remove` (the ids an edit
    * inserted) and put `blocks` (the exact pre-edit block JSON) back at `anchor`. Never built by the model.

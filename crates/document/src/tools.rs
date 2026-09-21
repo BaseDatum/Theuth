@@ -1,6 +1,6 @@
-//! The five `doc_*` tools (design 59 §5) and the prompt block (§5.4), registered
+//! The six `doc_*` tools (design 59 §5, §7.4 `doc_move`) and the prompt block (§5.4), registered
 //! by `DocumentPlugin::start` once the tool registry is up. `doc_read` is
-//! `ReadOnly`; the four writers are `Mutating` (decision 15): each is one
+//! `ReadOnly`; the writers are `Mutating` (decision 15): each is one
 //! helper `edit` → one Y transaction → one update stamped `Principal::Agent`.
 
 use std::path::PathBuf;
@@ -17,11 +17,12 @@ use crate::helper::{Edit as BlockEdit, EditError};
 use crate::meta::{Binding, DocId, Principal};
 
 /// §5.4: what block ids are, how to edit, what the `[doc …]` marker means. Static.
-pub const PROMPT: &str = "**Documents.** Knowledge concepts, notes and markdown artifacts are block documents. \
+pub const PROMPT: &str = "**Documents.** Knowledge concepts, notes, meeting notes and markdown artifacts are block documents. \
 `doc_read(doc)` returns an outline, one block per line with its id first; read it before editing, then change \
 the smallest run of blocks with `doc_insert` / `doc_replace` / `doc_delete`, quoting ids from the outline you \
 just read (ids stay stable across edits you did not make; a replaced block gets a new id, returned — anchor \
-later inserts on it, or put everything in the one `doc_replace` markdown). One tool call per request when possible. Never \
+later inserts on it, or put everything in the one `doc_replace` markdown). `doc_move` reorders blocks without \
+changing them (ids kept). One tool call per request when possible. Never \
 rewrite text a person typed unless asked to change that text; edit knowledge metadata with `knowledge_put`, \
 not the frontmatter block. `doc` is a document id or `knowledge:<concept id>`. A user line starting \
 `[doc <id> \"<title>\"]` means that document is attached to the conversation: pass `<id>` as `doc`. Several \
@@ -34,7 +35,7 @@ pub struct Docs {
     data_dir: PathBuf,
 }
 
-/// Register the prompt block and the five tools on `reg`.
+/// Register the prompt block and the six tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActor>, data_dir: PathBuf) {
     let _ = reg
         .ask(RegisterPrompt {
@@ -47,6 +48,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActo
     let _ = reg.ask(RegisterTool(Arc::new(InsertTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(ReplaceTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(DeleteTool(d.clone())))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(MoveTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(CreateTool(d)))).await;
 }
 
@@ -323,6 +325,80 @@ impl Tool for DeleteTool {
         self.0
             .edit(&a.doc, vec![BlockEdit::Delete { blocks: a.blocks }], &cx)
             .await
+    }
+}
+
+/// Arguments for [`MoveTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MoveArgs {
+    /// Document id, or `knowledge:<concept id>`.
+    pub doc: String,
+    /// Block ids to move (from doc_read); their document order is kept, children go with them.
+    pub blocks: Vec<String>,
+    /// Land after this block id.
+    #[serde(default)]
+    pub after: Option<String>,
+    /// Land before this block id.
+    #[serde(default)]
+    pub before: Option<String>,
+    /// `start` or `end` of the document.
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+/// `doc_move`: reorder blocks, ids and authorship kept (§7.4: regroup a person's notes under headings).
+pub struct MoveTool(pub Docs);
+
+#[async_trait::async_trait]
+impl Tool for MoveTool {
+    const NAME: &'static str = "doc_move";
+    const RISK: Risk = Risk::Mutating;
+    const RETURNS: &'static str = "dict";
+    type Args = MoveArgs;
+
+    fn description(&self) -> String {
+        "Move blocks (ids from doc_read) after or before another block, or to `start`/`end`, without \
+         changing their text or ids — the way to regroup what a person wrote under a heading. Exactly one \
+         of after/before/at; the anchor must not be one of the moved blocks. One call = one undoable edit. \
+         Returns {moved: [id]}."
+            .into()
+    }
+
+    async fn call(&self, a: MoveArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let given = [a.after.is_some(), a.before.is_some(), a.at.is_some()]
+            .iter()
+            .filter(|b| **b)
+            .count();
+        if given != 1 {
+            return Ok(ToolOutput::err("give exactly one of after, before, at"));
+        }
+        if let Some(at) = a.at.as_deref()
+            && at != "start"
+            && at != "end"
+        {
+            return Ok(ToolOutput::err("at must be \"start\" or \"end\""));
+        }
+        let moved = a.blocks.clone();
+        let out = self
+            .0
+            .edit(
+                &a.doc,
+                vec![BlockEdit::Move {
+                    blocks: a.blocks,
+                    after: a.after,
+                    before: a.before,
+                    at: a.at,
+                }],
+                &cx,
+            )
+            .await?;
+        if out.is_error {
+            return Ok(out);
+        }
+        Ok(structured(
+            format!("moved {}\n", moved.join(", ")),
+            serde_json::json!({ "moved": moved }),
+        ))
     }
 }
 

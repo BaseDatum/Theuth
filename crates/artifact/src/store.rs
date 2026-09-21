@@ -205,11 +205,12 @@ pub struct State {
     owner: String,
     /// The OS lock on that file, held for the process lifetime: released by
     /// the kernel when the process dies, so liveness is never guessed from a
-    /// pid. `None` for a private tree, whose rows die with the process anyway.
-    _owner_lock: Option<std::fs::File>,
+    /// pid. `None` for a private tree, whose rows die with the process anyway —
+    /// which is also why only a store holding one binds documents (59 §7.2).
+    owner_lock: Option<std::fs::File>,
     /// Derived search index (design doc 49 §3.2); invalidated by
-    /// [`State::show`], [`State::commit`] and [`State::delete_session`], the
-    /// only writers.
+    /// [`State::show`], [`State::commit`], [`State::edit_version`] and
+    /// [`State::delete_session`], the only writers.
     search: Arc<search::Cache>,
 }
 
@@ -525,7 +526,7 @@ impl State {
             gate: tokio::sync::RwLock::new(()),
             closing: AtomicBool::new(false),
             owner,
-            _owner_lock: Some(owner_lock),
+            owner_lock: Some(owner_lock),
             search: Arc::default(),
         })
     }
@@ -564,7 +565,7 @@ impl State {
             gate: tokio::sync::RwLock::new(()),
             closing: AtomicBool::new(false),
             owner: "private".to_owned(),
-            _owner_lock: None,
+            owner_lock: None,
             search: Arc::default(),
         })
     }
@@ -812,6 +813,9 @@ impl State {
         })?;
         artifact.version = u32::try_from(version).unwrap_or_default();
         self.search.invalidate();
+        if artifact.kind == Kind::Markdown {
+            self.bind_document(&artifact, &bytes).await;
+        }
 
         tracing::info!(
             target: "artifact",
@@ -978,6 +982,9 @@ impl State {
         };
         artifact.version = u32::try_from(version).unwrap_or_default();
         self.search.invalidate();
+        if artifact.kind == Kind::Markdown {
+            self.bind_document(&artifact, &m.bytes).await;
+        }
         drop(_writing);
 
         tracing::info!(
@@ -1012,6 +1019,164 @@ impl State {
         .map_err(|e| format!("index: {e}"))?;
         let row = row.ok_or_else(|| format!("{call_id}: no such artifact"))?;
         row_to_artifact(&self.dir, row).map_err(|e| format!("{e:#}"))
+    }
+
+    /// Whether this store's markdown records are documents (59 §7.2): the
+    /// durable one only — a private tree's records die with the process while
+    /// documents persist.
+    fn binds_documents(&self) -> bool {
+        self.owner_lock.is_some()
+    }
+
+    /// 59 §7.2: the shown markdown becomes the bound document's text — created
+    /// on the first show (`Ensure`, mode `replace`), a block diff after — then a
+    /// `artifact-v<N>` snapshot. Stamped `Principal::File`, so the import never
+    /// exports (the import *is* this version; an export would loop back as an
+    /// edit version). Failures are logged: the record stands without a document.
+    async fn bind_document(&self, a: &Artifact, bytes: &[u8]) {
+        if !self.binds_documents() {
+            return;
+        }
+        let Some(docs) = document::Handle::lookup() else {
+            return;
+        };
+        let Ok(markdown) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        let binding = document::Binding::Artifact {
+            session: a.session.to_string(),
+            name: a.name.clone(),
+        };
+        let doc = match docs.actor().ask(document::Lookup { binding: binding.clone() }).await {
+            Ok(Some(doc)) => docs
+                .import_markdown(doc.clone(), markdown.to_owned(), document::Principal::File)
+                .await
+                .map(|_| doc),
+            Ok(None) => docs
+                .actor()
+                .ask(document::Ensure {
+                    binding,
+                    markdown: markdown.to_owned(),
+                })
+                .await
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match doc {
+            Ok(doc) => {
+                if let Err(e) = docs
+                    .actor()
+                    .ask(document::Snapshot {
+                        doc,
+                        label: format!("artifact-v{}", a.version),
+                    })
+                    .await
+                {
+                    tracing::warn!(name = %a.name, "artifact document snapshot: {e}");
+                }
+            }
+            Err(e) => tracing::warn!(name = %a.name, "artifact document: {e}"),
+        }
+    }
+
+    /// The newest version of `(session, name)`, if any.
+    async fn latest(&self, session: SessionId, name: &str) -> Result<Option<Artifact>, String> {
+        // Only `COLS` (a const) is interpolated; the keys are bound.
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLS} FROM artifacts WHERE session = ? AND name = ? ORDER BY version DESC LIMIT 1"
+        )))
+        .bind(session.to_string())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("index: {e}"))?;
+        row.map(|r| row_to_artifact(&self.dir, r).map_err(|e| format!("{e:#}")))
+            .transpose()
+    }
+
+    /// 59 §7.2: a settled user edit of a markdown artifact's document — `bytes`
+    /// is its export — becomes the next version: a new content-addressed blob
+    /// and a row with `call_id = "edit:<ms>-<sha16>"` (the column is the primary
+    /// key, so a bare `"edit"` cannot repeat), `origin = None`, the latest
+    /// version's title unless the text names its own. `Ok(None)` when the text
+    /// is byte-identical to the latest version (nothing to record) or the
+    /// lineage is not markdown. Publishes [`ArtifactShown`] like a show.
+    pub async fn edit_version(
+        &self,
+        session: SessionId,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Option<Artifact>, String> {
+        let Some(latest) = self.latest(session, name).await? else {
+            return Err(format!("{name}: no version to edit"));
+        };
+        if latest.kind != Kind::Markdown {
+            return Ok(None);
+        }
+        let id = sha16(&bytes);
+        if id == latest.id {
+            return Ok(None);
+        }
+        let _writing = self.gate.read().await;
+        self.admit().map_err(|e| format!("{name}: {e}"))?;
+        let path = self
+            .put_blob(&blob_name(&id, name), &bytes)
+            .await
+            .map_err(|e| format!("{name}: {e:#}"))?;
+        let title = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(doc_title)
+            .unwrap_or_else(|| latest.title.clone());
+        let created_at = chrono::Utc::now().timestamp();
+        // ponytail: ms + content hash; two artifacts exporting identical text in one ms collide → logged, no row.
+        let mut artifact = Artifact {
+            call_id: format!("edit:{}-{id}", chrono::Utc::now().timestamp_millis()),
+            mime: kind::mime(Kind::Markdown, name),
+            id,
+            session,
+            name: name.to_owned(),
+            title,
+            kind: Kind::Markdown,
+            bytes: bytes.len() as u64,
+            version: 0,
+            path,
+            source: None,
+            preview: None,
+            pages: None,
+            origin: None,
+            created_at,
+        };
+        let (version,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO artifacts ({COLS}) VALUES (?,?,?,?,?,?,?,?,\
+             (SELECT COUNT(*) + 1 FROM artifacts WHERE session = ? AND name = ?),\
+             NULL,NULL,NULL,NULL,?) RETURNING version"
+        )))
+        .bind(&artifact.call_id)
+        .bind(&artifact.id)
+        .bind(session.to_string())
+        .bind(name)
+        .bind(&artifact.title)
+        .bind(artifact.kind.as_str())
+        .bind(&artifact.mime)
+        .bind(i64::try_from(artifact.bytes).unwrap_or(i64::MAX))
+        .bind(session.to_string())
+        .bind(name)
+        .bind(created_at)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("{name}: index: {e}"))?;
+        artifact.version = u32::try_from(version).unwrap_or_default();
+        self.search.invalidate();
+        drop(_writing);
+        tracing::info!(target: "artifact", kind = "markdown", bytes = artifact.bytes, version = artifact.version, ok = true, "edit");
+        self.rt
+            .publish(ArtifactShown {
+                session,
+                call_id: artifact.call_id.clone(),
+                artifact: artifact.clone(),
+            })
+            .await;
+        Ok(Some(artifact))
     }
 
     /// What a [`Commit`] of `wanted.call_id` must answer when that call is

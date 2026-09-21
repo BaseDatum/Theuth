@@ -238,6 +238,18 @@ export async function edit(o: Open, edits: Edit[]): Promise<EditResult> {
         removedIds.push(...t.removed.map((b) => b.id));
         break;
       }
+      case "move": {
+        const given = [e.after !== undefined, e.before !== undefined, e.at !== undefined].filter(Boolean).length;
+        if (given !== 1) fail({ code: "bad_edit", message: "move takes exactly one of after, before, at" });
+        const target = e.after ?? e.before;
+        if (target !== undefined && e.blocks.includes(target)) fail({ code: "bad_edit", message: `the anchor ${target} is one of the moved blocks` });
+        const t = take(tree, e.blocks);
+        place(tree, t.removed, { after: e.after, before: e.before, at: e.at });
+        // Not `inserted`: the blocks keep their ids and their authors; the undo puts them back where they were.
+        // ponytail: one anchor per edit — a non-contiguous run comes back contiguous at the first gap (as delete's undo does).
+        undo.unshift({ op: "restore", remove: t.removed.map((b) => b.id), blocks: t.removed, anchor: t.anchor });
+        break;
+      }
       case "restore": {
         // Stored by an earlier `edit` of this helper: exact block JSON, ids included.
         const stored = e.blocks as DocBlock[];
