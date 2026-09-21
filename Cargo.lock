@@ -3664,6 +3664,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "decision"
+version = "1.8.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "half",
+ "humantime",
+ "kameo",
+ "models",
+ "ort",
+ "runtime",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokenizers",
+ "tokio",
+ "tools",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17362,6 +17388,7 @@ dependencies = [
  "browser",
  "clap",
  "computer",
+ "decision",
  "dirs 6.0.0",
  "figment",
  "jsonrpsee",

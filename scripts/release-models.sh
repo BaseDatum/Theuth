@@ -42,6 +42,9 @@ REQUIRED=(
   nemotron-streaming-en/tokenizer.model
   pyannote/segmentation-3.0.onnx                   # meeting/src/post/diarize.rs
   pyannote/wespeaker_en_voxceleb_CAM++.onnx
+  decision/model.onnx                              # decision/src/laya.rs Engine::load (57 §6 step 2b)
+  decision/tokenizer.json
+  decision/rl_agent_config.json
 )
 
 MODELS_DIR="${THEUTH_MODELS_DIR:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models}"

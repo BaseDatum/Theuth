@@ -233,6 +233,25 @@ agent:
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
+# decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya via ONNX Runtime
+#                            # answers typed questions (choice / bool / score) with a probability per option; a per-family gate
+#                            # accepts or escalates to today's model turn. Every family starts in shadow (runs, logs, changes nothing).
+#   enabled: true            # false: the actor answers every ask with escalate(disabled); nothing loads
+#   model_dir: ~             # checkpoint dir (model.onnx, tokenizer.json, rl_agent_config.json); default <data_dir>/models/decision.
+#                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
+#                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
+#   threads: 4               # ONNX Runtime intra-op threads
+#   idle_unload: 10m         # drop the session after this long unused (~1 GiB back)
+#   coreml: false            # try the CoreML execution provider (experiment; the log shows which provider actually ran)
+#   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
+#   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin.
+#                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2); listing any family replaces this table.
+#     meeting.topic:  { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
+#     meeting.brief:  { mode: shadow, tau_top: 0.80, tau_margin: 0.35 }
+#     browser.target: { mode: shadow, tau_top: 0.90, tau_margin: 0.50 }
+#     browser.wait:   { mode: shadow, tau_top: 0.80, tau_margin: 0.30 }
+#     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
+
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
 #   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
@@ -498,6 +517,7 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(update::UpdatePlugin));
         plugins.push(Box::new(voice::VoicePlugin));
         plugins.push(Box::new(meeting::MeetingPlugin));
+        plugins.push(Box::new(decision::DecisionPlugin));
         if cli.serve || cli.headless {
             plugins.push(Box::new(rpc::RpcPlugin));
         }

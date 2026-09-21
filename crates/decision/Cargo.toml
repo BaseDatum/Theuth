@@ -1,0 +1,34 @@
+[package]
+name = "decision"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Local typed-probability oracle (laya via ONNX Runtime) with a selective gate in front of the reasoning model (design doc 57)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+models = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+humantime = { workspace = true }
+ort = { workspace = true }
+half = { workspace = true }
+# laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+tempfile = "3"
+serde_yaml = { workspace = true }
+
+[lints]
+workspace = true

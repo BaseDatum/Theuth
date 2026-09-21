@@ -44,6 +44,7 @@ secrets = { path = "crates/secrets" }  # secrets vault (37)
 update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)
 meeting = { path = "crates/meeting" }  # meeting recorder: process tap + VPIO mic, three Opus tracks (53)
+decision = { path = "crates/decision" }  # local typed-probability oracle + selective gate (57)
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;
 # `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.13 is
 # what `cpal` already pins — 0.12 would duplicate `objc2-audio-toolbox`); `objc2-core-audio` =

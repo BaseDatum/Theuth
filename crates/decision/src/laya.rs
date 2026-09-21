@@ -1,0 +1,483 @@
+//! laya's input rendering and post-processing (57 §1), ported from `rl_common.py`
+//! (`render_options`, `build_sequence`, `temp_bucket`, `confidence_from_probs`) and
+//! `agent.py` (`system_one`). Pure functions over a `tokenizers::Tokenizer`; the ort
+//! `Session` that consumes a [`Sequence`] is step 2.
+//!
+//! Sequence: `[CLS] <qtype> question: <instructions> [SEP] [MASK] opt0 [MASK] opt1 … [SEP] <state> [SEP]`.
+//! Each option is capped at [`OPTION_CAP`] tokens and shrunk evenly when the head budget
+//! (`head_max_len`) runs out; the instructions get what the options leave (≥ 8 tokens); the
+//! state gets the rest of `max_len` and is right-truncated.
+
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
+use tokenizers::Tokenizer;
+
+use crate::question::Question;
+
+/// `[CLS]` in laya's tokenizer.
+pub const CLS: i64 = 50281;
+/// `[SEP]`.
+pub const SEP: i64 = 50282;
+/// `[PAD]`.
+pub const PAD: i64 = 50283;
+/// `[MASK]`: one per option; the head scores its hidden state.
+pub const MASK: i64 = 50284;
+/// The mask token's text, replaced by a space wherever user text contains it.
+pub const MASK_TEXT: &str = "[MASK]";
+/// Tokens per option before the head budget shrinks them.
+pub const OPTION_CAP: usize = 48;
+
+/// Question type, the model's `qtype` input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QType {
+    /// Pick one of N.
+    Choice = 0,
+    /// Ordinal level.
+    Score = 1,
+    /// Binary truth ("noul").
+    Noul = 2,
+}
+
+impl QType {
+    /// The text prefix and `temp_bucket` name.
+    pub fn name(self) -> &'static str {
+        match self {
+            QType::Choice => "choice",
+            QType::Score => "score",
+            QType::Noul => "noul",
+        }
+    }
+
+    /// Of a question.
+    pub fn of(q: &Question) -> Self {
+        match q {
+            Question::Choice { .. } => QType::Choice,
+            Question::Score { .. } => QType::Score,
+            Question::Bool { .. } => QType::Noul,
+        }
+    }
+}
+
+/// The fields of `rl_agent_config.json` inference needs.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct LayaConfig {
+    /// Sequence budget.
+    pub max_len: usize,
+    /// Budget for instructions + options.
+    pub head_max_len: usize,
+    /// Per-qtype temperature, index = [`QType`].
+    pub temperature: [f32; 3],
+    /// Per-cardinality temperature, keyed like `choice:3-5`; wins over `temperature`.
+    pub temperature_by_options: BTreeMap<String, f32>,
+}
+
+impl Default for LayaConfig {
+    fn default() -> Self {
+        LayaConfig {
+            max_len: 512,
+            head_max_len: 192,
+            temperature: [1.0; 3],
+            temperature_by_options: BTreeMap::new(),
+        }
+    }
+}
+
+impl LayaConfig {
+    /// `temp_bucket` + lookup (agent.py `system_one`).
+    pub fn temperature(&self, qtype: QType, k: usize) -> f32 {
+        let size = match k {
+            0..=2 => "2",
+            3..=5 => "3-5",
+            6..=10 => "6-10",
+            _ => "11+",
+        };
+        self.temperature_by_options
+            .get(&format!("{}:{size}", qtype.name()))
+            .copied()
+            .unwrap_or(self.temperature[qtype as usize])
+    }
+}
+
+/// One model row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sequence {
+    /// Token ids, `[CLS] … [SEP]`, at most `max_len`.
+    pub input_ids: Vec<i64>,
+    /// All ones (padding is the batch's job).
+    pub attention_mask: Vec<i64>,
+    /// Position of each option's `[MASK]`, option order.
+    pub marker_pos: Vec<i64>,
+    /// All true for a single row.
+    pub marker_mask: Vec<bool>,
+    /// [`QType`] as the model reads it.
+    pub qtype: i64,
+    /// The state was cut, or an option's marker fell past `max_len` (57 §0.5 hard failure).
+    pub truncated: bool,
+}
+
+/// Option texts in label order (`render_options`). Bool is always `[false, true]`.
+pub fn render_options(q: &Question) -> Vec<String> {
+    match q {
+        Question::Choice { candidates, .. } => candidates
+            .iter()
+            .map(|c| {
+                if c.text.is_empty() {
+                    c.id.clone()
+                } else {
+                    format!("{}: {}", c.id, c.text)
+                }
+            })
+            .collect(),
+        Question::Score { levels, .. } => levels
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("level {i}: {c}"))
+            .collect(),
+        Question::Bool { .. } => vec![
+            "false: no, the statement does not hold".to_owned(),
+            "true: yes, the statement holds".to_owned(),
+        ],
+    }
+}
+
+/// The option labels [`render_options`] order maps back to: candidate ids, `0..n`, `false`/`true`.
+pub fn labels(q: &Question) -> Vec<String> {
+    match q {
+        Question::Choice { candidates, .. } => candidates.iter().map(|c| c.id.clone()).collect(),
+        Question::Score { levels, .. } => (0..levels.len()).map(|i| i.to_string()).collect(),
+        Question::Bool { .. } => vec!["false".to_owned(), "true".to_owned()],
+    }
+}
+
+fn encode(tok: &Tokenizer, text: &str) -> Result<Vec<i64>, String> {
+    let enc = tok
+        .encode(text.replace(MASK_TEXT, " "), false)
+        .map_err(|e| format!("tokenize: {e}"))?;
+    Ok(enc.get_ids().iter().map(|&i| i64::from(i)).collect())
+}
+
+/// `build_sequence` (rl_common.py), option order = insertion order, right-truncated state.
+pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result<Sequence, String> {
+    let qtype = QType::of(q);
+    let (instructions, state) = match q {
+        Question::Choice {
+            instructions,
+            state,
+            ..
+        }
+        | Question::Score {
+            instructions,
+            state,
+            ..
+        } => (instructions.as_str(), state.as_str()),
+        Question::Bool { statement, state } => (statement.as_str(), state.as_str()),
+    };
+    let mut head = encode(tok, &format!("{} question: {instructions}", qtype.name()))?;
+    let mut opts: Vec<Vec<i64>> = Vec::new();
+    for o in render_options(q) {
+        let mut ids = encode(tok, &format!(" {o}"))?;
+        ids.truncate(OPTION_CAP);
+        ids.insert(0, MASK);
+        opts.push(ids);
+    }
+    let used = |opts: &[Vec<i64>]| opts.iter().map(Vec::len).sum::<usize>();
+    let mut budget = cfg.head_max_len as isize - used(&opts) as isize;
+    if budget < 16 {
+        // Too many / too long options: shrink every option evenly.
+        let per = ((cfg.head_max_len.saturating_sub(16)) / opts.len().max(1)).max(4);
+        for o in &mut opts {
+            o.truncate(per);
+        }
+        budget = cfg.head_max_len as isize - used(&opts) as isize;
+    }
+    head.truncate(budget.max(8) as usize);
+    let mut ids = Vec::with_capacity(cfg.max_len);
+    ids.push(CLS);
+    ids.extend(head);
+    ids.push(SEP);
+    let mut markers = Vec::with_capacity(opts.len());
+    for o in &opts {
+        markers.push(ids.len() as i64);
+        ids.extend(o);
+    }
+    ids.push(SEP);
+    let room = cfg.max_len.saturating_sub(ids.len() + 1);
+    let mut st = encode(tok, state)?;
+    let state_cut = st.len() > room;
+    st.truncate(room);
+    ids.extend(st);
+    ids.push(SEP);
+    ids.truncate(cfg.max_len);
+    let k = markers.len();
+    markers.retain(|&m| (m as usize) < cfg.max_len);
+    let truncated = state_cut || markers.len() < k;
+    Ok(Sequence {
+        attention_mask: vec![1; ids.len()],
+        marker_mask: vec![true; markers.len()],
+        input_ids: ids,
+        marker_pos: markers,
+        qtype: qtype as i64,
+        truncated,
+    })
+}
+
+/// Softmax over the first `k` logits at temperature `t` (floored at 1e-3), as `system_one`.
+pub fn softmax_with_temperature(logits: &[f32], k: usize, t: f32) -> Vec<f32> {
+    let t = t.max(1e-3);
+    let z: Vec<f32> = logits.iter().take(k).map(|l| l / t).collect();
+    let max = z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let e: Vec<f32> = z.iter().map(|v| (v - max).exp()).collect();
+    let sum: f32 = e.iter().sum();
+    e.into_iter().map(|v| v / sum).collect()
+}
+
+/// `confidence_from_probs`: 1 − normalised entropy over the first `k`; 1 when K < 2.
+pub fn entropy_confidence(p: &[f32], k: usize) -> f32 {
+    if k < 2 {
+        return 1.0;
+    }
+    let ent: f32 = p
+        .iter()
+        .take(k)
+        .map(|&v| {
+            let v = v.clamp(1e-12, 1.0);
+            -(v * v.ln())
+        })
+        .sum();
+    1.0 - ent / (k as f32).ln()
+}
+
+// step 2: ort Session + run (spawn_blocking, f16 outputs → f32, act_logits softmax).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::question::Candidate;
+
+    /// A whitespace word-level tokenizer: every distinct word is one token, unknown → 0.
+    fn tiny() -> Tokenizer {
+        let words = "choice score noul question : deploy blocked on image tags level 0 1 2 false true \
+                     no the statement does not hold yes holds a b c none e3 button sign in w";
+        let mut vocab = serde_json::Map::new();
+        vocab.insert("[UNK]".into(), 0.into());
+        for w in words.split_whitespace() {
+            let n = vocab.len();
+            vocab.entry(w).or_insert(n.into());
+        }
+        let spec = serde_json::json!({
+            "version": "1.0",
+            "pre_tokenizer": { "type": "Whitespace" },
+            "model": { "type": "WordLevel", "vocab": vocab, "unk_token": "[UNK]" },
+        });
+        Tokenizer::from_bytes(serde_json::to_vec(&spec).unwrap()).unwrap()
+    }
+
+    /// The real checkpoint's tokenizer, when a copy is around.
+    fn real() -> Option<Tokenizer> {
+        let home = std::env::var_os("HOME")?;
+        let candidates = [
+            std::path::PathBuf::from(&home).join(".theuth/models/decision/tokenizer.json"),
+            std::path::PathBuf::from("/tmp/laya-design/tokenizer.json"),
+        ];
+        candidates
+            .iter()
+            .find(|p| p.is_file())
+            .and_then(|p| Tokenizer::from_file(p).ok())
+    }
+
+    fn choice(n: usize, state: &str) -> Question {
+        Question::Choice {
+            instructions: "deploy blocked".into(),
+            candidates: (0..n)
+                .map(|i| Candidate {
+                    id: format!("e{i}"),
+                    text: "button".into(),
+                })
+                .collect(),
+            state: state.into(),
+        }
+    }
+
+    #[test]
+    fn layout_and_markers() {
+        let tok = tiny();
+        let cfg = LayaConfig::default();
+        let s = build_sequence(&tok, &choice(2, "image tags"), &cfg).unwrap();
+        // [CLS] choice question : deploy blocked [SEP] [MASK] e0 : button [MASK] e1 : button [SEP] image tags [SEP]
+        assert_eq!(s.input_ids[0], CLS);
+        assert_eq!(s.input_ids[6], SEP);
+        assert_eq!(s.marker_pos, vec![7, 11]);
+        assert_eq!(s.input_ids[7], MASK);
+        assert_eq!(s.input_ids[11], MASK);
+        assert_eq!(s.input_ids[15], SEP);
+        assert_eq!(*s.input_ids.last().unwrap(), SEP);
+        assert_eq!(s.input_ids.len(), 19);
+        assert_eq!(s.attention_mask, vec![1; 19]);
+        assert_eq!(s.marker_mask, vec![true, true]);
+        assert_eq!(s.qtype, 0);
+        assert!(!s.truncated);
+    }
+
+    #[test]
+    fn qtypes_and_fixed_options() {
+        let tok = tiny();
+        let cfg = LayaConfig::default();
+        let b = Question::Bool {
+            statement: "deploy blocked".into(),
+            state: "w".into(),
+        };
+        let s = build_sequence(&tok, &b, &cfg).unwrap();
+        assert_eq!(s.qtype, 2);
+        assert_eq!(s.marker_pos.len(), 2);
+        assert_eq!(
+            render_options(&b),
+            [
+                "false: no, the statement does not hold",
+                "true: yes, the statement holds"
+            ]
+        );
+        assert_eq!(labels(&b), ["false", "true"]);
+        let sc = Question::Score {
+            instructions: "deploy".into(),
+            levels: vec!["a".into(), "b".into(), "c".into()],
+            state: "w".into(),
+        };
+        assert_eq!(build_sequence(&tok, &sc, &cfg).unwrap().qtype, 1);
+        assert_eq!(
+            render_options(&sc),
+            ["level 0: a", "level 1: b", "level 2: c"]
+        );
+        assert_eq!(labels(&sc), ["0", "1", "2"]);
+    }
+
+    #[test]
+    fn mask_text_is_stripped() {
+        let tok = tiny();
+        let q = choice(1, "image [MASK] tags");
+        let s = build_sequence(&tok, &q, &LayaConfig::default()).unwrap();
+        assert_eq!(s.input_ids.iter().filter(|&&i| i == MASK).count(), 1);
+    }
+
+    #[test]
+    fn state_right_truncated_and_flagged() {
+        let tok = tiny();
+        let cfg = LayaConfig {
+            max_len: 24,
+            head_max_len: 16,
+            ..LayaConfig::default()
+        };
+        let state = "image tags ".repeat(20);
+        let s = build_sequence(&tok, &choice(1, &state), &cfg).unwrap();
+        assert_eq!(s.input_ids.len(), 24);
+        assert_eq!(*s.input_ids.last().unwrap(), SEP);
+        assert!(s.truncated);
+        // Right-truncated: the state's first tokens survive.
+        let image = tok.encode("image", false).unwrap().get_ids()[0] as i64;
+        let head_end = s.marker_pos[0] as usize + 4; // [MASK] e0 : button [SEP]
+        assert_eq!(s.input_ids[head_end + 1], image);
+    }
+
+    #[test]
+    fn options_shrink_evenly_when_head_overflows() {
+        let tok = tiny();
+        let cfg = LayaConfig {
+            max_len: 128,
+            head_max_len: 40,
+            ..LayaConfig::default()
+        };
+        // 8 options × 4 tokens = 32 > 40 − 16 → per = max(4, 24 / 8) = 4: [MASK] + 3 tokens each.
+        let s = build_sequence(&tok, &choice(8, "w"), &cfg).unwrap();
+        assert_eq!(s.marker_pos.len(), 8);
+        let gaps: Vec<i64> = s.marker_pos.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(gaps, vec![4; 7]);
+        // Head budget 40 − 32 = 8 → instructions cut to max(8, 8) = 8 (here only 5 exist).
+        assert_eq!(s.marker_pos[0], 1 + 5 + 1);
+        assert!(!s.truncated);
+    }
+
+    #[test]
+    fn markers_past_max_len_are_dropped_and_flagged() {
+        let tok = tiny();
+        let cfg = LayaConfig {
+            max_len: 12,
+            head_max_len: 192,
+            ..LayaConfig::default()
+        };
+        let s = build_sequence(&tok, &choice(3, "w"), &cfg).unwrap();
+        assert_eq!(s.input_ids.len(), 12);
+        assert!(s.marker_pos.len() < 3);
+        assert!(s.truncated);
+    }
+
+    #[test]
+    fn temperatures() {
+        let cfg: LayaConfig = serde_json::from_str(
+            r#"{"max_len":512,"head_max_len":192,"temperature":[1.6,1.25,1.98],
+                "temperature_by_options":{"choice:3-5":1.76,"noul:2":1.98,"choice:11+":0.1},
+                "encoder":"x","training":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.temperature(QType::Choice, 4), 1.76);
+        assert_eq!(cfg.temperature(QType::Choice, 2), 1.6);
+        assert_eq!(cfg.temperature(QType::Choice, 12), 0.1);
+        assert_eq!(cfg.temperature(QType::Noul, 2), 1.98);
+        assert_eq!(cfg.temperature(QType::Score, 3), 1.25);
+        let d: LayaConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!((d.max_len, d.head_max_len), (512, 192));
+    }
+
+    #[test]
+    fn softmax_and_confidence() {
+        let p = softmax_with_temperature(&[2.0, 0.0, -1e4, 9.0], 2, 1.0);
+        assert_eq!(p.len(), 2);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((p[0] - 0.880_797).abs() < 1e-5);
+        // Higher temperature flattens.
+        let flat = softmax_with_temperature(&[2.0, 0.0], 2, 4.0);
+        assert!(flat[0] < p[0]);
+        // Temperature floors at 1e-3, never divides by 0.
+        let sharp = softmax_with_temperature(&[2.0, 0.0], 2, 0.0);
+        assert!(sharp[0] > 0.999);
+        assert_eq!(entropy_confidence(&[1.0], 1), 1.0);
+        assert!((entropy_confidence(&[0.5, 0.5], 2)).abs() < 1e-6);
+        assert!((entropy_confidence(&[1.0, 0.0], 2) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn real_tokenizer_when_present() {
+        let Some(tok) = real() else {
+            eprintln!("skipped: no laya tokenizer.json around");
+            return;
+        };
+        let cfg = LayaConfig::default();
+        let q = Question::Choice {
+            instructions: "which cached brief is the subject being discussed".into(),
+            candidates: vec![
+                Candidate {
+                    id: "SRE-2386".into(),
+                    text: "image tag pipeline outage".into(),
+                },
+                Candidate {
+                    id: "none".into(),
+                    text: "none of these".into(),
+                },
+            ],
+            state: "The deploy is blocked on the image tags. [MASK]".into(),
+        };
+        let s = build_sequence(&tok, &q, &cfg).unwrap();
+        assert_eq!(s.input_ids[0], CLS);
+        assert_eq!(*s.input_ids.last().unwrap(), SEP);
+        assert_eq!(s.input_ids.iter().filter(|&&i| i == MASK).count(), 2);
+        assert_eq!(s.marker_pos.len(), 2);
+        assert!(s.input_ids.iter().all(|&i| i != PAD));
+        assert!(!s.truncated);
+        // The tokenizer's own special ids are the constants we hardcode.
+        assert_eq!(tok.token_to_id("[CLS]"), Some(CLS as u32));
+        assert_eq!(tok.token_to_id("[SEP]"), Some(SEP as u32));
+        assert_eq!(tok.token_to_id("[PAD]"), Some(PAD as u32));
+        assert_eq!(tok.token_to_id("[MASK]"), Some(MASK as u32));
+    }
+}
