@@ -141,8 +141,7 @@ async fn actor_end_to_end_with_report() {
                 "meeting.brief".to_owned(),
                 FamilyGate {
                     mode: Mode::Active,
-                    tau_top: 0.5,
-                    tau_margin: 0.1,
+                    ..FamilyGate::shadow(0.5, 0.1)
                 },
             ),
         ]

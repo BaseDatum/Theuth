@@ -2,13 +2,18 @@
 //! top-1 − top-2 ≥ `tau_margin`. Thresholds are per family and fitted from the log;
 //! `Mode` decides whether an accept changes anything.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::question::{Decision, Disposition, Reason};
 
 /// `shadow`: compute, log, return `Shadow(inner)`; `active`: the verdict stands; `off`: never run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// Run and log; the caller proceeds as today.
@@ -16,7 +21,37 @@ pub enum Mode {
     /// Accepts short-circuit the model turn.
     Active,
     /// Every `Ask` → `Escalate(Disabled)`.
+    #[default]
     Off,
+}
+
+impl Mode {
+    /// `shadow` / `active` / `off`, the config spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Shadow => "shadow",
+            Mode::Active => "active",
+            Mode::Off => "off",
+        }
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Mode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "shadow" => Ok(Mode::Shadow),
+            "active" => Ok(Mode::Active),
+            "off" => Ok(Mode::Off),
+            _ => Err(format!("unknown mode {s:?}: shadow | active | off")),
+        }
+    }
 }
 
 /// One family's gate (57 §2 YAML).
@@ -28,15 +63,48 @@ pub struct FamilyGate {
     pub tau_top: f32,
     /// Minimum top-1 − top-2.
     pub tau_margin: f32,
+    /// Tier-1 wall clock (`Ask.budget`); humantime, default 400 ms.
+    #[serde(default = "default_budget", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub budget: Duration,
+    /// Tier-2 wall clock (the cheap-model side call); humantime, default 3 s.
+    #[serde(default = "default_escalate_budget", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub escalate_budget: Duration,
+}
+
+const fn default_budget() -> Duration {
+    Duration::from_millis(400)
+}
+
+const fn default_escalate_budget() -> Duration {
+    Duration::from_secs(3)
+}
+
+mod humantime_serde {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&humantime::format_duration(*d).to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let s = String::deserialize(d)?;
+        humantime::parse_duration(&s).map_err(serde::de::Error::custom)
+    }
 }
 
 impl FamilyGate {
-    /// A conservative shadow gate.
+    /// A conservative shadow gate with the default budgets.
     pub const fn shadow(tau_top: f32, tau_margin: f32) -> Self {
         FamilyGate {
             mode: Mode::Shadow,
             tau_top,
             tau_margin,
+            budget: default_budget(),
+            escalate_budget: default_escalate_budget(),
         }
     }
 
@@ -109,6 +177,8 @@ mod tests {
         mode: Mode::Active,
         tau_top: 0.8,
         tau_margin: 0.4,
+        budget: Duration::from_millis(400),
+        escalate_budget: Duration::from_secs(3),
     };
 
     #[test]
@@ -176,6 +246,8 @@ mod tests {
             latency: Duration::ZERO,
             gate_version: 1,
             log_id: LogId::new(),
+            tier: 1,
+            calibrated: true,
         }
     }
 

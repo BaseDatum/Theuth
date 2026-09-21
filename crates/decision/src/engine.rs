@@ -72,6 +72,33 @@ pub struct Stats {
     pub family: Family,
 }
 
+/// `ask` → `Vec<FamilyStats>`: every configured family, for `decision_stats` (57 §7).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AllStats;
+
+/// `ask` → [`ModeInfo`]: the switch position for the families under `prefix` (57 §3.4).
+#[derive(Clone, Debug)]
+pub struct GetMode {
+    /// `meeting` covers `meeting.topic` and `meeting.brief`.
+    pub prefix: String,
+}
+
+/// `ask` → `Result<ModeInfo, String>`: set the mode of every family under `prefix`, written to
+/// `config.yaml` (`decision.families.<prefix>: { mode: … }`) first, then live — effective from
+/// the next `Ask`. A failed write changes nothing.
+#[derive(Clone, Debug)]
+pub struct SetMode {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+    /// The new mode.
+    pub mode: Mode,
+}
+
+/// `tell`: a decision made outside the engine — `escalate`'s tier-2 answer — appended to the
+/// log as an ask row (`tier: 2`, no logits, the mode of its gate).
+#[derive(Clone, Debug)]
+pub struct Record(pub Decision);
+
 /// `tell` from the idle watchdog: drop the session if nothing asked since.
 #[derive(Clone, Copy, Debug)]
 struct Unload;
@@ -83,6 +110,8 @@ pub struct Engine {
     model_dir: PathBuf,
     log: Log,
     loader: Loader,
+    /// `config.yaml`, for `SetMode`; `None` = live only (tests).
+    config_path: Option<PathBuf>,
     /// Warm session, shared with in-flight blocking runs.
     loaded: Option<Shared>,
     /// A cold load that outran the asking budget; polled by the next `Ask`.
@@ -110,6 +139,7 @@ impl Engine {
             model_dir,
             log,
             loader,
+            config_path: None,
             loaded: None,
             loading: None,
             last_used: Instant::now(),
@@ -118,6 +148,17 @@ impl Engine {
             pending_load_ms: None,
             model_sha: Arc::default(),
         }
+    }
+
+    /// Where `SetMode` persists (`<data_dir>/config.yaml`).
+    pub fn with_config_path(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
+    /// See [`crate::mode_for`].
+    pub fn mode(&self, prefix: &str) -> crate::ModeInfo {
+        crate::mode_for(&self.cfg, &self.model_dir, prefix)
     }
 
     /// The files that are not in the model dir, checked fresh each time.
@@ -157,6 +198,8 @@ impl Engine {
             latency: t.elapsed(),
             gate_version: gate.map_or(0, |g| g.version(&model_sha)),
             log_id: LogId::new(),
+            tier: 1,
+            calibrated: true,
         };
         let mode = gate.map_or(Mode::Off, |g| g.mode);
         let text = self.cfg.log_text.then(|| ask.question.clone());
@@ -306,6 +349,8 @@ fn decide(
         latency,
         gate_version: gate.version(model_sha),
         log_id: LogId::new(),
+        tier: 1,
+        calibrated: true,
     };
     gate.finish(d)
 }
@@ -405,6 +450,8 @@ impl Message<Ask> for Engine {
                                 latency: t.elapsed(),
                                 gate_version: gate.version(&sha),
                                 log_id: LogId::new(),
+                                tier: 1,
+                                calibrated: true,
                             };
                             AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, text)
                         }
@@ -424,6 +471,8 @@ impl Message<Ask> for Engine {
                     latency: t.elapsed(),
                     gate_version: gate.version(&self.model_sha()),
                     log_id: LogId::new(),
+                    tier: 1,
+                    calibrated: true,
                 }
             }
         }
@@ -463,17 +512,81 @@ impl Message<Report> for Engine {
     }
 }
 
+impl Engine {
+    fn family_stats(&self, family: &Family) -> FamilyStats {
+        let mut s = self.log.stats(family).unwrap_or_else(|e| {
+            tracing::warn!("decision log: {e}");
+            FamilyStats {
+                family: family.0.clone(),
+                ..FamilyStats::default()
+            }
+        });
+        s.mode = self.cfg.families.get(&family.0).map_or(Mode::Off, |g| g.mode);
+        s
+    }
+}
+
 impl Message<Stats> for Engine {
     type Reply = FamilyStats;
 
     async fn handle(&mut self, s: Stats, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.log.stats(&s.family).unwrap_or_else(|e| {
-            tracing::warn!("decision log: {e}");
-            FamilyStats {
-                family: s.family.0,
-                ..FamilyStats::default()
-            }
-        })
+        self.family_stats(&s.family)
+    }
+}
+
+impl Message<AllStats> for Engine {
+    type Reply = Vec<FamilyStats>;
+
+    async fn handle(&mut self, _: AllStats, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cfg
+            .families
+            .keys()
+            .map(|k| self.family_stats(&Family(k.clone())))
+            .collect()
+    }
+}
+
+impl Message<GetMode> for Engine {
+    type Reply = crate::ModeInfo;
+
+    async fn handle(&mut self, m: GetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.mode(&m.prefix)
+    }
+}
+
+impl Message<SetMode> for Engine {
+    type Reply = Result<crate::ModeInfo, String>;
+
+    async fn handle(&mut self, m: SetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let dot = format!("{}.", m.prefix);
+        if !self.cfg.families.keys().any(|k| k.starts_with(&dot)) {
+            return Err(format!("no `{}.*` decision family is configured", m.prefix));
+        }
+        if let Some(path) = &self.config_path {
+            runtime::write_nested_config_value(
+                path,
+                "decision",
+                "families",
+                &m.prefix,
+                &format!("{{ mode: {} }}", m.mode),
+            )
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        }
+        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
+            g.mode = m.mode;
+        }
+        tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
+        Ok(self.mode(&m.prefix))
+    }
+}
+
+impl Message<Record> for Engine {
+    type Reply = ();
+
+    async fn handle(&mut self, Record(d): Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mode = self.cfg.families.get(&d.family.0).map_or(Mode::Off, |g| g.mode);
+        let sha = self.model_sha();
+        self.append(Row::Ask(Box::new(AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, None))));
     }
 }
 
@@ -637,8 +750,7 @@ mod tests {
                 "browser.target".to_owned(),
                 FamilyGate {
                     mode: Mode::Active,
-                    tau_top: 0.8,
-                    tau_margin: 0.5,
+                    ..FamilyGate::shadow(0.8, 0.5)
                 },
             )]
             .into(),

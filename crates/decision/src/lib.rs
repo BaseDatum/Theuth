@@ -9,19 +9,21 @@
 
 pub mod candle;
 pub mod engine;
+pub mod escalate;
 pub mod gate;
 pub mod laya;
 pub mod log;
 pub mod question;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kameo::actor::Spawn;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-pub use engine::{Engine, Loader, Oracle, Report, Stats};
+pub use engine::{AllStats, Engine, GetMode, Loader, Oracle, Record, Report, SetMode, Stats};
+pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
 pub use log::FamilyStats;
 pub use question::{
@@ -75,7 +77,10 @@ pub struct DecisionConfig {
     pub idle_unload: Duration,
     /// Store the question text in the log, not only its hash.
     pub log_text: bool,
-    /// Gate per decision family; a family not listed never runs.
+    /// Gate per decision family; a family not listed never runs. The YAML is a patch over the
+    /// default table: `meeting.topic: { mode: active }` changes one field; a prefix key
+    /// (`meeting: { mode: off }`, what Settings → Meetings writes) patches every family under it.
+    #[serde(deserialize_with = "families")]
     pub families: BTreeMap<String, FamilyGate>,
 }
 
@@ -87,23 +92,167 @@ impl Default for DecisionConfig {
             device: Device::Auto,
             idle_unload: Duration::from_secs(600),
             log_text: false,
-            families: [
-                ("meeting.topic", FamilyGate::shadow(0.85, 0.40)),
-                ("meeting.brief", FamilyGate::shadow(0.80, 0.35)),
-                ("browser.target", FamilyGate::shadow(0.90, 0.50)),
-                ("browser.wait", FamilyGate::shadow(0.80, 0.30)),
-                ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
-            ]
-            .into_iter()
-            .map(|(k, v)| (k.to_owned(), v))
-            .collect(),
+            families: default_families(),
         }
     }
+}
+
+fn default_families() -> BTreeMap<String, FamilyGate> {
+    [
+        ("meeting.topic", FamilyGate::shadow(0.85, 0.40)),
+        ("meeting.brief", FamilyGate::shadow(0.80, 0.35)),
+        ("browser.target", FamilyGate::shadow(0.90, 0.50)),
+        ("browser.wait", FamilyGate::shadow(0.80, 0.30)),
+        ("agent.readable", FamilyGate::shadow(0.85, 0.40)),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect()
+}
+
+/// One YAML entry under `families:`: any subset of a [`FamilyGate`]'s fields.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FamilyPatch {
+    mode: Option<Mode>,
+    tau_top: Option<f32>,
+    tau_margin: Option<f32>,
+    #[serde(default, deserialize_with = "opt_duration")]
+    budget: Option<Duration>,
+    #[serde(default, deserialize_with = "opt_duration")]
+    escalate_budget: Option<Duration>,
+}
+
+impl FamilyPatch {
+    fn apply(&self, g: &mut FamilyGate) {
+        if let Some(m) = self.mode {
+            g.mode = m;
+        }
+        if let Some(t) = self.tau_top {
+            g.tau_top = t;
+        }
+        if let Some(t) = self.tau_margin {
+            g.tau_margin = t;
+        }
+        if let Some(b) = self.budget {
+            g.budget = b;
+        }
+        if let Some(b) = self.escalate_budget {
+            g.escalate_budget = b;
+        }
+    }
+}
+
+/// Patch the default table (57 §3.4): exact family names first, then prefix keys, so
+/// `meeting: { mode: off }` + `meeting.topic: { mode: active }` still ends with `meeting.topic`
+/// off — the switch wins over a hand edit. A new fully-specified family is inserted.
+fn families<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, FamilyGate>, D::Error> {
+    let patches: BTreeMap<String, FamilyPatch> = BTreeMap::deserialize(d)?;
+    let mut table = default_families();
+    let mut prefixes = Vec::new();
+    for (k, p) in &patches {
+        if let Some(g) = table.get_mut(k) {
+            p.apply(g);
+        } else if let (Some(mode), Some(tau_top), Some(tau_margin)) =
+            (p.mode, p.tau_top, p.tau_margin)
+        {
+            let mut g = FamilyGate::shadow(tau_top, tau_margin);
+            g.mode = mode;
+            p.apply(&mut g);
+            table.insert(k.clone(), g);
+        } else {
+            prefixes.push((format!("{k}."), p));
+        }
+    }
+    for (prefix, p) in prefixes {
+        for (_, g) in table.iter_mut().filter(|(k, _)| k.starts_with(&prefix)) {
+            p.apply(g);
+        }
+    }
+    Ok(table)
 }
 
 fn duration<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
     let s = String::deserialize(d)?;
     humantime::parse_duration(&s).map_err(serde::de::Error::custom)
+}
+
+fn opt_duration<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|s| humantime::parse_duration(&s).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// What `GetMode { prefix }` answers (57 §3.4): the switch position for the families under a
+/// prefix (`meeting` → `meeting.topic` + `meeting.brief`) and what effectively runs — `off`
+/// with a `reason` when the plugin is disabled or the checkpoint is not on disk.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ModeInfo {
+    /// The configured mode (the most permissive one when the families disagree).
+    pub mode: Mode,
+    /// What runs on the next ask.
+    pub effective: Mode,
+    /// Why `effective` is `off` while `mode` is not.
+    pub reason: Option<String>,
+    /// Tier-1 budget of the first family under the prefix, ms.
+    pub budget_ms: u64,
+    /// Tier-2 budget, ms.
+    pub escalate_budget_ms: u64,
+}
+
+/// The switch position for the families under `prefix` (see [`ModeInfo`]).
+pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInfo {
+    let dot = format!("{prefix}.");
+    let gates: Vec<&FamilyGate> = cfg
+        .families
+        .iter()
+        .filter(|(k, _)| k.starts_with(&dot) || *k == prefix)
+        .map(|(_, g)| g)
+        .collect();
+    let rank = |m: Mode| match m {
+        Mode::Off => 0,
+        Mode::Shadow => 1,
+        Mode::Active => 2,
+    };
+    let mode = gates
+        .iter()
+        .map(|g| g.mode)
+        .max_by_key(|m| rank(*m))
+        .unwrap_or(Mode::Off);
+    let (budget, escalate) = gates.first().map_or(
+        (Duration::from_millis(400), Duration::from_secs(3)),
+        |g| (g.budget, g.escalate_budget),
+    );
+    let missing: Vec<&str> = engine::MODEL_FILES
+        .into_iter()
+        .filter(|f| !model_dir.join(f).is_file())
+        .collect();
+    let (effective, reason) = if mode == Mode::Off {
+        (Mode::Off, None)
+    } else if !cfg.enabled {
+        (Mode::Off, Some("the decision plugin is disabled (decision.enabled: false)".to_owned()))
+    } else if !missing.is_empty() {
+        (
+            Mode::Off,
+            Some(format!(
+                "model missing: {} not in {}",
+                missing.join(", "),
+                model_dir.display()
+            )),
+        )
+    } else {
+        (mode, None)
+    };
+    ModeInfo {
+        mode,
+        effective,
+        reason,
+        budget_ms: budget.as_millis() as u64,
+        escalate_budget_ms: escalate.as_millis() as u64,
+    }
 }
 
 /// The plugin: reads `decision`, spawns [`Engine`] as [`DECISION_ACTOR`]. The actor is
@@ -130,7 +279,9 @@ impl runtime::Plugin for DecisionPlugin {
             .clone()
             .unwrap_or_else(|| rt.data_dir.join("models").join(MODEL_SUBDIR));
         let log = log::Log::new(rt.data_dir.join("decisions"));
-        Engine::spawn(Engine::new(cfg, model_dir, log)).register(DECISION_ACTOR)?;
+        let engine =
+            Engine::new(cfg, model_dir, log).with_config_path(rt.data_dir.join("config.yaml"));
+        Engine::spawn(engine).register(DECISION_ACTOR)?;
         Ok(())
     }
 }
@@ -145,8 +296,10 @@ mod tests {
         assert_eq!(d.families.len(), 5);
         assert!(d.families.values().all(|g| g.mode == Mode::Shadow));
         assert_eq!(d.families["browser.target"].tau_top, 0.90);
+        assert_eq!(d.families["meeting.topic"].budget, Duration::from_millis(400));
+        assert_eq!(d.families["meeting.topic"].escalate_budget, Duration::from_secs(3));
         let cfg: DecisionConfig = serde_yaml::from_str(
-            "enabled: false\nidle_unload: 2h\nlog_text: true\ndevice: cpu\nfamilies:\n  meeting.topic: { mode: active, tau_top: 0.7, tau_margin: 0.2 }\n",
+            "enabled: false\nidle_unload: 2h\nlog_text: true\ndevice: cpu\nfamilies:\n  meeting.topic: { mode: active, tau_top: 0.7, tau_margin: 0.2, budget: 1s }\n  new.family: { mode: shadow, tau_top: 0.5, tau_margin: 0.1 }\n",
         )
         .unwrap();
         assert!(!cfg.enabled);
@@ -154,8 +307,65 @@ mod tests {
         assert_eq!(cfg.idle_unload, Duration::from_secs(7200));
         assert_eq!(cfg.device, Device::Cpu);
         assert!(!cfg.device.metal());
-        // Listing a family replaces the default table: only it runs.
-        assert_eq!(cfg.families.len(), 1);
+        // A listed family patches its default row; a fully specified new one is added.
+        assert_eq!(cfg.families.len(), 6);
         assert_eq!(cfg.families["meeting.topic"].mode, Mode::Active);
+        assert_eq!(cfg.families["meeting.topic"].tau_top, 0.7);
+        assert_eq!(cfg.families["meeting.topic"].budget, Duration::from_secs(1));
+        assert_eq!(cfg.families["meeting.brief"].mode, Mode::Shadow);
+        assert_eq!(cfg.families["new.family"].tau_top, 0.5);
+    }
+
+    #[test]
+    fn prefix_entry_sets_every_family_under_it_and_wins() {
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "families:\n  meeting.topic: { mode: active }\n  meeting: { mode: off }\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.families.len(), 5);
+        assert_eq!(cfg.families["meeting.topic"].mode, Mode::Off);
+        assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
+        assert_eq!(cfg.families["browser.target"].mode, Mode::Shadow);
+        // A partial unknown family is neither inserted nor an error.
+        let cfg: DecisionConfig =
+            serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
+        assert_eq!(cfg.families.len(), 5);
+    }
+
+    #[test]
+    fn mode_resolution_forces_off_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = DecisionConfig::default();
+        let m = mode_for(&cfg, dir.path(), "meeting");
+        assert_eq!(m.mode, Mode::Shadow);
+        assert_eq!(m.effective, Mode::Off);
+        assert!(m.reason.as_deref().unwrap().starts_with("model missing: model.safetensors"));
+        assert_eq!((m.budget_ms, m.escalate_budget_ms), (400, 3000));
+
+        for f in engine::MODEL_FILES {
+            let p = dir.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let m = mode_for(&cfg, dir.path(), "meeting");
+        assert_eq!((m.mode, m.effective, m.reason), (Mode::Shadow, Mode::Shadow, None));
+
+        let off: DecisionConfig =
+            serde_yaml::from_str("families:\n  meeting: { mode: off }\n").unwrap();
+        let m = mode_for(&off, dir.path(), "meeting");
+        assert_eq!((m.mode, m.effective, m.reason), (Mode::Off, Mode::Off, None));
+
+        let disabled: DecisionConfig = serde_yaml::from_str("enabled: false\n").unwrap();
+        let m = mode_for(&disabled, dir.path(), "meeting");
+        assert_eq!(m.effective, Mode::Off);
+        assert!(m.reason.as_deref().unwrap().contains("disabled"));
+
+        // Families disagree → the most permissive is the reported switch position.
+        let mixed: DecisionConfig = serde_yaml::from_str(
+            "families:\n  meeting.topic: { mode: active }\n  meeting.brief: { mode: off }\n",
+        )
+        .unwrap();
+        assert_eq!(mode_for(&mixed, dir.path(), "meeting").mode, Mode::Active);
+        assert_eq!(mode_for(&mixed, dir.path(), "nothing").effective, Mode::Off);
     }
 }

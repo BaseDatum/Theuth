@@ -184,6 +184,20 @@ pub struct Decision {
     pub gate_version: u32,
     /// For [`Outcome`] patching via `Report`.
     pub log_id: LogId,
+    /// 1 = the local oracle, 2 = the cheap-model side call (`escalate`), 3 = the main model turn (57 §2).
+    #[serde(default = "tier_one")]
+    pub tier: u8,
+    /// `false` when `probabilities` is a model's self-reported confidence, not the calibrated head.
+    #[serde(default = "yes")]
+    pub calibrated: bool,
+}
+
+const fn tier_one() -> u8 {
+    1
+}
+
+const fn yes() -> bool {
+    true
 }
 
 impl Decision {

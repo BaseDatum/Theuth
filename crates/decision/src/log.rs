@@ -65,6 +65,9 @@ pub struct AskRow {
     pub reason: Option<Reason>,
     /// Engine wall-clock.
     pub latency_ms: u64,
+    /// 1 = oracle, 2 = cheap-model side call.
+    #[serde(default = "tier_one")]
+    pub tier: u8,
     /// The question itself, only with `decision.log_text: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<Question>,
@@ -105,10 +108,15 @@ impl AskRow {
             disposition: d.disposition.kind().to_owned(),
             reason: d.disposition.reason().cloned(),
             latency_ms: d.latency.as_millis() as u64,
+            tier: d.tier,
             text,
             load_ms: None,
         }
     }
+}
+
+const fn tier_one() -> u8 {
+    1
 }
 
 /// sha256 hex of the rendered ids, little-endian i64s.
@@ -124,11 +132,19 @@ pub fn question_hash(ids: &[i64]) -> String {
 #[derive(
     Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
 )]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct FamilyStats {
     /// Family.
     pub family: String,
+    /// The gate's mode right now (filled by the engine, not the fold).
+    #[serde(default = "off")]
+    pub mode: Mode,
     /// Ask rows.
     pub asks: u64,
+    /// Tier-2 rows (cheap-model answers) among `asks`, and how many of them were valid picks.
+    pub tier2: u64,
+    /// See `tier2`.
+    pub tier2_accepted: u64,
     /// Rows whose (inner) disposition was accept: the coverage numerator in shadow, the saved turns in active.
     pub accepted: u64,
     /// Escalations by reason (`low_top1`, `hard_error`, …).
@@ -145,6 +161,10 @@ pub struct FamilyStats {
     pub unknown: u64,
     /// `confirmed / (confirmed + corrected)` over accepted rows with an outcome; the shadow agreement rate.
     pub agreement: Option<f32>,
+}
+
+const fn off() -> Mode {
+    Mode::Off
 }
 
 /// The append-only day files under one directory.
@@ -207,6 +227,12 @@ pub fn fold(path: &Path, family: &Family) -> std::io::Result<FamilyStats> {
             Row::Ask(a) if &a.family == family => {
                 s.asks += 1;
                 latencies.push(a.latency_ms);
+                if a.tier == 2 {
+                    s.tier2 += 1;
+                    if a.reason.is_none() {
+                        s.tier2_accepted += 1;
+                    }
+                }
                 match &a.reason {
                     None => s.accepted += 1,
                     Some(r) => *s.escalations.entry(reason_key(r)).or_default() += 1,
@@ -286,6 +312,8 @@ mod tests {
             latency: Duration::from_millis(ms),
             gate_version: 7,
             log_id: LogId::new(),
+            tier: 1,
+            calibrated: true,
         }
     }
 

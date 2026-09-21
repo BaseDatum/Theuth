@@ -8,6 +8,8 @@ description = "Local typed-probability oracle (laya in candle) with a selective 
 [features]
 # NVIDIA (58): off by default, forwarded for the Linux/Windows build.
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
+# TypeScript bindings for the desktop (`Mode`, `ModeInfo`, `FamilyStats`).
+ts = ["dep:ts-rs", "runtime/ts"]
 
 [dependencies]
 runtime = { workspace = true }
@@ -25,6 +27,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 # laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # The engine (57 §12.8): laya-rs 0.1.0's model code vendored under `src/candle/`, candle 0.11 is its pin.
