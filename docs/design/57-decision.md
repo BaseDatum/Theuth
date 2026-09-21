@@ -646,3 +646,59 @@ Three of four pass; latency fails by 1.5–2×, with the cause identified as lau
 ### Checks
 
 `cargo check --workspace` green (`--all-targets` fails in `nodes` on a missing generated `bindings/methods.json` — pre-existing, unrelated); `cargo check -p decision --features candle --all-targets` green; `cargo test --release -p decision --features candle`: **33 unit + 2 candle model-gated (CPU f32 Δp 0.0000, Metal f16 Δp 0.0006) + 3 ORT model-gated**, all pass; `cargo clippy -p decision --no-deps --all-targets` clean with and without `--features candle` (one `large_enum_variant` in the bench fixed by boxing). `cargo test -p tools`' two pty failures in non-tty shells not re-run.
+
+## As built — step 3b (2026-09-21): `agent.escalate_model` + `SideCall` in `agent`
+
+Brief: `/tmp/laya-design/omp-step3b.md`. `crates/decision` untouched (being refactored in a worktree); everything lives in `agent`, `rpc` (the RPC surface is there, not in `theuth`), `desktop`, `theuth` (config comment). Commits `2aa09eb` (slot + RPC), `c0c39c1` (side call; title turn on it), `d2e761c` (desktop + config comment), this note. `cargo test -p agent`: 238 passed (4 new).
+
+### The slot (`2aa09eb`)
+
+- `AgentConfig.escalate_model: Option<String>`; `Agents.escalate_model: Arc<RwLock<Option<Resolved>>>` beside `title_model`/`vision_model`, handed to every `Session::new` (one more positional arg; all six call sites updated), stored on `Shared`.
+- Startup: resolved with the title model's leniency — a bad id logs `agent.escalate_model: …; tier 2 inherits the title model` and the slot stays `None`.
+- `SetEscalateModel { model }` → `Result<Option<ModelInfo>, String>`: `escalate_candidate` = `catalog.resolve` + **exact catalog entry required** (text capability is enough; the title setter itself never checks existence, so "same validation" here means the stricter of the two — a typo must not become a pass-through model that answers nothing), then write `config.yaml` → swap live (the vision setter's order: a failed write changes nothing). `None` clears (`escalate_model: ` written empty, like the others).
+- `GetEscalateModel` → **`EscalateModel { model: Option<ModelInfo>, effective: Option<ModelInfo> }`**: `effective` = escalate, else title, else `None` = "each session's own model" (there is no single id to show). Exported to the TS bindings (`bindings/EscalateModel.ts`).
+- RPC `escalate_model()` / `set_escalate_model(model)` in `crates/rpc/src/api.rs`, dispatching to `Agents` like `title_model`.
+- Tests (`supervisor.rs`): `set_escalate_model_validates_and_reports_effective` (unknown id → `not a catalog entry`, ambiguous bare id → `ambiguous`, both leave the slot and the file untouched; bare unique `blind` canonicalises to `testvis/blind` with `image: false`; `effective` follows the title model when unset; a write failure leaves the live value; `None` clears), `escalate_model_config_round_trip` (serde_yaml in/out, absent = `None`).
+
+### The side call (`c0c39c1`) — what `decision::escalate` calls in step 4
+
+```rust
+// crates/agent/src/lib.rs
+pub enum ModelRole { Escalate, Title, Vision, Session, Named(String) }
+pub struct SideCall {
+    pub session: SessionId,      // cost owner; also what `ModelRole::Session` means
+    pub role: ModelRole,         // Escalate = escalate_model → title_model → the session's model
+    pub system: String,
+    pub user: String,            // the one user message (no history, no tools)
+    pub budget: Duration,        // whole-call wall clock → Err("timed out")
+    pub kind: CallKind,          // model_calls.kind: CallKind::Escalate ("escalate") for the oracle
+}
+pub struct SideReply { pub text: String, pub model: String, pub input_tokens: Option<u32>, pub output_tokens: Option<u32>, pub latency: Duration }
+
+// from any plugin (the route `meeting::session::deliver` already uses):
+let agents = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)?.ok_or("agent is not running")?;
+let reply: Result<agent::SideReply, String> = agents
+    .ask(agent::SideCall { session, role: agent::ModelRole::Escalate, system, user, budget, kind: agent::CallKind::Escalate })
+    .await
+    .map_err(|e| e.to_string())?;   // SendError<_, String> displays the handler's own message
+```
+
+- **Why the kameo registry and not a new function on the agent plugin API**: `decision` cannot depend on `agent` for a *type* it links against… it can — `agent` is below nothing that `decision` needs, but 00 §10's order is `runtime ← tools ← decision ← {meeting, browser}` and `agent` sits after `decision`; a direct function call would invert the edge. Kameo's name registry is the one cross-plugin channel that already exists (`meeting` steers sessions through `ActorRef::<Agents>::lookup(AGENT_ACTOR)`), needs no new runtime type, and `decision` only needs the message structs, which are plain data. Note for step 4: `decision` referencing `agent::SideCall` *is* a crate edge `decision → agent`; if 00 §10 is to hold literally, the message types move to `runtime` (they depend only on `SessionId`, `Duration`, `CallKind` — `CallKind` would have to move or be mirrored). Sky's call; the code is a two-file move either way.
+- **Where it runs**: `Session` handles `SideCall` (`DelegatedReply`): it resolves the role from its slots and its own `Current` (the only place the session's model and its resolution error are known), snapshots `Shared::side(turn)` and spawns the call — the actor's mailbox and any running turn never wait on the provider. `Agents` handles `SideCall` by forwarding to the session's native actor the same way (`DelegatedReply`, spawned `ask`); an ACP session answers `session runs on an external harness`, an unknown one `no live session <id>`.
+- **`loop_/side.rs`**: `Shared::role_model` — `Escalate` = escalate → title → session; `Title` = title → session; `Vision` = the fallback or `no vision fallback model is set` (never the main model, 52 §3); `Session` = the session's model or its `model: <error>`; `Named(id)` = `catalog.resolve` with the auth-derived `configured`. `Side::call` = `Current::new` → transport → `Frame { tools: &[], system, history: [user] }` → `Reserved::open(kind)` → stream drained to `End` under `tokio::select!` on the session's `closed` token and `timeout(budget)` → `settle(Settled | Failed | Cancelled)` → `SideReply`. Latency is dispatch→End. Genai has no non-streaming call here; "non-streaming" means no live events are published and the text is returned whole.
+- **Title turn** (`maybe_title`): `role_model(Title)` + `side.call(model, title::SYSTEM, digest, 45 s, CallKind::Title)`; the digest, the revision check, the `closed` fences and the `TitleChanged` publish are unchanged. One behaviour change: the transport for a configured title model is now resolved inside the detached task, so a transport failure no longer returns *before* the title bookkeeping (`title_turns` reset etc.) — it is logged as `title: <error>` like any other failure. No existing test drove the old path end to end; `title::due` tests unchanged.
+- Tests (`loop_.rs`, fake OpenAI gateway): `role_model_inherits_escalate_title_session` (the full chain, `Vision` never falls back, `Session` reports the main model's error while `Escalate` still resolves); `side_call_settles_under_its_kind` (one `escalate`/`settled` row with the provider's `cost` 0.25 → `returned`, `input/output_tokens` 10/5, `ModelUsageChanged` published; a stream that never reaches `End` settles `escalate`/`failed` and returns the error).
+
+### Desktop (`d2e761c`)
+
+- Settings → Agent loop → Helper models: **Escalation model** `Select` after the vision picker; `Off` renders as `Off (inherits title model <id>)` when a title model is set, description names tier 2 and the inheritance rule, `aria-label="Escalation model"`. Setting the title model also invalidates the escalation query so the inherited id follows.
+- Slash: **`/escalate <model|off>`** — the repo's convention is `/title`, `/vision`, `/subagent` (not `/title-model`), so the brief's `/escalate-model` became `/escalate`. Bare `/escalate` opens Settings → Agent loop like its siblings. The TUI command table (`tui/model.rs`) was **not** extended — out of the brief's crates; `/escalate` there is a follow-up if wanted.
+- `api.ts`: `escalate_model(): Promise<EscalateModel>`, `set_escalate_model(model)`, both in the method-name list; `queryKeys.escalateModel`; the reload hook invalidates it with the other model keys.
+- Generated config: `# escalate_model: …` two lines after `vision_model`.
+
+### Checks
+
+- `cargo check --workspace --all-targets` green after each commit; `cargo test -p agent`: 238 passed (234 → 238); `cargo clippy -p agent -p rpc -p desktop --no-deps --all-targets`: no finding in changed code — the 14 findings it reports are all pre-existing (`network.rs`, `store/communication.rs`, `repl.rs`, `accounting.rs`, `loop_.rs:2565 stream_once` too-many-arguments, `supervisor.rs:3306`, `vision_fallback_tests.rs:556`), untouched here.
+- `just ts-desktop` regenerated `bindings/` (+`EscalateModel.ts`); `bun run check` (`tsc -b --noEmit`) reports one pre-existing error outside the UI tree (`packages/apps/src/renderer.tsx: Cannot find module '@openuidev/react-lang/theuth-runtime'`), nothing in `crates/desktop/ui/src`.
+- Not run: the desktop app itself (no `cargo tauri dev` here); the picker is the vision picker's JSX with two strings changed. A real `SideCall` against a provider was not exercised beyond the fake gateway — step 3b's "one real call against `agent.title_model`" check needs a configured provider on this machine and is left to step 4's integration test.
+- `cargo fmt` reflows untouched code across `agent` (the crate is not fmt-clean); only the changed hunks were kept formatted, the rest reverted, as in earlier steps.
