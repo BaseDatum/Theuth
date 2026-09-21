@@ -10,6 +10,10 @@ test('skill injection: chip plus the words after it', () => {
   expect(classify('<skill name="caveman">\nbody\n</skill>\n\nbe brief')).toEqual([
     { kind: 'skill', name: 'caveman', words: 'be brief' },
   ])
+  // The body may contain `">` (HTML in a skill's prose); it must not truncate the parse.
+  expect(classify('<skill name="ponytail">\n`<input type="date">` over a picker\n</skill>')).toEqual([
+    { kind: 'skill', name: 'ponytail', words: '' },
+  ])
 })
 
 test('context summaries and runtime wrappers do not duplicate existing surfaces', () => {

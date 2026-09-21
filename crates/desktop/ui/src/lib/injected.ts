@@ -39,9 +39,11 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
 export function classify(text: string): Injected[] | null {
   let rest = text.trimStart()
   if (rest.startsWith('<skill name="')) {
-    const [name, after] = rest.slice('<skill name="'.length).split('">', 2)
-    const words = after?.split('</skill>', 2)[1]
-    return words === undefined ? null : [{ kind: 'skill', name: name as string, words: words.trim() }]
+    // `indexOf`, not `split(sep, 2)`: JS's limit drops the remainder, and a body with `">` in it (`<input type="date">`) is common.
+    const at = rest.indexOf('">')
+    const end = rest.indexOf('</skill>', at)
+    if (at < 0 || end < 0) return null
+    return [{ kind: 'skill', name: rest.slice('<skill name="'.length, at), words: rest.slice(end + '</skill>'.length).trim() }]
   }
   const out: Injected[] = []
   while (rest) {

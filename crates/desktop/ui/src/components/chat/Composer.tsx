@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, AudioLines, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, AudioLines, Mic, Paperclip, Plus, Sparkles, Square, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -20,10 +20,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { attach, expand, type Pastes, prune, token, tokenize } from '@/lib/pastes'
+import { attach, expand, type Pastes, tokenize } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { drafts, useSkillDraft } from '@/lib/drafts'
 import * as speech from '@/lib/speech'
 import { matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
@@ -32,21 +33,18 @@ import { noteText } from '@/lib/voice-note'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
-import { Attachments } from './Attachments'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { ContextPicker } from './ContextPicker'
+import { HeldStrip } from './HeldStrip'
 import { LevelMeter } from './LevelMeter'
 import { QueuedChips } from './QueuedChips'
-import { type Ctx, FRESH, matches, run } from './slash'
+import { type Ctx, FRESH, draftSkill, matches, run } from './slash'
 
 /** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
 export type DraftCreate = { private: boolean; project: string | null }
 
 const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
-/** Typed-but-unsent text by session (`''` = new chat): a screen switch unmounts the composer, the draft stays.
- * ponytail: in-memory; move to localStorage if drafts should survive a relaunch. */
-const drafts = new Map<string, string>()
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
@@ -88,9 +86,9 @@ function SlashList({
 /**
  * ChatGPT's composer: `+` attach on the left, send / stop on the right, Enter
  * sends (mid-turn: queues a steer), ⌘/Ctrl+Enter interjects (cancels the turn
- * so the message runs now), Shift+Enter breaks a line. Large pastes and attachments become
- * `[⎘ …]` tokens (`lib/pastes`) expanded on submit. `/` at column 0 opens
- * the command list; other `/x` runs `use_skill`.
+ * so the message runs now), Shift+Enter breaks a line. Large pastes and attachments are held as chips above the
+ * box (`lib/pastes`, `HeldStrip`) and appended on submit. `/` at column 0 opens
+ * the command list; `/skill:<name>` parks a skill on the next send; other `/x` runs `use_skill` now.
  */
 export function Composer({
   session,
@@ -127,6 +125,9 @@ export function Composer({
   useEffect(() => {
     drafts.set(draftKey, text)
   }, [draftKey, text])
+  /** Skill parked for the next send (`lib/skill-draft`): the send becomes `use_skill(session, skill, words)`. */
+  const skill = useSkillDraft((s) => (session ? s.by[session] : undefined))
+  const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
   const [pastes, setPastes] = useState<Pastes>(NONE)
   const [selected, setSelected] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -157,7 +158,7 @@ export function Composer({
 
   const slashWord = /^\/\S*$/.test(text) ? text : null
   const slash = slashWord !== null && matches(slashWord).length > 0
-  const files = [...pastes.values()].flatMap((p) => (p.kind === 'file' ? [p.path] : []))
+  const held = pastes.size > 0
 
   // ⇧Esc lands in the focused pane's composer (or the new-chat draft).
   const focused = usePanes((s) => session === null || s.focused === session)
@@ -234,15 +235,7 @@ export function Composer({
   }
 
   const addFiles = (paths: string[], dims?: [number, number]) => {
-    let next = pastes
-    const tokens: string[] = []
-    for (const path of paths) {
-      const held = attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, next)
-      next = held.pastes
-      tokens.push(held.token)
-    }
-    setPastes(next)
-    insert(`${tokens.join(' ')} `)
+    setPastes(paths.reduce((held, path) => attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, held), pastes))
     const id = model ?? defaultModel
     const info = models?.find((m) => m.id === id)
     if (info && !info.image && paths.some((p) => IMAGE.test(p)))
@@ -309,16 +302,7 @@ export function Composer({
     e.preventDefault()
     const held = tokenize(plain, pastes)
     setPastes(held.pastes)
-    insert(held.text)
-  }
-
-  const removeFile = (path: string) => {
-    for (const [i, p] of pastes) {
-      if (p.kind !== 'file' || p.path !== path) continue
-      const next = text.replace(token(i, p), '').replace(/ {2,}/g, ' ').trimStart()
-      setText(next)
-      setPastes(prune(next, pastes))
-    }
+    if (held.text) insert(held.text)
   }
 
   const reset = () => {
@@ -344,13 +328,33 @@ export function Composer({
    * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now. */
   const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
-    if (!line || busy) return
+    if ((!line && !skill && !held) || busy) return
     setBusy(true)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
     try {
+      if (line.startsWith('/skill:')) {
+        const [name = '', ...words] = line.slice('/skill:'.length).trim().split(/\s+/)
+        if (!name) throw new Error('usage: /skill:<name>')
+        // The words stay in the box: `reset()` then `setText` when this composer stays mounted; a new chat's
+        // composer reads them from `drafts` as it mounts.
+        reset()
+        await draftSkill(api, navigate, session, name, words.join(' '))
+        if (session) setText(words.join(' '))
+        return
+      }
       if (line.startsWith('/')) {
         reset()
         await run(line, ctx)
+        return
+      }
+      // A parked skill: the server builds the `<skill>` input from its body and these words; `TurnStarted`
+      // (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is marked sent here.
+      if (session && skill) {
+        reset()
+        setSkill(null)
+        mode(session)
+        if (running && interject) await api.cancel(session)
+        await api.use_skill(session, skill, expand(line, pastes).text)
         return
       }
       const { text: body, files } = expand(line, pastes)
@@ -526,6 +530,17 @@ export function Composer({
     <div className="mx-auto w-full max-w-[768px] px-4 pb-2">
       <CommunicationNotice session={session} state={comm} exports={exports} />
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
+      {skill && (
+        <div className="flex justify-end pb-2">
+          <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
+            <Sparkles className="size-3.5" />
+            <span className="font-medium">{skill}</span>
+            <button type="button" aria-label="Remove skill" onClick={() => setSkill(null)} className="ml-1 hover:text-foreground">
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
       {session && <ContextPicker session={session} />}
       <input
         ref={fileInput}
@@ -544,23 +559,7 @@ export function Composer({
         onDrop={onDrop}
       >
         {slash && slashWord && <SlashList word={slashWord} selected={selected} onPick={pick} />}
-        {files.length > 0 && (
-          <div className="flex flex-wrap gap-2 px-2 pt-2">
-            {files.map((path) => (
-              <div key={path} className="relative">
-                <Attachments files={[path]} className="[&_img]:max-h-20" />
-                <button
-                  type="button"
-                  aria-label="Remove attachment"
-                  onClick={() => removeFile(path)}
-                  className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <HeldStrip pastes={pastes} onChange={setPastes} />
         <div className="flex items-end gap-1">
           <Popover>
             <PopoverTrigger asChild>
@@ -611,14 +610,13 @@ export function Composer({
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value)
-                  setPastes(prune(e.target.value, pastes))
                   setSelected(0)
                 }}
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}
                 rows={1}
                 // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
-                placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : 'Ask anything'}
+                placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
                 // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
                 className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
               />
@@ -691,7 +689,7 @@ export function Composer({
             <Button
               className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
               aria-label="Send"
-              disabled={!text.trim() || busy || dictating}
+              disabled={(!text.trim() && !skill && !held) || busy || dictating}
               onClick={() => void submit()}
             >
               <ArrowUp className="size-5" />

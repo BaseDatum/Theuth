@@ -12,6 +12,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/harness-scope'
 import { useSessions } from '@/store/sessions'
+import { drafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
@@ -56,6 +57,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     name: '/skills',
     hint: '[add <url>|rm <name>|sync]',
     desc: 'skills: picker; `/<skill> [words]` hands one to the model',
+  },
+  {
+    name: '/skill:',
+    hint: '<name>',
+    desc: 'park a skill on the next message (`/<skill> [words]` sends it now)',
   },
   {
     name: '/knowledge',
@@ -232,6 +238,25 @@ export const FRESH: LoadedPage = {
   communication: null,
   project: null,
   retention: 'durable',
+}
+
+/** Park `name` (and any `words` typed after it) on `session`'s composer — creating and opening the session when
+ * there is none — and show that chat. No turn starts: the next send hands the skill over with the user's words
+ * (`use_skill`). Returns the session shown. */
+export async function draftSkill(
+  api: Api,
+  navigate: Navigate,
+  session: string | null,
+  name: string,
+  words = '',
+): Promise<string> {
+  const id = session ?? (await api.new_session())
+  if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
+  useSkillDraft.getState().set(id, name)
+  // Before `navigate`: the chat's composer reads its text from `drafts` as it mounts.
+  drafts.set(id, words)
+  await navigate({ to: '/c/$session', params: { session: id } })
+  return id
 }
 
 /**
@@ -556,7 +581,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     default: {
-      // `/<skill> [args]` hands the skill to the model (04 §2.4); the agent names an unknown skill.
+      // `/<skill> [args]` hands the skill to the model now (04 §2.4); the agent names an unknown skill.
+      // `/skill:<name>` never reaches here: the composer parks it (`draftSkill`) and keeps the words typed after it.
       const id = session ?? await api.new_session()
       if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
       await api.use_skill(id, cmd.slice(1), arg)

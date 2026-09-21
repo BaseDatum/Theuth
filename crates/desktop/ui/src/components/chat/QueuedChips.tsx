@@ -1,15 +1,20 @@
-import { X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { useSessionField } from '@/store/sessions'
 
-/** A queued input's chip text: a skill injection reads `◇ name  words`, anything else its text. */
-function label(text: string): string {
-  const cls = classify(text)
-  const skill = cls?.[0]
-  if (skill?.kind === 'skill') return skill.words ? `◇ ${skill.name}  ${skill.words}` : `◇ ${skill.name}`
-  return `◇ ${text}`
+/** A queued input's chip: a skill injection shows the skills icon, its name and the words; anything else `◇ text`. */
+function label(text: string) {
+  const skill = classify(text)?.[0]
+  if (skill?.kind !== 'skill') return `◇ ${text}`
+  return (
+    <>
+      <Sparkles className="mr-1 inline size-3.5 align-[-2px]" />
+      <span className="font-medium">{skill.name}</span>
+      {skill.words && `  ${skill.words}`}
+    </>
+  )
 }
 
 /** Steers waiting for the current tool batch: click edits (withdraws into the composer), × withdraws. */
