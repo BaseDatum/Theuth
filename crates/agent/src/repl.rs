@@ -67,7 +67,8 @@ starting with `_`, which do not carry across cells. A tool error inside a corout
 passed to `gather` cannot be caught inside that coroutine (monty bug): catch around
 the `gather` itself, or await tools one at a time. `shell()` returns the output when
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
-result arrives later as <job_result>.
+result arrives later as <job_result>. A PTY job whose screen stops changing for a minute
+wakes you with <job_idle> and the screen: the program is likely waiting on you.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path=\"x.rs\")`)

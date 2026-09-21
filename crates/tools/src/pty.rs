@@ -2288,7 +2288,7 @@ impl Tool for StartTool {
     type Args = StartArgs;
 
     fn description(&self) -> String {
-        "Run a command on a pseudo-terminal as a named job you can type into (REPLs, servers, TUIs, prompts). Returns the job id and the screen; with `ready`, waits for a log regex and/or a TCP port first. cwd defaults to the shell's; variables and functions do not carry over. Use `shell` for anything that just runs and exits.".into()
+        "Run a command on a pseudo-terminal as a named job you can type into (REPLs, servers, TUIs, prompts). Returns the job id and the screen; with `ready`, waits for a log regex and/or a TCP port first. cwd defaults to the shell's; variables and functions do not carry over. Use `shell` for anything that just runs and exits. A job whose screen stops changing for `idle_secs` (default 60) wakes you with `<job_idle>` and the screen; `0` for a server you only need running.".into()
     }
 
     async fn call(&self, args: StartArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -2326,7 +2326,7 @@ impl Tool for SendTool {
     type Args = SendArgs;
 
     fn description(&self) -> String {
-        "Type into a PTY job: `text` (+ Enter unless `enter: false`), then `keys`, or deliver a `signal`. Returns the screen once output settles.".into()
+        "Type into a PTY job: `text` (+ Enter unless `enter: false`), then `keys`, or deliver a `signal`. Returns the screen once output settles. After a `<job_idle>`, this is how you answer what the program is waiting for.".into()
     }
 
     async fn call(&self, args: SendArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -2377,7 +2377,7 @@ impl Tool for WaitTool {
     type Args = WaitArgs;
 
     fn description(&self) -> String {
-        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
+        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you, or `<job_idle>` does once the screen stops changing. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
     }
 
     async fn call(&self, args: WaitArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {

@@ -1680,14 +1680,62 @@ impl Message<Settle> for Agents {
     }
 }
 
-/// A notice about a still-admitted operation (61 §1.8). Delivery lands with
-/// the `<job_idle>` wrapper; until then a notice is dropped.
+impl Agents {
+    /// A quiet PTY job wakes its owner (61 §1.8): the same wrap-cap-inject
+    /// path as a result, under the op's network scope, while the operation
+    /// is still admitted. A late notice for a retired op is dropped: nothing
+    /// is owed.
+    async fn notice(&mut self, m: Notice) {
+        let Notice::JobIdle {
+            op,
+            event:
+                JobEvent::Idle {
+                    session,
+                    id,
+                    command,
+                    name,
+                    quiet_secs,
+                    secs,
+                    nudge,
+                    user_typed_secs,
+                    output,
+                },
+        } = m
+        else {
+            return;
+        };
+        if self.ledger.op_owner(op).is_none() {
+            tracing::info!(%op, "idle notice for a settled job dropped");
+            return;
+        }
+        let text = spill::cap(
+            session,
+            &format!("job-{id}-idle"),
+            &output,
+            self.cfg.max_tool_output_chars,
+            &self.rt.data_dir.join("spill"),
+        );
+        let wrapped = job_idle(
+            &id,
+            &command,
+            name.as_deref(),
+            quiet_secs,
+            secs,
+            nudge,
+            user_typed_secs,
+            &text,
+        );
+        let scope = self.network_operation_scope(op);
+        self.inject(session, &format!("job {id}"), text, wrapped, scope)
+            .await;
+    }
+}
+
 impl Message<Notice> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Notice, _: &mut Context<Self, Self::Reply>) {
-        let Notice::JobIdle { op, .. } = m;
-        tracing::debug!(%op, "idle notice dropped: delivery not wired");
+        self.notice(m).await;
     }
 }
 
@@ -1806,6 +1854,29 @@ pub(crate) fn job_result(
     let pty = if pty { " pty=\"true\"" } else { "" };
     format!(
         "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty}>\n{text}\n</job_result>",
+        attr(&cmd)
+    )
+}
+
+/// The `<job_idle>` wrapper (61 §2.2): `command` cut and escaped as
+/// [`job_result`]; `name` and `user_typed` only when present; `text` is the
+/// screen with its `cursor:` line.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn job_idle(
+    id: &JobId,
+    command: &str,
+    name: Option<&str>,
+    quiet: u64,
+    secs: u64,
+    nudge: u32,
+    user_typed: Option<u64>,
+    text: &str,
+) -> String {
+    let cmd: String = command.chars().take(120).collect();
+    let name = name.map_or_else(String::new, |n| format!(" name=\"{}\"", attr(n)));
+    let typed = user_typed.map_or_else(String::new, |t| format!(" user_typed=\"{t}\""));
+    format!(
+        "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{typed}>\n{text}\n</job_idle>",
         attr(&cmd)
     )
 }
@@ -6730,6 +6801,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn job_idle_wrapper_escapes_and_names_optionals() {
+        let id = JobId("j4".into());
+        let w = job_idle(
+            &id,
+            "echo \"a\" <b>",
+            None,
+            63,
+            912,
+            1,
+            None,
+            ">>> \ncursor: row 1 col 5",
+        );
+        assert_eq!(
+            w,
+            "<job_idle id=\"j4\" command=\"echo &quot;a&quot; &lt;b&gt;\" quiet=\"63\" secs=\"912\" nudge=\"1\">\n>>> \ncursor: row 1 col 5\n</job_idle>"
+        );
+        let w = job_idle(&id, "omp", Some("omp<1>"), 120, 30, 2, Some(12), "");
+        assert_eq!(
+            w,
+            "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"120\" secs=\"30\" nudge=\"2\" user_typed=\"12\">\n\n</job_idle>"
+        );
+        let long = "a".repeat(200);
+        let w = job_idle(&id, &long, None, 0, 0, 1, None, "");
+        assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
+        assert!(!w.contains(&"a".repeat(121)));
+    }
+
+    #[test]
     fn first_line_skips_blanks_and_cuts_by_char() {
         assert_eq!(first_line("\n  \n  hello world  \nmore"), "hello world");
         assert_eq!(first_line(""), "");
@@ -7572,6 +7671,90 @@ pub(crate) mod tests {
             a.ledger.activity(p),
             None,
             "operation retired under the ticket"
+        );
+    }
+
+    /// Every `AgentEvent` on a fixture's bus, in order.
+    #[derive(kameo::Actor)]
+    struct Sink(Arc<parking_lot::Mutex<Vec<AgentEvent>>>);
+
+    impl Message<AgentEvent> for Sink {
+        type Reply = ();
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+            self.0.lock().push(e);
+        }
+    }
+
+    /// 61 §5.9: a quiet-job notice for a live op becomes the owner's pending
+    /// input (announced as `job j4` with the screen) without retiring the op —
+    /// the job keeps running; one for a retired op injects nothing.
+    #[tokio::test]
+    async fn idle_notice_injects_only_for_a_live_op() {
+        let mut a = agents_with(true).await;
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
+        a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let (p, t) = in_turn(&mut a).await;
+        let op = tools::Operation {
+            id: tools::Activity::untracked(p, tools::Kind::Pty(JobId("j4".into()))).id(),
+            owner: p,
+            kind: tools::Kind::Pty(JobId("j4".into())),
+        };
+        let notice = |op: &tools::Operation| Notice::JobIdle {
+            op: op.id,
+            event: JobEvent::Idle {
+                session: p,
+                id: JobId("j4".into()),
+                command: "python3 -q".into(),
+                name: None,
+                quiet_secs: 61,
+                secs: 90,
+                nudge: 1,
+                user_typed_secs: None,
+                output: ">>>\ncursor: row 1 col 5".into(),
+            },
+        };
+
+        a.notice(notice(&op)).await;
+        assert_eq!(a.ledger.activity(p), None, "retired op: nothing injected");
+
+        a.ledger.admit_op(&op);
+        a.notice(notice(&op)).await;
+        let why = a.ledger.activity(p).unwrap();
+        assert!(why.ends_with(&format!("pending on {p}")), "{why}");
+        a.ledger.consumed(InputConsumed {
+            session: p,
+            id: pending_ticket(&why),
+            turn: t,
+        });
+        assert_eq!(
+            a.ledger.op_owner(op.id),
+            Some(p),
+            "the job still runs: its op is not retired by a notice"
+        );
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: p,
+                title: String::new(),
+            })
+            .await;
+        let delivered: Vec<(String, String)> = seen
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::MessageDelivered {
+                    session,
+                    from,
+                    text,
+                } if *session == p => Some((from.clone(), text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            delivered,
+            [("job j4".to_owned(), ">>>\ncursor: row 1 col 5".to_owned())],
+            "one delivery, for the live op only"
         );
     }
 
