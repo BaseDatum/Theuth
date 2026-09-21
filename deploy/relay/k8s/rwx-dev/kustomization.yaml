@@ -10,7 +10,7 @@ resources:
 
 images:
   - name: ghcr.io/skymoore/theuth/relay
-    newTag: 9ecb23c
+    newTag: 902fa0a
 
 patches:
   - target:
