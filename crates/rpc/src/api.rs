@@ -947,27 +947,45 @@ pub trait Api {
     /// `summary.md`.
     #[method(name = "meeting_summary")]
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
-    /// 57 §3.4: the meeting families' decision-oracle switch — `mode` as configured,
-    /// `effective` (`off` with `reason` when the plugin is disabled or the checkpoint is
-    /// missing), and the tier budgets.
+    /// 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`,
+    /// `browser`) — `mode` as configured, `effective` (`off` with `reason` when the plugin is
+    /// disabled or the checkpoint is missing), `enabled`, `installed`, and the tier budgets.
+    #[method(name = "decision_mode")]
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo>;
+    /// Persist `decision.families.<prefix>: { mode, train, share }` (`off` | `shadow` |
+    /// `active`) and apply it live; effective from the next ask. A failed config write changes
+    /// nothing. `browser` off ↔ on also changes whether `browser_run` is registered — that
+    /// part takes a restart.
+    #[method(name = "set_decision_mode")]
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
+    /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
-    /// Persist `decision.families.meeting: { mode }` (`off` | `shadow` | `active`) and apply
-    /// it live; effective from the next batch. A failed config write changes nothing.
+    /// `set_decision_mode("meeting", mode)`.
     #[method(name = "set_meeting_oracle_mode")]
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
     /// 57 §7: today's decision log folded per family — mode, asks, accepts, escalations by
     /// reason, tier-2 rows, p50/p95, shadow agreement.
     #[method(name = "decision_stats")]
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
-    /// 57 §11.4: whether the families under `prefix` (`meeting`) capture training examples
-    /// locally, and how much is on disk (`<data_dir>/decisions/training/<prefix>/`).
+    /// 57 §11.4 / §7.1: whether the families under `prefix` (`meeting`, `browser`) capture
+    /// training examples locally (`enabled`), consent to upload them (`share`), and how much is
+    /// on disk (`<data_dir>/decisions/training/<prefix>/`).
     #[method(name = "decision_training")]
     async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
-    /// Persist `decision.families.<prefix>: { mode, train }` and apply it live; effective from
-    /// the next batch. A failed config write changes nothing.
+    /// Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective
+    /// from the next batch. Turning capture off also clears `share`. A failed config write
+    /// changes nothing.
     #[method(name = "set_decision_training")]
     async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: consent to upload the prefix's captured rows, persisted the same way. Refused
+    /// (`-32000`) when capture is off. No uploader reads it in this version.
+    #[method(name = "set_decision_share")]
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: remove `<data_dir>/decisions/training/<prefix>/`; the switches stay as set.
+    /// Answers the new counts.
+    #[method(name = "delete_decision_training")]
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
     async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
@@ -2767,25 +2785,20 @@ impl ApiServer for Server {
         send(&meeting()?, meeting::ListSpeakers).await
     }
 
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
+    }
+
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode }).await
+    }
+
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::GetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-            },
-        )
-        .await
+        self.decision_mode(meeting::oracle::PREFIX.to_owned()).await
     }
 
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::SetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-                mode,
-            },
-        )
-        .await
+        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode).await
     }
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
@@ -2798,6 +2811,14 @@ impl ApiServer for Server {
 
     async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on }).await
+    }
+
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetShare { prefix, on }).await
+    }
+
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::DeleteTraining { prefix }).await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {

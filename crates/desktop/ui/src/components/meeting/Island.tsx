@@ -317,7 +317,7 @@ const VERDICT_MS = 4000
  */
 function OracleChip() {
   const api = useApi()
-  const mode = useQuery({ queryKey: queryKeys.meetingOracleMode, queryFn: () => api.meeting_oracle_mode(), refetchInterval: 30_000 })
+  const mode = useQuery({ queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting'), refetchInterval: 30_000 })
   const oracle = useMeeting((s) => s.oracle)
   const deciding = useMeeting((s) => s.deciding)
   const last: OracleDecision | undefined = oracle[oracle.length - 1]

@@ -1,25 +1,17 @@
 // 53 decisions 9–10 / 03 §3: Settings › Meetings — the eye (hidden from capture) with its hotkey, the
 // push-to-talk hotkey, and the black-screenshot note. All desktop-local (`lib/meeting-settings.ts`) — except
-// the enrolled speaker profiles (04 §7) and the decision-oracle switch (57 §3.4), which are the daemon's.
+// the enrolled speaker profiles (04 §7), which are the daemon's. The decision-oracle switch moved to Labs (57 §7.1).
 
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { ChordInput, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { probeShortcut } from '@/lib/shortcuts'
 import { setHiddenFromCapture } from '@/lib/tauri'
-import type { Mode } from '@/rpc/bindings/Mode'
-
-/** 57 §3.4: one line per position. */
-export const ORACLE_MODE_HELP: Record<Mode, string> = {
-  off: 'Off: every transcript batch is a model turn, as before.',
-  shadow: 'Shadow: the oracle is asked and its verdict shown, the model turn still runs; the session rows show whether they agreed.',
-  active: 'Active: the oracle gates the turn — a confident "nothing to look up" skips it, a confident cached brief is published directly.',
-}
 
 export function Meetings() {
   const api = useApi()
@@ -51,7 +43,7 @@ export function Meetings() {
         </Row>
       </Section>
       <Section title="Local decision oracle">
-        <OracleSwitch />
+        <OraclePointer />
       </Section>
       <Section title="Enrolled speakers">
         {speakers.isError && <Empty>{errorText(speakers.error)}</Empty>}
@@ -68,45 +60,18 @@ export function Meetings() {
   )
 }
 
-/** 57 §3.4 switch: `meeting_oracle_mode` / `set_meeting_oracle_mode`; disabled with the reason when the oracle cannot run. */
-function OracleSwitch() {
+/** 57 §7.1: the switch lives in Labs; this line shows the effective state and links there (same query key, so both update together). */
+function OraclePointer() {
   const api = useApi()
-  const info = useQuery({ queryKey: queryKeys.meetingOracleMode, queryFn: () => api.meeting_oracle_mode() })
-  const set = useAction((mode: Mode) => api.set_meeting_oracle_mode(mode), { keys: [queryKeys.meetingOracleMode] })
-  const mode = info.data?.mode ?? 'off'
-  const blocked = info.data?.reason ?? (info.isError ? errorText(info.error) : undefined)
+  const info = useQuery({ queryKey: queryKeys.decisionMode('meeting'), queryFn: () => api.decision_mode('meeting') })
+  const state = info.isError ? errorText(info.error) : info.data ? info.data.effective : '…'
   return (
-    <Row
-      label="Local decision oracle"
-      description={
-        <>
-          {ORACLE_MODE_HELP[mode]}
-          {blocked && <span className="block text-danger">Off until this is fixed: {blocked}</span>}
-          {info.data && !blocked && info.data.effective !== info.data.mode && (
-            <span className="block">Running as {info.data.effective} until the next batch.</span>
-          )}
-        </>
-      }
-    >
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={mode}
-        aria-label="Local decision oracle"
-        disabled={set.isPending || info.isPending || blocked !== undefined}
-        onValueChange={(v) => v && set.mutate(v as Mode)}
-      >
-        <ToggleGroupItem value="off" title={ORACLE_MODE_HELP.off}>
-          Off
-        </ToggleGroupItem>
-        <ToggleGroupItem value="shadow" title={ORACLE_MODE_HELP.shadow}>
-          Shadow
-        </ToggleGroupItem>
-        <ToggleGroupItem value="active" title={ORACLE_MODE_HELP.active}>
-          Active
-        </ToggleGroupItem>
-      </ToggleGroup>
+    <Row label={`Local decision oracle: ${state}`} description="Off · Shadow · Active, counters and training-data consent are in Labs.">
+      <Button asChild variant="outline" size="sm">
+        <Link to="/settings/$tab" params={{ tab: 'labs' }} search={{}}>
+          Change in Labs
+        </Link>
+      </Button>
     </Row>
   )
 }
