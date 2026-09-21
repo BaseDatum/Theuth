@@ -103,6 +103,9 @@ export function Loop() {
   const setMaxSalvages = useAction((count: number) =>
     api.set_max_salvages(count).then(() => refreshInfo(api)),
   )
+  const setPtyIdle = useAction((seconds: number) =>
+    api.set_pty_idle(seconds).then(() => refreshInfo(api)),
+  )
 
   // 52 §3.2: only models whose backend can actually receive images (`ModelInfo.image` is effective support).
   const visionModels = models.data?.filter((m) => m.image) ?? []
@@ -137,6 +140,12 @@ export function Loop() {
           description="Maximum runtime for a newly spawned subagent turn, in seconds."
         >
           <Count value={info?.subagent_timeout_secs} min={1} action={setSubagentTimeout} />
+        </Row>
+        <Row
+          label="Terminal idle wake"
+          description="Seconds a PTY job's screen must stay unchanged before the model is woken with <job_idle> and the screen (a REPL at its prompt, a wizard waiting, a stalled build). Applies to later `start` calls; 0 turns it off, and `start … idle_secs` overrides per job."
+        >
+          <Count value={info?.pty_idle_secs} min={0} action={setPtyIdle} />
         </Row>
       </Section>
       <Section title="Context">

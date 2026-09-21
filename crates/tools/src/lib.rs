@@ -61,9 +61,10 @@ pub use mcp::{
 };
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
-    GetApprovals, HiddenTools, InspectTool, InstallCommunicationAccess, Invoke, ListPrompts,
-    ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals, SetHidden, SetParent,
-    ToolInspection, ToolRegistry, UnregisterPrompt, UnregisterTool, UserActivation,
+    GetApprovals, GetPtyIdle, HiddenTools, InspectTool, InstallCommunicationAccess, Invoke,
+    ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
+    SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
+    UnregisterTool, UserActivation,
 };
 pub use registry::{InstallResources, RemoveResources};
 pub use resources::{Retention, SessionResources};

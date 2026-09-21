@@ -423,6 +423,8 @@ export interface Api {
   set_model(session: SessionId | null, model: string): Promise<ModelInfo>
   /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
+  /** Persist `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model with `<job_idle>`; `0` = never. Later `start` calls use it. */
+  set_pty_idle(seconds: number): Promise<null>
   /** Persist `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned; `0` rejects. New sessions only. */
   set_stream_idle(seconds: number): Promise<null>
   set_subagent_timeout(seconds: number): Promise<null>
@@ -634,6 +636,7 @@ export const METHODS = [
   'set_meeting_oracle_mode',
   'set_model',
   'set_peer_scope',
+  'set_pty_idle',
   'set_secret',
   'set_session_project',
   'set_stream_idle',

@@ -2250,18 +2250,19 @@ pub struct StartTool {
     jobs: ActorRef<Jobs>,
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
     ready_timeout: Duration,
-    idle_default: Duration,
+    /// `tools.pty_idle_secs`, shared with the registry's `SetPtyIdle`.
+    idle_default: Arc<AtomicU64>,
 }
 
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
     /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
-    /// `idle_default` is `tools.pty_idle_secs` (61 §1.6), zero for never.
+    /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never.
     pub fn new(
         jobs: ActorRef<Jobs>,
         shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
         ready_timeout: Duration,
-        idle_default: Duration,
+        idle_default: Arc<AtomicU64>,
     ) -> Self {
         Self {
             jobs,
@@ -2276,7 +2277,9 @@ impl StartTool {
         match secs {
             Some(0) => None,
             Some(s) => Some(Duration::from_secs(s.max(IDLE_MIN))),
-            None => Some(self.idle_default).filter(|d| !d.is_zero()),
+            None => {
+                Some(Duration::from_secs(self.idle_default.load(SeqCst))).filter(|d| !d.is_zero())
+            }
         }
     }
 }
@@ -2797,7 +2800,7 @@ mod tests {
             fx.jobs.clone(),
             Arc::default(),
             Duration::from_secs(30),
-            idle,
+            Arc::new(AtomicU64::new(idle.as_secs())),
         )
     }
 
