@@ -1396,6 +1396,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             jobs.clone(),
             Arc::clone(&shells),
             Duration::from_secs(cfg.pty_ready_timeout_secs),
+            Duration::from_secs(cfg.pty_idle_secs),
         )),
         Arc::new(pty::SendTool(jobs.clone())),
         Arc::new(pty::ScreenTool(jobs.clone())),
