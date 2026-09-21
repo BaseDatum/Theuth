@@ -17,7 +17,23 @@ import { usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
+import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import { surfaceOf } from './slash'
+
+/** The cmdk group every model picker shows: name, provider, a check on the current one. */
+export function ModelItems({ models, model, onSelect }: { models: ModelInfo[]; model: string | undefined; onSelect(id: string): void }) {
+  return (
+    <CommandGroup heading="Models">
+      {models.map((m) => (
+        <CommandItem key={m.id} value={`${m.name} ${m.id}`} onSelect={() => onSelect(m.id)}>
+          <span className="truncate">{m.name}</span>
+          <span className="ml-auto truncate text-xs text-fg-tertiary">{m.provider}</span>
+          {m.id === model && <Check className="size-4" />}
+        </CommandItem>
+      ))}
+    </CommandGroup>
+  )
+}
 
 /**
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
@@ -86,15 +102,7 @@ export function ModelMenu({
           <CommandInput placeholder="Search models" />
           <CommandList className="max-h-96">
             <CommandEmpty>No model matches.</CommandEmpty>
-            <CommandGroup heading="Models">
-              {models.map((m) => (
-                <CommandItem key={m.id} value={`${m.name} ${m.id}`} onSelect={() => void setModel(m.id)}>
-                  <span className="truncate">{m.name}</span>
-                  <span className="ml-auto truncate text-xs text-fg-tertiary">{m.provider}</span>
-                  {m.id === model && <Check className="size-4" />}
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            <ModelItems models={models} model={model} onSelect={(id) => void setModel(id)} />
             {current && current.efforts.length > 0 && (
               <>
                 <CommandSeparator />

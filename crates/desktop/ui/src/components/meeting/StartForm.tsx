@@ -1,22 +1,27 @@
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
 // audio first), title, a dictated context box, the consent checkbox (decision 14), the session's
-// model, the permissions row. `Start` → `meeting_start` → the control center.
+// model (the chat header's picker; remembered in `meeting-settings`), the permissions row.
+// `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Check, LoaderCircle, Mic, RefreshCw, X } from 'lucide-react'
+import { Check, ChevronDown, LoaderCircle, Mic, RefreshCw, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { LevelMeter } from '@/components/chat/LevelMeter'
+import { ModelItems } from '@/components/chat/ModelMenu'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
+import { Command, CommandEmpty, CommandInput, CommandList } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import * as dictation from '@/lib/dictation'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
@@ -39,7 +44,9 @@ export function StartForm() {
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
   const [consent, setConsent] = useState(false)
-  const [model, setModel] = useState<string | null>(null)
+  const saved = useMeetingSettings((s) => s.model)
+  const model = saved ?? info?.default_model
+  const [pickModel, setPickModel] = useState(false)
 
   const start = useAction(
     (_: void) =>
@@ -48,7 +55,7 @@ export function StartForm() {
         title: title.trim() || null,
         context: context.trim() || null,
         consent,
-        session_model: model,
+        session_model: saved,
       }),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
@@ -97,18 +104,30 @@ export function StartForm() {
           label="Session model"
           description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here."
         >
-          <Select value={model ?? info?.default_model} onValueChange={setModel}>
-            <SelectTrigger className="w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {models.data?.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={pickModel} onOpenChange={setPickModel}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-64 justify-between font-normal">
+                <span className="truncate">{models.data?.find((m) => m.id === model)?.name ?? model ?? 'Model'}</span>
+                <ChevronDown className="size-4 opacity-70" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 p-0">
+              <Command>
+                <CommandInput placeholder="Search models" />
+                <CommandList className="max-h-96">
+                  <CommandEmpty>No model matches.</CommandEmpty>
+                  <ModelItems
+                    models={models.data ?? []}
+                    model={model}
+                    onSelect={(id) => {
+                      useMeetingSettings.getState().setModel(id)
+                      setPickModel(false)
+                    }}
+                  />
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </Row>
         <Permission label="Microphone" state={perms.data?.microphone} pane="Privacy_Microphone" />
         <Permission label="System audio recording" state={perms.data?.audio_capture} pane="Privacy_AudioCapture" />
