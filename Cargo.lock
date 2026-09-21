@@ -3673,8 +3673,10 @@ dependencies = [
  "half",
  "humantime",
  "kameo",
+ "libc",
  "models",
  "ort",
+ "parking_lot",
  "runtime",
  "schemars 1.2.2",
  "serde",
@@ -3686,6 +3688,7 @@ dependencies = [
  "tokio",
  "tools",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

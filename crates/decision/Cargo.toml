@@ -11,6 +11,7 @@ tools = { workspace = true }
 models = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
+parking_lot = { workspace = true }  # the session slot: locked only inside `spawn_blocking`
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

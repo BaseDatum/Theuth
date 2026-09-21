@@ -20,7 +20,7 @@ use std::time::Duration;
 use kameo::actor::Spawn;
 use serde::Deserialize;
 
-pub use engine::{Engine, Report, Stats};
+pub use engine::{Engine, Loader, Oracle, Report, Stats};
 pub use gate::{FamilyGate, Mode};
 pub use log::FamilyStats;
 pub use question::{

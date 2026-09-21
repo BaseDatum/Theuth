@@ -68,6 +68,9 @@ pub struct AskRow {
     /// The question itself, only with `decision.log_text: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<Question>,
+    /// Cold-load wall clock, on the first row after a load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_ms: Option<u64>,
 }
 
 impl AskRow {
@@ -103,6 +106,7 @@ impl AskRow {
             reason: d.disposition.reason().cloned(),
             latency_ms: d.latency.as_millis() as u64,
             text,
+            load_ms: None,
         }
     }
 }
