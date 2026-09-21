@@ -101,7 +101,7 @@ export function ControlCenter({ id }: { id: string }) {
                 <BriefLog id={id} cursor={current(store)?.id ?? null} />
               </div>
             )}
-            {note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:basis-2/5" />}
+            {note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:w-[45%] md:flex-none" />}
           </div>
         </div>
       ) : (
@@ -195,7 +195,10 @@ function LiveLog({ id }: { id: string }) {
       })
     })
   }, [api, id])
-  useEffect(() => end.current?.scrollIntoView({ block: 'end' }), [rows])
+  // Braces on purpose: with the editor mounted, a scroll polyfill makes `scrollIntoView` return a Promise, which React rejects as a cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' })
+  }, [rows])
   const request = useAction((t: string) => api.meeting_request(t), { onSuccess: () => setText('') })
   return (
     <div className="flex min-w-0 flex-1 flex-col rounded-xl border border-border-subtle">
