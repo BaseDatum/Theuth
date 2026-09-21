@@ -934,10 +934,9 @@ impl Message<EditDone> for DocumentActor {
                 }));
             }
             Err(err) => {
+                // Presence set at start goes with its own delayed clear; clearing here would
+                // drop a concurrent edit's presence (seen: replace + failing insert in one call).
                 self.edits.remove(&m.req);
-                if matches!(by, Principal::Agent { .. }) {
-                    self.clear_agent_presence(&doc);
-                }
                 tx.send(Err(EditError::from_helper(&err)));
             }
         }

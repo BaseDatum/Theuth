@@ -98,6 +98,13 @@ describe("edit: insert", () => {
     expect(lines(o).slice(-3)).toEqual(["[h3] Sub", "para", "• bullet"]);
   });
 
+  test("the outline's • marker copied back into markdown is a bullet, not a paragraph", async () => {
+    const o = await doc();
+    const r = await edit(o, [{ op: "insert", markdown: "• X\n  ◦ nested\n", at: "end" }]);
+    expect(r.inserted).toHaveLength(1);
+    expect(lines(o).slice(-2)).toEqual(["• X", "  • nested"]);
+  });
+
   test("after a nested block inserts a sibling inside the same parent", async () => {
     const o = await doc();
     const nested = flatten(blocks(o)).find((b) => outline(o).blocks.some((t) => t.children.some((c) => c.id === b.id)))!;

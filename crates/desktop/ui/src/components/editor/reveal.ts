@@ -2,7 +2,8 @@ import { type BlockNoteEditor, createExtension } from '@blocknote/core'
 import type { Node as PmNode } from 'prosemirror-model'
 import { Plugin, PluginKey, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet } from 'prosemirror-view'
-import { ySyncPluginKey } from 'y-prosemirror'
+import { ySyncPluginKey, yUndoPluginKey } from 'y-prosemirror'
+import type { UndoManager } from 'yjs'
 import type { Authored, HarnessProvider } from '@/lib/doc/provider'
 
 /** 59 §6.4: unmask at `max(24 chars/s, len / 1.5 s)`. */
@@ -248,6 +249,21 @@ export function revealPlugin(color: string, reduced = () => window.matchMedia('(
   })
 }
 
+/**
+ * y-prosemirror's undo plugin keeps its `Y.UndoManager` in plugin *state* but destroys it in
+ * `view.destroy` (detaching it from the doc). Any view remount — `editable` flipping when the
+ * document goes live, React StrictMode — leaves Cmd-Z dead. Re-attach the detached manager.
+ * ponytail: two Yjs fields (`afterTransactionHandler`, `trackedOrigins`), stable since 13.5; drop when upstream fixes it.
+ */
+function reviveUndo(editor: BlockNoteEditor<any, any, any>): void {
+  const um = yUndoPluginKey.getState(editor.prosemirrorState)?.undoManager as UndoManager | undefined
+  if (!um) return
+  const attached = um.doc._observers.get('afterTransaction')?.has(um.afterTransactionHandler) ?? false
+  if (attached) return
+  um.trackedOrigins.add(um)
+  um.doc.on('afterTransaction', um.afterTransactionHandler)
+}
+
 /** BlockNote extension: the plugin plus the `Authored` subscription that feeds it. `createExtension` returns a creator; called once here. */
 export function revealExtension(provider: HarnessProvider, color: string) {
   return createExtension(({ editor }: { editor: BlockNoteEditor<any, any, any> }) => {
@@ -256,6 +272,7 @@ export function revealExtension(provider: HarnessProvider, color: string) {
       key: 'theuthReveal',
       prosemirrorPlugins: [plugin],
       mount() {
+        reviveUndo(editor)
         return provider.onAuthored((a: Authored) => {
           if (a.by.who !== 'agent') return
           const view = editor.prosemirrorView

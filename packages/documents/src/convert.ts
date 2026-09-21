@@ -134,10 +134,14 @@ const fail = (detail: EditError): never => {
   throw new EditFailure(detail);
 };
 
-/** Parse the model's markdown into body blocks; a frontmatter block can never come out of it. */
+/**
+ * Parse the model's markdown into body blocks; a frontmatter block can never come out of it.
+ * Models copy the outline's `• ` bullet marker back into their markdown: read it as `- `.
+ */
 async function parseBody(md: string): Promise<DocBlock[]> {
   if (md.trim() === "") return [];
-  return (await ed.tryParseMarkdownToBlocks(md)).filter((b) => !isFrontmatter(b));
+  const normalised = md.replace(/^(\s*)[•◦▪] /gm, "$1- ");
+  return (await ed.tryParseMarkdownToBlocks(normalised)).filter((b) => !isFrontmatter(b));
 }
 
 /** An anchor for the gap at `list[index]` (the block there, if any, comes *after* the gap) that an undo can use later. */

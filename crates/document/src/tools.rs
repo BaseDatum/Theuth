@@ -20,7 +20,8 @@ use crate::meta::{Binding, DocId, Principal};
 pub const PROMPT: &str = "**Documents.** Knowledge concepts, notes and markdown artifacts are block documents. \
 `doc_read(doc)` returns an outline, one block per line with its id first; read it before editing, then change \
 the smallest run of blocks with `doc_insert` / `doc_replace` / `doc_delete`, quoting ids from the outline you \
-just read (ids stay stable across edits you did not make). One tool call per request when possible. Never \
+just read (ids stay stable across edits you did not make; a replaced block gets a new id, returned — anchor \
+later inserts on it, or put everything in the one `doc_replace` markdown). One tool call per request when possible. Never \
 rewrite text a person typed unless asked to change that text; edit knowledge metadata with `knowledge_put`, \
 not the frontmatter block. `doc` is a document id or `knowledge:<concept id>`. A user line starting \
 `[doc <id> \"<title>\"]` means that document is attached to the conversation: pass `<id>` as `doc`.";
