@@ -133,6 +133,22 @@ With `decision`:
 
 Expected effect: in a typical meeting most batches contain nothing worth a brief; each of those is a full model turn today (seconds and tokens) and becomes a ~200 ms local call. Wrong `false` = a missed brief (recoverable: the user can tap or ask); wrong brief id = an irrelevant cached brief on the island (visible, dismissible). Both bounded — which is why this family goes `active` first.
 
+### 3.4 Operating switch and visibility (Sky, 2026-09-21 night)
+
+Sky wants to run meetings in both configurations and *see* what the oracle is doing, so the meeting family gets an owner-facing switch and live UI, not just a config key and a log file.
+
+**Switch** — Desktop Settings → Meetings → "Local decision oracle": a three-way segmented control **Off · Shadow · Active**, default **Shadow** once the model is installed (Off when `ModelMissing`, with the reason shown).
+- **Off**: the oracle is not asked; today's path exactly.
+- **Shadow**: the oracle is asked, its disposition is recorded and *shown*, and today's model turn still runs; after the turn the plugin reports `Outcome` (agreed / model did X) so the same batch shows both answers side by side.
+- **Active**: the oracle gates the turn as in §3.2 (Accept → no model turn; Escalate → tiers 2/3).
+It is the `decision.families.meeting.*.mode` setting (§2) for both meeting families at once, written through the same config RPC the model pickers use (runtime value + `config.yaml`), effective from the next batch — no restart. The TUI keeps `/decision` for the numbers; the switch is the day-to-day control.
+
+**Session view** (the meeting session's chat, where batches are steered today): every batch that went through the oracle gets one compact status row under it — `⚡ topic 0.12 · skip · 78 ms` / `⚡ brief SRE-2386 0.91 · published · 81 ms` / `⚡ escalate · low margin 0.55 / 0.31 · tier 2 → skip` — and in Shadow the row gains the outcome after the model turn: `✓ agreed` or `✗ model published HR-12`. Rows are dim, single-line, expandable to the full probabilities. In Off nothing is added.
+
+**Island**: a small state chip in the island header next to the clock: mode badge (`shadow` / `active`; none when Off) and a live indicator that steps `⚡ deciding` (the ~80 ms flash) → `skip` (dim, fades) / `brief` (the topic row appears with the `⚡` source marker) / `→ model` (the existing thinking indicator continues). Session counters live in the chip's tooltip and in the Meetings tab header: `⚡ 14 skipped · 3 briefs · 2 escalated · agreed 92 %`.
+
+**Data path**: the meeting plugin emits `OracleDecision { batch_id, family, mode, disposition, top: [(label, p)], latency_ms, tier, outcome: Option<Outcome> }` on the meeting event stream the island already subscribes to (topics, level, state), `ts_rs`-exported like `MeetingState`; `store/meeting.ts` keeps the last N per meeting and the counters; `Island.tsx` and the session batch rows render from the store. The row and the chip are the only new UI; no new window, no new RPC beyond the config write.
+
 ## §4 Second integration: browser (23)
 
 Today the model lists elements (`browser_elements` / `browser_read`), reads `ref=e3 button "Sign in"` lines, then acts — two turns per action, the second one containing the whole element list. `browser_do(intent, operation?)` (Mutating, like `browser_click`):
@@ -164,7 +180,8 @@ Before 52's two-call vision fallback (`agent/src/loop_.rs:4354-4578`), the agent
 
 ## §7 Frontend / owner surfaces
 
-- Meeting island: an escalated batch shows nothing new; an oracle-accepted brief shows exactly like an alias hit. A small `⚡` marker on oracle-published topics (53's topic row already carries a source enum: add `Oracle`).
+- Meeting island: an escalated batch shows nothing new; an oracle-accepted brief shows exactly like an alias hit. A small `⚡` marker on oracle-published topics (53's topic row already carries a source enum: add `Oracle`). Plus the §3.4 state chip (mode badge + deciding/skip/brief/→ model indicator, counters in the tooltip).
+- Desktop Settings → Meetings: **Local decision oracle** Off · Shadow · Active (§3.4) — the day-to-day switch; the meeting session shows one `⚡` status row per oracle-handled batch, with the shadow outcome appended after the model turn.
 - Desktop Settings → Agent loop: **Escalation model** picker (`agent.escalate_model`), same control as the title/vision model pickers, placeholder "inherits title model"; unset by default.
 - Desktop Settings → "Decision training data": per-family opt-in switches (§11.1.2), off by default.
 - TUI `/decision` (or `Stats` via RPC `decision_stats`): per family — mode, coverage, escalations by reason, p95, shadow agreement. That is how Sky decides to flip `active`.
