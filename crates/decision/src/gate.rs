@@ -71,6 +71,9 @@ pub struct FamilyGate {
     #[serde(default = "default_escalate_budget", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub escalate_budget: Duration,
+    /// Capture training examples for this family (57 §11): off by default, every family.
+    #[serde(default)]
+    pub train: bool,
 }
 
 const fn default_budget() -> Duration {
@@ -105,6 +108,7 @@ impl FamilyGate {
             tau_margin,
             budget: default_budget(),
             escalate_budget: default_escalate_budget(),
+            train: false,
         }
     }
 
@@ -179,6 +183,7 @@ mod tests {
         tau_margin: 0.4,
         budget: Duration::from_millis(400),
         escalate_budget: Duration::from_secs(3),
+        train: false,
     };
 
     #[test]

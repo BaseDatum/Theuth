@@ -184,6 +184,11 @@ impl Log {
         Log { dir }
     }
 
+    /// The directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     fn today(&self) -> PathBuf {
         self.dir
             .join(format!("{}.jsonl", chrono::Local::now().format("%Y-%m-%d")))

@@ -21,6 +21,7 @@ use crate::log::{AskRow, FamilyStats, Log, Row};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
+use crate::training::{self, Store, TrainingInfo};
 
 /// The checkpoint files [`Engine`] needs in `model_dir` — the Hugging Face
 /// `convaiinnovations/laya` layout, `release-models.sh` REQUIRED.
@@ -106,6 +107,36 @@ pub struct Record {
     pub note: Option<String>,
 }
 
+/// `ask` → [`TrainingInfo`]: whether the families under `prefix` capture training examples
+/// (57 §11.4 item 3), and how much is on disk.
+#[derive(Clone, Debug)]
+pub struct GetTrain {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: set `train` on every family under `prefix`, written
+/// to `config.yaml` (`decision.families.<prefix>: { mode: …, train: … }`) first, then live. A
+/// failed write changes nothing.
+#[derive(Clone, Debug)]
+pub struct SetTrain {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+    /// Capture on or off.
+    pub on: bool,
+}
+
+/// `tell`: one training row for `prefix` (57 §11.4). Dropped unless a family under `prefix`
+/// has `train: true` *now* — flipping it off stops writes at once. Example rows get the
+/// engine's `model_sha`; every row is secret-scrubbed by the store.
+#[derive(Clone, Debug)]
+pub struct Capture {
+    /// The family prefix (`meeting`).
+    pub prefix: String,
+    /// The row.
+    pub row: training::Row,
+}
+
 /// `ask` → `Result<u64, String>`: load the session (checkpoint present, plugin enabled) and run
 /// one throwaway forward so a meeting's first real `Ask` pays neither the cold load nor the
 /// first-inference cost (57 §3.5 item 5). Nothing is logged; the reply is the wall clock in ms.
@@ -125,6 +156,8 @@ pub struct Engine {
     cfg: DecisionConfig,
     model_dir: PathBuf,
     log: Log,
+    /// `<data_dir>/decisions/training`, beside the log.
+    training: Store,
     loader: Loader,
     /// `config.yaml`, for `SetMode`; `None` = live only (tests).
     config_path: Option<PathBuf>,
@@ -153,6 +186,7 @@ impl Engine {
         Engine {
             cfg,
             model_dir,
+            training: Store::new(log.dir().join("training")),
             log,
             loader,
             config_path: None,
@@ -170,6 +204,42 @@ impl Engine {
     pub fn with_config_path(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
+    }
+
+    /// Whether any family under `prefix` captures training examples.
+    pub fn train(&self, prefix: &str) -> bool {
+        let dot = format!("{prefix}.");
+        self.cfg
+            .families
+            .iter()
+            .any(|(k, g)| k.starts_with(&dot) && g.train)
+    }
+
+    /// `Err` unless some `<prefix>.*` family is configured.
+    fn check_prefix(&self, prefix: &str) -> Result<(), String> {
+        let dot = format!("{prefix}.");
+        if self.cfg.families.keys().any(|k| k.starts_with(&dot)) {
+            Ok(())
+        } else {
+            Err(format!("no `{prefix}.*` decision family is configured"))
+        }
+    }
+
+    /// Persist the prefix's switch positions as one flow mapping — both fields every time, so
+    /// `SetMode` does not drop `train` and `SetTrain` does not drop `mode` (the config writer
+    /// replaces the whole value).
+    fn write_prefix(&self, prefix: &str, mode: Mode, train: bool) -> Result<(), String> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        runtime::write_nested_config_value(
+            path,
+            "decision",
+            "families",
+            prefix,
+            &format!("{{ mode: {mode}, train: {train} }}"),
+        )
+        .map_err(|e| format!("config.yaml: {e}"))
     }
 
     /// See [`crate::mode_for`].
@@ -573,25 +643,65 @@ impl Message<SetMode> for Engine {
     type Reply = Result<crate::ModeInfo, String>;
 
     async fn handle(&mut self, m: SetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        self.write_prefix(&m.prefix, m.mode, self.train(&m.prefix))?;
         let dot = format!("{}.", m.prefix);
-        if !self.cfg.families.keys().any(|k| k.starts_with(&dot)) {
-            return Err(format!("no `{}.*` decision family is configured", m.prefix));
-        }
-        if let Some(path) = &self.config_path {
-            runtime::write_nested_config_value(
-                path,
-                "decision",
-                "families",
-                &m.prefix,
-                &format!("{{ mode: {} }}", m.mode),
-            )
-            .map_err(|e| format!("config.yaml: {e}"))?;
-        }
-        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
+        for (_, g) in self
+            .cfg
+            .families
+            .iter_mut()
+            .filter(|(k, _)| k.starts_with(&dot))
+        {
             g.mode = m.mode;
         }
         tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
         Ok(self.mode(&m.prefix))
+    }
+}
+
+impl Message<GetTrain> for Engine {
+    type Reply = TrainingInfo;
+
+    async fn handle(&mut self, m: GetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.training.info(&m.prefix, self.train(&m.prefix))
+    }
+}
+
+impl Message<SetTrain> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: SetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, m.on)?;
+        let dot = format!("{}.", m.prefix);
+        for (_, g) in self
+            .cfg
+            .families
+            .iter_mut()
+            .filter(|(k, _)| k.starts_with(&dot))
+        {
+            g.train = m.on;
+        }
+        tracing::info!("decision: {}.* train → {}", m.prefix, m.on);
+        Ok(self.training.info(&m.prefix, m.on))
+    }
+}
+
+impl Message<Capture> for Engine {
+    type Reply = ();
+
+    async fn handle(&mut self, mut c: Capture, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.train(&c.prefix) {
+            return;
+        }
+        if let training::Row::Example(e) = &mut c.row
+            && e.model_sha.is_empty()
+        {
+            e.model_sha = self.model_sha();
+        }
+        if let Err(e) = self.training.append(&c.prefix, &c.row) {
+            tracing::warn!("decision training: {e}");
+        }
     }
 }
 
@@ -942,5 +1052,134 @@ mod tests {
         ));
         let d = engine.ask(ask("meeting.topic")).await.unwrap();
         assert_eq!(d.disposition, Disposition::Escalate(Reason::Disabled));
+    }
+
+    #[tokio::test]
+    async fn train_switch_writes_a_merged_prefix_patch_and_gates_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            "decision:\n  families:\n    meeting: { mode: shadow }\n",
+        )
+        .unwrap();
+        let log = Log::new(dir.path().join("decisions"));
+        let e = Engine::with_loader(
+            DecisionConfig::default(),
+            dir.path().join("m"),
+            log,
+            fake_loader(Duration::ZERO),
+        )
+        .with_config_path(config.clone());
+        let engine = Engine::spawn(e);
+        let get = |prefix: &str| GetTrain {
+            prefix: prefix.to_owned(),
+        };
+        let info = engine.ask(get("meeting")).await.unwrap();
+        assert!(
+            !info.enabled
+                && info.examples_total == 0
+                && info.dir.ends_with("decisions/training/meeting")
+        );
+
+        // Off: a captured row is dropped and no directory appears.
+        let example = || {
+            training::Example::new(
+                "meeting",
+                Mode::Shadow,
+                "them: hi".into(),
+                vec![],
+                vec![],
+                None,
+                training::Verdict::Skip,
+            )
+        };
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(engine.ask(get("meeting")).await.unwrap().examples_total, 0);
+        assert!(!dir.path().join("decisions/training").exists());
+
+        // On: the config line keeps `mode`, the families flip live, the row lands with the model sha.
+        let info = engine
+            .ask(SetTrain {
+                prefix: "meeting".into(),
+                on: true,
+            })
+            .await
+            .unwrap();
+        assert!(info.enabled);
+        let yaml = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            yaml.contains("    meeting: { mode: shadow, train: true }"),
+            "{yaml}"
+        );
+        let whole: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let cfg: DecisionConfig = serde_yaml::from_value(whole["decision"].clone()).unwrap();
+        assert!(
+            cfg.families["meeting.kind"].train
+                && cfg.families["meeting.brief"].train
+                && !cfg.families["browser.wait"].train
+        );
+        assert_eq!(cfg.families["meeting.kind"].mode, Mode::Shadow);
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        let info = engine.ask(get("meeting")).await.unwrap();
+        assert_eq!((info.examples_today, info.examples_total), (1, 1));
+        assert!(info.bytes > 0);
+        // Another prefix is untouched; an unknown one is an error.
+        assert!(!engine.ask(get("browser")).await.unwrap().enabled);
+        assert!(
+            engine
+                .ask(SetTrain {
+                    prefix: "nobody".into(),
+                    on: true
+                })
+                .await
+                .is_err()
+        );
+
+        // `SetMode` keeps `train` in the line; `SetTrain(false)` keeps the mode and stops writes.
+        engine
+            .ask(SetMode {
+                prefix: "meeting".into(),
+                mode: Mode::Active,
+            })
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&config)
+                .unwrap()
+                .contains("meeting: { mode: active, train: true }")
+        );
+        engine
+            .ask(SetTrain {
+                prefix: "meeting".into(),
+                on: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&config)
+                .unwrap()
+                .contains("meeting: { mode: active, train: false }")
+        );
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(engine.ask(get("meeting")).await.unwrap().examples_total, 1);
     }
 }

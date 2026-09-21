@@ -73,9 +73,18 @@ pub fn redact(text: &str) -> Cow<'_, str> {
         .map_or(Cow::Borrowed(text), |s| s.redact(text))
 }
 
+/// [`redact`] over every string in a JSON value; identity when nothing is installed.
+pub fn redact_value(v: &mut serde_json::Value) {
+    if let Some(s) = INSTALLED.get() {
+        s.redact_value(v);
+    }
+}
+
 /// Byte ranges [`redact`] would replace; empty when nothing is installed.
 pub fn redact_spans(text: &str) -> Vec<Range<usize>> {
-    INSTALLED.get().map_or_else(Vec::new, |s| s.redact_spans(text))
+    INSTALLED
+        .get()
+        .map_or_else(Vec::new, |s| s.redact_spans(text))
 }
 
 /// Longest literal [`redact_spans`] can match; `0` when nothing is installed.

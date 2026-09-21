@@ -15,6 +15,7 @@ pub mod laya;
 pub mod log;
 pub mod question;
 pub mod subject;
+pub mod training;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,10 +24,14 @@ use std::time::Duration;
 use kameo::actor::Spawn;
 use serde::{Deserialize, Serialize};
 
-pub use engine::{AllStats, Engine, GetMode, Loader, Oracle, Record, Report, SetMode, Stats, Warm};
+pub use engine::{
+    AllStats, Capture, Engine, GetMode, GetTrain, Loader, Oracle, Record, Report, SetMode,
+    SetTrain, Stats, Warm,
+};
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
 pub use log::FamilyStats;
+pub use training::TrainingInfo;
 pub use question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
@@ -137,6 +142,7 @@ struct FamilyPatch {
     budget: Option<Duration>,
     #[serde(default, deserialize_with = "opt_duration")]
     escalate_budget: Option<Duration>,
+    train: Option<bool>,
 }
 
 impl FamilyPatch {
@@ -155,6 +161,9 @@ impl FamilyPatch {
         }
         if let Some(b) = self.escalate_budget {
             g.escalate_budget = b;
+        }
+        if let Some(t) = self.train {
+            g.train = t;
         }
     }
 }
@@ -350,6 +359,11 @@ mod tests {
         let cfg: DecisionConfig =
             serde_yaml::from_str("families:\n  nobody: { mode: active }\n").unwrap();
         assert_eq!(cfg.families.len(), 6);
+        // 57 §11: `train` patches like `mode`, default false everywhere.
+        assert!(cfg.families.values().all(|g| !g.train));
+        let train: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { train: true }\n").unwrap();
+        assert!(train.families.iter().all(|(k, g)| g.train == k.starts_with("meeting.")), "{:?}", train.families);
+        assert_eq!(train.families["meeting.kind"].mode, Mode::Shadow);
     }
 
     #[test]

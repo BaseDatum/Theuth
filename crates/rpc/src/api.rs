@@ -955,6 +955,14 @@ pub trait Api {
     /// reason, tier-2 rows, p50/p95, shadow agreement.
     #[method(name = "decision_stats")]
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
+    /// 57 §11.4: whether the families under `prefix` (`meeting`) capture training examples
+    /// locally, and how much is on disk (`<data_dir>/decisions/training/<prefix>/`).
+    #[method(name = "decision_training")]
+    async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
+    /// Persist `decision.families.<prefix>: { mode, train }` and apply it live; effective from
+    /// the next batch. A failed config write changes nothing.
+    #[method(name = "set_decision_training")]
+    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
     async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
@@ -2771,6 +2779,14 @@ impl ApiServer for Server {
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::AllStats).await
+    }
+
+    async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetTrain { prefix }).await
+    }
+
+    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on }).await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {
