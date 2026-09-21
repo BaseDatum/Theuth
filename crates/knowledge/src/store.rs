@@ -222,6 +222,36 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Design 59 §7.1: a concept that already has a document gets the new file
+/// text imported as one block-diff transaction, so an edit that arrived
+/// through the file (`knowledge_put`, `write`, `restore`, `sync`) lands in
+/// the open editor. Migration is on demand — no document is created here —
+/// and the document's own export is recognised by hash and skipped. Fire and
+/// forget: the write path never waits on the document actor or its helper.
+fn notify_document(id: String, path: PathBuf) {
+    let Some(docs) = document::Handle::lookup() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let Some(doc) = docs.resolve_knowledge(&id).await else {
+            return;
+        };
+        let text = match tokio::fs::read_to_string(&path).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(id, error = %e, "knowledge → document import skipped: unreadable");
+                return;
+            }
+        };
+        if let Err(e) = docs
+            .import_markdown(doc, text, document::Principal::File)
+            .await
+        {
+            tracing::warn!(id, error = %e, "knowledge → document import failed");
+        }
+    });
+}
+
 /// `okf::index::regenerate_indexes` minus dot-directories: the crate's walk
 /// lists `.git` under `# Subdirectories`. Same output otherwise (deepest-first
 /// so a parent reuses its children's descriptions); files whose text is
@@ -520,6 +550,7 @@ impl Knowledge {
                 out.added += 1;
             }
             self.upsert(&ix).await?;
+            notify_document(ix.meta.id.clone(), self.root.join(&ix.path));
             written.push(PathBuf::from(&ix.path));
             names.push(format!("edit {}", ix.meta.id));
             events.push((ix.meta.id, KnowledgeOp::Put));
@@ -703,6 +734,16 @@ impl Knowledge {
         self.remove_rows(&id).await?;
         removed.sort();
         self.commit(written, removed, entry).await;
+        if let Some(docs) = document::Handle::lookup() {
+            let id = id.clone();
+            tokio::spawn(async move {
+                if let Some(doc) = docs.resolve_knowledge(&id).await
+                    && let Err(e) = docs.delete(doc).await
+                {
+                    tracing::warn!(id, error = %e, "knowledge → document delete failed");
+                }
+            });
+        }
         self.rt
             .publish(KnowledgeChanged {
                 id,
@@ -899,6 +940,7 @@ impl Knowledge {
             })
             .await??;
         self.upsert(&ix).await?;
+        notify_document(cid.to_string(), cid.to_path(&self.root));
         touched.push(rel);
         let commit = self.commit(touched, Vec::new(), message.to_owned()).await;
         Ok(Written {

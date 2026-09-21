@@ -8956,6 +8956,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "document",
  "figment",
  "gix",
  "kameo",

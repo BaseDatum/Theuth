@@ -16,6 +16,12 @@
 //!   [`RevisionOf`], [`Restore`], [`SyncNow`], [`search::SearchConcepts`],
 //!   [`search::SearchHistory`], [`search::ReadRevision`], [`search::RefreshSearch`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
+//!
+//! Design 59 §7.1: a concept open in the BlockNote editor is a `document`;
+//! its export rewrites `<id>.md`, and this plugin hears [`document::Exported`]
+//! and runs `sync` so the file is indexed and committed like any other edit.
+//! Writes through the store hand the new text back to the document by block
+//! diff (`store::notify_document`); `delete` moves the document to `.trash`.
 
 use std::sync::Arc;
 
@@ -177,6 +183,27 @@ pub struct Restore {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct SyncNow;
 
+impl Message<document::Exported> for KnowledgeActor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        m: document::Exported,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if !matches!(m.binding, document::Binding::Knowledge(_)) {
+            return;
+        }
+        // The editor rewrote a concept file (59 §4.3): index + commit it (10 §2.3 step 6).
+        if let Err(e) = self.k.sync().await {
+            tracing::warn!(
+                error = format!("{e:#}"),
+                "knowledge sync after document export failed"
+            );
+        }
+    }
+}
+
 impl Message<Handle> for KnowledgeActor {
     type Reply = Arc<Knowledge>;
 
@@ -319,8 +346,13 @@ impl runtime::Plugin for KnowledgePlugin {
                 return Ok(());
             }
         };
-        let actor = KnowledgeActor::spawn(KnowledgeActor { k: k.clone() });
+        let actor = KnowledgeActor::spawn_with_mailbox(
+            KnowledgeActor { k: k.clone() },
+            runtime::subscriber_mailbox(),
+        );
         actor.register(KNOWLEDGE_ACTOR)?;
+        rt.subscribe::<KnowledgeActor, document::Exported>(&actor)
+            .await;
 
         // First use of the registry (00 §4, 12 §2).
         let rt = rt.clone();

@@ -427,7 +427,9 @@ mod tests {
         let msg = "knowledge mutations are disabled in a private session";
         let e = PutTool(k.clone()).call(put(), cx(true)).await.unwrap_err();
         assert_eq!(e.to_string(), msg);
-        let id = IdArgs { id: "facts/x".into() };
+        let id = IdArgs {
+            id: "facts/x".into(),
+        };
         let e = DeleteTool(k.clone()).call(id, cx(true)).await.unwrap_err();
         assert_eq!(e.to_string(), msg);
         let restore = RestoreArgs {
