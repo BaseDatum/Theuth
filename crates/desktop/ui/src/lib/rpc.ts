@@ -89,6 +89,8 @@ export const queryKeys = {
   meetingSpeakers: ['meeting-speakers'] as const,
   /** `meeting_oracle_mode()` (57 §3.4): Settings → Meetings switch and the island's mode badge. */
   meetingOracleMode: ['meeting-oracle-mode'] as const,
+  /** `decision_loaded()` (57 §2.1): the "Decision models loaded now" line. */
+  decisionLoaded: ['decision-loaded'] as const,
   // 53 (05 §7): the brief cache — `briefs` prefixes every list/search page; a `BriefChanged` invalidates all of it.
   briefs: ['briefs'] as const,
   briefsList: (tag: string | null) => ['briefs', 'list', tag] as const,

@@ -186,10 +186,12 @@ pub struct LoadedInfo {
     /// Checkpoint name (`default`, `browser`).
     pub checkpoint: String,
     /// Seconds since the session was installed.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub since_secs: u64,
     /// The **whole daemon's** memory in MB, not this checkpoint's share: one number, the same
     /// on every entry (57 §2.1 item 4). macOS `phys_footprint` (Activity Monitor's Memory);
     /// resident set on Linux — see [`crate::ProcessMemory`].
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub rss_mb: u64,
 }
 

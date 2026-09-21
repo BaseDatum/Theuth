@@ -37,6 +37,7 @@ import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { ModeInfo } from '@/rpc/bindings/ModeInfo'
 import type { Mode } from '@/rpc/bindings/Mode'
 import type { FamilyStats } from '@/rpc/bindings/FamilyStats'
+import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Permissions } from '@/rpc/bindings/Permissions'
 import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
@@ -338,6 +339,8 @@ export interface Api {
   set_meeting_oracle_mode(mode: Mode): Promise<ModeInfo>
   /** 57 §7: today's decision log folded per family (mode, asks, accepts, escalations, tier-2 rows, p50/p95, shadow agreement). */
   decision_stats(): Promise<FamilyStats[]>
+  /** 57 §2.1 item 4: the decision checkpoints resident right now (`[]` at idle); `rss_mb` is the whole daemon's. */
+  decision_loaded(): Promise<LoadedInfo[]>
   meeting_tap(topic: TopicId): Promise<null>
   meeting_topics(): Promise<Topic[]>
   /** `transcript.json` (04 §3). */
@@ -496,6 +499,7 @@ export const METHODS = [
   'computer_permissions',
   'context_items',
   'create_session',
+  'decision_loaded',
   'decision_stats',
   'delete_secret',
   'delete_session',

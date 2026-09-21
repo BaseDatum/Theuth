@@ -223,6 +223,7 @@ async fn export_bindings() {
         decision::ModeInfo,
         decision::FamilyStats,
         decision::TrainingInfo,
+        decision::LoadedInfo,
         voice::AudioSource,
         surface::Spec,
         surface::Element,

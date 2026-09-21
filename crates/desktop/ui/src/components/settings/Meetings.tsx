@@ -12,6 +12,7 @@ import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-sett
 import { queryKeys, useApi } from '@/lib/rpc'
 import { probeShortcut } from '@/lib/shortcuts'
 import { setHiddenFromCapture } from '@/lib/tauri'
+import type { LoadedInfo } from '@/rpc/bindings/LoadedInfo'
 import type { Mode } from '@/rpc/bindings/Mode'
 
 /** 57 §3.4: one line per position. */
@@ -52,6 +53,7 @@ export function Meetings() {
       </Section>
       <Section title="Local decision oracle">
         <OracleSwitch />
+        <DecisionLoaded />
       </Section>
       <Section title="Enrolled speakers">
         {speakers.isError && <Empty>{errorText(speakers.error)}</Empty>}
@@ -109,6 +111,35 @@ function OracleSwitch() {
       </ToggleGroup>
     </Row>
   )
+}
+
+/** 57 §2.1 item 4: what the daemon holds resident right now, refreshed every 10 s. One component so the Labs pane can take it over. */
+export function DecisionLoaded() {
+  const api = useApi()
+  const loaded = useQuery({ queryKey: queryKeys.decisionLoaded, queryFn: () => api.decision_loaded(), refetchInterval: 10_000 })
+  return (
+    <Row
+      label="Decision models loaded now"
+      description="A checkpoint is resident only while a meeting records or a browser session runs the loop; released at stop / close, or after a few idle minutes."
+    >
+      <span className="text-sm text-muted-foreground" aria-live="polite">
+        {loaded.isError ? errorText(loaded.error) : loadedText(loaded.data)}
+      </span>
+    </Row>
+  )
+}
+
+/** `none` / `meeting · 903 MB · 4 min` (`default` is the meeting checkpoint). */
+export function loadedText(infos: LoadedInfo[] | undefined): string {
+  if (!infos || infos.length === 0) return 'none'
+  return infos
+    .map((i) => {
+      const name = i.checkpoint === 'default' ? 'meeting' : i.checkpoint
+      const mins = Math.floor(i.since_secs / 60)
+      const since = mins < 1 ? `${i.since_secs} s` : `${mins} min`
+      return `${name} · ${i.rss_mb} MB · ${since}`
+    })
+    .join(' / ')
 }
 
 /** A meeting global shortcut: probed with the plugin (a conflict rejects) before it is saved. */
