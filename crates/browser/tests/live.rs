@@ -318,6 +318,73 @@ async fn drives_fixture_page() {
         "read after wait: {read}"
     );
 
+    // 57 §4.1: `browser_run` on the fixture with a scripted oracle standing in for the browser
+    // head — active mode types the quoted value, submits, sees the echo and says DONE; shadow
+    // mode decides one step, hands back, and the model's own next click labels it.
+    let run_tool = kit
+        .tools
+        .iter()
+        .find(|t| t.spec().name == "browser_run")
+        .expect("browser_run registered (decision.families.browser defaults to shadow)");
+    assert_eq!(run_tool.spec().risk, tools::Risk::Mutating);
+    assert!(run_tool.spec().description.contains("up to `max_steps`"));
+    let engine = scripted_engine(&data_dir);
+    kit.ok("browser_open", json!({ "url": format!("http://127.0.0.1:{port}/") })).await;
+    let run = kit
+        .call("browser_run", json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }))
+        .await;
+    assert!(!run.is_error, "browser_run: {}", run.content);
+    let lines: Vec<&str> = run.content.lines().collect();
+    assert!(lines[0].starts_with("browser_run (active): 3 step(s)"), "{}", run.content);
+    assert!(lines[1].starts_with("step 1: TYPE_TEXT 0.90 [1] \"textbox\" (textbox) 1.00 = 'hello loop'"), "{}", run.content);
+    assert!(lines[2].starts_with("step 2: CLICK 0.90 [2] \"Go\" (button) 0.90"), "{}", run.content);
+    assert!(lines[3].starts_with("step 3: DONE 0.90"), "{}", run.content);
+    assert!(run.content.contains("stopped: DONE"), "{}", run.content);
+    assert!(run.content.contains("/submitted"), "{}", run.content);
+    assert!(!run.content.contains("Continue with the browser_* tools"), "{}", run.content);
+    let read = kit.ok("browser_read", json!({})).await;
+    assert!(read.contains("you sent: hello loop"), "after browser_run: {read}");
+
+    // Shadow: one decision, nothing executed, the hand-back carries the element listing.
+    engine
+        .ask(decision::SetMode {
+            prefix: "browser".into(),
+            mode: decision::Mode::Shadow,
+        })
+        .await
+        .expect("set mode");
+    kit.ok("browser_open", json!({ "url": format!("http://127.0.0.1:{port}/") })).await;
+    let shadow = kit
+        .call("browser_run", json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }))
+        .await;
+    assert!(!shadow.is_error, "{}", shadow.content);
+    assert!(shadow.content.starts_with("browser_run (shadow): 1 step(s)"), "{}", shadow.content);
+    assert!(shadow.content.contains("step 1: TYPE_TEXT"), "{}", shadow.content);
+    assert!(shadow.content.contains("stopped: shadow mode"), "{}", shadow.content);
+    assert!(shadow.content.contains("Continue with the browser_* tools"), "{}", shadow.content);
+    assert!(shadow.content.contains("ref=e1"), "{}", shadow.content);
+    let read = kit.ok("browser_read", json!({})).await;
+    assert!(!read.contains("you sent"), "shadow must not act: {read}");
+    // The model disagrees (clicks Go instead of typing): both shadowed rows get `corrected`.
+    kit.ok("browser_elements", json!({})).await; // a read settles nothing
+    kit.call("browser_click", json!({ "ref": "e2" })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stats = engine
+        .ask(decision::Stats {
+            family: "browser.operation".into(),
+        })
+        .await
+        .expect("stats");
+    assert_eq!(stats.asks, 4, "{stats:?}");
+    assert_eq!(stats.agreement, Some(0.0), "{stats:?}");
+    let stats = engine
+        .ask(decision::Stats {
+            family: "browser.type_target".into(),
+        })
+        .await
+        .expect("stats");
+    assert_eq!(stats.agreement, Some(0.0), "{stats:?}");
+
     kit.ok("browser_close", json!({})).await;
 
     let closed = actor
@@ -336,6 +403,114 @@ async fn drives_fixture_page() {
 
     eprintln!("live test body took {:?}", started.elapsed());
     let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// A stand-in for the browser head: step 1 `TYPE_TEXT` into the first editable, step 2
+/// `CLICK` the `(button)`, step 3 `DONE`, cyclic. `build` encodes the pick in `input_ids[1]`
+/// (it sees the question; `run` sees rows), P 0.9 on the pick.
+struct Scripted {
+    step: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl decision::Oracle for Scripted {
+    fn model_sha(&self) -> decision::engine::ModelSha {
+        Arc::new(parking_lot::Mutex::new("scripted".into()))
+    }
+    fn build(&self, q: &decision::Question) -> Result<decision::laya::Sequence, String> {
+        let decision::Question::Choice { candidates, .. } = q else {
+            return Err("choice only".into());
+        };
+        let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        let step = self.step.load(std::sync::atomic::Ordering::SeqCst) % 3;
+        let pick = if ids.contains(&"DONE") {
+            let want = ["TYPE_TEXT", "CLICK", "DONE"][step];
+            ids.iter().position(|i| *i == want).unwrap_or(ids.len() - 1)
+        } else if candidates.iter().any(|c| c.text.contains("(button)")) && !candidates.iter().any(|c| c.text.starts_with("[1] textbox")) {
+            candidates.iter().position(|c| c.text.contains("(button)")).unwrap()
+        } else {
+            0
+        };
+        let k = candidates.len();
+        let mut ids = vec![decision::laya::CLS, pick as i64, decision::laya::SEP];
+        let markers: Vec<i64> = (0..k)
+            .map(|_| {
+                let m = ids.len() as i64;
+                ids.extend([decision::laya::MASK, 9]);
+                m
+            })
+            .collect();
+        ids.extend([decision::laya::SEP, 11, decision::laya::SEP]);
+        Ok(decision::laya::Sequence {
+            attention_mask: vec![1; ids.len()],
+            marker_mask: vec![true; k],
+            input_ids: ids,
+            marker_pos: markers,
+            qtype: 0,
+            truncated: false,
+            state_cut: false,
+            markers_lost: false,
+        })
+    }
+    fn run(&mut self, rows: &[decision::laya::Sequence]) -> anyhow::Result<Vec<decision::laya::RowOut>> {
+        self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let k = r.marker_pos.len();
+                let pick = r.input_ids[1] as usize;
+                let mut probs = vec![if k > 1 { 0.1 / (k - 1) as f32 } else { 0.0 }; k];
+                probs[pick] = if k > 1 { 0.9 } else { 1.0 };
+                decision::laya::RowOut {
+                    logits: vec![0.0; k],
+                    probs,
+                    temperature: 1.0,
+                    act_p: 0.5,
+                    confidence: 0.9,
+                }
+            })
+            .collect())
+    }
+    fn load_time(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// The decision engines the loop talks to: `decision` (default) and `decision/browser`, the
+/// browser families active, both on the [`Scripted`] oracle (the files are touched so the
+/// engine's presence check passes).
+fn scripted_engine(data_dir: &std::path::Path) -> kameo::actor::ActorRef<decision::Engine> {
+    let models = data_dir.join("models");
+    for dir in ["decision", "decision-browser"] {
+        for f in decision::engine::MODEL_FILES {
+            let p = models.join(dir).join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+    }
+    let mut cfg = decision::DecisionConfig::default();
+    for (k, g) in cfg.families.iter_mut() {
+        if k.starts_with("browser.") {
+            g.mode = decision::Mode::Active;
+        }
+    }
+    let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let loader: decision::Loader = Arc::new(move |_, _| {
+        Ok(Box::new(Scripted { step: step.clone() }) as Box<dyn decision::Oracle>)
+    });
+    let log = decision::log::Log::new(data_dir.join("decisions"));
+    let default = decision::Engine::spawn(decision::Engine::with_loader(
+        cfg.clone(),
+        models.join("decision"),
+        log.clone(),
+        loader.clone(),
+    ));
+    default.register(decision::DECISION_ACTOR).unwrap();
+    let browser = decision::Engine::spawn(
+        decision::Engine::with_loader(cfg, models.join("decision"), log, loader)
+            .with_checkpoint("browser", models.join("decision-browser")),
+    );
+    browser.register(decision::actor_name("browser")).unwrap();
+    default
 }
 
 fn uuid_ish() -> String {

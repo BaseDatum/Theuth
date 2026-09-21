@@ -1930,6 +1930,7 @@ dependencies = [
 name = "browser"
 version = "1.9.2"
 dependencies = [
+ "agent",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -1940,6 +1941,7 @@ dependencies = [
  "kameo",
  "obscura-js",
  "obscura-mcp",
+ "parking_lot",
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.2",
@@ -1950,6 +1952,7 @@ dependencies = [
  "tokio-util",
  "tools",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "unjar",
  "url",
