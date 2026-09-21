@@ -115,6 +115,17 @@ Threshold fitting is a procedure, not code in v0: export the family's log rows w
 
 `<data_dir>/decisions/YYYY-MM-DD.jsonl`, one row per `Ask`: ts, family, gate_version, model sha, mode, question hash (sha256 of the rendered sequence — not the text), K, raw logits (f32), temperature, calibrated probs, act_p, disposition, reason, latency_ms, then `outcome` patched by `Report` (append a second row keyed by log_id; readers fold). Text is never stored in this log — transcript and page text belong to their owners (53, 28); the opt-in training capture in §11 is a separate store with its own consent switch. `Stats` folds the current file; older files are for offline fitting.
 
+### 2.1 Checkpoint lifecycle — nothing resident at idle (Sky, 2026-09-21 night)
+
+Sky's rule: a decision checkpoint (~0.9 GB on Metal each) is in memory **only while the feature that needs it is in use** — the meeting checkpoint from `Recording` to stop, the browser checkpoint from the first `browser_run` step to the end of the browser session — never "just sitting there". Small STT/TTS/dictation models may stay resident; these may not.
+
+Today (as built through step 5): lazy load (RSS ≈ 100 MiB at daemon start, no checkpoint read until the first question); meeting warms at `Recording`; browser loads on the first `browser_run` step; each checkpoint is its own engine actor; the only release is the idle watchdog (`decision.idle_unload`, default 10 min after the last question). Two gaps: the release is timer-only (a finished meeting keeps 0.9 GB for ten minutes), and the reclaim was asserted, never measured.
+
+1. **Explicit release** — engine message `Release { checkpoint }` (drops the session; in-flight blocking runs finish on their own `Arc` and then the memory goes). Senders: `meeting` on leaving `Recording` (post-processing never asks the oracle); `browser` when the session closes / `browser_close`, and when a model turn ends without a further `browser_*` call after a `browser_run` (if the turn boundary is not observable from the browser plugin, the idle override below is the fallback and the as-built says so).
+2. **Idle as a safety net, shorter and per checkpoint** — default `idle_unload` **3m**; `checkpoints.<name>.idle_unload` override, browser default **2m** (loop steps are sub-second; a run never trips it). `Warm` never happens at daemon start or on config load; only the meeting `Recording` warm-up and a real question load a checkpoint.
+3. **Measured reclaim** — for both checkpoints, RSS before load / after first inference / after `Release` (Metal f16 and CPU f32); "after release" must be within ~50 MB of "before". If Metal keeps buffers alive, the session owns its `Device` and drops it; a fresh device per load. The numbers go in the as-built; a model-gated test asserts the bound.
+4. **Visible** — `decision_stats` gains `loaded: [{ checkpoint, since, rss_mb }]`; Labs shows *"Loaded now: none"* / *"meeting checkpoint · 903 MB · 4 min"*; `t --headless` smoke: start → nothing loaded; meeting `Recording` → default loaded; stop → nothing loaded within one watchdog tick.
+
 ## §3 First integration: meeting (53)
 
 Today (`meeting/src/lib.rs:1150-1215`, `tools.rs:24-50`): each flushed batch is steered into the meeting session; the reasoning model decides among nothing / `brief_search` / `meeting_topic` / research; cached alias hits (`cache.rs:395-434`) already bypass the model and stay as they are.
