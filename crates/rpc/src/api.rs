@@ -72,8 +72,8 @@ use tools::{
     SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
-    Key, ListTerminals, PtyInput, PtyScreen, PtyScreenReply, PtyViewport, Retention,
-    TerminalSummary,
+    Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
+    PtyScreenReply, PtyViewport, Retention, TerminalSummary,
 };
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
@@ -204,6 +204,23 @@ pub trait Api {
         text: Option<String>,
         keys: Option<Vec<Key>>,
     ) -> RpcResult<()>;
+    /// Resize a running PTY job's grid (the program gets SIGWINCH). Rows
+    /// 2–200, columns 10–400. Errors when the job is unknown or finished.
+    #[method(name = "pty_resize", with_extensions)]
+    async fn pty_resize(&self, session: SessionId, job: JobId, rows: u16, cols: u16) -> RpcResult<()>;
+    /// Attach a terminal emulator to a PTY job: first a `reset` item with
+    /// the retained buffer as escape sequences (base64), then every byte the
+    /// program writes as `data` items, in order, and `exit` once it ends.
+    /// `rows`/`cols` resize the pty before the snapshot. A client that falls
+    /// behind gets a fresh `reset` instead of a gap.
+    #[subscription(name = "subscribe_pty", unsubscribe = "unsubscribe_pty", item = PtyChunk, with_extensions)]
+    async fn subscribe_pty(
+        &self,
+        session: SessionId,
+        job: JobId,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> SubscriptionResult;
     /// Current page of `session`'s embedded browser as a base64 PNG for a live
     /// view (23 §3.2); `None` when the session has no live isolate or no open
     /// page. Polling never spawns an isolate.
@@ -1363,6 +1380,17 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     Ok(bytes)
 }
 
+/// `PtyAttach` as an RPC result; `size` resizes a running job first.
+async fn attach_pty(session: SessionId, job: &JobId, size: Option<(u16, u16)>) -> RpcResult<tools::PtyAttached> {
+    lookup::<Jobs>(JOBS_ACTOR)?
+        .ask(PtyAttach { session, id: job.clone(), size })
+        .await
+        .map_err(|e| match e {
+            SendError::HandlerError(msg) => failed(msg),
+            other => failed(other.to_string()),
+        })
+}
+
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
@@ -1545,6 +1573,85 @@ impl ApiServer for Server {
                 SendError::HandlerError(msg) => failed(msg),
                 other => failed(other.to_string()),
             })
+    }
+
+    async fn pty_resize(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        rows: u16,
+        cols: u16,
+    ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        lookup::<Jobs>(JOBS_ACTOR)?
+            .ask(PtyResize { session, id: job, rows, cols })
+            .await
+            .map_err(|e| match e {
+                SendError::HandlerError(msg) => failed(msg),
+                other => failed(other.to_string()),
+            })
+    }
+
+    async fn subscribe_pty(
+        &self,
+        pending: PendingSubscriptionSink,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> SubscriptionResult {
+        let admit = async {
+            self.authorize(ext, session).await?;
+            attach_pty(session, &job, rows.zip(cols)).await
+        };
+        let mut at = match admit.await {
+            Ok(a) => a,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        let sink = pending.accept().await?;
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let item = |c: &PtyChunk| SubscriptionMessage::from(serde_json::value::to_raw_value(c).expect("PtyChunk serializes"));
+        tokio::spawn(async move {
+            loop {
+                let reset = PtyChunk::Reset { data: b64(&at.replay), rows: at.rows, cols: at.cols };
+                if sink.send(item(&reset)).await.is_err() {
+                    return;
+                }
+                if let Some(exit) = at.exit {
+                    let _ = sink.send(item(&PtyChunk::Exit { exit })).await;
+                    return;
+                }
+                loop {
+                    let out = tokio::select! {
+                        _ = sink.closed() => return,
+                        r = at.rx.recv() => r,
+                    };
+                    let chunk = match out {
+                        Ok(PtyOut::Data(bytes)) => PtyChunk::Data { data: b64(&bytes) },
+                        Ok(PtyOut::Exit(exit)) => {
+                            let _ = sink.send(item(&PtyChunk::Exit { exit })).await;
+                            return;
+                        }
+                        // Behind by more than the ring: start over from a snapshot.
+                        Err(broadcast::error::RecvError::Lagged(_)) => break,
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    };
+                    if sink.send(item(&chunk)).await.is_err() {
+                        return;
+                    }
+                }
+                at = match attach_pty(session, &job, None).await {
+                    Ok(a) => a,
+                    Err(_) => return,
+                };
+            }
+        });
+        Ok(())
     }
 
     async fn browser_screenshot(

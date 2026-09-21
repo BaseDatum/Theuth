@@ -389,7 +389,9 @@ Each step leaves `theuth` green.
   `wait` on a pattern cover both halves.
 - **Stripped-bytes view for the model** (omp). The whole point of the pty
   is programs that redraw; a screen is the only faithful reading.
-- **`resize`.** 120×40 until a transcript shows a program that needs more.
+- ~~`resize`~~ — reversed by 55 §11: `pty_resize` (RPC, not a tool) follows
+  the desktop viewer's grid; 120×40 at `start` and restored when the viewer
+  closes. The model still has no `resize`.
 - ~~Input from a human~~ — reversed by 55: `pty_input` (RPC, not a tool)
   types into a PTY job from the TUI/desktop viewer; `Key` grew
   `ctrl`/`alt`/`f`/`shift_tab`/`insert`/`paste`; arrows follow the

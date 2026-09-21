@@ -52,8 +52,8 @@ pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
 };
 pub use pty::{
-    Cell, Color, Key, ListTerminals, PtyInput, PtyPage, PtyScreen, PtyScreenReply, PtyViewport,
-    Style, StyledRun, TerminalSummary,
+    Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
+    PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,

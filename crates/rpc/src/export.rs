@@ -126,6 +126,7 @@ async fn export_bindings() {
         tools::PtyViewport,
         tools::PtyScreenReply,
         tools::PtyPage,
+        tools::PtyChunk,
         tools::StyledRun,
         tools::Style,
         tools::Color,

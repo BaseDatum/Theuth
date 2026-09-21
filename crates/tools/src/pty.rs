@@ -25,7 +25,7 @@ use regex::Regex;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
 use crate::activity::{self, Activity, Kind, Tracked};
 use crate::jobs::{
@@ -33,10 +33,16 @@ use crate::jobs::{
 };
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
-/// Screen height (22 §1.9).
+/// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
 const ROWS: u16 = 40;
-/// Screen width (22 §1.9).
+/// Screen width at `start` (22 §1.9).
 const COLS: u16 = 120;
+/// `pty_resize` bounds: a phone is ~40 columns, a wide monitor ~300.
+const ROWS_MAX: u16 = 200;
+const COLS_MAX: u16 = 400;
+/// Output chunks a slow `subscribe_pty` client may fall behind before it is
+/// resynced from a fresh snapshot.
+const STREAM_CHUNKS: usize = 256;
 /// `send` replies once no bytes arrived for this long (22 §4.5)…
 const SETTLE_QUIET: Duration = Duration::from_millis(300);
 /// …or after this long regardless.
@@ -450,6 +456,12 @@ pub(crate) struct PtyHandle {
     /// (51 §7.3): equal revisions mean an identical retained buffer.
     revision: AtomicU64,
     output: Notify,
+    /// Raw output as it arrived, for `subscribe_pty` viewers running their
+    /// own emulator; sent under `parser`'s lock so a subscriber that took its
+    /// snapshot under the same lock sees every byte after it exactly once.
+    stream: broadcast::Sender<PtyOut>,
+    /// The master side, kept for `resize`; the job task takes it at exit.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     /// `== pgid`: the child is a session leader.
     pid: u32,
     /// Set by the job task just before it finishes; `send`/`wait` loops read it.
@@ -457,6 +469,15 @@ pub(crate) struct PtyHandle {
     /// When a human last typed into this terminal (`pty_input`, 55 §2.3);
     /// tool replies say so for [`USER_ATTACHED`] after.
     user_input: Mutex<Option<Instant>>,
+}
+
+/// One item of [`PtyHandle::stream`].
+#[derive(Clone, Debug)]
+pub enum PtyOut {
+    /// Bytes the program wrote, verbatim.
+    Data(Arc<[u8]>),
+    /// The job ended; nothing follows.
+    Exit(JobExit),
 }
 
 /// The screen cloned under the lock, with what else a page reports.
@@ -473,6 +494,8 @@ pub(crate) struct PtySnapshot {
     viewport: PtyViewport,
     origin: u32,
     retained: u32,
+    rows: u16,
+    cols: u16,
     alternate: bool,
     cursor_pos: (u16, u16),
     cursor_hidden: bool,
@@ -523,6 +546,70 @@ impl PtyHandle {
     fn exit(&self) -> Option<JobExit> {
         lock(&self.exit).clone()
     }
+
+    /// Current `(rows, cols)`.
+    pub(crate) fn size(&self) -> (u16, u16) {
+        lock(&self.parser).screen().size()
+    }
+
+    /// Resize the grid and tell the program (SIGWINCH). The parser learns
+    /// the size first so the redraw it triggers is parsed at the new width.
+    pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        if !(2..=ROWS_MAX).contains(&rows) || !(10..=COLS_MAX).contains(&cols) {
+            return Err(format!("size {cols}x{rows} out of range (10..={COLS_MAX} x 2..={ROWS_MAX})"));
+        }
+        let master = lock(&self.master);
+        let Some(master) = master.as_ref() else {
+            return Err("job finished".into());
+        };
+        {
+            let mut p = lock(&self.parser);
+            if p.screen().size() == (rows, cols) {
+                return Ok(());
+            }
+            p.screen_mut().set_size(rows, cols);
+            self.revision.fetch_add(1, SeqCst);
+        }
+        master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("resize pty: {e:#}"))
+    }
+
+    /// Subscribe and snapshot under one lock: the replay plus every byte
+    /// after it is the whole terminal. The replay is formatted off the lock.
+    pub(crate) fn attach(&self) -> (Vec<u8>, (u16, u16), broadcast::Receiver<PtyOut>, Option<JobExit>) {
+        let (screen, rx) = {
+            let p = lock(&self.parser);
+            (p.screen().clone(), self.stream.subscribe())
+        };
+        let size = screen.size();
+        (replay(screen), size, rx, self.exit())
+    }
+}
+
+/// Escape sequences that rebuild a terminal from the retained buffer: every
+/// scrollback row on its own line, pushed off the top so the viewer's own
+/// scrollback holds it, then the live screen with its cursor and input modes.
+fn replay(mut screen: vt100::Screen) -> Vec<u8> {
+    let (rows, cols) = screen.size();
+    let mut out = Vec::new();
+    if !screen.alternate_screen() {
+        screen.set_scrollback(usize::MAX);
+        let retained = screen.scrollback();
+        for off in (1..=retained).rev() {
+            screen.set_scrollback(off);
+            if let Some(row) = screen.rows_formatted(0, cols).next() {
+                out.extend_from_slice(&row);
+            }
+            out.extend_from_slice(b"\x1b[m\r\n");
+        }
+        screen.set_scrollback(0);
+        for _ in 0..rows {
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+    out.extend_from_slice(&screen.state_formatted());
+    out
 }
 
 impl PtySnapshot {
@@ -561,8 +648,8 @@ impl PtySnapshot {
             viewport: self.viewport,
             origin: self.origin,
             retained: self.retained,
-            rows: ROWS,
-            cols: COLS,
+            rows: self.rows,
+            cols: self.cols,
             alternate: self.alternate,
             cursor,
             wrapped: self.wrapped,
@@ -638,7 +725,8 @@ fn render(
     } = cap;
     screen.set_scrollback(usize::MAX);
     let retained = screen.scrollback();
-    let live = usize::from(ROWS);
+    let (rows, cols) = screen.size();
+    let live = usize::from(rows);
     let (start, end, viewport) = match viewport {
         PtyViewport::Live => (retained, retained + live, viewport),
         PtyViewport::History { offset, height } => {
@@ -666,8 +754,8 @@ fn render(
         if in_page && i == start {
             page_at = text.len();
         }
-        let mut row = in_page.then(|| Vec::with_capacity(usize::from(COLS)));
-        for c in 0..COLS {
+        let mut row = in_page.then(|| Vec::with_capacity(usize::from(cols)));
+        for c in 0..cols {
             let at = text.len();
             let cell = screen.cell(r, c);
             let continuation = cell.is_some_and(vt100::Cell::is_wide_continuation);
@@ -747,6 +835,8 @@ fn render(
         viewport,
         origin: start as u32,
         retained: retained as u32,
+        rows,
+        cols,
         alternate: screen.alternate_screen(),
         cursor_pos: screen.cursor_position(),
         cursor_hidden: screen.hide_cursor(),
@@ -841,6 +931,63 @@ pub struct PtyInput {
     pub text: Option<String>,
     /// Keys after `text`.
     pub keys: Vec<Key>,
+}
+
+/// `ask` → `Result<PtyAttached, String>`: a viewer with its own terminal
+/// emulator attaches to a PTY job: the retained buffer as escape sequences,
+/// then every byte the program writes, on a broadcast receiver. `size`
+/// resizes the pty first (a running job only). `Err` = no such job / not a
+/// PTY job / a bad size.
+pub struct PtyAttach {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job (exact id).
+    pub id: JobId,
+    /// `(rows, cols)` the viewer shows.
+    pub size: Option<(u16, u16)>,
+}
+
+/// Reply to [`PtyAttach`].
+#[derive(kameo::Reply)]
+#[allow(missing_docs)]
+pub struct PtyAttached {
+    /// Rebuilds the retained buffer and live screen in a fresh terminal.
+    pub replay: Vec<u8>,
+    /// Grid size the replay assumes.
+    pub rows: u16,
+    pub cols: u16,
+    /// Everything after `replay`, in order; `Lagged` means re-attach.
+    pub rx: broadcast::Receiver<PtyOut>,
+    /// Set when the job already ended: `rx` yields nothing more.
+    pub exit: Option<JobExit>,
+}
+
+/// `ask` → `Result<(), String>`: resize a running PTY job's grid; the
+/// program gets SIGWINCH. `Err` names the job's exit, a non-PTY job, or a
+/// size out of range.
+#[allow(missing_docs)]
+pub struct PtyResize {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job (exact id).
+    pub id: JobId,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// One `subscribe_pty` item.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(missing_docs)]
+pub enum PtyChunk {
+    /// Start over: reset the terminal to `rows`×`cols` and write `data`
+    /// (base64). First item, and again after the client fell behind.
+    Reset { data: String, rows: u16, cols: u16 },
+    /// Program output (base64), in order.
+    Data { data: String },
+    /// The job ended; the subscription closes.
+    Exit { exit: JobExit },
 }
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
@@ -1067,6 +1214,8 @@ impl Message<Launch<StartPty>> for Jobs {
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
+            stream: broadcast::channel(STREAM_CHUNKS).0,
+            master: Mutex::new(Some(s.master)),
             pid: s.pid,
             exit: Mutex::new(None),
             user_input: Mutex::new(None),
@@ -1095,7 +1244,6 @@ impl Message<Launch<StartPty>> for Jobs {
             log_path: log_path.clone(),
             log: log.clone(),
             pty: Arc::clone(&pty),
-            master: s.master,
             child: s.child,
             rx,
             cancel: cancel.clone(),
@@ -1193,16 +1341,19 @@ impl Message<ListTerminals> for Jobs {
             .filter_map(|s| self.sessions.get(s).map(|sj| (*s, sj)))
             .flat_map(|(session, sj)| {
                 sj.jobs.iter().filter_map(move |j| {
-                    j.pty.as_ref().map(|p| TerminalSummary {
-                        session,
-                        id: j.id.clone(),
-                        name: j.name.clone(),
-                        command: j.command.clone(),
-                        state: j.state(),
-                        rows: ROWS,
-                        cols: COLS,
-                        revision: p.revision(),
-                        epoch: None,
+                    j.pty.as_ref().map(|p| {
+                        let (rows, cols) = p.size();
+                        TerminalSummary {
+                            session,
+                            id: j.id.clone(),
+                            name: j.name.clone(),
+                            command: j.command.clone(),
+                            state: j.state(),
+                            rows,
+                            cols,
+                            revision: p.revision(),
+                            epoch: None,
+                        }
                     })
                 })
             })
@@ -1254,29 +1405,73 @@ impl Message<PtyScreen> for Jobs {
     }
 }
 
+impl Jobs {
+    /// The handle of a PTY job by exact id; `running` also refuses a finished one.
+    fn pty_handle(&self, session: SessionId, id: &JobId, running: bool) -> Result<Arc<PtyHandle>, String> {
+        let job = self
+            .sessions
+            .get(&session)
+            .and_then(|s| s.jobs.iter().find(|j| j.id == *id));
+        match job {
+            None => Err("no such job".to_owned()),
+            Some(Job { exit: Some(e), .. }) if running => Err(format!("{id} {e}")),
+            Some(Job { pty: None, .. }) => Err(format!("{id} is not a PTY job")),
+            Some(Job { pty: Some(p), .. }) => Ok(Arc::clone(p)),
+        }
+    }
+}
+
 impl Message<PtyInput> for Jobs {
     type Reply = DelegatedReply<Result<(), String>>;
 
     async fn handle(&mut self, m: PtyInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let job = self
-            .sessions
-            .get(&m.session)
-            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id));
-        let pty = match job {
-            None => Err("no such job".to_owned()),
-            Some(Job { exit: Some(e), .. }) => Err(format!("{} {e}", m.id)),
-            Some(Job { pty: None, .. }) => Err(format!("{} is not a PTY job", m.id)),
-            Some(Job { pty: Some(p), .. }) => Ok(Arc::clone(p)),
-        };
-        match pty {
+        match self.pty_handle(m.session, &m.id, true) {
             Err(e) => tx.send(Err(e)),
             Ok(pty) => {
                 tokio::spawn(async move { tx.send(write(&pty, m.text.as_deref(), &m.keys, true).await) });
             }
         }
         reply
+    }
+}
+
+impl Message<PtyAttach> for Jobs {
+    type Reply = DelegatedReply<Result<PtyAttached, String>>;
+
+    async fn handle(&mut self, m: PtyAttach, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let pty = match self.pty_handle(m.session, &m.id, false) {
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+            Ok(p) => p,
+        };
+        // A finished job keeps its last size; the viewer adopts it.
+        if let Some((rows, cols)) = m.size
+            && pty.exit().is_none()
+            && let Err(e) = pty.resize(rows, cols)
+        {
+            tx.send(Err(e));
+            return reply;
+        }
+        // The replay of up to 552 rows is formatted off the mailbox.
+        tokio::task::spawn_blocking(move || {
+            let (replay, (rows, cols), rx, exit) = pty.attach();
+            tx.send(Ok(PtyAttached { replay, rows, cols, rx, exit }));
+        });
+        reply
+    }
+}
+
+impl Message<PtyResize> for Jobs {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PtyResize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.pty_handle(m.session, &m.id, true)?.resize(m.rows, m.cols)
     }
 }
 
@@ -1382,7 +1577,6 @@ struct Run {
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
     pty: Arc<PtyHandle>,
-    master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: mpsc::Receiver<Vec<u8>>,
     cancel: Arc<Notify>,
@@ -1510,7 +1704,9 @@ async fn run(mut j: Run) {
             Err(_) => break false,
         }
     };
-    drop(j.master); // closes the slave: anything that escaped the group gets SIGHUP
+    // Closes the slave: anything that escaped the group gets SIGHUP. Taken
+    // from the handle so a late `resize` sees "job finished".
+    drop(lock(&j.pty.master).take());
     // Ownership is the process group, not the tty: the leader is reaped, but
     // a `&` child of it lives on in the same group whether or not it still
     // holds the slave. The result waits `SETTLE` (`KILL_WAIT` after a kill)
@@ -1547,7 +1743,11 @@ async fn run(mut j: Run) {
         }
     };
     *lock(&j.pty.exit) = Some(exit.clone());
-    j.pty.revision.fetch_add(1, SeqCst);
+    {
+        let _p = lock(&j.pty.parser);
+        j.pty.revision.fetch_add(1, SeqCst);
+        let _ = j.pty.stream.send(PtyOut::Exit(exit.clone()));
+    }
     j.pty.output.notify_waiters();
     j.rt.publish(JobEvent::Screen {
         session: j.session,
@@ -1587,6 +1787,7 @@ fn ingest(pty: &PtyHandle, log: &Mutex<Log>, carry: &mut Vec<u8>, chunk: &[u8]) 
         let mut p = lock(&pty.parser);
         p.process(chunk);
         pty.revision.fetch_add(1, SeqCst);
+        let _ = pty.stream.send(PtyOut::Data(Arc::from(chunk)));
         p.screen().cursor_position()
     };
     respond(pty, carry, chunk, cursor);
@@ -2308,6 +2509,117 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e.starts_with("j1 ")), "{err}");
+    }
+
+    /// A viewer's own emulator fed `replay` then the stream shows what the
+    /// daemon's does; `resize` changes the grid every reader reports; the
+    /// stream ends with the exit; a finished job attaches but never resizes.
+    #[tokio::test]
+    async fn attach_replays_streams_and_resizes() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx)).await.unwrap();
+        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let type_ = |text: &str| {
+            fx.jobs.ask(PtyInput {
+                session: fx.session,
+                id: JobId("j1".into()),
+                text: Some(text.into()),
+                keys: vec![Key::Enter],
+            })
+        };
+        type_("before").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let attached = fx
+            .jobs
+            .ask(PtyAttach {
+                session: fx.session,
+                id: JobId("j1".into()),
+                size: Some((24, 80)),
+            })
+            .await
+            .unwrap();
+        assert_eq!((attached.rows, attached.cols), (24, 80));
+        assert!(attached.exit.is_none());
+        let mut viewer = vt100::Parser::new(24, 80, 1000);
+        viewer.process(&attached.replay);
+        assert!(viewer.screen().contents().contains("before"), "{}", viewer.screen().contents());
+        let terms = fx
+            .jobs
+            .ask(ListTerminals {
+                sessions: vec![fx.session],
+            })
+            .await
+            .unwrap();
+        assert_eq!((terms[0].rows, terms[0].cols), (24, 80));
+
+        // Bytes after the snapshot arrive in order; the program saw SIGWINCH.
+        let mut rx = attached.rx;
+        fx.jobs
+            .ask(PtyResize {
+                session: fx.session,
+                id: JobId("j1".into()),
+                rows: 30,
+                cols: 100,
+            })
+            .await
+            .unwrap();
+        type_("after").await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let out = tokio::time::timeout_at(deadline, rx.recv()).await.unwrap().unwrap();
+            let PtyOut::Data(bytes) = out else { panic!("exit before echo") };
+            viewer.process(&bytes);
+            if viewer.screen().contents().matches("after").count() == 2 {
+                break;
+            }
+        }
+        let daemon = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j1".into()),
+                viewport: PtyViewport::Live,
+                if_revision: None,
+            })
+            .await
+            .unwrap();
+        let PtyScreenReply::Updated(page) = daemon else { panic!("expected a page") };
+        assert_eq!((page.rows, page.cols, page.lines.len()), (30, 100, 30));
+        assert!(matches!(
+            fx.jobs
+                .ask(PtyResize { session: fx.session, id: JobId("j1".into()), rows: 1, cols: 5 })
+                .await
+                .unwrap_err(),
+            kameo::error::SendError::HandlerError(e) if e.contains("out of range")
+        ));
+
+        cancel(&fx, "j1").await;
+        let exit = loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                PtyOut::Data(_) => {}
+                PtyOut::Exit(e) => break e,
+            }
+        };
+        assert_eq!(exit, JobExit::Killed);
+        finished(&fx).await;
+        // A finished job still attaches (last screen, exit set); a resize does not.
+        let again = fx
+            .jobs
+            .ask(PtyAttach {
+                session: fx.session,
+                id: JobId("j1".into()),
+                size: Some((24, 80)),
+            })
+            .await
+            .unwrap();
+        assert_eq!((again.rows, again.cols, again.exit), (30, 100, Some(JobExit::Killed)));
+        assert!(fx
+            .jobs
+            .ask(PtyResize { session: fx.session, id: JobId("j1".into()), rows: 24, cols: 80 })
+            .await
+            .is_err());
     }
 
     fn tools(fx: &Fx) -> (StartTool, SendTool, ScreenTool, WaitTool) {

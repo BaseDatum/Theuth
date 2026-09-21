@@ -161,6 +161,8 @@ export interface Api {
   ): Promise<PtyScreenReply>
   /** A human types into a running PTY job (55 §2.1): `text` verbatim, then `keys`; returns once written. */
   pty_input(session: SessionId, job: JobId, text: string | null, keys: Key[] | null): Promise<null>
+  /** Resize a running PTY job's grid (rows 2–200, cols 10–400); the program gets SIGWINCH. */
+  pty_resize(session: SessionId, job: JobId, rows: number, cols: number): Promise<null>
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
@@ -595,6 +597,7 @@ export const METHODS = [
   'peer_message',
   'pin_session',
   'pty_input',
+  'pty_resize',
   'pty_screen',
   'put_attachment',
   'put_session_attachment',

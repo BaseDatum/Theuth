@@ -36,7 +36,6 @@ export const queryKeys = {
   /** `session_cost(id)` (51 §6.5); invalidated by `ModelUsageChanged`. */
   sessionCost: (id: string) => ['session-cost', id] as const,
   terminals: (id: string) => ['terminals', id] as const,
-  ptyScreen: (session: string, job: string) => ['pty', session, job] as const,
   jobs: (id: string) => ['jobs', id] as const,
   prompt: (id: string) => ['prompt', id] as const,
   knowledge: ['knowledge'] as const,
