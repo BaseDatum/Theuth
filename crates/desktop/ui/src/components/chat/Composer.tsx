@@ -44,6 +44,9 @@ export type DraftCreate = { private: boolean; project: string | null }
 
 const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
+/** Typed-but-unsent text by session (`''` = new chat): a screen switch unmounts the composer, the draft stays.
+ * ponytail: in-memory; move to localStorage if drafts should survive a relaunch. */
+const drafts = new Map<string, string>()
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
@@ -119,7 +122,11 @@ export function Composer({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
   })
-  const [text, setText] = useState('')
+  const draftKey = session ?? ''
+  const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
+  useEffect(() => {
+    drafts.set(draftKey, text)
+  }, [draftKey, text])
   const [pastes, setPastes] = useState<Pastes>(NONE)
   const [selected, setSelected] = useState(0)
   const [busy, setBusy] = useState(false)

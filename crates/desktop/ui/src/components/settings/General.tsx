@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
+import { LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Row, Section, useAction } from '@/components/settings/shared'
@@ -66,6 +67,8 @@ export function General() {
     },
   })
   const install = useAction(installUpdate)
+  // `install_update` answers before the quit handshake runs; `isSuccess` holds until the process is gone.
+  const restarting = install.isPending || install.isSuccess
 
   return (
     <>
@@ -114,8 +117,8 @@ export function General() {
               }
             >
               {pending ? (
-                <Button variant="outline" size="sm" disabled={install.isPending} onClick={() => install.mutate(undefined)}>
-                  Install and restart
+                <Button variant="outline" size="sm" disabled={restarting} onClick={() => install.mutate(undefined)}>
+                  {restarting && <LoaderCircle className="animate-spin" />} {restarting ? 'Restarting…' : 'Install and restart'}
                 </Button>
               ) : (
                 <Button variant="outline" size="sm" disabled={check.isPending} onClick={() => check.mutate(undefined)}>
