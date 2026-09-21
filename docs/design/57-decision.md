@@ -449,3 +449,93 @@ Brief: `/tmp/laya-design/omp-step2c.md`, Sky's direction: the ONNX Runtime is bu
 
 - The bundle's `Contents/Frameworks/libonnxruntime.dylib` and the bucket copy are the same Microsoft artifact by construction (same `ort-version.env` pin), but nothing checks the installed `models/onnxruntime/VERSION` against the pin the binary was built with; a mismatch is only visible in the debug log line. Add a warning if it ever bites.
 - Homebrew (location 4) may hold a *different* ORT version; it is last for that reason.
+
+## As built — step 2d (2026-09-21): Core ML spike — Path A FAILS the §12.6 criteria; stopped before Path B
+
+Brief: `/tmp/laya-design/omp-step2d.md` plus Sky's correction (`2469ae1`: fp16 is the CoreML EP input, fp32 the CPU input, RSS ≤ 2 GiB with breakdown). Commits `63c2568` (library: fp32/fp16 outputs, `act`/`act_logits`, bucketing, CoreML EP registration + fallback + partition capture), `20b2c59` (bench on both EPs, config comment), this note. The brief's first two commit subjects were merged by file rather than by feature: the fp32 support and the CoreML registration both live in `Loaded::open`, and an intermediate `cargo check`-green state would have meant writing the function twice.
+
+### Artifacts
+
+| | fp16 (candidate for the CoreML EP) | fp32 (CPU artifact) |
+|---|---|---|
+| source | `sevenreasons/laya-onnx-fp16` (step 2) | `tozp/laya-onnx` `model.onnx` |
+| local | `~/.theuth/models/decision/model.onnx` | `~/.theuth/models/decision-fp32/model.onnx` (+ copies of `tokenizer.json`, `rl_agent_config.json`) |
+| size / sha256 | 846,269,825 B, `1e0031fd826e…` | 1,685,917,998 B, `053ee547e0c67d43574e1f8c9f4fc4ff1e1f6fc48bf7c4de1b848a1d275bcbf1` |
+| opset | 18 | 14 (TorchScript exporter, per the README) |
+| inputs | `input_ids`, `attention_mask` `i64[batch_size, sequence_length]`; `marker_pos` `i64`, `marker_mask` `bool` `[batch_size, num_options]`; `qtype` `i64[batch_size]` | same names; dims `seq_len`, `num_markers` |
+| outputs | `logits` `f16[batch_size, num_options]`, `act_logits` `f16[batch_size, 2]` | `logits` `f32[batch_size, Wherelogits_dim_1]`, **`act`** `f32[batch_size, 2]` |
+| shapes actually accepted | fully dynamic | **S = 512 only**: `seq_len` is declared symbolic but the trace baked `Reshape_4` in every attention layer to `{512, 16, 64}`; S = 128/256/300 fail with `input_shape_size == requested_shape_size was false`. B and K are dynamic (B = 1/2 × K = 3/32 all run). |
+
+The README (`/tmp/laya-design/ref/tozp-readme.md`) says only "Inputs: input_ids, attention_mask, marker_pos, marker_mask, qtype; Outputs: logits, act; opset 14; FP32 and INT8" — no preprocessing notes beyond the upstream card.
+
+**Consequence for the engine** (`Provider::Cpu` in `laya.rs`): "dynamic shapes on the CPU EP" (§12.6) is not available with this artifact; `Loaded` on CPU pads S to the checkpoint's `max_len` (512) and leaves K dynamic — one rule that runs both files ("make the engine work with whichever file is in the dir"). Cost on the fp16 Mac-CPU fallback path: none measurable today (K = 2 / S = 339: 637 ms p50 padded vs 736 ms dynamic in step 2 — run-to-run noise dominates); fp32 pays nothing because it could never run unpadded. K-padding to 32 on top costs ~+40–100 ms on CPU (table below), so K stays dynamic on CPU.
+
+### `verify_graph` / `run`
+
+Outputs may be f32 or f16; the act head may be `act_logits` or `act`; anything else is refused and named (`expected f32|f16 rank 2`, `` no output `act_logits|act` ``). `Loaded::run` extracts by element type (`floats`: borrowed `&[f32]` for fp32, converted for fp16) and finds the act output by either name. `collate(rows, bucket)` pads at least to `(S, K)`; `Loaded.bucket` is `BUCKET = (512, 32)` on the CoreML EP and `(max_len, 0)` on CPU.
+
+### CoreML EP in `ort` rc.13
+
+`ort::ep::CoreML` is behind the crate feature `coreml` (`ort-sys/coreml = []`: option-string builder only, nothing to link; under `load-dynamic` registration is the generic `SessionOptionsAppendExecutionProvider("CoreML", keys, values)` on Microsoft's dylib, which ships the EP on osx-arm64). Options set: `ModelFormat=MLProgram`, `MLComputeUnits=ALL|CPUAndNeuralEngine`, `ModelCacheDirectory=<data_dir>/cache/coreml/decision/` (rc.13 exposes it as `with_model_cache_dir`; ORT 1.27 honours it — a 418 MB `…/3066006407364578280/2_dynamic_mlprogram/` tree appeared). `RequireStaticInputShapes` left at 0 as briefed. Registered first with `error_on_failure()`; the CPU EP is ORT's implicit last resort. Partition line: `SessionBuilder::with_log_level(Info)` + `with_logger(Arc<dyn Fn>)` (a per-session user logger, so the daemon's normal ORT logging is untouched); `parse_partitions` keeps the three integers; `Loaded.partitions`, logged at info as `CoreML EP took K of M nodes in N partitions`. If the EP registers but the session fails to build, `open` logs `CoreML EP unusable (<error>; GetCapability: Some((N, M, K)))` and rebuilds on CPU with `partitions = None`, `bucket = (512, 0)`.
+
+### Measurements (M3 Max, 8 intra-op threads, ORT 1.27.0, 20 warm runs per row)
+
+**CPU EP** (`--dump`/`--ref` parity: fp32 padded vs fp32 S-only 4/4 argmax, max |Δp| 0.0000; fp16 vs fp32 4/4 argmax, **max |Δp| 0.0002**):
+
+| artifact / padding | cold load | RSS after load | first inference | RSS after first run | K2 S339 p50/p95 | K2 S512 | K5 S393 | K5 S512 | K10 S473 | K10 S512 | README 4-Q batch |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| fp32, S→512, K dynamic (**engine default on CPU**) | 4.8 s | 2309 MiB | 585 ms | **2313 MiB** | 581 / 585 | 590 / 605 | 627 / 647 | 662 / 685 | 679 / 692 | 679 / 695 | 2757 ms |
+| fp32, S→512 K→32 (`--pad`) | 4.8 s | 2309 | 625 | 2312 | 680 / 696 | 696 / 715 | 703 / 725 | 717 / 740 | 719 / 744 | 722 / 748 | 3068 |
+| fp16, S→512, K dynamic (Mac CPU fallback) | 2.2 s | 1167 | 681 | 2513 → **4065** peak | 637 / 696 | 733 / 780 | 775 / 830 | 738 / 793 | 741 / 750 | 758 / 776 | 3138 |
+
+fp32 on CPU: ~2.3 GiB flat (weights once, no casts) — half the fp16-on-CPU footprint, as §12.1 predicted — and 580–720 ms per question, above the official 193–464 ms (PyTorch, presumably with MKL/oneDNN; ORT's fp32 CPU MatMul on Apple silicon is not that). Batching does not amortise on CPU (4 questions = 4.7× one).
+
+**CoreML EP** — every attempt fell back to CPU; the rows below are the attempt, not a working accelerator:
+
+| artifact | units | GetCapability | outcome | cold load incl. failed attempt | second run (cache 418 MB) |
+|---|---|---|---|---|---|
+| fp16 | All | — (never reached) | **ORT throws during session init**: `HandleNegativeAxis … axis 2 is not in valid range [-2,1]` (`onnxruntime/core/providers/common.h:32`) — a CoreML-EP op builder or shape pass on the fp16 opset-18 graph | 2.36 s | 2.34 s (nothing cached) |
+| fp16 | CPU+ANE | — | same exception | 2.37 s | 2.35 s |
+| fp32 | All | **`number of partitions supported by CoreML: 125 number of nodes in the graph: 2715 number of nodes supported by CoreML: 2150`** (verbatim values from ORT's INFO line, captured by `parse_partitions`) | Core ML **compile fails**: `Failed to create MLModel … Failed to build the model execution plan … model.mil with error code: -7`; E5RT: `Invalid tensor rank 0 inferred from: ios18.squeeze`, `Input _encoder_Mul_output_0 has unbounded dimension which is not supported` | 16.7 s | 15.0 s (cache does not help a failing compile) |
+| fp32 | CPU+ANE | 125 / 2715 / 2150 | same | 12.8 s | 14.5 s |
+
+Both models warn `CoreML does not support shapes with dimension values of 0. Input: /layers.N/self_attn/Slice_2_output_0, shape: {0}` — ModernBERT's rotary/unpadding slices produce empty tensors per layer, which is what fragments the graph into ~125 partitions (28 layers × ~4 cuts + head).
+
+**Knob sweep** (throwaway probe, not committed; output in `/tmp/laya-design/coreml-probe.txt`):
+
+| artifact | format | opt level | `RequireStaticInputShapes` | partitions / nodes / on CoreML | session |
+|---|---|---|---|---|---|
+| fp16 | MLProgram | 3 or 0 | 0 | — | init exception (above) |
+| fp16 | MLProgram | 3 | **1** | 0 / 1622 / **0** | OK — nothing on Core ML |
+| fp16 | NeuralNetwork | 3 or 0 | 0 | 0 / 1632 / **0** | OK — nothing on Core ML (the NN format has no fp16 path) |
+| fp32 | MLProgram | 3 | 0 | 125 / 2715 / 2150 | compile fails (-7) |
+| fp32 | MLProgram | 0 | 0 | 129 / 3284 / 2667 | compile fails (-7) |
+| fp32 | MLProgram | 3 | **1** | 91 / 2715 / 591 | OK — 22 % of nodes |
+| fp32 | NeuralNetwork | 3 | 0 | **224** / 2715 / 1502 | OK (8.2 s load) — 55 % of nodes in 224 pieces |
+| fp32 | NeuralNetwork | 0 | 0 | 256 / 3284 / 1342 | OK (10.0 s) |
+
+No configuration puts the encoder on Core ML in ≤ 3 pieces; the only sessions that build either run nothing on Core ML or split it into 91–256 partitions with the CPU EP shuttling tensors between them (latency not measured — the partition criterion already fails, and MLProgram is the format the design names).
+
+### §12.6 verdict, criterion by criterion
+
+| criterion | required | measured | verdict |
+|---|---|---|---|
+| CoreML partitions | ≤ 3 | fp16: session never builds; fp32: 125 (compile fails); best building variant 91 with 22 % coverage | **FAIL** |
+| p95 warm, single question, S 512 / K 32 | ≤ 50 ms | no CoreML session exists to measure; CPU fallback 585–748 ms | **FAIL** |
+| RSS after first inference, fp16 on CoreML EP | ≤ 2 GiB | not measurable (no session); breakdown for the record — fp16 CPU: 1167 MiB after load, 2513 MiB after first run, 4065 MiB peak; fp32 CPU: 2309 / 2313 / 2313 MiB | **FAIL** (not met by any running configuration) |
+| argmax parity with CPU fp32 (README examples + model-gated tests) | all agree | fp16 CPU vs fp32 CPU: 4/4 argmax, max \|Δp\| 0.0002; `tests/model.rs` passes on both dirs (fp32 via `DECISION_MODEL_DIR`) | PASS (between the two CPU runs; there is no CoreML run to compare) |
+| cold compile time recorded, cache makes the second load materially faster | recorded | fp32 attempt 12.8–16.7 s cold, 14.5–15.0 s with the 418 MB cache present — no improvement, because the compile fails every time; fp16 never reaches compile | **FAIL** |
+
+**Path A fails.** Per the brief: `decision.coreml` default stays `false`, the shipped path for now is **fp32 on the CPU EP** everywhere (with S padded to 512, ~2.3 GiB, 580–720 ms per question on this machine), and this task **stops here — Path B (direct Core ML via `objc2-core-ml`, `FluidInference/laya-coreml`-style buckets exported from the English root in CI) is not started.** `coreml: true` remains available and safe: it warns and falls back.
+
+### What the failures are (for the Path B brief / an ORT issue)
+
+1. **fp16 + CoreML EP**: an exception inside ORT's own session initialisation, before Core ML is called — `HandleNegativeAxis(axis 2, rank 2)`. Deterministic across opt levels and compute units; goes away with `RequireStaticInputShapes=1` (which then takes zero nodes). Looks like a CoreML-EP op builder assuming rank ≥ 3 on one of the fp16 graph's rank-2 tensors — an ORT bug worth a minimal repro, not something the Rust side can work around.
+2. **fp32 + CoreML EP (MLProgram)**: GetCapability succeeds (2150/2715 nodes) but Core ML's compiler rejects the MIL: rank-0 `squeeze` results and unbounded dimensions (`_encoder_Mul_output_0`, `_encoder_Reshape_1_output_0`) — the EP emits dynamic-shape MIL because the ONNX inputs are declared symbolic even though the trace is S = 512-fixed. **The one lever left for Path A** is a graph with static input dims (B = 1, S = 512, K = 32) baked into the ONNX file itself (onnx graph surgery or a re-export — a CI job, no pip on Sky's Mac); that would let `RequireStaticInputShapes=1` be meaningful and might collapse the partitions. Untested; it is the same export work Path B needs anyway, so it belongs in that brief as a first cheap check.
+3. The 0-size `Slice` outputs per layer are inherent to the ModernBERT export and will fragment any ORT CoreML partitioning until ORT's EP handles them; Path B's own Core ML conversion (coremltools from PyTorch, as FluidInference did) sidesteps ORT's partitioner entirely, which is why their models are one partition at 5–18 ms.
+
+### Also recorded
+
+- fp32 CPU probabilities equal the step-2 fp16 numbers to 3 decimals (billing 0.965 / conf 0.86, urgency 1.44, churn 0.825): the fp16 export is faithful; the README's 0.94 / 1.84 / 0.892 belong to another checkpoint revision (step 2's open question stands, now with two independent exports agreeing).
+- `scripts/release-models.sh` still lists `decision/model.onnx`; which file it uploads is whatever is in `~/.theuth/models/decision/` (today fp16). Per-platform selection of fp16 vs fp32 through the manifest's `platform`/`key` is 2b's job and is moot until an accelerator path exists — the CPU artifact is fp32 on every platform, including macOS, unless Sky prefers the smaller fp16 download for Macs at 2× CPU memory.
+- Checks: `cargo check --workspace --all-targets` green; `cargo test --release -p decision`: 32 unit + 3 model-gated (fp16 dir) + 3 (fp32 dir via `DECISION_MODEL_DIR`); `cargo clippy -p decision --no-deps --all-targets` clean; the generated config comment for `coreml` states the fallback. Bench outputs: `/tmp/laya-design/bench-2d-{cpu-fp32,cpu-fp32-pad,cpu-fp16,coreml}.txt`, `fp32-shapes.txt`, `coreml-probe.txt`.
