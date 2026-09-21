@@ -1375,3 +1375,5 @@ every frame — a harness quirk, not investigated). Not observed:
   UndoManager on view destroy.
 - Debug builds block on the macOS Keychain prompt for the vault key after
   every rebuild; `THEUTH_SECRETS__KEY_STORE=file` for smoke data dirs.
+- Flake: `test/helper.test.ts` spawned `bun run src/helper.ts` per test under bun's 5 s default; at load average >100 the spawn took 28 s and all 6 failed while `dist/theuth-documents` answered in 1 s.
+- Fix (19cb77a): the tests spawn `dist/theuth-documents` (built in `beforeAll` via `bun run build:helper` when missing, source entry only as fallback) with a 60 s timeout each; one process per test stays — every test is a stdin→EOF session asserting exit code and full output. Three consecutive `bun test` runs at load 180/92/56: 75 pass, 0 fail (14.3 s, 19.9 s, 11.9 s).
