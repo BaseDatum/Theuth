@@ -30,6 +30,8 @@ tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 [dev-dependencies]
 tempfile = "3"
 serde_yaml = { workspace = true }
+libc = { workspace = true }  # bench: ru_maxrss
+tracing-subscriber = { workspace = true }  # tests/model.rs: show the engine's info lines under --nocapture
 
 [lints]
 workspace = true
