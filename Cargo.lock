@@ -2255,8 +2255,10 @@ checksum = "5ecb245093b0f791b89d3420c3df9c6d49c60ab63ba54db896bf8a3baf486706"
 dependencies = [
  "accelerate-src",
  "byteorder",
+ "candle-kernels",
  "candle-metal-kernels",
  "candle-ug",
+ "cudarc 0.19.9",
  "float8",
  "gemm 0.19.0",
  "half",
@@ -2276,6 +2278,15 @@ dependencies = [
  "yoke 0.8.3",
  "zerocopy",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67450168a281bbb195a14cc85cf164c7a12023a54a03409a3324f476346e0789"
+dependencies = [
+ "cudaforge",
 ]
 
 [[package]]
@@ -2320,6 +2331,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "257411c33abf7d898a31ac20d80813dfe96ff09e23a73039e22ab293aea9b871"
 dependencies = [
  "ug",
+ "ug-cuda",
  "ug-metal",
 ]
 
@@ -3515,6 +3527,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudaforge"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d475ff95b9e4096878f47fe0ca5dbad0e23849a79fc225305ea06c2f25771cd"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "glob",
+ "num_cpus",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "walkdir",
+ "which 7.0.3",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.17.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf99ab37ee7072d64d906aa2dada9a3422f1d975cdf8c8055a573bc84897ed8"
+dependencies = [
+ "half",
+ "libloading 0.8.9",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.19.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "804764d10e844da09765a7b2ca9641a0851523d1702efb0d7299d73e31b86e80"
+dependencies = [
+ "float8",
+ "half",
+ "libloading 0.9.0",
+]
+
+[[package]]
 name = "cursor"
 version = "1.8.4"
 dependencies = [
@@ -3765,13 +3817,9 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "chrono",
- "half",
  "humantime",
  "kameo",
- "laya-rs",
  "libc",
- "models",
- "ort",
  "parking_lot",
  "runtime",
  "schemars 1.2.2",
@@ -4650,6 +4698,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_home"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7f84e12ccf0a7ddc17a6c41c93326024c42920d7ee630d04950e6926645c0fe"
+
+[[package]]
 name = "env_logger"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5257,6 +5311,16 @@ dependencies = [
  "io-lifetimes 2.0.4",
  "rustix 1.1.4",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -9001,35 +9065,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "507460a910eb7b32ee961886ff48539633b788a36b65692b95f225b844c82553"
 dependencies = [
  "regex-automata 0.4.18",
-]
-
-[[package]]
-name = "laya-core"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e74969385bb823c2f6b090ac8bc1b283779852ef7908bbf3161b9ea5d8d5db56"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokenizers 0.23.2",
- "unicode-general-category",
-]
-
-[[package]]
-name = "laya-rs"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c651803bc2cf3a7c30730ccc0b45b831a3162d72f9851149befb9e29e0b25c05"
-dependencies = [
- "candle-core",
- "candle-nn",
- "laya-core",
- "rayon",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -19355,6 +19390,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ug-cuda"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f0a1fa748f26166778c33b8498255ebb7c6bffb472bcc0a72839e07ebb1d9b5"
+dependencies = [
+ "cudarc 0.17.8",
+ "half",
+ "serde",
+ "thiserror 1.0.69",
+ "ug",
+]
+
+[[package]]
 name = "ug-metal"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20614,6 +20662,18 @@ dependencies = [
  "either",
  "home",
  "rustix 0.38.44",
+ "winsafe",
+]
+
+[[package]]
+name = "which"
+version = "7.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24d643ce3fd3e5b54854602a080f34fb10ab75e0b813ee32d00ca2b44fa74762"
+dependencies = [
+ "either",
+ "env_home",
+ "rustix 1.1.4",
  "winsafe",
 ]
 

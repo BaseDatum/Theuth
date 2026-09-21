@@ -41,7 +41,7 @@ pub struct AskRow {
     pub family: Family,
     /// Thresholds + model at the time.
     pub gate_version: u32,
-    /// sha256 of `model.onnx`; empty when no model ran.
+    /// sha256 of `model.safetensors` — `size:<bytes>` on rows written before the background hash landed; empty when no model ran.
     pub model_sha: String,
     /// Gate mode at the time.
     pub mode: Mode,

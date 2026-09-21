@@ -76,12 +76,11 @@ opus = "0.3"
 parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "load-dynamic"] }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "half", "coreml"] }  # parakeet-rs's pin; `half` = typed `f16` tensors for laya's fp16 outputs (57 §2); `coreml` = the CoreML EP option builder (registered on macOS only, 57 §12.6)
 half = "2"  # ort's f16 type (57 §2)
-# Decision step 2e (57 §12.8): laya's ModernBERT + decision head natively in candle — no ONNX, no dylib. `laya-rs`
-# pins candle 0.11; `metal`/`accelerate` are forwarded by `decision`'s features. No `hub` (weights come from the
-# release bucket) and no `cli`. Repo is 404 — vendor if it goes stale.
-laya-rs = { version = "=0.1.0", default-features = false }
-candle-core = "0.11"  # laya-rs's pin; `Device`/`DType`/`Tensor` for the five inputs (57 §12.8)
-candle-nn = "0.11"  # `VarBuilder` over laya-rs's `SanitizedBackend`
+# Decision (57 §12.8): laya's ModernBERT + decision head natively in candle — no ONNX, no dylib. The model code is
+# laya-rs 0.1.0 vendored under crates/decision/src/candle/ (its repo is 404; see crates/decision/NOTICE); candle 0.11
+# is its pin. `metal`/`accelerate`/`cuda` are forwarded by `decision`.
+candle-core = "0.11"
+candle-nn = "0.11"
 symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
 rubato = "0.16"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)

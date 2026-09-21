@@ -12,40 +12,36 @@ use kameo::message::{Context, Message};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::DecisionConfig;
+use crate::candle::Loaded;
 use crate::gate::{FamilyGate, Mode};
-use crate::laya::{self, Loaded, Provider, RowOut, Sequence, Units};
-use crate::{DecisionConfig, EngineKind};
+use crate::laya::{self, RowOut, Sequence};
 use crate::log::{AskRow, FamilyStats, Log, Row};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
 
-/// The checkpoint files the ORT engine needs in `model_dir` (`release-models.sh` REQUIRED).
-pub const MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "rl_agent_config.json"];
-
-/// The laya `safetensors` checkpoint the candle engine needs (57 §12.8; `candle::CANDLE_FILES`).
-pub const CANDLE_FILES: [&str; 4] = [
+/// The checkpoint files [`Engine`] needs in `model_dir` — the Hugging Face
+/// `convaiinnovations/laya` layout, `release-models.sh` REQUIRED.
+pub const MODEL_FILES: [&str; 4] = [
     "model.safetensors",
     "encoder/config.json",
     "tokenizer/tokenizer.json",
     "rl_agent_config.json",
 ];
 
-/// Which files [`Engine::missing_files`] checks for `engine`.
-pub fn model_files(engine: EngineKind) -> &'static [&'static str] {
-    match engine {
-        EngineKind::Ort => &MODEL_FILES,
-        EngineKind::Candle => &CANDLE_FILES,
-    }
-}
-
 /// The mandatory negative control appended to every `Choice` (57 §0.4).
 pub const NONE_ID: &str = "none";
 
+/// The model's identity for `gate_version` and the log, shared with the oracle that fills it:
+/// `size:<bytes>` until the background sha256 lands, then the hex. Rows written in between
+/// carry the size tag (and a `gate_version` derived from it); the fold does not care.
+pub type ModelSha = Arc<Mutex<String>>;
+
 /// What the engine runs: [`Loaded`] in production, a fake in the timeout test.
 pub trait Oracle: Send {
-    /// sha256 of the model artifact, for `gate_version`.
-    fn model_sha(&self) -> &str;
+    /// The model's identity, see [`ModelSha`].
+    fn model_sha(&self) -> ModelSha;
     /// Render one question.
     fn build(&self, q: &Question) -> Result<Sequence, String>;
     /// One forward pass.
@@ -54,24 +50,9 @@ pub trait Oracle: Send {
     fn load_time(&self) -> Duration;
 }
 
-impl Oracle for Loaded {
-    fn model_sha(&self) -> &str {
-        &self.model_sha
-    }
-    fn build(&self, q: &Question) -> Result<Sequence, String> {
-        Loaded::build(self, q)
-    }
-    fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
-        Loaded::run(self, rows)
-    }
-    fn load_time(&self) -> Duration {
-        self.load_time
-    }
-}
-
-/// Opens an [`Oracle`] from `(model_dir, data_dir, cfg)`; blocking.
+/// Opens an [`Oracle`] from `(model_dir, cfg)`; blocking.
 pub type Loader =
-    Arc<dyn Fn(&Path, &Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
+    Arc<dyn Fn(&Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
 
@@ -100,8 +81,6 @@ struct Unload;
 pub struct Engine {
     cfg: DecisionConfig,
     model_dir: PathBuf,
-    /// `<data_dir>`: the runtime's home (`models::onnx::ort_lib`).
-    data_dir: PathBuf,
     log: Log,
     loader: Loader,
     /// Warm session, shared with in-flight blocking runs.
@@ -114,29 +93,21 @@ pub struct Engine {
     missing_logged: bool,
     /// Cold-load time, written into the next logged row.
     pending_load_ms: Option<u64>,
-    /// The loaded model's sha, readable without taking the session lock.
-    model_sha: String,
+    /// The loaded model's identity, readable without taking the session lock.
+    model_sha: ModelSha,
 }
 
 impl Engine {
-    /// An engine over `cfg` with the real checkpoint ([`Loaded`] or `candle::CandleLoaded` by
-    /// `cfg.engine`); nothing loads until the first `Ask`.
-    pub fn new(cfg: DecisionConfig, model_dir: PathBuf, data_dir: PathBuf, log: Log) -> Self {
-        Self::with_loader(cfg, model_dir, data_dir, log, Arc::new(open))
+    /// An engine over `cfg` with the real [`Loaded`]; nothing loads until the first `Ask`.
+    pub fn new(cfg: DecisionConfig, model_dir: PathBuf, log: Log) -> Self {
+        Self::with_loader(cfg, model_dir, log, Arc::new(open))
     }
 
     /// An engine whose checkpoint comes from `loader` (tests).
-    pub fn with_loader(
-        cfg: DecisionConfig,
-        model_dir: PathBuf,
-        data_dir: PathBuf,
-        log: Log,
-        loader: Loader,
-    ) -> Self {
+    pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
         Engine {
             cfg,
             model_dir,
-            data_dir,
             log,
             loader,
             loaded: None,
@@ -145,21 +116,20 @@ impl Engine {
             watchdog: false,
             missing_logged: false,
             pending_load_ms: None,
-            model_sha: String::new(),
+            model_sha: Arc::default(),
         }
     }
 
     /// The files that are not in the model dir, checked fresh each time.
     pub fn missing_files(&self) -> Vec<&'static str> {
-        model_files(self.cfg.engine)
-            .iter()
-            .copied()
+        MODEL_FILES
+            .into_iter()
             .filter(|f| !self.model_dir.join(f).is_file())
             .collect()
     }
 
     fn model_sha(&self) -> String {
-        self.model_sha.clone()
+        self.model_sha.lock().clone()
     }
 
     fn append(&self, row: Row) {
@@ -223,24 +193,20 @@ impl Engine {
                     return Err(Reason::ModelMissing);
                 }
                 self.missing_logged = false;
-                let (loader, dir, data_dir, cfg) = (
-                    self.loader.clone(),
-                    self.model_dir.clone(),
-                    self.data_dir.clone(),
-                    self.cfg.clone(),
-                );
-                tokio::task::spawn_blocking(move || loader(&dir, &data_dir, &cfg))
+                let (loader, dir, cfg) =
+                    (self.loader.clone(), self.model_dir.clone(), self.cfg.clone());
+                tokio::task::spawn_blocking(move || loader(&dir, &cfg))
             }
         };
         let mut handle = handle;
         match tokio::time::timeout(budget, &mut handle).await {
             Ok(Ok(Ok(oracle))) => {
                 let load = oracle.load_time();
-                self.model_sha = oracle.model_sha().to_owned();
+                self.model_sha = oracle.model_sha();
                 tracing::info!(
-                    "decision: model loaded in {load:?} from {} (sha256 {})",
+                    "decision: model loaded in {load:?} from {} ({})",
                     self.model_dir.display(),
-                    &self.model_sha[..12.min(self.model_sha.len())]
+                    self.model_sha()
                 );
                 let shared: Shared = Arc::new(Mutex::new(oracle));
                 self.loaded = Some(shared.clone());
@@ -275,32 +241,15 @@ impl Engine {
     }
 }
 
-/// The production [`Loader`]: ORT ([`Loaded`]) or candle by `cfg.engine`.
-fn open(dir: &Path, data_dir: &Path, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
-    match cfg.engine {
-        EngineKind::Ort => {
-            let provider = if cfg.coreml {
-                Provider::CoreMl(Units::All)
-            } else {
-                Provider::Cpu
-            };
-            Loaded::open(dir, data_dir, cfg.threads, provider).map(|l| Box::new(l) as Box<dyn Oracle>)
-        }
-        #[cfg(feature = "candle")]
-        EngineKind::Candle => {
-            let metal = cfg.device.metal();
-            let dtype = if metal {
-                candle_core::DType::F16
-            } else {
-                candle_core::DType::F32
-            };
-            crate::candle::CandleLoaded::open(dir, metal, dtype).map(|l| Box::new(l) as Box<dyn Oracle>)
-        }
-        #[cfg(not(feature = "candle"))]
-        EngineKind::Candle => {
-            anyhow::bail!("decision.engine = candle, but this build has no `candle` feature")
-        }
-    }
+/// The production [`Loader`]: [`Loaded`] on `cfg.device`, f16 on Metal, f32 on CPU.
+fn open(dir: &Path, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
+    let metal = cfg.device.metal();
+    let dtype = if metal {
+        candle_core::DType::F16
+    } else {
+        candle_core::DType::F32
+    };
+    Loaded::open(dir, metal, dtype).map(|l| Box::new(l) as Box<dyn Oracle>)
 }
 
 /// `none` appended once to a `Choice`; other questions unchanged.
@@ -393,7 +342,7 @@ impl Message<Ask> for Engine {
                     .into_iter()
                     .next()
                     .ok_or_else(|| Reason::HardError("no row".into()))?;
-                Ok((seq, out, o.model_sha().to_owned()))
+                Ok((seq, out, o.model_sha().lock().clone()))
             })
         };
         let text = self.cfg.log_text.then(|| ask.question.clone());
@@ -546,9 +495,10 @@ mod tests {
     }
 
     fn touch_files(model_dir: &Path) {
-        std::fs::create_dir_all(model_dir).unwrap();
         for f in MODEL_FILES {
-            std::fs::write(model_dir.join(f), b"x").unwrap();
+            let p = model_dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
         }
     }
 
@@ -558,8 +508,8 @@ mod tests {
     }
 
     impl Oracle for Fake {
-        fn model_sha(&self) -> &str {
-            "fake"
+        fn model_sha(&self) -> ModelSha {
+            Arc::new(Mutex::new("fake".into()))
         }
         fn build(&self, q: &Question) -> Result<Sequence, String> {
             let k = laya::labels(q).len();
@@ -605,7 +555,7 @@ mod tests {
     }
 
     fn fake_loader(delay: Duration) -> Loader {
-        Arc::new(move |_, _, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
+        Arc::new(move |_, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
     }
 
     #[tokio::test]
@@ -617,13 +567,24 @@ mod tests {
             families: [("meeting.topic".to_owned(), FamilyGate::shadow(0.85, 0.4))].into(),
             ..DecisionConfig::default()
         };
-        let engine = Engine::spawn(Engine::with_loader(
-            cfg,
-            model_dir.clone(),
-            dir.path().into(),
-            log.clone(),
-            fake_loader(Duration::ZERO),
-        ));
+        let e = Engine::with_loader(cfg, model_dir.clone(), log.clone(), fake_loader(Duration::ZERO));
+        // The safetensors layout, subdirs included; one present file drops out of the list.
+        assert_eq!(
+            e.missing_files(),
+            [
+                "model.safetensors",
+                "encoder/config.json",
+                "tokenizer/tokenizer.json",
+                "rl_agent_config.json"
+            ]
+        );
+        std::fs::create_dir_all(model_dir.join("encoder")).unwrap();
+        std::fs::write(model_dir.join("encoder/config.json"), b"{}").unwrap();
+        assert_eq!(
+            e.missing_files(),
+            ["model.safetensors", "tokenizer/tokenizer.json", "rl_agent_config.json"]
+        );
+        let engine = Engine::spawn(e);
 
         let d = engine.ask(ask("meeting.topic")).await.unwrap();
         assert_eq!(d.disposition, Disposition::Escalate(Reason::ModelMissing));
@@ -686,7 +647,6 @@ mod tests {
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
             dir.path().into(),
-            dir.path().into(),
             Log::new(dir.path().join("d")),
             fake_loader(Duration::ZERO),
         ));
@@ -732,7 +692,6 @@ mod tests {
         };
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
-            dir.path().into(),
             dir.path().into(),
             log.clone(),
             fake_loader(Duration::from_millis(300)),
@@ -786,7 +745,7 @@ mod tests {
         };
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let n = loads.clone();
-        let loader: Loader = Arc::new(move |_, _, _| {
+        let loader: Loader = Arc::new(move |_, _| {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(Fake {
                 delay: Duration::ZERO,
@@ -794,7 +753,6 @@ mod tests {
         });
         let engine = Engine::spawn(Engine::with_loader(
             cfg,
-            dir.path().into(),
             dir.path().into(),
             Log::new(dir.path().join("d")),
             loader,
@@ -816,7 +774,6 @@ mod tests {
         };
         let engine = Engine::spawn(Engine::new(
             cfg,
-            dir.path().into(),
             dir.path().into(),
             Log::new(dir.path().join("d")),
         ));

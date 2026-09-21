@@ -52,8 +52,9 @@ REQUIRED=(
   nemotron-streaming-en/tokenizer.model
   pyannote/segmentation-3.0.onnx                   # meeting/src/post/diarize.rs
   pyannote/wespeaker_en_voxceleb_CAM++.onnx
-  decision/model.onnx                              # decision/src/laya.rs Engine::load (57 §6 step 2b)
-  decision/tokenizer.json
+  decision/model.safetensors                       # decision/src/engine.rs MODEL_FILES (57 §12.8): the Hugging Face
+  decision/encoder/config.json                     # convaiinnovations/laya root layout, loaded by candle/mod.rs Loaded::open
+  decision/tokenizer/tokenizer.json
   decision/rl_agent_config.json
 )
 
