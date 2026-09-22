@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { isDraft, leaves, newDraft, usePanes } from './panes'
+import { draftProject, isDraft, leaves, newDraft, usePanes } from './panes'
 
 const reset = () => usePanes.setState({ root: null, focused: null, drag: null })
 
@@ -66,4 +66,38 @@ test('a lone draft is not collapsed to the route chat; closing hands the URL a r
   expect(usePanes.getState().close('b')).toBeNull()
   expect(usePanes.getState().focused).toBe(d)
   expect(leaves(usePanes.getState().root!)).toEqual([d])
+})
+
+test('New chat in a split view replaces the focused pane with a draft; a single pane leaves the tree to the route', () => {
+  reset()
+  expect(usePanes.getState().fresh()).toBeNull()
+  expect(usePanes.getState().root).toBeNull()
+  usePanes.getState().place('a', 'b', 'right')
+  usePanes.getState().focus('a')
+  const d = usePanes.getState().fresh()
+  expect(isDraft(d)).toBe(true)
+  expect(leaves(usePanes.getState().root!)).toEqual([d, 'b'])
+  expect(usePanes.getState().focused).toBe(d)
+  // Focused on something no longer shown: the first pane takes it.
+  usePanes.getState().focus('gone')
+  const e = usePanes.getState().fresh()
+  expect(leaves(usePanes.getState().root!)).toEqual([e, 'b'])
+})
+
+test('New chat on a focused draft keeps it instead of stacking a second one', () => {
+  reset()
+  usePanes.getState().place('a', 'b', 'right')
+  const d = usePanes.getState().fresh()
+  expect(usePanes.getState().fresh()).toBe(d)
+  expect(leaves(usePanes.getState().root!)).toEqual(['a', d])
+})
+
+test('a draft carries the project preset of "New chat in <project>"', () => {
+  reset()
+  usePanes.getState().place('a', 'b', 'right')
+  const d = usePanes.getState().fresh('Q&A / ops')!
+  expect(isDraft(d)).toBe(true)
+  expect(draftProject(d)).toBe('Q&A / ops')
+  expect(draftProject(newDraft())).toBeUndefined()
+  expect(draftProject(newDraft(null))).toBeUndefined()
 })

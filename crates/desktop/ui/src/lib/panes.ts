@@ -1,6 +1,6 @@
 // Tiled chats: a binary split tree over session ids, the focused pane (the URL follows it), and the
 // sidebar → pane drag in flight. `root === null` is the plain single chat the route names. In memory only.
-// A leaf may also hold a draft id (`draft:<uuid>`, 25 §12.3): a new chat dropped from the sidebar whose
+// A leaf may also hold a draft id (`draft:<uuid>[?project=<label>]`, 25 §12.3): a new chat opened from the sidebar whose
 // session does not exist until the first send; `place(draft, session, 'center')` then swaps it in.
 
 import { create } from 'zustand'
@@ -15,7 +15,14 @@ export type Drag = { session: string; title: string; x: number; y: number; targe
 const DRAFT = 'draft:'
 /** A pane id for a not-yet-created chat; `leaves` lists it beside real sessions, so check before an RPC. */
 export const isDraft = (id: string | null | undefined): id is string => id?.startsWith(DRAFT) ?? false
-export const newDraft = (): string => `${DRAFT}${crypto.randomUUID()}`
+/** A fresh draft id; `project` (the project header's "New chat in <project>") rides along for `draftProject`. */
+export const newDraft = (project?: string | null): string =>
+  `${DRAFT}${crypto.randomUUID()}${project ? `?project=${encodeURIComponent(project)}` : ''}`
+/** The picker preset a draft id carries, if any. */
+export function draftProject(id: string): string | undefined {
+  const q = id.indexOf('?')
+  return q < 0 ? undefined : (new URLSearchParams(id.slice(q)).get('project') ?? undefined)
+}
 
 /** Sessions shown, left-to-right, top-to-bottom. */
 export const leaves = (n: Node): string[] => ('session' in n ? [n.session] : [...leaves(n.a), ...leaves(n.b)])
@@ -86,6 +93,9 @@ type PanesStore = {
   show(session: string): void
   /** Show `session` at `edge` of the pane showing `target` (`center` replaces it). A pane already showing `session` moves. */
   place(target: string, session: string, edge: Edge): void
+  /** New chat where the user is looking: with ≥ 2 panes the focused one (fallback: the first) becomes a fresh draft;
+   * a focused draft is kept, never stacked. Returns the draft to type into, or `null` for a single pane: go to `/`. */
+  fresh(project?: string | null): string | null
   /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay (also
    * when only a draft is left: the URL then names a chat no longer shown until the draft's first send replaces it). */
   close(session: string): string | null
@@ -130,6 +140,16 @@ export const usePanes = create<PanesStore>()((set, get) => ({
             return { dir: edge === 'left' || edge === 'right' ? 'row' : 'col', ratio: 0.5, a: first ? fresh : leaf, b: first ? leaf : fresh }
           })
     set({ root: normal(next), focused: session })
+  },
+  fresh(project) {
+    const { root, focused } = get()
+    const all = root ? leaves(root) : []
+    const target = focused && all.includes(focused) ? focused : all[0]
+    if (target && isDraft(target)) return target
+    if (all.length < 2) return null
+    const draft = newDraft(project)
+    set({ root: replace(root as Node, target as string, () => ({ session: draft })), focused: draft })
+    return draft
   },
   close(session) {
     const { root, focused } = get()
