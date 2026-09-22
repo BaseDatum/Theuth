@@ -19,8 +19,8 @@ use agent::{
     VisionStage, VisionStatus,
 };
 use agent::{
-    CleanupStatus, CloseResult, CostBucket, CostScope, Coverage, CreateSessionOptions, Money,
-    Retention, SessionCost, SessionOpen,
+    BroadcastReceipt, BroadcastRequest, BroadcastTargets, CleanupStatus, CloseResult, CostBucket,
+    CostScope, Coverage, CreateSessionOptions, Money, Retention, SessionCost, SessionOpen,
 };
 use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
@@ -36,6 +36,7 @@ use tools::{
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
 
+use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
 use crate::dictation::{Dictating, Phase};
 use crate::search;
@@ -61,6 +62,10 @@ pub enum UiEvent {
     KnowledgeChanged(knowledge::KnowledgeChanged),
     /// Reply to [`Command::ListAgents`]: the session's subtree with live state.
     Agents(Vec<AgentInfo>),
+    /// Reply to [`Command::ListActivity`]: every live or root session (62 §0.6).
+    Activity(Vec<AgentInfo>),
+    /// Reply to [`Command::Broadcast`]: the receipt (dry run or send), or the refusal.
+    Broadcasted(Result<BroadcastReceipt, String>),
     /// Reply to [`Command::Load`] with `settled_only: false`: shown as is.
     History(SessionId, Loaded),
     /// Reply to [`Command::Load`] with `settled_only: true` (48 §5): shown
@@ -396,6 +401,10 @@ pub enum Command {
     Search(search::Request),
     /// `list_agents`: the subtree under a session.
     ListAgents(SessionId),
+    /// `list_activity`: the broadcast picker's rows (62 §0.6).
+    ListActivity,
+    /// `broadcast` (62 §0.1); `dry_run` previews.
+    Broadcast(BroadcastRequest),
     /// `load_session`; `settled_only` (48 §5) reads through the idle actor
     /// and replies with [`UiEvent::Refreshed`] instead of [`UiEvent::History`].
     Load {
@@ -1268,6 +1277,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/parent", "", "open the parent session (from a subagent)"),
     ("/sessions", "", "switch session (picker)"),
     (
+        "/broadcast",
+        "[running|roots] [text]",
+        "send one message to many sessions",
+    ),
+    (
         "/search",
         "[query]",
         "search sessions, artifacts, knowledge and history (live; fzf syntax)",
@@ -1606,6 +1620,8 @@ pub enum Menu {
     },
     /// `/shake` picker and review (48 §2.4).
     Shake(Box<Shake>),
+    /// `/broadcast` picker, composer and review (62 §5.1).
+    Broadcast(Box<Broadcast>),
     /// `/peers` (50 §5.1, §5.3): the directory `session` may address, then
     /// the requests a human may resolve for it by exact id. Opened at once,
     /// filled by the replies that name `session`; a switch drops the rest.
@@ -4153,6 +4169,10 @@ impl Model {
                 category,
                 snapshot,
             } => self.open_shake(session, category, snapshot),
+            UiEvent::Activity(list) => {
+                self.menu = Some(Menu::Broadcast(Box::new(Broadcast::pick(list))));
+            }
+            UiEvent::Broadcasted(r) => self.broadcasted(r),
             // A failed read leaves the plan on screen, labelled stale (47 §5.4).
             UiEvent::Todos(id, snapshot) => {
                 if self.session == Some(id) {
@@ -5655,6 +5675,7 @@ impl Model {
                     send(tx, cmd);
                 }
             }
+            "/broadcast" => self.broadcast_cmd(arg, tx),
             "/agents" => match self.session {
                 Some(session) => {
                     self.agents_picker_pending = true;
@@ -7231,6 +7252,121 @@ impl Model {
         MenuKey::Consumed
     }
 
+    /// `/broadcast [running|roots] [text]` (62 §5.1): bare opens the picker
+    /// over `list_activity()`; with text the dry run goes straight to review
+    /// (`running` when no selector is named).
+    fn broadcast_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        if arg.is_empty() {
+            send(tx, Command::ListActivity);
+            return;
+        }
+        let (word, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(w, r)| (w, r.trim()));
+        let (targets, text) = match word {
+            "running" => (BroadcastTargets::Running, rest),
+            "roots" => (BroadcastTargets::Roots, rest),
+            _ => (BroadcastTargets::Running, arg),
+        };
+        if text.is_empty() {
+            self.entries
+                .push(Entry::Error("usage: /broadcast [running|roots] [text]".into()));
+            return;
+        }
+        let b = Broadcast::review(targets, text.to_owned());
+        send(tx, Command::Broadcast(b.request(true)));
+        self.menu = Some(Menu::Broadcast(Box::new(b)));
+    }
+
+    /// A `broadcast` reply: a dry run fills the review; a send closes the
+    /// menu and prints the receipt; a refusal stays on the menu's error line.
+    fn broadcasted(&mut self, r: Result<BroadcastReceipt, String>) {
+        let Some(Menu::Broadcast(b)) = &mut self.menu else {
+            return;
+        };
+        match (r, b.stage, b.preview.is_some()) {
+            (Err(e), _, _) => b.error = Some(e),
+            (Ok(receipt), BroadcastStage::Review, true) => {
+                self.menu = None;
+                self.entries.extend(
+                    crate::broadcast::result_lines(&receipt)
+                        .into_iter()
+                        .map(Entry::Info),
+                );
+            }
+            (Ok(receipt), _, _) => {
+                b.preview = Some(receipt);
+                b.error = None;
+                b.stage = BroadcastStage::Review;
+                b.cursor = 0;
+            }
+        }
+    }
+
+    /// `/broadcast` keys: Pick ticks (`space`, `r` running roots, `a` all
+    /// roots, `n` none, `d` delivery) and ⏎ composes; Compose edits the line
+    /// and ⏎ asks for the dry run; Review's ⏎ sends. Esc backs one stage.
+    fn broadcast_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
+        let Some(Menu::Broadcast(b)) = &mut self.menu else {
+            return MenuKey::Consumed;
+        };
+        let len = match b.stage {
+            BroadcastStage::Pick => b.rows.len(),
+            BroadcastStage::Compose => 0,
+            BroadcastStage::Review => b.preview.as_ref().map_or(0, |r| r.rows.len() + 2),
+        };
+        match (code, b.stage) {
+            (KeyCode::Up, _) => b.cursor = b.cursor.saturating_sub(1),
+            (KeyCode::Down, _) => b.cursor = (b.cursor + 1).min(len.saturating_sub(1)),
+            (KeyCode::Char(' '), BroadcastStage::Pick) => b.toggle(),
+            (KeyCode::Char('r'), BroadcastStage::Pick) => {
+                b.tick_roots(|a| crate::broadcast::running(&a.activity));
+            }
+            (KeyCode::Char('a'), BroadcastStage::Pick) => b.tick_roots(|_| true),
+            (KeyCode::Char('n'), BroadcastStage::Pick) => b.selected.clear(),
+            (KeyCode::Char('d'), BroadcastStage::Pick) => b.toggle_delivery(),
+            (KeyCode::Enter, BroadcastStage::Pick) => {
+                if !b.selected.is_empty() {
+                    b.stage = BroadcastStage::Compose;
+                    b.error = None;
+                }
+            }
+            (KeyCode::Esc, BroadcastStage::Pick) => self.menu = None,
+            (KeyCode::Char(c), BroadcastStage::Compose) => b.text.push(c),
+            (KeyCode::Backspace, BroadcastStage::Compose) => {
+                b.text.pop();
+            }
+            (KeyCode::Enter, BroadcastStage::Compose) => {
+                if !b.text.trim().is_empty() {
+                    b.select_ticked();
+                    b.error = None;
+                    send(tx, Command::Broadcast(b.request(true)));
+                }
+            }
+            (KeyCode::Esc, BroadcastStage::Compose) => {
+                b.stage = BroadcastStage::Pick;
+                b.cursor = 0;
+            }
+            (KeyCode::Enter, BroadcastStage::Review) => {
+                if b.preview.is_some() {
+                    b.error = None;
+                    send(tx, Command::Broadcast(b.request(false)));
+                }
+            }
+            (KeyCode::Esc, BroadcastStage::Review) => {
+                if b.picked() {
+                    b.stage = BroadcastStage::Compose;
+                    b.preview = None;
+                    b.cursor = 0;
+                } else {
+                    self.menu = None;
+                }
+            }
+            _ => {}
+        }
+        MenuKey::Consumed
+    }
+
     /// `/compact [summary|cut|snap|style …]`.
     fn compact_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
@@ -7451,6 +7587,7 @@ impl Model {
             Some(Menu::Secrets { .. }) => self.secrets_key(code, tx),
             Some(Menu::Artifacts { .. }) => self.artifacts_key(code, tx),
             Some(Menu::Shake(_)) => self.shake_key(code, tx),
+            Some(Menu::Broadcast(_)) => self.broadcast_key(code, tx),
             Some(Menu::Peers { .. }) => self.peers_key(code, tx),
             Some(Menu::Knowledge { .. }) => self.knowledge_key(code, tx),
             Some(Menu::KnowledgeHistory { .. }) => self.knowledge_history_key(code, tx),
@@ -9603,19 +9740,14 @@ pub fn sort_agents(mut list: Vec<AgentRow>) -> Vec<AgentRow> {
     list
 }
 
-/// One `/agents` picker or board row: `glyph name state detail age` (design
-/// doc 19 §3.1). `spinner` is the running glyph; depth ≥ 2 indents the name
-/// under its parent; `width` (terminal columns) bounds the detail column.
-/// Age is elapsed while the agent is live, `ago` since it finished otherwise.
+/// One `/agents` picker or board row: `glyph name state detail age [jN pN ·age]`
+/// (design doc 19 §3.1, 62 §5.1). `spinner` is the running glyph; depth ≥ 2
+/// indents the name under its parent; `width` (terminal columns) bounds the
+/// detail column. Age is elapsed while the agent is live, `ago` since it
+/// finished otherwise; the trailing counts and `last_active` age come from
+/// the snapshot's `activity` and appear only when known.
 pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
-    let glyph = match a.info.state {
-        AgentState::Running => spinner,
-        AgentState::Awaiting { .. } => "⏳",
-        AgentState::Approval { .. } => "⚠",
-        AgentState::Error => "✗",
-        AgentState::Cancelled => "∅",
-        AgentState::Idle => "·",
-    };
+    let glyph = crate::broadcast::glyph(&a.info.state, spinner);
     let name = match a.info.depth {
         0 | 1 => a.info.name.clone(),
         d => format!("{}↳ {}", " ".repeat(2 * usize::from(d - 1)), a.info.name),
@@ -9639,9 +9771,14 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         AgentState::Cancelled | AgentState::Idle => a.info.last.clone(),
     };
     let detail: String = detail.chars().take(room).collect();
+    let active = match crate::broadcast::age(a.info.activity.last_active) {
+        s if s.is_empty() => s,
+        s => format!(" ·{s}"),
+    };
     format!(
-        "{glyph} {name:<14} {:<9} {detail:<room$}  {age}",
-        a.info.state.word()
+        "{glyph} {name:<14} {:<9} {detail:<room$}  {age}{}{active}",
+        a.info.state.word(),
+        crate::broadcast::counts(&a.info.activity),
     )
 }
 
@@ -9690,13 +9827,7 @@ fn bad_secret_name(name: &str) -> String {
 
 /// Time since a turn ended, coarse: `48s ago`, `3m ago`, `2h ago`, `3d ago`.
 fn ago(d: chrono::Duration) -> String {
-    let s = d.num_seconds().max(0);
-    match s {
-        0..60 => format!("{s}s ago"),
-        60..3600 => format!("{}m ago", s / 60),
-        3600..86_400 => format!("{}h ago", s / 3600),
-        _ => format!("{}d ago", s / 86_400),
-    }
+    format!("{} ago", crate::broadcast::since(d))
 }
 
 /// Shown once per run before the first private session (51 §1).
@@ -10829,6 +10960,133 @@ mod tests {
         m.back_to_results(&tx);
         assert!(m.search_open());
         assert_eq!(m.search.query, "deploy");
+    }
+
+    /// `/broadcast`: the picker pre-ticks running roots and groups children
+    /// under them; ⏎ composes, ⏎ asks for the dry run, ⏎ on the review sends
+    /// the same request for real; the receipt closes the menu and prints.
+    #[test]
+    fn broadcast_picker_composes_reviews_and_sends() {
+        use agent::{BroadcastOutcome, BroadcastRow, SessionActivity};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let info = |name: &str, parent: Option<SessionId>, state: AgentState, ptys: u16| {
+            let id = SessionId::new();
+            AgentInfo {
+                id,
+                name: name.into(),
+                parent: parent.unwrap_or(id),
+                depth: u8::from(parent.is_some()),
+                agent: None,
+                model: "m".into(),
+                state: state.clone(),
+                started_at: None,
+                finished_at: None,
+                last: String::new(),
+                project: None,
+                retention: agent::Retention::Durable,
+                activity: SessionActivity {
+                    state,
+                    ptys,
+                    live: true,
+                    ..SessionActivity::default()
+                },
+            }
+        };
+        let busy = info("busy", None, AgentState::Running, 0);
+        let idle = info("idle", None, AgentState::Idle, 0);
+        let pty = info("pty", None, AgentState::Idle, 1);
+        let child = info("kid", Some(busy.id), AgentState::Running, 0);
+        // Children arrive out of order; the picker regroups them under their root.
+        m.submit("/broadcast", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListActivity)));
+        m.apply(UiEvent::Activity(vec![
+            child.clone(),
+            busy.clone(),
+            idle.clone(),
+            pty.clone(),
+        ]));
+        let Some(Menu::Broadcast(b)) = &m.menu else {
+            panic!("picker open");
+        };
+        let names: Vec<&str> = b.rows.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["busy", "kid", "idle", "pty"]);
+        assert_eq!(b.selected, [busy.id, pty.id].into_iter().collect());
+        assert!(b.rows("●")[1].contains("↳ kid"));
+        // `a` ticks every root, `n` none, `r` the running ones again; `d` flips delivery.
+        m.menu_key(KeyCode::Char('a'), "", &tx);
+        m.menu_key(KeyCode::Char('n'), "", &tx);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('r'), "", &tx);
+        m.menu_key(KeyCode::Char('d'), "", &tx);
+        let Some(Menu::Broadcast(b)) = &m.menu else {
+            panic!("still picking");
+        };
+        assert_eq!(b.stage, BroadcastStage::Pick, "⏎ with nothing ticked stays");
+        assert_eq!(b.selected.len(), 2);
+        assert_eq!(b.delivery, agent::Delivery::NextTurn);
+        m.menu_key(KeyCode::Enter, "", &tx);
+        for c in "hi all".chars() {
+            m.menu_key(KeyCode::Char(c), "", &tx);
+        }
+        m.menu_key(KeyCode::Enter, "", &tx);
+        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+            panic!("dry run sent");
+        };
+        assert!(req.dry_run && req.text == "hi all");
+        assert_eq!(
+            req.targets,
+            BroadcastTargets::Sessions {
+                ids: vec![busy.id, pty.id]
+            }
+        );
+        let row = |a: &AgentInfo, outcome| BroadcastRow {
+            session: a.id,
+            title: a.name.clone(),
+            parent: None,
+            before: a.activity.clone(),
+            outcome,
+        };
+        let receipt = |outcomes: [BroadcastOutcome; 2]| BroadcastReceipt {
+            id: Uuid::new_v4(),
+            at: chrono::Utc::now(),
+            rows: {
+                let [x, y] = outcomes;
+                vec![row(&busy, x), row(&pty, y)]
+            },
+        };
+        let skip = || BroadcastOutcome::Skipped {
+            reason: "dry run".into(),
+        };
+        m.apply(UiEvent::Broadcasted(Ok(receipt([skip(), skip()]))));
+        let Some(Menu::Broadcast(b)) = &m.menu else {
+            panic!("review open");
+        };
+        assert_eq!(b.stage, BroadcastStage::Review);
+        let rows = b.rows("●");
+        assert!(rows[0].starts_with("[broadcast … · 2 sessions]"));
+        assert!(rows[2].ends_with("will queue (next turn)"), "{}", rows[2]);
+        // A refusal stays on the menu; ⏎ then sends for real.
+        m.menu_key(KeyCode::Enter, "", &tx);
+        let Ok(Command::Broadcast(req)) = rx.try_recv() else {
+            panic!("send");
+        };
+        assert!(!req.dry_run && req.delivery == agent::Delivery::NextTurn);
+        m.apply(UiEvent::Broadcasted(Err("too many targets".into())));
+        assert!(matches!(&m.menu, Some(Menu::Broadcast(b)) if b.error.as_deref() == Some("too many targets")));
+        m.apply(UiEvent::Broadcasted(Ok(receipt([
+            BroadcastOutcome::Started,
+            BroadcastOutcome::Queued {
+                input_id: InputId::new(),
+                delivery: agent::Delivery::NextTurn,
+            },
+        ]))));
+        assert!(m.menu.is_none());
+        let last = m.entries.iter().rev().find_map(|e| match e {
+            Entry::Info(t) => Some(t.as_str()),
+            _ => None,
+        });
+        assert_eq!(last, Some("sent to 2 (1 started, 1 queued, 0 skipped)"));
     }
 
     #[test]

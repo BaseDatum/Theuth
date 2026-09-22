@@ -27,6 +27,7 @@ use tools::{
     McpProgress,
 };
 
+pub mod broadcast;
 mod clip;
 pub mod dictation;
 pub mod model;
@@ -453,6 +454,11 @@ async fn execute(
             UiEvent::Search(generation, search_request(api, ext, kind).await)
         }
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(ext, session).await)?),
+        Command::ListActivity => UiEvent::Activity(msg(api.list_activity(ext).await)?),
+        // The menu shows the refusal on its error line; not an `Error` entry.
+        Command::Broadcast(req) => {
+            UiEvent::Broadcasted(api.broadcast(ext, req).await.map_err(|e| e.message().to_owned()))
+        }
         // A failed read must not leave the card looking current: the plan is
         // marked stale first, then the error line explains why (47 §5.4).
         Command::GetTodos(session) => match msg(api.get_todos(ext, session).await) {
@@ -1303,6 +1309,23 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
                 model::short(a.id)
             )
         }),
+        UiEvent::Activity(list) => list.iter().try_for_each(|a| {
+            writeln!(
+                out,
+                "{}{}  {}  j{} p{}  {}  {}",
+                "  ".repeat(usize::from(a.depth)),
+                a.name,
+                a.activity.state.word(),
+                a.activity.jobs,
+                a.activity.ptys,
+                broadcast::age(a.activity.last_active),
+                model::short(a.id)
+            )
+        }),
+        UiEvent::Broadcasted(Err(e)) => writeln!(out, "broadcast: {e}"),
+        UiEvent::Broadcasted(Ok(r)) => broadcast::result_lines(&r)
+            .iter()
+            .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::History(_, loaded) => print_history(out, loaded),
         // A busy session's settled reload is refused (48 §5); the model
         // keeps what it shows and says so.
