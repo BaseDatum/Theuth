@@ -11,6 +11,10 @@ import type { DocKind } from '@/rpc/bindings/DocKind'
 import type { DocOpen } from '@/rpc/bindings/DocOpen'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import type { SnapshotInfo } from '@/rpc/bindings/SnapshotInfo'
+import type { Joined } from '@/rpc/bindings/Joined'
+import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
+import type { Members } from '@/rpc/bindings/Members'
+import type { Role } from '@/rpc/bindings/Role'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Concept } from '@/rpc/bindings/Concept'
@@ -207,6 +211,20 @@ export interface Api {
   doc_rename(doc: DocId, title: string): Promise<null>
   /** Move a note to the trash (swept after 30 days); other kinds reject `delete_via_owner`. */
   doc_delete(doc: DocId): Promise<null>
+  /** A document's members and share links (59 §8; owner only). */
+  doc_members(doc: DocId): Promise<Members>
+  /** Rename or re-role a member (owner only); demoting an editor closes their subscription with `Closed{demoted}`. */
+  doc_member_set(doc: DocId, member: string, role: Role | null, name: string | null): Promise<null>
+  /** Remove a member (owner only): `Closed{revoked}`, their connections dropped. */
+  doc_member_revoke(doc: DocId, member: string): Promise<null>
+  /** A new share link (owner only): the full URL, returned once. Needs Link on. */
+  doc_link_create(doc: DocId, role: Role, name: string | null, expires_ms: number | null): Promise<LinkCreated>
+  /** Stop new joins through `link` (owner only); its members stay. */
+  doc_link_revoke(doc: DocId, link: string): Promise<null>
+  /** Guest conns only (59 §8.3): prove the link secret for this connection; `proof` = base64url HMAC-SHA256(sha256(secret), handshake_hash ‖ guest_pub). */
+  doc_join(doc: DocId, link: string, proof: string, name: string | null): Promise<Joined>
+  /** A member renames themself (editors only). */
+  doc_set_name(doc: DocId, name: string): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -533,11 +551,18 @@ export const METHODS = [
   'doc_awareness',
   'doc_create',
   'doc_delete',
+  'doc_join',
+  'doc_link_create',
+  'doc_link_revoke',
   'doc_list',
+  'doc_member_revoke',
+  'doc_member_set',
+  'doc_members',
   'doc_open',
   'doc_rename',
   'doc_resolve',
   'doc_restore',
+  'doc_set_name',
   'doc_snapshots',
   'doc_undo_agent',
   'doc_update',

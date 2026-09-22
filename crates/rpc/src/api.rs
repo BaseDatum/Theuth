@@ -675,6 +675,50 @@ pub trait Api {
     /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
     #[method(name = "doc_delete")]
     async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
+    /// A document's members and share links (59 §8; owner only).
+    #[method(name = "doc_members", with_extensions)]
+    async fn doc_members(&self, doc: document::DocId) -> RpcResult<document::Members>;
+    /// Rename or re-role a member (59 §8.1; owner only). Demoting an editor closes their
+    /// subscriptions with `Closed{demoted}`; their editor re-opens read-only.
+    #[method(name = "doc_member_set", with_extensions)]
+    async fn doc_member_set(
+        &self,
+        doc: document::DocId,
+        member: String,
+        role: Option<document::Role>,
+        name: Option<String>,
+    ) -> RpcResult<()>;
+    /// Remove a member (59 §8.4; owner only): `Closed{revoked}`, their connections dropped, the next
+    /// handshake from that static finds no membership.
+    #[method(name = "doc_member_revoke", with_extensions)]
+    async fn doc_member_revoke(&self, doc: document::DocId, member: String) -> RpcResult<()>;
+    /// A new share link (59 §8.2; owner only): `https://<relay>/d#1.<harness>.<doc>.<secret>`,
+    /// returned once — the harness keeps only `sha256(secret)`. Needs Link enabled (the relay host).
+    #[method(name = "doc_link_create", with_extensions)]
+    async fn doc_link_create(
+        &self,
+        doc: document::DocId,
+        role: document::Role,
+        name: Option<String>,
+        expires_ms: Option<i64>,
+    ) -> RpcResult<document::LinkCreated>;
+    /// Stop new joins through `link` (59 §8.4; owner only); its members stay until revoked.
+    #[method(name = "doc_link_revoke", with_extensions)]
+    async fn doc_link_revoke(&self, doc: document::DocId, link: String) -> RpcResult<()>;
+    /// A guest connection (31 §4.3 mode 2) proves the link secret for this connection and becomes a
+    /// member (59 §8.3): `proof` = base64url `HMAC-SHA256(sha256(secret), handshake_hash ‖ guest_pub)`.
+    /// Errors: `link_unknown`, `link_revoked`, `link_expired`, `bad_proof`, `members_full`, `sharing_off`.
+    #[method(name = "doc_join", with_extensions)]
+    async fn doc_join(
+        &self,
+        doc: document::DocId,
+        link: String,
+        proof: String,
+        name: Option<String>,
+    ) -> RpcResult<document::Joined>;
+    /// A member renames themself (59 §8.5; editors only — `viewer_readonly` otherwise).
+    #[method(name = "doc_set_name", with_extensions)]
+    async fn doc_set_name(&self, doc: document::DocId, name: String) -> RpcResult<()>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -1288,6 +1332,49 @@ fn peer(ext: &Extensions) -> RpcResult<link::RpcPeer> {
     ext.get::<link::RpcPeer>().cloned().ok_or_else(|| {
         ErrorObjectOwned::owned(UNAUTHORIZED, "no authenticated connection", None::<()>)
     })
+}
+
+/// The document principal behind a call (59 §8.3): a mode-2 guest conn is `Member{pub, device}`,
+/// everything else the owner on `device`. Returned with the peer so the caller can mark a guest
+/// joined or refused.
+fn principal(ext: &Extensions) -> RpcResult<(link::RpcPeer, document::Principal)> {
+    let p = peer(ext)?;
+    let device = Some(p.id());
+    let by = match p.guest() {
+        Some(g) => document::Principal::Member {
+            pub_: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(g.key),
+            device,
+        },
+        None => document::Principal::Owner { device },
+    };
+    Ok((p, by))
+}
+
+/// Owner-only methods (59 §8: `doc_members`, links): a guest peer is refused before the actor sees it.
+fn owner(ext: &Extensions) -> RpcResult<link::RpcPeer> {
+    let p = peer(ext)?;
+    if p.guest().is_some() {
+        return Err(ErrorObjectOwned::owned(UNAUTHORIZED, "owner only", None::<()>));
+    }
+    Ok(p)
+}
+
+/// A member call's outcome as the guest's conn sees it (59 §8.3, §11): success scopes the conn
+/// (no `doc_join` needed on a return visit), a membership or role refusal counts toward the close.
+fn member_outcome<T>(peer: &link::RpcPeer, r: &RpcResult<T>) {
+    let Some(g) = peer.guest() else {
+        return;
+    };
+    match r {
+        Ok(_) => g.mark_joined(),
+        Err(e) if e.message().starts_with("not_member")
+            || e.message().starts_with("viewer_readonly")
+            || e.message().starts_with("sharing_disabled") =>
+        {
+            g.refuse();
+        }
+        Err(_) => {}
+    }
 }
 
 /// The secrets actor; absent when the plugin is not loaded or the vault failed to open.
@@ -2331,8 +2418,10 @@ impl ApiServer for Server {
         doc: document::DocId,
         sv: Option<String>,
     ) -> RpcResult<document::DocOpen> {
-        peer(ext)?;
-        send(&documents()?, document::OpenDoc { doc, sv }).await
+        let (peer, by) = principal(ext)?;
+        let r = send(&documents()?, document::OpenDoc { doc, sv, by }).await;
+        member_outcome(&peer, &r);
+        r
     }
 
     async fn doc_update(
@@ -2341,16 +2430,10 @@ impl ApiServer for Server {
         doc: document::DocId,
         update: String,
     ) -> RpcResult<()> {
-        let device = Some(peer(ext)?.id());
-        send(
-            &documents()?,
-            document::ApplyUpdate {
-                doc,
-                update,
-                by: document::Principal::Owner { device },
-            },
-        )
-        .await
+        let (peer, by) = principal(ext)?;
+        let r = send(&documents()?, document::ApplyUpdate { doc, update, by }).await;
+        member_outcome(&peer, &r);
+        r
     }
 
     async fn doc_awareness(
@@ -2359,16 +2442,124 @@ impl ApiServer for Server {
         doc: document::DocId,
         state: String,
     ) -> RpcResult<()> {
-        let device = Some(peer(ext)?.id());
-        send(
+        let (peer, by) = principal(ext)?;
+        let r = send(&documents()?, document::AwarenessUpdateMsg { doc, state, by }).await;
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn doc_members(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<document::Members> {
+        owner(ext)?;
+        send(&documents()?, document::MembersOf { doc }).await
+    }
+
+    async fn doc_member_set(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        member: String,
+        role: Option<document::Role>,
+        name: Option<String>,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        send(&documents()?, document::MemberSet { doc, pub_: member, role, name }).await
+    }
+
+    async fn doc_member_revoke(&self, ext: &Extensions, doc: document::DocId, member: String) -> RpcResult<()> {
+        owner(ext)?;
+        send(&documents()?, document::MemberRevoke { doc, pub_: member.clone() }).await?;
+        // 59 §8.4: their live conns go too. Link off (no conns) is not an error.
+        if let Ok(link) = link()
+            && let Ok(key) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&member)
+            && let Ok(key) = <[u8; 32]>::try_from(key)
+        {
+            let _ = link.ask(link::DropGuest { key }).await;
+        }
+        Ok(())
+    }
+
+    async fn doc_link_create(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        role: document::Role,
+        name: Option<String>,
+        expires_ms: Option<i64>,
+    ) -> RpcResult<document::LinkCreated> {
+        owner(ext)?;
+        // The URL needs the relay host and this harness's id (59 §8.2): Link must be on.
+        let status: LinkStatus = send(&link()?, link::Status).await?;
+        let harness = status.harness_id.filter(|_| status.enabled).ok_or_else(|| {
+            failed("link is off: turn on Settings › Link to share documents")
+        })?;
+        let relay = status.relay.trim_end_matches('/');
+        let origin = relay
+            .strip_prefix("wss://")
+            .map(|h| format!("https://{h}"))
+            .or_else(|| relay.strip_prefix("ws://").map(|h| format!("http://{h}")))
+            .unwrap_or_else(|| relay.to_owned());
+        let (link, secret) = send(
             &documents()?,
-            document::AwarenessUpdateMsg {
-                doc,
-                state,
-                by: document::Principal::Owner { device },
+            document::LinkCreate {
+                doc: doc.clone(),
+                role,
+                name,
+                expires_ms,
             },
         )
-        .await
+        .await?;
+        Ok(document::LinkCreated {
+            url: format!("{origin}/d#1.{harness}.{doc}.{secret}"),
+            link,
+        })
+    }
+
+    async fn doc_link_revoke(&self, ext: &Extensions, doc: document::DocId, link: String) -> RpcResult<()> {
+        owner(ext)?;
+        send(&documents()?, document::LinkRevoke { doc, link }).await
+    }
+
+    async fn doc_join(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        link: String,
+        proof: String,
+        name: Option<String>,
+    ) -> RpcResult<document::Joined> {
+        let peer = peer(ext)?;
+        let Some(guest) = peer.guest() else {
+            return Err(ErrorObjectOwned::owned(UNAUTHORIZED, "guests only", None::<()>));
+        };
+        let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(proof)
+            .map_err(|_| failed("bad_proof"))?;
+        let r = send(
+            &documents()?,
+            document::Join {
+                doc,
+                link,
+                guest_pub: guest.key,
+                handshake_hash: guest.handshake_hash.to_vec(),
+                proof,
+                name,
+            },
+        )
+        .await;
+        match &r {
+            Ok(_) => guest.mark_joined(),
+            Err(_) => {
+                guest.refuse();
+            }
+        }
+        r
+    }
+
+    async fn doc_set_name(&self, ext: &Extensions, doc: document::DocId, name: String) -> RpcResult<()> {
+        let (peer, by) = principal(ext)?;
+        let r = send(&documents()?, document::SetName { doc, by, name }).await;
+        member_outcome(&peer, &r);
+        r
     }
 
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {
@@ -3049,8 +3240,10 @@ impl ApiServer for Server {
         // Admission and the actor's subscription before accept, so the client's first
         // `doc_open` after this cannot race an update it would then miss (59 §6.2).
         let admit = async {
-            let conn = Some(peer(ext)?.id());
-            send(&documents()?, document::Subscribe { doc, conn }).await
+            let (peer, by) = principal(ext)?;
+            let r = send(&documents()?, document::Subscribe { doc, by }).await;
+            member_outcome(&peer, &r);
+            r
         };
         let mut rx = match admit.await {
             Ok(rx) => rx,
