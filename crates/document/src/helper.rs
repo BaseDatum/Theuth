@@ -5,10 +5,12 @@
 //! lines on its own after an import; those reach the actor as
 //! [`HelperEvent`]s. The child is started when the [`Helper`] is built and
 //! kept warm; a crash, a malformed line or a request past [`DEADLINE`]
-//! kills it and it is respawned with backoff (1 s, 2 s, … 30 s). While it is
-//! down every request fails at once with the last failure — the child's
-//! stderr included — and the actor learns of the fresh child through
-//! [`HelperEvent::Restarted`] (its mirrors are gone and must be reopened).
+//! kills it and it is respawned with backoff (1 s, 2 s, … 30 s). A request
+//! that arrives while a spawn is due or in flight waits for it (bounded by
+//! [`DEADLINE`] on the handshake); while the child is down — crashed,
+//! missing, or in backoff — every request fails at once with the last
+//! failure, the child's stderr included. The actor learns of the fresh child
+//! through [`HelperEvent::Restarted`] (its mirrors are gone and must be reopened).
 //! The executable's `--version` must print our [`protocol_version`] before
 //! it serves anything. [`helper_status`] reports the process for Settings.
 
@@ -574,7 +576,8 @@ fn head(s: &str, n: usize) -> &str {
 }
 
 /// Owns the child: spawns it (again, with backoff, whenever it is gone), writes requests, matches
-/// replies to pending ids, forwards events. Requests that find no child fail with the last failure.
+/// replies to pending ids, forwards events. Requests that find a spawn due wait for it (they sit in
+/// `rx` until it resolves); requests that find no child and no spawn due fail with the last failure.
 async fn worker(
     path: PathBuf,
     mut rx: mpsc::UnboundedReceiver<Job>,
@@ -606,24 +609,29 @@ async fn worker(
         }};
     }
     loop {
+        // A due spawn runs before anything else is polled: jobs that arrive meanwhile sit in `rx` and
+        // meet the child (or its failure) instead of failing with "starting". The sleep branch below
+        // only wakes the loop when the backoff ends.
+        if proc.is_none() && next_spawn <= Instant::now() {
+            match tokio::time::timeout(DEADLINE, spawn(&path)).await {
+                Ok(Ok(p)) => {
+                    proc = Some(p);
+                    backoff = BACKOFF_MIN;
+                    generation += 1;
+                    set_process(HelperProcess::Running);
+                    if generation > 1 {
+                        tracing::info!("documents helper running again");
+                        let _ = events.send(HelperEvent::Restarted);
+                    }
+                }
+                Ok(Err(e)) => lost!(e),
+                Err(_) => lost!(Error::Crashed(format!("no answer to --version within {DEADLINE:?}"))),
+            }
+            continue;
+        }
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = tokio::time::sleep_until(next_spawn.into()), if proc.is_none() => {
-                match tokio::time::timeout(DEADLINE, spawn(&path)).await {
-                    Ok(Ok(p)) => {
-                        proc = Some(p);
-                        backoff = BACKOFF_MIN;
-                        generation += 1;
-                        set_process(HelperProcess::Running);
-                        if generation > 1 {
-                            tracing::info!("documents helper running again");
-                            let _ = events.send(HelperEvent::Restarted);
-                        }
-                    }
-                    Ok(Err(e)) => lost!(e),
-                    Err(_) => lost!(Error::Crashed(format!("no answer to --version within {DEADLINE:?}"))),
-                }
-            }
+            _ = tokio::time::sleep_until(next_spawn.into()), if proc.is_none() => {}
             _ = tick.tick() => {
                 if proc.is_some() && pending.values().any(|(at, _)| at.elapsed() > DEADLINE) {
                     if let Some(p) = proc.take() {
