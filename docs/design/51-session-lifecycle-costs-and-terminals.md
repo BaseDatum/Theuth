@@ -1093,3 +1093,13 @@ As built — deviations:
     than `CloseSessions`.
 11. Manual acceptance scenarios §9.1–9.7 were not executed end-to-end on real
     devices/harnesses; the automated unit/integration tests listed above ran.
+12. 2026-09-22: `ContextUsed { session, turn, context }` is published by the
+    round loop right after each settled model round, alongside the
+    `ModelUsageChanged` that round's settlement raises, so the context meter
+    (desktop `ContextMeter`, TUI status line) moves on the cost pill's cadence
+    instead of only at `TurnFinished`. It carries the same figure
+    `TurnFinished.context` reports (prompt + completion of the last round, or
+    the chars/4 fallback when the gateway stripped usage); `TurnFinished` is
+    unchanged. Its `context` is not folded into `ModelUsageChanged`: that event
+    also fires for ancestors and for title/compaction/harvest/vision calls,
+    whose token counts are not the main frame's.
