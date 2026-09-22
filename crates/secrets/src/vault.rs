@@ -7,7 +7,6 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::SystemTime;
@@ -622,18 +621,9 @@ fn load(path: &Path, key: &[u8; 32]) -> anyhow::Result<Option<BTreeMap<String, E
     Ok(Some(plain.secrets))
 }
 
-/// `<path>.tmp` at mode 0600, then rename over `path`.
+/// `<path>.tmp` owner-only, then rename over `path`.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        open.mode(0o600);
-    }
-    open.open(&tmp).and_then(|mut f| f.write_all(bytes))?;
-    std::fs::rename(&tmp, path)
+    platform::files::write_private(path, bytes)
 }
 
 #[cfg(test)]

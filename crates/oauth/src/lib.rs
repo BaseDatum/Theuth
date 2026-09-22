@@ -82,17 +82,7 @@ const PAGE: &str = include_str!("callback.html");
 
 /// Open `url` in the user's browser; best effort, never fails the login.
 pub fn open_browser(url: &str) {
-    let cmd = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let _ = std::process::Command::new(cmd)
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let _ = platform::open::open_url(url);
 }
 
 /// PKCE S256 pair and CSRF state, 32 random bytes each, base64url no pad.
@@ -428,23 +418,10 @@ impl Store {
         }
     }
 
-    /// Write-then-rename, mode 0600.
+    /// Write-then-rename, owner-only.
     pub fn save(&self, ns: &str, t: &Tokens) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let path = self.path(ns);
-        let tmp = path.with_extension("json.tmp");
-        let mut open = std::fs::OpenOptions::new();
-        open.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            open.mode(0o600);
-        }
-        std::io::Write::write_all(
-            &mut open.open(&tmp)?,
-            serde_json::to_string_pretty(t)?.as_bytes(),
-        )?;
-        std::fs::rename(tmp, path)
+        platform::files::write_private(&self.path(ns), serde_json::to_string_pretty(t)?.as_bytes())
     }
 
     /// Delete the token file; fine if absent.

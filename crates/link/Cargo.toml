@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Relay uplink, Noise pairing and sessions, paired-device registry (design doc 31)"
 
 [dependencies]
+platform = { workspace = true }
 runtime = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }

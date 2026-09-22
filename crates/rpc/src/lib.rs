@@ -181,7 +181,7 @@ async fn accept(
     let _ = server.stop();
 }
 
-/// Read the token, or create it (64 hex chars, mode 0600).
+/// Read the token, or create it (64 hex chars, owner-only).
 fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
     if let Ok(t) = std::fs::read_to_string(path) {
         let t = t.trim();
@@ -194,12 +194,7 @@ fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    std::fs::write(path, &token)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    platform::files::write_private(path, token.as_bytes())?;
     Ok(token.into())
 }
 

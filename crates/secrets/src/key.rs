@@ -3,7 +3,6 @@
 //! (base64, mode 0600). `Auto` tries the keychain and falls back to the file
 //! on any keyring error, saying so in the log.
 
-use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -67,19 +66,8 @@ fn file(data_dir: &Path) -> anyhow::Result<[u8; 32]> {
     }
     std::fs::create_dir_all(data_dir).with_context(|| data_dir.display().to_string())?;
     let key: [u8; 32] = rand::random();
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        open.mode(0o600);
-    }
-    match open.open(&path) {
-        Ok(mut f) => {
-            f.write_all(B64.encode(key).as_bytes())
-                .with_context(|| format!("writing {}", path.display()))?;
-            Ok(key)
-        }
+    match platform::files::create_private(&path, B64.encode(key).as_bytes()) {
+        Ok(()) => Ok(key),
         // Another process created it between our check and ours: theirs is the key.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(&path),
         Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),

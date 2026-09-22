@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Model loop (genai), session store (sqlite), skills, subagents"
 
 [dependencies]
+platform = { workspace = true }
 knowledge = { workspace = true }
 search = { workspace = true }
 runtime = { workspace = true }

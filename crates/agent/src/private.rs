@@ -28,10 +28,7 @@ impl Scratch {
             "{PREFIX}{}",
             uuid::Uuid::new_v4().simple()
         ));
-        let mut b = fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-        b.create(&root)?;
+        platform::files::private_dir(&root)?;
         let lock = lock_file(&root)?;
         Ok(Self { root, lock })
     }

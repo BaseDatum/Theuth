@@ -6,6 +6,7 @@ publish.workspace = true
 description = "OAuth login plumbing: loopback callback, PKCE, provider token store"
 
 [dependencies]
+platform = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

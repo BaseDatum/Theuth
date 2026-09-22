@@ -25,7 +25,7 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Load `<dir>/identity` or create it (32 random bytes, mode 0600).
+    /// Load `<dir>/identity` or create it (32 random bytes, owner-only).
     pub fn load_or_create(dir: &Path) -> anyhow::Result<Self> {
         let path = dir.join("identity");
         let private: [u8; 32] = match std::fs::read(&path) {
@@ -80,21 +80,7 @@ pub fn public_of(private: &[u8; 32]) -> [u8; 32] {
 }
 
 fn write_private(path: &Path, private: &[u8; 32]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?
-            .write_all(private)
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, private)
-    }
+    platform::files::create_private(path, private)
 }
 
 /// `Noise_<pattern>_25519_AESGCM_SHA256` params.
