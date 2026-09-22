@@ -5,6 +5,7 @@
 //! Paths are resolved against the process cwd; `~` is not expanded.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,8 @@ pub const READ_HEADER_PREFIX: &str = concat!("[read_", "file ");
 /// The header's range clause; together with [`READ_HEADER_PREFIX`] on one
 /// line it identifies a pasted header.
 pub const READ_HEADER_SHOWING: &str = concat!("; show", "ing");
+/// End of the header of an `outline=true` result.
+pub const READ_HEADER_OUTLINE: &str = concat!("; out", "line]");
 /// First line of a `read_file` result cut at 64 KiB by the pre-header
 /// format; still refused on write.
 pub const TRUNCATED_HEAD_PREFIX: &str = concat!("[read_file: ", "showing bytes ");
@@ -43,9 +46,10 @@ pub(crate) fn refuse_read_output(content: &str) -> anyhow::Result<()> {
         "refusing to write: content contains a read_file truncation marker — the source read was cut at 64 KiB; read with offset/limit or use edit for targeted changes"
     );
     anyhow::ensure!(
-        !content
-            .lines()
-            .any(|l| l.starts_with(READ_HEADER_PREFIX) && l.contains(READ_HEADER_SHOWING)),
+        !content.lines().any(|l| {
+            l.starts_with(READ_HEADER_PREFIX)
+                && (l.contains(READ_HEADER_SHOWING) || l.ends_with(READ_HEADER_OUTLINE))
+        }),
         "refusing to write: content looks like read_file output (header/line numbers); write the file's real text"
     );
     Ok(())
@@ -74,10 +78,37 @@ pub struct ReadFileArgs {
     /// (`cat -n`); default true. `false` returns the raw text.
     #[serde(default = "yes")]
     pub numbers: bool,
+    /// Return the file's symbol outline (as `code_outline` renders it)
+    /// instead of its text; needs the codeindex plugin. Not combinable with
+    /// any other option.
+    #[serde(default)]
+    pub outline: bool,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// Renders a source file's symbol outline for `read_file(outline=true)`;
+/// `Ok(None)` when the file is outside every indexed root or its language
+/// is not indexed. Registered once by the codeindex plugin via
+/// [`set_outliner`] (`tools` must not depend on `codeindex`).
+#[async_trait::async_trait]
+pub trait Outliner: Send + Sync {
+    /// The outline text for `path`, or `None` when the file is not indexed.
+    async fn outline(&self, path: &Path) -> anyhow::Result<Option<String>>;
+}
+
+static OUTLINER: OnceLock<Arc<dyn Outliner>> = OnceLock::new();
+
+/// Install the process-wide [`Outliner`]; `false` if one is already set.
+pub fn set_outliner(o: Arc<dyn Outliner>) -> bool {
+    OUTLINER.set(o).is_ok()
+}
+
+/// The installed [`Outliner`], if any.
+pub fn outliner() -> Option<Arc<dyn Outliner>> {
+    OUTLINER.get().cloned()
 }
 
 /// Read a text file, or a document rendered as Markdown.
@@ -90,7 +121,7 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown. The first line is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`; each following line is `N<tab>text` (`cat -n`) unless `numbers=false` — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`. Optional `offset`/`limit` select a 1-based line window. Output is capped at 64 KiB: a cut result says so in the header and ends with a `[truncated …]` footer; read the rest with offset/limit and never write a cut result back. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown; paths are relative to the process cwd, `~` is not expanded. Line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -114,7 +145,23 @@ impl Tool for ReadFile {
         };
         let all: Vec<&str> = text.lines().collect();
         let total = all.len();
-        let sel = select(&a, &shown, total)?;
+        let mut sel = select(&a, &shown, total)?;
+        if a.outline {
+            let Some(o) = outliner() else {
+                anyhow::bail!("outline needs the codeindex plugin (codeindex.enabled)");
+            };
+            match o.outline(&a.path).await? {
+                Some(outline) => {
+                    return Ok(ToolOutput::ok(format!(
+                        "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes{READ_HEADER_OUTLINE}\n{outline}",
+                        text.len()
+                    )));
+                }
+                None => sel
+                    .notes
+                    .push("no outline for this language, showing text".into()),
+            }
+        }
         let width = match sel.windows.iter().map(|w| w.1).max() {
             Some(last) if a.numbers => last.checked_ilog10().map_or(1, |d| d as usize + 1),
             _ => 0,
@@ -232,13 +279,20 @@ fn select(a: &ReadFileArgs, shown: &str, total: usize) -> anyhow::Result<Selecti
         "tail" => a.tail.is_some(),
         "offset" => a.offset.is_some(),
         "limit" => a.limit.is_some(),
-        _ => a.ranges.is_some(),
+        "ranges" => a.ranges.is_some(),
+        "outline" => a.outline,
+        _ => !a.numbers,
     };
     for (x, y) in [
         ("tail", "offset"),
         ("tail", "limit"),
         ("tail", "ranges"),
         ("ranges", "offset"),
+        ("outline", "offset"),
+        ("outline", "limit"),
+        ("outline", "tail"),
+        ("outline", "ranges"),
+        ("outline", "numbers=false"),
     ] {
         anyhow::ensure!(
             !(set(x) && set(y)),
@@ -605,6 +659,7 @@ mod tests {
             tail: None,
             ranges: None,
             numbers: true,
+            outline: false,
         }
     }
 
@@ -779,6 +834,72 @@ mod tests {
             assert_eq!(
                 err,
                 format!("`tail` cannot be combined with `{conflict}`; pass one of them")
+            );
+        }
+    }
+
+    struct FakeOutliner;
+
+    #[async_trait::async_trait]
+    impl Outliner for FakeOutliner {
+        async fn outline(&self, path: &Path) -> anyhow::Result<Option<String>> {
+            Ok((path.extension().is_some_and(|e| e == "rs"))
+                .then(|| format!("outline of {}", path.display())))
+        }
+    }
+
+    // The hook is process-global, so every outline expectation lives in
+    // this one test: the unregistered error first, then Some/None.
+    #[tokio::test]
+    async fn read_outline_uses_the_registered_hook() {
+        let dir = std::env::temp_dir().join(format!("theuth-outline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("a.rs");
+        std::fs::write(&rs, "fn a() {}\nfn b() {}\n").unwrap();
+        let outline = |p: &Path| {
+            let mut a = args(p, None, None);
+            a.outline = true;
+            a
+        };
+        assert_eq!(
+            read_err(outline(&rs)).await,
+            "outline needs the codeindex plugin (codeindex.enabled)"
+        );
+        assert!(set_outliner(Arc::new(FakeOutliner)));
+        assert!(!set_outliner(Arc::new(FakeOutliner)));
+        let out = read(outline(&rs)).await;
+        assert_eq!(
+            out,
+            format!(
+                "{READ_HEADER_PREFIX}{}: 2 lines, 20 bytes{READ_HEADER_OUTLINE}\noutline of {}",
+                rs.display(),
+                rs.display()
+            )
+        );
+        assert!(refuse_read_output(&out).is_err());
+        let txt = dir.join("a.txt");
+        std::fs::write(&txt, "plain\n").unwrap();
+        assert_eq!(
+            read(outline(&txt)).await,
+            format!(
+                "{}\n1\tplain",
+                header(
+                    &txt,
+                    1,
+                    6,
+                    "lines 1–1; no outline for this language, showing text"
+                )
+            )
+        );
+        for (field, conflict) in [("offset", "offset"), ("numbers", "numbers=false")] {
+            let mut a = outline(&rs);
+            match field {
+                "offset" => a.offset = Some(1),
+                _ => a.numbers = false,
+            }
+            assert_eq!(
+                read_err(a).await,
+                format!("`outline` cannot be combined with `{conflict}`; pass one of them")
             );
         }
     }
