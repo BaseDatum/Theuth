@@ -4,6 +4,7 @@ import { MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'luc
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
 import { MeetingPill } from '@/components/meeting/MeetingPill'
+import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/NotePicker'
 import { ago } from '@/components/sidebar/AgentTree'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -24,13 +25,14 @@ import type { DocSummary } from '@/rpc/bindings/DocSummary'
 /** `/notes` (59 §7.3): every note, newest update first; New note; per-row Rename (inline) and Delete (one click). */
 export function NotesList() {
   const api = useApi()
+  const qc = useQueryClient()
   const navigate = useNavigate()
   const notes = useNotes()
   const sidebar = useSidebar()
   const mac = isMacDesktop()
-  // The note opens with its title focused (`?new`); a failed create (e.g. the documents helper missing) toasts and stays.
+  // The note opens with its title focused (`?new`) as soon as it exists (`create.ts`); a create that fails before that toasts and stays.
   const create = useMutation({
-    mutationFn: () => api.doc_create('Untitled', null),
+    mutationFn: () => createNote(api, qc, notes.data ?? []),
     onSuccess: (n) => void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true } }),
     onError: (e) => toast.error(e.message),
   })
