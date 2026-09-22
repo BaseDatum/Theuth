@@ -1,11 +1,22 @@
-import { Sparkles, X } from 'lucide-react'
+import { AppWindow, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { parseAppInput } from '@/components/apps/lifecycle'
 import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { useSessionField } from '@/store/sessions'
 
-/** A queued input's chip: a skill injection shows the skills icon, its name and the words; anything else `◇ text`. */
+/** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message; anything else `◇ text`. */
 function label(text: string) {
+  const app = parseAppInput(text)
+  if (app) {
+    return (
+      <>
+        <AppWindow className="mr-1 inline size-3.5 align-[-2px]" />
+        <span className="font-medium">{app.name}</span>
+        {`  ${app.message}`}
+      </>
+    )
+  }
   const skill = classify(text)?.[0]
   if (skill?.kind !== 'skill') return `◇ ${text}`
   return (

@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
-import { BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
+import { AppWindow, BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
+import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
 import { HARNESS_NOTICES } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/rpc/extra'
@@ -26,6 +27,9 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       // 53 §4.4: the daemon's `[meeting …]` inputs are notices, not the user's words.
       const meeting = parseMeetingLine(entry.text)
       if (meeting) return <MeetingCard line={meeting} />
+      // 46 §6.3: an app's `@ToAssistant` action is app data with provenance, not a `you` bubble.
+      const app = parseAppInput(entry.text)
+      if (app) return <AppInputCard input={app} />
       return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
     }
     case 'assistant':
@@ -67,11 +71,43 @@ function HarnessNotice({ notice, text }: Pick<Extract<Entry, { kind: 'harness' }
   )
 }
 
+/** An app's `@ToAssistant` input: provenance chips (app, version, action), the message, then the context and form values as sent. */
+function AppInputCard({ input }: { input: AppInput }) {
+  const sections: [string, string][] = []
+  if (input.context !== undefined) sections.push(['context', input.context])
+  if (input.form) sections.push([input.form.name ? `form ${input.form.name}` : 'form', input.form.values])
+  return (
+    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-fg-secondary">
+        <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="font-medium">app</span>
+        <span className="rounded-full bg-layer-2 px-2 leading-5" title={input.record}>
+          {input.name} v{input.version}
+        </span>
+        {input.action !== undefined && (
+          <span className="rounded-full bg-layer-2 px-2 font-mono leading-5" title={input.action}>
+            action {input.action.slice(0, 8)}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 leading-6 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{input.message}</div>
+      {sections.map(([label, text]) => (
+        <div key={label} className="mt-2">
+          <div className="text-xs text-fg-tertiary">{label}</div>
+          <pre className="mt-1 overflow-x-auto rounded-md bg-layer-2 px-3 py-2 font-mono text-xs leading-5 text-fg-secondary">{text}</pre>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** What the tombstone names. */
 function describe(entry: Entry): string {
   switch (entry.kind) {
-    case 'user':
-      return 'your message'
+    case 'user': {
+      const app = parseAppInput(entry.text)
+      return app ? `app ${app.name}` : 'your message'
+    }
     case 'assistant':
       return 'reply'
     case 'reasoning':

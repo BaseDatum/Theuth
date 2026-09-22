@@ -9,6 +9,7 @@ export const HARNESS_NOTICES = {
   surface_error: { title: 'Display correction', description: 'The harness asked the model to fix content that could not be rendered.' },
   todo: { title: 'Todo reminder', description: 'The harness reminded the model of its current plan.' },
   knowledge: { title: 'Knowledge reminder', description: 'The harness suggested relevant knowledge for the model to consult.' },
+  vision: { title: 'Images unseen', description: 'The harness told the model no vision model is configured, so the pending images were not looked at.' },
 }
 
 /** One card a harness-wrapped input renders as. */

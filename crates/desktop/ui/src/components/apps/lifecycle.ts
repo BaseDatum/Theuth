@@ -356,3 +356,41 @@ export function assistantInput(
     out += `\n\nform${form.name ? ` ${form.name}` : ""}:\n${JSON.stringify(form.values, null, 2)}`;
   return out;
 }
+
+/** `assistantInput` read back: what the transcript card shows instead of a user bubble. `context`/`form.values` stay the literal text (JSON or a string). */
+export type AppInput = {
+  name: string;
+  version: string;
+  record: string;
+  action?: string;
+  message: string;
+  context?: string;
+  form?: { name?: string; values: string };
+};
+
+// The record id is opaque and may carry whitespace (a provider's composite call id); the head ends at the first `]` newline.
+const APP_HEAD = /^\[app (.+?) v(\d+) · ([^\]]+?)(?: · action (\S+))?\]\n/;
+const APP_FORM = /\n\nform(?: ([^\n:]+))?:\n/;
+const APP_CONTEXT = "\n\ncontext:\n";
+
+/** `null` for anything but an app-origin input. Sections are split in emission order: message, then context, then form. */
+export function parseAppInput(text: string): AppInput | null {
+  const m = APP_HEAD.exec(text);
+  if (!m) return null;
+  const out: AppInput = { name: m[1] as string, version: m[2] as string, record: m[3] as string, message: "" };
+  if (m[4] !== undefined) out.action = m[4];
+  let rest = text.slice(m[0].length);
+  const f = APP_FORM.exec(rest);
+  if (f) {
+    out.form = { values: rest.slice(f.index + f[0].length) };
+    if (f[1] !== undefined) out.form.name = f[1];
+    rest = rest.slice(0, f.index);
+  }
+  const c = rest.indexOf(APP_CONTEXT);
+  if (c >= 0) {
+    out.context = rest.slice(c + APP_CONTEXT.length);
+    rest = rest.slice(0, c);
+  }
+  out.message = rest;
+  return out;
+}

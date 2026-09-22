@@ -7,6 +7,7 @@ import {
   PendingPresses,
   type Target,
   assistantInput,
+  parseAppInput,
   createProvider,
   previewPatch,
   resultValue,
@@ -318,4 +319,28 @@ test("assistantInput leads with provenance and carries message and context as da
   expect(assistantInput(app, "a", "Send", undefined, { values: {} })).toBe(
     "[app argo v3 · rec1 · action a]\nSend",
   );
+});
+
+test("parseAppInput reads assistantInput back, section by section", () => {
+  const app = { name: "playground.openui", version: 1, record_call_id: "call-1_0" };
+  expect(parseAppInput(assistantInput(app, "6cf3", "User is in the OpenUI playground.\nclicks: 4", undefined, { values: { $count: 4, $name: "Sky" } }))).toEqual({
+    name: "playground.openui",
+    version: "1",
+    record: "call-1_0",
+    action: "6cf3",
+    message: "User is in the OpenUI playground.\nclicks: 4",
+    form: { values: '{\n  "$count": 4,\n  "$name": "Sky"\n}' },
+  });
+  expect(parseAppInput(assistantInput(app, undefined, "", "Healthy", { name: "ticket", values: { a: 1 } }))).toEqual({
+    name: "playground.openui",
+    version: "1",
+    record: "call-1_0",
+    message: "(button pressed)",
+    context: "Healthy",
+    form: { name: "ticket", values: '{\n  "a": 1\n}' },
+  });
+  expect(parseAppInput("[app x v1 · r]\nhi")).toEqual({ name: "x", version: "1", record: "r", message: "hi" });
+  expect(parseAppInput("[app x v1 · call-1\nfc_2 · action a]\nhi")).toEqual({ name: "x", version: "1", record: "call-1\nfc_2", action: "a", message: "hi" });
+  expect(parseAppInput("[app x v1 · r] hi")).toBeNull();
+  expect(parseAppInput("[application] hi")).toBeNull();
 });
