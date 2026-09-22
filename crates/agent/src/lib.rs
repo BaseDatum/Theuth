@@ -1638,6 +1638,18 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         revision: u64,
     },
+    /// The window gauge moved mid-turn: one model round of `turn` settled and
+    /// `context` is what `TurnFinished.context` will report if no round follows
+    /// (prompt + completion of that round). Published on the same cadence as
+    /// `ModelUsageChanged` so the context meter moves with the cost (51 §6.4).
+    ContextUsed {
+        /// Session.
+        session: SessionId,
+        /// Turn.
+        turn: TurnId,
+        /// Prompt + completion tokens of the round that just settled.
+        context: u32,
+    },
     /// A private root tree is closing (51 §4.4): every member's data is
     /// being torn down under `generation`; owners fence late writes on it.
     /// `SessionDeleted` follows per member once cleanup ends.
@@ -1682,6 +1694,7 @@ impl AgentEvent {
             | Self::SessionMetadataChanged { session, .. }
             | Self::Error { session, .. }
             | Self::ModelUsageChanged { session, .. }
+            | Self::ContextUsed { session, .. }
             | Self::SessionClosing { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
         }
