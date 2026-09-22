@@ -62,6 +62,9 @@ pub struct ReadFileArgs {
     /// Maximum number of lines to return.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Return the last N lines instead; not combinable with `offset`/`limit`.
+    #[serde(default)]
+    pub tail: Option<usize>,
     /// Prefix each line with its right-aligned line number and a tab
     /// (`cat -n`); default true. `false` returns the raw text.
     #[serde(default = "yes")]
@@ -106,16 +109,27 @@ impl Tool for ReadFile {
         };
         let all: Vec<&str> = text.lines().collect();
         let total = all.len();
-        let first = a.offset.unwrap_or(1).max(1);
-        anyhow::ensure!(
-            first <= total.max(1),
-            "{shown}: offset {first} is past the end of the file ({total} lines)"
-        );
-        let (end, capped) = match a.limit {
-            Some(n) => ((first - 1).saturating_add(n).min(total), false),
-            None => {
-                let end = (first - 1 + DEFAULT_LINES).min(total);
-                (end, end < total)
+        let (first, end, capped) = match (a.tail, a.offset, a.limit) {
+            (Some(_), Some(_), _) => {
+                anyhow::bail!("`tail` cannot be combined with `offset`; pass one of them")
+            }
+            (Some(_), _, Some(_)) => {
+                anyhow::bail!("`tail` cannot be combined with `limit`; pass one of them")
+            }
+            (Some(n), None, None) => (total.saturating_sub(n) + 1, total, false),
+            (None, offset, limit) => {
+                let first = offset.unwrap_or(1).max(1);
+                anyhow::ensure!(
+                    first <= total.max(1),
+                    "{shown}: offset {first} is past the end of the file ({total} lines)"
+                );
+                match limit {
+                    Some(n) => (first, (first - 1).saturating_add(n).min(total), false),
+                    None => {
+                        let end = (first - 1 + DEFAULT_LINES).min(total);
+                        (first, end, end < total)
+                    }
+                }
             }
         };
         let (mut body, long) = render(&all[first - 1..end], first, a.numbers);
@@ -470,6 +484,7 @@ mod tests {
             path: path.to_owned(),
             offset,
             limit,
+            tail: None,
             numbers: true,
         }
     }
@@ -614,6 +629,39 @@ mod tests {
         );
         let p = scratch(&"a".repeat(2000));
         assert!(!read(args(&p, None, None)).await.contains("…["));
+    }
+
+    #[tokio::test]
+    async fn read_tail_shows_the_last_lines_with_real_numbers() {
+        let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let mut a = args(&p, None, None);
+        a.tail = Some(3);
+        assert_eq!(
+            read(a).await,
+            format!(
+                "{}\n118\tl118\n119\tl119\n120\tl120",
+                header(&p, 120, text.len(), "lines 118–120")
+            )
+        );
+        // More than the file has: the whole file, no footer.
+        let mut a = args(&p, None, None);
+        a.tail = Some(500);
+        let out = read(a).await;
+        assert!(out.starts_with(&header(&p, 120, text.len(), "lines 1–120")));
+        assert!(out.ends_with("\n120\tl120"));
+        for (offset, limit, conflict) in [(Some(2), None, "offset"), (None, Some(2), "limit")] {
+            let mut a = args(&p, offset, limit);
+            a.tail = Some(3);
+            let err = Tool::call(&ReadFile, a, cx())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!("`tail` cannot be combined with `{conflict}`; pass one of them")
+            );
+        }
     }
 
     #[tokio::test]
