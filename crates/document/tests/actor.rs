@@ -642,7 +642,11 @@ async fn notes_create_list_rename_delete() {
     assert_eq!(ids(list), vec![a.id.clone(), b.id.clone()]);
 
     // Rename: meta/index title and the heading block; `b`'s own heading is rewritten too (it is an h1).
+    // A subscriber (a guest's page, another device) gets the title as `Meta` before the heading update.
+    let mut a_sub = actor.ask(Subscribe { doc: a.id.clone(), by: Principal::Owner { device: Some(1) } }).await.unwrap();
     actor.ask(Rename { doc: a.id.clone(), title: "Renamed".into() }).await.unwrap();
+    assert_eq!(next_event(&mut a_sub).await, DocEvent::Meta { title: "Renamed".into() });
+    drop(a_sub);
     assert_eq!(wait_for(&a_md, |s| s.starts_with("# Renamed"), Duration::from_secs(3)).await, "# Renamed\n\npara\n");
     let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
     assert_eq!(list.iter().find(|d| d.id == a.id).unwrap().title, "Renamed");

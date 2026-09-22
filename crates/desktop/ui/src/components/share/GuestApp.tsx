@@ -192,13 +192,16 @@ function GuestDocument({ provider, user, owner }: { provider: HarnessProvider; u
       setTitle(provider.meta?.title ?? '')
     })
     const offEvent = provider.onEvent((e: DocEvent) => {
-      if (e.type === 'Members') setTitle(provider.meta?.title ?? '')
+      if (e.type === 'Members' || e.type === 'Meta') setTitle(provider.meta?.title ?? '')
     })
     return () => {
       offStatus()
       offEvent()
     }
   }, [provider])
+  useEffect(() => {
+    document.title = title
+  }, [title])
   return (
     <main className="flex h-dvh flex-col" data-guest-role={user.role}>
       <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border-subtle px-4">
