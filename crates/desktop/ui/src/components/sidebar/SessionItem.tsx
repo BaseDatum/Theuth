@@ -129,6 +129,7 @@ export const SessionItem = memo(function SessionItem({
   // Inline editor: the title, or the name of a new project.
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const remove = async () => {
     try {
@@ -209,6 +210,11 @@ export const SessionItem = memo(function SessionItem({
               params={{ session: id }}
               title={tip}
               {...drag}
+              onContextMenu={(e) => {
+                if (touch()) return
+                e.preventDefault()
+                setMenuOpen(true)
+              }}
               onClick={(e) => {
                 if (!touch() && (selecting || e.metaKey || e.shiftKey)) {
                   e.preventDefault()
@@ -244,7 +250,7 @@ export const SessionItem = memo(function SessionItem({
               )}
             </Link>
           </SidebarMenuButton>
-          <DropdownMenu>
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>
               <SidebarMenuAction showOnHover className="top-2 right-2" aria-label="Chat options">
                 <MoreHorizontal />
