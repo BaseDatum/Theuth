@@ -51,6 +51,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 monty-proto = { workspace = true }
 monty-alloc = { workspace = true }
+monty-types = { workspace = true }
 tracing-appender = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
