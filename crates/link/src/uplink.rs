@@ -43,6 +43,12 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const STABLE_AFTER: Duration = Duration::from_secs(60);
+/// Harness-side keepalive: a WebSocket `Ping` this often. The relay pings us too (30 s), but a
+/// relay replaced behind its proxy leaves our socket ESTABLISHED and silent forever — we must
+/// notice on our own or the harness reports "connected" while devices see it offline.
+const PING_EVERY: Duration = Duration::from_secs(20);
+/// No frame at all within this long after a `Ping` → the uplink is dead; `supervise` redials.
+const PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `op ‖ conn:u32 LE ‖ payload` as a binary frame.
 pub fn frame(op: u8, conn: u32, payload: &[u8]) -> Message {
@@ -183,12 +189,30 @@ async fn run_once(ctx: &Arc<Ctx>, cancel: &CancellationToken) -> anyhow::Result<
     }
     set_connected(ctx, true).await;
 
-    // The only `next()` caller: demux by conn.
+    // The only `next()` caller: demux by conn. Any inbound frame counts as life; a `Ping` we
+    // sent that nothing answers within `PONG_TIMEOUT` ends the socket.
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let pong = tokio::time::sleep(PONG_TIMEOUT);
+    tokio::pin!(pong);
+    let mut awaiting_pong = false;
     let result = loop {
         let msg = tokio::select! {
             _ = cancel.cancelled() => break Ok(()),
             m = stream.next() => m,
+            _ = ping.tick() => {
+                if out.send(Message::Ping(Bytes::new())).await.is_err() {
+                    break Err(anyhow::anyhow!("writer gone"));
+                }
+                awaiting_pong = true;
+                pong.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
+                continue;
+            }
+            _ = &mut pong, if awaiting_pong => {
+                break Err(anyhow::anyhow!("relay silent for {PONG_TIMEOUT:?} after a ping; redialing"));
+            }
         };
+        awaiting_pong = false;
         let b = match msg {
             Some(Ok(Message::Binary(b))) => b,
             Some(Ok(Message::Close(_))) | None => break Ok(()),
@@ -269,5 +293,105 @@ mod tests {
         let (op, payload) = parse_device(&Bytes::from_static(&[OP_CLOSE])).unwrap();
         assert!(op == OP_CLOSE && payload.is_empty());
         assert!(parse_device(&Bytes::new()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use crate::identity::Identity;
+    use crate::state::State;
+    use crate::types::LinkConfig;
+
+    /// A relay that completes `NK` and then holds the socket open without ever polling it — a
+    /// replaced backend behind a proxy as the harness experiences it: ESTABLISHED, silent, no pongs
+    /// (an unpolled tungstenite server never auto-answers a `Ping`).
+    async fn silent_relay(harness: &Identity) -> (String, tokio::sync::oneshot::Receiver<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let harness_pub = harness.public;
+        let prologue = harness.prologue();
+        let (registered, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |_req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut res: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    res.headers_mut()
+                        .insert("Sec-WebSocket-Protocol", PROTOCOL.parse().unwrap());
+                    Ok(res)
+                },
+            )
+            .await
+            .unwrap();
+            let mut hs = Builder::new(params("NK").unwrap())
+                .remote_public_key(&harness_pub)
+                .unwrap()
+                .prologue(&prologue)
+                .unwrap()
+                .build_initiator()
+                .unwrap();
+            let mut buf = vec![0u8; conn::MAX_MSG];
+            let n = hs.write_message(&[], &mut buf).unwrap();
+            ws.send(frame(OP_HELLO, 0, &buf[..n])).await.unwrap();
+            let Some(Ok(Message::Binary(b))) = ws.next().await else {
+                panic!("expected HELLO msg2");
+            };
+            let (OP_HELLO, 0, msg2) = parse(&b).unwrap() else {
+                panic!("expected HELLO msg2");
+            };
+            hs.read_message(&msg2, &mut buf).unwrap();
+            registered.send(()).unwrap();
+            // Registered — and gone. Never poll `ws` again.
+            std::future::pending::<()>().await;
+            drop(ws);
+        });
+        (format!("ws://{addr}"), rx)
+    }
+
+    /// A dead uplink must end `run_once` on its own (so `supervise` redials) instead of reporting
+    /// "connected" forever while every device sees the harness offline.
+    #[tokio::test]
+    async fn a_silent_relay_ends_the_uplink() {
+        let kp = Builder::new(params("NK").unwrap()).generate_keypair().unwrap();
+        let identity = Identity::from_private(kp.private.as_slice().try_into().unwrap());
+        let (relay, registered) = silent_relay(&identity).await;
+        let dir = std::env::temp_dir().join(format!("theuth-link-uplink-{}", rand::random::<u64>()));
+        let ctx = Ctx::new(
+            runtime::Runtime::new(Default::default(), dir.clone()),
+            State {
+                cfg: LinkConfig {
+                    relay,
+                    ..LinkConfig::default()
+                },
+                hostname: "test".into(),
+                identity: Some(identity),
+                devices: crate::devices::Devices::load(&dir),
+                pairing: None,
+                connected: false,
+                conns: Default::default(),
+                guests: Default::default(),
+            },
+        );
+        let cancel = CancellationToken::new();
+        let uplink = tokio::spawn({
+            let ctx = ctx.clone();
+            let cancel = cancel.clone();
+            async move { run_once(&ctx, &cancel).await }
+        });
+        registered.await.unwrap();
+        assert!(ctx.lock().connected, "registered with the relay");
+        // Real time for the dial and NK; from here the clock only moves when everything is idle,
+        // so the ping and pong timers fire without a 30 s wall-clock wait.
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(PING_EVERY + PONG_TIMEOUT + Duration::from_secs(5), uplink)
+            .await
+            .expect("run_once returned")
+            .unwrap();
+        let err = result.expect_err("a silent relay is an error, not a clean close");
+        assert!(err.to_string().contains("silent"), "{err}");
+        assert!(started.elapsed() >= PING_EVERY + PONG_TIMEOUT, "{:?}", started.elapsed());
     }
 }
