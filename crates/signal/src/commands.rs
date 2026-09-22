@@ -4,7 +4,10 @@
 
 use std::fmt::Display;
 
-use agent::{AGENT_ACTOR, Agents, PeerScope};
+use agent::{
+    AGENT_ACTOR, Agents, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets,
+    Delivery, PeerScope,
+};
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use kameo::actor::ActorRef;
@@ -119,6 +122,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "pending peer requests: inspect or answer one (owner)",
     ),
     (
+        "/broadcast",
+        "[--next] running|roots|<id>[,<id>…] <text>",
+        "one message to many sessions; --next lands after the turn (owner)",
+    ),
+    (
         "/a2a",
         "[reload]",
         "network status or config reload (owner)",
@@ -134,6 +142,7 @@ const OWNER_ONLY: &[&str] = &[
     "/peers",
     "/requests",
     "/a2a",
+    "/broadcast",
 ];
 const OWNER_MSG: &str = "This command is restricted to the owner.";
 const NO_SESSION: &str = "no session yet: send a message first";
@@ -210,14 +219,9 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                 return text("usage: /resume <id>".into());
             }
             let rows = agent()?.ask(agent::ListSessions).await.map_err(err)?;
-            let mut hits = rows.iter().filter(|s| {
-                let id = s.id.to_string();
-                id == arg || id.starts_with(arg) || id.ends_with(arg)
-            });
-            match (hits.next(), hits.next()) {
-                (Some(s), None) => Ok(Reply::Resume(s.id)),
-                (Some(_), Some(_)) => text(format!("{arg:?} matches several sessions")),
-                (None, _) => text(format!("no session {arg:?}")),
+            match session_by_id(&rows, arg) {
+                Ok(s) => Ok(Reply::Resume(s.id)),
+                Err(msg) => text(msg),
             }
         }
         "/cancel" if arg.is_empty() => {
@@ -454,6 +458,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         "/peers" => peers_cmd(cx.session, arg).await,
         "/requests" => requests_cmd(cx.session, arg).await,
         "/a2a" => a2a_cmd(arg).await,
+        "/broadcast" => broadcast_cmd(arg).await,
         _ => text(help()),
     }
 }
@@ -840,6 +845,114 @@ async fn communication_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Res
     Ok(Reply::Text(communication_text(&state)))
 }
 
+/// `/broadcast [--next] running|roots|<id>[,<id>…] <text>` (62 §5.3): one
+/// message to the selected sessions; the reply is the receipt, one line per
+/// row.
+async fn broadcast_cmd(arg: &str) -> anyhow::Result<Reply> {
+    let (delivery, selector, text) = match parse_broadcast(arg) {
+        Ok(p) => p,
+        Err(usage) => return Ok(Reply::Text(usage)),
+    };
+    let targets = match selector {
+        Selector::Running => BroadcastTargets::Running,
+        Selector::Roots => BroadcastTargets::Roots,
+        Selector::Ids(ids) => {
+            let rows = agent()?.ask(agent::ListSessions).await.map_err(err)?;
+            let mut out = Vec::with_capacity(ids.len());
+            for id in &ids {
+                match session_by_id(&rows, id) {
+                    Ok(s) => out.push(s.id),
+                    Err(msg) => return Ok(Reply::Text(msg)),
+                }
+            }
+            BroadcastTargets::Sessions { ids: out }
+        }
+    };
+    // kameo flattens a `Result` reply: the supervisor's refusal is `HandlerError`.
+    let receipt = agent()?
+        .ask(agent::Broadcast(BroadcastRequest {
+            targets,
+            text,
+            files: vec![],
+            delivery,
+            dry_run: false,
+        }))
+        .await;
+    Ok(Reply::Text(match receipt {
+        Ok(r) => receipt_text(&r),
+        Err(kameo::error::SendError::HandlerError(e)) => format!("broadcast refused: {e}"),
+        Err(e) => return Err(err(e)),
+    }))
+}
+
+/// The `/broadcast` selector word before id resolution.
+#[derive(Debug, PartialEq, Eq)]
+enum Selector {
+    Running,
+    Roots,
+    /// Raw ids: full UUIDs or the prefixes `/resume` accepts.
+    Ids(Vec<String>),
+}
+
+/// `[--next] running|roots|<id>[,<id>…] <text>` → delivery, selector, text.
+/// `Err` is the usage line.
+fn parse_broadcast(arg: &str) -> Result<(Delivery, Selector, String), String> {
+    const USAGE: &str = "usage: /broadcast [--next] running|roots|<id>[,<id>…] <text>";
+    let (delivery, rest) = match arg.trim().strip_prefix("--next ") {
+        Some(r) => (Delivery::NextTurn, r.trim_start()),
+        None => (Delivery::Steer, arg.trim()),
+    };
+    let (sel, text) = rest
+        .split_once(char::is_whitespace)
+        .map(|(s, t)| (s, t.trim()))
+        .filter(|(_, t)| !t.is_empty())
+        .ok_or_else(|| USAGE.to_owned())?;
+    let selector = match sel {
+        "running" => Selector::Running,
+        "roots" => Selector::Roots,
+        ids => Selector::Ids(
+            ids.split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        ),
+    };
+    if matches!(&selector, Selector::Ids(v) if v.is_empty()) {
+        return Err(USAGE.to_owned());
+    }
+    Ok((delivery, selector, text.to_owned()))
+}
+
+/// `broadcast <short-id> → N sessions`, then `title — outcome` per row.
+fn receipt_text(r: &BroadcastReceipt) -> String {
+    if r.rows.is_empty() {
+        return "no matching sessions".to_owned();
+    }
+    let id = r.id.simple().to_string();
+    let mut out = format!("broadcast {} → {} sessions", &id[..4], r.rows.len());
+    for row in &r.rows {
+        let title = if row.title.is_empty() {
+            short(row.session)
+        } else {
+            row.title.clone()
+        };
+        let outcome = match &row.outcome {
+            BroadcastOutcome::Started => "started".to_owned(),
+            BroadcastOutcome::Queued { delivery, .. } => format!(
+                "queued ({})",
+                match delivery {
+                    Delivery::Steer => "steer",
+                    Delivery::NextTurn => "next turn",
+                }
+            ),
+            BroadcastOutcome::Skipped { reason } => format!("skipped: {reason}"),
+            BroadcastOutcome::Failed { error } => format!("failed: {error}"),
+        };
+        out.push_str(&format!("\n{title} — {outcome}"));
+    }
+    out
+}
+
 /// [`agent::CommunicationState`] as the phone reads it: the effective answer
 /// first, then the exact blocker when it is off.
 fn communication_text(s: &agent::CommunicationState) -> String {
@@ -1126,6 +1239,22 @@ fn short(id: SessionId) -> String {
     s[s.len() - 8..].to_owned()
 }
 
+/// The one session whose id equals, starts or ends with `id`; `Err` is reply text.
+fn session_by_id<'a>(
+    rows: &'a [agent::SessionSummary],
+    id: &str,
+) -> Result<&'a agent::SessionSummary, String> {
+    let mut hits = rows.iter().filter(|s| {
+        let full = s.id.to_string();
+        full == id || full.starts_with(id) || full.ends_with(id)
+    });
+    match (hits.next(), hits.next()) {
+        (Some(s), None) => Ok(s),
+        (Some(_), Some(_)) => Err(format!("{id:?} matches several sessions")),
+        (None, _) => Err(format!("no session {id:?}")),
+    }
+}
+
 /// `12.3k`, `200k`, `1.0M`; `?` for 0.
 fn k(n: u32) -> String {
     match n {
@@ -1294,6 +1423,7 @@ mod tests {
             "/peers scope owner",
             "/requests",
             "/a2a reload",
+            "/broadcast running hello",
         ] {
             let cx = Cx {
                 session: None,
@@ -1324,6 +1454,37 @@ mod tests {
             handle(cx, "/signal rm +1 555").await,
             Some(Reply::RemoveAllowed("+1 555".into()))
         );
+    }
+
+    #[test]
+    fn broadcast_parses_selector_delivery_and_text() {
+        let ok = |s| parse_broadcast(s).unwrap();
+        assert_eq!(
+            ok("running stop touching Cargo.lock"),
+            (
+                Delivery::Steer,
+                Selector::Running,
+                "stop touching Cargo.lock".into()
+            )
+        );
+        assert_eq!(
+            ok("--next roots  wrap up"),
+            (Delivery::NextTurn, Selector::Roots, "wrap up".into())
+        );
+        assert_eq!(
+            ok("abcd1234,ef56 hi there"),
+            (
+                Delivery::Steer,
+                Selector::Ids(vec!["abcd1234".into(), "ef56".into()]),
+                "hi there".into()
+            )
+        );
+        for bad in ["", "running", "--next roots", ", hi", "--next"] {
+            assert!(
+                parse_broadcast(bad).is_err_and(|u| u.starts_with("usage: /broadcast")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

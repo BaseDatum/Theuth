@@ -12,7 +12,10 @@ use agent::communication::{
     AnswerPeerRequest, CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages,
     ListPeers, PeerMessagePage, PeerRecord, PeerScope, SetCommunication, SetPeerScope,
 };
-use agent::{AGENT_ACTOR, Agents};
+use agent::{
+    AGENT_ACTOR, Agents, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets,
+    Delivery,
+};
 use anyhow::Context as _;
 use kameo::actor::ActorRef;
 use runtime::SessionId;
@@ -63,6 +66,8 @@ pub enum Cmd {
     Requests(Vec<String>),
     /// `a2a [reload]` (owner, 50 §6).
     A2a(Vec<String>),
+    /// `broadcast [--next] running|roots|<id>[,<id>…] <text>` (owner, 62 §5.3).
+    Broadcast(String),
     /// Unknown or ambiguous first word.
     Unknown(String),
 }
@@ -157,6 +162,11 @@ pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
         "network status; reload peers.yaml (owner)",
     ),
     (
+        "broadcast",
+        "[--next] running|roots|<id>[,<id>…] <text>",
+        "one message to many sessions; --next lands after the turn (owner)",
+    ),
+    (
         "slack",
         "[status|allow <U>|rm <U>|channel add <C>|channel rm <C>]",
         "this channel (owner)",
@@ -202,6 +212,7 @@ pub fn classify(text: &str) -> Cmd {
         Some("peers") => Cmd::Peers(words()),
         Some("requests") => Cmd::Requests(words()),
         Some("a2a") => Cmd::A2a(words()),
+        Some("broadcast") => Cmd::Broadcast(arg.to_owned()),
         _ => Cmd::Unknown(word),
     }
 }
@@ -247,6 +258,7 @@ fn owner_only(cmd: &Cmd) -> bool {
             | Cmd::Peers(_)
             | Cmd::Requests(_)
             | Cmd::A2a(_)
+            | Cmd::Broadcast(_)
     )
 }
 
@@ -495,6 +507,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
         Cmd::Peers(args) => peers_cmd(cx.session.context(NO_SESSION)?, &args).await,
         Cmd::Requests(args) => requests_cmd(cx.session.context(NO_SESSION)?, &args).await,
         Cmd::A2a(args) => a2a_cmd(&args).await,
+        Cmd::Broadcast(arg) => broadcast_cmd(&arg).await,
     }
 }
 
@@ -769,6 +782,115 @@ async fn communication_cmd(session: Option<SessionId>, args: &[String]) -> anyho
         );
     }
     Ok(Outcome::Text(ui::code(&body)))
+}
+
+/// `broadcast [--next] running|roots|<id>[,<id>…] <text>` (62 §5.3): one
+/// message to the selected sessions; the reply is the receipt, one line per
+/// row.
+async fn broadcast_cmd(arg: &str) -> anyhow::Result<Outcome> {
+    let (delivery, selector, text) = match parse_broadcast(arg) {
+        Ok(p) => p,
+        Err(usage) => return Ok(Outcome::Text(Reply::text(usage))),
+    };
+    let targets = match selector {
+        Selector::Running => BroadcastTargets::Running,
+        Selector::Roots => BroadcastTargets::Roots,
+        Selector::Ids(ids) => {
+            let mut out = Vec::with_capacity(ids.len());
+            for id in &ids {
+                match resolve(id).await? {
+                    Ok(s) => out.push(s.id),
+                    Err(msg) => return Ok(Outcome::Text(Reply::text(msg))),
+                }
+            }
+            BroadcastTargets::Sessions { ids: out }
+        }
+    };
+    // kameo flattens a `Result` reply: the supervisor's refusal is `HandlerError`.
+    let receipt = agent()?
+        .ask(agent::Broadcast(BroadcastRequest {
+            targets,
+            text,
+            files: vec![],
+            delivery,
+            dry_run: false,
+        }))
+        .await;
+    Ok(Outcome::Text(match receipt {
+        Ok(r) => ui::code(&receipt_text(&r)),
+        Err(kameo::error::SendError::HandlerError(e)) => {
+            Reply::text(format!("broadcast refused: {e}"))
+        }
+        Err(e) => return Err(err(e)),
+    }))
+}
+
+/// The `broadcast` selector word before id resolution.
+#[derive(Debug, PartialEq, Eq)]
+enum Selector {
+    Running,
+    Roots,
+    /// Raw ids: full UUIDs or the prefixes `resume` accepts.
+    Ids(Vec<String>),
+}
+
+/// `[--next] running|roots|<id>[,<id>…] <text>` → delivery, selector, text.
+/// `Err` is the usage line.
+fn parse_broadcast(arg: &str) -> Result<(Delivery, Selector, String), String> {
+    const USAGE: &str = "usage: /theuth broadcast [--next] running|roots|<id>[,<id>…] <text>";
+    let (delivery, rest) = match arg.trim().strip_prefix("--next ") {
+        Some(r) => (Delivery::NextTurn, r.trim_start()),
+        None => (Delivery::Steer, arg.trim()),
+    };
+    let (sel, text) = rest
+        .split_once(char::is_whitespace)
+        .map(|(s, t)| (s, t.trim()))
+        .filter(|(_, t)| !t.is_empty())
+        .ok_or_else(|| USAGE.to_owned())?;
+    let selector = match sel {
+        "running" => Selector::Running,
+        "roots" => Selector::Roots,
+        ids => Selector::Ids(
+            ids.split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        ),
+    };
+    if matches!(&selector, Selector::Ids(v) if v.is_empty()) {
+        return Err(USAGE.to_owned());
+    }
+    Ok((delivery, selector, text.to_owned()))
+}
+
+/// `broadcast <short-id> → N sessions`, then `title — outcome` per row.
+fn receipt_text(r: &BroadcastReceipt) -> String {
+    if r.rows.is_empty() {
+        return "no matching sessions".to_owned();
+    }
+    let id = r.id.simple().to_string();
+    let mut out = format!("broadcast {} → {} sessions", &id[..4], r.rows.len());
+    for row in &r.rows {
+        let title = if row.title.is_empty() {
+            short(row.session)
+        } else {
+            row.title.clone()
+        };
+        let outcome = match &row.outcome {
+            BroadcastOutcome::Started => "started".to_owned(),
+            BroadcastOutcome::Queued { delivery, .. } => format!(
+                "queued ({})",
+                match delivery {
+                    Delivery::Steer => "steer",
+                    Delivery::NextTurn => "next turn",
+                }
+            ),
+            BroadcastOutcome::Skipped { reason } => format!("skipped: {reason}"),
+            BroadcastOutcome::Failed { error } => format!("failed: {error}"),
+        };
+        out.push_str(&format!("\n{title} — {outcome}"));
+    }
+    out
 }
 
 /// [`CommunicationState`] as lines: effective state, the global ceiling and
@@ -1261,6 +1383,10 @@ mod tests {
         assert_eq!(classify("pe"), Cmd::Peers(vec![]));
         assert_eq!(classify("req"), Cmd::Requests(vec![]));
         assert_eq!(classify("a2a reload"), Cmd::A2a(vec!["reload".into()]));
+        assert_eq!(
+            classify("br --next roots  wrap up"),
+            Cmd::Broadcast("--next roots  wrap up".into())
+        );
         assert_eq!(classify(""), Cmd::Help);
     }
 
@@ -1285,6 +1411,7 @@ mod tests {
             Cmd::Peers(vec!["scope".into(), "owner".into()]),
             Cmd::Requests(vec!["answer".into(), "x".into(), "y".into()]),
             Cmd::A2a(vec!["reload".into()]),
+            Cmd::Broadcast("running hello".into()),
         ] {
             assert_eq!(
                 handle(cmd.clone(), cx("U5TRANGER", None)).await,
@@ -1368,6 +1495,38 @@ mod tests {
         assert!(!is_instant(&Cmd::Model(Some("x".into()))));
         assert!(!is_instant(&Cmd::Compact(None)));
         assert!(!is_instant(&Cmd::Resume("a".into())));
+    }
+
+    #[test]
+    fn broadcast_parses_selector_delivery_and_text() {
+        let ok = |s| parse_broadcast(s).unwrap();
+        assert_eq!(
+            ok("running stop touching Cargo.lock"),
+            (
+                Delivery::Steer,
+                Selector::Running,
+                "stop touching Cargo.lock".into()
+            )
+        );
+        assert_eq!(
+            ok("--next roots  wrap up"),
+            (Delivery::NextTurn, Selector::Roots, "wrap up".into())
+        );
+        assert_eq!(
+            ok("abcd1234,ef56 hi there"),
+            (
+                Delivery::Steer,
+                Selector::Ids(vec!["abcd1234".into(), "ef56".into()]),
+                "hi there".into()
+            )
+        );
+        for bad in ["", "running", "--next roots", ", hi", "--next"] {
+            assert!(
+                parse_broadcast(bad).is_err_and(|u| u.starts_with("usage: /theuth broadcast")),
+                "{bad}"
+            );
+        }
+        assert!(!is_instant(&Cmd::Broadcast("running x".into())));
     }
 
     #[tokio::test]
