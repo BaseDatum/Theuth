@@ -6,7 +6,10 @@
 //! what they always did. Every call goes through `document::Handle` lazily:
 //! documents off → `None`/`Err`, the meeting goes on as before 59.
 
+use std::time::Duration;
+
 use document::{DocId, Handle, Principal};
+use tokio::task::JoinHandle;
 
 use crate::MeetingId;
 
@@ -36,23 +39,48 @@ pub fn summary_path(meeting: MeetingId) -> String {
     format!("{}/{meeting}/{}", crate::DIR, crate::store::SUMMARY)
 }
 
-/// Create the meeting's note, headed `# <title>`; `None` when documents are off or refused.
-pub async fn create(meeting: MeetingId, title: &str) -> Option<DocId> {
-    let docs = Handle::lookup()?;
-    match docs
-        .actor()
-        .ask(document::Create {
-            binding: document::Binding::MeetingNote(meeting.to_string()),
-            title: title.to_owned(),
-            markdown: String::new(),
-            by: Principal::Owner { device: None },
-        })
-        .await
-    {
-        Ok(s) => Some(s.id),
-        Err(e) => {
-            tracing::warn!(%meeting, "meeting note not created: {e}");
-            None
+/// How long `meeting_start` waits for the note before starting without it.
+pub const CREATE_WAIT: Duration = Duration::from_millis(1500);
+
+/// [`create`]'s answer.
+pub enum Created {
+    /// The note, or `None` when documents are off or refused it.
+    Now(Option<DocId>),
+    /// Documents are still working on it past [`CREATE_WAIT`]; the meeting starts without it and
+    /// attaches the id this yields if it ever does.
+    Late(JoinHandle<Option<DocId>>),
+}
+
+/// Create the meeting's note, headed `# <title>`, waiting at most [`CREATE_WAIT`] (59 §7.4: the
+/// meeting must not hang on the helper).
+pub async fn create(meeting: MeetingId, title: &str) -> Created {
+    let Some(docs) = Handle::lookup() else {
+        return Created::Now(None);
+    };
+    let title = title.to_owned();
+    let mut task = tokio::spawn(async move {
+        match docs
+            .actor()
+            .ask(document::Create {
+                binding: document::Binding::MeetingNote(meeting.to_string()),
+                title,
+                markdown: String::new(),
+                by: Principal::Owner { device: None },
+            })
+            .await
+        {
+            Ok(s) => Some(s.id),
+            Err(e) => {
+                tracing::warn!(%meeting, "meeting note not created: {e}");
+                None
+            }
+        }
+    });
+    match tokio::time::timeout(CREATE_WAIT, &mut task).await {
+        Ok(r) => Created::Now(r.unwrap_or_default()),
+        Err(_) => {
+            tracing::warn!(%meeting, "meeting note not ready within {CREATE_WAIT:?}; starting without it");
+            Created::Late(task)
         }
     }
 }

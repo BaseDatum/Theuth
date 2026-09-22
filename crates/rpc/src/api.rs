@@ -698,8 +698,9 @@ pub trait Api {
     /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
     #[method(name = "doc_delete")]
     async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
-    /// Whether the documents helper (`theuth-documents-<version>` beside `t`, 59 §3.2) is there; a missing
-    /// helper disables notes, knowledge editing and meeting notes. Answers whether documents run or not.
+    /// Whether the documents helper (`theuth-documents-<version>` beside `t`, 59 §3.2) is there and how its
+    /// process is doing (`process`: `running` | `crashed{stderr}` | `missing` | `starting`); a missing or
+    /// crashed helper disables notes, knowledge editing and meeting notes. Answers whether documents run or not.
     #[method(name = "documents_status")]
     async fn documents_status(&self) -> RpcResult<document::HelperStatus>;
     /// A document's members and share links (59 §8; owner only).
