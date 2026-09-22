@@ -27,10 +27,11 @@ export type PageLike = {
   keyboard: { type(text: string, o?: { delay?: number }): Promise<void>; press(key: string): Promise<void>; down(key: string): Promise<void>; up(key: string): Promise<void> }
   screenshot(o: { path: string }): Promise<unknown>
   browser(): { newPage(): Promise<PageLike> }
+  reload(o?: { waitUntil?: string }): Promise<unknown>
   close(): Promise<void>
 }
 
-export type Opts = { ui: string; rpc: string; token: string; out: string; words?: number }
+export type Opts = { ui: string; rpc: string; token: string; out: string; dataDir: string; words?: number }
 
 const IPHONE = {
   viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, isLandscape: false },
@@ -204,7 +205,13 @@ export async function smokePhone(phone: PageLike, o: Opts): Promise<string> {
 export async function smokeDesk(desk: PageLike, o: Opts, note: string, phone: PageLike): Promise<void> {
   await desk.goto(`${o.ui}/notes/${note}`, { waitUntil: 'networkidle0' })
   await desk.waitForSelector('.bn-editor', { timeout: 30_000 })
-  await desk.waitForFunction(`document.querySelector('footer')?.textContent?.includes('live')`, { timeout: 60_000 })
+  const live = `document.querySelector('footer')?.textContent?.includes('live')`
+  // A second RPC socket in the same headless Chromium sometimes never opens; one reload has always fixed it.
+  await desk.waitForFunction(live, { timeout: 10_000 }).catch(async () => {
+    await desk.reload({ waitUntil: 'networkidle0' })
+    await desk.waitForSelector('.bn-editor', { timeout: 30_000 })
+    await desk.waitForFunction(live, { timeout: 30_000 })
+  })
   check('desktop: 1280 px, pointer fine, no mobile toolbar', await desk.evaluate<boolean>(
     `innerWidth === 1280 && matchMedia('(pointer: fine)').matches && !document.querySelector('[data-mobile-toolbar]')`,
   ))
@@ -219,9 +226,10 @@ export async function smokeDesk(desk: PageLike, o: Opts, note: string, phone: Pa
   await sleep(800)
   const [tp, td] = [await text(phone), await text(desk)]
   check('convergence: phone and desktop editors read the same text', tp === td && td.includes('from-the-desk') && td.includes('bold'), { phone: tp.length, desk: td.length })
-  await sleep(1500)
-  const md = await rpc<string>(o.rpc, o.token, 'doc_markdown', [note]).catch(() => null)
-  if (md !== null) check('export contains the typed text', md.includes('from-the-desk') && md.includes('**bold'), md.length)
+  await sleep(1500) // export debounce
+  const { meta } = await rpc<{ meta: { derived: string } }>(o.rpc, o.token, 'doc_open', [note])
+  const md = await Bun.file(`${o.dataDir}/${meta.derived}`).text()
+  check('derived markdown contains the typed text', md.includes('from-the-desk') && md.includes('**bold'), md.length)
   // The two phases may run in separate module instances (one per tab runtime): merge with what the phone wrote.
   const prior = (await Bun.file(`${o.out}/report.json`).json().catch(() => ({}))) as Record<string, unknown>
   await Bun.write(`${o.out}/report.json`, JSON.stringify({ ...prior, ...report }, null, 1))
@@ -239,6 +247,7 @@ if (import.meta.main) {
     rpc: flag('--rpc') ?? 'ws://127.0.0.1:7821',
     token: flag('--token') ?? '',
     out: flag('--out') ?? '/tmp/theuth-59-smoke6',
+    dataDir: flag('--data-dir') ?? '/tmp/theuth-59-6',
   }
   // Runtime-selected: puppeteer is not a dependency of the UI; `--puppeteer` names whichever install the caller has.
   const mod = flag('--puppeteer') ?? 'puppeteer-core'
