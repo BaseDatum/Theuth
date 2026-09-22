@@ -285,9 +285,9 @@ test('PeerDelivered renders once from its origin; the wrapper echo and the repla
 
 test('SubagentSpawned creates the child, adds a row to the parent and its ancestors, notes the spawn', () => {
   const draft: Record<string, SessionSlice> = { [S]: empty(S) }
-  expect(route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'Scout' }, ctx())).toBe(true)
+  expect(route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'Scout', cap: 'read_only' }, ctx())).toBe(true)
   expect(draft.kid).toMatchObject({ name: 'Scout', parent: S })
-  expect(draft[S]?.children.kid).toMatchObject({ name: 'Scout', depth: 1, state: { state: 'running' } })
+  expect(draft[S]?.children.kid).toMatchObject({ name: 'Scout', depth: 1, state: { state: 'running' }, cap: 'read_only' })
   expect(draft[S]?.entries[0]).toMatchObject({ kind: 'info', text: '↳ spawned Scout' })
   route(draft, { type: 'SubagentSpawned', parent: 'kid', child: 'grandkid', name: 'Deep' }, ctx())
   expect(draft[S]?.children.grandkid?.depth).toBe(2)
