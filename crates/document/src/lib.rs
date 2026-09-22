@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub mod actor;
 pub mod helper;
 pub mod meta;
+pub mod share;
 pub mod store;
 pub mod tools;
 pub mod watch;
@@ -35,6 +36,10 @@ pub use actor::{
 };
 pub use helper::{Edit as BlockEdit, EditError, ImportMode, helper_path, protocol_version};
 pub use meta::*;
+pub use share::{
+    Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
+    secret_hash,
+};
 
 /// Registry name of the [`DocumentActor`].
 pub const DOCUMENT_ACTOR: &str = "document";
@@ -55,6 +60,10 @@ pub struct DocumentsConfig {
     pub snapshots_keep: usize,
     /// CSS colour of the agent's presence and reveal in every editor (§6.4, §12).
     pub agent_color: String,
+    /// Members per document (§8.3, §12); the 65th join is refused.
+    pub max_members: usize,
+    /// `on` (default) | `off` (`doc_link_create` refuses; members still connect) | `disabled` (members refused too) (§12).
+    pub sharing: String,
 }
 
 impl Default for DocumentsConfig {
@@ -65,6 +74,8 @@ impl Default for DocumentsConfig {
             max_doc_bytes: 8 * 1024 * 1024,
             snapshots_keep: 30,
             agent_color: "#7c3aed".to_owned(),
+            max_members: 64,
+            sharing: "on".to_owned(),
         }
     }
 }

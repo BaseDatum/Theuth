@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
+use base64::Engine as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
@@ -180,12 +181,23 @@ impl Store {
         })
     }
 
-    /// Append one record (§5.5 framing) and fsync. Returns the record's size.
+    /// Append one record (§5.5 framing: tag, 16-byte session for the agent, 32-byte static for a
+    /// member, u32 length, update) and fsync. Returns the record's size.
     pub fn append(&self, id: &DocId, by: &Principal, update: &[u8]) -> anyhow::Result<usize> {
-        let mut rec = Vec::with_capacity(update.len() + 21);
+        let mut rec = Vec::with_capacity(update.len() + 37);
         rec.push(by.tag());
-        if let Principal::Agent { session } = by {
-            rec.extend_from_slice(session.as_bytes());
+        match by {
+            Principal::Agent { session } => rec.extend_from_slice(session.as_bytes()),
+            Principal::Member { pub_, .. } => {
+                let mut key = [0u8; 32];
+                if let Ok(k) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(pub_)
+                    && k.len() == 32
+                {
+                    key.copy_from_slice(&k);
+                }
+                rec.extend_from_slice(&key);
+            }
+            _ => {}
         }
         rec.extend_from_slice(&(update.len() as u32).to_be_bytes());
         rec.extend_from_slice(update);
@@ -422,9 +434,11 @@ pub fn records(log: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     std::iter::from_fn(move || {
         let tag = *log.get(at)?;
         at += 1;
-        if tag == 2 {
-            at += 16;
-        }
+        at += match tag {
+            2 => 16,
+            4 => 32,
+            _ => 0,
+        };
         let len = u32::from_be_bytes(log.get(at..at + 4)?.try_into().ok()?) as usize;
         at += 4;
         let update = log.get(at..at + len)?;

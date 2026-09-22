@@ -58,9 +58,9 @@ const TRASH_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
 const IMPORT_GRACE: Duration = Duration::from_secs(10);
 
 /// One loaded document.
-struct Open {
+pub(crate) struct Open {
     doc: yrs::Doc,
-    meta: DocMeta,
+    pub(crate) meta: DocMeta,
     awareness: Awareness,
     log_count: usize,
     log_bytes: usize,
@@ -112,9 +112,11 @@ struct PendingEdit {
     applied: bool,
 }
 
-struct Subscriber {
-    conn: Option<u64>,
-    tx: mpsc::Sender<DocEvent>,
+pub(crate) struct Subscriber {
+    pub(crate) conn: Option<u64>,
+    /// The member's static when a member subscribed (§8.4: `Closed{demoted|revoked}` finds them).
+    pub(crate) member: Option<String>,
+    pub(crate) tx: mpsc::Sender<DocEvent>,
 }
 
 /// An import the helper is running; keyed by the helper request id. The update
@@ -164,13 +166,13 @@ pub struct EditOutcome {
 /// The [`crate::DOCUMENT_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct DocumentActor {
-    store: Store,
+    pub(crate) store: Store,
     helper: Helper,
-    cfg: DocumentsConfig,
+    pub(crate) cfg: DocumentsConfig,
     rt: Runtime,
     data_dir: PathBuf,
-    open: HashMap<DocId, Open>,
-    subs: HashMap<DocId, Vec<Subscriber>>,
+    pub(crate) open: HashMap<DocId, Open>,
+    pub(crate) subs: HashMap<DocId, Vec<Subscriber>>,
     imports: HashMap<u64, Import>,
     edits: HashMap<u64, PendingEdit>,
     last_sweep: Option<Instant>,
@@ -194,7 +196,7 @@ impl DocumentActor {
     }
 
     /// Load `id` if it is not, and open its mirror in the helper.
-    fn load(&mut self, id: &DocId) -> Result<&mut Open, String> {
+    pub(crate) fn load(&mut self, id: &DocId) -> Result<&mut Open, String> {
         if !self.open.contains_key(id) {
             let l = self.store.load(id).map_err(|e| format!("{e:#}"))?;
             let state = l
@@ -226,7 +228,7 @@ impl DocumentActor {
     }
 
     /// Fan an event to every subscriber of `doc` but the one on `skip`; drop the dead and the slow.
-    fn fan_out(&mut self, doc: &DocId, ev: DocEvent, skip: Option<u64>) {
+    pub(crate) fn fan_out(&mut self, doc: &DocId, ev: DocEvent, skip: Option<u64>) {
         let Some(subs) = self.subs.get_mut(doc) else {
             return;
         };
@@ -304,9 +306,15 @@ impl DocumentActor {
                 None,
             );
         }
+        let mut who = Who::from(&by);
+        if let Who::Member { pub_, name } = &mut who
+            && let Some(m) = self.open.get(doc).and_then(|o| o.meta.members.iter().find(|m| m.pub_ == *pub_))
+        {
+            *name = m.name.clone();
+        }
         let ev = DocEvent::Update {
             update: base64::engine::general_purpose::STANDARD.encode(&update),
-            by: Who::from(&by),
+            by: who,
         };
         self.fan_out(doc, ev, by.conn());
         if let Err(e) = self.store.touch(doc, now, bytes).await {
@@ -653,12 +661,15 @@ fn unb64(s: &str) -> Result<Vec<u8>, String> {
 // ---- messages -------------------------------------------------------------
 
 /// `ask` → `Result<DocOpen, String>`: load, and the state missing from `sv` (base64 state vector).
+/// A member (§8.1) must be in `members` (`not_member` otherwise); the reply's `meta.links` is empty.
 #[derive(Clone, Debug)]
 pub struct OpenDoc {
     /// Document.
     pub doc: DocId,
     /// Client's state vector, base64 v1; `None` = everything.
     pub sv: Option<String>,
+    /// Who opens.
+    pub by: Principal,
 }
 
 impl Message<OpenDoc> for DocumentActor {
@@ -669,16 +680,31 @@ impl Message<OpenDoc> for DocumentActor {
             Some(s) => StateVector::decode_v1(&unb64(&s)?).map_err(|e| format!("bad sv: {e}"))?,
             None => StateVector::default(),
         };
+        self.admit(&m.doc, &m.by, false)?;
         let o = self.load(&m.doc)?;
         o.idle_since = Instant::now();
+        let mut seen = false;
+        if let Some(pub_) = m.by.member()
+            && let Some(member) = o.meta.members.iter_mut().find(|x| x.pub_ == pub_)
+        {
+            member.last_seen_ms = now_ms();
+            seen = true;
+        }
         let state = o.doc.transact().encode_state_as_update_v1(&sv);
         let awareness = o
             .awareness
             .update()
             .map(|u| b64(&u.encode_v1()))
             .unwrap_or_default();
+        let meta = DocMeta {
+            links: Vec::new(),
+            ..o.meta.clone()
+        };
+        if seen {
+            self.save_members(&m.doc).await;
+        }
         Ok(DocOpen {
-            meta: o.meta.clone(),
+            meta,
             state: state.chunks(CHUNK).map(b64).collect(),
             awareness,
         })
@@ -701,30 +727,33 @@ impl Message<ApplyUpdate> for DocumentActor {
 
     async fn handle(&mut self, m: ApplyUpdate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let update = unb64(&m.update)?;
+        self.admit(&m.doc, &m.by, true)?;
         self.apply(&m.doc, update, m.by, false, Vec::new()).await
     }
 }
 
-/// `ask` → `Result<mpsc::Receiver<DocEvent>, String>`: every event of `doc` not caused by `conn`.
+/// `ask` → `Result<mpsc::Receiver<DocEvent>, String>`: every event of `doc` not caused by `by`'s connection.
 #[derive(Clone, Debug)]
 pub struct Subscribe {
     /// Document.
     pub doc: DocId,
-    /// The subscriber's connection id; its own updates are not echoed.
-    pub conn: Option<u64>,
+    /// The subscriber; its own connection's updates are not echoed, a member's role is checked (§8.1).
+    pub by: Principal,
 }
 
 impl Message<Subscribe> for DocumentActor {
     type Reply = Result<mpsc::Receiver<DocEvent>, String>;
 
     async fn handle(&mut self, m: Subscribe, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.admit(&m.doc, &m.by, false)?;
         let o = self.load(&m.doc)?;
         o.idle_since = Instant::now();
         let (tx, rx) = mpsc::channel(SUB_QUEUE);
-        self.subs
-            .entry(m.doc)
-            .or_default()
-            .push(Subscriber { conn: m.conn, tx });
+        self.subs.entry(m.doc).or_default().push(Subscriber {
+            conn: m.by.conn(),
+            member: m.by.member().map(str::to_owned),
+            tx,
+        });
         Ok(rx)
     }
 }
@@ -750,6 +779,7 @@ impl Message<AwarenessUpdateMsg> for DocumentActor {
     ) -> Self::Reply {
         let bytes = unb64(&m.state)?;
         let u = AwarenessUpdate::decode_v1(&bytes).map_err(|e| format!("bad awareness: {e}"))?;
+        self.admit(&m.doc, &m.by, false)?;
         let o = self.load(&m.doc)?;
         let now = Instant::now();
         let slot = o
