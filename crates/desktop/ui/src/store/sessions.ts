@@ -191,6 +191,8 @@ export type SessionSlice = {
   terminal: boolean;
   /** PTY jobs whose screen is still changing: added on `JobStarted.pty`/`JobScreen`, dropped on `JobIdle`/`JobFinished`. The sidebar's live-terminal glyph. */
   ptys: Set<string>;
+  /** Non-PTY background jobs still running (`JobStarted` until `JobFinished`). The sidebar's background-job glyph. */
+  jobs: Set<string>;
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>;
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.

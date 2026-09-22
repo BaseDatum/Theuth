@@ -334,9 +334,12 @@ test('live PTY set follows screen changes: idle or exit drops a job, a new scree
   expect([...s.ptys]).toEqual(['j1'])
   s = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'top', exit: { exited: 0 }, secs: 99n, output: '', inline: false, pty: true }, ctx())
   expect(s.ptys.size).toBe(0)
-  // A plain job never enters the set.
+  // A plain job is a background job, not a terminal, until it finishes (inline or not).
   s = apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
   expect(s.ptys.size).toBe(0)
+  expect([...s.jobs]).toEqual(['j2'])
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j2', command: 'make', exit: { exited: 0 }, secs: 1n, output: '', inline: true, pty: false }, ctx())
+  expect(s.jobs.size).toBe(0)
 })
 
 test('ScrapeProgress attaches inflight URLs to the crawl card by call id, dropped on finish', () => {
