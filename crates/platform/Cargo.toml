@@ -1,0 +1,32 @@
+[package]
+name = "platform"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "OS primitives: process trees, private files, open, service units, shell/PTY program, ORT library name, target matrix (design doc 58)"
+
+[dependencies]
+tokio = { workspace = true }  # login-PATH probe (`process`, `time`), stop signal (`signal`)
+anyhow = { workspace = true }
+dirs = { workspace = true }  # LaunchAgent / systemd user unit paths
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }  # killpg / kill / setsid / access / getppid
+
+[target.'cfg(windows)'.dependencies]
+# 58 §0.4 Job Objects, §0.8 owner-only DACLs, §4 ShellExecuteW; features are the four API families used and nothing else.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+self-replace = "1.5"  # 58 §0.5: swap the running `t.exe` without a launcher process
+
+[lints]
+workspace = true
