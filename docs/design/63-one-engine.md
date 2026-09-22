@@ -103,7 +103,7 @@ Step 1 alone removes the double-engine hazard (§1 cannot recur); step 2 deliver
 - `t --headless` spawned by the desktop app records `host: desktop` (it is the only headless run with `THEUTH_LAUNCH=1`, 18 §4).
 - Desktop (`crates/desktop/src/launch.rs`): `probe()` reads `engine.json` itself — `pid` (alive via `nix` signal 0) and `listen` — then falls back to the configured `rpc.listen` for records written by older engines. The desktop crate does not (and must not, for build size) link `rpc`; the two-field read is the whole contract it needs. `Connection.owned` unchanged. A second daemon the app spawns against a live engine exits 3; the transcript shows the §0.5 line.
 - **§2.5 jobs ownership: not built — nothing to build on.** On this base job rows live only in the `Jobs` actor's memory (`crates/tools/src/jobs.rs`, no jobs table, nothing persisted); a new engine cannot see, let alone signal, another engine's jobs. §1's collateral kill cannot recur because the second engine never starts (§4.5). `engine_id`/`lost` return with a persisted jobs store, if one ever exists.
-- Windows: `alive` uses `windows-sys` (`OpenProcess` + `GetExitCodeProcess`) behind `cfg(windows)`; written, not compiled here (no msvc target on the build box). `// ponytail:` note points at `platform::process::alive` (58).
+- Windows: `alive` uses `windows-sys` (`OpenProcess` + `GetExitCodeProcess`) behind `cfg(windows)`; type-checked for `x86_64-pc-windows-msvc` in isolation (6.3), not run. `// ponytail:` note points at `platform::process::alive` (58).
 
 ### 6.2 Step 2 — client mode, takeover, `-p`/`--resume`/`--acp`
 
@@ -127,4 +127,4 @@ Step 1 alone removes the double-engine hazard (§1 cannot recur); step 2 deliver
 | 4.2 | `kill -9` the headless engine under the attached TUI | `engine gone — starting one…` 0.1 s after the kill; `engine started here (pid 66746)` 0.11 s later; `engine.json` → `host: tui, listen 127.0.0.1:7863`; `t -p 'Reply with exactly: hi'` then answered `hi` with stderr `attached · pid 66746 · tui`; `pgrep -f 't --headless'` = 0 |
 | — | `t -p` against a headless engine | `hi`, `real 1.60 s` total (model call included), stderr `attached · pid 63016 · headless`; one `t --headless` process |
 | 4.5 | jobs | n/a on this base (6.1); the killed engine's PTY child went with its pty master, nothing signalled it |
-| 4.6 | Windows target | not compiled here (no msvc toolchain on the box) |
+| 4.6 | Windows target | `cargo check -p rpc --target x86_64-pc-windows-msvc` stops at `ring`/`aws-lc-sys`/`zstd-sys` build scripts (no Windows C toolchain here) before reaching any Rust; `engine.rs` alone in a scratch crate (chrono, serde, uuid, windows-sys) checks clean for that target — the `alive` Win32 path compiles |
