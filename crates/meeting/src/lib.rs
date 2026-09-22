@@ -903,10 +903,18 @@ struct Begun {
     manifest: Manifest,
     result: Result<capture::Capture, String>,
     engines: Option<(Utterer, Utterer)>,
+    /// The note documents were still creating when the meeting started (`note::Created::Late`).
+    late_note: Option<tokio::task::JoinHandle<Option<document::DocId>>>,
 }
 
 /// `tell` from the timers, the capture threads and the STT tasks: something degraded.
 pub(crate) struct Degrade(pub(crate) Degradation);
+
+/// `tell` from the late-note task: the note `meeting_start` did not wait for is there.
+pub(crate) struct NoteReady {
+    pub(crate) meeting: MeetingId,
+    pub(crate) doc: document::DocId,
+}
 
 // ---------------------------------------------------------------------------
 // Actor
@@ -1565,11 +1573,18 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     };
     // 59 §7.4: one note per meeting, from the first second; `None` when documents are off — or refused
     // (the helper missing), which the user must see: the meeting goes on without a note or a summary note.
-    manifest.note = note::create(
+    // The wait is bounded (`note::CREATE_WAIT`): a slow helper degrades the start, never hangs it; the
+    // note is attached later if it arrives (`NoteReady`).
+    let mut late_note = None;
+    match note::create(
         manifest.id,
         manifest.title.as_deref().unwrap_or(&setup.title),
     )
-    .await;
+    .await
+    {
+        note::Created::Now(n) => manifest.note = n,
+        note::Created::Late(task) => late_note = Some(task),
+    }
     if manifest.note.is_none() && document::Handle::lookup().is_some() {
         manifest.degraded.push(Degradation::NoNote);
     }
@@ -1619,6 +1634,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         manifest,
         result: Ok(capture),
         engines,
+        late_note,
     }
 }
 
@@ -1639,6 +1655,7 @@ impl Begun {
             manifest,
             result: Err(reason),
             engines: None,
+            late_note: None,
         }
     }
 }
@@ -1731,6 +1748,14 @@ impl Message<Begun> for Meeting {
                 );
                 self.current = Some(rec);
                 self.save(&manifest).await;
+                if let Some(task) = m.late_note {
+                    let me = ctx.actor_ref().clone();
+                    tokio::spawn(async move {
+                        if let Ok(Some(doc)) = task.await {
+                            let _ = me.tell(NoteReady { meeting: id, doc }).await;
+                        }
+                    });
+                }
                 let hits = self.scan(&seed);
                 self.cached_topics(hits, 0, Instant::now()).await;
                 self.deliver(started).await;
@@ -1750,6 +1775,25 @@ impl Message<Degrade> for Meeting {
             return;
         }
         rec.manifest.degraded.push(m.0);
+        let manifest = rec.manifest.clone();
+        self.save(&manifest).await;
+    }
+}
+
+impl Message<NoteReady> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, m: NoteReady, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self
+            .current
+            .as_mut()
+            .filter(|r| r.manifest.id == m.meeting && r.manifest.note.is_none())
+        else {
+            tracing::warn!(meeting = %m.meeting, doc = %m.doc, "late meeting note: meeting no longer current; left unattached");
+            return;
+        };
+        rec.manifest.note = Some(m.doc);
+        rec.manifest.degraded.retain(|d| *d != Degradation::NoNote);
         let manifest = rec.manifest.clone();
         self.save(&manifest).await;
     }

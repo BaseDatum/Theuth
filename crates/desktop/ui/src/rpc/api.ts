@@ -6,6 +6,8 @@ import type { ApprovalsState } from '@/rpc/bindings/ApprovalsState'
 import type { AskId } from '@/rpc/bindings/AskId'
 import type { Change } from '@/rpc/bindings/Change'
 import type { Binding } from '@/rpc/bindings/Binding'
+import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
+import type { BroadcastRequest } from '@/rpc/bindings/BroadcastRequest'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { DocKind } from '@/rpc/bindings/DocKind'
 import type { DocOpen } from '@/rpc/bindings/DocOpen'
@@ -24,6 +26,7 @@ import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import type { DictationId } from '@/rpc/bindings/DictationId'
 import type { HelperStatus } from '@/rpc/bindings/HelperStatus'
 import type { DictationState } from '@/rpc/bindings/DictationState'
+import type { Delivery } from '@/rpc/bindings/Delivery'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
 import type { HarvestResult } from '@/rpc/bindings/HarvestResult'
@@ -152,6 +155,8 @@ export interface Api {
   add_provider(name: string, base_url: string, key: string): Promise<ProviderInfo>
   add_skill(name: string, description: string, body: string, always: boolean): Promise<SkillMeta>
   add_skill_repo(url: string, name: string | null): Promise<SkillMeta[]>
+  /** One message to many sessions (62 §0.1): server-side selector, one outcome row per session; `dry_run: true` previews. */
+  broadcast(req: BroadcastRequest): Promise<BroadcastReceipt>
   /** PNG (base64) of the session's browser page; `null` when it has no isolate or no open page. */
   browser_screenshot(session: SessionId): Promise<string | null>
   /** The human resolves pending request `reply_to` on behalf of `session` — as its recipient (answer travels to the sender) or as its blocked sender (its own wait resolves); exact id, never an arbitrary waiter (50 §5.3). Rejects when `session` is neither side or nothing is pending. */
@@ -283,6 +288,8 @@ export interface Api {
   list_acp(probe: boolean): Promise<EntryInfo[]>
   list_acp_registry(): Promise<RegistryAgent[]>
   list_agents(session: SessionId): Promise<AgentInfo[]>
+  /** Every session with a live actor or a running job plus every root, with `activity`; the broadcast picker's source (62 §0.6). */
+  list_activity(): Promise<AgentInfo[]>
   /** Artifacts newest first: one session's (`descendants` widens to its subtree) or, with `null`, every session's (35 §3.5). */
   list_artifacts(session: SessionId | null, descendants?: boolean | null): Promise<Artifact[]>
   list_jobs(session: SessionId): Promise<JobView[]>
@@ -473,7 +480,7 @@ export interface Api {
   search_refresh(categories: SearchCategory[] | null): Promise<void>
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
-  send_input(session: SessionId | null, text: string, files: string[]): Promise<SessionId>
+  send_input(session: SessionId | null, text: string, files: string[], delivery?: Delivery | null): Promise<SessionId>
   /** Sign every Bedrock call on the harness as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
@@ -514,7 +521,7 @@ export interface Api {
   slack_status(): Promise<SlackStatus>
   /** Read `text` (markdown) aloud in `session`'s name (43 §6); stops the current utterance first. Returns the `SpeechId`; audio follows as `SpeechAudio` events. `-32001` when the voice plugin is disabled. */
   speak(session: SessionId, text: string): Promise<string>
-  steer(session: SessionId, text: string, id: InputId | null, files: string[]): Promise<InputId>
+  steer(session: SessionId, text: string, id: InputId | null, files: string[], delivery?: Delivery | null): Promise<InputId>
   /** Stop utterance `id`, or whatever is speaking when `null`; idempotent (43 §6). */
   stop_speaking(id: string | null): Promise<null>
   /** The preferred subagent model, `null` when unset. */
@@ -558,6 +565,7 @@ export const METHODS = [
   'brief_put',
   'brief_search',
   'brief_tags',
+  'broadcast',
   'browser_screenshot',
   'cancel',
   'cancel_job',
@@ -586,7 +594,6 @@ export const METHODS = [
   'doc_link_create',
   'doc_link_revoke',
   'doc_list',
-  'documents_status',
   'doc_member_revoke',
   'doc_member_set',
   'doc_members',
@@ -598,6 +605,7 @@ export const METHODS = [
   'doc_snapshots',
   'doc_undo_agent',
   'doc_update',
+  'documents_status',
   'edit_turn',
   'enable_schedule',
   'escalate_model',
@@ -634,6 +642,7 @@ export const METHODS = [
   'link_status',
   'list_acp',
   'list_acp_registry',
+  'list_activity',
   'list_agents',
   'list_artifacts',
   'list_aws_profiles',

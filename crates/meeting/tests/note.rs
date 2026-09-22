@@ -96,9 +96,11 @@ async fn note_lives_through_start_summary_and_retry() {
     std::fs::create_dir_all(&mdir).unwrap();
 
     // meeting_start: the note exists and exports `notes.md` headed with the title.
-    let doc = note::create(meeting, "Meeting 2026-09-21 14:00")
-        .await
-        .expect("documents are running");
+    let doc = match note::create(meeting, "Meeting 2026-09-21 14:00").await {
+        note::Created::Now(Some(doc)) => doc,
+        note::Created::Now(None) => panic!("documents are running"),
+        note::Created::Late(task) => task.await.unwrap().expect("documents are running"),
+    };
     let notes_md = mdir.join("notes.md");
     let text = wait_for(&notes_md, |s| s.contains("# Meeting 2026-09-21 14:00")).await;
     assert!(text.trim().starts_with("# Meeting 2026-09-21 14:00"), "{text}");

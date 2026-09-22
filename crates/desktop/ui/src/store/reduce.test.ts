@@ -213,17 +213,17 @@ test('a draft abandoned mid-stream is cancelled at TurnFinished, not dropped; it
 
 test('InputQueued dedupes by id and never touches the streaming tail', () => {
   const base = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }])
-  const q = apply(base, { type: 'InputQueued', session: S, id: 'i1', text: 'steer' }, ctx())
-  expect(q.queued).toEqual([{ id: 'i1', text: 'steer' }])
+  const q = apply(base, { type: 'InputQueued', session: S, id: 'i1', text: 'steer', defer: false }, ctx())
+  expect(q.queued).toEqual([{ id: 'i1', text: 'steer', defer: false }])
   expect(q.entries[0]).toMatchObject({ open: true })
-  expect(apply(q, { type: 'InputQueued', session: S, id: 'i1', text: 'steer' }, ctx())).toBe(q)
+  expect(apply(q, { type: 'InputQueued', session: S, id: 'i1', text: 'steer', defer: false }, ctx())).toBe(q)
   expect(apply(q, { type: 'InputWithdrawn', session: S, id: 'nope' }, ctx())).toBe(q)
   expect(apply(q, { type: 'InputWithdrawn', session: S, id: 'i1' }, ctx()).queued).toEqual([])
 })
 
 test('InputInjected moves the steer into the transcript and suppresses its echo', () => {
   const s = run([
-    { type: 'InputQueued', session: S, id: 'i1', text: 'steer' },
+    { type: 'InputQueued', session: S, id: 'i1', text: 'steer', defer: false },
     { type: 'InputInjected', session: S, id: 'i1', turn: 'T2' },
     { type: 'TurnStarted', session: S, turn: 'T2', text: 'steer', model: 'm', turn_seq: 4 },
   ])
@@ -334,9 +334,12 @@ test('live PTY set follows screen changes: idle or exit drops a job, a new scree
   expect([...s.ptys]).toEqual(['j1'])
   s = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'top', exit: { exited: 0 }, secs: 99n, output: '', inline: false, pty: true }, ctx())
   expect(s.ptys.size).toBe(0)
-  // A plain job never enters the set.
+  // A plain job is a background job, not a terminal, until it finishes (inline or not).
   s = apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
   expect(s.ptys.size).toBe(0)
+  expect([...s.jobs]).toEqual(['j2'])
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j2', command: 'make', exit: { exited: 0 }, secs: 1n, output: '', inline: true, pty: false }, ctx())
+  expect(s.jobs.size).toBe(0)
 })
 
 test('ScrapeProgress attaches inflight URLs to the crawl card by call id, dropped on finish', () => {
@@ -502,7 +505,7 @@ test('turn activity bumps live; bookkeeping (jobs, queue, title) does not; a tur
   expect(s1).toMatchObject({ live: 1, contextEditable: false })
   const s2 = apply(s1, { type: 'TextDelta', session: S, turn: T, text: 'x' }, ctx())
   expect(s2.live).toBe(2)
-  const s3 = apply(s2, { type: 'InputQueued', session: S, id: 'q', text: 'later' }, ctx())
+  const s3 = apply(s2, { type: 'InputQueued', session: S, id: 'q', text: 'later', defer: true }, ctx())
   const s4 = apply(s3, { type: 'TitleChanged', session: S, title: 't' }, ctx())
   const s5 = apply(s4, { type: 'JobOutput', session: S, id: 'j', chunk: 'out' }, ctx())
   expect(s5.live).toBe(2)

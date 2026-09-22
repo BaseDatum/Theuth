@@ -55,6 +55,7 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
             }}
           >
             {label(q.text)}
+            {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
           </button>
           <button
             type="button"

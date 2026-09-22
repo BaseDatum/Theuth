@@ -38,6 +38,7 @@ export function empty(id: string): SessionSlice {
     browserLive: false,
     terminal: false,
     ptys: new Set(),
+    jobs: new Set(),
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
@@ -475,12 +476,12 @@ function patchJob(
   );
 }
 
-/** Job `id` is no longer a live terminal (quiet screen or exited); a no-op for non-PTY jobs. */
-function ptyQuiet(s: SessionSlice, id: string): SessionSlice {
-  if (!s.ptys.has(id)) return s;
-  const ptys = new Set(s.ptys);
-  ptys.delete(id);
-  return { ...s, ptys };
+/** Drop job `id` from `key` (`ptys`: screen went quiet or exited; `jobs`: exited); a no-op when absent. */
+function jobGone(s: SessionSlice, key: "ptys" | "jobs", id: string): SessionSlice {
+  if (!s[key].has(id)) return s;
+  const set = new Set(s[key]);
+  set.delete(id);
+  return { ...s, [key]: set };
 }
 
 /**
@@ -498,7 +499,7 @@ export function apply(
     case "InputQueued":
       return slice.queued.some((q) => q.id === e.id)
         ? slice
-        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text }] };
+        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer }] };
     case "InputWithdrawn": {
       const queued = slice.queued.filter((q) => q.id !== e.id);
       return queued.length === slice.queued.length
@@ -532,7 +533,9 @@ export function apply(
         (t) => t.callId === e.call_id,
         (t) => ({ ...t, job: { id: e.id, command: e.command, lines: [] } }),
       );
-      return e.pty ? { ...next, terminal: true, ptys: new Set(next.ptys).add(e.id) } : next;
+      return e.pty
+        ? { ...next, terminal: true, ptys: new Set(next.ptys).add(e.id) }
+        : { ...next, jobs: new Set(next.jobs).add(e.id) };
     }
     case "JobOutput":
       return patchJob(slice, e.id, (j) => ({
@@ -548,17 +551,16 @@ export function apply(
       return next.ptys.has(e.id) ? next : { ...next, ptys: new Set(next.ptys).add(e.id) };
     }
     case "JobIdle":
-      return ptyQuiet(slice, e.id);
-    case "JobFinished":
+      return jobGone(slice, "ptys", e.id);
+    case "JobFinished": {
       // Within grace the tool result carries the output: the tail has nothing to add.
-      return ptyQuiet(
-        patchJob(slice, e.id, (j) =>
-          e.inline
-            ? undefined
-            : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } },
-        ),
-        e.id,
+      const next = patchJob(slice, e.id, (j) =>
+        e.inline
+          ? undefined
+          : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } },
       );
+      return jobGone(jobGone(next, "ptys", e.id), "jobs", e.id);
+    }
     case "BrowserShowLive":
       return { ...slice, browser: true, browserLive: true };
     case "ToolCallProgress": {

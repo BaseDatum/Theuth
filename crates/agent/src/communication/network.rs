@@ -450,6 +450,8 @@ impl NetworkState {
                 send: true,
                 reply: true,
                 stream: false,
+                activity: None,
+                title: None,
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));

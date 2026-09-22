@@ -54,9 +54,10 @@ function DocSideMenu(props: SideMenuProps) {
 }
 
 /**
- * The page frame (59 §24.y): the scroll container is the canvas, `.bn-editor` the paper (styles.css `html .bn-editor`:
- * BlockNote's own sheet is unlayered, so utilities on `.bn-editor` would lose). `dense` (the meeting pane, already in a
- * bordered box) keeps the paper but tightens it.
+ * The page frame (59 §24.y, §24.8): the scroll container is the canvas, `.bn-editor` the paper (styles.css `html .bn-editor`:
+ * BlockNote's own sheet is unlayered, so utilities on `.bn-editor` would lose). The canvas is a column flex whose one
+ * growing item is the paper, so an empty document is still page-high and the whole page is the editable element.
+ * `dense` (the meeting pane, already in a bordered box) keeps the paper but tightens it.
  */
 const CANVAS = 'min-h-0 flex-1 overflow-y-auto bg-background'
 

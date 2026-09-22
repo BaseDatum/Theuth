@@ -140,6 +140,7 @@ impl Port for Actors {
                 session,
                 text,
                 files,
+                delivery: agent::Delivery::default(),
             })
             .await
             .map_err(|e| e.to_string())
@@ -165,6 +166,7 @@ impl Port for Actors {
                 id,
                 text,
                 files,
+                delivery: agent::Delivery::default(),
             })
             .await
             .map_err(|e| e.to_string())

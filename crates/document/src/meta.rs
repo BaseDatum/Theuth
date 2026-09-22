@@ -534,6 +534,12 @@ pub enum DocEvent {
         /// Links (no hash).
         links: Vec<ShareLink>,
     },
+    /// The title changed (`doc_rename`, §7.3). Every subscriber gets it — members too: a guest's page
+    /// chrome has no bus, and `DocumentChanged` stays owner-side.
+    Meta {
+        /// The new title.
+        title: String,
+    },
     /// The subscription ends.
     Closed {
         /// Why: `deleted`, `unloaded`, `slow`, `demoted` (re-open read-only, §8.1), `revoked` (§8.4).

@@ -292,6 +292,11 @@ export class HarnessProvider {
       case 'Awareness':
         applyAwarenessUpdate(this.awareness, unb64(e.state), HARNESS)
         return
+      case 'Meta':
+        // A rename (59 §7.3): `meta` follows so the page chrome and `docRef` read the new title.
+        if (this.meta) this.meta.title = e.title
+        for (const cb of this.#events) cb(e)
+        return
       case 'Closed':
         this.#unsub = null
         // `slow`: the harness dropped our queue; the state vector recovers what we missed.

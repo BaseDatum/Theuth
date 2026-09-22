@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { BookOpen, FolderOpen, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
@@ -15,6 +15,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { settings } from '@/components/chat/slash'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
@@ -46,6 +47,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const hasMeetings = useHasMeetings()
 
   return (
+    <>
     <Sidebar collapsible="offcanvas" className="border-r-0">
       <SidebarHeader
         data-tauri-drag-region={isMacDesktop() || undefined}
@@ -54,6 +56,16 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         <HarnessSwitcher className="min-w-0 flex-1 justify-start" />
         <div className="ml-auto flex shrink-0 items-center">
           <SearchTrigger />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-lg text-fg-secondary"
+            aria-label="Broadcast…"
+            title="Broadcast…"
+            onClick={() => openBroadcastDialog({})}
+          >
+            <Megaphone className="size-5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -130,5 +142,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+    {/* Beside, not inside: on phones the sidebar is a sheet that unmounts when closed (62 §5.2). */}
+    <BroadcastDialog />
+    </>
   )
 }

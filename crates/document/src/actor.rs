@@ -410,6 +410,25 @@ impl DocumentActor {
         }
     }
 
+    /// The derived file's text when `doc` was never synced with it — no export or import ever
+    /// landed (`meta.last_export` is `None`), none is in flight, and the file has a body. That is a
+    /// binding whose first import failed (the helper was down): the blank page the installed app
+    /// showed. `None` for a fresh note (its file does not exist until the first export).
+    fn unsynced_file(&self, doc: &DocId) -> Option<String> {
+        if self.imports.values().any(|i| i.doc == *doc) {
+            return None;
+        }
+        let derived = match self.open.get(doc) {
+            Some(o) => o.meta.last_export.is_none().then(|| o.meta.derived.clone())?,
+            None => {
+                let m = self.store.read_meta(doc).ok()?;
+                m.last_export.is_none().then_some(m.derived)?
+            }
+        };
+        let text = std::fs::read_to_string(self.data_dir.join(derived)).ok()?;
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     /// Start an import through the helper; the transaction returns as a [`HelperEvent::Update`].
     fn start_import(
         &mut self,
@@ -787,6 +806,12 @@ impl Message<OpenDoc> for DocumentActor {
         if seen {
             self.save_members(&m.doc).await;
         }
+        // Bound but never filled (the first import failed while the helper was down): import the
+        // derived file now; the client gets the state as an ordinary update a moment after this reply.
+        if let Some(markdown) = self.unsynced_file(&m.doc) {
+            tracing::info!(doc = %m.doc, "document never imported; importing its file on open");
+            self.start_import(&m.doc, markdown, Principal::File, ImportMode::Diff, ImportReply::None);
+        }
         Ok(DocOpen {
             meta,
             state: state.chunks(CHUNK).map(b64).collect(),
@@ -929,6 +954,19 @@ impl Message<Ensure> for DocumentActor {
         let Some(tx) = tx else { return reply };
         match self.store.lookup(&m.binding).await {
             Ok(Some(id)) => {
+                // Bound but never filled (see `unsynced_file`): import now and answer when it has
+                // landed, like a first open; `Diff` keeps an edit typed meanwhile.
+                if self.unsynced_file(&id).is_some() && !m.markdown.trim().is_empty() {
+                    tracing::info!(doc = %id, "document never imported; importing its file now");
+                    self.start_import(
+                        &id,
+                        m.markdown,
+                        Principal::File,
+                        ImportMode::Diff,
+                        ImportReply::Created(id.clone(), tx),
+                    );
+                    return reply;
+                }
                 tx.send(Ok(id));
                 return reply;
             }
@@ -1465,6 +1503,7 @@ impl Message<Rename> for DocumentActor {
             tx.send(Err(format!("{e:#}")));
             return reply;
         }
+        self.fan_out(&m.doc, DocEvent::Meta { title: title.clone() }, None);
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
