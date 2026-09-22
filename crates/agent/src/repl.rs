@@ -1492,14 +1492,15 @@ mod tests {
     }
 
     /// Drives a real checkout through `monty`; skipped when absent.
-    #[tokio::test]
-    async fn capping_binds_out_name() {
+    #[test]
+    fn capping_binds_out_name() {
+        crate::with_test_registry(capping_scenario());
+    }
+
+    async fn capping_scenario() {
         let Some(pool) = monty_pool().await else {
             return;
         };
-        let _registry = crate::REGISTRY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let dir = tempdir();
         std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
         let cx = run_cx(&dir).await;

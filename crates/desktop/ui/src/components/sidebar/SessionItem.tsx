@@ -32,7 +32,7 @@ import { touch } from '@/lib/hotkeys'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
-import { type Activity, useSessionField } from '@/store/sessions'
+import { type Activity, shownActivity, useSessionField } from '@/store/sessions'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
@@ -47,7 +47,7 @@ const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
 
 /** Live activity glyph for a session row; nothing while idle. */
 function SessionActivity({ id }: { id: string }) {
-  const activity = useSessionField(id, 'activity') ?? 'idle'
+  const activity = shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting'))
   if (activity === 'idle') return null
   const [Icon, label] = ACTIVITY[activity]
   return (

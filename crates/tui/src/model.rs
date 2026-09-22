@@ -3009,7 +3009,9 @@ pub struct Model {
     notice: Option<String>,
     /// The shown session's summariser call is in flight (`Compacting`).
     pub compacting: bool,
-    /// The shown session's harvest call is in flight (`Harvesting`).
+    /// The shown session's harvest is in flight (`Harvesting` … `Harvested`).
+    /// Detached from the turn (10 §5.2 as built): survives `TurnFinished`,
+    /// shown only while nothing else is.
     pub harvesting: bool,
     /// The shown session's vision consultation step in flight
     /// (`VisionProgress`, 52 §6): the status-line text until it settles.
@@ -3966,19 +3968,17 @@ impl Model {
     }
 
     /// What the shown session is doing right now, for the status line and
-    /// the trailing activity row; `None` when idle.
+    /// the trailing activity row; `None` when idle. A background harvest is
+    /// named only when the session is otherwise idle.
     pub fn activity(&self) -> Option<String> {
         if self.compacting {
             return Some("compacting…".into());
-        }
-        if self.harvesting {
-            return Some("harvesting…".into());
         }
         if let Some(v) = &self.vision {
             return Some(v.clone());
         }
         if !self.streaming {
-            return None;
+            return self.harvesting.then(|| "harvesting…".into());
         }
         // Parallel calls: a running card need not be the last entry.
         let busy = self.entries.iter().rev().find_map(|e| match e {
@@ -5364,7 +5364,6 @@ impl Model {
                 self.usage = Some(usage);
                 self.context = context;
                 self.compacting = false;
-                self.harvesting = false;
                 self.vision = None;
             }
             // The gauge moves per round, with the cost (51 §6.4).
@@ -5411,7 +5410,6 @@ impl Model {
             }
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
-                self.harvesting = false;
                 self.vision = None;
                 self.entries.push(Entry::Error(message));
             }

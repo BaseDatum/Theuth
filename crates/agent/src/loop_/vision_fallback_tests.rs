@@ -83,7 +83,7 @@ fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTe
 
 /// The fake provider: routes on the system prompt, so the same server serves
 /// the question call, the vision call, the summariser and the ordinary main call.
-struct Fake {
+pub(super) struct Fake {
     /// The main model's question (the question call's reply).
     question: &'static str,
     /// The vision reply is not the JSON array the harness requires.
@@ -95,7 +95,12 @@ struct Fake {
     /// Main calls whose request lacks this text are cut off (`length`), so
     /// the turn runs another round — the steering injection point.
     truncate_until: Option<&'static str>,
+    /// Hold the harvest reply ([`HARVEST_REPLY`]) this long (detached-harvest scenarios).
+    harvest_delay: Option<Duration>,
 }
+
+/// The harvest call's reply: one well-formed concept.
+pub(super) const HARVEST_REPLY: &str = "<concept id=\"facts/detached-harvest\">\n---\ntype: fact\ntitle: Detached harvest\ndescription: The harvest ran off the turn\ntags: [test]\n---\nThe fake provider answered the harvest instruction.\n</concept>";
 
 impl Respond for Fake {
     fn respond(&self, req: &Request) -> ResponseTemplate {
@@ -128,6 +133,13 @@ impl Respond for Fake {
                 .set_body_string("{\"error\":{\"message\":\"boom\"}}");
         }
         let text = all_text(&b);
+        if text.contains(knowledge::harvest::HARVEST_INSTRUCTION.lines().next().unwrap_or_default()) {
+            let t = sse(HARVEST_REPLY, "stop", MAIN_USAGE);
+            return match self.harvest_delay {
+                Some(d) => t.set_delay(d),
+                None => t,
+            };
+        }
         if text.contains(compact::COMPACT_INSTRUCTION) {
             return sse(&summary(), "stop", MAIN_USAGE);
         }
@@ -233,7 +245,7 @@ impl Message<AgentEvent> for Sink {
 }
 
 /// A fresh store, session, runtime bus and fake provider per scenario.
-struct Harness {
+pub(super) struct Harness {
     dir: PathBuf,
     store: Store,
     rt: Runtime,
@@ -251,7 +263,7 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new(fake: Fake) -> Self {
+    pub(super) async fn new(fake: Fake) -> Self {
         let dir = std::env::temp_dir().join(format!("theuth-vision-e2e-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = |id: &str, image: bool| {
@@ -345,7 +357,7 @@ impl Harness {
     }
 
     /// A turn over the session's current frame, as `Session::start_turn` builds one.
-    async fn turn(&self, main: &str, cancel: CancellationToken) -> (Turn, TurnId) {
+    pub(super) async fn turn(&self, main: &str, cancel: CancellationToken) -> (Turn, TurnId) {
         let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
         let mut session = Session::new(
             self.id,
@@ -378,7 +390,7 @@ impl Harness {
         (turn, tid)
     }
 
-    fn input(&self, text: &str, with_image: bool) -> Input {
+    pub(super) fn input(&self, text: &str, with_image: bool) -> Input {
         self.input_files(
             text,
             if with_image {
@@ -409,13 +421,13 @@ impl Harness {
         self.drain().await
     }
 
-    async fn drain(&mut self) -> Vec<AgentEvent> {
+    pub(super) async fn drain(&mut self) -> Vec<AgentEvent> {
         self.drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
             .await
     }
 
     /// Bus events up to and including the first `done` one.
-    async fn drain_until(&mut self, done: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
+    pub(super) async fn drain_until(&mut self, done: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         loop {
             let ev = tokio::time::timeout(Duration::from_secs(10), self.events.recv())
@@ -534,6 +546,17 @@ fn fake() -> Fake {
         question_delay: None,
         question_seen: Arc::default(),
         truncate_until: None,
+        harvest_delay: None,
+    }
+}
+
+impl Fake {
+    /// [`fake`] holding every harvest reply for `hold` (the detached-harvest scenarios).
+    pub(super) fn harvest_held(hold: Duration) -> Self {
+        Self {
+            harvest_delay: Some(hold),
+            ..fake()
+        }
     }
 }
 
@@ -551,12 +574,13 @@ fn finished(events: &[AgentEvent]) -> (Usage, u32) {
 /// 52 §10 gates: main-authored question, native bypass, no-fallback notice,
 /// explicit failure without an in-turn retry loop, cancellation, batching,
 /// steering, manual summary compaction, accounting, redaction.
-#[tokio::test]
-async fn vision_fallback_contract_against_fake_provider() {
-    // One registry and one vault for the process; every scenario's turn finds them.
-    let _registry = crate::REGISTRY_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+#[test]
+fn vision_fallback_contract_against_fake_provider() {
+    crate::with_test_registry(vision_scenarios());
+}
+
+/// One registry and one vault for the process; every scenario's turn finds them.
+async fn vision_scenarios() {
     let reg_dir = std::env::temp_dir().join(format!("theuth-vision-reg-{}", Uuid::now_v7()));
     std::fs::create_dir_all(&reg_dir).unwrap();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());

@@ -53,6 +53,21 @@ pub mod vision;
 /// the name is freed only when the first test's runtime drops the actor.
 #[cfg(test)]
 pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run a registry-starting test body: the lock is taken before the runtime
+/// is built and released after it is dropped, so the actors the body
+/// registered are dead — not merely about to be — when the next test's
+/// `tools::registry::start` evicts them. A `#[tokio::test]` releases a guard
+/// declared in its body *before* its runtime drops, which lost that race.
+#[cfg(test)]
+pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
+    let _lock = REGISTRY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+        .block_on(body)
+}
 pub mod private;
 pub mod lifecycle;
 pub mod cost;
@@ -444,7 +459,10 @@ pub struct SetSubagentModel {
 pub struct GetSubagentModel;
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
-/// finished frame now (design doc 10 §5.2). `Err("turn in flight")` while it runs.
+/// finished frame (design doc 10 §5.2). `Err("turn in flight")` while a turn
+/// runs, `Err("harvest in flight")` while the previous harvest still does; the
+/// session is idle again as soon as the frame is snapshotted, the reply
+/// follows the detached harvest.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Harvest {
     /// Session.
@@ -1550,7 +1568,9 @@ pub enum AgentEvent {
         /// Style actually used (cut if the summariser fell back).
         style: CompactStyle,
     },
-    /// The harvest continuation is in flight (design doc 10 §5.2); precedes `TurnFinished`.
+    /// A detached harvest of the finished frame started (design doc 10 §5.2 as
+    /// built): it may follow `TurnFinished` and outlive the next `TurnStarted`;
+    /// `Harvested` ends it either way.
     Harvesting {
         /// Session.
         session: SessionId,
