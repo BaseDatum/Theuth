@@ -7,6 +7,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   created_at: updated_at,
   updated_at,
   title: id,
+  tags: [],
   model: 'm',
   parent: null,
   name: null,

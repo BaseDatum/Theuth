@@ -525,8 +525,14 @@ export function apply(
         { ...slice, live: slice.live + 1 },
         peerEntry(e.origin, e.text, e.seq),
       );
-    case "TitleChanged":
-      return slice.title === e.title ? slice : { ...slice, title: e.title };
+    case "TitleChanged": {
+      const tags = e.tags;
+      const same =
+        slice.title === e.title &&
+        slice.tags?.length === tags.length &&
+        tags.every((t, i) => slice.tags?.[i] === t);
+      return same ? slice : { ...slice, title: e.title, tags };
+    }
     case "JobStarted": {
       const next = patchTool(
         slice,

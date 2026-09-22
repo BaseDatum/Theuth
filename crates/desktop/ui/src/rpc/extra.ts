@@ -99,11 +99,12 @@ export type AgentInfo = {
   activity?: SessionActivity
 }
 
-/** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title. */
+/** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title; `tags` are the set in force after it. */
 export type TitleChanged = {
   type: 'TitleChanged'
   session: SessionId
   title: string
+  tags: string[]
 }
 
 /** `AgentEvent::SessionDeleted`: `delete_session` removed the rows; drop it from every list. */

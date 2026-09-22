@@ -193,6 +193,7 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
                 <SessionItem
                   id={row.session.id}
                   title={row.session.title}
+                  tags={row.session.tags}
                   pinned={row.session.pinned}
                   project={row.session.project}
                   active={row.session.id === active}
