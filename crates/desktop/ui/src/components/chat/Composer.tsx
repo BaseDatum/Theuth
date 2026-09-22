@@ -462,8 +462,9 @@ export function Composer({
   }
 
   const record = async () => {
-    // A user gesture: the one moment iOS lets the reply's `AudioContext` start (45 §7.3).
-    speech.unlock()
+    // A user gesture: the one moment iOS lets the reply's `AudioContext` start (45 §7.3). Released on `onstop`
+    // or a failed start, so an idle session does not keep iOS's Now Playing up.
+    speech.unlock('record')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const rec = new MediaRecorder(stream, {
@@ -474,6 +475,7 @@ export function Composer({
       rec.ondataavailable = (e) => chunks.push(e.data)
       rec.onstop = () => {
         for (const track of stream.getTracks()) track.stop()
+        void speech.release('record')
         const discard = recorder.current?.discard ?? true
         recorder.current = null
         setRecording(false)
@@ -483,6 +485,7 @@ export function Composer({
       rec.start()
       setRecording(true)
     } catch (e) {
+      void speech.release('record')
       toast.error(e instanceof Error ? e.message : String(e))
     }
   }

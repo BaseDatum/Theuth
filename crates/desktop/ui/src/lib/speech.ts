@@ -32,17 +32,31 @@ let next = 0
 /** Utterance being played; packets for any other id are late and dropped. */
 let id: string | null = null
 
+/** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2). */
+export type Use = 'speak' | 'dictate' | 'record'
+const uses = new Set<Use>()
+
 /**
  * iOS WKWebView files bare Web Audio under `AmbientSound`, which the ringer switch mutes (WebKit#251532);
- * `playback` plays like media, `play-and-record` keeps the mic open. The type is a hard override, so each
- * side sets its own before touching audio. No-op where the API is absent.
+ * `playback` plays like media, `play-and-record` keeps the mic open. The type is a hard override, so it
+ * follows the holders: a mic use wins while speaking, and none → `auto` (WebKit's default), which lets iOS
+ * deactivate the session and drop the Now Playing island. No-op where the API is absent.
  */
-function session(type: 'playback' | 'play-and-record'): void {
+function session(): void {
   const nav = navigator as Navigator & { audioSession?: { type: string } }
-  if (nav.audioSession) nav.audioSession.type = type
+  if (!nav.audioSession) return
+  nav.audioSession.type =
+    uses.has('dictate') || uses.has('record') ? 'play-and-record' : uses.has('speak') ? 'playback' : 'auto'
 }
 
-function graph(): AudioContext {
+/**
+ * Hold the session for `use`: set the type, create (once) and resume the context. Mic uses call it inside
+ * the tap, before `getUserMedia`; the context comes back so dictation's tap shares the one device-rate
+ * context instead of opening a second one (WKWebView). Pair with `release(use)`.
+ */
+export function unlock(use: Use): AudioContext {
+  uses.add(use)
+  session()
   if (!ctx) {
     ctx = new AudioContext()
     out = ctx.createGain()
@@ -52,11 +66,15 @@ function graph(): AudioContext {
   return ctx
 }
 
-/** Create (once) and resume the context; call from the record tap, before `getUserMedia`. Returns it so
- * dictation's mic tap shares the one device-rate context instead of opening a second one (WKWebView). */
-export function unlock(): AudioContext {
-  session('play-and-record')
-  return graph()
+/**
+ * Let go of `use`. With no holder left, suspend the context and reset the type: a running context (or a
+ * `play-and-record` type) left behind keeps iOS's Now Playing ("localhost") up. Suspended, not closed —
+ * `unlock` resumes it without a gesture. Idempotent; a use never held releases nothing but the idle state.
+ */
+export async function release(use: Use): Promise<void> {
+  uses.delete(use)
+  if (uses.size === 0) await ctx?.suspend()
+  session()
 }
 
 function cut(): void {
@@ -72,16 +90,13 @@ function cut(): void {
 
 /** Unlock Web Audio on the click that starts speak (43 §2.3) and warm the decoder during the RPC round-trip. */
 export function prime(sampleRate = SAMPLE_RATE): void {
-  session('playback')
-  graph()
+  unlock('speak')
   if (!dec) dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
 }
 
 /** Begin utterance `speech`: cut previous audio, keep the unlocked context, open a decoder. */
-// ponytail: `start` during an in-progress recording flips the mic to `playback`; a record button while speaking is not a flow yet.
 export function start(speech: string, sampleRate: number): void {
-  session('playback')
-  graph()
+  unlock('speak')
   cut()
   id = speech
   rate = sampleRate
@@ -117,13 +132,10 @@ export function remaining(): number {
   return ctx ? Math.max(0, next - ctx.currentTime) : 0
 }
 
-/**
- * Halt playback now and release the decoder. The context is suspended, not closed: a `playback`-type
- * context left running keeps iOS's Now Playing ("localhost") up; `start` resumes it without a gesture.
- */
+/** Halt playback now, release the decoder and the session's `speak` hold (see `release`). */
 export function stop(): void {
   cut()
-  void ctx?.suspend()
+  void release('speak')
   dec?.free()
   dec = null
   id = null
@@ -176,6 +188,10 @@ export async function speak(api: Api, session: string, entry: string, text: stri
       for (const p of held.packets) push(sid, p)
     }
     held = null
+  } catch (e) {
+    // `prime` took the `speak` hold on the tap; nothing will play, so give it back (unless another utterance is on).
+    if (id === null) stop()
+    throw e
   } finally {
     inflight--
   }
@@ -249,7 +265,8 @@ function onFinished(speech: string, reason: FinishReason): void {
   mine.delete(speech)
   const clear = () => {
     if (speaking?.id === speech) setSpeaking(null)
-    if (id === speech) stop()
+    // `id === null`: finished (error) before its `SpeechStarted`; `stop` only drops `prime`'s hold then.
+    if (id === speech || id === null) stop()
   }
   if (reason.reason === 'done') {
     // Every packet is published but the tail is still scheduled; wait for the queued pushes, then for playback.
@@ -279,8 +296,15 @@ export function installSpeechListeners(): () => void {
     on('ToolCallPending', (e) => speakBlock(e.session)),
     on('TurnFinished', (e) => speakBlock(e.session)),
   ]
+  // Belt and braces: backgrounded with nothing held, make sure the session is idle (a missed release would
+  // otherwise keep the island up until the next tap).
+  const hidden = () => {
+    if (document.visibilityState === 'hidden' && uses.size === 0) void release('speak')
+  }
+  document.addEventListener('visibilitychange', hidden)
   return () => {
     for (const off of offs) off()
+    document.removeEventListener('visibilitychange', hidden)
   }
 }
 

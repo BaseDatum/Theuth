@@ -100,13 +100,18 @@ const WORKLET_SRC = `registerProcessor('theuth-tap', class extends AudioWorkletP
   process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice()); return true }
 })`
 
-/** Release the mic and the tap nodes; idempotent. The context is speech's and stays open. */
+/**
+ * Release the mic, the tap nodes and speech's `dictate` hold (the session suspends once nothing else holds
+ * it); idempotent, and run on every end — a failed `getUserMedia` has no capture yet still took the hold.
+ */
 function teardownCapture(): void {
   const c = capture
-  if (!c) return
   capture = null
-  for (const t of c.stream.getTracks()) t.stop()
-  for (const n of c.nodes) n.disconnect()
+  if (c) {
+    for (const t of c.stream.getTracks()) t.stop()
+    for (const n of c.nodes) n.disconnect()
+  }
+  void speech.release('dictate')
 }
 
 /**
@@ -114,10 +119,13 @@ function teardownCapture(): void {
  * context; the daemon resamples (ponytail: ~1 Mbit/s of PCM at 48 kHz — decimate here if the relay minds).
  */
 async function openCapture(): Promise<Capture> {
-  const ctx = speech.unlock()
+  speech.unlock('dictate')
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   })
+  // Esc during the prompt ran `teardownCapture` with nothing to tear down and released the hold; take it
+  // again (a gesture-free resume is fine once the context exists) or the tap renders nothing.
+  const ctx = speech.unlock('dictate')
   const c: Capture = { stream, ctx, nodes: [], batcher: null }
   capture = c
   if (ctx.sampleRate % 50 !== 0) throw new Error('unsupported microphone rate')
