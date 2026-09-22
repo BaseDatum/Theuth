@@ -54,6 +54,13 @@ function DocSideMenu(props: SideMenuProps) {
 }
 
 /**
+ * The page frame (59 §24.y): the scroll container is the canvas, `.bn-editor` the paper (styles.css `html .bn-editor`:
+ * BlockNote's own sheet is unlayered, so utilities on `.bn-editor` would lose). `dense` (the meeting pane, already in a
+ * bordered box) keeps the paper but tightens it.
+ */
+const CANVAS = 'min-h-0 flex-1 overflow-y-auto bg-background'
+
+/**
  * BlockNote over a live `HarnessProvider` (59 §3.3); the status line of §9.4 sits under it.
  * `onAsk(block)` is the "Ask theuth…" slash item (§9.3): the host opens a chat about this document and block.
  */
@@ -62,11 +69,13 @@ export function Editor({
   status,
   className,
   onAsk,
+  dense,
 }: {
   provider: HarnessProvider
   status: DocStatus
   className?: string
   onAsk?: (block: string) => void
+  dense?: boolean
 }) {
   const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
   // 59 §10: fingers get the fixed toolbar instead of BlockNote's floating menus; labels on remote cursors need no hover.
@@ -120,7 +129,7 @@ export function Editor({
     [onAsk, editor],
   )
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', className)} data-toolbar={toolbar || undefined}>
+    <div className={cn('flex min-h-0 flex-1 flex-col', className)} data-toolbar={toolbar || undefined} data-paper={dense ? 'dense' : 'page'}>
       <BlockNoteView
         editor={editor}
         theme={dark ? 'dark' : 'light'}
@@ -130,7 +139,7 @@ export function Editor({
         formattingToolbar={!coarse}
         linkToolbar={!coarse}
         tableHandles={!coarse}
-        className="min-h-0 flex-1 overflow-y-auto px-6 py-4 [&_.bn-editor]:mx-auto [&_.bn-editor]:max-w-[768px]"
+        className={cn(CANVAS, dense ? 'p-3 md:p-4' : 'md:p-6')}
       >
         {coarse ? (
           <MobileToolbar editor={editor} readonly={!editable} onVisible={setToolbar} />

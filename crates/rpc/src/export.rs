@@ -117,6 +117,7 @@ async fn export_bindings() {
         document::Joined,
         document::LinkCreated,
         document::AgentStyle,
+        document::HelperStatus,
         tools::ToolSpec,
         tools::Risk,
         tools::PolicyAction,

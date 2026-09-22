@@ -7,7 +7,7 @@
 #                        pubkeys match, <ver>/ absent (immutability), staging/<ver>/ complete, each Linux
 #                        tarball prints VERSION in a clean ubuntu:22.04 of its arch and its helper answers
 #                        `--version` with the library hash, every CLI tarball holds exactly
-#                        `theuth` + `theuth-app-parser-<hash>` (46 §2.1; scripts/app-parser-env.sh)
+#                        `theuth` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` (46 §2.1, 59 §3.2; scripts/app-parser-env.sh)
 #   pull staging/<ver>/  → dist/
 #   sign                 cargo tauri signer sign  dist/theuth_<ver>_*.tar.gz  → .sig
 #   SHA256SUMS           shasum -a 256 over tarballs + DMG
@@ -134,7 +134,7 @@ PLIST_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$AP
 if [[ "$PRERELEASE" == "1" ]]; then
   echo "==> gates 2-3 skipped (THEUTH_RELEASE_PRERELEASE=1)"
 else
-  gate 2 "codesign shows a Developer ID (app and $HELPER)"
+  gate 2 "codesign shows a Developer ID (app, $HELPER and $DOC_HELPER)"
   # Capture, don't `grep -q` in a pipe: with pipefail, grep -q closes early,
   # codesign gets SIGPIPE (141), the gate fails even when Authority is present.
   signed_developer_id() {
@@ -143,9 +143,11 @@ else
     [[ "$out" == *"Authority=Developer ID"* ]]
   }
   signed_developer_id "$APP" || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
-  signed_developer_id "$APP/Contents/MacOS/$HELPER" || fail 2 "$HELPER not signed with a Developer ID (rerun just package-macos)"
-  ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$HELPER" 2>/dev/null)" || true
-  [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
+  for h in "$HELPER" "$DOC_HELPER"; do
+    signed_developer_id "$APP/Contents/MacOS/$h" || fail 2 "$h not signed with a Developer ID (rerun just package-macos)"
+    ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$h" 2>/dev/null)" || true
+    [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$h lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
+  done
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
 fi
@@ -196,24 +198,26 @@ else
   for f in "${LINUX_TGZ[@]}"; do
     case "$f" in *linux-x86_64*) plat=linux/amd64 ;; *) plat=linux/arm64 ;; esac
     out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:22.04 \
-      bash -c "tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER" 2>&1)" || fail 7 "$f: $out"
+      bash -c "tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER && /tmp/$DOC_HELPER --version && printf '' | /tmp/$DOC_HELPER" 2>&1)" || fail 7 "$f: $out"
     [[ "$out" == *"$VERSION"* ]] || fail 7 "$f printed '$out', expected $VERSION"
     [[ "$out" == *"wants=$HELPER_HASH"* ]] || fail 7 "$f: t --app-parser-hash does not name $HELPER_HASH: '$out'"
     [[ "$out" == *"theuth-app-parser $HELPER_HASH"* ]] || fail 7 "$f: $HELPER --version printed '$out', expected 'theuth-app-parser $HELPER_HASH'"
+    [[ "$out" == *"theuth-documents $DOC_VERSION"* ]] || fail 7 "$f: $DOC_HELPER --version printed '$out', expected 'theuth-documents $DOC_VERSION'"
     echo "    $f: $(tr '\n' ' ' <<<"$out")($plat)"
   done
 fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-gate 8 "every CLI tarball holds exactly t + $HELPER; the macOS helper runs here"
+gate 8 "every CLI tarball holds exactly t + $HELPER + $DOC_HELPER; the macOS helpers run here"
 for f in "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}; do
   listed="$(tar -tzf "$DIST/$f" | sed 's|^\./||' | sort | tr '\n' ' ')"
-  [[ "$listed" == "t $HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER' (stale dist/ or staging from another library hash)"
-  echo "    $f: t $HELPER"
+  [[ "$listed" == "t $HELPER $DOC_HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER $DOC_HELPER' (stale dist/ or staging from another library hash / protocol version)"
+  echo "    $f: t $HELPER $DOC_HELPER"
 done
 mkdir -p "$WORK/cli" && tar -xzf "$DIST/$CLI_TGZ" -C "$WORK/cli"
 check_helper "$WORK/cli/$HELPER"
+check_doc_helper "$WORK/cli/$DOC_HELPER"
 [[ "$("$WORK/cli/t" --version 2>&1)" == *"$VERSION"* ]] || fail 8 "$CLI_TGZ: t --version did not print $VERSION"
 [[ "$("$WORK/cli/t" --app-parser-hash 2>&1)" == "$HELPER_HASH" ]] || fail 8 "$CLI_TGZ: t --app-parser-hash does not name the shipped $HELPER (the updater refuses such a payload)"
 

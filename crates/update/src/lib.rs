@@ -408,6 +408,9 @@ async fn download(
 /// Prefix of the app parser helper beside `theuth` (46 §2.1): the file is
 /// `theuth-app-parser-<library sha256 hex>`, immutable per hash.
 const HELPER_PREFIX: &str = "theuth-app-parser-";
+/// Prefix of the documents helper beside `theuth` (59 §3.2): the file is
+/// `theuth-documents-<protocol version>`, immutable per version.
+const DOC_HELPER_PREFIX: &str = "theuth-documents-";
 /// Upper bound on one tarball entry. A release `theuth` is ~330 MB today, the
 /// helper ~60 MiB; the bound only stops a runaway header, not a real build.
 const MAX_ENTRY: u64 = 2 << 30;
@@ -423,8 +426,14 @@ fn is_helper_name(name: &str) -> bool {
     })
 }
 
-/// Step 3: the payload holds exactly two regular files, `theuth` and one
-/// `theuth-app-parser-<hash>`. Both land beside `exe` as `<name>.new.<pid>-<nonce>`,
+/// `theuth-documents-<digits and dots>`.
+fn is_doc_helper_name(name: &str) -> bool {
+    name.strip_prefix(DOC_HELPER_PREFIX)
+        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
+}
+
+/// Step 3: the payload holds `theuth`, one `theuth-app-parser-<hash>` and at most one
+/// `theuth-documents-<version>` (regular files, nothing else). All land beside `exe` as `<name>.new.<pid>-<nonce>`,
 /// `chmod 755`; the new `theuth` is asked which helper hash it was compiled against
 /// and must name the one shipped beside it; then rename: helper first, then
 /// `theuth`, so a `theuth` that exists always has its helper. Same directory, so each
@@ -444,7 +453,8 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
     let tag = format!(".new.{}-{:016x}", std::process::id(), rand::random::<u64>());
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = match unpack(tarball, exe, dir, &tag, &mut staged) {
-        Ok(hash) => probe(&staged[1].0, &hash).await.and_then(|()| {
+        // `unpack` sorts `t` last.
+        Ok(hash) => probe(&staged[staged.len() - 1].0, &hash).await.and_then(|()| {
             for (new, dest) in &staged {
                 if dest != exe && dest.exists() {
                     let _ = std::fs::remove_file(new);
@@ -498,8 +508,8 @@ async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
 
 /// Extract the validated entries to `<dest><tag>`, each created fresh
 /// (`create_new`) so the path is provably this install's; `staged` is filled in
-/// commit order (helper, then `theuth`), including on error so the caller can
-/// clean up. Returns the helper's hash.
+/// commit order (helpers, then `theuth`), including on error so the caller can
+/// clean up. Returns the app parser helper's hash.
 fn unpack(
     tarball: &Path,
     exe: &Path,
@@ -511,6 +521,7 @@ fn unpack(
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let mut theuth = false;
     let mut helper: Option<String> = None;
+    let mut doc_helper = false;
     for entry in archive.entries().context("tarball")? {
         let mut entry = entry.context("tarball entry")?;
         let path = entry.path().context("tarball entry path")?;
@@ -537,6 +548,8 @@ fn unpack(
                     .is_some(),
                 dir.join(&name),
             )
+        } else if is_doc_helper_name(&name) {
+            (std::mem::replace(&mut doc_helper, true), dir.join(&name))
         } else {
             anyhow::bail!("tarball entry `{name}`: unexpected");
         };
@@ -772,15 +785,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_replaces_exe_and_adds_helper_keeping_the_old_one() {
+    async fn install_replaces_exe_and_adds_helpers_keeping_the_old_one() {
         let (dir, exe) = installed();
         let helper = format!("{HELPER_PREFIX}{HASH}");
         let old_helper = format!("{HELPER_PREFIX}{OLD_HASH}");
+        let doc_helper = format!("{DOC_HELPER_PREFIX}59.5");
         let new_theuth = fake_theuth(HASH);
         let tb = tarball(
             dir.path(),
             &[
                 file(&helper, b"#!/bin/sh\necho helper\n"),
+                file(&doc_helper, b"docs"),
                 file("t", &new_theuth),
             ],
         );
@@ -791,7 +806,8 @@ mod tests {
             std::fs::read(dir.path().join(&helper)).unwrap(),
             b"#!/bin/sh\necho helper\n"
         );
-        for f in [&exe, &dir.path().join(&helper)] {
+        assert_eq!(std::fs::read(dir.path().join(&doc_helper)).unwrap(), b"docs");
+        for f in [&exe, &dir.path().join(&helper), &dir.path().join(&doc_helper)] {
             assert_eq!(
                 std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
                 0o755,
@@ -805,9 +821,20 @@ mod tests {
         );
         assert_eq!(
             names(dir.path()),
-            sorted(&["t", &helper, &old_helper, "theuth_0.2.0.tar.gz.part"]),
+            sorted(&[
+                "t",
+                &helper,
+                &doc_helper,
+                &old_helper,
+                "theuth_0.2.0.tar.gz.part"
+            ]),
             "no .new leftovers"
         );
+
+        // A payload without the documents helper (pre-59) still installs.
+        let tb = tarball(dir.path(), &[file(&helper, b"h2"), file("t", &new_theuth)]);
+        install(&tb, &exe).await.unwrap();
+        assert_eq!(std::fs::read(dir.path().join(&doc_helper)).unwrap(), b"docs");
     }
 
     #[tokio::test]
@@ -844,6 +871,27 @@ mod tests {
             (
                 "uppercase hash",
                 vec![file("t", b"new"), file(&upper, b"h")],
+            ),
+            (
+                "unqualified documents helper",
+                vec![file("t", b"new"), file(&helper, b"h"), file("theuth-documents", b"d")],
+            ),
+            (
+                "documents helper with a non-version suffix",
+                vec![
+                    file("t", b"new"),
+                    file(&helper, b"h"),
+                    file("theuth-documents-59.5.new", b"d"),
+                ],
+            ),
+            (
+                "two documents helpers",
+                vec![
+                    file("t", b"new"),
+                    file(&helper, b"h"),
+                    file("theuth-documents-59.5", b"d"),
+                    file("theuth-documents-59.6", b"d2"),
+                ],
             ),
             (
                 "two helpers",

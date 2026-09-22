@@ -322,8 +322,89 @@ html .bn-root[data-color-scheme="dark"] {
   --bn-colors-side-menu: var(--fg-tertiary);
   --bn-font-family: inherit;
 }
+/* The paper (59 §24.y): every document page — notes, knowledge, artifacts, the meeting pane, the guest page — is a
+   centred `--card` column with a hairline border and shadow on the pane's canvas (`bg-background`, set by the editor);
+   edge to edge under `md`, 48/64 px padding on desktop; `[data-paper="dense"]` (the meeting pane) tightens it.
+   `.theuth-paper` is the same sheet for a page rendered without BlockNote (the knowledge read-only fallback). */
+html .bn-editor,
+html .theuth-paper {
+  width: 100%;
+  max-width: 800px;
+  margin-inline: auto;
+  padding: 20px 16px;
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+}
+@media (min-width: 768px) {
+  /* Side padding follows the pane (8% of the paper): 64 px at full width, less beside an open rail. */
+  html .bn-editor,
+  html .theuth-paper {
+    padding: 48px clamp(24px, 8%, 64px);
+    border-radius: 0.75rem;
+  }
+  html [data-paper="dense"] .bn-editor {
+    padding: 24px 32px;
+    border-radius: 0.5rem;
+  }
+}
+/* The frontmatter header (59 §24.y, FrontmatterBlock): the pre-59 concept title; `.bn-default-styles h1` would flatten it. */
+html .bn-editor [data-frontmatter] h1 {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+}
+/* Page typography (59 §24.y): the pre-59 concept view's prose (Streamdown's defaults on the 16/24 body) so a
+   knowledge page in BlockNote reads as it did and a note reads as its sibling. Headings 30/24/20 px semibold with
+   `mt-6 mb-2`, links `text-primary font-medium underline`, inline code and code wells on the muted token. */
 html .bn-editor {
-  padding-inline: 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+html .bn-editor [data-content-type="heading"] {
+  --level: 30px;
+  padding-top: 0;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+html .bn-editor [data-content-type="heading"][data-level="2"] {
+  --level: 24px;
+}
+html .bn-editor [data-content-type="heading"][data-level="3"] {
+  --level: 20px;
+}
+html .bn-editor .bn-block-group > .bn-block-outer:first-child > .bn-block > [data-content-type="heading"] {
+  margin-top: 0;
+}
+html .bn-editor .bn-inline-content a {
+  color: var(--primary);
+  font-weight: 500;
+  text-decoration: underline;
+}
+html .bn-inline-content code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.125rem 0.375rem;
+  font-size: 0.875em;
+}
+html .bn-block-content[data-content-type="codeBlock"] {
+  color: var(--fg-primary);
+  background: var(--muted);
+  border-radius: 0.375rem;
+}
+html .bn-block-content[data-content-type="codeBlock"] > pre {
+  padding: 0.75rem;
+  font-size: 14px;
+  line-height: 20px;
+}
+html .bn-editor [data-content-type="quote"] blockquote {
+  color: var(--muted-foreground);
+  border-left: 4px solid color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+  padding-left: 1rem;
+  font-style: italic;
 }
 /* Fingers (59 §10): no side menu; the fixed MobileToolbar replaces BlockNote's floating menus. Inputs stay at
    16px so iOS does not zoom on focus; while the bar is shown the editor's scroll box keeps a bar's height clear

@@ -698,6 +698,10 @@ pub trait Api {
     /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
     #[method(name = "doc_delete")]
     async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
+    /// Whether the documents helper (`theuth-documents-<version>` beside `t`, 59 §3.2) is there; a missing
+    /// helper disables notes, knowledge editing and meeting notes. Answers whether documents run or not.
+    #[method(name = "documents_status")]
+    async fn documents_status(&self) -> RpcResult<document::HelperStatus>;
     /// A document's members and share links (59 §8; owner only).
     #[method(name = "doc_members", with_extensions)]
     async fn doc_members(&self, doc: document::DocId) -> RpcResult<document::Members>;
@@ -2759,6 +2763,10 @@ impl ApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn documents_status(&self) -> RpcResult<document::HelperStatus> {
+        Ok(document::helper_status())
     }
 
     async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()> {

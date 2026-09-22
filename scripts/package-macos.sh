@@ -3,12 +3,13 @@
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
+#      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
 #   2. stage sidecar as binaries/t-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)
 #      + libonnxruntime.dylib (Microsoft's release, pinned) into Contents/Frameworks (45 §2.1)
-#      + theuth-app-parser-<hash> into Contents/MacOS beside the sidecar
+#      + theuth-app-parser-<hash> and theuth-documents-<version> into Contents/MacOS beside the sidecar
 #   4. codesign inside-out (hardened runtime): $THEUTH_SIGN_IDENTITY, else ad-hoc "-"
-#      the helper gets scripts/entitlements-app-parser.plist (Bun JIT)
+#      both helpers get scripts/entitlements-app-parser.plist (Bun JIT)
 #   5. hdiutil DMG (after signing — Tauri's dmg target would snapshot pre-signature)
 #
 # Arm64-only: built on/for the host. Universal binaries are out of scope.
@@ -52,6 +53,9 @@ cargo build --release -p theuth
 echo "==> [1/5] building $HELPER (bun build --compile)"
 build_helper
 
+echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
+build_doc_helper
+
 echo "==> [2/5] staging sidecar"
 mkdir -p crates/desktop/binaries
 cp target/release/t "crates/desktop/binaries/t-$HOST_TRIPLE"
@@ -74,9 +78,10 @@ mkdir -p "$APP/Contents/Frameworks"
 tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$APP/Contents/Frameworks/libonnxruntime.dylib"
 chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
 
-echo "==> [3/5] $HELPER → Contents/MacOS"
-rm -f "$APP/Contents/MacOS"/theuth-app-parser-*
+echo "==> [3/5] $HELPER + $DOC_HELPER → Contents/MacOS"
+rm -f "$APP/Contents/MacOS"/theuth-app-parser-* "$APP/Contents/MacOS"/theuth-documents-*
 install -m 755 "$HELPER_SRC" "$APP/Contents/MacOS/$HELPER"
+install -m 755 "$DOC_HELPER_SRC" "$APP/Contents/MacOS/$DOC_HELPER"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DMG="$BUNDLE_DIR/theuth_${VERSION}_$(uname -m).dmg"
@@ -91,6 +96,10 @@ codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.app-parser" \
   --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$HELPER"
 check_helper "$APP/Contents/MacOS/$HELPER"
+codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
+  -i "${BUNDLE_ID}.documents" \
+  --entitlements "$HELPER_ENTITLEMENTS" "$APP/Contents/MacOS/$DOC_HELPER"
+check_doc_helper "$APP/Contents/MacOS/$DOC_HELPER"
 codesign --force --options runtime $TIMESTAMP_FLAG --sign "$IDENTITY" \
   -i "${BUNDLE_ID}.t" \
   --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/t"
@@ -115,6 +124,7 @@ echo
 echo "done:"
 echo "  app: $APP"
 echo "  helper: $APP/Contents/MacOS/$HELPER"
+echo "  documents helper: $APP/Contents/MacOS/$DOC_HELPER"
 echo "  dmg: $DMG"
 if [[ "$IDENTITY" == "-" ]]; then
   echo "  signed: ad-hoc (set THEUTH_SIGN_IDENTITY for a Developer ID build," \

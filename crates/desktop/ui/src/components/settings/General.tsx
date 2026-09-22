@@ -56,6 +56,8 @@ export function General() {
     queryFn: () => api.update_status(),
     enabled: !!info,
   })
+  // 59 §3.2: a missing documents helper silently disables notes, knowledge editing and meeting notes — say so here.
+  const documents = useQuery({ queryKey: ['documents-status'], queryFn: () => api.documents_status(), retry: false })
 
   const setAutostart = useAction((on: boolean) => (on ? enable() : disable()), {
     onSuccess: (_, on) => qc.setQueryData(AUTOSTART, on),
@@ -139,6 +141,18 @@ export function General() {
               {info.data_dir}
             </code>
           </Row>
+          {documents.data && (
+            <Row
+              label="Documents"
+              description={
+                documents.data.found
+                  ? `Helper: theuth-documents ${documents.data.version}`
+                  : `Helper missing at ${documents.data.path} — notes, knowledge editing and meeting notes are disabled. Reinstall the app (or run just install).`
+              }
+            >
+              <span className={documents.data.found ? 'text-sm text-fg-tertiary' : 'text-sm text-danger'}>{documents.data.found ? 'ok' : 'missing'}</span>
+            </Row>
+          )}
           {update.data && (
             <Row
               label="Update"

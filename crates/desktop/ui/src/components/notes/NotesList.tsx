@@ -28,9 +28,10 @@ export function NotesList() {
   const notes = useNotes()
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  // The note opens with its title focused (`?new`); a failed create (e.g. the documents helper missing) toasts and stays.
   const create = useMutation({
     mutationFn: () => api.doc_create('Untitled', null),
-    onSuccess: (n) => void navigate({ to: '/notes/$id', params: { id: n.id } }),
+    onSuccess: (n) => void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true } }),
     onError: (e) => toast.error(e.message),
   })
   return (

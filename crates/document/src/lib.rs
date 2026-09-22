@@ -34,7 +34,10 @@ pub use actor::{
     Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
     with_heading,
 };
-pub use helper::{Edit as BlockEdit, EditError, ImportMode, helper_path, protocol_version};
+pub use helper::{
+    Edit as BlockEdit, EditError, HelperStatus, ImportMode, helper_path, helper_status,
+    protocol_version,
+};
 pub use meta::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,

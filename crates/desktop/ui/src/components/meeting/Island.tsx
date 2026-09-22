@@ -37,6 +37,7 @@ function badge(d: Degradation): string | null {
   if (d === 'ModelDown') return 'model down'
   if (d === 'DiskLow') return 'disk low'
   if (d === 'NearMaxLength') return '10 min left'
+  if (d === 'NoNote') return 'no note'
   if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
   return null
 }

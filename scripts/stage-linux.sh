@@ -2,8 +2,8 @@
 # Build the Linux CLI tarball natively in Docker and stage it in the bucket (39 §5.1).
 #
 # Pipeline (run once per arch, on a box of that arch — never QEMU):
-#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/{t,theuth-app-parser-<hash>}
-#   2. tar → target/release/dist/theuth_<ver>_linux-<arch>.tar.gz  (entries `t` + `theuth-app-parser-<hash>`, unsigned)
+#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/{t,theuth-app-parser-<hash>,theuth-documents-<ver>}
+#   2. tar → target/release/dist/theuth_<ver>_linux-<arch>.tar.gz  (entries `t` + both helpers, unsigned)
 #   3. aws s3 cp → s3://$THEUTH_S3_BUCKET/staging/<ver>/  (private; release-s3.sh signs, publishes, deletes)
 #
 # Env (defaults for rustfs @ s3.rwx.dev; repo-root .env.signing is loaded):
@@ -55,12 +55,13 @@ rm -rf "$OUT"
 docker build -f deploy/update/Dockerfile --output "type=local,dest=$OUT" .
 [[ -f "$OUT/t" ]] || { echo "error: $OUT/t not produced" >&2; exit 1; }
 [[ -f "$OUT/$HELPER" ]] || { echo "error: $OUT/$HELPER not produced (image built from another library hash?)" >&2; exit 1; }
-chmod 755 "$OUT/t" "$OUT/$HELPER"
+[[ -f "$OUT/$DOC_HELPER" ]] || { echo "error: $OUT/$DOC_HELPER not produced (image built from another protocol version?)" >&2; exit 1; }
+chmod 755 "$OUT/t" "$OUT/$HELPER" "$OUT/$DOC_HELPER"
 
 echo "==> [2/3] $TGZ"
 mkdir -p "$DIST"
 rm -f "$TGZ"
-COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" t "$HELPER"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" t "$HELPER" "$DOC_HELPER"
 
 echo "==> [3/3] upload → $DEST"
 if [[ "$DRY_RUN" == "1" ]]; then
