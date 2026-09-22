@@ -59,7 +59,7 @@ fn verify(link: &ShareLink, handshake_hash: &[u8], guest_pub: &[u8; 32], proof: 
 /// Why a join was refused (§8.3). `Display` is the wire code the guest page keys its copy on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinError {
-    /// No such link on this document.
+    /// The document has no links at all.
     LinkUnknown,
     /// `doc_link_revoke` happened.
     LinkRevoked,
@@ -230,15 +230,14 @@ impl Message<LinkRevoke> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<Joined, JoinError>`: a guest proves the link secret for *this* connection (§8.3)
-/// and becomes a member. A static that is already a member is answered without checking the link
-/// (return visit; membership outlives the link, §8.2).
+/// `ask` → `Result<Joined, JoinError>`: a guest proves a link secret for *this* connection (§8.3)
+/// and becomes a member. The URL carries no link id (§8.2), so the proof is checked against every
+/// live link of the document — a few HMACs. A static that is already a member is answered without
+/// checking any link (return visit; membership outlives the link, §8.2).
 #[derive(Clone, Debug)]
 pub struct Join {
     /// Document.
     pub doc: DocId,
-    /// `ShareLink::id`.
-    pub link: String,
     /// The guest's X25519 static (from the Noise handshake).
     pub guest_pub: [u8; 32],
     /// The Noise handshake hash of the guest's connection.
@@ -267,20 +266,20 @@ impl Message<Join> for DocumentActor {
             });
         }
         let now = now_ms();
-        let link = o
+        // Every link is tried, live or not, so the error names the link the guest actually holds.
+        let Some(link) = o
             .meta
             .links
             .iter()
-            .find(|l| l.id == m.link)
-            .ok_or(JoinError::LinkUnknown)?;
+            .find(|l| verify(l, &m.handshake_hash, &m.guest_pub, &m.proof))
+        else {
+            return Err(if o.meta.links.is_empty() { JoinError::LinkUnknown } else { JoinError::BadProof });
+        };
         if link.revoked_ms.is_some() {
             return Err(JoinError::LinkRevoked);
         }
         if !link.live(now) {
             return Err(JoinError::LinkExpired);
-        }
-        if !verify(link, &m.handshake_hash, &m.guest_pub, &m.proof) {
-            return Err(JoinError::BadProof);
         }
         if o.meta.members.len() >= max {
             return Err(JoinError::Full);

@@ -222,7 +222,7 @@ export interface Api {
   /** Stop new joins through `link` (owner only); its members stay. */
   doc_link_revoke(doc: DocId, link: string): Promise<null>
   /** Guest conns only (59 §8.3): prove the link secret for this connection; `proof` = base64url HMAC-SHA256(sha256(secret), handshake_hash ‖ guest_pub). */
-  doc_join(doc: DocId, link: string, proof: string, name: string | null): Promise<Joined>
+  doc_join(doc: DocId, proof: string, name: string | null): Promise<Joined>
   /** A member renames themself (editors only). */
   doc_set_name(doc: DocId, name: string): Promise<null>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */

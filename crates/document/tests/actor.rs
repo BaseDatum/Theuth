@@ -715,7 +715,6 @@ async fn sharing_links_join_roles_demote_revoke() {
     let h = [1u8; 32];
     let join = |proof: [u8; 32], name: Option<&str>| Join {
         doc: doc.clone(),
-        link: link.id.clone(),
         guest_pub: guest,
         handshake_hash: h.to_vec(),
         proof: proof.to_vec(),
@@ -769,7 +768,6 @@ async fn sharing_links_join_roles_demote_revoke() {
     let v = actor
         .ask(Join {
             doc: doc.clone(),
-            link: vlink.id.clone(),
             guest_pub: viewer_static,
             handshake_hash: h.to_vec(),
             proof: proof(&vkey, &h, &viewer_static).to_vec(),
@@ -801,7 +799,6 @@ async fn sharing_links_join_roles_demote_revoke() {
     let late = [9u8; 32];
     let expired = Join {
         doc: doc.clone(),
-        link: elink.id.clone(),
         guest_pub: late,
         handshake_hash: h.to_vec(),
         proof: proof(&ekey, &h, &late).to_vec(),
@@ -814,7 +811,6 @@ async fn sharing_links_join_roles_demote_revoke() {
         actor
             .ask(Join {
                 doc: doc.clone(),
-                link: link.id.clone(),
                 guest_pub: fresh,
                 handshake_hash: h.to_vec(),
                 proof: proof(&key, &h, &fresh).to_vec(),
@@ -832,7 +828,6 @@ async fn sharing_links_join_roles_demote_revoke() {
         actor
             .ask(Join {
                 doc: doc.clone(),
-                link: vlink.id.clone(),
                 guest_pub: s,
                 handshake_hash: h.to_vec(),
                 proof: proof(&vkey, &h, &s).to_vec(),
@@ -846,7 +841,6 @@ async fn sharing_links_join_roles_demote_revoke() {
         actor
             .ask(Join {
                 doc: doc.clone(),
-                link: vlink.id.clone(),
                 guest_pub: s,
                 handshake_hash: h.to_vec(),
                 proof: proof(&vkey, &h, &s).to_vec(),

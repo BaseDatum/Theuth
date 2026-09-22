@@ -705,14 +705,14 @@ pub trait Api {
     /// Stop new joins through `link` (59 §8.4; owner only); its members stay until revoked.
     #[method(name = "doc_link_revoke", with_extensions)]
     async fn doc_link_revoke(&self, doc: document::DocId, link: String) -> RpcResult<()>;
-    /// A guest connection (31 §4.3 mode 2) proves the link secret for this connection and becomes a
-    /// member (59 §8.3): `proof` = base64url `HMAC-SHA256(sha256(secret), handshake_hash ‖ guest_pub)`.
+    /// A guest connection (31 §4.3 mode 2) proves a link secret for this connection and becomes a
+    /// member (59 §8.3): `proof` = base64url `HMAC-SHA256(sha256(secret), handshake_hash ‖ guest_pub)`;
+    /// the link is the one the proof verifies against (the URL carries no link id).
     /// Errors: `link_unknown`, `link_revoked`, `link_expired`, `bad_proof`, `members_full`, `sharing_off`.
     #[method(name = "doc_join", with_extensions)]
     async fn doc_join(
         &self,
         doc: document::DocId,
-        link: String,
         proof: String,
         name: Option<String>,
     ) -> RpcResult<document::Joined>;
@@ -2523,7 +2523,6 @@ impl ApiServer for Server {
         &self,
         ext: &Extensions,
         doc: document::DocId,
-        link: String,
         proof: String,
         name: Option<String>,
     ) -> RpcResult<document::Joined> {
@@ -2538,7 +2537,6 @@ impl ApiServer for Server {
             &documents()?,
             document::Join {
                 doc,
-                link,
                 guest_pub: guest.key,
                 handshake_hash: guest.handshake_hash.to_vec(),
                 proof,
