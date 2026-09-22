@@ -757,6 +757,7 @@ direct tool list is read once per turn (12 §4).
 Cargo.toml            workspace, edition 2024, resolver 3
 crates/
   runtime/            library: Plugin trait, Runtime, SessionId/TurnId (≤400 lines; §4)
+  platform/           library: OS primitives — process trees (pgid / Job Object), owner-only files, open-with-handler, service units, login shell + PTY program, login PATH, ORT library name, target matrix; leaf, no `runtime` (58 §3.1; step 1 2026-09-22)
   models/             library: model catalog trimmed from models.dev (added in 02)
   markdown/           library: streaming markdown renderer for the TUI (added in 03)
   oauth/              library: loopback callback, PKCE, provider token store (added in 05)
@@ -839,6 +840,12 @@ tools arrive in step 2, when it gains `tools`); `knowledge` depends on
 `document` (import hooks after `put`/`write`/`restore`/`sync`, delete), so the
 chain reads `runtime ← tools ← secrets ← document ← knowledge ← …`; `rpc`
 imports its wire types and `Handle` like every plugin's.
+
+`platform` (58, step 1 2026-09-22) sits beside `runtime` at the bottom:
+`tools`, `secrets`, `link`, `rpc`, `oauth`, `tui`, `schedule`, `update`,
+`computer`, `models`, `agent`, `relay`, `desktop` and `theuth` call it for
+what the OS provides; it depends on no workspace crate. `meeting` is a
+`[target.'cfg(target_os = "macos")']` dependency of `theuth` (58 §3.2).
 
 `app` (46, added 2026-09-18) depends on `artifact` (typed `Commit` with
 `expected_base`, invocation rows), `tools` (`AppInvoke`, `DescribeTools`,
