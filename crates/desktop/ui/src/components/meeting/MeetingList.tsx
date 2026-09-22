@@ -16,7 +16,6 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 /** `Post(Transcribing)` → `Transcribing`. */
 export const stateLabel = (s: MeetingState): string => (typeof s === 'string' ? s : s.Post)
@@ -45,7 +44,6 @@ export function MeetingHeader({ title, children }: { title: ReactNode; children?
       )}
       <h2 className="flex flex-1 items-center gap-1 truncate text-sm font-semibold">{title}</h2>
       {children}
-      <MeetingPill />
     </header>
   )
 }

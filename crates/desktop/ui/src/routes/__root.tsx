@@ -1,6 +1,7 @@
 import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
 import { type CSSProperties, useEffect, useState } from 'react'
 import { DragOverlay } from '@/components/chat/Panes'
+import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
@@ -14,7 +15,8 @@ export const Route = createRootRoute({ component: isIsland() ? Outlet : Root })
 
 const WIDTH = { '--sidebar-width': '260px' } as CSSProperties
 
-/** The shell: 260 px sidebar (⇧⌘S) beside the routed column. Routes render only once connected, so `useApi` is safe below. */
+/** The shell: 260 px sidebar (⇧⌘S) beside the routed column; the meeting bar closes the column while a meeting records.
+ * Routes render only once connected, so `useApi` is safe below. */
 function Root() {
   const { session } = useParams({ strict: false })
   const navigate = useNavigate()
@@ -42,6 +44,7 @@ function Root() {
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />
+        <MeetingBar />
       </SidebarInset>
     </SidebarProvider>
   )

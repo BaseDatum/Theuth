@@ -22,7 +22,6 @@ import { ModelMenu } from './ModelMenu'
 import { SessionMenu } from './SessionMenu'
 import { CostPill } from './CostPill'
 import { TerminalButton } from './TerminalViewer'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 /** `↳ parent` breadcrumb of a subagent's transcript. */
 function Parent({ id }: { id: string }) {
@@ -144,7 +143,6 @@ export function Header({
         </Button>
       )}
       {session && <SessionMenu session={session} />}
-      {first && <MeetingPill />}
       {onClose && (
         <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
           <X className="size-5" />

@@ -5,7 +5,6 @@ import { Editor as BlockEditor } from '@/components/editor/Editor'
 import type { LiveDocument } from '@/components/editor/useDocument'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { ShareAction } from '@/components/share/ShareDialog'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,7 +44,6 @@ export function Frame({
         {title}
         {actions}
         <SearchTrigger className="md:hidden" />
-        <MeetingPill />
       </header>
       {children}
     </article>

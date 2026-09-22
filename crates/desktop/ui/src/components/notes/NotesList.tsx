@@ -3,7 +3,6 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/NotePicker'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -54,7 +53,6 @@ export function NotesList() {
         <Button variant="ghost" size="sm" disabled={create.isPending} onClick={() => create.mutate()}>
           <Plus /> New note
         </Button>
-        <MeetingPill />
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[768px] p-3">

@@ -14,7 +14,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from 'cn'
-import { MeetingPill } from '@/components/meeting/MeetingPill'
 
 const route = getRouteApi('/knowledge')
 
@@ -111,7 +110,6 @@ export function Explorer() {
             <Plus />
             New
           </Button>
-          <MeetingPill />
         </header>
         <SearchBox initial={q ?? ''}>
           <Tree active={active} />
