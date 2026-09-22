@@ -873,3 +873,50 @@ session-prefix invalidation after an answer. Browser DOM smoke checks of
 the real menu and settings components with fixture RPC replies passed at
 desktop and mobile widths; these are not visual approval or native-device
 verification.
+
+### 12.3 Chat panes and the New chat drop, as-built 2026-09-22
+
+Panes (`91f2e78`, undocumented until now): `lib/panes.ts` keeps a binary
+split tree over session ids, `Node = { session } | { dir, ratio, a, b }`,
+with `root === null` meaning the plain single chat the route names. Any
+sidebar row (root or subagent) is dragged with pointer events, not HTML5
+DnD (`useSessionDrag` in `components/chat/Panes.tsx`; the macOS webview
+keeps the native drag handler for file drops), and the drop snaps to the
+target pane's left/right/top/bottom quarter to split it or its middle to
+replace it. The URL names the focused pane: a sidebar click lands there,
+a press in a pane moves the URL to it, and hotkeys, slash surfaces and
+`document.title` address it alone. `routes/c.$session.tsx` renders the tree
+and gives every leaf a `LiveSession`.
+
+New chat drop: the sidebar's **New chat** rail item takes the same hook with
+`id = null`. A press-and-move shows the usual ghost ("New chat") and drop
+zones; the drop inserts a **draft leaf** — a pane id `draft:<uuid>`
+(`newDraft`/`isDraft`) in the same `{ session }` node shape, so `leaves`,
+`place`, `close` and the drop-target markup are untouched — and focuses it
+without moving the URL (a draft has no `/c/…`; the URL stays on the chat it
+named). The route renders a draft leaf as `NewChatPane`
+(`components/chat/NewChatPane.tsx`), which is the `/` body (`Header
+session={null}`, prompt, `Composer session={null}`, the private/project
+options) extracted into a shared `NewChat` component that `routes/index.tsx`
+now also renders. The pane dispatches `theuth:focus-composer` on mount so
+typing starts at once; `Composer`'s new `pane` prop scopes that and ⇧Esc to
+the draft's pane instead of "every draft composer". On the first send the
+composer's existing `onCreated(session)` callback fires; the pane calls
+`place(draft, session, 'center')`, which swaps the created session into the
+leaf, and navigates to `/c/$session`, so the URL catches up and the sidebar
+lists the chat. Nothing is created on the daemon until then (route (b) of the
+brief; chosen because the renderer is component-based and `onCreated`
+already existed, so no empty sessions and no cleanup path).
+
+Rules that follow: a lone draft is *not* collapsed to single-chat mode (a
+centre drop on the only chat, or closing the last real pane beside a draft,
+would otherwise bring the route's chat back); `close` never hands the URL a
+draft — it moves to the first real survivor, or stays where it is when only
+a draft remains; a route landing (`show`) replaces the focused draft like
+any other focused pane, so a sidebar click while a draft is focused
+discards the draft (its typed text with it). Phones offer no drag
+(`touch()` guard in the hook); the `new-chat` shortcut is unchanged. Not
+done: clicking the sidebar row of the chat the URL already names while a
+draft is focused is a same-URL navigation and does not refocus that pane
+(press the pane instead); `ModelMenu` still treats every `session={null}`
+composer as focused for the `/model` surface.

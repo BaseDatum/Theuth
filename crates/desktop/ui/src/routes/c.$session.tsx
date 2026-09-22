@@ -5,12 +5,13 @@ import { Badge } from '@/components/ui/badge'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { lastCode } from '@/components/chat/MessageAssistant'
+import { NewChatPane } from '@/components/chat/NewChatPane'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
 import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
-import { usePanes } from '@/lib/panes'
+import { isDraft, usePanes } from '@/lib/panes'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
@@ -44,7 +45,13 @@ function SessionRoute() {
   // The URL names the focused pane: a sidebar click lands in it, a pane press moves the URL to it.
   useEffect(() => usePanes.getState().show(session), [session])
   if (seq !== undefined) return <SearchSession key={`${session}:${seq}`} session={session} seq={seq} />
-  return <Panes session={session} render={(id, first) => <LiveSession session={id} first={first} />} />
+  // A draft leaf (a dropped New chat) has no session yet; it renders the `/` body until its first send.
+  return (
+    <Panes
+      session={session}
+      render={(id, first) => (isDraft(id) ? <NewChatPane id={id} first={first} /> : <LiveSession session={id} first={first} />)}
+    />
+  )
 }
 
 /** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live.

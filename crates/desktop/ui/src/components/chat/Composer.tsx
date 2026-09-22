@@ -101,6 +101,7 @@ function SlashList({
  */
 export function Composer({
   session,
+  pane = session,
   draftEffort,
   draftCreate,
   pinned,
@@ -109,6 +110,8 @@ export function Composer({
   compact = false,
 }: {
   session: string | null
+  /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
+  pane?: string | null
   draftEffort?: string | null
   draftCreate?: DraftCreate
   /** 59 §7.3 chat under a note: this document's marker line leads every message (not removable here). */
@@ -183,8 +186,8 @@ export function Composer({
   const held = pastes.size > 0
   const [pickingNote, setPickingNote] = useState(false)
 
-  // ⇧Esc lands in the focused pane's composer (or the new-chat draft).
-  const focused = usePanes((s) => session === null || s.focused === session)
+  // ⇧Esc lands in the focused pane's composer (or the new-chat draft when it is not in a pane).
+  const focused = usePanes((s) => pane === null || s.focused === pane)
   useEffect(() => {
     if (!focused) return
     const focus = () => ref.current?.focus()
