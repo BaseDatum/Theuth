@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MoreHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -307,10 +307,10 @@ export function SessionList({
       {selected.size > 0 &&
         barEl &&
         createPortal(
-          <div className="flex items-center gap-1 border-t border-border-subtle bg-sidebar px-3 py-2 text-sm">
-            <span className="flex-1 truncate">{selected.size} selected</span>
-            <Button variant="ghost" size="sm" onClick={() => select('', 'clear')}>
-              Cancel
+          <div className="flex items-center gap-0.5 border-t border-border-subtle bg-sidebar px-2 py-2 text-sm">
+            <span className="flex-1 truncate pl-1">{selected.size} selected</span>
+            <Button variant="ghost" size="icon-sm" aria-label="Clear selection" title="Clear selection" onClick={() => select('', 'clear')}>
+              <X />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => void archive()}>
               {allArchived ? 'Unarchive' : 'Archive'}
