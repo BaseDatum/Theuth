@@ -1,8 +1,9 @@
 import { createReactBlockSpec } from '@blocknote/react'
 import { frontmatterConfig } from '@theuth/documents/schema'
 import { type Entry, emitHeader, parseHeader } from '@theuth/documents/yaml'
-import { Plus, X } from 'lucide-react'
+import { Check, Pencil, Plus, X } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useState } from 'react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from 'cn'
@@ -20,11 +21,61 @@ type Props = {
 }
 
 /**
+ * The header as the pre-59 concept header (59 §24.y): title, type badge, tag chips, description, the
+ * scope/source/timestamp line. A pencil (hover; always on fingers) or a click opens the form of {@link FrontmatterForm}.
+ */
+export function Frontmatter({ yaml, onChange }: Props) {
+  const [editing, setEditing] = useState(false)
+  if (editing) return <FrontmatterForm yaml={yaml} onChange={onChange} onDone={() => setEditing(false)} />
+  const entries = parseHeader(yaml)
+  const value = (key: string) => {
+    const e = entries.find((x) => x.key === key)
+    return !e || 'raw' in e ? '' : 'list' in e ? e.list.join(', ') : e.value
+  }
+  const tagsEntry = entries.find((e) => e.key === 'tags')
+  const tags = tagsEntry && 'list' in tagsEntry ? tagsEntry.list : value('tags') === '' ? [] : value('tags').split(/,\s*/)
+  const title = value('title')
+  const type = value('type')
+  const facts = ['scope', 'source', 'timestamp'].map(value).filter((s) => s !== '')
+  return (
+    <header
+      className="group relative mb-6 w-full cursor-default border-b border-border-subtle pb-4"
+      contentEditable={false}
+      data-frontmatter
+      onDoubleClick={() => setEditing(true)}
+    >
+      <div className="flex flex-wrap items-center gap-2 pr-8">
+        <h1 className={cn('text-[24px] leading-8 font-semibold', title === '' && 'text-fg-tertiary')}>{title || 'Untitled'}</h1>
+        <Badge variant="outline" className={cn(type === '' && 'border-destructive text-danger')}>
+          {type || 'type?'}
+        </Badge>
+        {tags.map((t) => (
+          <Badge key={t} variant="secondary">
+            {t}
+          </Badge>
+        ))}
+      </div>
+      {value('description') !== '' && <p className="mt-1 text-fg-secondary">{value('description')}</p>}
+      {facts.length > 0 && <p className="mt-1 text-sm text-fg-tertiary">{facts.join(' · ')}</p>}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Edit header"
+        className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+        onClick={() => setEditing(true)}
+      >
+        <Pencil />
+      </Button>
+    </header>
+  )
+}
+
+/**
  * The header as a two-column form (59 §4.5): `type` a select, `tags` chips, `source`/`timestamp` read-only,
  * unknown keys as free rows, "+ add key". The only validation `knowledge::Put` has is a non-empty `type`;
  * that row turns red. Invalid YAML the subset cannot model (`raw` entries) is kept verbatim.
  */
-export function Frontmatter({ yaml, onChange }: Props) {
+function FrontmatterForm({ yaml, onChange, onDone }: Props & { onDone: () => void }) {
   const entries = parseHeader(yaml)
   const update = (next: Entry[]) => onChange(emitHeader(next).replace(/\n$/, ''))
   const value = (key: string) => {
@@ -129,14 +180,17 @@ export function Frontmatter({ yaml, onChange }: Props) {
         </div>
       )}
       {/* 59 §10: fields editable on a phone, no new keys (the desktop adds them). */}
-      <div className="col-span-2 pointer-coarse:hidden">
+      <div className="col-span-2 flex items-center">
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-xs text-fg-tertiary"
+          className="h-7 px-2 text-xs text-fg-tertiary pointer-coarse:hidden"
           onClick={() => setDraft({ key: '', value: '' })}
         >
           <Plus className="size-3" /> add key
+        </Button>
+        <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={onDone}>
+          <Check className="size-3" /> Done
         </Button>
       </div>
     </div>

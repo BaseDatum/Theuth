@@ -1,16 +1,20 @@
+import { code } from '@streamdown/code'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { FRAGMENT } from '@theuth/documents/schema'
 import { Copy, FileCode, History as HistoryIcon, MessageSquarePlus, PanelRight, Sparkles, Trash2, Undo2 } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { type Components, Streamdown } from 'streamdown'
 import { prefillDraft } from '@/components/chat/Composer'
 import { Action, DocumentPage, Frame } from '@/components/editor/DocumentPage'
-import { useDocument } from '@/components/editor/useDocument'
+import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
 import { Backlinks, Links } from '@/components/knowledge/Backlinks'
 import { Editor, type EditorHandle } from '@/components/knowledge/Editor'
 import { History } from '@/components/knowledge/History'
 import { NewDocDialog } from '@/components/knowledge/NewDocDialog'
-import { scaffold } from '@/components/knowledge/frontmatter'
+import { scaffold, stripFrontmatter } from '@/components/knowledge/frontmatter'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import {
@@ -29,11 +33,13 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSearchFocus } from '@/hooks/use-search-focus'
 import type { HarnessProvider } from '@/lib/doc/provider'
+import { classify, resolveLink } from '@/lib/resolveLink'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin, useSearchState } from '@/lib/search'
 import type { Concept } from '@/rpc/bindings/Concept'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
+import { cn } from 'cn'
 
 const route = getRouteApi('/knowledge/$')
 
@@ -76,6 +82,12 @@ function Doc({
   const historical = draft === undefined && change !== undefined && snapshot !== undefined
   const binding = useMemo(() => ({ knowledge: id }), [id])
   const live = useDocument(binding)
+  const doc = useQuery({
+    queryKey: queryKeys.knowledgeDoc(id),
+    queryFn: () => api.knowledge_get(id),
+    enabled: draft === undefined && !historical,
+  })
+  const unavailable = useUnavailable(live, doc.data !== undefined && stripFrontmatter(doc.data.text).body.trim() !== '')
   const rootNavigate = useNavigate()
   const docRef = () => ({ ref: `knowledge:${id}`, title: live.provider?.meta?.title ?? id })
   // 59 §5.4: "Ask theuth…" opens a new chat with this document attached (and names a block).
@@ -83,11 +95,6 @@ function Doc({
     prefillDraft(null, block ? `about block ${block}: ` : '', [docRef()])
     void rootNavigate({ to: '/' })
   }
-  const doc = useQuery({
-    queryKey: queryKeys.knowledgeDoc(id),
-    queryFn: () => api.knowledge_get(id),
-    enabled: draft === undefined && !historical,
-  })
   // A `knowledge` hit lands on the editor column once the current text rendered (49 §7); refetches and ordinary visits leave focus alone.
   const column = useSearchFocus<HTMLDivElement>(
     isSearchDestination(origin, { category: 'knowledge', id }) ? origin : null,
@@ -188,6 +195,11 @@ function Doc({
     <DocumentPage
       {...frame}
       live={live}
+      fallback={
+        unavailable !== null ? (
+          <ReadOnly concept={concept} reason={unavailable} onMissing={(target, title) => setMissing({ id: target, title })} />
+        ) : undefined
+      }
       onAsk={ask}
       columnRef={column}
       above={<SearchReturn className="mx-auto mt-2 w-full max-w-[768px] px-4" />}
@@ -246,6 +258,127 @@ function Doc({
       {createMissing}
       {sheet}
     </DocumentPage>
+  )
+}
+
+/** Grace before the read-only view replaces a document that is still connecting or still empty. */
+const UNAVAILABLE_AFTER_MS = 3000
+
+/**
+ * Why the live document cannot be shown (59 §24.y), or `null` to show the editor: the harness refused the binding
+ * (`doc_resolve` error — the documents helper missing, `documents.enabled = false`), the stream closed, or
+ * `UNAVAILABLE_AFTER_MS` passed since the provider was acquired and the document holds no text — either not live
+ * (a link device offline with a cached copy keeps its editor) or live but empty while the file has a body: a
+ * binding whose first import failed (the helper was missing when `Ensure` ran) stays bound and empty, which is the
+ * blank page of the installed app. Clears on its own once the document goes live with content.
+ */
+function useUnavailable(live: LiveDocument, fileHasBody: boolean): string | null {
+  const [late, setLate] = useState(false)
+  const [, setRevision] = useState(0)
+  useEffect(() => {
+    setLate(false)
+    const t = setTimeout(() => setLate(true), UNAVAILABLE_AFTER_MS)
+    const doc = live.provider?.doc
+    const bump = () => setRevision((n) => n + 1)
+    doc?.on('update', bump)
+    return () => {
+      clearTimeout(t)
+      doc?.off('update', bump)
+    }
+  }, [live.provider])
+  if (live.error) return live.error.message
+  if (live.status.kind === 'closed') return `closed · ${live.status.reason}`
+  if (!late) return null
+  const hasText = live.provider !== null && /[^\s]/.test(live.provider.doc.getXmlFragment(FRAGMENT).toString().replace(/<[^>]*>/g, ''))
+  if (hasText) return null
+  switch (live.status.kind) {
+    case 'live':
+    case 'readonly':
+      return fileHasBody ? 'the document is empty although the file has a body — its import failed (documents helper missing? see the harness log)' : null
+    case 'offline':
+      return 'the harness could not open the document (documents helper missing? see its log)'
+    default:
+      return 'still connecting'
+  }
+}
+
+const plugins = { code }
+const RESERVED: Record<string, true> = { index: true, log: true }
+
+/**
+ * The concept as the pre-59 page rendered it (59 §24.y): the header from `meta`, the markdown body (okf link
+ * semantics: external → opener, internal → route, missing → create), on the same paper as the editor, with the
+ * reason live editing is unavailable. "Open raw" in the bar still edits the file.
+ */
+function ReadOnly({ concept, reason, onMissing }: { concept: Concept; reason: string; onMissing: (id: string, title: string) => void }) {
+  const navigate = useNavigate()
+  const meta = concept.meta
+  const id = meta.id
+  const body = useMemo(() => stripFrontmatter(concept.text).body, [concept.text])
+  const exists = useMemo<Record<string, boolean>>(() => Object.fromEntries(concept.links), [concept.links])
+  const facts = [meta.scope, meta.source, meta.timestamp].filter((s): s is string => s !== null)
+  const components = useMemo<Components>(
+    () => ({
+      a: ({ href = '', children, node: _node, className, ...rest }) => {
+        const target = resolveLink(id, href)
+        const kind = classify(href)
+        const internal = kind === 'absolute' || kind === 'relative'
+        const inert = internal && (target === null || RESERVED[target] === true)
+        const missing = target !== null && exists[target] === false
+        return (
+          <a
+            href={href}
+            {...rest}
+            title={inert ? 'Not a document' : missing ? 'Missing: click to create' : undefined}
+            className={cn(className, inert && 'cursor-default text-fg-tertiary no-underline', missing && 'text-danger underline decoration-dotted')}
+          >
+            {children}
+          </a>
+        )
+      },
+    }),
+    [id, exists],
+  )
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const a = e.target instanceof Element ? e.target.closest('a') : null
+    const href = a?.getAttribute('href')
+    if (!a || !href) return
+    const kind = classify(href)
+    if (kind === 'anchor') return
+    e.preventDefault()
+    if (kind === 'external') {
+      openUrl(href).catch((err: unknown) => toast.error(String(err)))
+      return
+    }
+    const target = resolveLink(id, href)
+    if (target === null || RESERVED[target]) return
+    if (exists[target] === false) onMissing(target, a.textContent?.trim() || target)
+    else navigate({ to: '/knowledge/$', params: { _splat: target } })
+  }
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto bg-background md:p-6" data-testid="knowledge-readonly">
+      <div className="theuth-paper">
+        <header className="mb-6 border-b border-border-subtle pb-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-[24px] leading-8 font-semibold">{meta.title}</h1>
+            <Badge variant="outline">{meta.type}</Badge>
+            {meta.tags.map((t) => (
+              <Badge key={t} variant="secondary">
+                {t}
+              </Badge>
+            ))}
+          </div>
+          {meta.description && <p className="mt-1 text-fg-secondary">{meta.description}</p>}
+          {facts.length > 0 && <p className="mt-1 text-sm text-fg-tertiary">{facts.join(' · ')}</p>}
+          <p className="mt-2 text-xs text-fg-tertiary">live editing unavailable: {reason}</p>
+        </header>
+        <div onClickCapture={onClick}>
+          <Streamdown mode="static" plugins={plugins} components={components} linkSafety={{ enabled: false }}>
+            {body}
+          </Streamdown>
+        </div>
+      </div>
+    </div>
   )
 }
 
