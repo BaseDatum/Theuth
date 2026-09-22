@@ -16,6 +16,10 @@ use crate::proto::{self, conversation_action::Action};
 /// Tool provider tag Cursor echoes back on every MCP call.
 pub const PROVIDER: &str = "theuth";
 const DEFAULT_SYSTEM: &str = "You are a helpful assistant.";
+/// Cursor's server always advertises its native toolset; we refuse those exec
+/// frames (`run.rs`), so tell the model up front instead of after the fact.
+const NO_NATIVE_TOOLS: &str = "This client cannot run Cursor's built-in tools (Read, Shell, Grep, Write, \
+Delete, Ls, Todo, and the rest). Only the MCP tools from provider `theuth` are available.";
 
 /// sha256 id → bytes.
 pub type Blobs = HashMap<Vec<u8>, Vec<u8>>;
@@ -159,10 +163,12 @@ fn systems(req: &ChatRequest) -> Vec<&str> {
 }
 
 /// The `RequestContext` the server asks for over the exec channel: system
-/// prompts as global `.mdc` rules, every genai tool as an MCP tool.
+/// prompts as global `.mdc` rules plus [`NO_NATIVE_TOOLS`], every genai tool as
+/// an MCP tool.
 pub fn request_context(req: &ChatRequest) -> proto::RequestContext {
     let rules = systems(req)
         .into_iter()
+        .chain([NO_NATIVE_TOOLS])
         .enumerate()
         .map(|(i, content)| proto::CursorRule {
             full_path: format!("/t/system-prompt/{i}.mdc"),
@@ -647,6 +653,8 @@ mod tests {
         let ctx = request_context(&r);
         assert_eq!(ctx.rules[0].full_path, "/t/system-prompt/0.mdc");
         assert_eq!(ctx.rules[0].content, "Be terse.");
+        assert_eq!(ctx.rules[1].content, NO_NATIVE_TOOLS);
+        assert_eq!(ctx.rules.len(), 2);
         assert_eq!(ctx.tools[0].provider_identifier, PROVIDER);
         assert_eq!(
             decode_arg(&ctx.tools[0].input_schema)["properties"]["q"]["type"],
