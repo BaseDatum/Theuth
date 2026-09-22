@@ -524,7 +524,7 @@ test('turn activity bumps live; bookkeeping (jobs, queue, title) does not; a tur
   const s2 = apply(s1, { type: 'TextDelta', session: S, turn: T, text: 'x' }, ctx())
   expect(s2.live).toBe(2)
   const s3 = apply(s2, { type: 'InputQueued', session: S, id: 'q', text: 'later', defer: true }, ctx())
-  const s4 = apply(s3, { type: 'TitleChanged', session: S, title: 't' }, ctx())
+  const s4 = apply(s3, { type: 'TitleChanged', session: S, title: 't', tags: ['rust'] }, ctx())
   const s5 = apply(s4, { type: 'JobOutput', session: S, id: 'j', chunk: 'out' }, ctx())
   expect(s5.live).toBe(2)
   expect(apply(s5, { type: 'MessageDelivered', session: S, from: 'p', text: 'm' }, ctx()).live).toBe(3)

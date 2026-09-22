@@ -88,13 +88,14 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
 }
 
 /**
- * One chat in the list: title (live from `TitleChanged`), project pill (51 §3), active highlight, hover `…` menu with
- * pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click / ⇧-click / menu > Select feed the
- * list's multi-selection. An archived row (51 §3) renders muted and its menu offers Unarchive.
+ * One chat in the list: title (live from `TitleChanged`; the tooltip adds its tags), project pill (51 §3), active
+ * highlight, hover `…` menu with pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click /
+ * ⇧-click / menu > Select feed the list's multi-selection. An archived row (51 §3) renders muted and its menu offers Unarchive.
  */
 export const SessionItem = memo(function SessionItem({
   id,
   title,
+  tags,
   pinned,
   archived,
   project,
@@ -105,6 +106,7 @@ export const SessionItem = memo(function SessionItem({
 }: {
   id: string
   title: string
+  tags: string[]
   pinned: boolean
   archived: boolean
   project: string | null
@@ -117,9 +119,11 @@ export const SessionItem = memo(function SessionItem({
   const qc = useQueryClient()
   const navigate = useNavigate()
   const live = useSessionField(id, 'title')
+  const liveTags = useSessionField(id, 'tags') ?? tags
   const raw = live || title || id.slice(0, 8)
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
+  const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
   const drag = useSessionDrag(id, shown)
   // Inline editor: the title, or the name of a new project.
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
@@ -202,7 +206,7 @@ export const SessionItem = memo(function SessionItem({
             <Link
               to="/c/$session"
               params={{ session: id }}
-              title={shown}
+              title={tip}
               {...drag}
               onClick={(e) => {
                 if (!touch() && (selecting || e.metaKey || e.shiftKey)) {

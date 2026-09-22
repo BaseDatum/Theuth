@@ -105,6 +105,7 @@ struct SessionRow {
     created_at: String,
     updated_at: String,
     title: String,
+    tags: String,
     model: String,
     parent: Option<String>,
     name: Option<String>,
@@ -140,7 +141,7 @@ macro_rules! root_col {
 macro_rules! session_cols {
     () => {
         concat!(
-            "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.model, \
+            "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.tags, sessions.model, \
              sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.pinned, ",
             root_col!("archived"),
             " AS archived, ",
@@ -159,6 +160,7 @@ impl TryFrom<SessionRow> for SessionSummary {
             created_at: r.created_at.parse().context("bad created_at")?,
             updated_at: r.updated_at.parse().context("bad updated_at")?,
             title: r.title,
+            tags: r.tags.split(',').filter(|t| !t.is_empty()).map(str::to_owned).collect(),
             model: r.model,
             parent: r
                 .parent
@@ -772,8 +774,8 @@ impl Store {
         let (new, old) = (id.to_string(), src.to_string());
         let now = chrono::Utc::now().to_rfc3339();
         let inserted = sqlx::query(concat!(
-            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, effort, cwd, context_revision, project) \
-             SELECT ?, ?, ?, title, model, NULL, NULL, effort, cwd, context_revision, ",
+            "INSERT INTO sessions (id, created_at, updated_at, title, tags, model, parent, name, effort, cwd, context_revision, project) \
+             SELECT ?, ?, ?, title, tags, model, NULL, NULL, effort, cwd, context_revision, ",
             root_col!("project"),
             " FROM sessions WHERE id = ?"
         ))
@@ -961,26 +963,32 @@ impl Store {
         Ok(project(&m, &Mask::decode(excluded.as_deref())?))
     }
 
-    /// Set the title only if the session is still at `revision` (48 §4.3:
-    /// a title job that captured pre-edit content is discarded). `Ok(false)`
-    /// when the revision moved on or the session is unknown.
+    /// Set the title and tags only if the session is still at `revision`
+    /// (48 §4.3: a title job that captured pre-edit content is discarded).
+    /// `Ok(false)` when the revision moved on or the session is unknown.
+    /// `tags` are stored comma-joined; the caller normalises them
+    /// ([`crate::title::tags`]).
     pub async fn set_title_at_revision(
         &self,
         id: SessionId,
         title: &str,
+        tags: &[String],
         revision: &str,
     ) -> anyhow::Result<bool> {
         let revision: i64 = revision
             .trim()
             .parse()
             .map_err(|_| anyhow::anyhow!("bad revision {revision:?}"))?;
-        let n = sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND context_revision = ?")
-            .bind(title)
-            .bind(id.to_string())
-            .bind(revision)
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let n = sqlx::query(
+            "UPDATE sessions SET title = ?, tags = ? WHERE id = ? AND context_revision = ?",
+        )
+        .bind(title)
+        .bind(tags.join(","))
+        .bind(id.to_string())
+        .bind(revision)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
         Ok(n == 1)
     }
 
@@ -2969,11 +2977,15 @@ mod tests {
         assert!(store.remove_context(id, "6", &[msg(2)]).await.is_err());
         let (r, ..) = store.remove_context(id, "8", &[msg(2)]).await.unwrap();
         assert_eq!((r.revision.as_str(), r.messages), ("9", 1));
-        // Conditional title: only at the current revision.
-        assert!(!store.set_title_at_revision(id, "old", "8").await.unwrap());
-        assert!(store.set_title_at_revision(id, "new", "9").await.unwrap());
-        assert_eq!(store.session(id).await.unwrap().unwrap().title, "new");
-        assert!(store.set_title_at_revision(id, "x", "bad").await.is_err());
+        // Conditional title + tags: only at the current revision; tags round-trip as a list.
+        let tags = vec!["theuth".to_owned(), "merge".to_owned()];
+        assert!(!store.set_title_at_revision(id, "old", &tags, "8").await.unwrap());
+        assert!(store.set_title_at_revision(id, "new", &tags, "9").await.unwrap());
+        let row = store.session(id).await.unwrap().unwrap();
+        assert_eq!((row.title.as_str(), &row.tags), ("new", &tags));
+        assert!(store.set_title_at_revision(id, "new", &[], "9").await.unwrap());
+        assert!(store.session(id).await.unwrap().unwrap().tags.is_empty());
+        assert!(store.set_title_at_revision(id, "x", &[], "bad").await.is_err());
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

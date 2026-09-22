@@ -664,6 +664,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             title: format!("task <{i}>"),
+            tags: Vec::new(),
             model: "openai/gpt-5".into(),
             parent: None,
             name: None,

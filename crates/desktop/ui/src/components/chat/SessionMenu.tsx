@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -197,6 +198,10 @@ export function SessionMenu({ session }: { session: string }) {
   const navigate = useNavigate()
   const parent = useSessionField(session, 'parent')
   const undone = useSessionField(session, 'undone') ?? 0
+  // Tags: live from `TitleChanged`, else the stored set from the session list.
+  const liveTags = useSessionField(session, 'tags')
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !liveTags })
+  const tags = liveTags ?? sessions.data?.find((s) => s.id === session)?.tags ?? []
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
 
@@ -240,6 +245,18 @@ export function SessionMenu({ session }: { session: string }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          {tags.length > 0 && (
+            <>
+              <DropdownMenuLabel className="flex flex-wrap gap-1 py-1.5">
+                {tags.map((t) => (
+                  <span key={t} className="rounded-full border border-border-subtle px-1.5 text-[10px] font-normal leading-4 text-fg-tertiary">
+                    {t}
+                  </span>
+                ))}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onSelect={() => setRename(true)}>Rename</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(session)}>
             Copy id

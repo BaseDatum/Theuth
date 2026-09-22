@@ -190,6 +190,8 @@ export type SessionSlice = {
   /** Subtree rows for the agent tree, keyed by session id. */
   children: Record<string, AgentInfo>;
   title?: string;
+  /** Keywords the title model assigned with the title (live from `TitleChanged`); the session list carries the stored set. */
+  tags?: string[];
   /** Turn whose `InputInjected` already moved a steer into the transcript; its `TurnStarted` echo is skipped. */
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */

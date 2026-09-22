@@ -1210,6 +1210,10 @@ pub struct SessionSummary {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     /// Model-written name of what the session is about now (07 §15); the first input, truncated, until then.
     pub title: String,
+    /// Keywords the title model assigned beside the title (`[a-z0-9-]`, at
+    /// most four); empty until the first model-written title.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Model used.
     pub model: String,
     /// Parent session when this is a subagent.
@@ -1614,6 +1618,10 @@ pub enum AgentEvent {
         session: SessionId,
         /// New title, non-empty.
         title: String,
+        /// Tags in force after this change: the titler's set, or the
+        /// unchanged stored set on a rename or placeholder.
+        #[serde(default)]
+        tags: Vec<String>,
     },
     /// The session's rows are gone ([`DeleteSession`]); lists drop it.
     SessionDeleted {

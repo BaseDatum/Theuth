@@ -1484,6 +1484,24 @@ here depends on them:
 - Calling a young official SDK “mature” to make a library-selection paragraph
   look finished. The explicit dependency gate is part of the design.
 
+## 14. As built: session tags in the directory (2026-09-22)
+
+The title model's call (07 §15, `crates/agent/src/title.rs`) returns a second
+line `tags: a, b, c`; the tags are normalised (lowercase, `[a-z0-9-]`, ≤ 4,
+≤ 24 chars, deduplicated), stored comma-joined in `sessions.tags`
+(migration `0017_session_tags.sql`), written with the title by
+`Store::set_title_at_revision` under the same 48 §4.3 revision guard, and
+announced on `AgentEvent::TitleChanged.tags`. A reply without a usable
+`tags:` line keeps the stored set; a rename keeps it too.
+
+`PeerInfo.tags` carries them on every **local** row of `discover_peers`
+(same tree and other owner roots alike), rendered after the title as
+`[rust, merge]`; remote A2A rows have none. This amends §5.1's "no content
+of another root": a handful of keywords is disclosed across owner roots on
+purpose — it is the whole point of the column, letting a model facing forty
+peers pick the relevant ones — while `title`, `cwd`, `model` and the
+transcript stay same-tree or hidden as before.
+
 ## Sources
 
 Local document links above identify the design contracts; source symbols in §1

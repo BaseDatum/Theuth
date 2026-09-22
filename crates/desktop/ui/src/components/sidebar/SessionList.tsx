@@ -289,6 +289,7 @@ export function SessionList({
                 <SessionItem
                   id={row.session.id}
                   title={row.session.title}
+                  tags={row.session.tags}
                   pinned={row.session.pinned}
                   archived={row.session.archived}
                   project={row.session.project}
