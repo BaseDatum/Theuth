@@ -1433,7 +1433,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Duration::from_secs(cfg.job_timeout_secs),
     )?;
 
-    let shell = shell::ShellTool::new(jobs.clone());
+    let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
     let shells = shell.shells();
     let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
     let builtins: [DynTool; 14] = [

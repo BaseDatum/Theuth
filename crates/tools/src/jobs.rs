@@ -79,7 +79,8 @@ impl std::fmt::Display for JobId {
 pub enum JobExit {
     /// The command returned this code (a shell error is `1`).
     Exited(u8),
-    /// `tools.job_timeout_secs` elapsed; the process group was killed.
+    /// The job's deadline (`tools.job_timeout_secs`, or the call's shorter
+    /// `timeout_secs`) elapsed; the process group was killed.
     Timeout,
     /// [`CancelJob`] killed the process group.
     Killed,
@@ -252,6 +253,10 @@ pub struct Start {
     /// the supervisor installed on the actor instead, so no job spawns
     /// untracked once one exists.
     pub activity: Option<Activity>,
+    /// Per-call kill deadline (`shell.timeout_secs`); `None` = the actor's
+    /// configured job timeout, which also caps any value given here. Values
+    /// under one second become one second.
+    pub timeout: Option<Duration>,
 }
 
 /// Reply to [`Start`].
@@ -720,7 +725,10 @@ impl Message<Launch<Start>> for Jobs {
             cancel: cancel.clone(),
             claimable: claimable.clone(),
             quiet,
-            timeout: self.timeout,
+            timeout: m.timeout.map_or(self.timeout, |t| {
+                t.clamp(Duration::from_secs(1), self.timeout)
+            }),
+            requested: m.timeout,
             started,
             done: done_tx,
             activity,
@@ -1014,7 +1022,10 @@ struct Run {
     claimable: Arc<AtomicBool>,
     /// [`Start::quiet`]: publish nothing, take no row.
     quiet: bool,
+    /// Deadline actually applied.
     timeout: Duration,
+    /// [`Start::timeout`] as given, for the timeout message.
+    requested: Option<Duration>,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
     /// The job's admitted lifetime (`Kind::Job`); the actor holds the other
@@ -1226,10 +1237,15 @@ async fn run(mut j: Run) {
         }
         (JobExit::Timeout, None) => {
             let body = truncate(body);
+            let applied = j.timeout.as_secs();
+            let limit = match j.requested {
+                Some(r) if r.as_secs() == applied => format!(" (timeout_secs={applied})"),
+                Some(r) => format!(" (timeout_secs={} capped to {applied})", r.as_secs()),
+                None => String::new(),
+            };
             let out = ToolOutput::err(format!(
-                "{body}{}timed out after {}s; process group killed",
-                sep(&body),
-                j.timeout.as_secs()
+                "{body}{}timed out after {applied}s{limit}; process group killed",
+                sep(&body)
             ));
             (body, out)
         }
@@ -1487,10 +1503,11 @@ pub(crate) mod tests {
                 command: command.into(),
                 call_id: String::new(),
                 quiet,
-                shell: ShellTool::build_shell().await.unwrap(),
+                shell: ShellTool::build_shell(false).await.unwrap(),
                 put_back: Arc::new(|_| {}),
                 root: fx.dir.clone(),
                 activity: None,
+                timeout: None,
             })
             .await
             .unwrap()
@@ -1900,7 +1917,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn state_last_finished_wins() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
-        let tool = ShellTool::new(fx.jobs.clone());
+        let tool = ShellTool::new(fx.jobs.clone(), false);
         let cx = ToolCx {
             session: fx.session,
             call_id: String::new(),
@@ -1911,6 +1928,9 @@ pub(crate) mod tests {
             &tool,
             crate::shell::ShellArgs {
                 command: "cd /tmp".into(),
+                cwd: None,
+                timeout_secs: None,
+                env: None,
             },
             cx.clone(),
         )
@@ -1921,6 +1941,9 @@ pub(crate) mod tests {
             &tool,
             crate::shell::ShellArgs {
                 command: "pwd".into(),
+                cwd: None,
+                timeout_secs: None,
+                env: None,
             },
             cx,
         )
