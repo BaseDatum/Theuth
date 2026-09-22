@@ -168,6 +168,7 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
                 id: InputId::new(),
                 text,
                 files: Vec::new(),
+                delivery: agent::Delivery::default(),
             })
             .await
             .map_err(|e| e.to_string())
@@ -177,6 +178,7 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
                 session: Some(session),
                 text,
                 files: Vec::new(),
+                delivery: agent::Delivery::default(),
             })
             .await
             .map(|_| ())

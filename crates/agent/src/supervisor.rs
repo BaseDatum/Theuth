@@ -73,7 +73,9 @@ use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
+    AgentState, AncestorInfo, Ancestors, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
+    BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems, Delivery,
+    SessionActivity,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
     GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel, SideCall, SideReply,
     HistoryEntry, ListAcp, ListAgents,
@@ -178,6 +180,9 @@ pub struct Agents {
     owned_children: HashMap<SessionId, OwnedChild>,
     /// Last `TurnFinished` per session this process saw: `(stop_reason, when)`.
     last_stop: HashMap<SessionId, (String, DateTime<Utc>)>,
+    /// Last input routed into each session by this process (62 §0.5); with
+    /// `last_stop` and the turn start it makes `SessionActivity.last_active`.
+    last_input: HashMap<SessionId, DateTime<Utc>>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -413,6 +418,18 @@ pub struct UnregisterNode {
     /// The registered name.
     pub name: String,
 }
+
+/// `ask` → `Result<BroadcastReceipt, String>`: one human message to many
+/// sessions with a per-row receipt (62 §0.1, §3.3). `Err` only for the
+/// target cap; every per-session failure is a row.
+#[derive(Clone, Debug)]
+pub struct Broadcast(pub BroadcastRequest);
+
+/// `ask` → `Vec<AgentInfo>`: every session with a live actor or a running
+/// job, plus every root; `depth` from its own root, 0 for roots (62 §3.2).
+/// A root reports `parent == id`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListActivity;
 
 /// `tell` (internal): a permit was acquired; run the child's first turn.
 struct StartChildTurn {
@@ -722,29 +739,34 @@ impl Agents {
         }
     }
 
-    /// Route `text` (plus image `files`) into `session` (created when `None`);
-    /// errors surface as `AgentEvent::Error`. A rejected attachment drops the
-    /// whole input (17 §3.1). The input's ticket is admitted here, before
-    /// the actor `tell`, so a yield decision handled after this sees it (47 §4.3).
+    /// Route `text` (plus image `files`) into `sid` (created when unknown);
+    /// errors surface as `AgentEvent::Error` and as the `Err`. A rejected
+    /// attachment drops the whole input (17 §3.1). The input's ticket is
+    /// admitted here, before the actor `tell`, so a yield decision handled
+    /// after this sees it (47 §4.3). `delivery` says how it lands on a busy
+    /// session (62 §0.3).
     async fn input(
         &mut self,
-        session: Option<SessionId>,
+        sid: SessionId,
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
         origin: InputOrigin,
-    ) -> SessionId {
-        let sid = session.unwrap_or_default();
+        delivery: Delivery,
+    ) -> Result<(), String> {
         let ticket = self.ledger.admit(sid, origin, id);
-        self.route(sid, id, text, files, ticket, None).await
+        let defer = matches!(delivery, Delivery::NextTurn);
+        self.route(sid, id, text, files, ticket, None, defer).await
     }
 
     /// [`Agents::input`] with a ticket admitted earlier (a queued child's first
     /// turn). `scope` is the A2A request scope the input belongs to (an owned
     /// child's assignment, the result of the task's own work); `None` is a
-    /// private input (50 §6.3). A routing failure — a rejected attachment, no
+    /// private input (50 §6.3). `defer` holds a busy session's input until
+    /// its turn ends (62 §0.3). A routing failure — a rejected attachment, no
     /// actor, or a `tell` into a closed mailbox — releases the ticket: no
     /// runner ever held it.
+    #[allow(clippy::too_many_arguments)]
     async fn route(
         &mut self,
         sid: SessionId,
@@ -753,7 +775,8 @@ impl Agents {
         files: Vec<PathBuf>,
         ticket: InputTicket,
         scope: Option<Uuid>,
-    ) -> SessionId {
+        defer: bool,
+    ) -> Result<(), String> {
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
             Err(e) => Err(anyhow::anyhow!(e)),
@@ -767,18 +790,27 @@ impl Agents {
                         files,
                         ticket: Some(ticket),
                         scope,
+                        defer,
                     })
                     .await
             }
             Err(e) => Err(e),
         };
-        if let Err(e) = sent {
-            self.ledger.release(sid, ticket);
-            self.network_input_dropped(ticket).await;
-            tracing::error!(session = %sid, "session: {e:#}");
-            self.error(sid, format!("{e:#}")).await;
+        match sent {
+            Ok(()) => {
+                // Human and harness inputs alike (`inject` routes through here): 62 §0.5.
+                self.last_input.insert(sid, Utc::now());
+                Ok(())
+            }
+            Err(e) => {
+                self.ledger.release(sid, ticket);
+                self.network_input_dropped(ticket).await;
+                tracing::error!(session = %sid, "session: {e:#}");
+                let message = format!("{e:#}");
+                self.error(sid, message.clone()).await;
+                Err(message)
+            }
         }
-        sid
     }
 
     /// [`SendInput`] / [`Steer`] from a human: routed as a fresh external
@@ -790,9 +822,14 @@ impl Agents {
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        delivery: Delivery,
     ) -> SessionId {
-        self.input(session, id, text, files, InputOrigin::External)
-            .await
+        let sid = session.unwrap_or_default();
+        // A failure was published as `AgentEvent::Error` on `sid` already.
+        let _ = self
+            .input(sid, id, text, files, InputOrigin::External, delivery)
+            .await;
+        sid
     }
 
     /// A session-scoped failure outside any turn: recorded behind the last
@@ -866,7 +903,9 @@ impl Agents {
             tracing::info!(session = %to, "{from}: result dropped, its request scope is closed");
             return;
         }
-        self.route(to, None, wrapped, Vec::new(), ticket, scope)
+        // A failure is already an `AgentEvent::Error` on `to`.
+        let _ = self
+            .route(to, None, wrapped, Vec::new(), ticket, scope, false)
             .await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
@@ -1922,7 +1961,9 @@ impl Message<SendInput> for Agents {
         m: SendInput,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self.human_input(m.session, None, m.text, m.files).await)
+        Ok(self
+            .human_input(m.session, None, m.text, m.files, m.delivery)
+            .await)
     }
 }
 
@@ -1935,15 +1976,19 @@ impl Message<UseSkill> for Agents {
         // Routed, never a waiter's answer: a skill body is not a reply. The
         // id makes the queue/inject lifecycle visible to UIs (they did not type it).
         // The user asked for it: a fresh request (47 §4.5).
-        Ok(self
+        let sid = m.session.unwrap_or_default();
+        // A routing failure is an `AgentEvent::Error` on `sid`, as before.
+        let _ = self
             .input(
-                m.session,
+                sid,
                 Some(InputId::new()),
                 text,
                 Vec::new(),
                 InputOrigin::External,
+                Delivery::Steer,
             )
-            .await)
+            .await;
+        Ok(sid)
     }
 }
 
@@ -1951,7 +1996,7 @@ impl Message<Steer> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
-        self.human_input(Some(m.session), Some(m.id), m.text, m.files)
+        self.human_input(Some(m.session), Some(m.id), m.text, m.files, m.delivery)
             .await;
     }
 }
@@ -2767,7 +2812,8 @@ impl Message<StartChildTurn> for Agents {
         let Ok(scope) = self.claim_child_turn(child, m.ticket).await else {
             return;
         };
-        self.route(child, None, m.text, Vec::new(), m.ticket, scope)
+        let _ = self
+            .route(child, None, m.text, Vec::new(), m.ticket, scope, false)
             .await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
@@ -3706,54 +3752,373 @@ impl Agents {
             .iter()
             .filter_map(|(_, s)| Some((s.id, s.name.as_deref()?)))
             .collect();
+        let ids: Vec<SessionId> = rows.iter().map(|(_, r)| r.id).collect();
+        let mut activity = self.activity_for(&ids).await;
         let mut out = Vec::with_capacity(rows.len());
         for (depth, row) in &rows {
-            let id = row.id;
             let parent = row.parent.unwrap_or(session);
-            let state = if let Some((_, tool)) = self.approvals.get(&id) {
-                AgentState::Approval { tool: tool.clone() }
-            } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
-                // The awaited peer by its convenience name when it has one.
-                let from = match PeerAddress::local(&w.to) {
-                    Some(p) if p == parent => "parent".to_owned(),
-                    Some(p) => names
-                        .get(&p)
-                        .map(|n| (*n).to_owned())
-                        .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
-                        .unwrap_or_else(|| w.to.clone()),
-                    None => w.to.clone(),
-                };
-                AgentState::Awaiting { from }
-            } else if self.running.contains(&id) {
-                AgentState::Running
-            } else {
-                match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
-                    Some("error") => AgentState::Error,
-                    Some("cancelled") => AgentState::Cancelled,
-                    _ => AgentState::Idle,
-                }
-            };
-            // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
-            let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
-                tracing::error!(session = %id, "last_turn_text: {e:#}");
-                String::new()
-            });
-            out.push(AgentInfo {
-                id,
-                name: row.name.clone().unwrap_or_default(),
-                parent,
-                depth: *depth,
-                agent: row.agent.clone(),
-                model: row.model.clone(),
-                state,
-                started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
-                finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
-                last: first_line(&last),
-                project: row.project.clone(),
-                retention: self.retention_of(id),
-            });
+            // Names of cold siblings are known here; keep the two states equal.
+            let state = self.state_of(row.id, Some(parent), &names);
+            let mut activity = activity.remove(&row.id).unwrap_or_default();
+            activity.state = state.clone();
+            out.push(self.info_row(store, row, *depth, parent, state, activity).await);
         }
         out
+    }
+
+    /// [`SessionActivity`] for `ids` (62 §0.5): one `JobCounts` ask for all
+    /// of them, the rest from this actor's maps; the store is read only for
+    /// a cold session's `updated_at`.
+    async fn activity_for(&self, ids: &[SessionId]) -> HashMap<SessionId, SessionActivity> {
+        let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
+            Ok(Some(jobs)) => jobs
+                .ask(tools::JobCounts(ids.to_vec()))
+                .await
+                .unwrap_or_default(),
+            _ => HashMap::new(),
+        };
+        self.assemble_activity(ids, &counts).await
+    }
+
+    /// [`Self::activity_for`] given the `JobCounts` reply.
+    async fn assemble_activity(
+        &self,
+        ids: &[SessionId],
+        counts: &HashMap<SessionId, (u16, u16)>,
+    ) -> HashMap<SessionId, SessionActivity> {
+        // Live descendants per ancestor: walk each live session's parent chain.
+        let mut children: HashMap<SessionId, u16> = HashMap::new();
+        for (id, live) in &self.sessions {
+            if !live.actor.is_alive() {
+                continue;
+            }
+            let mut cur = *id;
+            while let Some((p, _)) = self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
+                *children.entry(*p).or_default() += 1;
+                cur = *p;
+            }
+        }
+        let names = HashMap::new();
+        let mut out = HashMap::with_capacity(ids.len());
+        for &id in ids {
+            let parent = self.sessions.get(&id).and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
+            let turn_started_at = self.child_turns.get(&id).map(|ct| ct.started_at);
+            let mut last_active = [
+                self.last_input.get(&id).copied(),
+                self.last_stop.get(&id).map(|(_, at)| *at),
+                turn_started_at,
+            ]
+            .into_iter()
+            .flatten()
+            .max();
+            if last_active.is_none() {
+                last_active = self
+                    .store_for(id)
+                    .session(id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|s| s.updated_at);
+            }
+            let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
+            out.insert(
+                id,
+                SessionActivity {
+                    state: self.state_of(id, parent, &names),
+                    last_active,
+                    turn_started_at,
+                    jobs,
+                    ptys,
+                    children: children.get(&id).copied().unwrap_or_default(),
+                    asks: None,
+                    live: self.live(id).is_some(),
+                },
+            );
+        }
+        out
+    }
+
+    /// Every stored session row, durable store first then each open private
+    /// tree's, in each store's `list_sessions` order.
+    async fn all_rows(&self) -> Vec<SessionSummary> {
+        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
+            tracing::error!("list sessions: {e:#}");
+            Vec::new()
+        });
+        for p in self.private.values().filter(|p| !p.closing) {
+            rows.extend(p.store.list_sessions().await.unwrap_or_default());
+        }
+        rows
+    }
+
+    /// Live state of `id` as the roster shows it (design doc 19 §2.1).
+    /// `names` maps sibling ids to their peer names for `Awaiting { from }`.
+    fn state_of(
+        &self,
+        id: SessionId,
+        parent: Option<SessionId>,
+        names: &HashMap<SessionId, &str>,
+    ) -> AgentState {
+        if let Some((_, tool)) = self.approvals.get(&id) {
+            AgentState::Approval { tool: tool.clone() }
+        } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
+            // The awaited peer by its convenience name when it has one.
+            let from = match PeerAddress::local(&w.to) {
+                Some(p) if Some(p) == parent => "parent".to_owned(),
+                Some(p) => names
+                    .get(&p)
+                    .map(|n| (*n).to_owned())
+                    .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
+                    .unwrap_or_else(|| w.to.clone()),
+                None => w.to.clone(),
+            };
+            AgentState::Awaiting { from }
+        } else if self.running.contains(&id) {
+            AgentState::Running
+        } else {
+            match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
+                Some("error") => AgentState::Error,
+                Some("cancelled") => AgentState::Cancelled,
+                _ => AgentState::Idle,
+            }
+        }
+    }
+
+    /// One roster row from its store row plus live state.
+    async fn info_row(
+        &self,
+        store: &Store,
+        row: &SessionSummary,
+        depth: u8,
+        parent: SessionId,
+        state: AgentState,
+        activity: SessionActivity,
+    ) -> AgentInfo {
+        let id = row.id;
+        // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
+        let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
+            tracing::error!(session = %id, "last_turn_text: {e:#}");
+            String::new()
+        });
+        AgentInfo {
+            id,
+            name: row.name.clone().unwrap_or_default(),
+            parent,
+            depth,
+            agent: row.agent.clone(),
+            model: row.model.clone(),
+            state,
+            started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
+            finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
+            last: first_line(&last),
+            project: row.project.clone(),
+            retention: self.retention_of(id),
+            activity,
+        }
+    }
+
+    /// [`ListActivity`]'s rows (62 §3.2): every root, plus every session with
+    /// a live actor or a running job; `depth` from its own root.
+    async fn activity_rows(&self) -> Vec<AgentInfo> {
+        let rows = self.all_rows().await;
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        let mut activity = self.activity_for(&ids).await;
+        // Pre-order like `agents()`: roots in roster order, then each one's
+        // children oldest first. A cold child is skipped but its live
+        // descendants are still walked (their depth counts it).
+        let mut kids: HashMap<SessionId, Vec<&SessionSummary>> = HashMap::new();
+        for r in &rows {
+            if let Some(p) = r.parent {
+                kids.entry(p).or_default().push(r);
+            }
+        }
+        for v in kids.values_mut() {
+            v.sort_by_key(|r| r.created_at);
+        }
+        let mut stack: Vec<(&SessionSummary, u8)> = rows
+            .iter()
+            .filter(|r| r.parent.is_none())
+            .rev()
+            .map(|r| (r, 0))
+            .collect();
+        let mut out = Vec::new();
+        while let Some((row, depth)) = stack.pop() {
+            if let Some(children) = kids.get(&row.id) {
+                stack.extend(children.iter().rev().map(|c| (*c, depth.saturating_add(1))));
+            }
+            let Some(a) = activity.remove(&row.id) else {
+                continue;
+            };
+            if depth > 0 && !a.live && a.jobs + a.ptys == 0 {
+                continue;
+            }
+            let parent = row.parent.unwrap_or(row.id);
+            let state = a.state.clone();
+            out.push(
+                self.info_row(self.store_for(row.id), row, depth, parent, state, a)
+                    .await,
+            );
+        }
+        out
+    }
+}
+
+impl Message<ListActivity> for Agents {
+    type Reply = Vec<AgentInfo>;
+
+    async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.activity_rows().await
+    }
+}
+
+impl Agents {
+    /// 62 §3.3 step 1: the rows `targets` names, in selector order, `before`
+    /// filled, every resolved row `Skipped{"dry run"}` and an unknown id
+    /// `Failed{"unknown session"}`. `Running`/`Roots` never name a child.
+    async fn resolve_targets(&self, targets: &BroadcastTargets) -> Vec<BroadcastRow> {
+        let rows = self.all_rows().await;
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        let mut activity = self.activity_for(&ids).await;
+        let by_id: HashMap<SessionId, &SessionSummary> = rows.iter().map(|r| (r.id, r)).collect();
+        let row = |id: SessionId, before: SessionActivity| {
+            let s = by_id[&id];
+            BroadcastRow {
+                session: id,
+                title: s.title.clone(),
+                parent: s.parent,
+                before,
+                outcome: BroadcastOutcome::Skipped {
+                    reason: "dry run".into(),
+                },
+            }
+        };
+        match targets {
+            BroadcastTargets::Running | BroadcastTargets::Roots => rows
+                .iter()
+                .filter(|r| r.parent.is_none())
+                .filter_map(|r| {
+                    let a = activity.remove(&r.id)?;
+                    let keep = match targets {
+                        BroadcastTargets::Roots => a.live,
+                        _ => {
+                            a.jobs + a.ptys > 0
+                                || matches!(
+                                    a.state,
+                                    AgentState::Running
+                                        | AgentState::Awaiting { .. }
+                                        | AgentState::Approval { .. }
+                                )
+                        }
+                    };
+                    keep.then(|| row(r.id, a))
+                })
+                .collect(),
+            BroadcastTargets::Sessions { ids } => {
+                let mut seen = HashSet::with_capacity(ids.len());
+                ids.iter()
+                    .filter(|id| seen.insert(**id))
+                    .map(|&id| match activity.remove(&id) {
+                        Some(a) => row(id, a),
+                        None => BroadcastRow {
+                            session: id,
+                            title: String::new(),
+                            parent: None,
+                            before: SessionActivity::default(),
+                            outcome: BroadcastOutcome::Failed {
+                                error: "unknown session".into(),
+                            },
+                        },
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// [`Broadcast`] (62 §3.3 steps 1–5). `Err` only for the target cap; every
+    /// per-session outcome is a row, and a row's failure never stops the loop.
+    async fn broadcast(&mut self, req: BroadcastRequest) -> Result<BroadcastReceipt, String> {
+        let mut rows = self.resolve_targets(&req.targets).await;
+        let max = self.cfg.broadcast.max_targets;
+        let n = rows
+            .iter()
+            .filter(|r| !matches!(r.outcome, BroadcastOutcome::Failed { .. }))
+            .count();
+        if n > max {
+            return Err(format!("too many targets ({n} > {max})"));
+        }
+        let id = Uuid::now_v7();
+        let at = Utc::now();
+        if req.dry_run {
+            return Ok(BroadcastReceipt { id, at, rows });
+        }
+        // Skips are decided before the count in the marker line: `n` is what
+        // is actually sent.
+        let nodes = node_lines(&self.nodes);
+        for r in &mut rows {
+            if !matches!(r.outcome, BroadcastOutcome::Skipped { .. }) {
+                continue;
+            }
+            let store_row = self.store_for(r.session).session(r.session).await.ok().flatten();
+            let reason = if store_row
+                .as_ref()
+                .and_then(|s| s.agent.as_deref())
+                .is_some_and(|a| nodes.contains_key(a))
+            {
+                Some("remote node")
+            } else if !r.before.live && r.parent.is_some() {
+                Some("no actor and not a root")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                r.outcome = BroadcastOutcome::Skipped {
+                    reason: reason.into(),
+                };
+            } else {
+                // Marks "send this one" for the loop below.
+                r.outcome = BroadcastOutcome::Started;
+            }
+        }
+        let n = rows
+            .iter()
+            .filter(|r| matches!(r.outcome, BroadcastOutcome::Started))
+            .count();
+        let short = &id.simple().to_string()[..4];
+        let text = format!("[broadcast {short} · {n} sessions]\n{}", req.text);
+        for r in &mut rows {
+            if !matches!(r.outcome, BroadcastOutcome::Started) {
+                continue;
+            }
+            let busy = self.running.contains(&r.session);
+            let input_id = InputId::new();
+            let sent = self
+                .input(
+                    r.session,
+                    Some(input_id),
+                    text.clone(),
+                    req.files.clone(),
+                    InputOrigin::External,
+                    req.delivery,
+                )
+                .await;
+            r.outcome = match sent {
+                Err(error) => BroadcastOutcome::Failed { error },
+                Ok(()) if busy => BroadcastOutcome::Queued {
+                    input_id,
+                    delivery: req.delivery,
+                },
+                Ok(()) => BroadcastOutcome::Started,
+            };
+        }
+        Ok(BroadcastReceipt { id, at, rows })
+    }
+}
+
+impl Message<Broadcast> for Agents {
+    type Reply = Result<BroadcastReceipt, String>;
+
+    async fn handle(&mut self, m: Broadcast, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.broadcast(m.0).await
     }
 }
 
@@ -5631,6 +5996,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             timed_out: HashSet::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
+            last_input: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -6033,6 +6399,7 @@ impl Agents {
             self.running.remove(&id);
             self.approvals.remove(&id);
             self.last_stop.remove(&id);
+            self.last_input.remove(&id);
             self.owned_children.remove(&id);
             self.bound.retain(|(s, _), _| *s != id);
             self.delivered.retain(|(s, _), _| *s != id);
@@ -6968,6 +7335,7 @@ pub(crate) mod tests {
             timed_out: HashSet::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
+            last_input: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),
@@ -7827,15 +8195,153 @@ pub(crate) mod tests {
     async fn routing_failure_releases_the_ticket() {
         let mut a = agents().await;
         let (p, _) = in_turn(&mut a).await;
-        a.input(
-            Some(p),
+        let r = a.input(
+            p,
             None,
             "x".into(),
             vec![PathBuf::from("/nonexistent/theuth.png")],
             InputOrigin::External,
+            Delivery::Steer,
         )
         .await;
+        assert!(r.is_err(), "the caller learns the drop too (62 §3.3)");
         assert_eq!(a.ledger.activity(p), None);
+    }
+
+    /// 62 §3.2: a root whose model is idle but that owns a running PTY is
+    /// `Idle, ptys: 1, live: true` — the job, not the model, marks it as
+    /// working. (`JobCounts` is fed as a synthetic reply: no `Jobs` actor is
+    /// registered in this harness.)
+    #[tokio::test]
+    async fn activity_counts_a_pty_on_an_idle_root() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let counts = HashMap::from([(root, (0u16, 1u16))]);
+        let act = a.assemble_activity(&[root], &counts).await;
+        let act = &act[&root];
+        assert_eq!(act.state, AgentState::Idle);
+        assert_eq!((act.jobs, act.ptys, act.children), (0, 1, 0));
+        assert!(act.live);
+        assert!(act.last_active.is_some(), "a cold row falls back to `updated_at`");
+        assert!(act.turn_started_at.is_none());
+    }
+
+    /// 62 §3.2: `ListActivity` lists every root, cold or not, and a child only
+    /// while it has an actor or a job; a live child counts toward its root.
+    #[tokio::test]
+    async fn list_activity_keeps_cold_roots_and_drops_cold_children() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (cold_root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let cold_child = SessionId::new();
+        let live_child = SessionId::new();
+        for (id, name) in [(cold_child, "cold"), (live_child, "live")] {
+            a.session(Some(id), Some((root, name)), None, (None, None))
+                .await
+                .unwrap();
+        }
+        // Going cold: the actor is gone, the row stays.
+        a.sessions.remove(&cold_root);
+        a.sessions.remove(&cold_child);
+
+        let rows = a.activity_rows().await;
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&root) && ids.contains(&cold_root));
+        assert!(ids.contains(&live_child) && !ids.contains(&cold_child));
+        let by_id: HashMap<SessionId, &AgentInfo> = rows.iter().map(|r| (r.id, r)).collect();
+        assert_eq!((by_id[&root].depth, by_id[&root].parent), (0, root));
+        assert_eq!((by_id[&live_child].depth, by_id[&live_child].parent), (1, root));
+        assert!(by_id[&root].activity.live && !by_id[&cold_root].activity.live);
+        assert_eq!(by_id[&root].activity.children, 1);
+        // Pre-order: a child right after its root.
+        let at = |id| ids.iter().position(|x| *x == id).unwrap();
+        assert_eq!(at(live_child), at(root) + 1);
+    }
+
+    /// 62 §0.2, §3.3: `Running` names roots only — a running child is never
+    /// swept in; a dry run fills `before` and routes nothing.
+    #[tokio::test]
+    async fn broadcast_running_selects_roots_and_dry_run_sends_nothing() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        // An idle root: live, but not `Running`.
+        a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        a.running.insert(root);
+        a.running.insert(child);
+
+        let receipt = a
+            .broadcast(BroadcastRequest {
+                targets: BroadcastTargets::Running,
+                text: "stop touching Cargo.lock".into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                dry_run: true,
+            })
+            .await
+            .unwrap();
+        let ids: Vec<SessionId> = receipt.rows.iter().map(|r| r.session).collect();
+        assert_eq!(ids, [root], "running child and idle root excluded");
+        let row = &receipt.rows[0];
+        assert_eq!(row.before.state, AgentState::Running);
+        assert!(row.before.live && row.parent.is_none());
+        assert_eq!(
+            row.outcome,
+            BroadcastOutcome::Skipped {
+                reason: "dry run".into()
+            }
+        );
+        assert!(a.last_input.is_empty(), "a dry run routes no input");
+    }
+
+    /// 62 §3.3 step 4: a busy recipient queues (with the chosen delivery), an
+    /// idle one starts, an unknown id is one failed row, and the loop never
+    /// stops early. Above the cap nothing is sent at all.
+    #[tokio::test]
+    async fn broadcast_rows_queue_start_fail_and_cap() {
+        let mut a = agents().await;
+        let (busy, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (idle, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let unknown = SessionId::new();
+        a.running.insert(busy);
+
+        let req = BroadcastRequest {
+            targets: BroadcastTargets::Sessions {
+                ids: vec![unknown, busy, idle, busy],
+            },
+            text: "hello all".into(),
+            files: Vec::new(),
+            delivery: Delivery::NextTurn,
+            dry_run: false,
+        };
+        let receipt = a.broadcast(req.clone()).await.unwrap();
+        assert_eq!(receipt.rows.len(), 3, "duplicates collapse, order kept");
+        assert_eq!(
+            receipt.rows[0].outcome,
+            BroadcastOutcome::Failed {
+                error: "unknown session".into()
+            }
+        );
+        assert!(matches!(
+            receipt.rows[1].outcome,
+            BroadcastOutcome::Queued {
+                delivery: Delivery::NextTurn,
+                ..
+            }
+        ));
+        assert_eq!(receipt.rows[2].outcome, BroadcastOutcome::Started);
+        assert!(a.last_input.contains_key(&busy) && a.last_input.contains_key(&idle));
+
+        let mut cfg = AgentConfig::default();
+        cfg.broadcast.max_targets = 1;
+        a.cfg = Arc::new(cfg);
+        a.last_input.clear();
+        let err = a.broadcast(req).await.unwrap_err();
+        assert_eq!(err, "too many targets (2 > 1)");
+        assert!(a.last_input.is_empty(), "refused before any send");
     }
 
     /// A rename or delete that has replied is visible to the very next search:
@@ -8057,6 +8563,7 @@ pub(crate) mod tests {
                 session: Some(root),
                 text: "hello".into(),
                 files: Vec::new(),
+                delivery: Delivery::default(),
             })
             .await
             .unwrap();

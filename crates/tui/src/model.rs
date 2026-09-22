@@ -5071,6 +5071,7 @@ impl Model {
                             last: String::new(),
                             project: None,
                             retention: agent::Retention::Durable,
+                            activity: Default::default(),
                         }),
                     );
                 }
@@ -5107,7 +5108,7 @@ impl Model {
                 return;
             }
             // Queue bookkeeping mid-stream must not finish the streaming tail below.
-            AgentEvent::InputQueued { session, id, text } => {
+            AgentEvent::InputQueued { session, id, text, .. } => {
                 if self.session == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
                     self.queued.push(QueuedInput {
                         id: *id,
@@ -10849,6 +10850,7 @@ mod tests {
             last: String::new(),
             project: None,
             retention: agent::Retention::Durable,
+            activity: Default::default(),
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -12963,6 +12965,7 @@ mod tests {
                 session: s,
                 id,
                 text: "x".into(),
+                defer: false,
             });
         }
         assert_eq!(m.queued.len(), 2);

@@ -904,6 +904,9 @@ impl Message<UserInput> for AcpChild {
             id,
             text,
             files: _,
+            // No mid-turn injection on the ACP prompt path: every queued
+            // input waits for the turn already, so `defer` changes nothing (62 §3.1).
+            defer: _,
             ticket,
             scope,
         }: UserInput,
@@ -927,6 +930,7 @@ impl Message<UserInput> for AcpChild {
                     session: self.id,
                     id,
                     text: q.text.clone(),
+                    defer: false,
                 })
                 .await;
             }

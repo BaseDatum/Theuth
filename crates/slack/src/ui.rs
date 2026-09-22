@@ -716,6 +716,7 @@ mod tests {
             last: "looking".into(),
             project: None,
             retention: agent::Retention::Durable,
+            activity: Default::default(),
         }];
         let models_rows = vec![
             ModelInfo {

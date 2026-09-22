@@ -432,6 +432,7 @@ mod tests {
             last: "reading the loop".into(),
             project: None,
             retention: agent::Retention::Durable,
+            activity: Default::default(),
         };
         r.seed(&info);
         assert_eq!(
