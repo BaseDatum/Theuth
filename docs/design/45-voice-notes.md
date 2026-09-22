@@ -479,6 +479,14 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
 - One `AudioContext` for the module, created or resumed inside the mic
   click (a user gesture) and reused by `start` — iOS WKWebView will not
   start one that was created outside a gesture [INFERENCE, §10 step 6].
+- Audio session lifecycle (as built 2026-09-22, iOS): one owner in
+  `speech.ts` — `unlock(use)` / `release(use)` over the holders `speak`,
+  `dictate` (54), `record`. `record()` takes `record` on the tap and gives it
+  back in `MediaRecorder.onstop` (upload and Escape-discard alike) and on a
+  failed `getUserMedia`; read-aloud's `stop()` gives back `speak`. The last
+  release suspends the context and resets `navigator.audioSession.type` to
+  `auto` — a running context or a forced `play-and-record`/`playback` type
+  kept the Dynamic Island's Now Playing up after the note was sent.
 
 ### 7.4 Bubble
 

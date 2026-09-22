@@ -435,6 +435,17 @@ the TUI in its status line, the desktop as a toast.
   desktop keeps `dictation_start(null)` and the daemon mic. A dropped
   connection stops the dictation server-side (§8). 25 §3 parity table row
   `dictation on the phone` reads yes.
+- Audio session lifecycle (as built 2026-09-22, iOS): one owner in
+  `lib/speech.ts` — `unlock(use)` / `release(use)` over a set of holders
+  (`speak` | `dictate` | `record`). The type follows the holders (a mic use
+  → `play-and-record`, speaking alone → `playback`, none → `auto`); the last
+  release suspends the shared `AudioContext` (kept, not closed — `unlock`
+  resumes it gesture-free). `teardownCapture` releases `dictate` on stop,
+  discard, the daemon's `Finished` (max secs) and every failed start,
+  including a refused `getUserMedia`; before this, the context stayed
+  running at `play-and-record` and the Dynamic Island showed the app as
+  playing until a restart. `visibilitychange` → hidden with nothing held
+  re-applies the idle state.
 
 ## 8. RPC (`crates/rpc/src/api.rs`)
 
