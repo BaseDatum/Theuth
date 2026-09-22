@@ -952,7 +952,7 @@ scripts/entitlements-app-parser.plist`, `codesign --verify --strict` and the
   `link_status`). No phone hardware, no visual claim.
 
 Not run, recorded as unrun rather than passed: Linux runtime (the Docker build
-and clean-`ubuntu:22.04` probe are release-script gates, not exercised here);
+and clean-`ubuntu:24.04` probe are release-script gates, not exercised here);
 physical phone/iOS trace, heap or open/close cycles; Developer ID signing,
 notarization and a clean-machine launch (external, another machine); a frame-
 budget measurement on the production build (see the accepted limitation above);

@@ -547,9 +547,9 @@ just release:
 ```
 
 **Linux build.** `deploy/update/Dockerfile` builds `theuth` (not the relay)
-natively for the host's arch: `FROM ubuntu:22.04` (glibc 2.35 — the oldest
-we support; covers Ubuntu 22.04+, Debian 12+, Fedora 36+, and Homebrew on
-Linux, which requires ≥ 2.13), Rust from `rust-toolchain.toml`, the C
+natively for the host's arch: `FROM ubuntu:24.04` (glibc 2.39 — the oldest
+we support; covers Ubuntu 24.04+, Debian 13+, Fedora 40+, and Homebrew on
+Linux, Tier 1 since Homebrew 6.0), Rust from `rust-toolchain.toml`, the C
 toolchain obscura/btls/libsignal need (`clang`, `cmake`, `llvm`, `perl`,
 `pkg-config`, `libssl-dev` if anything still wants it, X11/xcb headers for
 enigo/xcap), `cargo build --release -p theuth`, output the one file. `just
@@ -609,7 +609,7 @@ never touching the encoding again.
    installs then no-op on that version per §3.2 step 1; a hotfix that only
    matters on macOS need not wait for a Linux box);
 7. each staged Linux tarball, extracted in a clean `docker run --rm
-   ubuntu:22.04` of its arch, does not print `VERSION` for `t --version`
+   ubuntu:24.04` of its arch, does not print `VERSION` for `t --version`
    (missing shared library, wrong glibc — caught here, not on a user's
    box).
 
@@ -756,8 +756,8 @@ config (36 §1). Jarvis's 12 h was chosen for a check that ended in a toast;
    version aborts at gate 5; missing staging aborts at gate 6 and
    `THEUTH_RELEASE_LINUX=skip` produces a manifest with two keys.
 3. **Linux build.** `just stage-linux` on the arm64 Mac and on an x86_64
-   box; gate 7 runs `t --version` in a clean `ubuntu:22.04` of each arch
-   and prints `VERSION`. On a `debian:12` and a `fedora:40` container the
+   box; gate 7 runs `t --version` in a clean `ubuntu:24.04` of each arch
+   and prints `VERSION`. On a `debian:13` and a `fedora:40` container the
    same tarball's `t --version` also works (glibc floor holds).
 4. **`crates/update` + `t --update`.** Publish `0.1.1` to a scratch
    prefix; `THEUTH_UPDATE__URL=<scratch> t --update` on a `0.1.0`

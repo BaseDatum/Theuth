@@ -8,8 +8,8 @@
 # at build time only; the output embeds its own runtime, so no Bun/Node on the target box.
 # The hash is packages/apps/generated/library-hash.txt, the value `theuth` embeds (scripts/app-parser-env.sh).
 #
-# Why ubuntu:22.04 and not musl/alpine?
-#   glibc 2.35 is the oldest we support (Ubuntu 22.04+, Debian 12+, Fedora 36+, Homebrew on
+# Why ubuntu:24.04 and not musl/alpine?
+#   glibc 2.39 is the oldest we support (Ubuntu 24.04+, Debian 13+, Fedora 40+, Homebrew on
 #   Linux). musl is out: V8 (deno_core) ships no musl build, BoringSSL/btls-sys and aws-lc-sys
 #   assume glibc, and keyring's dbus-secret-service dlopens system libraries at runtime.
 #
@@ -19,7 +19,7 @@
 #   `scripts/stage-linux.sh` uploads the result to staging/<ver>/ for release-s3.sh.
 
 # ── build ─────────────────────────────────────────────────────────────────────
-FROM ubuntu:22.04 AS build
+FROM ubuntu:24.04 AS build
 ARG TARGETARCH
 ARG DEBIAN_FRONTEND=noninteractive
 # Toolchain: obscura/btls/boringssl/aws-lc need clang+cmake+perl; libspa-sys runs bindgen (libclang).

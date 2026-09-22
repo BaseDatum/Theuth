@@ -5,7 +5,7 @@
 # already staged by `just stage-linux` on each Linux build host):
 #   gates 1-8 (§5.2)     version == Info.plist, Developer ID (app + theuth-app-parser helper), notarized,
 #                        pubkeys match, <ver>/ absent (immutability), staging/<ver>/ complete, each Linux
-#                        tarball prints VERSION in a clean ubuntu:22.04 of its arch and its helper answers
+#                        tarball prints VERSION in a clean ubuntu:24.04 of its arch and its helper answers
 #                        `--version` with the library hash, every CLI tarball holds exactly
 #                        `theuth` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` (46 §2.1, 59 §3.2; scripts/app-parser-env.sh)
 #   pull staging/<ver>/  → dist/
@@ -189,7 +189,7 @@ else
   echo "    desktop bundles: ${#LINUX_DESKTOP[@]}"
 fi
 
-gate 7 "each Linux tarball runs in a clean ubuntu:22.04 of its arch"
+gate 7 "each Linux tarball runs in a clean ubuntu:24.04 of its arch"
 if [[ "$LINUX" == "skip" ]]; then
   echo "    skipped (no Linux tarballs)"
 elif ! command -v docker >/dev/null 2>&1; then
@@ -197,7 +197,7 @@ elif ! command -v docker >/dev/null 2>&1; then
 else
   for f in "${LINUX_TGZ[@]}"; do
     case "$f" in *linux-x86_64*) plat=linux/amd64 ;; *) plat=linux/arm64 ;; esac
-    out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:22.04 \
+    out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:24.04 \
       bash -c "tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER && /tmp/$DOC_HELPER --version && printf '' | /tmp/$DOC_HELPER" 2>&1)" || fail 7 "$f: $out"
     [[ "$out" == *"$VERSION"* ]] || fail 7 "$f printed '$out', expected $VERSION"
     [[ "$out" == *"wants=$HELPER_HASH"* ]] || fail 7 "$f: t --app-parser-hash does not name $HELPER_HASH: '$out'"

@@ -174,7 +174,7 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    `THEUTH_LINUX_ARCH` overrides the detected arch. The script refuses an image
    whose helper hash is not the checkout's. Gate 6 aborts the release if
    either tarball is missing; gate 7 runs, from each staged tarball in a
-   clean `ubuntu:22.04` container, `t --version`, `t --app-parser-hash`
+   clean `ubuntu:24.04` container, `t --version`, `t --app-parser-hash`
    (must print the shipped helper's hash) and the helper's own `--version`;
    gate 8 lists every CLI tarball and requires exactly those two entries.
 5. macOS-only release (hotfix, no Linux box at hand):
@@ -240,8 +240,8 @@ Tick each on the first release and after any change to `crates/update`,
       `THEUTH_RELEASE_LINUX=skip` yields a two-key manifest.
 - [ ] 3 Linux build: `just stage-linux` on both hosts; gate 7 prints the
       version, `wants=<hash>` and `theuth-app-parser <hash>` from
-      `ubuntu:22.04`; the same tarball's `t --version` and
-      `theuth-app-parser-<hash> --version` work in `debian:12` and `fedora:40`.
+      `ubuntu:24.04`; the same tarball's `t --version` and
+      `theuth-app-parser-<hash> --version` work in `debian:13` and `fedora:40`.
 - [ ] 4 `t --update`: `0.1.1` on a scratch prefix, `THEUTH_UPDATE__URL=<scratch>
       t --update` on a `0.1.0` `~/.cargo/bin/theuth` prints `theuth 0.1.0 → 0.1.1`,
       `t --version` → `0.1.1`, `codesign --verify` passes (macOS); same on

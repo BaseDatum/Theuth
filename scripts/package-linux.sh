@@ -12,7 +12,7 @@
 #   5. aws s3 cp → s3://$THEUTH_S3_BUCKET/staging/<ver>/  (private; release-s3.sh publishes)
 #
 # Native only: run on a box of the target arch; the bundles bind to the host's glibc and
-# webkit2gtk, so build on the oldest distro you support (the CLI tarball uses ubuntu:22.04,
+# webkit2gtk, so build on the oldest distro you support (the CLI tarball uses ubuntu:24.04,
 # deploy/update/Dockerfile). No libonnxruntime in the bundle — the app downloads it from the
 # model bucket at start (release-models.sh publishes the linux rows; `t` finds it under
 # ~/.theuth/models/onnxruntime/).

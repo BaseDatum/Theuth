@@ -33,7 +33,7 @@ const TABS = [
     id: "linux",
     label: "Linux",
     cmd: "brew update\nbrew install basedatum/tap/theuth",
-    note: "Tarballs exist for linux-x86_64 and linux-aarch64. glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later.",
+    note: "Tarballs exist for linux-x86_64 and linux-aarch64. glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 and later.",
   },
   {
     id: "app",
