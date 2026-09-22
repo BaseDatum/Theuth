@@ -38,10 +38,11 @@ use uuid::Uuid;
 use crate::communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, DISCOVER_DEFAULT_LIMIT,
     DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
-    PEER_TEXT_MAX, PeerAddress, PeerConsumed, PeerDelivered, PeerInfo, PeerIntakeFailed, PeerKind,
-    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerRelationship, PeerScope, PeerState, PeerTurnFinished, Policy, PolicyError,
-    SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
+    PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed, PeerDelivered, PeerInfo,
+    PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged, PeerMessagePage,
+    PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerRelationship, PeerScope,
+    PeerState, PeerTurnFinished, Policy, PolicyError, SetCommunication, SetPeerScope, SharedPolicy,
+    WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
 };
 
 use crate::acp_child::AcpChild;
@@ -3261,6 +3262,7 @@ impl Message<ListPeers> for Agents {
             .map(str::to_lowercase)
             .filter(|q| !q.is_empty());
         let mut rows = self.directory(m.session).await?;
+        arrange(&mut rows, m.active_only);
         if let Some(q) = &query {
             rows.retain(|p| p.name.to_lowercase().contains(q) || p.address.contains(q.as_str()));
         }
@@ -3305,6 +3307,8 @@ impl Agents {
             self.mirror(r.id).await;
         }
         let me_parent = rows.iter().find(|r| r.id == session).and_then(|r| r.parent);
+        // Rows keep their session id for the activity lookup, which runs once
+        // the policy guard is released.
         let mut same = Vec::new();
         let mut other = Vec::new();
         {
@@ -3356,6 +3360,8 @@ impl Agents {
                 } else {
                     PeerState::Stored
                 };
+                // The title is the caller's own tree's business only (62 §0.7).
+                let title = (their_root == root).then(|| r.title.clone());
                 let info = PeerInfo {
                     address: format!("session:{}", r.id),
                     name,
@@ -3366,18 +3372,74 @@ impl Agents {
                     // An external harness cannot call theuth peer tools (50 §6.4).
                     reply: kind == PeerKind::Native,
                     stream: false,
+                    activity: None,
+                    title,
                 };
                 if their_root == root {
-                    same.push(info);
+                    same.push((r.id, info));
                 } else {
-                    other.push(info);
+                    other.push((r.id, info));
                 }
             }
         }
         same.extend(other);
-        same.extend(self.network.remote_peers(root));
-        Ok(same)
+        let ids: Vec<SessionId> = same.iter().map(|(id, _)| *id).collect();
+        let mut activity = self.activity_for(&ids).await;
+        let mut out: Vec<PeerInfo> = same
+            .into_iter()
+            .map(|(id, mut info)| {
+                info.activity = activity.remove(&id).map(peer_activity);
+                info
+            })
+            .collect();
+        out.extend(self.network.remote_peers(root));
+        Ok(out)
     }
+}
+
+/// [`SessionActivity`] as a directory row shows it (62 §3.4): liveness
+/// detail without `Awaiting { from }` / `Approval { tool }` content. `Stored`
+/// when no actor is loaded; `Offline` is never derived here (no node-down
+/// notion reaches the supervisor).
+fn peer_activity(a: SessionActivity) -> PeerActivity {
+    let state = if !a.live {
+        PeerLiveState::Stored
+    } else {
+        match a.state {
+            AgentState::Idle => PeerLiveState::Idle,
+            AgentState::Running => PeerLiveState::Running,
+            AgentState::Awaiting { .. } => PeerLiveState::Awaiting,
+            AgentState::Approval { .. } => PeerLiveState::Approval,
+            AgentState::Error => PeerLiveState::Error,
+            AgentState::Cancelled => PeerLiveState::Cancelled,
+        }
+    };
+    PeerActivity {
+        state,
+        last_active: a.last_active,
+        turn_secs: a
+            .turn_started_at
+            .map(|t| (Utc::now() - t).num_seconds().max(0) as u64),
+        jobs: a.jobs,
+        ptys: a.ptys,
+        children: a.children,
+    }
+}
+
+/// `discover_peers` order and `active_only` filter (62 §3.4): working rows
+/// first, then most recently active; ties keep [`Agents::directory`]'s order.
+/// Remote rows have no activity and stay last.
+fn arrange(rows: &mut Vec<PeerInfo>, active_only: bool) {
+    if active_only {
+        rows.retain(|p| p.activity.as_ref().is_some_and(PeerActivity::active));
+    }
+    rows.sort_by_key(|p| {
+        let a = p.activity.as_ref();
+        std::cmp::Reverse((
+            a.is_some_and(PeerActivity::active),
+            a.and_then(|a| a.last_active),
+        ))
+    });
 }
 
 /// `s` is a strict descendant of `ancestor` among `rows`.
@@ -7645,6 +7707,11 @@ pub(crate) mod tests {
         assert_eq!(rows[0].address, format!("session:{other}"));
         assert_eq!(rows[0].relationship, PeerRelationship::Root);
         assert_eq!(rows[0].state, PeerState::Idle);
+        // 62 §0.7: liveness detail crosses roots, the title does not.
+        assert_eq!(rows[0].title, None);
+        let act = rows[0].activity.as_ref().expect("activity");
+        assert_eq!(act.state, PeerLiveState::Idle);
+        assert_eq!((act.jobs, act.ptys, act.children), (0, 0, 0));
     }
 
     /// 62 §0.8: a fan-out resolves every address first; each answer is the
@@ -7676,6 +7743,78 @@ pub(crate) mod tests {
             a.resolve_all(child, &["parent".to_owned()]).await,
             vec![Ok(format!("session:{root}"))]
         );
+    }
+
+    /// 62 §0.7: within the caller's own tree a row carries the session title
+    /// and its activity; a cold child reads `stored`.
+    #[tokio::test]
+    async fn same_tree_rows_carry_title_and_activity() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.store.set_title(root, "deploy checklist").await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let rows = a.directory(child).await.unwrap();
+        let parent = rows.iter().find(|r| r.relationship == PeerRelationship::Parent).unwrap();
+        assert_eq!(parent.title.as_deref(), Some("deploy checklist"));
+        assert_eq!(parent.activity.as_ref().unwrap().state, PeerLiveState::Idle);
+
+        // A stored-only sibling: no actor, so `stored` regardless of last stop.
+        let cold = SessionId::new();
+        a.store
+            .create_session(cold, "m", Some(root), Some("cold"), None)
+            .await
+            .unwrap();
+        let rows = a.directory(child).await.unwrap();
+        let cold_row = rows
+            .iter()
+            .find(|r| r.address == format!("session:{cold}"))
+            .unwrap();
+        assert_eq!(cold_row.relationship, PeerRelationship::Sibling);
+        assert_eq!(cold_row.state, PeerState::Stored);
+        assert_eq!(cold_row.activity.as_ref().unwrap().state, PeerLiveState::Stored);
+    }
+
+    /// 62 §3.4: `active_only` drops an idle jobless row and keeps one with a
+    /// running PTY; the default order is working first, then `last_active`
+    /// desc, remotes (no activity) last.
+    #[test]
+    fn arrange_orders_working_first_and_filters_active_only() {
+        let row = |address: &str, activity: Option<PeerActivity>| PeerInfo {
+            address: address.into(),
+            name: address.into(),
+            kind: PeerKind::Native,
+            relationship: PeerRelationship::Root,
+            state: PeerState::Idle,
+            send: true,
+            reply: true,
+            stream: false,
+            activity,
+            title: None,
+        };
+        let act = |state: PeerLiveState, ptys: u16, secs_ago: i64| PeerActivity {
+            state,
+            last_active: Some(Utc::now() - chrono::Duration::seconds(secs_ago)),
+            turn_secs: None,
+            jobs: 0,
+            ptys,
+            children: 0,
+        };
+        let mut rows = vec![
+            row("peer:lab", None),
+            row("idle-old", Some(act(PeerLiveState::Idle, 0, 600))),
+            row("pty", Some(act(PeerLiveState::Idle, 1, 300))),
+            row("idle-new", Some(act(PeerLiveState::Idle, 0, 10))),
+            row("running", Some(act(PeerLiveState::Running, 0, 900))),
+        ];
+        arrange(&mut rows, false);
+        let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
+        assert_eq!(order, ["pty", "running", "idle-new", "idle-old", "peer:lab"]);
+        arrange(&mut rows, true);
+        let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
+        assert_eq!(order, ["pty", "running"]);
     }
 
     /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires

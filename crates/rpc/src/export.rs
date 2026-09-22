@@ -61,6 +61,8 @@ async fn export_bindings() {
         agent::communication::PeerKind,
         agent::communication::PeerRelationship,
         agent::communication::PeerState,
+        agent::communication::PeerLiveState,
+        agent::communication::PeerActivity,
         agent::PeerPage,
         agent::PeerMessagePage,
         agent::PeerMessageChanged,

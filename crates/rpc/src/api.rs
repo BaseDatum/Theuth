@@ -2426,6 +2426,7 @@ impl ApiServer for Server {
                 query,
                 cursor,
                 limit,
+                active_only: false,
             },
         )
         .await

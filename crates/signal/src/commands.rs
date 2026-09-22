@@ -909,6 +909,7 @@ async fn peers_cmd(session: Option<SessionId>, arg: &str) -> anyhow::Result<Repl
             query: (!arg.is_empty()).then(|| arg.to_owned()),
             cursor: None,
             limit: None,
+            active_only: false,
         })
         .await
         .map_err(err)?;

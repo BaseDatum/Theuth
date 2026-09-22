@@ -287,6 +287,63 @@ pub enum PeerState {
     Offline,
 }
 
+/// Fine-grained liveness (62 §3.4): the [`crate::AgentState`] names, plus
+/// `Stored` (no actor now) and `Offline` (a node known to be down).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum PeerLiveState {
+    /// Loaded, no turn in flight.
+    Idle,
+    /// A turn is in flight.
+    Running,
+    /// An approval prompt is unanswered.
+    Approval,
+    /// Blocked in an awaited send.
+    Awaiting,
+    /// The last turn ended with an error.
+    Error,
+    /// The last turn was cancelled.
+    Cancelled,
+    /// Persisted but not loaded; listing did not wake it.
+    Stored,
+    /// A node known to be unreachable.
+    Offline,
+}
+
+impl PeerLiveState {
+    /// A turn is in flight or blocked mid-turn: the peer is working.
+    pub fn working(self) -> bool {
+        matches!(self, Self::Running | Self::Approval | Self::Awaiting)
+    }
+}
+
+/// Liveness detail for one directory row (62 §0.7): state, times and counts,
+/// never content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PeerActivity {
+    /// Fine-grained state.
+    pub state: PeerLiveState,
+    /// Last input or stop, not a heartbeat.
+    pub last_active: Option<DateTime<Utc>>,
+    /// Age of the current turn in seconds; `None` when no turn is running.
+    pub turn_secs: Option<u64>,
+    /// Running background jobs (non-PTY).
+    pub jobs: u16,
+    /// Running PTY jobs.
+    pub ptys: u16,
+    /// Descendants with a live actor.
+    pub children: u16,
+}
+
+impl PeerActivity {
+    /// Working now: a turn in flight or a running job/PTY (62 §3.4 `active_only`).
+    pub fn active(&self) -> bool {
+        self.state.working() || self.jobs + self.ptys > 0
+    }
+}
+
 /// One row of the permitted directory (§5.1). No title, brief, cwd, model,
 /// tools or transcript of another root; `name` is the same-tree brief name
 /// or the owner's explicit alias.
@@ -309,6 +366,12 @@ pub struct PeerInfo {
     pub reply: bool,
     /// Streams task updates (A2A only).
     pub stream: bool,
+    /// Liveness detail (62 §0.7); `None` for a remote peer (a card is not a heartbeat).
+    #[serde(default)]
+    pub activity: Option<PeerActivity>,
+    /// Session title, only for the caller's own tree (parent, child, sibling, ancestor, descendant).
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// Reply to [`ListPeers`] / `discover_peers`: one page after permission filtering.
@@ -398,6 +461,9 @@ pub struct ListPeers {
     pub cursor: Option<String>,
     /// Page size; `None` = [`DISCOVER_DEFAULT_LIMIT`], capped at [`DISCOVER_MAX_LIMIT`].
     pub limit: Option<u16>,
+    /// Keep only rows whose `activity` is working (62 §3.4).
+    #[serde(default)]
+    pub active_only: bool,
 }
 
 /// `ask` → `Result<PeerRecord, String>`: `session`'s own record of message

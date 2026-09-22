@@ -420,6 +420,9 @@ pub struct DiscoverPeersArgs {
     /// Page size, default 25, max 100.
     #[serde(default)]
     pub limit: Option<u16>,
+    /// Only peers working now: a turn in flight (running, approval, awaiting) or a running job/PTY.
+    #[serde(default)]
+    pub active_only: bool,
 }
 
 /// The permitted peer directory (50 §5.1).
@@ -436,8 +439,13 @@ impl Tool for DiscoverPeersTool {
         format!(
             "List the peers you may message: parent, children, siblings, other sessions of the same tree, \
              other owner roots and configured remote agents. Each row has the canonical address for send_message, \
-             a short name, kind, relationship, coarse state and capabilities. Default {DISCOVER_DEFAULT_LIMIT} rows, \
-             max {DISCOVER_MAX_LIMIT}; pass `cursor` for the next page. Listing wakes nobody and probes no network."
+             a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
+             `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
+             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `title` is filled only \
+             for your own tree (parent, children, siblings, ancestors, descendants). Rows come working-first, then \
+             most recently active; `active_only` keeps only peers with a turn in flight or a running job/PTY. \
+             Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the next page. \
+             Listing wakes nobody and probes no network."
         )
     }
 
@@ -452,6 +460,7 @@ impl Tool for DiscoverPeersTool {
                 query: args.query,
                 cursor: args.cursor,
                 limit: args.limit,
+                active_only: args.active_only,
             })
             .await
         {
@@ -465,7 +474,7 @@ impl Tool for DiscoverPeersTool {
             page.peers
                 .iter()
                 .map(|p| {
-                    format!(
+                    let mut s = format!(
                         "{} — {} ({:?}, {:?}, {:?}{}{})",
                         p.address,
                         p.name,
@@ -474,7 +483,26 @@ impl Tool for DiscoverPeersTool {
                         p.state,
                         if p.reply { ", replies" } else { "" },
                         if p.stream { ", streams" } else { "" },
-                    )
+                    );
+                    if let Some(a) = &p.activity {
+                        s.push_str(&format!(" {:?}", a.state).to_lowercase());
+                        if let Some(t) = a.turn_secs {
+                            s.push_str(&format!(" turn={t}s"));
+                        }
+                        if a.jobs + a.ptys > 0 {
+                            s.push_str(&format!(" jobs={} ptys={}", a.jobs, a.ptys));
+                        }
+                        if a.children > 0 {
+                            s.push_str(&format!(" children={}", a.children));
+                        }
+                        if let Some(at) = a.last_active {
+                            s.push_str(&format!(" last_active={}", at.to_rfc3339()));
+                        }
+                    }
+                    if let Some(t) = &p.title {
+                        s.push_str(&format!(" title={t:?}"));
+                    }
+                    s
                 })
                 .collect::<Vec<_>>()
                 .join("\n")

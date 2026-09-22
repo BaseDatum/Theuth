@@ -853,6 +853,7 @@ async fn peers_cmd(session: SessionId, args: &[String]) -> anyhow::Result<Outcom
                     query,
                     cursor: None,
                     limit: None,
+                    active_only: false,
                 })
                 .await
                 .map_err(err)?;
