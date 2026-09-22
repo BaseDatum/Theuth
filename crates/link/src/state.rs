@@ -87,6 +87,42 @@ pub struct State {
     pub connected: bool,
     /// Conns of the current uplink by relay conn id.
     pub conns: HashMap<u32, ConnHandle>,
+    /// Guest handshakes admitted lately (59 §8.3 rate limit): tokens left and when they were last refilled.
+    pub guests: Bucket,
+}
+
+/// A token bucket refilled continuously to `cfg.guest_handshakes_per_minute` per minute.
+#[derive(Clone, Copy, Debug)]
+pub struct Bucket {
+    tokens: f64,
+    last: std::time::Instant,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self {
+            tokens: f64::NAN,
+            last: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Bucket {
+    /// Take one token at `now`; `false` when the minute's budget is spent. A fresh bucket is full.
+    pub fn take(&mut self, per_minute: u32, now: std::time::Instant) -> bool {
+        let cap = f64::from(per_minute);
+        if self.tokens.is_nan() {
+            self.tokens = cap;
+        }
+        let refill = now.saturating_duration_since(self.last).as_secs_f64() * cap / 60.0;
+        self.tokens = (self.tokens + refill).min(cap);
+        self.last = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
 }
 
 impl State {

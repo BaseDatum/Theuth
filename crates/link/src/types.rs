@@ -22,6 +22,8 @@ pub struct LinkConfig {
     pub name: String,
     /// Refuse new pairings past this many devices.
     pub max_devices: usize,
+    /// Guest (`/d`) handshakes admitted per minute (59 §8.3, §11); a guest handshake costs one DH.
+    pub guest_handshakes_per_minute: u32,
 }
 
 impl Default for LinkConfig {
@@ -31,6 +33,7 @@ impl Default for LinkConfig {
             relay: "wss://relay.theuth.io".to_owned(),
             name: String::new(),
             max_devices: 16,
+            guest_handshakes_per_minute: 10,
         }
     }
 }
@@ -168,6 +171,14 @@ pub struct Revoke {
     pub id: String,
 }
 
+/// `ask` → `()`: close every mode-2 conn of `key` (59 §8.4: `doc_member_revoke`); the static is not
+/// a device, so nothing else changes. Its next `IK` completes and its first member call is refused.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DropGuest {
+    /// The guest's X25519 static.
+    pub key: [u8; 32],
+}
+
 /// Serves one ACP conn (32 §4.3) over a record channel; ends when either half closes.
 pub type AcpServe = std::sync::Arc<
     dyn Fn(runtime::Runtime, crate::RecordChannel) -> futures::future::BoxFuture<'static, ()>
@@ -184,20 +195,61 @@ pub struct SetDispatch {
     pub acp: AcpServe,
 }
 
-/// One authenticated RPC connection — a Noise session (mode 0) or a local
-/// WebSocket the bearer token admitted — as the method it invokes sees it:
-/// the same peer for every request on that connection, a different one for
-/// every other connection. Methods read it from their jsonrpsee
-/// [`Extensions`](jsonrpsee::types::Extensions) (`#[method(with_extensions)]`,
-/// `ext.get::<RpcPeer>()`); `None` there means no connection authenticated
-/// the call — treat it as unauthenticated, never as local. [`remote`](Self::remote)
-/// tells a relay conn (the caller's host is not this machine, 54 §8) from
-/// a local socket or in-process caller.
+/// One authenticated RPC connection — a Noise session (mode 0), a guest conn
+/// (mode 2, 59 §8.3) or a local WebSocket the bearer token admitted — as the
+/// method it invokes sees it: the same peer for every request on that
+/// connection, a different one for every other connection. Methods read it
+/// from their jsonrpsee [`Extensions`](jsonrpsee::types::Extensions)
+/// (`#[method(with_extensions)]`, `ext.get::<RpcPeer>()`); `None` there means
+/// no connection authenticated the call — treat it as unauthenticated, never
+/// as local. [`remote`](Self::remote) tells a relay conn (the caller's host is
+/// not this machine, 54 §8) from a local socket or in-process caller;
+/// [`guest`](Self::guest) tells a share-link guest from the owner's devices.
 #[derive(Clone, Debug)]
 pub struct RpcPeer {
     id: u64,
     closed: CancellationToken,
     remote: bool,
+    guest: Option<std::sync::Arc<Guest>>,
+}
+
+/// A mode-2 conn's identity (59 §8.3): the unknown static that completed `IK`
+/// and that handshake's hash — what `doc_join`'s proof binds to. `joined` is
+/// set by rpc once `document` admitted the static to some document; the conn
+/// task closes the conn (`CLOSE 3`) when it is still unset 5 s after the
+/// handshake, or after three refused member calls.
+#[derive(Debug)]
+pub struct Guest {
+    /// The guest's X25519 static.
+    pub key: [u8; 32],
+    /// Noise handshake hash of this connection.
+    pub handshake_hash: [u8; 32],
+    joined: std::sync::atomic::AtomicBool,
+    refusals: std::sync::atomic::AtomicU8,
+}
+
+impl Guest {
+    /// `document` accepted a `doc_join` or a member call from this static.
+    pub fn mark_joined(&self) {
+        self.joined.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether some member call succeeded on this conn.
+    pub fn joined(&self) -> bool {
+        self.joined.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `document` refused a member call (not a member, viewer write); returns the running count.
+    pub fn refuse(&self) -> u8 {
+        self.refusals
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
+    /// Refused member calls so far.
+    pub fn refusals(&self) -> u8 {
+        self.refusals.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Held by the connection for as long as it is open; dropping it closes the
@@ -211,17 +263,31 @@ impl RpcPeer {
     /// A fresh local peer with a random id. The connection keeps the guard
     /// until it is gone (disconnect, revocation, server stop).
     pub fn open() -> (Self, RpcPeerGuard) {
-        Self::open_with(false)
+        Self::open_with(false, None)
     }
 
     /// A fresh peer for a connection that reached us through the relay: its
     /// host is elsewhere, so the microphone is not on it (54 §8). Guard as
     /// [`open`](Self::open).
     pub fn open_remote() -> (Self, RpcPeerGuard) {
-        Self::open_with(true)
+        Self::open_with(true, None)
     }
 
-    fn open_with(remote: bool) -> (Self, RpcPeerGuard) {
+    /// A fresh peer for a mode-2 guest conn (59 §8.3): remote, and carrying the
+    /// static + handshake hash the join proof binds to.
+    pub fn open_guest(key: [u8; 32], handshake_hash: [u8; 32]) -> (Self, RpcPeerGuard) {
+        Self::open_with(
+            true,
+            Some(std::sync::Arc::new(Guest {
+                key,
+                handshake_hash,
+                joined: Default::default(),
+                refusals: Default::default(),
+            })),
+        )
+    }
+
+    fn open_with(remote: bool, guest: Option<std::sync::Arc<Guest>>) -> (Self, RpcPeerGuard) {
         let closed = CancellationToken::new();
         let guard = RpcPeerGuard {
             _cancel_on_drop: closed.clone().drop_guard(),
@@ -231,6 +297,7 @@ impl RpcPeer {
                 id: rand::random(),
                 closed,
                 remote,
+                guest,
             },
             guard,
         )
@@ -244,6 +311,7 @@ impl RpcPeer {
             id: rand::random(),
             closed: CancellationToken::new(),
             remote: false,
+            guest: None,
         }
     }
 
@@ -251,6 +319,11 @@ impl RpcPeer {
     /// on this host (54 §8).
     pub fn remote(&self) -> bool {
         self.remote
+    }
+
+    /// The guest identity of a mode-2 conn; `None` for the owner's devices and local callers.
+    pub fn guest(&self) -> Option<&Guest> {
+        self.guest.as_deref()
     }
 
     /// Random per connection; collision-resistant across the Noise and local
