@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
-use crate::fs::refuse_truncated;
+use crate::fs::refuse_read_output;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Which tier of the matching ladder found `old`.
@@ -518,7 +518,7 @@ impl EditArgs {
             let check = || -> anyhow::Result<()> {
                 anyhow::ensure!(!op.old.is_empty(), "`old` must not be empty");
                 anyhow::ensure!(op.old != op.new, "no-op: old and new are identical");
-                refuse_truncated(&op.new)
+                refuse_read_output(&op.new)
             };
             check().map_err(|e| label(e, i, n))?;
         }

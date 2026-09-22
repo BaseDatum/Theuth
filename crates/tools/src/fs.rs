@@ -16,18 +16,33 @@ const MAX_BYTES: usize = 64 * 1024;
 
 // The marker literals are split with `concat!` so this source file does not
 // itself contain them: `write_file`/`edit` refuse content that does.
-/// First line of a cut `read_file` result; followed by exact byte/line counts.
+/// First line of every `read_file` result:
+/// `[read_file <path>: N lines, B bytes; showing lines a–b]`.
+pub const READ_HEADER_PREFIX: &str = concat!("[read_", "file ");
+/// The header's range clause; together with [`READ_HEADER_PREFIX`] on one
+/// line it identifies a pasted header.
+pub const READ_HEADER_SHOWING: &str = concat!("; show", "ing");
+/// First line of a `read_file` result cut at 64 KiB by the pre-header
+/// format; still refused on write.
 pub const TRUNCATED_HEAD_PREFIX: &str = concat!("[read_file: ", "showing bytes ");
 /// Last line of a cut `read_file` result.
 pub const TRUNCATED_TAIL: &str =
     concat!("[truncated at 64 KiB; ", "use offset/limit to read more]");
 
-/// Err when `content` carries a `read_file` truncation marker: writing it
-/// back would persist a file cut at 64 KiB (the 2026-09-21 loss).
-pub(crate) fn refuse_truncated(content: &str) -> anyhow::Result<()> {
+/// Err when `content` looks like `read_file` output: a truncation marker
+/// (writing it back would persist a file cut at 64 KiB — the 2026-09-21
+/// loss) or a pasted header. Line-number prefixes alone are not refused:
+/// TSV files legitimately have them.
+pub(crate) fn refuse_read_output(content: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !content.contains(TRUNCATED_HEAD_PREFIX) && !content.contains(TRUNCATED_TAIL),
         "refusing to write: content contains a read_file truncation marker — the source read was cut at 64 KiB; read with offset/limit or use edit for targeted changes"
+    );
+    anyhow::ensure!(
+        !content
+            .lines()
+            .any(|l| l.starts_with(READ_HEADER_PREFIX) && l.contains(READ_HEADER_SHOWING)),
+        "refusing to write: content looks like read_file output (header/line numbers); write the file's real text"
     );
     Ok(())
 }
@@ -43,6 +58,14 @@ pub struct ReadFileArgs {
     /// Maximum number of lines to return.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Prefix each line with its right-aligned line number and a tab
+    /// (`cat -n`); default true. `false` returns the raw text.
+    #[serde(default = "yes")]
+    pub numbers: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Read a text file, or a document rendered as Markdown.
@@ -55,55 +78,99 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown. Optional `offset`/`limit` select a 1-based line window. Output is capped at 64 KiB: a cut result starts with a `[read_file: …]` header giving exact byte/line counts and ends with a `[truncated …]` footer; read the rest with offset/limit and never write a cut result back. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown. The first line is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`; each following line is `N<tab>text` (`cat -n`) unless `numbers=false` — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`. Optional `offset`/`limit` select a 1-based line window. Output is capped at 64 KiB: a cut result says so in the header and ends with a `[truncated …]` footer; read the rest with offset/limit and never write a cut result back. Paths are relative to the process cwd; `~` is not expanded.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let shown = a.path.display().to_string();
         let bytes = tokio::fs::read(&a.path)
             .await
-            .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
+            .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
         // A detected document that fails to convert is an error the model can
         // act on, never 64 KiB of object streams; undetected bytes stay text.
-        let text: String = match crate::doc::format(&bytes) {
+        let (note, text) = match crate::doc::format(&bytes) {
             Some(fmt) => {
                 let md = crate::doc::to_markdown(bytes, fmt)
                     .await
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
-                format!(
-                    "[{}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]\n{md}",
-                    a.path.display()
-                )
+                    .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+                let note = format!(
+                    "[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]"
+                );
+                (Some(note), md)
             }
-            None => String::from_utf8_lossy(&bytes).into_owned(),
+            None => (None, String::from_utf8_lossy(&bytes).into_owned()),
         };
-        let mut out: String = match (a.offset, a.limit) {
-            (None, None) => text,
-            (offset, limit) => text
-                .lines()
-                .skip(offset.unwrap_or(1).saturating_sub(1))
-                .take(limit.unwrap_or(usize::MAX))
-                .collect::<Vec<_>>()
-                .join("\n"),
+        let all: Vec<&str> = text.lines().collect();
+        let total = all.len();
+        let first = a.offset.unwrap_or(1).max(1);
+        anyhow::ensure!(
+            first <= total.max(1),
+            "{shown}: offset {first} is past the end of the file ({total} lines)"
+        );
+        let end = match a.limit {
+            Some(n) => (first - 1).saturating_add(n).min(total),
+            None => total,
         };
-        if out.len() > MAX_BYTES {
-            let mut cut = MAX_BYTES;
-            while !out.is_char_boundary(cut) {
-                cut -= 1;
+        let mut body = render(&all[first - 1..end], first, a.numbers);
+        let mut count = end + 1 - first;
+        let cut = body.len() > MAX_BYTES;
+        if cut {
+            let mut at = MAX_BYTES;
+            while !body.is_char_boundary(at) {
+                at -= 1;
             }
-            let (bytes_total, lines_total) = (out.len(), out.lines().count());
-            out.truncate(cut);
-            let lines_shown = out.lines().count();
-            out.insert_str(
-                0,
-                &format!(
-                    "{TRUNCATED_HEAD_PREFIX}0–{cut} of {bytes_total} (lines 1–{lines_shown} of {lines_total}); truncated — use offset/limit, or edit for changes]\n"
-                ),
-            );
+            body.truncate(at);
+            // The line the cut lands in is shown partially and counts.
+            count = body.matches('\n').count() + 1;
+        }
+        let mut out = format!(
+            "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes",
+            text.len()
+        );
+        match count {
+            0 => out.push_str(&format!("{READ_HEADER_SHOWING} 0 lines")),
+            n => out.push_str(&format!(
+                "{READ_HEADER_SHOWING} lines {first}–{}",
+                first + n - 1
+            )),
+        }
+        if cut {
+            out.push_str("; cut at 64 KiB — read the rest with offset/limit");
+        }
+        out.push(']');
+        if let Some(note) = note {
+            out.push('\n');
+            out.push_str(&note);
+        }
+        if !body.is_empty() {
+            out.push('\n');
+            out.push_str(&body);
+        }
+        if cut {
             out.push('\n');
             out.push_str(TRUNCATED_TAIL);
         }
         Ok(ToolOutput::ok(out))
     }
+}
+
+/// Join `lines`, numbered from `first` in `cat -n` shape (right-aligned to
+/// the widest number shown, one tab, the line verbatim) when `numbers`.
+fn render(lines: &[&str], first: usize, numbers: bool) -> String {
+    use std::fmt::Write;
+    if !numbers {
+        return lines.join("\n");
+    }
+    let last = first + lines.len().saturating_sub(1);
+    let width = last.checked_ilog10().map_or(1, |d| d as usize + 1);
+    let mut out = String::with_capacity(lines.iter().map(|l| l.len() + width + 2).sum());
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        write!(out, "{:>width$}\t{line}", first + i).unwrap();
+    }
+    out
 }
 
 /// Arguments for [`WriteFile`].
@@ -131,7 +198,7 @@ impl Tool for WriteFile {
     }
 
     async fn call(&self, a: WriteFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
-        refuse_truncated(&a.content)?;
+        refuse_read_output(&a.content)?;
         let shown = a.path.display().to_string();
         let existing = match tokio::fs::read(&a.path).await {
             Ok(bytes) => Some(bytes),
@@ -371,21 +438,85 @@ mod tests {
             path: path.to_owned(),
             offset,
             limit,
+            numbers: true,
         }
+    }
+
+    fn header(p: &Path, total_lines: usize, bytes: usize, rest: &str) -> String {
+        format!(
+            "{READ_HEADER_PREFIX}{}: {total_lines} lines, {bytes} bytes{READ_HEADER_SHOWING} {rest}]",
+            p.display()
+        )
+    }
+
+    #[tokio::test]
+    async fn read_numbers_lines_cat_n_style_under_an_exact_header() {
+        let text: String = (1..=12).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        let mut want = header(&p, 12, text.len(), "lines 1–12");
+        for i in 1..=12 {
+            want.push_str(&format!("\n{i:>2}\tl{i}"));
+        }
+        assert_eq!(out, want);
+        // Width follows the largest number shown, not the file's.
+        let out = read(args(&p, Some(8), Some(2))).await;
+        assert_eq!(
+            out,
+            format!("{}\n8\tl8\n9\tl9", header(&p, 12, text.len(), "lines 8–9"))
+        );
+        // Empty lines keep their number; a limit past EOF clamps.
+        let p = scratch("a\n\nc");
+        let out = read(args(&p, Some(2), Some(50))).await;
+        assert_eq!(out, format!("{}\n2\t\n3\tc", header(&p, 3, 4, "lines 2–3")));
+    }
+
+    #[tokio::test]
+    async fn read_numbers_false_gives_raw_text_with_header() {
+        let p = scratch("a\n\nc\n");
+        let mut a = args(&p, None, None);
+        a.numbers = false;
+        assert_eq!(
+            read(a).await,
+            format!("{}\na\n\nc", header(&p, 3, 5, "lines 1–3"))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_empty_file_and_offset_past_eof() {
+        let p = scratch("");
+        assert_eq!(
+            read(args(&p, None, None)).await,
+            header(&p, 0, 0, "0 lines")
+        );
+        let p = scratch("a\nb\n");
+        let err = Tool::call(&ReadFile, args(&p, Some(3), None), cx())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.ends_with("offset 3 is past the end of the file (2 lines)"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
     async fn read_over_cap_is_marked_at_both_ends_with_exact_counts() {
-        // 1000 lines × 70 bytes = 70 000 bytes, 1 000 lines; the cap falls
-        // mid-line 937 (65536 / 70 = 936.2), so 937 partial lines are shown.
+        // 1000 lines × 70 bytes = 70 000 bytes; raw, the cap falls mid-line
+        // 937 (65536 / 70 = 936.2); numbered (+5 bytes a line) mid-line 874.
         let line = format!("{}\n", "x".repeat(69));
         let p = scratch(&line.repeat(1000));
-        let out = read(args(&p, None, None)).await;
+        let mut a = args(&p, None, None);
+        a.numbers = false;
+        let out = read(a).await;
         let head = out.lines().next().unwrap();
         assert_eq!(
             head,
-            format!(
-                "{TRUNCATED_HEAD_PREFIX}0–65536 of 70000 (lines 1–937 of 1000); truncated — use offset/limit, or edit for changes]"
+            header(
+                &p,
+                1000,
+                70000,
+                "lines 1–937; cut at 64 KiB — read the rest with offset/limit"
             )
         );
         assert!(
@@ -396,16 +527,58 @@ mod tests {
         let body = &out[head.len() + 1..out.len() - TRUNCATED_TAIL.len() - 1];
         assert_eq!(body.len(), MAX_BYTES);
         assert_eq!(body, &line.repeat(1000)[..MAX_BYTES]);
+
+        let out = read(args(&p, None, None)).await;
+        let head = out.lines().next().unwrap();
+        assert_eq!(
+            head,
+            header(
+                &p,
+                1000,
+                70000,
+                "lines 1–874; cut at 64 KiB — read the rest with offset/limit"
+            )
+        );
+        let body = &out[head.len() + 1..out.len() - TRUNCATED_TAIL.len() - 1];
+        assert_eq!(body.len(), MAX_BYTES);
+        assert!(body.starts_with(&format!("   1\t{}\n   2\t", "x".repeat(69))));
     }
 
     #[tokio::test]
     async fn read_window_under_cap_has_no_markers() {
         let line = format!("{}\n", "x".repeat(69));
         let p = scratch(&line.repeat(1000));
-        let out = read(args(&p, Some(2), Some(3))).await;
-        assert_eq!(out, line.repeat(3).trim_end());
+        let mut a = args(&p, Some(2), Some(3));
+        a.numbers = false;
+        let out = read(a).await;
+        assert_eq!(
+            out,
+            format!(
+                "{}\n{}",
+                header(&p, 1000, 70000, "lines 2–4"),
+                line.repeat(3).trim_end()
+            )
+        );
         let all = read(args(&p, Some(1), Some(1000))).await;
-        assert!(all.starts_with(TRUNCATED_HEAD_PREFIX) && all.ends_with(TRUNCATED_TAIL));
+        assert!(all.contains("; cut at 64 KiB") && all.ends_with(TRUNCATED_TAIL));
+    }
+
+    #[tokio::test]
+    async fn guard_refuses_pasted_header_but_not_tsv_numbers() {
+        let p = scratch("x");
+        let pasted = format!("{}\n1\tfoo\n2\tbar", header(&p, 2, 8, "lines 1–2"));
+        let err = write(&p, &pasted).await.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "refusing to write: content looks like read_file output (header/line numbers); write the file's real text"
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
+        write(&p, "1\tfoo\n2\tbar\n").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "1\tfoo\n2\tbar\n");
+        // A header mid-file (e.g. quoted in prose) is still refused; the
+        // prefix without the range clause is not.
+        assert!(refuse_read_output(&format!("doc\n{pasted}")).is_err());
+        assert!(refuse_read_output(&format!("{READ_HEADER_PREFIX}notes]\nbody")).is_ok());
     }
 
     #[tokio::test]
