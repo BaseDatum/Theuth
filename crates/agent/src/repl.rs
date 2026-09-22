@@ -72,12 +72,13 @@ wakes you with <job_idle> and the screen: the program is likely waiting on you.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path=\"x.rs\")`)
-and work on it in Python: slice, filter, regex, count, diff. Print only what you need to
-decide the next step, never a whole file or a whole result; the full value stays in the
-variable and survives compaction and restart. Use Python for loops, conditions and
-parsing; use `shell()` to run programs, not to write shell programs. Discover a tool's
-full parameters with `help(name)` - the index below is names and signatures only. The
-tools defined directly for you are awaitable here too, by the same name.
+and work on it in Python: slice, filter, regex, count, diff. `read_file` returns a header
+line then `N<tab>text` lines; pass `numbers=False` when you want the file's raw text.
+Print only what you need to decide the next step, never a whole file or a whole result;
+the full value stays in the variable and survives compaction and restart. Use Python for
+loops, conditions and parsing; use `shell()` to run programs, not to write shell programs.
+Discover a tool's full parameters with `help(name)` - the index below is names and
+signatures only. The tools defined directly for you are awaitable here too, by the same name.
 
 Tools available only in the runtime (all `async`):
 ";
