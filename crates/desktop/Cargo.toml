@@ -37,11 +37,11 @@ anyhow = { workspace = true }
 serde_yaml = { workspace = true }
 dirs = { workspace = true }
 # 39 §3.3: background check + verify, install at quit; tokio for `sleep`, rand for the
-# jitter, nix `access(2)` to skip a bundle we cannot rename without a password prompt.
+# jitter, `platform::files::writable` to skip a bundle we cannot rename without a password prompt.
 tauri-plugin-updater = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
-nix = { workspace = true, features = ["fs"] }
+platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
 sha2 = { workspace = true }

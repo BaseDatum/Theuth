@@ -51,27 +51,11 @@ impl Entry {
         self.key.as_deref().unwrap_or(&self.path)
     }
 
-    /// Meant for this build. `cfg!(target_os, target_arch)` → triple: the platforms we ship
-    /// are unambiguous from those two, so no `build.rs` exporting `TARGET` is needed.
+    /// Meant for this build ([`platform::target::target_triple`]).
     fn for_this_platform(&self) -> bool {
-        self.platform.as_deref().is_none_or(|p| p == TARGET_TRIPLE)
+        self.platform.as_deref().is_none_or(|p| p == platform::target::target_triple())
     }
 }
-
-/// This build's rust target triple, as `release-models.sh` names it.
-const TARGET_TRIPLE: &str = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    "aarch64-apple-darwin"
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    "x86_64-apple-darwin"
-} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    "x86_64-unknown-linux-gnu"
-} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-    "aarch64-unknown-linux-gnu"
-} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-    "x86_64-pc-windows-msvc"
-} else {
-    "unknown"
-};
 
 /// `models-progress` payload. `done`/`total` are bytes over every missing file.
 #[derive(Clone, Serialize)]
@@ -224,10 +208,8 @@ async fn download(
         );
     }
     // The runtime is dlopened: executable bit on, like Microsoft ships it.
-    #[cfg(unix)]
     if e.path.starts_with("onnxruntime/") && !e.path.ends_with("/VERSION") {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755)).await?;
+        platform::files::set_executable(&part)?;
     }
     tokio::fs::rename(&part, dest).await?;
     Ok(())

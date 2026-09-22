@@ -149,8 +149,5 @@ fn bundle_dir() -> anyhow::Result<PathBuf> {
 
 /// The plugin renames `dir` aside and a new one in: needs write on `dir` and its parent.
 fn writable(dir: &Path) -> bool {
-    use nix::unistd::{AccessFlags, access};
-    dir.parent()
-        .is_some_and(|parent| access(parent, AccessFlags::W_OK).is_ok())
-        && access(dir, AccessFlags::W_OK).is_ok()
+    dir.parent().is_some_and(platform::files::writable) && platform::files::writable(dir)
 }

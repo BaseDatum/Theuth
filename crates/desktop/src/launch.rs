@@ -174,16 +174,11 @@ fn spawn(
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let shell = shell(log);
-    let script = format!(
-        "exec {} --headless --data-dir {}",
-        sq(&cli_bin().to_string_lossy()),
-        sq(&data_dir.to_string_lossy())
-    );
+    let (program, args) = daemon_command(data_dir, log);
     let child = pair
         .slave
-        .spawn_command(command(&shell, &script, port))
-        .with_context(|| format!("spawn {}", shell.display()))?;
+        .spawn_command(command(&program, &args, port))
+        .with_context(|| format!("spawn {}", program.display()))?;
     drop(pair.slave);
     let reader = pair.master.try_clone_reader()?;
     Ok((
@@ -195,12 +190,30 @@ fn spawn(
     ))
 }
 
-/// 18 §2 step 2: the user's login, interactive shell running one command, with
-/// the app's environment plus `TERM`, the `THEUTH_LAUNCH=1` guard (18 §4) and the
-/// port override (01 §1). cwd is `$HOME`, as for a new terminal tab.
-fn command(shell: &Path, script: &str, port: u16) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.args(["-l", "-i", "-c", script]);
+/// The daemon's command line (18 §2 step 2): on Unix the user's login,
+/// interactive shell running `exec t --headless …` so the daemon inherits a
+/// terminal tab's environment; on Windows, which has no login-shell
+/// environment, `t.exe --headless …` itself (58 §0.3).
+fn daemon_command(data_dir: &Path, log: &Mutex<Vec<u8>>) -> (PathBuf, Vec<String>) {
+    let bin = cli_bin();
+    if cfg!(windows) {
+        let args = ["--headless", "--data-dir", &data_dir.to_string_lossy()].map(str::to_owned);
+        return (bin, args.to_vec());
+    }
+    let script = format!(
+        "exec {} --headless --data-dir {}",
+        sq(&bin.to_string_lossy()),
+        sq(&data_dir.to_string_lossy())
+    );
+    (shell(log), ["-l", "-i", "-c", &script].map(str::to_owned).to_vec())
+}
+
+/// `program args` on the pty with the app's environment plus `TERM`, the
+/// `THEUTH_LAUNCH=1` guard (18 §4) and the port override (01 §1). cwd is
+/// `$HOME`, as for a new terminal tab.
+fn command(program: &Path, args: &[String], port: u16) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(args);
     cmd.env("TERM", "xterm-256color");
     cmd.env("THEUTH_LAUNCH", "1");
     cmd.env("THEUTH_RPC__LISTEN", format!("127.0.0.1:{port}"));
@@ -230,11 +243,12 @@ fn cli_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("THEUTH_BIN") {
         return PathBuf::from(p);
     }
+    let t = format!("t{}", std::env::consts::EXE_SUFFIX);
     std::env::current_exe()
         .ok()
-        .map(|exe| exe.with_file_name("t"))
+        .map(|exe| exe.with_file_name(&t))
         .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from("t"))
+        .unwrap_or_else(|| PathBuf::from(t))
 }
 
 /// POSIX single-quote for `sh -c`.
@@ -321,6 +335,7 @@ mod tests {
     use super::*;
 
     /// 18 §7.1: the login+interactive shell on a pty passes our variables through.
+    #[cfg(unix)]
     #[test]
     fn shell_on_pty_carries_env() {
         let pair = native_pty_system()
@@ -337,7 +352,7 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from(FALLBACK_SHELL));
         let mut child = pair
             .slave
-            .spawn_command(command(&shell, "exec env", 7802))
+            .spawn_command(command(&shell, &["-l", "-i", "-c", "exec env"].map(str::to_owned), 7802))
             .unwrap();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().unwrap();
