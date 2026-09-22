@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Eye, LoaderCircle, type LucideIcon, Mic, MoreHorizontal, PencilLine, Shrink, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Eye, LoaderCircle, type LucideIcon, Mic, MoreHorizontal, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -57,6 +57,13 @@ function SessionActivity({ id }: { id: string }) {
       role="img"
     />
   )
+}
+
+/** Live-terminal glyph: a PTY job whose screen is still changing (nothing once every PTY is quiet or gone). */
+function SessionTerminals({ id }: { id: string }) {
+  const n = useSessionField(id, 'ptys')?.size ?? 0
+  if (n === 0) return null
+  return <SquareTerminal className="size-3.5 shrink-0 animate-pulse text-info" aria-label={`${n} live terminal${n === 1 ? '' : 's'}`} role="img" />
 }
 
 /** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */
@@ -200,6 +207,7 @@ export const SessionItem = memo(function SessionItem({
                 </span>
               )}
               <SessionActivity id={id} />
+              <SessionTerminals id={id} />
               <span className="truncate">{shown}</span>
               {project === 'meetings' ? (
                 // 53 / 01 §0.1: a meeting's session; the sidebar filters on `project`.

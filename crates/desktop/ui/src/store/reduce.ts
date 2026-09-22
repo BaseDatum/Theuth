@@ -37,6 +37,7 @@ export function empty(id: string): SessionSlice {
     browser: false,
     browserLive: false,
     terminal: false,
+    ptys: new Set(),
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
@@ -474,6 +475,14 @@ function patchJob(
   );
 }
 
+/** Job `id` is no longer a live terminal (quiet screen or exited); a no-op for non-PTY jobs. */
+function ptyQuiet(s: SessionSlice, id: string): SessionSlice {
+  if (!s.ptys.has(id)) return s;
+  const ptys = new Set(s.ptys);
+  ptys.delete(id);
+  return { ...s, ptys };
+}
+
 /**
  * Fold one event into its session's slice (mirrors `tui::model::apply_agent`
  * and the job arm of `Model::apply`). Returns `slice` itself when nothing
@@ -523,24 +532,32 @@ export function apply(
         (t) => t.callId === e.call_id,
         (t) => ({ ...t, job: { id: e.id, command: e.command, lines: [] } }),
       );
-      return e.pty && !next.terminal ? { ...next, terminal: true } : next;
+      return e.pty ? { ...next, terminal: true, ptys: new Set(next.ptys).add(e.id) } : next;
     }
     case "JobOutput":
       return patchJob(slice, e.id, (j) => ({
         ...j,
         lines: pushChunk(j.lines, e.chunk),
       }));
-    case "JobScreen":
-      return patchJob(slice, e.id, (j) => ({
+    case "JobScreen": {
+      const next = patchJob(slice, e.id, (j) => ({
         ...j,
         screen: { rows: e.rows, cursor: e.cursor },
       }));
+      // A changing screen is a live terminal again, however it went quiet.
+      return next.ptys.has(e.id) ? next : { ...next, ptys: new Set(next.ptys).add(e.id) };
+    }
+    case "JobIdle":
+      return ptyQuiet(slice, e.id);
     case "JobFinished":
       // Within grace the tool result carries the output: the tail has nothing to add.
-      return patchJob(slice, e.id, (j) =>
-        e.inline
-          ? undefined
-          : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } },
+      return ptyQuiet(
+        patchJob(slice, e.id, (j) =>
+          e.inline
+            ? undefined
+            : { ...j, exit: { exit: e.exit, secs: Number(e.secs) } },
+        ),
+        e.id,
       );
     case "BrowserShowLive":
       return { ...slice, browser: true, browserLive: true };

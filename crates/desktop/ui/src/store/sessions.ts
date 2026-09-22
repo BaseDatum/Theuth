@@ -189,6 +189,8 @@ export type SessionSlice = {
   browserLive: boolean;
   /** A PTY job started in this session (`JobStarted.pty`): the header shows the terminals icon. */
   terminal: boolean;
+  /** PTY jobs whose screen is still changing: added on `JobStarted.pty`/`JobScreen`, dropped on `JobIdle`/`JobFinished`. The sidebar's live-terminal glyph. */
+  ptys: Set<string>;
   /** Artifacts by `call_id` of the `show` call that made them (35 §7.3); fed by `ArtifactShown` and `list_artifacts`. */
   artifacts: Map<string, Artifact>;
   /** Tool calls whose arguments are still streaming (`ToolCallProgress`), by `call_id`; cleared on `ToolCallStarted`.

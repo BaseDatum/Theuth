@@ -321,6 +321,24 @@ test('job tail attaches to the tool card by call id, follows output, freezes or 
   expect(apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'top', call_id: 'c9', log: '/l', name: null, pty: true }, ctx()).terminal).toBe(true)
 })
 
+test('live PTY set follows screen changes: idle or exit drops a job, a new screen re-adds it', () => {
+  let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'top' } }])
+  expect(s.ptys.size).toBe(0)
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'top', call_id: 'c1', log: '/l', name: null, pty: true }, ctx())
+  expect([...s.ptys]).toEqual(['j1'])
+  const idle = { type: 'JobIdle', session: S, id: 'j1', command: 'top', name: null, quiet_secs: 60n, secs: 90n, nudge: 1, user_typed_secs: null, output: '' } as const
+  s = apply(s, idle, ctx())
+  expect(s.ptys.size).toBe(0)
+  expect(apply(s, idle, ctx())).toBe(s)
+  s = apply(s, { type: 'JobScreen', session: S, id: 'j1', rows: ['$ '], cursor: [0, 2] }, ctx())
+  expect([...s.ptys]).toEqual(['j1'])
+  s = apply(s, { type: 'JobFinished', session: S, id: 'j1', command: 'top', exit: { exited: 0 }, secs: 99n, output: '', inline: false, pty: true }, ctx())
+  expect(s.ptys.size).toBe(0)
+  // A plain job never enters the set.
+  s = apply(s, { type: 'JobStarted', session: S, id: 'j2', command: 'make', call_id: 'c1', log: '/l', name: null, pty: false }, ctx())
+  expect(s.ptys.size).toBe(0)
+})
+
 test('ScrapeProgress attaches inflight URLs to the crawl card by call id, dropped on finish', () => {
   let s = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'crawl', args: { url: 'https://a.example' } }])
   s = apply(
