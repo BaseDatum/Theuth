@@ -52,8 +52,8 @@ pub use ask::{
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
-    CancelJob, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId, JobView, Jobs,
-    ListJobs,
+    CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
+    JobView, Jobs, ListJobs,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
