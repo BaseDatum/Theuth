@@ -301,7 +301,8 @@ pub struct ScreenArgs {
 pub struct WaitArgs {
     /// `j4` or the job's `name`.
     pub id: String,
-    /// Rust regex (no look-around) over output since this call started;
+    /// Rust regex (no look-around) over output since your last `send` (or
+    /// the job's start) — a prompt already on screen matches at once;
     /// absent → wait for exit.
     pub pattern: Option<String>,
     /// Seconds; default 30, max 120.
@@ -486,6 +487,10 @@ pub(crate) struct PtyHandle {
     /// The model touched the job (`send`/`screen`/`wait`) since the last
     /// nudge fired: the next stretch runs at the base interval (61 §1.4).
     interacted: AtomicBool,
+    /// `wait`'s read cursor into the log (55 §12): where the model last
+    /// acted — reset to the log length by `send`, moved past each `wait`
+    /// match — so a prompt already on screen matches at once.
+    cursor: AtomicU64,
 }
 
 /// One item of [`PtyHandle::stream`].
@@ -1154,7 +1159,7 @@ impl Message<StartPty> for Jobs {
                             Outcome::Exited => (String::new(), Some((&mut done).await)),
                             Outcome::Ready(matched) => {
                                 let mut parts = Vec::new();
-                                if let Some(m) = matched {
+                                if let Some((m, _)) = matched {
                                     parts.push(format!("log matched `{m}`"));
                                 }
                                 if let Some((_, p)) = port {
@@ -1253,6 +1258,7 @@ impl Message<Launch<StartPty>> for Jobs {
             idle_wake: Notify::new(),
             waiting: AtomicUsize::new(0),
             interacted: AtomicBool::new(false),
+            cursor: AtomicU64::new(0),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Notify::new());
@@ -2003,54 +2009,80 @@ fn strip(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != 0x1b {
+        if bytes[i] == 0x1b {
+            i = skip_esc(bytes, i);
+        } else {
             out.push(bytes[i]);
             i += 1;
-            continue;
-        }
-        i += 1;
-        match bytes.get(i) {
-            Some(b'[') => {
-                i += 1;
-                while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
-                    i += 1;
-                }
-                i += 1;
-            }
-            Some(b']') => {
-                while i < bytes.len()
-                    && bytes[i] != 0x07
-                    && !(bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\'))
-                {
-                    i += 1;
-                }
-                i += if bytes.get(i) == Some(&0x1b) { 2 } else { 1 };
-            }
-            // `ESC ( B` and friends: intermediates 0x20..=0x2f, then one final byte.
-            Some(b) if (0x20..=0x2f).contains(b) => {
-                while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
-                    i += 1;
-                }
-                i += 1;
-            }
-            Some(_) => i += 1,
-            None => {}
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Index just past the ESC sequence starting at `bytes[i]`.
+fn skip_esc(bytes: &[u8], mut i: usize) -> usize {
+    i += 1;
+    match bytes.get(i) {
+        Some(b'[') => {
+            i += 1;
+            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                i += 1;
+            }
+            i + 1
+        }
+        Some(b']') => {
+            while i < bytes.len()
+                && bytes[i] != 0x07
+                && !(bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\'))
+            {
+                i += 1;
+            }
+            i + if bytes.get(i) == Some(&0x1b) { 2 } else { 1 }
+        }
+        // `ESC ( B` and friends: intermediates 0x20..=0x2f, then one final byte.
+        Some(b) if (0x20..=0x2f).contains(b) => {
+            while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                i += 1;
+            }
+            i + 1
+        }
+        Some(_) => i + 1,
+        None => i,
+    }
+}
+
+/// Raw index just past the first `kept` bytes [`strip`] keeps: maps a match
+/// end in the stripped text back into `bytes`.
+// ponytail: `kept` indexes the lossy String, which equals the kept-bytes
+// index unless invalid UTF-8 precedes the match; then the cursor lands a
+// few bytes off. Match on `regex::bytes` over the kept bytes if it matters.
+fn raw_end(bytes: &[u8], kept: usize) -> usize {
+    let (mut i, mut n) = (0, 0);
+    while i < bytes.len() && n < kept {
+        if bytes[i] == 0x1b {
+            i = skip_esc(bytes, i);
+        } else {
+            i += 1;
+            n += 1;
+        }
+    }
+    i
 }
 
 fn log_len(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
-/// First `re` match in the log bytes appended since offset `from`.
-fn find_since(path: &Path, from: u64, re: &Regex) -> Option<String> {
+/// First `re` match in the log bytes appended since offset `from`, with the
+/// log offset just past it.
+fn find_since(path: &Path, from: u64, re: &Regex) -> Option<(String, u64)> {
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(from)).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
-    re.find(&strip(&buf)).map(|m| m.as_str().to_owned())
+    let text = strip(&buf);
+    let m = re.find(&text)?;
+    Some((m.as_str().to_owned(), from + raw_end(&buf, m.end()) as u64))
 }
 
 async fn connects(host: &str, port: u16) -> bool {
@@ -2060,8 +2092,9 @@ async fn connects(host: &str, port: u16) -> bool {
 }
 
 enum Outcome {
-    /// Every condition passed; the log match if there was a pattern.
-    Ready(Option<String>),
+    /// Every condition passed; the log match and the offset past it, if there
+    /// was a pattern.
+    Ready(Option<(String, u64)>),
     Exited,
     /// What was still pending: `log \`re\``, `port N`.
     TimedOut(Vec<String>),
@@ -2115,8 +2148,11 @@ async fn await_output(
     }
 }
 
-/// 22 §4.5: write, signal, settle, screen.
+/// 22 §4.5: write, signal, settle, screen. The write moves `wait`'s read
+/// cursor to the end of the log first (55 §12): what follows the keystroke
+/// is what the model waits for next.
 async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
+    live.pty.cursor.fetch_max(log_len(&live.log_path), SeqCst);
     let mut text = args.text.clone().unwrap_or_default();
     if args.text.is_some() && args.enter.unwrap_or(true) {
         text.push('\r');
@@ -2149,7 +2185,8 @@ async fn settle(pty: &PtyHandle) {
     }
 }
 
-/// 22 §4.6.
+/// 22 §4.6; the scan starts at the job's read cursor (55 §12), so output
+/// already on screen since the model's last `send` matches at once.
 async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
     let re = args
         .pattern
@@ -2159,15 +2196,27 @@ async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
         .map_err(|e| format!("pattern: {e}"))?;
     let secs = args.timeout.unwrap_or(WAIT_DEFAULT).min(WAIT_MAX);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    let from = log_len(&live.log_path);
-    // 61 §1.5: the model is watching; the reply, not a nudge, is the wake.
-    live.pty.waiting.fetch_add(1, SeqCst);
-    let outcome = await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await;
-    live.pty.waiting.fetch_sub(1, SeqCst);
+    let from = live.pty.cursor.load(SeqCst);
+    let on_screen = re.as_ref().and_then(|re| find_since(&live.log_path, from, re));
+    let already = on_screen.is_some();
+    let outcome = match on_screen {
+        Some(m) => Outcome::Ready(Some(m)),
+        None => {
+            // 61 §1.5: the model is watching; the reply, not a nudge, is the wake.
+            live.pty.waiting.fetch_add(1, SeqCst);
+            let o = await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await;
+            live.pty.waiting.fetch_sub(1, SeqCst);
+            o
+        }
+    };
     let (note, matched) = match outcome {
-        Outcome::Ready(m) => (m.as_deref().map(|m| format!("matched: {m:?}")), m),
+        Outcome::Ready(Some((m, end))) => {
+            live.pty.cursor.fetch_max(end, SeqCst);
+            let how = if already { " (already on screen)" } else { "" };
+            (Some(format!("matched{how}: {m:?}")), Some(m))
+        }
         Outcome::TimedOut(_) => (Some(format!("timed out after {secs}s")), None),
-        Outcome::Exited => (None, None),
+        Outcome::Ready(None) | Outcome::Exited => (None, None),
     };
     Ok(reply(live, note.as_deref(), matched.as_deref()))
 }
@@ -2380,7 +2429,7 @@ impl Tool for WaitTool {
     type Args = WaitArgs;
 
     fn description(&self) -> String {
-        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you, or `<job_idle>` does once the screen stops changing. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
+        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). `pattern` matches output since your last `send` (or since the job started), so a prompt already on screen returns at once. Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you, or `<job_idle>` does once the screen stops changing. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
     }
 
     async fn call(&self, args: WaitArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -3035,6 +3084,90 @@ mod tests {
         cancel(&fx, "j1").await;
     }
 
+    /// `start` returns before the program prints; block until `needle` is
+    /// in the log so the following `wait` sees it already on screen.
+    async fn logged(fx: &Fx, needle: &str) {
+        let log = list(fx).await[0].log.clone();
+        let end = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(&log).is_ok_and(|s| s.contains(needle)) {
+            assert!(Instant::now() < end, "{needle} never logged");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn wait_args(pattern: &str, timeout: u64) -> WaitArgs {
+        WaitArgs {
+            id: "j1".into(),
+            pattern: Some(pattern.into()),
+            timeout: Some(timeout),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_matches_output_already_present() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, _, _, wait) = tools(&fx);
+        Tool::call(&start, start_args("echo READY; sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        logged(&fx, "READY").await;
+        let t = Instant::now();
+        let out = Tool::call(&wait, wait_args("READY", 10), cx(&fx))
+            .await
+            .unwrap();
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert!(
+            out.content.contains("matched (already on screen): \"READY\""),
+            "{}",
+            out.content
+        );
+        assert_eq!(out.structured.as_ref().unwrap()["matched"], "READY");
+        cancel(&fx, "j1").await;
+    }
+
+    #[tokio::test]
+    async fn send_advances_cursor_so_wait_ignores_earlier_output() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, send, _, wait) = tools(&fx);
+        Tool::call(&start, start_args("echo READY; sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        logged(&fx, "READY").await;
+        Tool::call(&send, send_args("j1"), cx(&fx)).await.unwrap();
+        let out = Tool::call(&wait, wait_args("READY", 1), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("timed out after 1s"),
+            "{}",
+            out.content
+        );
+        cancel(&fx, "j1").await;
+    }
+
+    #[tokio::test]
+    async fn wait_match_advances_cursor() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, _, _, wait) = tools(&fx);
+        Tool::call(&start, start_args("echo READY; sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        logged(&fx, "READY").await;
+        let out = Tool::call(&wait, wait_args("READY", 10), cx(&fx))
+            .await
+            .unwrap();
+        assert!(out.content.contains("matched"), "{}", out.content);
+        let out = Tool::call(&wait, wait_args("READY", 1), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("timed out after 1s"),
+            "{}",
+            out.content
+        );
+        cancel(&fx, "j1").await;
+    }
+
     #[tokio::test]
     async fn ready_port() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
@@ -3222,6 +3355,9 @@ mod tests {
             strip(b"\x1b[32m>>> \x1b[0m\x1b]0;title\x07x\x1b(B"),
             ">>> x"
         );
+        // `>>> ` is 4 kept bytes; the raw index past them skips the SGR prefix.
+        assert_eq!(raw_end(b"\x1b[32m>>> \x1b[0mx", 4), 9);
+        assert_eq!(raw_end(b"ab", 5), 2);
         assert!(matches!(query(b"\x1b[6n", (1, 4)), Scan::Reply(4, r) if &*r == b"\x1b[2;5R"));
         assert!(matches!(query(b"\x1b]11;", (0, 0)), Scan::Partial));
         assert!(matches!(query(b"\x1b[31m", (0, 0)), Scan::None));

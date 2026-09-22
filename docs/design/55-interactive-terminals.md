@@ -382,3 +382,30 @@ Check: `pty::tests::attach_replays_streams_and_resizes` — a second vt100
 fed replay+stream matches the daemon's; `ListTerminals`/`PtyScreen` report
 the resized grid; out-of-range refused; `Exit` closes the stream; a finished
 job attaches but does not resize.
+
+## 12. Amendment (2026-09-22): `wait` reads from where the model last acted
+
+Bug: the orchestrator `start`ed five `omp` jobs, then `wait(pattern:
+"ponytail", timeout: 90)` on each. The banner (`Ponytail loaded: full`) was
+already on screen before the first `wait`; every call ran to its timeout.
+`wait` scanned the log from `log_len` at call time — "prints *after* this
+call" — which neither the description nor a model's reading of "wait until
+this is on the terminal" implied. It had only ever worked when issued before
+the output arrived.
+
+As built (`pty.rs`): `PtyHandle.cursor: AtomicU64`, a byte offset into the
+job's log, 0 at start.
+
+- `send` moves it to the current log length *before* writing — what follows
+  the keystroke is what the model waits for next.
+- `wait(pattern)` scans from the cursor. A match already present returns at
+  once with `matched (already on screen): …` (no `waiting` increment, 61
+  §1.5 brackets only the blocking part); otherwise it blocks as before and
+  reports `matched: …`. Either way the cursor moves past the matched text
+  (`find_since` maps the match end in the ESC-stripped text back to a raw
+  offset), so the same `wait` twice does not match the same banner twice.
+- `screen`, `pty_input` and exit-only `wait` leave the cursor alone.
+
+Checks: `pty::tests::wait_matches_output_already_present`,
+`send_advances_cursor_so_wait_ignores_earlier_output`,
+`wait_match_advances_cursor`; `strip_and_queries` covers the offset map.
