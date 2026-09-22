@@ -461,6 +461,9 @@ pub struct ToolsConfig {
     /// tools installed by rc files are found); `THEUTH_NO_LOGIN_PATH=1` also
     /// turns it off.
     pub login_path: bool,
+    /// Program for `start`'s PTY jobs instead of the platform default
+    /// (`$SHELL`; `pwsh.exe` else `powershell.exe` on Windows — 58 §0.3).
+    pub pty_shell: Option<std::path::PathBuf>,
 }
 
 impl Default for ToolsConfig {
@@ -475,6 +478,7 @@ impl Default for ToolsConfig {
             pty_ready_timeout_secs: 30,
             pty_idle_secs: 60,
             login_path: true,
+            pty_shell: None,
         }
     }
 }

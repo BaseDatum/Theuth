@@ -23,8 +23,7 @@ use brush_core::{ExecutionParameters, ProcessGroupPolicy, Shell, SourceInfo};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use nix::sys::signal::{Signal, killpg};
-use nix::unistd::Pid;
+use platform::ProcessTree;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -486,7 +485,7 @@ pub(crate) struct Job {
     pub(crate) secs: u64,
     pub(crate) log_path: PathBuf,
     pub(crate) log: Arc<Mutex<Log>>,
-    pub(crate) pgids: Arc<Mutex<Vec<i32>>>,
+    pub(crate) pgids: Arc<Mutex<Vec<ProcessTree>>>,
     pub(crate) cancel: Arc<Cancel>,
     pub(crate) task: AbortHandle,
     /// `start`'s label (22 §2.1); PTY jobs only.
@@ -748,7 +747,7 @@ impl Message<Launch<Start>> for Jobs {
         let quiet = m.quiet;
         let dir = m.root.join("jobs").join(m.session.to_string());
         let log_path = dir.join(format!("{id}.log"));
-        let pgids: Arc<Mutex<Vec<i32>>> = Arc::default();
+        let pgids: Arc<Mutex<Vec<ProcessTree>>> = Arc::default();
         let log_file = (!quiet).then_some(log_path.as_path());
         // On `Err` the admitted guard drops here: settled `Finished`, no blocker.
         let (file, params, out_r, err_r) =
@@ -998,34 +997,29 @@ impl Message<InstallActivity> for Jobs {
     }
 }
 
-/// Sorted, deduplicated snapshot of the recorded groups (pipeline members
-/// share the first member's group).
-fn groups(pgids: &Mutex<Vec<i32>>) -> Vec<i32> {
-    let mut pgids = lock(pgids).clone();
-    pgids.sort_unstable();
-    pgids.dedup();
-    pgids
+/// Snapshot of the recorded trees, one per group (pipeline members share
+/// the first member's; `setup`'s hook adds them to it).
+fn groups(trees: &Mutex<Vec<ProcessTree>>) -> Vec<ProcessTree> {
+    lock(trees).clone()
 }
 
-/// SIGKILL every recorded group once and forget them; returns what was
+/// SIGKILL every recorded tree once and forget them; returns what was
 /// signalled so the caller can verify it went.
-pub(crate) fn kill(pgids: &Mutex<Vec<i32>>) -> Vec<i32> {
-    let killed = groups(pgids);
-    lock(pgids).clear();
-    for &pgid in &killed {
-        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+pub(crate) fn kill(trees: &Mutex<Vec<ProcessTree>>) -> Vec<ProcessTree> {
+    let killed = std::mem::take(&mut *lock(trees));
+    for tree in &killed {
+        tree.kill();
     }
     killed
 }
 
-/// Poll `pgid` with signal 0 every [`GROUP_POLL`] until no member is left
-/// (an unreaped zombie still counts, so this also waits out the reaper) or
-/// `deadline`; `true` once the group is gone. Actual process evidence, not
-/// output idleness: only our own descendants share a recorded group.
-pub(crate) async fn group_gone(pgid: i32, deadline: Option<tokio::time::Instant>) -> bool {
-    let pgid = Pid::from_raw(pgid);
+/// Poll `tree` every [`GROUP_POLL`] until no member is left (an unreaped
+/// zombie still counts, so this also waits out the reaper) or `deadline`;
+/// `true` once the tree is gone. Actual process evidence, not output
+/// idleness: only our own descendants are in a recorded tree.
+pub(crate) async fn group_gone(tree: &ProcessTree, deadline: Option<tokio::time::Instant>) -> bool {
     loop {
-        if killpg(pgid, None).is_err() {
+        if !tree.alive() {
             return true;
         }
         if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
@@ -1045,7 +1039,7 @@ fn setup(
     dir: &std::path::Path,
     log_path: Option<&std::path::Path>,
     shell: &Shell,
-    pgids: &Arc<Mutex<Vec<i32>>>,
+    trees: &Arc<Mutex<Vec<ProcessTree>>>,
 ) -> anyhow::Result<(
     Option<std::fs::File>,
     ExecutionParameters,
@@ -1069,11 +1063,20 @@ fn setup(
     params.set_fd(1, out_w.into());
     params.set_fd(2, err_w.into());
     params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
+    // brush reports `(pid, pgid)` per external process; the first of a
+    // pipeline leads a new group, the rest join it (58 §0.4: a Job Object
+    // on Windows, where the members are assigned as they appear).
     params.on_spawn = Some(Arc::new({
-        let pgids = pgids.clone();
-        move |_pid, pgid| {
-            if let Some(pgid) = pgid {
-                lock(&pgids).push(pgid);
+        let trees = trees.clone();
+        move |pid, pgid| {
+            let Some(pgid) = pgid else { return };
+            let mut trees = lock(&trees);
+            let r = match trees.iter().find(|t| t.id() == pgid as u32) {
+                Some(t) => t.add(pid as u32),
+                None => ProcessTree::adopt(pgid as u32).map(|t| trees.push(t)),
+            };
+            if let Err(e) = r {
+                tracing::warn!(pid, pgid, "could not track the job's process: {e}");
             }
         }
     }));
@@ -1098,7 +1101,7 @@ struct Run {
     err_r: std::io::PipeReader,
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
-    pgids: Arc<Mutex<Vec<i32>>>,
+    pgids: Arc<Mutex<Vec<ProcessTree>>>,
     cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
     /// [`Start::quiet`]: publish nothing, take no row.
@@ -1139,7 +1142,7 @@ struct Drain {
 async fn settle(
     bg: Vec<brush_core::jobs::Job>,
     drains: Vec<JoinHandle<std::io::Result<()>>>,
-    groups: Vec<i32>,
+    groups: Vec<ProcessTree>,
     killed: bool,
 ) -> Vec<String> {
     let mut why = Vec::new();
@@ -1151,9 +1154,9 @@ async fn settle(
         }
     }
     let bound = killed.then(|| tokio::time::Instant::now() + KILL_WAIT);
-    for pgid in groups {
-        if !group_gone(pgid, bound).await {
-            why.push(format!("process group {pgid} survived SIGKILL"));
+    for tree in groups {
+        if !group_gone(&tree, bound).await {
+            why.push(format!("process group {} survived SIGKILL", tree.id()));
         }
     }
     for r in futures::future::join_all(drains).await {
@@ -1953,8 +1956,8 @@ pub(crate) mod tests {
         else {
             panic!("expected Running");
         };
-        let pgid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
-        assert!(nix::sys::signal::kill(Pid::from_raw(pgid), None).is_ok());
+        let pgid: u32 = list(&fx).await[0].tail.trim().parse().unwrap();
+        assert!(platform::process::pid_alive(pgid));
 
         fx.jobs
             .ask(CancelJob {
@@ -1972,7 +1975,7 @@ pub(crate) mod tests {
         );
         // Reaped by tokio's orphan queue on the next SIGCHLD; allow it a moment.
         let gone = Instant::now() + Duration::from_secs(1);
-        while nix::sys::signal::kill(Pid::from_raw(pgid), None).is_ok() {
+        while platform::process::pid_alive(pgid) {
             assert!(Instant::now() < gone, "pgid {pgid} still alive");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -2079,8 +2082,8 @@ pub(crate) mod tests {
         else {
             panic!("expected Running");
         };
-        let pid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
-        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok());
+        let pid: u32 = list(&fx).await[0].tail.trim().parse().unwrap();
+        assert!(platform::process::pid_alive(pid));
         assert_eq!(
             log,
             fx.dir
@@ -2100,7 +2103,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(ack.owner, "jobs");
         assert!(ack.ok, "{ack:?}");
-        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
+        assert!(!platform::process::pid_alive(pid));
         assert!(!log.parent().unwrap().exists());
         assert!(list(&fx).await.is_empty());
     }

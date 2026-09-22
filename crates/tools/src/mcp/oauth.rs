@@ -31,27 +31,13 @@ impl CredentialStore for FileStore {
         }
     }
 
-    /// Write-then-rename, mode 0600.
+    /// Write-then-rename, owner-only ([`platform::files::write_private`]).
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(store_err)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
-        let mut open = std::fs::OpenOptions::new();
-        open.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            open.mode(0o600);
-        }
-        std::io::Write::write_all(
-            &mut open.open(&tmp).map_err(store_err)?,
-            serde_json::to_string_pretty(&credentials)
-                .map_err(store_err)?
-                .as_bytes(),
-        )
-        .map_err(store_err)?;
-        std::fs::rename(tmp, &self.path).map_err(store_err)
+        let json = serde_json::to_string_pretty(&credentials).map_err(store_err)?;
+        platform::files::write_private(&self.path, json.as_bytes()).map_err(store_err)
     }
 
     async fn clear(&self) -> Result<(), AuthError> {

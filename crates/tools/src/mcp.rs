@@ -1285,8 +1285,8 @@ impl Message<Progress> for Mcp {
 }
 
 /// Expand `{{secret:NAME}}` placeholders (37 §3.4; an unknown name is an
-/// error), then `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks with the user's
-/// shell (`$SHELL`, else `/bin/sh`), so a file can say
+/// error), then `$VAR`, `${VAR:-x}`, `$(cmd)` and backticks with
+/// [`platform::shell`] (the login shell, else `/bin/sh`), so a file can say
 /// `"GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token)"` or `"${GRAFANA_TOKEN}"`,
 /// or `"Authorization": "Bearer {{secret:grafana}}"` and store nothing.
 /// The string is fed as an unquoted heredoc: quotes stay literal, `\$` is a
@@ -1306,13 +1306,14 @@ async fn expand(raw: &str) -> anyhow::Result<String> {
     if !s.contains('$') && !s.contains('`') {
         return Ok(s);
     }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let out = tokio::process::Command::new(shell)
-        .arg("-c")
-        .arg(format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"))
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await?;
+    // ponytail: `ShellKind::Brush` (Windows) is 58 §11 step 3 — brush runs the
+    // heredoc in-process there; until then the string is kept as written.
+    let Some(mut cmd) = platform::shell().command(&format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"), false)
+    else {
+        tracing::warn!(value = %raw, "mcp expansion: no login shell on this platform; value kept as written");
+        return Ok(s);
+    };
+    let out = cmd.output().await?;
     let err = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() || !err.trim().is_empty() {
         // `raw`, not `s`: the expanded string may hold a secret value.

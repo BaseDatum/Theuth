@@ -18,8 +18,7 @@ use brush_core::Shell;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use nix::sys::signal::killpg;
-use nix::unistd::Pid;
+use platform::ProcessTree;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use regex::Regex;
 use runtime::{Runtime, SessionId};
@@ -444,15 +443,14 @@ pub enum Signal {
     Kill,
 }
 
-impl From<Signal> for nix::sys::signal::Signal {
+impl From<Signal> for platform::Signal {
     fn from(s: Signal) -> Self {
-        use nix::sys::signal::Signal as S;
         match s {
-            Signal::Int => S::SIGINT,
-            Signal::Term => S::SIGTERM,
-            Signal::Hup => S::SIGHUP,
-            Signal::Quit => S::SIGQUIT,
-            Signal::Kill => S::SIGKILL,
+            Signal::Int => Self::Int,
+            Signal::Term => Self::Term,
+            Signal::Hup => Self::Hup,
+            Signal::Quit => Self::Quit,
+            Signal::Kill => Self::Kill,
         }
     }
 }
@@ -474,6 +472,8 @@ pub(crate) struct PtyHandle {
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     /// `== pgid`: the child is a session leader.
     pid: u32,
+    /// The child's process tree (58 §0.4): killed on cancel, signalled by `send`.
+    tree: ProcessTree,
     /// Set by the job task just before it finishes; `send`/`wait` loops read it.
     exit: Mutex<Option<JobExit>>,
     /// When a human last typed into this terminal (`pty_input`, 55 §2.3);
@@ -902,6 +902,8 @@ pub struct StartPty {
     /// [`activity::current`] at the caller; see [`jobs::Start::activity`].
     /// The readiness wait runs under it too.
     pub activity: Option<Activity>,
+    /// `tools.pty_shell`: the program instead of the platform default (58 §0.3).
+    pub pty_shell: Option<PathBuf>,
 }
 
 /// `ask` → `Result<ToolOutput, String>`: type into a PTY job, reply with the
@@ -1243,7 +1245,7 @@ impl Message<Launch<StartPty>> for Jobs {
         if self.pty_bytes + RESERVE > jobs::PTY_BUDGET {
             return Err("terminal capacity exhausted (64 MiB retained-terminal budget)".into());
         }
-        let s = spawn(&dir, &log_path, &m.args, &m.cwd).map_err(|e| format!("{e:#}"))?;
+        let s = spawn(&dir, &log_path, &m.args, &m.cwd, m.pty_shell.as_deref()).map_err(|e| format!("{e:#}"))?;
         self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
             writer: Mutex::new(s.writer),
@@ -1253,6 +1255,7 @@ impl Message<Launch<StartPty>> for Jobs {
             stream: broadcast::channel(STREAM_CHUNKS).0,
             master: Mutex::new(Some(s.master)),
             pid: s.pid,
+            tree: s.tree,
             exit: Mutex::new(None),
             user_input: Mutex::new(None),
             touched: Mutex::new(Instant::now()),
@@ -1306,7 +1309,7 @@ impl Message<Launch<StartPty>> for Jobs {
                 secs: 0,
                 log_path: log_path.clone(),
                 log,
-                pgids: Arc::new(Mutex::new(vec![s.pid as i32])),
+                pgids: Arc::new(Mutex::new(vec![pty.tree.clone()])),
                 cancel,
                 task,
                 name: m.args.name,
@@ -1547,11 +1550,19 @@ struct Spawned {
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
     pid: u32,
+    tree: ProcessTree,
 }
 
-/// 22 §4.1: `$SHELL -lc <command>` on a fresh 120×40 pty (`setsid` +
-/// `TIOCSCTTY` in the child), log file created.
-fn spawn(dir: &Path, log_path: &Path, args: &StartArgs, cwd: &Path) -> anyhow::Result<Spawned> {
+/// 22 §4.1: [`platform::pty_command`] (`$SHELL -lc <command>` on Unix) on a
+/// fresh 120×40 pty (`setsid` + `TIOCSCTTY` in the child; ConPTY on
+/// Windows), log file created, the child's tree adopted.
+fn spawn(
+    dir: &Path,
+    log_path: &Path,
+    args: &StartArgs,
+    cwd: &Path,
+    pty_shell: Option<&Path>,
+) -> anyhow::Result<Spawned> {
     std::fs::create_dir_all(dir)?;
     let file = std::fs::File::create(log_path)?;
     let pair = native_pty_system().openpty(PtySize {
@@ -1560,11 +1571,9 @@ fn spawn(dir: &Path, log_path: &Path, args: &StartArgs, cwd: &Path) -> anyhow::R
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let shell = std::env::var_os("SHELL")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/bin/sh".into());
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.args(["-lc", &args.command]);
+    let (program, argv) = platform::pty_command(&args.command, pty_shell);
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(argv);
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     for (k, v) in args.env.iter().flatten() {
@@ -1575,6 +1584,7 @@ fn spawn(dir: &Path, log_path: &Path, args: &StartArgs, cwd: &Path) -> anyhow::R
     let pid = child
         .process_id()
         .ok_or_else(|| anyhow::anyhow!("pty child has no pid"))?;
+    let tree = ProcessTree::adopt(pid)?;
     let reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
     Ok(Spawned {
@@ -1584,6 +1594,7 @@ fn spawn(dir: &Path, log_path: &Path, args: &StartArgs, cwd: &Path) -> anyhow::R
         reader,
         writer,
         pid,
+        tree,
     })
 }
 
@@ -1650,7 +1661,7 @@ type Drain = (mpsc::Receiver<Vec<u8>>, Arc<Mutex<Log>>);
 async fn linger(
     job: &Activity,
     id: &JobId,
-    group: Option<Pid>,
+    group: Option<ProcessTree>,
     rx: Option<Drain>,
     doubt: Option<String>,
 ) {
@@ -1667,8 +1678,8 @@ async fn linger(
                         lock(&log).push(&c);
                     }
                 }
-                if let Some(pgid) = group {
-                    jobs::group_gone(pgid.as_raw(), None).await;
+                if let Some(tree) = group {
+                    jobs::group_gone(&tree, None).await;
                 }
             }));
         }
@@ -1773,7 +1784,7 @@ async fn run(mut j: Run) {
 
     let mut child = j.child;
     let mut waited = tokio::task::spawn_blocking(move || child.wait());
-    let pid = Pid::from_raw(j.pty.pid as i32);
+    let tree = j.pty.tree.clone();
     let mut carry = Vec::new();
     let mut dirty = false;
     let mut tick = tokio::time::interval(jobs::OUTPUT_EVERY);
@@ -1783,7 +1794,7 @@ async fn run(mut j: Run) {
         tokio::select! {
             biased;
             origin = j.cancel.notified() => {
-                let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
+                tree.kill();
                 // Cancellation is not cessation: the exit is the reaper's.
                 let _ = (&mut waited).await;
                 break (JobExit::Killed, true, Some(origin));
@@ -1800,7 +1811,7 @@ async fn run(mut j: Run) {
                 None => break match tokio::time::timeout(Duration::from_secs(1), &mut waited).await {
                     Ok(r) => (exit_of(r), false, None),
                     Err(_) => {
-                        let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
+                        tree.kill();
                         (exit_of(waited.await), true, None)
                     }
                 },
@@ -1859,14 +1870,14 @@ async fn run(mut j: Run) {
     } else {
         jobs::SETTLE
     };
-    let gone = jobs::group_gone(pid.as_raw(), Some(tokio::time::Instant::now() + bound)).await;
+    let gone = jobs::group_gone(&tree, Some(tokio::time::Instant::now() + bound)).await;
     let rx = (!closed).then(|| (j.rx, j.log.clone()));
     match (gone, killed) {
         (true, _) if closed => {}
         (true, _) => linger(&j.activity, &j.id, None, rx, None).await,
-        (false, false) => linger(&j.activity, &j.id, Some(pid), rx, None).await,
+        (false, false) => linger(&j.activity, &j.id, Some(tree), rx, None).await,
         (false, true) => {
-            let doubt = format!("process group {pid} survived SIGKILL");
+            let doubt = format!("process group {} survived SIGKILL", tree.id());
             linger(&j.activity, &j.id, None, rx, Some(doubt)).await;
         }
     }
@@ -2164,11 +2175,10 @@ async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
     }
     write(&live.pty, Some(&text), args.keys.as_deref().unwrap_or_default(), false).await?;
     if let Some(sig) = args.signal {
-        killpg(
-            Pid::from_raw(live.pty.pid as i32),
-            nix::sys::signal::Signal::from(sig),
-        )
-        .map_err(|e| format!("signal: {e}"))?;
+        live.pty
+            .tree
+            .signal(sig.into())
+            .map_err(|e| format!("signal: {e}"))?;
     }
     settle(&live.pty).await;
     Ok(reply(live, None, None))
@@ -2306,23 +2316,28 @@ pub struct StartTool {
     ready_timeout: Duration,
     /// `tools.pty_idle_secs`, shared with the registry's `SetPtyIdle`.
     idle_default: Arc<AtomicU64>,
+    /// `tools.pty_shell`: the PTY program instead of the platform default.
+    pty_shell: Option<PathBuf>,
 }
 
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
     /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
-    /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never.
+    /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never;
+    /// `pty_shell` is `tools.pty_shell` (58 §0.3).
     pub fn new(
         jobs: ActorRef<Jobs>,
         shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
         ready_timeout: Duration,
         idle_default: Arc<AtomicU64>,
+        pty_shell: Option<PathBuf>,
     ) -> Self {
         Self {
             jobs,
             shells,
             ready_timeout,
             idle_default,
+            pty_shell,
         }
     }
 
@@ -2367,6 +2382,7 @@ impl Tool for StartTool {
                 idle_after,
                 root: cx.resources.root.clone(),
                 activity: activity::current(),
+                pty_shell: self.pty_shell.clone(),
             })
             .await
             .map_err(|e| anyhow::anyhow!("jobs actor: {e}"))
@@ -2860,6 +2876,7 @@ mod tests {
             Arc::default(),
             Duration::from_secs(30),
             Arc::new(AtomicU64::new(idle.as_secs())),
+            None,
         )
     }
 
@@ -3235,7 +3252,7 @@ mod tests {
             "{}",
             out.content
         );
-        let pid = out.structured.as_ref().unwrap()["pid"].as_u64().unwrap() as i32;
+        let pid = out.structured.as_ref().unwrap()["pid"].as_u64().unwrap() as u32;
 
         let out = Tool::call(&screen, ScreenArgs { id: "srv".into() }, cx(&fx))
             .await
@@ -3261,7 +3278,7 @@ mod tests {
         cancel(&fx, "j1").await;
         assert_eq!(settled(&fx, Duration::from_secs(2)).await.state, "killed");
         let gone = Instant::now() + Duration::from_secs(1);
-        while nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok() {
+        while platform::process::pid_alive(pid) {
             assert!(Instant::now() < gone, "pid {pid} still alive");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -3295,7 +3312,7 @@ mod tests {
             "{}",
             out.content
         );
-        let pid = out.structured.as_ref().unwrap()["pid"].as_u64().unwrap() as i32;
+        let pid = out.structured.as_ref().unwrap()["pid"].as_u64().unwrap() as u32;
         let v = crate::activity::test_sink::drained(&ledger, &seen).await;
         let [Seen::Admitted(op)] = v.as_slice() else {
             panic!("expected only the admission, got {v:?}");
@@ -3306,7 +3323,7 @@ mod tests {
         cancel(&fx, "j1").await;
         assert_eq!(settled(&fx, Duration::from_secs(2)).await.state, "killed");
         // The row closed after the reaper returned: the pid is already gone.
-        assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
+        assert!(!platform::process::pid_alive(pid));
         let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 2).await;
         assert_eq!(v[1..], [Seen::Result(op)]);
         // `/jobs kill`: the result rides the guard as one line, not the screen.

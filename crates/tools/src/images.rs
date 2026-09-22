@@ -101,7 +101,7 @@ fn read_regular(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(nix::libc::O_NONBLOCK);
+        opts.custom_flags(libc::O_NONBLOCK);
     }
     let file = opts.open(path)?;
     if !file.metadata()?.is_file() {

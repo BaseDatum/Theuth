@@ -23,7 +23,7 @@ brush-builtins = { workspace = true }
 rmcp = { workspace = true, features = ["auth"] }
 oauth = { workspace = true }
 reqwest = { workspace = true }
-nix = { workspace = true }
+platform = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 notify = { workspace = true }
@@ -40,6 +40,9 @@ sha2 = { workspace = true }
 jsonschema = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 base64 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }  # `O_NONBLOCK` open in `images.rs`
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

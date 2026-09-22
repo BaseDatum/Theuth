@@ -178,19 +178,15 @@ fn state_of(probe: &Mutex<Probe>) -> LoginPathState {
     }
 }
 
-/// `PATH` as the user's login shell sets it: `$SHELL -l -i -c 'printf %s
-/// "$PATH"'` (fallback `/bin/zsh` on macOS, `/bin/bash` elsewhere) with a
-/// [`LOGIN_PATH_TIMEOUT`], stdin from `/dev/null`, stderr discarded, and on
-/// unix in its own session (`setsid`) so it has no controlling terminal.
-/// `-i` stays on because macOS users set `PATH` in `.zshrc`, which only an
-/// interactive shell reads; but an interactive zsh that can reach the tty
-/// takes its foreground (`tcsetpgrp`), stopping the TUI with `SIGTTOU` and
-/// killing the outer shell with `EIO`. A success is cached for the process;
-/// a failure or timeout is retried by the next caller, up to
-/// [`LOGIN_PATH_ATTEMPTS`], then the inherited `PATH` is kept for good (one
-/// warning, debug before). Concurrent callers share one in-flight probe.
-/// `None` = keep the inherited `PATH`; immediate when [`NO_LOGIN_PATH`] is
-/// `1`.
+/// `PATH` as the user's login shell sets it ([`platform::env::login_path`]:
+/// `$SHELL -l -i -c 'printf %s "$PATH"'`, fallback `/bin/zsh` on macOS,
+/// `/bin/bash` elsewhere, with a [`LOGIN_PATH_TIMEOUT`], in its own session
+/// so an interactive zsh cannot take the TUI's terminal; the current `PATH`
+/// on Windows). A success is cached for the process; a failure or timeout
+/// is retried by the next caller, up to [`LOGIN_PATH_ATTEMPTS`], then the
+/// inherited `PATH` is kept for good (one warning, debug before).
+/// Concurrent callers share one in-flight probe. `None` = keep the
+/// inherited `PATH`; immediate when [`NO_LOGIN_PATH`] is `1`.
 pub async fn login_path() -> Option<String> {
     if std::env::var_os(NO_LOGIN_PATH).is_some_and(|v| v == "1") {
         return None;
@@ -259,41 +255,9 @@ async fn login_path_with(probe: &Mutex<Probe>, shell: &OsStr, timeout: Duration)
     result
 }
 
-/// Run `shell -l -i -c 'printf %s "$PATH"'` once; `Err` says why it gave no
-/// usable `PATH`. On unix the child is a new session leader, so it has no
-/// controlling terminal and `zsh -i` cannot open `/dev/tty` or `tcsetpgrp`
-/// the caller's terminal away. A new process group alone would not do: it
-/// still shares the session's tty.
+/// One probe: `Err` says why it gave no usable `PATH`.
 async fn probe_with(shell: &OsStr, timeout: Duration) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.args(["-l", "-i", "-c", r#"printf %s "$PATH""#])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    // SAFETY: `setsid` is async-signal-safe and touches no parent state.
-    unsafe {
-        cmd.pre_exec(|| {
-            if nix::libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let run = cmd.output();
-    match tokio::time::timeout(timeout, run).await {
-        Ok(Ok(out)) if out.status.success() => {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            if path.is_empty() {
-                return Err("printed an empty PATH".into());
-            }
-            Ok(path)
-        }
-        Ok(Ok(out)) => Err(format!("exited with {}", out.status)),
-        Ok(Err(e)) => Err(format!("could not start: {e}")),
-        Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
-    }
+    platform::env::login_path(shell, timeout).await
 }
 
 #[async_trait::async_trait]
@@ -509,6 +473,7 @@ mod tests {
     }
 
     /// An executable script standing in for the login shell.
+    #[cfg(unix)]
     fn fake_shell(body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let p = std::env::temp_dir().join(format!("theuth-shell-{}", uuid::Uuid::new_v4()));
@@ -517,10 +482,12 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     fn probe_state() -> Mutex<Probe> {
         Mutex::new(Probe::Idle { attempts: 0 })
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn failed_probe_is_retried_then_gives_up() {
         let state = probe_state();
@@ -541,6 +508,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn timed_out_probe_counts_as_a_failure_and_success_is_cached() {
         let state = probe_state();
@@ -565,6 +533,7 @@ mod tests {
         assert_eq!(path.as_deref(), Some("/fake/bin:/bin"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn concurrent_callers_share_one_probe() {
         let state = probe_state();
@@ -596,9 +565,12 @@ printf ' %s' "$(ps -o pgid= -p $$)""#,
             .unwrap();
         let (tty, pgid) = out.split_once(' ').unwrap();
         assert_eq!(tty, "NOTTY");
-        // SAFETY: getpgrp takes no arguments and cannot fail.
-        let ours = unsafe { nix::libc::getpgrp() };
-        assert_ne!(pgid.trim().parse::<i32>().unwrap(), ours, "{out}");
+        let ours = std::process::Command::new("ps")
+            .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
+            .output()
+            .unwrap();
+        let ours = String::from_utf8_lossy(&ours.stdout).trim().to_owned();
+        assert_ne!(pgid.trim(), ours, "{out}");
     }
 
     #[tokio::test]
@@ -622,6 +594,7 @@ printf ' %s' "$(ps -o pgid= -p $$)""#,
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn login_shell_path_contains_bin() {
         let shell = login_shell();
