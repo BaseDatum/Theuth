@@ -2,7 +2,7 @@ import { useNavigate } from '@tanstack/react-router'
 import type { PointerEvent, ReactNode, SyntheticEvent } from 'react'
 import { useRef } from 'react'
 import { touch } from '@/lib/hotkeys'
-import { type Node, type Path, usePanes, zone } from '@/lib/panes'
+import { isDraft, type Node, newDraft, type Path, usePanes, zone } from '@/lib/panes'
 import { cn } from '@/lib/utils'
 
 /** Pointer travel (px) before a press on a sidebar row becomes a drag. */
@@ -11,9 +11,10 @@ const SLOP = 6
 /**
  * Drag a sidebar row onto a chat pane. Pointer events, not HTML5 DnD: the macOS webview keeps the native
  * drag handler for file drops (Composer), which swallows `dragstart`. Spread the result on the row's `Link`;
- * a press that became a drag never navigates or selects.
+ * a press that became a drag never navigates or selects. `id === null` is the New chat rail item: each drag
+ * carries a fresh draft id, and a drop opens a draft pane (`NewChatPane`) without moving the URL.
  */
-export function useSessionDrag(id: string, title: string) {
+export function useSessionDrag(id: string | null, title: string) {
   const navigate = useNavigate()
   const press = useRef<{ x: number; y: number } | null>(null)
   const dragging = useRef(false)
@@ -27,7 +28,7 @@ export function useSessionDrag(id: string, title: string) {
     swallow.current = true
     setTimeout(() => (swallow.current = false), 0)
     const dropped = usePanes.getState().endDrag(drop)
-    if (dropped) void navigate({ to: '/c/$session', params: { session: dropped } })
+    if (dropped && !isDraft(dropped)) void navigate({ to: '/c/$session', params: { session: dropped } })
   }
   return {
     // An `<a>` starts a native drag of its href on press-and-move, which fires `pointercancel` on this sequence.
@@ -43,7 +44,7 @@ export function useSessionDrag(id: string, title: string) {
       else if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SLOP) {
         dragging.current = true
         e.currentTarget.setPointerCapture(e.pointerId)
-        usePanes.getState().startDrag(id, title, e.clientX, e.clientY)
+        usePanes.getState().startDrag(id ?? newDraft(), title, e.clientX, e.clientY)
       }
     },
     onPointerUp(e: PointerEvent<HTMLElement>) {
@@ -82,7 +83,7 @@ export function DragOverlay() {
   )
 }
 
-/** One leaf: the drop target for the pane it shows; a press inside focuses it (and moves the URL there). */
+/** One leaf: the drop target for the pane it shows; a press inside focuses it (and moves the URL there; a draft has no URL). */
 function Leaf({ session, first, render }: { session: string; first: boolean; render(session: string, first: boolean): ReactNode }) {
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused)
@@ -92,7 +93,9 @@ function Leaf({ session, first, render }: { session: string; first: boolean; ren
       data-pane={session}
       className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', split && focused !== session && 'opacity-80')}
       onPointerDownCapture={() => {
-        if (focused !== session) void navigate({ to: '/c/$session', params: { session } })
+        if (focused === session) return
+        usePanes.getState().focus(session)
+        if (!isDraft(session)) void navigate({ to: '/c/$session', params: { session } })
       }}
     >
       {render(session, first)}

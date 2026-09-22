@@ -1,5 +1,7 @@
 // Tiled chats: a binary split tree over session ids, the focused pane (the URL follows it), and the
 // sidebar → pane drag in flight. `root === null` is the plain single chat the route names. In memory only.
+// A leaf may also hold a draft id (`draft:<uuid>`, 25 §12.3): a new chat dropped from the sidebar whose
+// session does not exist until the first send; `place(draft, session, 'center')` then swaps it in.
 
 import { create } from 'zustand'
 
@@ -9,6 +11,11 @@ export type Path = ('a' | 'b')[]
 /** The pane under the pointer and which of its edges (or its middle) the drop snaps to. */
 export type Target = { session: string; edge: Edge; rect: DOMRect }
 export type Drag = { session: string; title: string; x: number; y: number; target: Target | null }
+
+const DRAFT = 'draft:'
+/** A pane id for a not-yet-created chat; `leaves` lists it beside real sessions, so check before an RPC. */
+export const isDraft = (id: string | null | undefined): id is string => id?.startsWith(DRAFT) ?? false
+export const newDraft = (): string => `${DRAFT}${crypto.randomUUID()}`
 
 /** Sessions shown, left-to-right, top-to-bottom. */
 export const leaves = (n: Node): string[] => ('session' in n ? [n.session] : [...leaves(n.a), ...leaves(n.b)])
@@ -79,7 +86,8 @@ type PanesStore = {
   show(session: string): void
   /** Show `session` at `edge` of the pane showing `target` (`center` replaces it). A pane already showing `session` moves. */
   place(target: string, session: string, edge: Edge): void
-  /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay. */
+  /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay (also
+   * when only a draft is left: the URL then names a chat no longer shown until the draft's first send replaces it). */
   close(session: string): string | null
   resize(path: Path, ratio: number): void
   startDrag(session: string, title: string, x: number, y: number): void
@@ -88,8 +96,8 @@ type PanesStore = {
   endDrag(drop: boolean): string | null
 }
 
-/** A lone leaf is the single-chat mode. */
-const normal = (n: Node | null): Node | null => (n && 'session' in n ? null : n)
+/** A lone real leaf is the single-chat mode; a lone draft stays a tree, since no route names it. */
+const normal = (n: Node | null): Node | null => (n && 'session' in n && !isDraft(n.session) ? null : n)
 
 export const usePanes = create<PanesStore>()((set, get) => ({
   root: null,
@@ -129,8 +137,8 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     const next = remove(root, session)
     set({ root: normal(next) })
     if (focused !== session || !next) return null
-    const to = leaves(next)[0] as string
-    set({ focused: to })
+    const to = leaves(next).find((s) => !isDraft(s)) ?? null
+    set({ focused: to ?? (leaves(next)[0] as string) })
     return to
   },
   resize(path, ratio) {
