@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
-/// Output cap for `read_file`.
+/// Output cap for `read_file`: the hard backstop after the line caps.
 const MAX_BYTES: usize = 64 * 1024;
+/// Lines shown when no `limit` is given.
+const DEFAULT_LINES: usize = 2000;
+/// Longest line echoed back; longer lines are cut with ` …[+K chars]`.
+const MAX_LINE_CHARS: usize = 2000;
 
 // The marker literals are split with `concat!` so this source file does not
 // itself contain them: `write_file`/`edit` refuse content that does.
@@ -25,9 +29,9 @@ pub const READ_HEADER_SHOWING: &str = concat!("; show", "ing");
 /// First line of a `read_file` result cut at 64 KiB by the pre-header
 /// format; still refused on write.
 pub const TRUNCATED_HEAD_PREFIX: &str = concat!("[read_file: ", "showing bytes ");
-/// Last line of a cut `read_file` result.
-pub const TRUNCATED_TAIL: &str =
-    concat!("[truncated at 64 KiB; ", "use offset/limit to read more]");
+/// End of the footer of a `read_file` result that stopped before EOF:
+/// `[read_file: N more lines; use offset/limit, tail or ranges]`.
+pub const TRUNCATED_TAIL: &str = concat!("; use offset/limit, ", "tail or ranges]");
 
 /// Err when `content` looks like `read_file` output: a truncation marker
 /// (writing it back would persist a file cut at 64 KiB — the 2026-09-21
@@ -107,11 +111,14 @@ impl Tool for ReadFile {
             first <= total.max(1),
             "{shown}: offset {first} is past the end of the file ({total} lines)"
         );
-        let end = match a.limit {
-            Some(n) => (first - 1).saturating_add(n).min(total),
-            None => total,
+        let (end, capped) = match a.limit {
+            Some(n) => ((first - 1).saturating_add(n).min(total), false),
+            None => {
+                let end = (first - 1 + DEFAULT_LINES).min(total);
+                (end, end < total)
+            }
         };
-        let mut body = render(&all[first - 1..end], first, a.numbers);
+        let (mut body, long) = render(&all[first - 1..end], first, a.numbers);
         let mut count = end + 1 - first;
         let cut = body.len() > MAX_BYTES;
         if cut {
@@ -123,16 +130,20 @@ impl Tool for ReadFile {
             // The line the cut lands in is shown partially and counts.
             count = body.matches('\n').count() + 1;
         }
+        let last = first + count - count.min(1);
         let mut out = format!(
             "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes",
             text.len()
         );
         match count {
             0 => out.push_str(&format!("{READ_HEADER_SHOWING} 0 lines")),
-            n => out.push_str(&format!(
-                "{READ_HEADER_SHOWING} lines {first}–{}",
-                first + n - 1
+            _ if last < total => out.push_str(&format!(
+                "{READ_HEADER_SHOWING} lines {first}–{last} of {total}"
             )),
+            _ => out.push_str(&format!("{READ_HEADER_SHOWING} lines {first}–{last}")),
+        }
+        if long > 0 {
+            out.push_str(&format!("; {long} long lines cut"));
         }
         if cut {
             out.push_str("; cut at 64 KiB — read the rest with offset/limit");
@@ -146,9 +157,11 @@ impl Tool for ReadFile {
             out.push('\n');
             out.push_str(&body);
         }
-        if cut {
-            out.push('\n');
-            out.push_str(TRUNCATED_TAIL);
+        if cut || capped {
+            out.push_str(&format!(
+                "\n[read_file: {} more lines{TRUNCATED_TAIL}",
+                total - last
+            ));
         }
         Ok(ToolOutput::ok(out))
     }
@@ -156,21 +169,40 @@ impl Tool for ReadFile {
 
 /// Join `lines`, numbered from `first` in `cat -n` shape (right-aligned to
 /// the widest number shown, one tab, the line verbatim) when `numbers`.
-fn render(lines: &[&str], first: usize, numbers: bool) -> String {
+/// Lines over [`MAX_LINE_CHARS`] are cut with ` …[+K chars]`; returns how
+/// many were.
+fn render(lines: &[&str], first: usize, numbers: bool) -> (String, usize) {
     use std::fmt::Write;
-    if !numbers {
-        return lines.join("\n");
-    }
     let last = first + lines.len().saturating_sub(1);
-    let width = last.checked_ilog10().map_or(1, |d| d as usize + 1);
+    let width = if numbers {
+        last.checked_ilog10().map_or(1, |d| d as usize + 1)
+    } else {
+        0
+    };
     let mut out = String::with_capacity(lines.iter().map(|l| l.len() + width + 2).sum());
+    let mut long = 0;
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        write!(out, "{:>width$}\t{line}", first + i).unwrap();
+        if numbers {
+            write!(out, "{:>width$}\t", first + i).unwrap();
+        }
+        match line.char_indices().nth(MAX_LINE_CHARS) {
+            Some((at, _)) => {
+                long += 1;
+                write!(
+                    out,
+                    "{} …[+{} chars]",
+                    &line[..at],
+                    line[at..].chars().count()
+                )
+                .unwrap();
+            }
+            None => out.push_str(line),
+        }
     }
-    out
+    (out, long)
 }
 
 /// Arguments for [`WriteFile`].
@@ -463,7 +495,10 @@ mod tests {
         let out = read(args(&p, Some(8), Some(2))).await;
         assert_eq!(
             out,
-            format!("{}\n8\tl8\n9\tl9", header(&p, 12, text.len(), "lines 8–9"))
+            format!(
+                "{}\n8\tl8\n9\tl9",
+                header(&p, 12, text.len(), "lines 8–9 of 12")
+            )
         );
         // Empty lines keep their number; a limit past EOF clamps.
         let p = scratch("a\n\nc");
@@ -510,21 +545,18 @@ mod tests {
         a.numbers = false;
         let out = read(a).await;
         let head = out.lines().next().unwrap();
+        let footer = |more: usize| format!("\n[read_file: {more} more lines{TRUNCATED_TAIL}");
         assert_eq!(
             head,
             header(
                 &p,
                 1000,
                 70000,
-                "lines 1–937; cut at 64 KiB — read the rest with offset/limit"
+                "lines 1–937 of 1000; cut at 64 KiB — read the rest with offset/limit"
             )
         );
-        assert!(
-            out.ends_with(&format!("\n{TRUNCATED_TAIL}")),
-            "{}",
-            &out[out.len() - 80..]
-        );
-        let body = &out[head.len() + 1..out.len() - TRUNCATED_TAIL.len() - 1];
+        assert!(out.ends_with(&footer(63)), "{}", &out[out.len() - 80..]);
+        let body = &out[head.len() + 1..out.len() - footer(63).len()];
         assert_eq!(body.len(), MAX_BYTES);
         assert_eq!(body, &line.repeat(1000)[..MAX_BYTES]);
 
@@ -536,12 +568,52 @@ mod tests {
                 &p,
                 1000,
                 70000,
-                "lines 1–874; cut at 64 KiB — read the rest with offset/limit"
+                "lines 1–874 of 1000; cut at 64 KiB — read the rest with offset/limit"
             )
         );
-        let body = &out[head.len() + 1..out.len() - TRUNCATED_TAIL.len() - 1];
+        assert!(out.ends_with(&footer(126)), "{}", &out[out.len() - 80..]);
+        let body = &out[head.len() + 1..out.len() - footer(126).len()];
         assert_eq!(body.len(), MAX_BYTES);
         assert!(body.starts_with(&format!("   1\t{}\n   2\t", "x".repeat(69))));
+    }
+
+    #[tokio::test]
+    async fn read_defaults_to_2000_lines_with_a_footer() {
+        let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        let mut want = header(&p, 2500, text.len(), "lines 1–2000 of 2500");
+        for i in 1..=2000 {
+            want.push_str(&format!("\n{i:>4}\t{i}"));
+        }
+        want.push_str(&format!("\n[read_file: 500 more lines{TRUNCATED_TAIL}"));
+        assert_eq!(out, want);
+        // An explicit limit is the model's choice: no footer.
+        let out = read(args(&p, Some(2400), Some(50))).await;
+        assert!(out.starts_with(&header(&p, 2500, text.len(), "lines 2400–2449 of 2500")));
+        assert!(out.ends_with("\n2449\t2449"), "{}", &out[out.len() - 40..]);
+        // Offset without limit: the window starts there and may reach EOF.
+        let out = read(args(&p, Some(2400), None)).await;
+        assert!(out.starts_with(&header(&p, 2500, text.len(), "lines 2400–2500")));
+        assert!(out.ends_with("\n2500\t2500"), "{}", &out[out.len() - 40..]);
+    }
+
+    #[tokio::test]
+    async fn read_cuts_long_lines_at_a_char_boundary() {
+        let long = format!("{}é{}", "a".repeat(1999), "b".repeat(10));
+        let text = format!("short\n{long}\n{long}\n");
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        assert_eq!(
+            out,
+            format!(
+                "{}\n1\tshort\n2\t{cut}\n3\t{cut}",
+                header(&p, 3, text.len(), "lines 1–3; 2 long lines cut"),
+                cut = format!("{}é …[+10 chars]", "a".repeat(1999)),
+            )
+        );
+        let p = scratch(&"a".repeat(2000));
+        assert!(!read(args(&p, None, None)).await.contains("…["));
     }
 
     #[tokio::test]
@@ -555,7 +627,7 @@ mod tests {
             out,
             format!(
                 "{}\n{}",
-                header(&p, 1000, 70000, "lines 2–4"),
+                header(&p, 1000, 70000, "lines 2–4 of 1000"),
                 line.repeat(3).trim_end()
             )
         );
