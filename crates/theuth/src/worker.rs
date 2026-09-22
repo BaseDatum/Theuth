@@ -83,8 +83,11 @@ pub fn run() -> u8 {
 /// `Configure`, a restored dump's own limits and a `Reset` honest.
 fn apply_memory_limit(child: &Child) {
     let budget = child.session_budget();
-    monty_alloc::set_limit(budget.max_memory, budget.type_check)
-        .expect("theuth installs monty_alloc::LimitedAllocator as the global allocator");
+    monty_alloc::set_hard_limit(monty_types::memory_limit_with_headroom(
+        budget.max_memory,
+        budget.type_check,
+    ))
+    .expect("theuth installs monty_alloc::LimitedAllocator as the global allocator");
 }
 
 /// Framed child events to stdout. Framing is stateless and `Stdout` handles
