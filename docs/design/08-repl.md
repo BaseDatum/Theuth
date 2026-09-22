@@ -15,8 +15,9 @@ model was working with.
 
 Sources: cave-agent (`acodercat/cave-agent`), prime-agent
 (`PrimeIntellect-ai/prime-agent`, `docs/rlm.md`, `docs/rlm-runtime.md`),
-the user's earlier `../codemcp`, and pydantic `monty` 0.0.23 (Rust crates
-`monty-pool`, `monty-types`, `monty-fs`; docs at pydantic.dev/docs/monty).
+the user's earlier `../codemcp`, and pydantic `monty` (0.0.23 at design time,
+1.0.0-beta.2 since 2026-09-22 — §15; Rust crates `monty-pool`, `monty-types`,
+`monty-fs`; docs at pydantic.dev/docs/monty).
 §1 is what they taught us; the rest is what we build.
 
 ## 0. Decisions in one screen
@@ -84,7 +85,8 @@ resources, so pause/dump/restore/kill are all trivially safe.
 
 Verified against pydantic.dev/docs/monty and crates.io 0.0.23 (2026-09-05),
 then corrected against the spikes and `repl::tests::capping_binds_out_name`
-(2026-09-10). Where the two disagreed the code is the source below.
+(2026-09-10). Where the two disagreed the code is the source below. The
+1.0.0-beta.2 deltas to these facts are in §15; where §15 disagrees, §15 wins.
 
 - **Crates.** `monty-pool` (parent side: `Pool`, `PoolConfig`, `Checkout`,
   `ReplConfig`, `TurnEvent`, `ResumeValue`, `PoolError`, `MountSpec`,
@@ -137,10 +139,10 @@ then corrected against the spikes and `repl::tests::capping_binds_out_name`
   errors in one gather produce `RuntimeError: Internal error in monty:
   asyncio scheduler stalled` (the downgraded panic of pydantic/monty#732,
   which upstream never reproduced; likely introduced by #772). Filed as
-  **pydantic/monty#839** with the driver. A `try/except` *around* the
-  gather, or around a directly awaited call, works. The bridge appends the
-  workaround to that error text and the Runtime prompt block states the
-  rule; remove both when #839 is fixed.
+  **pydantic/monty#839** with the driver. **Fixed in 1.0.0-beta.2**
+  (pydantic/monty#875, verified 2026-09-22: two gathered coroutines each
+  catch their own tool `RuntimeError`); the bridge's error-text append and
+  the Runtime prompt block's rule were removed (§15).
 - **Errors.** An uncaught exception is `Err(PoolError::Runtime(
   MontyException))`; `exc.exc_type()` and `Display` give the CPython-style
   traceback with `<python-input-N>` as the file name. A type-check failure
@@ -227,9 +229,9 @@ Description (static bytes):
 ```
 ## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
-generators, no class inheritance; stdlib: json re math datetime collections itertools
-functools dataclasses pathlib base64 asyncio(gather). State persists, except names
-starting with `_`, which do not carry across cells.
+generators, no class inheritance; stdlib: json re math datetime time random copy collections
+itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
+names starting with `_`, which do not carry across cells.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path="x.rs")`)
@@ -351,8 +353,8 @@ Repl::run(call_id, code):
       ResolveFutures{ids}               → join_all(Invoke for each id) → publish ToolCallFinished×n
                                            resume_futures([(id, Return(value) | Error(exc))])
       OsCall{..}                        → resume_from_mounts; None (not covered):
-                                           datetime.now/date.today → host clock;
                                            os.getenv/environ       → default / {};
+                                           (clocks: the worker's own, in the host zone — §15)
                                            anything else           → ResumeValue::NotHandled (monty raises the call's own default)
   bind oversize stdout as outN (§3.3), probe (§6), dump (§5), render
 ```
@@ -646,10 +648,12 @@ protocol channel), and `repl::open_pool` hands `std::env::current_exe()` to
 longer touches monty and there is no `agent.repl` config section.
 
 The price: `monty_alloc::LimitedAllocator` must be the process's
-`#[global_allocator]` (`set_limit` refuses otherwise), so every `theuth`
-process runs it. Unarmed — the parent never calls `set_limit` — it is
+`#[global_allocator]` (`set_hard_limit` refuses otherwise), so every `theuth`
+process runs it. Unarmed — the parent never calls `set_hard_limit` — it is
 `System` plus one atomic live-byte add per allocation. The worker arms it
-per session; a cell that exceeds `max_memory` gets `MemoryError: memory
+per session with `set_hard_limit(memory_limit_with_headroom(max_memory,
+type_check))` (beta.2: the caller picks the headroom, §15); a cell that
+exceeds `max_memory` gets `MemoryError: memory
 limit exceeded: N bytes > 536870912 bytes` and the sandbox state is
 restored, the parent untouched (verified with every `monty` binary hidden
 from `PATH`, 2026-09-10). The binary grows by the interpreter.
@@ -864,3 +868,81 @@ Each step left `theuth` runnable.
   `gather`.
 - **Read-write mount of cwd.** A second write path around approvals.
 - **A `runtime` crate / plugin.** Only the agent uses it (00 §1.6).
+
+## 15. As-built 2026-09-22: monty 1.0.0-beta.2
+
+Pins `=1.0.0-beta.2` for the same five crates (`monty-pool`, `monty-types`,
+`monty-fs`, `monty-proto[worker]`, `monty-alloc[exit-code]`; no crate was
+split or merged); `monty-types` became a direct dependency of `theuth` for
+`memory_limit_with_headroom`. Wire protocol 2 → 5, dump format 8 → 12.
+
+**API delta that touched theuth** (release notes:
+github.com/pydantic/monty/releases/tag/v1.0.0-beta.2):
+
+- `MontyObject` is an opaque arena value (#871, #886, #900): built with
+  `MontyObject::{none,bool,int,float,string,list,dict,function,…}`, read via
+  `as_ref() -> ObjectRef` (`type_name`, `as_bool/as_int/as_float/as_str`,
+  `items`, `pairs`, `py_repr`). `repl::from_monty` takes an `ObjectRef`;
+  bytes/date/datetime — which the stable accessors cannot read — go through
+  `monty_types::unstable::node` (no stability guarantee; the one place to
+  fix at the next bump).
+- `TurnEvent::FunctionCall`/`OsCall` carry one `args: CallArgs`
+  (`args()`, `kwargs()`, `arg(i)`, `kwarg(name)`); `kwargs` is gone.
+  `merge_args`, `first_arg`, `os_answer` take `&CallArgs`.
+- `Checkout::restore` returns `(Option<TurnEvent>, Option<String>)`; the
+  bridge only checks `Err`.
+- `ResourceLimits`: `max_duration` replaced by `max_feed_duration`,
+  `max_turn_duration`, `max_total_sleep` (#880); theuth sets none of them
+  (§4.5 unchanged: `max_memory` + `max_suspensions`).
+- `ReplConfig::os_policy: OsPolicy` (#892, #902, #898): the worker now
+  answers `datetime.now`/`date.today`/`time.time` from its own clock and
+  performs `time.sleep`/`asyncio.sleep` (capped at 10 s, no host round
+  trip). Default zone is UTC, so theuth sets `SandboxTimeZone::Fixed` to the
+  host's current UTC offset per `Repl::open` — naive `datetime.now()` and
+  `date.today()` still read as host local time, which is what the
+  host-answered calls returned before (verified: sandbox `(19, 37)` vs host
+  `19:37:20 +01:00`). The `datetime.now`/`date.today` arms of `os_answer`
+  are gone; `os.getenv`/`os.environ` stay (`None`/default, `{}`).
+  Ceiling: a fixed offset sampled per turn, no DST rule (`ponytail:` note in
+  `Repl::open`; `SandboxTimeZone::named` needs the non-default `tzdb`
+  feature on both sides of the wire).
+- Mounts with nested host directories are refused at feed time (#741,
+  `ValueError: cannot mount …`). `/cwd` and `/spill` nest when the session
+  cwd contains the data dir (cwd = home) — the test fixtures did — and every
+  cell would fail. `Repl::open` now skips the `/spill` mount when the two
+  canonical paths nest; the spill is reachable through `/cwd` then.
+- CWD support (#828): a session's first feed sets the sandbox working
+  directory to its first mount, so `os.getcwd()` is `/cwd` and relative
+  paths resolve under it (was `/`). Nothing in theuth depended on `/`.
+- `monty_alloc::set_limit(max_memory, type_check)` →
+  `set_hard_limit(memory_limit_with_headroom(max_memory, type_check))`
+  (`worker.rs::apply_memory_limit`); the worker shell is otherwise
+  unchanged (`Child`, `EventSink`, `HandleOutcome`, `session_budget`).
+- pydantic/monty#839 (§2 gather bug) is fixed by #875: the bridge's
+  "monty bug" append on `asyncio scheduler stalled` and the prompt block's
+  workaround sentence were removed; the block now lists `time random copy`
+  and `asyncio(gather, sleep)`, all verified in a cell. Generators and
+  class inheritance are still `NotImplementedError` (verified), so those
+  restrictions stay.
+
+**Snapshot compatibility.** A 0.0.23 dump is refused on `Load`:
+`RuntimeError: protocol violation: failed to load session: dump format
+version 8 is older than 12, the oldest this build reads`. The existing §5
+path handles it without a crash: the file is renamed `.stale`, one `warn!`,
+and the first cell result starts with `<runtime> saved state could not be
+restored (…); the runtime is empty. It held: …` from `.names.json`
+(verified against a real `~/.theuth/runtime/*.monty` from 2026-09-20; the
+cell then ran and re-bound its names). Users lose the heap of sessions
+last active on 0.0.23, keep the inventory line, and continue.
+
+**Verification.** `cargo test -p agent repl` with `target/debug/t`
+symlinked as `monty` on `PATH` (the test helper's worker; no `monty`
+binary is installed here) — 18/18, including `capping_binds_out_name`
+(kill -9 restore, corrupt dump, gathered inner calls, `/cwd` mount,
+`tools()`/`help()`) and `inner_images_survive_overwrite_and_errors`.
+`cargo test -p theuth` 4/4. Live: `t --headless --data-dir /tmp/monty-smoke`
+(fresh dir, `python runtime on: …/t subprocess`, one warm worker), one
+model turn over the WebSocket RPC ran `x = 1+1; x → 2`, `d = await
+list_dir(path='/tmp'); len(d) → 3548` (inner call `…​.1`), `x → 2`; the
+process was restarted and `x → 2` again from the restored dump. No worker
+spawn, protocol or restore warnings in `logs/`.
