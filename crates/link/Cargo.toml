@@ -28,6 +28,9 @@ qrcode = { workspace = true }
 url = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]
 
