@@ -17,11 +17,14 @@ export function nextVisibility(v: Visibility, ev: 'focus' | 'blur' | 'elapsed'):
   }
 }
 
-/** `readonly` hides the bar entirely; an open sheet keeps it (the sheet took the focus, the user is still editing). */
+/**
+ * `readonly` hides the bar entirely; an open sheet keeps it (the link sheet took the focus, the user is still
+ * editing). The block-type picker is not a sheet: it lives inside the bar's focus guard and never blurs the editor.
+ */
 export const toolbarVisible = (v: Visibility, readonly: boolean, sheetOpen: boolean): boolean =>
   !readonly && (v !== 'hidden' || sheetOpen)
 
-/** The "Aa" sheet's rows in §10 order; `props` is what `updateBlock` needs beside `type`. */
+/** The "Aa" picker's chips in §10 order; `props` is what `updateBlock` needs beside `type`. */
 export const BLOCK_TYPES = [
   { key: 'paragraph', label: 'Text', type: 'paragraph' },
   { key: 'h1', label: 'Heading 1', type: 'heading', props: { level: 1 } },
@@ -36,7 +39,7 @@ export const BLOCK_TYPES = [
 
 export type BlockTypeKey = (typeof BLOCK_TYPES)[number]['key']
 
-/** Which sheet row the cursor's block is on; `null` for blocks the sheet does not offer (table, divider, frontmatter…). */
+/** Which chip the cursor's block is on; `null` for blocks the picker does not offer (table, divider, frontmatter…). */
 export function blockTypeKey(block: { type: string; props?: Record<string, unknown> }): BlockTypeKey | null {
   for (const t of BLOCK_TYPES) {
     if (t.type !== block.type) continue
