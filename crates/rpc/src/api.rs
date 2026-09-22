@@ -23,6 +23,7 @@ use agent::{
     EscalateModel, SetEscalateModel,
     ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry,
     ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
+    ArchiveSession,
     NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession,
     ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
     RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionSummary, SetCommunication,
@@ -389,6 +390,10 @@ pub trait Api {
     /// Pin or unpin a session; pinned sessions lead `list_sessions`.
     #[method(name = "pin_session", with_extensions)]
     async fn pin_session(&self, session: SessionId, pinned: bool) -> RpcResult<()>;
+    /// Archive or unarchive a root; archived trees leave the sidebar but stay
+    /// in `list_sessions` (flagged) and search (51 §3).
+    #[method(name = "archive_session", with_extensions)]
+    async fn archive_session(&self, session: SessionId, archived: bool) -> RpcResult<()>;
     /// Delete a session and its subagents for good; a `SessionDeleted` per removed session
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session", with_extensions)]
@@ -2176,6 +2181,16 @@ impl ApiServer for Server {
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, PinSession { session, pinned }).await
+    }
+
+    async fn archive_session(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        archived: bool,
+    ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, ArchiveSession { session, archived }).await
     }
 
     async fn delete_session(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
