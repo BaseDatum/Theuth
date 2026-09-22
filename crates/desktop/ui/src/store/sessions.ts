@@ -125,7 +125,9 @@ export type Entry = { id: string; context?: ContextEntry } & (
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
 );
 
-/** What the status dot says. */
+/** What the status dot says. `harvesting` is never stored in `activity`: a
+ * detached harvest (10 §5.2 as built) sets `harvesting` and shows only while
+ * the session is otherwise idle — see `shownActivity`. */
 export type Activity =
   | "idle"
   | "thinking"
@@ -136,6 +138,12 @@ export type Activity =
   | "harvesting"
   | "vision";
 
+/** The activity to show: the turn's own, or `harvesting` while a detached harvest runs on an otherwise idle session. */
+export function shownActivity(activity: Activity | undefined, harvesting: boolean | undefined): Activity {
+  const a = activity ?? "idle";
+  return a === "idle" && harvesting ? "harvesting" : a;
+}
+
 /** Everything the transcript and sidebar need for one session. */
 export type SessionSlice = {
   id: string;
@@ -144,6 +152,8 @@ export type SessionSlice = {
   /** Turn started, no delta yet. */
   waiting: boolean;
   activity: Activity;
+  /** A detached harvest is in flight (`Harvesting` … `Harvested`); independent of `running`/`activity`. */
+  harvesting: boolean;
   /** Status line while `activity === 'vision'` (52 §6): which model is asking or inspecting how many images. */
   visionStatus?: string;
   model?: string;

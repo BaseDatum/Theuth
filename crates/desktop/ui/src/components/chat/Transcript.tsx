@@ -13,6 +13,7 @@ import {
   type Activity,
   type Entry,
   freshness,
+  shownActivity,
   useEntries,
   useSessionField,
 } from '@/store/sessions'
@@ -147,7 +148,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const more = useSessionField(session, 'more')
   const firstSeq = useSessionField(session, 'firstSeq')
   const running = useSessionField(session, 'running')
-  const activity = useSessionField(session, 'activity') ?? 'idle'
+  const activity = shownActivity(useSessionField(session, 'activity'), useSessionField(session, 'harvesting'))
   const visionStatus = useSessionField(session, 'visionStatus')
   const children = useSessionField(session, 'children')
   // This harness's store, read after the await: a page landing after a switch must not touch another harness's slice.

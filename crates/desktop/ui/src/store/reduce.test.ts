@@ -5,7 +5,7 @@ import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
 import { adopt, apply, empty, fromHistory, route, type Ctx } from './reduce'
-import { type Freshness, type SessionSlice, freshness, useSessions } from './sessions'
+import { type Freshness, type SessionSlice, freshness, shownActivity, useSessions } from './sessions'
 
 const S = 'sess'
 const T = 'turn'
@@ -97,6 +97,24 @@ test('pending tool is replaced by its start (same id), finished by call id, aban
   s = apply(s, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool'])
   expect(s).toMatchObject({ running: false, activity: 'idle', usage, context: 15 })
+})
+
+test('detached harvest: Harvesting after TurnFinished shows only while idle, a new turn takes over, Harvested clears it', () => {
+  let s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 },
+    { type: 'Harvesting', session: S },
+  ])
+  expect(s).toMatchObject({ running: false, activity: 'idle', harvesting: true })
+  expect(shownActivity(s.activity, s.harvesting)).toBe('harvesting')
+  s = apply(s, { type: 'TurnStarted', session: S, turn: 'T2', text: 'y', model: 'm', turn_seq: 3 }, ctx())
+  expect(s).toMatchObject({ running: true, activity: 'thinking', harvesting: true })
+  expect(shownActivity(s.activity, s.harvesting)).toBe('thinking')
+  s = apply(s, { type: 'Harvested', session: S, added: 1, updated: 0 }, ctx())
+  expect(s).toMatchObject({ running: true, activity: 'thinking', harvesting: false })
+  expect(s.entries.at(-1)).toMatchObject({ kind: 'info', text: 'knowledge +1 ~0' })
+  s = apply(s, { type: 'TurnFinished', session: S, turn: 'T2', stop_reason: 'stop', usage, context: 15 }, ctx())
+  expect(shownActivity(s.activity, s.harvesting)).toBe('idle')
 })
 
 test('ToolCallProgress names the file being written; ToolCallStarted clears it; ArtifactShown attaches to the tool entry', () => {

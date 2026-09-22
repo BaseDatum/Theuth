@@ -27,6 +27,7 @@ export function empty(id: string): SessionSlice {
     running: false,
     waiting: false,
     activity: "idle",
+    harvesting: false,
     queued: [],
     skills: [],
     undone: 0,
@@ -878,11 +879,13 @@ function turn(
             { ...s, activity: idle, context: e.after },
             { id: nextId(), kind: "compacted", epoch: e.epoch, style: e.style },
           );
+    // 10 §5.2 as built: the harvest runs detached — may start after `TurnFinished`, may outlive the next
+    // `TurnStarted` — so it never touches `activity`; the label is derived (`shownActivity`).
     case "Harvesting":
-      return { ...s, activity: "harvesting" };
+      return { ...s, harvesting: true };
     case "Harvested":
       return interject(
-        { ...s, activity: idle },
+        { ...s, harvesting: false },
         {
           id: nextId(),
           kind: "info",
