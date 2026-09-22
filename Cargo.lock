@@ -1886,7 +1886,7 @@ dependencies = [
 [[package]]
 name = "boring-sys"
 version = "5.0.2"
-source = "git+https://github.com/signalapp/boring?tag=signal-v5.0.2#2c157897feea0c54f5eca93407a157fa90703b5f"
+source = "git+https://github.com/skymoore/boring?branch=theuth%2Fcargo-include#b75c769996b5207e453bd1796caac2fc89b2a0fb"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -2088,7 +2088,7 @@ dependencies = [
 [[package]]
 name = "btls-sys"
 version = "0.5.6"
-source = "git+https://github.com/skymoore/btls?branch=main#7664785ad52e4218a4cbd090be1f543bab35b9f1"
+source = "git+https://github.com/skymoore/btls?branch=fix%2Fprefix-cxx-elf#fcf88a042f2f7692d155ed070fe1575aa45a0ad2"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -3800,7 +3800,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.5",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4310,7 +4310,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -9734,9 +9734,8 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.36.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95b4103cffefa72eb8428cb6b47d6627161e51c2739fc5e3b734584157bc642a"
 dependencies = [
+ "boring-sys",
  "cc",
  "pkg-config",
  "vcpkg",
@@ -17863,7 +17862,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

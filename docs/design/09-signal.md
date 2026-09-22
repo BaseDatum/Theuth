@@ -130,6 +130,13 @@ fallback (§5.2). The crate is always compiled — the first build is minutes,
 later builds are cached; a feature flag would put a `cfg` in `main` for a
 saving nobody measured. Revisit if `cargo check` time becomes a complaint.
 
+As built (58 §0): `presage-store-sqlite`'s SQLCipher is compiled against
+libsignal's BoringSSL on every host — `vendor/libsqlite3-sys` patches
+crates.io 0.36.0 to `SQLCIPHER_CRYPTO_OPENSSL` over `boring-sys`'s headers,
+with a static `EVP_MAC`-over-`HMAC_CTX` shim — so the encrypted store links
+on Linux and Windows without OpenSSL and the on-disk format is the stock
+SQLCipher 4 one (verified both ways against the OpenSSL-provider CLI).
+
 ## 3. Plugin lifecycle
 
 `main.rs` pushes `Box::new(signal::SignalPlugin { channel: cli.headless })`
