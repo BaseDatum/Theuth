@@ -1028,6 +1028,7 @@ export function route(
         started_at: new Date().toISOString(),
         finished_at: null,
         last: "",
+        cap: e.cap,
       };
       const next = { ...s, children: { ...s.children, [e.child]: row } };
       draft[id] =

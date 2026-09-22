@@ -30,8 +30,8 @@ use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
     InstallCommunicationAccess, JobEvent, JobExit, JobId, ListPrompts, ListTools, Notice,
-    REGISTRY_ACTOR, RegisterActivity, RegisterPrompt, RegisterTool, SetParent, Settle,
-    ToolRegistry,
+    REGISTRY_ACTOR, RegisterActivity, RegisterPrompt, RegisterTool, Risk, SetCap, SetParent,
+    Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -174,6 +174,9 @@ pub struct Agents {
     child_turns: HashMap<SessionId, ChildTurn>,
     /// Children whose current turn was cancelled by the runtime cap.
     timed_out: HashSet<SessionId>,
+    /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
+    /// the board row; the registry enforces it ([`SetCap`]).
+    caps: HashMap<SessionId, Risk>,
     /// Children spawned by a turn an A2A request scope owns (50 §6.3): the
     /// child's first turn and its result are that scope's work (the durable
     /// `child:<id>` row) until [`Self::child_finished`] hands it off. A
@@ -334,6 +337,9 @@ pub struct SpawnChild {
     pub model: Option<String>,
     /// Child reasoning effort; default `agent.subagents.effort`, then `agent.effort`.
     pub effort: Option<String>,
+    /// Risk ceiling for the child and its descendants (12 §5); `None` = no
+    /// cap. Installed on the registry with [`SetCap`] and shown on the board.
+    pub cap: Option<Risk>,
 }
 
 /// `ask` → `Result<Delivered, String>`: route a peer message (50 §5.2). The
@@ -2760,11 +2766,26 @@ impl Message<SpawnChild> for Agents {
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
+        // Next to `inherit_approvals` in spirit: the ceiling is on the
+        // registry before the child's first `ListTools`, and `cap_for` takes
+        // the minimum down the tree, so a capped child cannot spawn a looser one.
+        if let Some(cap) = m.cap {
+            self.caps.insert(id, cap);
+            if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+                let _ = reg
+                    .tell(SetCap {
+                        session: id,
+                        cap: Some(cap),
+                    })
+                    .await;
+            }
+        }
         self.rt
             .publish(AgentEvent::SubagentSpawned {
                 parent: m.parent,
                 child: id,
                 name: name.clone(),
+                cap: m.cap,
             })
             .await;
         // Spawned by a turn an A2A request scope owns (50 §6.3): the child
@@ -3976,6 +3997,7 @@ impl Agents {
             project: row.project.clone(),
             retention: self.retention_of(id),
             activity,
+            cap: self.caps.get(&id).copied(),
         }
     }
 
@@ -4884,6 +4906,7 @@ impl Message<DeleteSession> for Agents {
             self.delivered.retain(|(s, _), _| s != id);
             self.turn_text.retain(|(s, _), _| s != id);
             self.owned_children.remove(id);
+            self.caps.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -6056,6 +6079,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             permits: Arc::new(Semaphore::new(cfg.subagents.max_concurrent.max(1))),
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
+            caps: HashMap::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
@@ -6463,6 +6487,7 @@ impl Agents {
             self.last_stop.remove(&id);
             self.last_input.remove(&id);
             self.owned_children.remove(&id);
+            self.caps.remove(&id);
             self.bound.retain(|(s, _), _| *s != id);
             self.delivered.retain(|(s, _), _| *s != id);
             self.turn_text.retain(|(s, _), _| *s != id);
@@ -7395,6 +7420,7 @@ pub(crate) mod tests {
             permits: Arc::new(Semaphore::new(1)),
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
+            caps: HashMap::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),

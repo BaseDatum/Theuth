@@ -1310,6 +1310,7 @@ impl Channel {
                 parent,
                 child,
                 name,
+                ..
             }) => {
                 self.spawned(parent, child, name).await;
             }
@@ -3322,6 +3323,7 @@ pub(crate) mod tests {
                 parent: f.stub.session,
                 child,
                 name: "grep-logs".into(),
+                cap: None,
             }))
             .await;
         child

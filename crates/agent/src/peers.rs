@@ -50,6 +50,9 @@ pub struct SpawnSubagentArgs {
     /// Reasoning effort for a theuth subagent: low|medium|high|off|default or a token budget; default: the configured one.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Risk ceiling for a theuth subagent: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk; not enforceable for an external harness — an error when combined with `agent`.
+    #[serde(default)]
+    pub tools: Option<String>,
 }
 
 /// Registered nodes (32 §6.5): name → (`describe` line, dialer). Written by
@@ -118,6 +121,22 @@ pub(crate) fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
         .ok_or("agent supervisor not running")
 }
 
+/// `tools` as a [`Risk`] ceiling: `None` (no cap) when absent or
+/// `destructive`; an unknown value or one paired with `agent` is the error
+/// the model reads. `destructive` is `None` so the argument reads naturally.
+fn cap_of(args: &SpawnSubagentArgs) -> Result<Option<Risk>, String> {
+    let Some(tools) = &args.tools else {
+        return Ok(None);
+    };
+    if args.agent.is_some() {
+        return Err("`tools` cannot be enforced for an external harness".into());
+    }
+    let risk: Risk = tools
+        .parse()
+        .map_err(|e| format!("`tools`: {e}"))?;
+    Ok((risk != Risk::Destructive).then_some(risk))
+}
+
 #[async_trait::async_trait]
 impl Tool for SpawnSubagentTool {
     const NAME: &'static str = "spawn_subagent";
@@ -130,7 +149,8 @@ impl Tool for SpawnSubagentTool {
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
              Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
-             For a theuth subagent, omit `model` to use the user's preferred subagent model; set `model`/`effort` only when the task clearly needs a different capability.",
+             For a theuth subagent, omit `model` to use the user's preferred subagent model; set `model`/`effort` only when the task clearly needs a different capability. \
+             `tools: read_only` (or `mutating`) caps what the subagent and its descendants may run at that risk (`destructive` = no cap); an investigation that must not change anything gets `read_only`.",
         );
         let line = acp::describe(&harnesses(&self.data_dir));
         if !line.is_empty() {
@@ -150,6 +170,10 @@ impl Tool for SpawnSubagentTool {
             Ok(a) => a,
             Err(out) => return Ok(ToolOutput::err(out)),
         };
+        let cap = match cap_of(&args) {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
         if let Some(agent) = &args.agent {
             let known = harnesses(&self.data_dir);
             let nodes = node_lines(&self.nodes);
@@ -167,6 +191,7 @@ impl Tool for SpawnSubagentTool {
                     cwd: args.cwd,
                     model: args.model,
                     effort: args.effort,
+                    cap,
                 })
                 .await
             {
@@ -652,6 +677,33 @@ mod tests {
         async fn dial(&self) -> Result<acp::LineDuplex, String> {
             Err("not dialled".to_owned())
         }
+    }
+
+    /// `tools` parses to a cap, `destructive` and absence are no cap, an
+    /// unknown value or an external harness is an error before any spawn.
+    #[test]
+    fn spawn_tools_arg_parses_to_a_cap_or_a_clear_error() {
+        let args = |tools: Option<&str>, agent: Option<&str>| SpawnSubagentArgs {
+            task: "t".into(),
+            name: None,
+            agent: agent.map(str::to_owned),
+            cwd: None,
+            model: None,
+            effort: None,
+            tools: tools.map(str::to_owned),
+        };
+        assert_eq!(cap_of(&args(None, None)), Ok(None));
+        assert_eq!(cap_of(&args(Some("read_only"), None)), Ok(Some(Risk::ReadOnly)));
+        assert_eq!(cap_of(&args(Some("mutating"), None)), Ok(Some(Risk::Mutating)));
+        assert_eq!(cap_of(&args(Some("destructive"), None)), Ok(None));
+        let e = cap_of(&args(Some("readonly"), None)).unwrap_err();
+        assert!(e.contains("unknown risk `readonly`") && e.contains("read_only"), "{e}");
+        assert_eq!(
+            cap_of(&args(Some("read_only"), Some("codex"))).unwrap_err(),
+            "`tools` cannot be enforced for an external harness"
+        );
+        // An external harness without `tools` is still fine.
+        assert_eq!(cap_of(&args(None, Some("codex"))), Ok(None));
     }
 
     #[test]

@@ -408,6 +408,7 @@ struct SpawnSubagentArgs {
     cwd: Option<PathBuf>,
     model: Option<String>,    // theuth child only: `provider/model`; default subagents.model, then agent.model
     effort: Option<String>,   // theuth child only: low|medium|high|off|default|<budget>; default subagents.effort, then agent.effort
+    tools: Option<String>,    // theuth child only: read_only|mutating|destructive risk ceiling; default none (added 2026-09-22)
 }
 // -> "Spawned `grep-logs` (session 01a0…). Its result will arrive as a
 //     <subagent_result> when it finishes; message it with send_message."
@@ -439,6 +440,25 @@ and to err towards more capability. Rejected: a fixed tier map
 (`fast`/`smart` → ids) in config - the model already knows model names,
 and the list is one tool call away; a static list in the system prompt -
 it changes with logins and would be hundreds of lines for gateway providers.
+
+**The parent caps the child's tools** (as built 2026-09-22). `tools:
+read_only | mutating | destructive` is a risk ceiling in the vocabulary of
+the one permission decision (12 §5): the registry keeps a per-session
+`cap`, `cap_for` walks the parent chain and takes the **minimum**, so a
+capped child cannot spawn a looser grandchild. Enforced twice — a tool
+above the cap is left out of `ListTools`/`DescribeTools` for the session
+(so it also vanishes from the Python function index, which is built from
+that listing), and a call that names one anyway is `Deny` with `denied:
+subagent is capped at <cap>`, distinct from `denied by policy`; the
+approval switches never rewrite it. `send_message` is exempt (a
+`CAP_EXEMPT` constant in the registry): it is `Mutating` for the approval
+policy, and reporting to the parent is what a subagent is for. The loop-
+local `todo` and `python` are `ReadOnly` and unaffected. `destructive`
+equals unset so the argument reads naturally; `tools` with `agent` is a
+tool error (an external harness enforces nothing). In memory only, like
+the hidden set: a child resumed in a later process is uncapped. The board
+row and `SubagentSpawned` carry `cap` so the desktop shows a `read-only`
+badge.
 
 Why one symmetric tool instead of `ask_parent` / `steer_subagent`: same
 schema, same routing table, same rendering; the direction is just `to`.

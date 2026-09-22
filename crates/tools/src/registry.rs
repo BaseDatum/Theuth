@@ -60,6 +60,10 @@ pub struct ToolRegistry {
     hidden: HashMap<SessionId, HashSet<String>>,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' bypass and hidden set.
     parents: HashMap<SessionId, SessionId>,
+    /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
+    /// listed for nor runnable by the session or its subagents, except
+    /// [`CAP_EXEMPT`]. In memory only, like `hidden`.
+    cap: HashMap<SessionId, Risk>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Per-root file capability from [`InstallResources`] (51 §4.5); a
@@ -400,6 +404,34 @@ impl Message<SetParent> for ToolRegistry {
     }
 }
 
+/// `tell`: cap `session` (and its subagents) at `cap` — tools above it are
+/// not offered and a call to one is `denied: subagent is capped`. `None`
+/// clears the session's own entry; an ancestor's still applies.
+#[derive(Clone, Copy, Debug)]
+pub struct SetCap {
+    /// Session to cap.
+    pub session: SessionId,
+    /// The ceiling; `None` removes it.
+    pub cap: Option<Risk>,
+}
+
+impl Message<SetCap> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetCap, _: &mut Context<Self, Self::Reply>) {
+        match m.cap {
+            Some(cap) => self.cap.insert(m.session, cap),
+            None => self.cap.remove(&m.session),
+        };
+    }
+}
+
+/// Tools a capped subagent keeps whatever its ceiling: reporting to its
+/// parent is what a subagent is for, and `send_message` is `Mutating` for
+/// the approval policy (a peer's inbox changes), not because it touches
+/// anything the cap protects. The policy still runs for these.
+const CAP_EXEMPT: &[&str] = &["send_message"];
+
 /// `tell`: `session`'s owners write under `resources` from now on (51 §4.5).
 /// The supervisor installs one per private root before its first turn;
 /// subagents inherit through [`SetParent`].
@@ -464,7 +496,7 @@ pub struct OpenTree(pub TreeOpened);
 /// (a participant past the per-owner timeout or unreachable answers
 /// `ok: false`), plus Jobs' own once it cancelled and reaped the subtree's
 /// jobs and removed their logs. The subtree's shells and this actor's
-/// `resources`/parent/hidden/bypass entries go with it.
+/// `resources`/parent/hidden/bypass/cap entries go with it.
 #[derive(Clone, Debug)]
 pub struct CloseTreeAll(pub CloseTree);
 
@@ -597,6 +629,7 @@ impl Message<Forget> for ToolRegistry {
             self.parents.remove(s);
             self.hidden.remove(s);
             self.bypass.remove(s);
+            self.cap.remove(s);
         }
     }
 }
@@ -714,6 +747,28 @@ impl ToolRegistry {
         }
     }
 
+    /// The tightest [`SetCap`] on the session or an ancestor: a child never
+    /// exceeds an ancestor's ceiling. `None` = no ceiling.
+    fn cap_for(&self, mut id: SessionId) -> Option<Risk> {
+        let mut cap: Option<Risk> = None;
+        loop {
+            if let Some(c) = self.cap.get(&id) {
+                cap = Some(cap.map_or(*c, |k| k.min(*c)));
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return cap,
+            }
+        }
+    }
+
+    /// The cap that puts `name` at `risk` out of the session's reach, if any:
+    /// `risk` above [`Self::cap_for`] and the tool not in [`CAP_EXEMPT`].
+    fn capped(&self, id: SessionId, name: &str, risk: Risk) -> Option<Risk> {
+        self.cap_for(id)
+            .filter(|cap| risk > *cap && !CAP_EXEMPT.contains(&name))
+    }
+
     /// The session's [`InstallResources`], else the nearest ancestor's, else durable.
     fn resources_for(&self, mut id: SessionId) -> Arc<SessionResources> {
         loop {
@@ -758,12 +813,21 @@ impl ToolRegistry {
             .cloned()
     }
 
-    /// The one permission decision (12 §5), before anyone is asked:
-    /// `tools.policy` for the risk, at least `Ask` when the args carry a
-    /// secret placeholder (37 §0.4), then `Ask` → `Allow` by the approval
-    /// switches (global, or the session / an ancestor opted out). `Deny` is
-    /// never rewritten.
-    fn effective(&self, session: Option<SessionId>, risk: Risk, mentions: bool) -> PolicyAction {
+    /// The one permission decision (12 §5), before anyone is asked: `Deny`
+    /// for a tool above the session's cap ([`SetCap`]), else `tools.policy`
+    /// for the risk, at least `Ask` when the args carry a secret placeholder
+    /// (37 §0.4), then `Ask` → `Allow` by the approval switches (global, or
+    /// the session / an ancestor opted out). `Deny` is never rewritten.
+    fn effective(
+        &self,
+        session: Option<SessionId>,
+        name: &str,
+        risk: Risk,
+        mentions: bool,
+    ) -> PolicyAction {
+        if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
+            return PolicyAction::Deny;
+        }
         let mut action = self.policy.action(risk);
         if mentions {
             action = action.max(PolicyAction::Ask);
@@ -776,18 +840,28 @@ impl ToolRegistry {
         action
     }
 
+    /// Why a `Deny` from [`Self::effective`] happened, for the model: the cap
+    /// names its ceiling so the subagent knows the refusal is not the policy's.
+    fn denied(&self, session: SessionId, name: &str, risk: Risk) -> String {
+        match self.capped(session, name, risk) {
+            Some(cap) => format!("denied: subagent is capped at {cap}"),
+            None => "denied by policy".to_owned(),
+        }
+    }
+
     /// [`Self::effective`] for a call theuth runs or vouches for, shared by
     /// [`Invoke`] and [`ExternalApproval`]: `Ok(None)` run now,
     /// `Ok(Some(approval))` ask the human first, `Err(why)` refuse.
     fn gate(
         &mut self,
         session: SessionId,
+        name: &str,
         risk: Risk,
         mentions: bool,
-    ) -> Result<Option<ActorRef<Approval>>, &'static str> {
-        match self.effective(Some(session), risk, mentions) {
+    ) -> Result<Option<ActorRef<Approval>>, String> {
+        match self.effective(Some(session), name, risk, mentions) {
             PolicyAction::Allow => Ok(None),
-            PolicyAction::Deny => Err("denied by policy"),
+            PolicyAction::Deny => Err(self.denied(session, name, risk)),
             PolicyAction::Ask => {
                 if self.approval.is_none() {
                     self.approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR).ok().flatten();
@@ -795,7 +869,7 @@ impl ToolRegistry {
                 self.approval
                     .clone()
                     .map(Some)
-                    .ok_or("approval required but no approval actor is running")
+                    .ok_or_else(|| "approval required but no approval actor is running".to_owned())
             }
         }
     }
@@ -809,7 +883,7 @@ impl ToolRegistry {
     ) -> ToolInspection {
         let spec = tool.spec();
         ToolInspection {
-            action: self.effective(session, spec.risk, mentions),
+            action: self.effective(session, &spec.name, spec.risk, mentions),
             identity: identity(tool, &spec),
             source: tool.source(),
             spec,
@@ -858,9 +932,12 @@ impl ToolRegistry {
             )));
         }
         let mentions = mentions(&tool, &call.args);
-        match self.effective(Some(call.session), spec.risk, mentions) {
+        match self.effective(Some(call.session), name, spec.risk, mentions) {
             PolicyAction::Allow => {}
-            PolicyAction::Deny => return Err(Unavailable(format!("{name}: denied by policy"))),
+            PolicyAction::Deny => {
+                let why = self.denied(call.session, name, spec.risk);
+                return Err(Unavailable(format!("{name}: {why}")));
+            }
             PolicyAction::Ask => match activation {
                 None => return Err(Refused::NeedsApproval),
                 Some(a) => tracing::info!(
@@ -985,6 +1062,9 @@ impl Message<DescribeTools> for ToolRegistry {
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
             .map(|(_, t)| self.inspect(t, session, false))
+            .filter(|i| {
+                !session.is_some_and(|s| self.capped(s, &i.spec.name, i.spec.risk).is_some())
+            })
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
         out
@@ -1001,7 +1081,7 @@ impl Message<ExternalApproval> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let approval = match self.gate(m.session, m.risk, false) {
+        let approval = match self.gate(m.session, &m.tool, m.risk, false) {
             Ok(None) => {
                 tx.send(Decision::Allow);
                 return reply;
@@ -1047,6 +1127,9 @@ impl Message<ListTools> for ToolRegistry {
                 session.is_none_or(|s| !self.is_hidden(s, name) && self.communicable(s, name))
             })
             .map(|(_, t)| t.spec())
+            .filter(|spec| {
+                !session.is_some_and(|s| self.capped(s, &spec.name, spec.risk).is_some())
+            })
             .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
@@ -1237,7 +1320,7 @@ impl Message<Invoke> for ToolRegistry {
             }
         };
         let mentions = mentions(&tool, &call.args);
-        let approval = match self.gate(call.session, spec.risk, mentions) {
+        let approval = match self.gate(call.session, &call.name, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
                 tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
@@ -1467,6 +1550,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             bypass: HashSet::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
+            cap: HashMap::new(),
             config_path: rt.data_dir.join("config.yaml"),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(&rt.data_dir),
@@ -1530,6 +1614,7 @@ mod tests {
             bypass: HashSet::new(),
             hidden: HashMap::new(),
             parents: HashMap::new(),
+            cap: HashMap::new(),
             config_path: PathBuf::new(),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
@@ -1806,6 +1891,112 @@ mod tests {
             ["echo"]
         );
         assert!(!reg.ask(Invoke(call(child))).await.unwrap().is_error);
+    }
+
+    /// A `Mutating` tool for the cap tests; changes nothing.
+    struct Touch;
+
+    #[async_trait::async_trait]
+    impl Tool for Touch {
+        const NAME: &'static str = "touch";
+        const RISK: Risk = Risk::Mutating;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("touched"))
+        }
+    }
+
+    /// A capped session (or a descendant) is not offered a tool above the
+    /// cap and is refused with the cap's own text when it names one; the
+    /// tightest ancestor cap wins; read-only tools and `send_message` are
+    /// untouched; clearing the cap restores everything.
+    #[tokio::test]
+    async fn cap_hides_and_denies_tools_above_it_down_the_tree() {
+        let allow = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Allow,
+            destructive: PolicyAction::Allow,
+        };
+        let reg = registry_with(
+            vec![Arc::new(Echo), Arc::new(Touch), Arc::new(Peer(Arc::default()))],
+            None,
+            allow,
+            None,
+        );
+        let (parent, child, grandchild) = (SessionId::new(), SessionId::new(), SessionId::new());
+        for (session, parent) in [(child, parent), (grandchild, child)] {
+            reg.tell(SetParent { session, parent }).await.unwrap();
+        }
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+
+        // No cap: the mutating tool is listed and runs.
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo", "touch"]
+        );
+        assert!(!reg.ask(Invoke(call("touch", child))).await.unwrap().is_error);
+
+        // (a) capped at read_only: `touch` is not offered ...
+        reg.tell(SetCap {
+            session: child,
+            cap: Some(Risk::ReadOnly),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo"]
+        );
+        // (b) ... and naming it anyway is the cap's refusal, not the policy's.
+        let out = reg.ask(Invoke(call("touch", child))).await.unwrap();
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+        // (e) a read-only tool still runs.
+        assert!(!reg.ask(Invoke(call("echo", child))).await.unwrap().is_error);
+        // `send_message` is exempt: still described, still allowed.
+        let described = reg.ask(DescribeTools(Some(child))).await.unwrap();
+        let peer = described
+            .iter()
+            .find(|i| i.spec.name == "send_message")
+            .expect("send_message survives the cap");
+        assert_eq!(peer.action, PolicyAction::Allow);
+        assert!(described.iter().all(|i| i.spec.name != "touch"));
+        // The parent is untouched.
+        assert_eq!(
+            names(reg.ask(ListTools(Some(parent))).await.unwrap()),
+            ["echo", "touch"]
+        );
+
+        // (c) the grandchild inherits the tighter ancestor cap even when its
+        // own is looser.
+        reg.tell(SetCap {
+            session: grandchild,
+            cap: Some(Risk::Destructive),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(grandchild))).await.unwrap()),
+            ["echo"]
+        );
+        let out = reg.ask(Invoke(call("touch", grandchild))).await.unwrap();
+        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+
+        // (d) clearing the child's cap restores both.
+        reg.tell(SetCap {
+            session: child,
+            cap: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["echo", "touch"]
+        );
+        assert!(!reg.ask(Invoke(call("touch", grandchild))).await.unwrap().is_error);
     }
 
     /// Stands in for the agent's `send_message`: counts body runs.

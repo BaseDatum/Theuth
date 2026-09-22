@@ -2094,6 +2094,7 @@ mod tests {
                 parent: root,
                 child: SessionId::new(),
                 name: format!("worker-{i}-with-a-long-name"),
+                cap: None,
             }));
         }
         for width in 60..=120u16 {

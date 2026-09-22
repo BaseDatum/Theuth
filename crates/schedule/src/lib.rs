@@ -810,6 +810,7 @@ impl Message<agent::AgentEvent> for Schedule {
                 parent,
                 child,
                 name,
+                ..
             } => {
                 if let Some(r) = self.running.get_mut(&parent) {
                     r.children.insert(child);

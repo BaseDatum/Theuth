@@ -8,6 +8,7 @@ import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Kind } from '@/rpc/bindings/Kind'
 import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { Retention } from '@/rpc/bindings/Retention'
+import type { Risk } from '@/rpc/bindings/Risk'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
@@ -97,6 +98,8 @@ export type AgentInfo = {
   retention?: Retention
   /** Live facts (62 §3.2); `#[serde(default)]`, absent from harnesses older than 62. */
   activity?: SessionActivity
+  /** `spawn_subagent(tools=…)` risk ceiling (12 §5); `#[serde(default)]`, absent when uncapped. */
+  cap?: Risk | null
 }
 
 /** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title. */

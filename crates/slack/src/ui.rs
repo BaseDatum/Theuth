@@ -717,6 +717,7 @@ mod tests {
             project: None,
             retention: agent::Retention::Durable,
             activity: Default::default(),
+            cap: None,
         }];
         let models_rows = vec![
             ModelInfo {

@@ -5069,6 +5069,7 @@ impl Model {
                 parent,
                 child,
                 name,
+                cap,
             } => {
                 let depth = if self.session == Some(*parent) {
                     Some(1)
@@ -5092,6 +5093,7 @@ impl Model {
                             project: None,
                             retention: agent::Retention::Durable,
                             activity: Default::default(),
+                            cap: *cap,
                         }),
                     );
                 }
@@ -10993,6 +10995,7 @@ mod tests {
                     live: true,
                     ..SessionActivity::default()
                 },
+                cap: None,
             }
         };
         let busy = info("busy", None, AgentState::Running, 0);
@@ -11111,6 +11114,7 @@ mod tests {
             project: None,
             retention: agent::Retention::Durable,
             activity: Default::default(),
+            cap: None,
         };
         let list = vec![
             info("old", AgentState::Idle, Some(600)),
@@ -11176,6 +11180,7 @@ mod tests {
                 parent,
                 child,
                 name: name.into(),
+                cap: None,
             });
         }
         assert!(m.animating() && m.board().len() == 2 && !m.status().contains("agents:"));
@@ -14924,6 +14929,7 @@ mod tests {
             parent: root,
             child,
             name: "worker".into(),
+            cap: None,
         }));
         while rx.try_recv().is_ok() {}
         // Root → child → parent: no leave.

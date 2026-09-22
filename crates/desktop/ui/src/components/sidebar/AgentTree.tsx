@@ -64,6 +64,11 @@ const Row = memo(function Row({
         {GLYPH[row.state.state]}
       </span>
       <span className="flex-1 truncate">{row.name}</span>
+      {row.cap && (
+        <span className="rounded-sm bg-sidebar-accent px-1 text-[10px] text-fg-tertiary" title={`tools capped at ${row.cap}`}>
+          {row.cap === 'read_only' ? 'read-only' : row.cap}
+        </span>
+      )}
       {cost && (cost.returned.length > 0 || cost.estimated_for_unavailable.length > 0) && (
         <span className="tabular-nums text-fg-tertiary" title={costLines(cost).secondary ?? costLines(cost).primary}>
           {costShort(cost)}

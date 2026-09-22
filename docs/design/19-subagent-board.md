@@ -329,6 +329,12 @@ true)` is a live tree; `send_input`/`steer`/`cancel` per node; `ts-rs` emits
 of the same data; a GUI shows a sidebar tree with the selected session's
 transcript beside it.
 
+*Amendment (as built 2026-09-22).* `AgentInfo.cap` and
+`SubagentSpawned.cap` carry the risk ceiling a parent set with
+`spawn_subagent(tools=…)` (01 §2.4, 12 §5); the sidebar `AgentTree` row
+shows it as a muted `read-only` / `mutating` badge. Known only for children
+spawned in the current process (the cap is in memory, like the hidden set).
+
 ## 6. What the model sees
 
 Unchanged. The roster is not in the prompt (07 §10); `Roster` for the
