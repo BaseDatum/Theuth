@@ -5,10 +5,12 @@ import { type ParseResult, parsePartial, parseSpec } from './parse'
 import { registry } from './registry'
 
 /** jarvis's `SurfaceError`, in the desktop's danger-card styling (ApprovalCard/AskCard shape). */
-function ErrorCard({ error, source }: { error: string; source: string }) {
+export function ErrorCard({ error, source, title = 'Interactive view unavailable' }: { error: string; source: string; title?: string }) {
   return (
     <div role="alert" className="my-4 rounded-xl border border-danger-border bg-danger-bg px-4 py-3 text-sm">
-      <div className="font-medium text-danger">Interactive view unavailable · {error}</div>
+      <div className="font-medium text-danger">
+        {title} · {error}
+      </div>
       <details className="mt-1">
         <summary className="cursor-pointer text-fg-secondary">source</summary>
         <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{source}</pre>

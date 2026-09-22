@@ -1,5 +1,4 @@
 import { code } from '@streamdown/code'
-import { createMermaidPlugin } from '@streamdown/mermaid'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
@@ -15,19 +14,19 @@ import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { openContextPicker } from './ContextPicker'
+import { MermaidFence } from './Mermaid'
 import { JsonRenderFence } from './surface/JsonRenderFence'
 
 // Module scope: a new object per render would re-initialise the highlighter.
-// Mermaid security (design 30 §11) goes through the plugin's own `config` (it spreads it into `mermaid.initialize`);
-// `htmlLabels` is set both globally and per-flowchart because the flowchart sub-config defaults it to true.
-// `json-render` fences use streamdown's `plugins.renderers` (matched by language before the built-in code block),
-// so no `components.code` override is needed and every other language keeps the `@streamdown/code` renderer.
+// `json-render` and `mermaid` fences use streamdown's `plugins.renderers` (matched by language before the built-in
+// code block), so no `components.code` override is needed and every other language keeps the `@streamdown/code`
+// renderer. Mermaid itself is configured in `Mermaid.tsx` (30 §11) and rendered there, not by streamdown.
 export const plugins: PluginConfig = {
   code,
-  mermaid: createMermaidPlugin({
-    config: { securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false }, suppressErrorRendering: true, maxEdges: 1000 },
-  }),
-  renderers: [{ language: 'json-render', component: JsonRenderFence }],
+  renderers: [
+    { language: 'json-render', component: JsonRenderFence },
+    { language: 'mermaid', component: MermaidFence },
+  ],
 }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
