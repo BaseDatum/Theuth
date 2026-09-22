@@ -367,6 +367,18 @@ pub struct Delivered {
 #[derive(Clone, Copy, Debug)]
 pub struct DropWait(pub Uuid);
 
+/// `ask` → `Vec<Result<String, String>>`: resolve each address relative to
+/// `from` (62 §0.8) to the canonical address a [`PeerReceipt`] carries
+/// (`session:<uuid>` | `peer:<name>`), or the same refusal [`Deliver`] would
+/// give. Nothing is sent; `send_message` resolves its whole fan-out first.
+#[derive(Clone, Debug)]
+pub struct Resolve {
+    /// Authenticated sender (`ToolCx::session`).
+    pub from: SessionId,
+    /// Addresses as the model wrote them, in order.
+    pub to: Vec<String>,
+}
+
 /// `ask` → `String`: the child's identity line only (design doc 07 §10 — the
 /// roster and static guidance live in [`frame::baseline`]). Empty for a root session.
 #[derive(Clone, Copy, Debug)]
@@ -902,6 +914,19 @@ impl Agents {
                 .map(Target::Local)
                 .ok_or_else(unknown),
         }
+    }
+
+    /// [`Self::resolve`] per address, each to the canonical form
+    /// (`session:<uuid>` | `peer:<name>`) or its refusal, in `to` order.
+    async fn resolve_all(&mut self, from: SessionId, to: &[String]) -> Vec<Result<String, String>> {
+        let mut out = Vec::with_capacity(to.len());
+        for a in to {
+            out.push(self.resolve(from, a).await.map(|t| match t {
+                Target::Local(id) => format!("session:{id}"),
+                Target::Remote(name) => format!("peer:{name}"),
+            }));
+        }
+        out
     }
 
     /// A refused route as the sender reads it: its own disablement is named;
@@ -2971,6 +2996,14 @@ impl Message<DropWait> for Agents {
     async fn handle(&mut self, DropWait(id): DropWait, _: &mut Context<Self, Self::Reply>) {
         self.waits.remove(&id);
         self.bound.retain(|_, b| *b != id);
+    }
+}
+
+impl Message<Resolve> for Agents {
+    type Reply = Vec<Result<String, String>>;
+
+    async fn handle(&mut self, m: Resolve, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.resolve_all(m.from, &m.to).await
     }
 }
 
@@ -7244,6 +7277,37 @@ pub(crate) mod tests {
         assert_eq!(rows[0].address, format!("session:{other}"));
         assert_eq!(rows[0].relationship, PeerRelationship::Root);
         assert_eq!(rows[0].state, PeerState::Idle);
+    }
+
+    /// 62 §0.8: a fan-out resolves every address first; each answer is the
+    /// canonical address a receipt carries (a child by name, `parent`, a
+    /// remote alias) or the same refusal a single send would get, in order.
+    #[tokio::test]
+    async fn resolve_all_is_canonical_and_ordered() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        let ghost = SessionId::new();
+        let to = [
+            "kid".to_owned(),
+            format!("session:{ghost}"),
+            "peer:lab".to_owned(),
+        ];
+        assert_eq!(
+            a.resolve_all(root, &to).await,
+            vec![
+                Ok(format!("session:{child}")),
+                Err(format!("unknown peer `session:{ghost}`")),
+                Ok("peer:lab".to_owned()),
+            ]
+        );
+        assert_eq!(
+            a.resolve_all(child, &["parent".to_owned()]).await,
+            vec![Ok(format!("session:{root}"))]
+        );
     }
 
     /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires

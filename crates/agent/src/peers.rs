@@ -10,7 +10,7 @@
 //! the generation token it was admitted under to [`Deliver`], so an off→on
 //! between approval and dispatch cannot revive it (50 §8).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -27,7 +27,7 @@ use crate::communication::{
     DISCOVER_DEFAULT_LIMIT, DISCOVER_MAX_LIMIT, GetPeerMessage, ListPeers, PeerMessageState,
     PeerReceipt, PeerRecord,
 };
-use crate::supervisor::{Deliver, DropWait, SpawnChild};
+use crate::supervisor::{Deliver, DropWait, Resolve, SpawnChild};
 use crate::{AGENT_ACTOR, AgentConfig, Agents, ListModels};
 
 /// Arguments for [`SpawnSubagentTool`].
@@ -180,11 +180,26 @@ impl Tool for SpawnSubagentTool {
     }
 }
 
+/// Most recipients one `send_message` call fans out to (62 §0.8).
+pub const SEND_MAX_RECIPIENTS: usize = 16;
+
+/// `send_message.to` (62 §0.8): one address or a list of up to
+/// [`SEND_MAX_RECIPIENTS`], each a canonical address from discover_peers
+/// (`session:<uuid>` or `peer:<name>`), `parent`, or one of your subagents' names.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Recipients {
+    /// One address.
+    One(String),
+    /// Several addresses (max 16); the same message reaches each, one receipt per recipient.
+    Many(Vec<String>),
+}
+
 /// Arguments for [`SendMessageTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SendMessageArgs {
-    /// Canonical address from discover_peers (`session:<uuid>` or `peer:<name>`), `parent`, or one of your subagents' names.
-    pub to: String,
+    /// One canonical address from discover_peers (`session:<uuid>` or `peer:<name>`), `parent`, or one of your subagents' names — or a list of up to 16 of them (one receipt per recipient).
+    pub to: Recipients,
     /// Body; at most 32 KiB.
     pub message: String,
     /// Block until the addressee answers with reply_to = this message's id (bounded by a timeout).
@@ -204,21 +219,72 @@ pub struct SendMessageTool {
     pub cfg: Arc<AgentConfig>,
 }
 
-/// Receipt as text plus `structured`; `is_error` for a terminal failure.
-fn receipt_output(lead: &str, r: &PeerReceipt) -> ToolOutput {
-    let mut s = format!("{lead}id={} to={} state={}", r.id, r.to, r.state.as_str());
+/// The recipient list as sent: `to` order, duplicates dropped, never empty
+/// or over [`SEND_MAX_RECIPIENTS`].
+fn recipients(to: Recipients) -> Result<Vec<String>, String> {
+    let mut v = match to {
+        Recipients::One(s) => vec![s],
+        Recipients::Many(v) => v,
+    };
+    let mut seen = HashSet::new();
+    v.retain(|a| seen.insert(a.clone()));
+    if v.is_empty() {
+        return Err("`to` names no recipient".into());
+    }
+    if v.len() > SEND_MAX_RECIPIENTS {
+        return Err(format!(
+            "`to` names {} recipients; at most {SEND_MAX_RECIPIENTS} per call",
+            v.len()
+        ));
+    }
+    Ok(v)
+}
+
+/// A refusal before anything was accepted, in receipt shape so the output
+/// keeps one row per recipient. The nil id marks "never minted".
+fn failed(to: String, error: String) -> PeerReceipt {
+    PeerReceipt {
+        id: Uuid::nil(),
+        to,
+        state: PeerMessageState::Failed,
+        reply_to: None,
+        reply: None,
+        task_id: None,
+        error: Some(error),
+        answered_by: None,
+    }
+}
+
+/// `<address> <state> id=<uuid>` plus task, error and the reply text.
+fn receipt_line(r: &PeerReceipt) -> String {
+    let mut s = format!("{} {} id={}", r.to, r.state.as_str(), r.id);
     if let Some(t) = &r.task_id {
         s.push_str(&format!(" task={t}"));
     }
     if let Some(e) = &r.error {
         s.push_str(&format!(" error={e}"));
     }
-    let mut out = if matches!(r.state, PeerMessageState::Failed) {
-        ToolOutput::err(s)
+    if let Some(reply) = &r.reply {
+        s.push('\n');
+        s.push_str(reply);
+    }
+    s
+}
+
+/// One line per recipient; `structured = {"receipts": [...]}` always a list;
+/// `is_error` only when every recipient failed.
+fn receipts_output(receipts: &[PeerReceipt]) -> ToolOutput {
+    let text = receipts
+        .iter()
+        .map(receipt_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = if receipts.iter().all(|r| r.state == PeerMessageState::Failed) {
+        ToolOutput::err(text)
     } else {
-        ToolOutput::ok(s)
+        ToolOutput::ok(text)
     };
-    out.structured = serde_json::to_value(r).ok();
+    out.structured = Some(serde_json::json!({ "receipts": receipts }));
     out
 }
 
@@ -231,12 +297,15 @@ impl Tool for SendMessageTool {
     type Args = SendMessageArgs;
 
     fn description(&self) -> String {
-        "Send a message to a peer: a canonical address from discover_peers (`session:<uuid>`, `peer:<name>`), \
-         `parent` if you are a subagent, or one of your subagents by name. Returns a receipt: `accepted` means \
-         committed to their intake, not read. With await_reply=true you block until they answer with reply_to set \
-         to this message's id (or the timeout passes; the message is not recalled). When answering a <message> \
-         with reply_expected=\"true\", set reply_to to its id. peer_message shows a message's current state."
-            .into()
+        format!(
+            "Send one message to one or more peers. `to`: one canonical address from discover_peers (`session:<uuid>`, \
+             `peer:<name>`), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
+             {SEND_MAX_RECIPIENTS} such addresses (every address must resolve or nothing is sent). Returns one receipt \
+             per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
+             With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
+             timeout passes; unanswered messages are not recalled). When answering a <message> with \
+             reply_expected=\"true\", set reply_to to its id. peer_message shows a message's current state."
+        )
     }
 
     async fn call(&self, args: SendMessageArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -253,50 +322,89 @@ impl Tool for SendMessageTool {
             Ok(a) => a,
             Err(out) => return Ok(ToolOutput::err(out)),
         };
-        let delivered = match agents
-            .ask(Deliver {
+        let to = match recipients(args.to) {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        let resolved = match agents
+            .ask(Resolve {
                 from: cx.session,
-                to: args.to,
-                text: args.message,
-                await_reply: args.await_reply,
-                reply_to: args.reply_to,
-                request_id: args.request_id,
-                admitted: admitted.token().clone(),
+                to: to.clone(),
             })
             .await
         {
-            Ok(d) => d,
-            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(format!("agent supervisor: {e}"))),
         };
-        let Some(rx) = delivered.reply else {
-            return Ok(receipt_output("", &delivered.receipt));
-        };
-        let id = delivered.receipt.id;
+        // A partial fan-out is the surprising outcome (62 §3.5): one bad
+        // address among several means nothing is sent; the model resends
+        // the good subset.
+        if to.len() > 1 && resolved.iter().any(Result::is_err) {
+            let rows: Vec<PeerReceipt> = to
+                .into_iter()
+                .zip(resolved)
+                .map(|(a, r)| match r {
+                    Ok(c) => failed(c, "not sent: another address failed".into()),
+                    Err(e) => failed(a, e),
+                })
+                .collect();
+            return Ok(receipts_output(&rows));
+        }
+        // Two spellings of one peer (`kid`, `session:<its id>`) send once.
+        let mut canonical: Vec<String> = Vec::with_capacity(to.len());
+        for r in resolved {
+            match r {
+                Ok(c) if !canonical.contains(&c) => canonical.push(c),
+                Ok(_) => {}
+                Err(e) => return Ok(ToolOutput::err(e)),
+            }
+        }
+        let mut receipts = Vec::with_capacity(canonical.len());
+        let mut waits = Vec::with_capacity(canonical.len());
+        for c in canonical {
+            match agents
+                .ask(Deliver {
+                    from: cx.session,
+                    to: c.clone(),
+                    text: args.message.clone(),
+                    await_reply: args.await_reply,
+                    reply_to: args.reply_to,
+                    request_id: args.request_id.clone(),
+                    admitted: admitted.token().clone(),
+                })
+                .await
+            {
+                Ok(d) => {
+                    receipts.push(d.receipt);
+                    waits.push(d.reply);
+                }
+                Err(SendError::HandlerError(e)) => {
+                    receipts.push(failed(c, e));
+                    waits.push(None);
+                }
+                Err(e) => {
+                    receipts.push(failed(c, format!("agent supervisor: {e}")));
+                    waits.push(None);
+                }
+            }
+        }
+        // One shared deadline for every awaited reply.
         let secs = self.cfg.subagents.reply_timeout_secs;
-        Ok(
-            match tokio::time::timeout(Duration::from_secs(secs), rx).await {
-                Ok(Ok(r)) => match (&r.state, &r.reply) {
-                    (PeerMessageState::Replied, Some(text)) => {
-                        let mut out = ToolOutput::ok(text.clone());
-                        out.structured = serde_json::to_value(&r).ok();
-                        out
-                    }
-                    // Expired by the supervisor: disable, cancel, deletion.
-                    _ => receipt_output("no reply: ", &r),
-                },
-                Ok(Err(_)) => receipt_output("wait dropped: ", &delivered.receipt),
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+        for (r, rx) in receipts.iter_mut().zip(waits) {
+            let Some(rx) = rx else { continue };
+            match tokio::time::timeout_at(deadline, rx).await {
+                // Replied, or expired by the supervisor: disable, cancel, deletion.
+                Ok(Ok(fin)) => *r = fin,
+                Ok(Err(_)) => r.error = Some("wait dropped".into()),
                 Err(_) => {
                     // Timeout: the waiter is removed, the accepted message stands.
-                    let _ = agents.tell(DropWait(id)).await;
-                    let mut r = delivered.receipt;
-                    r.error = Some(format!(
-                        "no reply within {secs}s; the message was not recalled"
-                    ));
-                    receipt_output("timeout: ", &r)
+                    let _ = agents.tell(DropWait(r.id)).await;
+                    r.error = Some(format!("timed out after {secs}s; message not recalled"));
                 }
-            },
-        )
+            }
+        }
+        Ok(receipts_output(&receipts))
     }
 }
 
@@ -589,5 +697,83 @@ mod tests {
         assert!(err.starts_with("unknown agent `box`"), "{err}");
         assert!(err.ends_with("nodes: build-box, mac-mini"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 62 §3.5: `to` is one address or a list; the list is deduplicated in
+    /// order and bounded to [`SEND_MAX_RECIPIENTS`], empty is refused.
+    #[test]
+    fn recipients_accept_one_or_many() {
+        let one: SendMessageArgs =
+            serde_json::from_value(serde_json::json!({ "to": "parent", "message": "m" })).unwrap();
+        assert_eq!(recipients(one.to).unwrap(), vec!["parent"]);
+        let many: SendMessageArgs = serde_json::from_value(
+            serde_json::json!({ "to": ["x", "y", "x"], "message": "m" }),
+        )
+        .unwrap();
+        assert_eq!(recipients(many.to).unwrap(), vec!["x", "y"]);
+        assert!(recipients(Recipients::Many(vec![])).is_err());
+        let over: Vec<String> = (0..=SEND_MAX_RECIPIENTS).map(|i| format!("p{i}")).collect();
+        let e = recipients(Recipients::Many(over)).unwrap_err();
+        assert!(e.contains("at most 16"), "{e}");
+        let full: Vec<String> = (0..SEND_MAX_RECIPIENTS).map(|i| format!("p{i}")).collect();
+        assert_eq!(recipients(Recipients::Many(full)).unwrap().len(), 16);
+        // The schema the model reads offers both shapes.
+        let schema = serde_json::to_value(schemars::schema_for!(Recipients)).unwrap();
+        assert_eq!(schema["anyOf"].as_array().map(Vec::len), Some(2), "{schema}");
+    }
+
+    /// 62 §3.5: two recipients yield two receipt lines and a two-element
+    /// `structured.receipts`; one unresolved address among two sends nothing
+    /// and reports both rows as failed; `is_error` only when all failed.
+    #[test]
+    fn receipts_output_is_one_row_per_recipient() {
+        let ok = |to: &str| PeerReceipt {
+            id: Uuid::now_v7(),
+            to: to.into(),
+            state: PeerMessageState::Accepted,
+            reply_to: None,
+            reply: None,
+            task_id: None,
+            error: None,
+            answered_by: None,
+        };
+        let (a, b) = (ok("session:a"), ok("session:b"));
+        let out = receipts_output(&[a.clone(), b.clone()]);
+        assert!(!out.is_error);
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], format!("session:a accepted id={}", a.id));
+        assert_eq!(lines[1], format!("session:b accepted id={}", b.id));
+        let s = out.structured.unwrap();
+        assert_eq!(s["receipts"].as_array().map(Vec::len), Some(2));
+        assert_eq!(s["receipts"][1]["to"], "session:b");
+        // A single recipient is still a list.
+        let s = receipts_output(&[a.clone()]).structured.unwrap();
+        assert_eq!(s["receipts"].as_array().map(Vec::len), Some(1));
+        // One bad address among two: nothing sent, two error lines, is_error.
+        let out = receipts_output(&[
+            failed("session:a".into(), "not sent: another address failed".into()),
+            failed("bogus".into(), "unknown peer `bogus`".into()),
+        ]);
+        assert!(out.is_error);
+        assert_eq!(out.content.lines().count(), 2);
+        assert!(
+            out.content.contains(
+                "bogus failed id=00000000-0000-0000-0000-000000000000 error=unknown peer `bogus`"
+            ),
+            "{}",
+            out.content
+        );
+        // One failure beside one acceptance is not an error.
+        let out = receipts_output(&[a, failed("session:c".into(), "busy".into())]);
+        assert!(!out.is_error);
+        // A reply follows its line.
+        let mut r = b;
+        r.state = PeerMessageState::Replied;
+        r.reply = Some("yes".into());
+        assert_eq!(
+            receipt_line(&r),
+            format!("session:b replied id={}\nyes", r.id)
+        );
     }
 }
