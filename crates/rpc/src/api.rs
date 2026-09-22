@@ -14,7 +14,9 @@ use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
-    Cancel, CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval,
+    Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets, Cancel,
+    CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval, Delivery,
+    ListActivity,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
     GetEscalateModel, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
@@ -143,16 +145,20 @@ pub trait Api {
     #[method(name = "new_session")]
     async fn new_session(&self) -> RpcResult<SessionId>;
     /// Start a turn; `session: None` creates an `owner`-scope root first.
-    /// `files` are image files (17 §2) attached to the message. Returns once queued.
+    /// `files` are image files (17 §2) attached to the message. `delivery`
+    /// (default `steer`) says how it lands on a busy session (62 §0.3).
+    /// Returns once queued.
     #[method(name = "send_input", with_extensions)]
     async fn send_input(
         &self,
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        delivery: Option<Delivery>,
     ) -> RpcResult<SessionId>;
-    /// Queue a user message after the current tool batch; returns the id (minted
-    /// when omitted). `files` are image files (17 §2).
+    /// Queue a user message after the current tool batch (or, with
+    /// `delivery: next_turn`, after the turn); returns the id (minted when
+    /// omitted). `files` are image files (17 §2).
     #[method(name = "steer", with_extensions)]
     async fn steer(
         &self,
@@ -160,7 +166,17 @@ pub trait Api {
         text: String,
         id: Option<InputId>,
         files: Vec<PathBuf>,
+        delivery: Option<Delivery>,
     ) -> RpcResult<InputId>;
+    /// One message to many sessions (62 §0.1): the selector is resolved on
+    /// the harness, each row is authorized like `send_input`, and the reply
+    /// carries one outcome per session. `dry_run: true` previews the rows.
+    #[method(name = "broadcast", with_extensions)]
+    async fn broadcast(&self, req: BroadcastRequest) -> RpcResult<BroadcastReceipt>;
+    /// Every session with a live actor or a running job plus every root, with
+    /// [`AgentInfo::activity`]; the broadcast picker's source (62 §0.6).
+    #[method(name = "list_activity", with_extensions)]
+    async fn list_activity(&self) -> RpcResult<Vec<AgentInfo>>;
     /// Pull a queued message back out; returns its text.
     #[method(name = "withdraw", with_extensions)]
     async fn withdraw(&self, session: SessionId, id: InputId) -> RpcResult<String>;
@@ -1635,6 +1651,7 @@ impl ApiServer for Server {
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        delivery: Option<Delivery>,
     ) -> RpcResult<SessionId> {
         self.authorize_opt(ext, session).await?;
         let session = match session {
@@ -1647,6 +1664,7 @@ impl ApiServer for Server {
                 session: Some(session),
                 text,
                 files,
+                delivery: delivery.unwrap_or_default(),
             },
         )
         .await
@@ -1659,6 +1677,7 @@ impl ApiServer for Server {
         text: String,
         id: Option<InputId>,
         files: Vec<PathBuf>,
+        delivery: Option<Delivery>,
     ) -> RpcResult<InputId> {
         self.authorize(ext, session).await?;
         let id = id.unwrap_or_default();
@@ -1669,10 +1688,76 @@ impl ApiServer for Server {
                 id,
                 text,
                 files,
+                delivery: delivery.unwrap_or_default(),
             },
         )
         .await?;
         Ok(id)
+    }
+
+    async fn broadcast(
+        &self,
+        ext: &Extensions,
+        req: BroadcastRequest,
+    ) -> RpcResult<BroadcastReceipt> {
+        // The supervisor owns the selector, so authorization is a two-step:
+        // resolve as a dry run, drop what this device may not see (51 §4.2),
+        // then send to the permitted ids by explicit list. The refused rows
+        // are spliced back in selector order with their title emptied.
+        let mut preview = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Broadcast(BroadcastRequest {
+                dry_run: true,
+                ..req.clone()
+            }),
+        )
+        .await?;
+        // Unknown ids (`Failed`) have nothing to authorize and stay as reported.
+        let mut permitted = Vec::with_capacity(preview.rows.len());
+        for row in &mut preview.rows {
+            if matches!(row.outcome, BroadcastOutcome::Failed { .. }) {
+                continue;
+            }
+            if self.authorize(ext, row.session).await.is_ok() {
+                permitted.push(row.session);
+            } else {
+                row.title.clear();
+                row.outcome = BroadcastOutcome::Skipped {
+                    reason: "not visible from this device".into(),
+                };
+            }
+        }
+        if req.dry_run {
+            return Ok(preview);
+        }
+        let allowed: HashSet<SessionId> = permitted.iter().copied().collect();
+        let mut sent = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Broadcast(BroadcastRequest {
+                targets: BroadcastTargets::Sessions { ids: permitted },
+                ..req
+            }),
+        )
+        .await?;
+        // `Sessions` keeps the given order, so the sent rows zip with the
+        // permitted preview rows.
+        let mut rows = std::mem::take(&mut sent.rows).into_iter();
+        sent.rows = preview
+            .rows
+            .into_iter()
+            .map(|row| {
+                if allowed.contains(&row.session) {
+                    rows.next().unwrap_or(row)
+                } else {
+                    row
+                }
+            })
+            .collect();
+        Ok(sent)
+    }
+
+    async fn list_activity(&self, _ext: &Extensions) -> RpcResult<Vec<AgentInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListActivity).await
     }
 
     async fn withdraw(

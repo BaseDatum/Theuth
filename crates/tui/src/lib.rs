@@ -244,7 +244,7 @@ async fn execute(
             session,
             text,
             files,
-        } => UiEvent::SessionCreated(msg(api.send_input(ext, session, text, files).await)?),
+        } => UiEvent::SessionCreated(msg(api.send_input(ext, session, text, files, None).await)?),
         Command::Steer {
             session,
             id,
@@ -256,7 +256,7 @@ async fn execute(
             if interject {
                 msg(api.cancel(ext, session).await)?;
             }
-            msg(api.steer(ext, session, text, Some(id), files).await)?;
+            msg(api.steer(ext, session, text, Some(id), files, None).await)?;
             return Ok(());
         }
         Command::Withdraw { session, id } => UiEvent::Withdrawn {

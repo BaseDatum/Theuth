@@ -1008,6 +1008,7 @@ impl Message<UserInput> for Session {
             session: self.shared.id,
             id,
             text: input.text.clone(),
+            defer: false,
         });
         self.shared
             .steer

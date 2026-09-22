@@ -69,7 +69,7 @@ pub use context::{
     ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextOwner, ContextRemoval,
     ContextSnapshot, ContextTarget,
 };
-pub use supervisor::{Agents, RegisterNode, UnregisterNode};
+pub use supervisor::{Agents, Broadcast, ListActivity, RegisterNode, UnregisterNode};
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,
@@ -91,6 +91,20 @@ pub use cost::{
 /// Registry name of the [`Agents`] supervisor actor.
 pub const AGENT_ACTOR: &str = "agent";
 
+/// How a human input lands on a busy session (62 §0.3): `Steer` joins the
+/// running turn after the current tool batch; `NextTurn` waits for the turn to
+/// end. An idle session starts a turn now either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// Inject after the current tool batch (today's behaviour).
+    #[default]
+    Steer,
+    /// Hold until the running turn ends; opens the next one.
+    NextTurn,
+}
+
 /// `ask` → [`SessionId`]. `session: None` creates a new session. Returns as
 /// soon as the turn is queued; progress arrives as [`AgentEvent`]s.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,6 +116,9 @@ pub struct SendInput {
     /// Image files to attach (17 §2); absolute paths on this machine.
     #[serde(default)]
     pub files: Vec<PathBuf>,
+    /// How it lands on a busy session (62 §0.3).
+    #[serde(default)]
+    pub delivery: Delivery,
 }
 
 /// `ask` → `()`. Injected as a user message after the current tool batch
@@ -120,6 +137,9 @@ pub struct Steer {
     /// Image files to attach (17 §2); absolute paths on this machine.
     #[serde(default)]
     pub files: Vec<PathBuf>,
+    /// How it lands on a busy session (62 §0.3).
+    #[serde(default)]
+    pub delivery: Delivery,
 }
 
 /// `ask` → `Result<String, String>`: pull a queued steer back before it enters
@@ -667,6 +687,137 @@ pub struct AgentInfo {
     /// Storage class of the root (51 §4).
     #[serde(default)]
     pub retention: tools::Retention,
+    /// Live facts (62 §3.2); `state` duplicates `activity.state`.
+    #[serde(default)]
+    pub activity: SessionActivity,
+}
+
+/// Live facts about one session, computed on `Agents` (62 §0.5, §3.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SessionActivity {
+    /// As `agents()` computes it.
+    pub state: AgentState,
+    /// `max(last_input, last_stop, turn start)`; the store's `updated_at` when cold.
+    pub last_active: Option<chrono::DateTime<chrono::Utc>>,
+    /// Start of the current turn; `None` when not running.
+    pub turn_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Running background jobs (non-PTY).
+    pub jobs: u16,
+    /// Running PTY jobs.
+    pub ptys: u16,
+    /// Descendants with a live actor.
+    pub children: u16,
+    /// Reserved: sessions blocked in `ask_user` (not in v1, always `None`).
+    pub asks: Option<u16>,
+    /// Has an actor now (vs stored/cold).
+    pub live: bool,
+}
+
+impl Default for SessionActivity {
+    fn default() -> Self {
+        Self {
+            state: AgentState::Idle,
+            last_active: None,
+            turn_started_at: None,
+            jobs: 0,
+            ptys: 0,
+            children: 0,
+            asks: None,
+            live: false,
+        }
+    }
+}
+
+/// Which sessions a [`Broadcast`] reaches (62 §0.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BroadcastTargets {
+    /// Roots whose state is `Running | Awaiting | Approval` or with `jobs + ptys > 0`.
+    Running,
+    /// Every root with a live actor.
+    Roots,
+    /// Explicit ids, roots or children; order kept, duplicates dropped.
+    Sessions {
+        /// The sessions.
+        ids: Vec<SessionId>,
+    },
+}
+
+/// One message to many sessions (62 §0.1); `ask` the supervisor with
+/// [`Broadcast`] → `Result<BroadcastReceipt, String>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct BroadcastRequest {
+    /// Selector.
+    pub targets: BroadcastTargets,
+    /// User text; stored behind a `[broadcast <id> · <n> sessions]` marker line.
+    pub text: String,
+    /// Image files (17 §2); copied per recipient by path.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
+    /// How it lands on a busy recipient.
+    #[serde(default)]
+    pub delivery: Delivery,
+    /// Resolve and report the rows without sending.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// What happened to one broadcast recipient.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BroadcastOutcome {
+    /// Was idle; a turn opened (`TurnStarted` follows).
+    Started,
+    /// Was busy; queued with the given delivery.
+    Queued {
+        /// The minted input id (`InputQueued`/`InputInjected` echo it).
+        input_id: InputId,
+        /// How it will land.
+        delivery: Delivery,
+    },
+    /// Not sent: `"dry run"`, `"remote node"`, `"no actor and not a root"`,
+    /// `"not visible from this device"`.
+    Skipped {
+        /// Why.
+        reason: String,
+    },
+    /// Send attempted and failed, or `"unknown session"`.
+    Failed {
+        /// The error.
+        error: String,
+    },
+}
+
+/// One recipient of a broadcast.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct BroadcastRow {
+    /// Session id.
+    pub session: SessionId,
+    /// Title; empty when the caller may not see it.
+    pub title: String,
+    /// Owning session; `None` for a root.
+    pub parent: Option<SessionId>,
+    /// What was true at send (or what the picker showed).
+    pub before: SessionActivity,
+    /// Outcome.
+    pub outcome: BroadcastOutcome,
+}
+
+/// Reply of [`Broadcast`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct BroadcastReceipt {
+    /// Broadcast id; the marker's short id is its first 4 hex chars.
+    pub id: uuid::Uuid,
+    /// When it was sent (or resolved, for a dry run).
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// One row per resolved session, in selector order.
+    pub rows: Vec<BroadcastRow>,
 }
 
 /// Live state of one subagent (design doc 19 §2.1).
@@ -1302,7 +1453,8 @@ pub enum AgentEvent {
         /// Message.
         message: String,
     },
-    /// A [`Steer`] is waiting for the current tool batch to end.
+    /// A [`Steer`] is waiting for the current tool batch to end (or, with
+    /// `defer`, for the turn to end; 62 §0.3).
     InputQueued {
         /// Session.
         session: SessionId,
@@ -1310,6 +1462,9 @@ pub enum AgentEvent {
         id: InputId,
         /// User text.
         text: String,
+        /// `true`: lands at the next turn, not after this tool batch.
+        #[serde(default)]
+        defer: bool,
     },
     /// A queued input entered the context as a user message; published before
     /// `TurnStarted` when queued inputs start a turn.

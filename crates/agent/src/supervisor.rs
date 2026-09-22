@@ -73,7 +73,8 @@ use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    AgentState, AncestorInfo, Ancestors, Cancel, Compact, CompactStyle, ContextItems,
+    AgentState, AncestorInfo, Ancestors, BroadcastReceipt, BroadcastRequest, Cancel, Compact,
+    CompactStyle, ContextItems, Delivery, SessionActivity,
     DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
     GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel, SideCall, SideReply,
     HistoryEntry, ListAcp, ListAgents,
@@ -401,6 +402,18 @@ pub struct UnregisterNode {
     /// The registered name.
     pub name: String,
 }
+
+/// `ask` → `Result<BroadcastReceipt, String>`: one human message to many
+/// sessions with a per-row receipt (62 §0.1, §3.3). `Err` only for the
+/// target cap; every per-session failure is a row.
+#[derive(Clone, Debug)]
+pub struct Broadcast(pub BroadcastRequest);
+
+/// `ask` → `Vec<AgentInfo>`: every session with a live actor or a running
+/// job, plus every root; `depth` from its own root, 0 for roots (62 §3.2).
+/// A root reports `parent == id`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListActivity;
 
 /// `tell` (internal): a permit was acquired; run the child's first turn.
 struct StartChildTurn {
@@ -3675,52 +3688,120 @@ impl Agents {
             .collect();
         let mut out = Vec::with_capacity(rows.len());
         for (depth, row) in &rows {
-            let id = row.id;
             let parent = row.parent.unwrap_or(session);
-            let state = if let Some((_, tool)) = self.approvals.get(&id) {
-                AgentState::Approval { tool: tool.clone() }
-            } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
-                // The awaited peer by its convenience name when it has one.
-                let from = match PeerAddress::local(&w.to) {
-                    Some(p) if p == parent => "parent".to_owned(),
-                    Some(p) => names
-                        .get(&p)
-                        .map(|n| (*n).to_owned())
-                        .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
-                        .unwrap_or_else(|| w.to.clone()),
-                    None => w.to.clone(),
-                };
-                AgentState::Awaiting { from }
-            } else if self.running.contains(&id) {
-                AgentState::Running
-            } else {
-                match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
-                    Some("error") => AgentState::Error,
-                    Some("cancelled") => AgentState::Cancelled,
-                    _ => AgentState::Idle,
-                }
+            let state = self.state_of(row.id, Some(parent), &names);
+            let activity = SessionActivity {
+                state: state.clone(),
+                ..SessionActivity::default()
             };
-            // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
-            let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
-                tracing::error!(session = %id, "last_turn_text: {e:#}");
-                String::new()
-            });
-            out.push(AgentInfo {
-                id,
-                name: row.name.clone().unwrap_or_default(),
-                parent,
-                depth: *depth,
-                agent: row.agent.clone(),
-                model: row.model.clone(),
-                state,
-                started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
-                finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
-                last: first_line(&last),
-                project: row.project.clone(),
-                retention: self.retention_of(id),
-            });
+            out.push(self.info_row(store, row, *depth, parent, state, activity).await);
         }
         out
+    }
+
+    /// Live state of `id` as the roster shows it (design doc 19 §2.1).
+    /// `names` maps sibling ids to their peer names for `Awaiting { from }`.
+    fn state_of(
+        &self,
+        id: SessionId,
+        parent: Option<SessionId>,
+        names: &HashMap<SessionId, &str>,
+    ) -> AgentState {
+        if let Some((_, tool)) = self.approvals.get(&id) {
+            AgentState::Approval { tool: tool.clone() }
+        } else if let Some(w) = self.waits.values().find(|w| w.session == id) {
+            // The awaited peer by its convenience name when it has one.
+            let from = match PeerAddress::local(&w.to) {
+                Some(p) if Some(p) == parent => "parent".to_owned(),
+                Some(p) => names
+                    .get(&p)
+                    .map(|n| (*n).to_owned())
+                    .or_else(|| Some(self.sessions.get(&p)?.parent.as_ref()?.1.clone()))
+                    .unwrap_or_else(|| w.to.clone()),
+                None => w.to.clone(),
+            };
+            AgentState::Awaiting { from }
+        } else if self.running.contains(&id) {
+            AgentState::Running
+        } else {
+            match self.last_stop.get(&id).map(|(reason, _)| reason.as_str()) {
+                Some("error") => AgentState::Error,
+                Some("cancelled") => AgentState::Cancelled,
+                _ => AgentState::Idle,
+            }
+        }
+    }
+
+    /// One roster row from its store row plus live state.
+    async fn info_row(
+        &self,
+        store: &Store,
+        row: &SessionSummary,
+        depth: u8,
+        parent: SessionId,
+        state: AgentState,
+        activity: SessionActivity,
+    ) -> AgentInfo {
+        let id = row.id;
+        // ponytail: one message replay per row; a `last_text` column if the picker gets slow.
+        let last = store.last_turn_text(id).await.unwrap_or_else(|e| {
+            tracing::error!(session = %id, "last_turn_text: {e:#}");
+            String::new()
+        });
+        AgentInfo {
+            id,
+            name: row.name.clone().unwrap_or_default(),
+            parent,
+            depth,
+            agent: row.agent.clone(),
+            model: row.model.clone(),
+            state,
+            started_at: self.child_turns.get(&id).map(|ct| ct.started_at),
+            finished_at: self.last_stop.get(&id).map(|(_, at)| *at),
+            last: first_line(&last),
+            project: row.project.clone(),
+            retention: self.retention_of(id),
+            activity,
+        }
+    }
+}
+
+impl Message<ListActivity> for Agents {
+    type Reply = Vec<AgentInfo>;
+
+    async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // Contract stub (62 commit 0): live roots only, activity zeroed.
+        let rows = self.store.list_sessions().await.unwrap_or_else(|e| {
+            tracing::error!("list sessions: {e:#}");
+            Vec::new()
+        });
+        let names = HashMap::new();
+        let mut out = Vec::new();
+        for row in rows
+            .iter()
+            .filter(|r| r.parent.is_none() && self.live(r.id).is_some())
+        {
+            let state = self.state_of(row.id, None, &names);
+            let activity = SessionActivity {
+                state: state.clone(),
+                live: true,
+                ..SessionActivity::default()
+            };
+            out.push(
+                self.info_row(&self.store, row, 0, row.id, state, activity)
+                    .await,
+            );
+        }
+        out
+    }
+}
+
+impl Message<Broadcast> for Agents {
+    type Reply = Result<BroadcastReceipt, String>;
+
+    async fn handle(&mut self, _: Broadcast, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // Contract stub (62 commit 0); behaviour lands with step 3.
+        Err("not built".into())
     }
 }
 
@@ -7993,6 +8074,7 @@ pub(crate) mod tests {
                 session: Some(root),
                 text: "hello".into(),
                 files: Vec::new(),
+                delivery: Delivery::default(),
             })
             .await
             .unwrap();

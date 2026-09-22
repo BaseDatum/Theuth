@@ -224,6 +224,7 @@ async fn serve(
                         session: Some(session),
                         text,
                         files,
+                        delivery: agent::Delivery::default(),
                     },
                 )
                 .await
