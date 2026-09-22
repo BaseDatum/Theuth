@@ -9,29 +9,43 @@ import { useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { NoteChat } from '@/components/notes/NoteChat'
+import { titleAfter } from '@/components/notes/title'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { HarnessProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { on } from '@/store/sessions'
 
 const route = getRouteApi('/notes_/$id')
 
 /** `/notes/$id` (59 §7.3): the note in BlockNote, its title inline in the bar, the chat panel below. */
 export function NotePage() {
   const { id } = route.useParams()
-  return <Note key={id} id={id} />
+  const { new: isNew } = route.useSearch()
+  return <Note key={id} id={id} isNew={isNew === true} />
 }
 
-/** The note's title as the provider knows it, updated locally on rename so the bar never flickers back. */
+/**
+ * The note's title as the provider knows it (59 §7.3): `meta` lands with `doc_open`; a rename — this page's, the
+ * list row's, another device's — arrives as `DocumentChanged` on the bus, not on the document stream, so the page
+ * follows that too. The local rename result sets it first so the bar never flickers back.
+ */
 function useTitle(provider: HarnessProvider | null): [string, (t: string) => void] {
   const [title, setTitle] = useState(provider?.meta?.title ?? '')
   useEffect(() => {
     if (!provider) return
     setTitle(provider.meta?.title ?? '')
-    // `meta` lands with `doc_open`, after the first `live`.
-    return provider.onStatus(() => setTitle(provider.meta?.title ?? ''))
+    const offStatus = provider.onStatus(() => setTitle(provider.meta?.title ?? ''))
+    const offChanged = on('DocumentChanged', (e) => {
+      const t = titleAfter(provider, e)
+      if (t !== null) setTitle(t)
+    })
+    return () => {
+      offStatus()
+      offChanged()
+    }
   }, [provider])
   return [
     title,
@@ -42,7 +56,7 @@ function useTitle(provider: HarnessProvider | null): [string, (t: string) => voi
   ]
 }
 
-function Note({ id }: { id: string }) {
+function Note({ id, isNew }: { id: string; isNew: boolean }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -55,6 +69,16 @@ function Note({ id }: { id: string }) {
   const [snapshots, setSnapshots] = useState(false)
   const titleInput = useRef<HTMLInputElement>(null)
   const doc = { ref: id, title: title || 'Untitled' }
+  useEffect(() => {
+    document.title = title
+  }, [title])
+  // A just-created note (`?new`, from New note): the title is selected for typing over, once the input is enabled; the flag is dropped from the URL.
+  const ready = live.provider !== null
+  useEffect(() => {
+    if (!isNew || !ready) return
+    titleInput.current?.select()
+    void navigate({ to: '/notes/$id', params: { id }, search: {}, replace: true })
+  }, [isNew, ready, id, navigate])
 
   const rename = useMutation({
     mutationFn: (t: string) => api.doc_rename(id, t),
