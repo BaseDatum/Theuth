@@ -13,9 +13,15 @@ function IslandRoute() {
   const { fixture } = Route.useSearch()
   useEffect(() => {
     if (!import.meta.env.DEV || (fixture !== 'meeting' && !import.meta.env.VITE_MEETING_FIXTURE)) return
-    let stop = () => {}
-    void import('@/dev/meeting-fixture').then((m) => (stop = m.play()))
-    return () => stop()
+    // The import resolves after StrictMode's first cleanup: a replay started then would run twice.
+    let stop: (() => void) | null = () => {}
+    void import('@/dev/meeting-fixture').then((m) => {
+      if (stop) stop = m.play()
+    })
+    return () => {
+      stop?.()
+      stop = null
+    }
   }, [fixture])
   return <Island />
 }

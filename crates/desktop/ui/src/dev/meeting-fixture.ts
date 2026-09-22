@@ -19,6 +19,17 @@ const brief = (id: string, source: 'Auto' | 'Tap', title: string, bullets: strin
   brief: { id, topic, title, bullets, source, at_ms: 0n, parent: null, cached: null },
 })
 
+const said = (track: 'Mic' | 'System', t0_ms: number, text: string, final = true): MeetingEvent => ({
+  type: 'Utterance',
+  meeting: M,
+  track,
+  t0_ms: BigInt(t0_ms),
+  t1_ms: BigInt(t0_ms + 900),
+  text,
+  request: false,
+  final,
+})
+
 /** `[at ms, event]`, in order. */
 const SCRIPT: [number, MeetingEvent][] = [
   [0, { type: 'State', meeting: M, state: 'Starting', degraded: [] }],
@@ -33,6 +44,16 @@ const SCRIPT: [number, MeetingEvent][] = [
     },
   ],
   [300, { type: 'State', meeting: M, state: 'Recording', degraded: ['MicNoAec'] }],
+  [1200, said('System', 1200, 'so the DR', false)],
+  [1800, said('System', 1200, 'so the DR sync is still blocked on the image tags')],
+  [2600, said('Mic', 2600, 'right, SRE-2386 — who owns that now?')],
+  [4000, said('System', 4000, 'platform team, but KEDA scaling keeps eating the on-call rotation')],
+  [4800, said('System', 4800, 'can we pin the', false)],
+  [5400, said('System', 4800, 'can we pin the DR cutover date this week?')],
+  [7000, said('Mic', 7000, 'let me check the runbook and come back with a date')],
+  [8000, said('System', 8000, 'one more thing on the scaler cooldown')],
+  [10000, said('Mic', 10000, 'thirty seconds is fine, the queue depth signal lags anyway')],
+  [12000, said('System', 12000, 'ok, next: the third auto brief should land about now')],
   [2000, topic('t1', 'SRE-2386 image tags', 2000)],
   [3500, topic('t2', 'KEDA scaling', 3500)],
   [5000, topic('t3', 'DR cutover date', 5000)],
