@@ -421,10 +421,11 @@ the TUI in its status line, the desktop as a toast.
     highlight layer behind a transparent textarea (scroll/wrap sync bugs for
     a read-only moment); `contenteditable` (rewrites the composer).
   - Buttons (`:510-543`): the right-hand slot becomes `[voice note?] [dictation | meter] [send | stop]`:
-    - **Dictation**: `<Tooltip><TooltipTrigger asChild><Button variant="ghost" className="size-9 rounded-full" aria-label="Dictation"><Mic/></Button></TooltipTrigger><TooltipContent>Dictation (Ctrl+D)</TooltipContent></Tooltip>`; shown when `voice && !priv && !running`; disabled with the `ModelState` reason in the tooltip while not `Ready`.
+    - **Dictation**: `<Tooltip><TooltipTrigger asChild><Button variant="ghost" className="size-9 rounded-full" aria-label="Dictation"><Mic/></Button></TooltipTrigger><TooltipContent>Dictation (Ctrl+D)</TooltipContent></Tooltip>`; shown when `voice && !priv`, running or not — mid-turn the dictated text sends as a steer like typed text; disabled with the `ModelState` reason in the tooltip while not `Ready`.
+      As built 2026-09-22: the original `!running` gate was dropped so Stop and both voice buttons coexist while a turn runs.
     - **Meter** (replaces the dictation button while `active`): `<canvas>` 96 × 36 px inside the same round-ended button shape (`rounded-full bg-fg-accent/10`), click = stop, tooltip "Stop dictation (Ctrl+D)". Drawing (`components/chat/LevelMeter.tsx`): a ring of the last 24 `levels` values (24 × 20 ms = 480 ms of audio scrolling right-to-left, newest at the right), one bar per 3 px with 1 px gap, height = `4 + 28 · clamp(log10(1 + 9·level), 0, 1)`, mirrored around the vertical centre with `roundRect` caps, accent colour, alpha fading toward the left; a `requestAnimationFrame` loop interpolates between packets (levels arrive 6×/s in bursts of 8, the meter renders 60×/s) and idles to a flat 4 px line after 400 ms without a packet; `devicePixelRatio`-scaled. Colour tokens from CSS variables via `getComputedStyle` so themes apply.
     - **Voice note**: `<Button variant="ghost" …><AudioLines/></Button>` with tooltip "Voice note", shown when `voice && !priv && !text.trim() && !active`; the existing `record()`/`stopRecording()`/`sendNote()` move behind it unchanged (red `Square` + seconds while recording, as today).
-    - Send / Stop as today. While `active`, Send is disabled.
+    - Send / Stop as today; both voice buttons stay beside Stop while running. While `active`, Send is disabled.
 - Touch (`touch()`): the hotkey is desktop-only; the buttons work as-is.
   Relay clients (the phone): the button works — `lib/dictation.ts`
   `start(api, before, after, capture)` with `capture = true` opens the

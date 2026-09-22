@@ -216,7 +216,10 @@ way one talks to a person on Signal — a voice note, then get on with the day
   whitelist png/jpg/jpeg/gif/webp ≤ 5 MB, pdf ≤ 32 MB, `rpc/src/api.rs:1434`)
   → `[⎘ …]` token → `submit()` → `steer` if running else `send_input`,
   `markSent(session, text, files)`. Send button in a `flex items-end gap-1`
-  row after the textarea; `running && session` shows Stop instead.
+  row after the textarea; `running && session` swaps Send for Stop, and the
+  voice-note/dictation buttons stay beside Stop so a note recorded mid-turn
+  queues as a steer (tooltip "Voice note (steers the running turn)").
+  As built 2026-09-22: earlier the mic row was hidden while running.
 - User bubble: `MessageUser.tsx` renders `<Attachments files/>` then the
   text; `Entry.files` exists for own sends only, history `HistoryEntry::User
   { text, turn }` has no files — anything a voice bubble needs to survive
