@@ -6,10 +6,11 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use document::actor::DocumentActor;
 use document::tools::{CreateTool, DeleteTool, Docs, InsertTool, ReadTool, ReplaceTool};
 use document::{
-    ApplyUpdate, Binding, BlockEdit, CreateNote, DOCUMENT_ACTOR, DeleteNote, DocEvent, DocKind,
+    ApplyUpdate, Binding, BlockEdit, CreateNote, DOCUMENT_ACTOR, DeleteNote, DocEvent, DocKind, Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, Role, SetName, proof, secret_hash,
     DocumentsConfig, Edit, EditError, Ensure, ImportMarkdown, ImportMode, ListDocs, OpenDoc, Outline,
     Principal, Rename, Subscribe, Tick, UndoLastAgentEdit, Who, helper, store,
 };
@@ -135,6 +136,7 @@ async fn knowledge_document_round_trip_export_import_restart() {
         .ask(OpenDoc {
             doc: id.clone(),
             sv: None,
+            by: Principal::Owner { device: None },
         })
         .await
         .unwrap();
@@ -150,14 +152,14 @@ async fn knowledge_document_round_trip_export_import_restart() {
     let mut sub = actor
         .ask(Subscribe {
             doc: id.clone(),
-            conn: Some(1),
+            by: Principal::Owner { device: Some(1) },
         })
         .await
         .unwrap();
     let mut own = actor
         .ask(Subscribe {
             doc: id.clone(),
-            conn: Some(2),
+            by: Principal::Owner { device: Some(2) },
         })
         .await
         .unwrap();
@@ -258,6 +260,7 @@ async fn knowledge_document_round_trip_export_import_restart() {
         .ask(OpenDoc {
             doc: id.clone(),
             sv: None,
+            by: Principal::Owner { device: None },
         })
         .await
         .unwrap();
@@ -368,7 +371,7 @@ async fn agent_tools_edit_attribute_and_undo() {
     let mut sub = actor
         .ask(Subscribe {
             doc: id.clone(),
-            conn: Some(1),
+            by: Principal::Owner { device: Some(1) },
         })
         .await
         .unwrap();
@@ -654,7 +657,7 @@ async fn notes_create_list_rename_delete() {
     assert!(e.contains("delete_via_owner"), "{e}");
 
     // Delete: subscribers see `Closed{deleted}`, the directory is in `.trash`, the list drops it.
-    let mut sub = actor.ask(Subscribe { doc: b.id.clone(), conn: Some(1) }).await.unwrap();
+    let mut sub = actor.ask(Subscribe { doc: b.id.clone(), by: Principal::Owner { device: Some(1) } }).await.unwrap();
     actor.ask(DeleteNote { doc: b.id.clone() }).await.unwrap();
     assert_eq!(next_event(&mut sub).await, DocEvent::Closed { reason: "deleted".into() });
     assert!(!b_md.exists());
@@ -662,6 +665,222 @@ async fn notes_create_list_rename_delete() {
     let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
     assert_eq!(ids(list), vec![a.id.clone()]);
     // Loading the deleted note fails (its directory is gone from `documents/`).
-    assert!(actor.ask(OpenDoc { doc: b.id.clone(), sv: None }).await.is_err());
+    assert!(actor.ask(OpenDoc { doc: b.id.clone(), sv: None, by: Principal::Owner { device: None } }).await.is_err());
+    stop(actor).await;
+}
+
+/// Design 59 §8 / §14 row 7, the authority's half: a link, a join with the connection-bound proof, a
+/// bad proof, an expired link, the 65th member, a viewer's write, demote → `Closed{demoted}` then a
+/// read-only reopen, revoke → `Closed{revoked}` and no membership left.
+#[tokio::test]
+async fn sharing_links_join_roles_demote_revoke() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let note = actor
+        .ask(CreateNote {
+            title: "Shared".into(),
+            markdown: "hello\n".into(),
+            by: Principal::Owner { device: None },
+        })
+        .await
+        .unwrap();
+    let doc = note.id.clone();
+    let owner = Principal::Owner { device: Some(1) };
+    let mut owner_sub = actor.ask(Subscribe { doc: doc.clone(), by: owner.clone() }).await.unwrap();
+
+    // A link: the secret comes back once; the store keeps its hash and the wire copy has none.
+    let (link, secret) = actor
+        .ask(LinkCreate { doc: doc.clone(), role: Role::Editor, name: None, expires_ms: None })
+        .await
+        .unwrap();
+    assert!(link.id.starts_with("lnk_"));
+    assert!(link.secret_hash.is_empty(), "no hash on the wire");
+    let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&secret).unwrap();
+    let key = secret_hash(&secret);
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(format!("documents/{doc}/meta.json"))).unwrap()).unwrap();
+    assert_eq!(
+        meta["links"][0]["secret_hash"],
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key),
+        "meta.json holds sha256(secret), never the secret"
+    );
+    assert!(matches!(next_event(&mut owner_sub).await, DocEvent::Members { links, .. } if links.len() == 1));
+
+    let guest = [7u8; 32];
+    let h = [1u8; 32];
+    let join = |proof: [u8; 32], name: Option<&str>| Join {
+        doc: doc.clone(),
+        guest_pub: guest,
+        handshake_hash: h.to_vec(),
+        proof: proof.to_vec(),
+        name: name.map(str::to_owned),
+    };
+    // Bad proof (another connection's hash): refused, nobody added.
+    let bad = proof(&key, &[2u8; 32], &guest);
+    assert_eq!(actor.ask(join(bad, None)).await.unwrap_err().to_string(), JoinError::BadProof.to_string());
+    // Not a member yet: every member call is refused.
+    let guest_pub = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(guest);
+    let member = Principal::Member { pub_: guest_pub.clone(), device: Some(2) };
+    assert_eq!(
+        actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap_err().to_string(),
+        "not_member"
+    );
+    // Happy path: role from the link, a palette colour, the given name (no preset).
+    let joined = actor.ask(join(proof(&key, &h, &guest), Some("Guest A"))).await.unwrap();
+    assert_eq!((joined.role, joined.name.as_str()), (Role::Editor, "Guest A"));
+    assert!(joined.color.starts_with('#'));
+    assert!(matches!(next_event(&mut owner_sub).await, DocEvent::Members { members, .. } if members.len() == 1 && members[0].name == "Guest A"));
+    // Again from the same static: the existing membership, no link check.
+    let again = actor.ask(join(bad, None)).await.unwrap();
+    assert_eq!(again, joined);
+
+    // The member opens (links stripped), subscribes, writes; the owner sees `Update by member <name>`.
+    let opened = actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap();
+    assert!(opened.meta.links.is_empty());
+    assert_eq!(opened.meta.members[0].pub_, guest_pub);
+    let mut member_sub = actor.ask(Subscribe { doc: doc.clone(), by: member.clone() }).await.unwrap();
+    actor
+        .ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("A"), by: member.clone() })
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_event(&mut owner_sub).await,
+        DocEvent::Update { by: Who::Member { pub_, name }, .. } if pub_ == guest_pub && name == "Guest A"
+    ));
+    // updates.log tag 4 carries the static.
+    let log = std::fs::read(dir.path().join(format!("documents/{doc}/updates.log"))).unwrap();
+    let recs: Vec<(u8, &[u8])> = store::records(&log).collect();
+    assert_eq!(recs.last().unwrap().0, 4);
+    assert_eq!(&log[log.len() - recs.last().unwrap().1.len() - 4 - 32..log.len() - recs.last().unwrap().1.len() - 4], &guest);
+
+    // A viewer link: its member cannot write; `doc_set_name` is a write too.
+    let (vlink, vsecret) = actor
+        .ask(LinkCreate { doc: doc.clone(), role: Role::Viewer, name: Some("Reader".into()), expires_ms: None })
+        .await
+        .unwrap();
+    let vkey = secret_hash(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&vsecret).unwrap());
+    let viewer_static = [8u8; 32];
+    let v = actor
+        .ask(Join {
+            doc: doc.clone(),
+            guest_pub: viewer_static,
+            handshake_hash: h.to_vec(),
+            proof: proof(&vkey, &h, &viewer_static).to_vec(),
+            name: Some("ignored".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!((v.role, v.name.as_str()), (Role::Viewer, "Reader"), "the preset wins");
+    let viewer = Principal::Member {
+        pub_: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(viewer_static),
+        device: Some(3),
+    };
+    assert_eq!(
+        actor.ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("V"), by: viewer.clone() }).await.unwrap_err().to_string(),
+        "viewer_readonly"
+    );
+    assert_eq!(
+        actor.ask(SetName { doc: doc.clone(), by: viewer.clone(), name: "R".into() }).await.unwrap_err().to_string(),
+        "viewer_readonly"
+    );
+    actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: viewer.clone() }).await.unwrap();
+
+    // Expired and revoked links refuse joins; existing members stay.
+    let (elink, esecret) = actor
+        .ask(LinkCreate { doc: doc.clone(), role: Role::Editor, name: None, expires_ms: Some(1) })
+        .await
+        .unwrap();
+    let ekey = secret_hash(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&esecret).unwrap());
+    let late = [9u8; 32];
+    let expired = Join {
+        doc: doc.clone(),
+        guest_pub: late,
+        handshake_hash: h.to_vec(),
+        proof: proof(&ekey, &h, &late).to_vec(),
+        name: None,
+    };
+    assert_eq!(actor.ask(expired).await.unwrap_err().to_string(), JoinError::LinkExpired.to_string());
+    actor.ask(LinkRevoke { doc: doc.clone(), link: link.id.clone() }).await.unwrap();
+    let fresh = [10u8; 32];
+    assert_eq!(
+        actor
+            .ask(Join {
+                doc: doc.clone(),
+                guest_pub: fresh,
+                handshake_hash: h.to_vec(),
+                proof: proof(&key, &h, &fresh).to_vec(),
+                name: None,
+            })
+            .await
+            .unwrap_err().to_string(),
+        JoinError::LinkRevoked.to_string()
+    );
+    actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap();
+
+    // The 65th member is refused (default `max_members` 64; two are in).
+    for i in 0u8..62 {
+        let s = [100 + i; 32];
+        actor
+            .ask(Join {
+                doc: doc.clone(),
+                guest_pub: s,
+                handshake_hash: h.to_vec(),
+                proof: proof(&vkey, &h, &s).to_vec(),
+                name: None,
+            })
+            .await
+            .unwrap();
+    }
+    let s = [200u8; 32];
+    assert_eq!(
+        actor
+            .ask(Join {
+                doc: doc.clone(),
+                guest_pub: s,
+                handshake_hash: h.to_vec(),
+                proof: proof(&vkey, &h, &s).to_vec(),
+                name: None,
+            })
+            .await
+            .unwrap_err().to_string(),
+        JoinError::Full.to_string()
+    );
+    assert_eq!(actor.ask(MembersOf { doc: doc.clone() }).await.unwrap().members.len(), 64);
+
+    // Demote A: their subscription ends with `demoted`; they reopen and can no longer write.
+    while member_sub.try_recv().is_ok() {}
+    actor
+        .ask(MemberSet { doc: doc.clone(), pub_: guest_pub.clone(), role: Some(Role::Viewer), name: Some("A (viewer)".into()) })
+        .await
+        .unwrap();
+    assert_eq!(next_event(&mut member_sub).await, DocEvent::Closed { reason: "demoted".into() });
+    let reopened = actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap();
+    let me = reopened.meta.members.iter().find(|m| m.pub_ == guest_pub).unwrap();
+    assert_eq!((me.role, me.name.as_str()), (Role::Viewer, "A (viewer)"));
+    let mut member_sub = actor.ask(Subscribe { doc: doc.clone(), by: member.clone() }).await.unwrap();
+    assert_eq!(
+        actor.ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("B"), by: member.clone() }).await.unwrap_err().to_string(),
+        "viewer_readonly"
+    );
+
+    // Revoke A: `revoked`, then every member call says `not_member`; the list has one fewer.
+    actor.ask(MemberRevoke { doc: doc.clone(), pub_: guest_pub.clone() }).await.unwrap();
+    assert_eq!(next_event(&mut member_sub).await, DocEvent::Closed { reason: "revoked".into() });
+    assert_eq!(actor.ask(Subscribe { doc: doc.clone(), by: member.clone() }).await.unwrap_err().to_string(), "not_member");
+    assert_eq!(actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap_err().to_string(), "not_member");
+    let members = actor.ask(MembersOf { doc: doc.clone() }).await.unwrap();
+    assert_eq!(members.members.len(), 63);
+    assert!(members.members.iter().all(|m| m.pub_ != guest_pub));
+    assert!(members.links.iter().all(|l| l.secret_hash.is_empty()));
+    assert_eq!(members.links.len(), 3);
+    // Membership survives a reload (meta.json).
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(format!("documents/{doc}/meta.json"))).unwrap()).unwrap();
+    assert_eq!(meta["members"].as_array().unwrap().len(), 63);
     stop(actor).await;
 }

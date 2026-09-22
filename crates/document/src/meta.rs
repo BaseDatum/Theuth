@@ -144,34 +144,57 @@ impl Binding {
     }
 }
 
-/// A member admitted through a share link (§8; empty in step 1).
+/// A member's capability (§8.1): `editor` (open, update, awareness, rename self) or `viewer` (open, awareness).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Open, update, awareness, `doc_set_name`.
+    Editor,
+    /// Open and awareness only; `doc_update` → `viewer_readonly`.
+    Viewer,
+}
+
+/// A member admitted through a share link (§8.1, §8.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Member {
     /// X25519 static, base64url.
     #[serde(rename = "pub")]
     pub pub_: String,
-    /// Display name.
+    /// Display name (the link's preset, else self-chosen at join; the owner may override).
     pub name: String,
-    /// `editor` or `viewer`.
-    pub role: String,
+    /// Cursor colour, assigned by the harness from [`PALETTE`] at join (§8.5).
+    #[serde(default)]
+    pub color: String,
+    /// Capability.
+    pub role: Role,
     /// When admitted.
     pub added_ms: i64,
-    /// The link they came through.
+    /// The link they came through (`ShareLink::id`), so the owner can sweep a link's members.
     pub via: Option<String>,
-    /// Last connection.
+    /// Last `doc_open`.
     pub last_seen_ms: i64,
 }
 
-/// A share link (§8.2; empty in step 1).
+/// Member colours (§8.5): the twelve are assigned round-robin by join order.
+pub const PALETTE: [&str; 12] = [
+    "#e0533d", "#d97706", "#65a30d", "#0d9488", "#0284c7", "#6d28d9", "#c026d3", "#db2777",
+    "#b45309", "#15803d", "#1d4ed8", "#9333ea",
+];
+
+/// A share link (§8.2). `secret_hash` is what the harness holds; on the wire (`doc_members`,
+/// `doc_open`) it is blanked — with the §8.3 proof it is the HMAC key, so it never leaves this machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ShareLink {
     /// `lnk_…`.
     pub id: String,
-    /// `editor` or `viewer`.
-    pub role: String,
-    /// base64url(sha256(secret)).
+    /// Role every joiner gets.
+    pub role: Role,
+    /// base64url(sha256(secret)); empty on the wire.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "ts", ts(skip))]
     pub secret_hash: String,
     /// Preset display name for joiners.
     pub name: Option<String>,
@@ -181,6 +204,57 @@ pub struct ShareLink {
     pub expires_ms: Option<i64>,
     /// Revoked, if so.
     pub revoked_ms: Option<i64>,
+}
+
+impl ShareLink {
+    /// Accepts joins at `now`: not revoked, not expired.
+    pub fn live(&self, now: i64) -> bool {
+        self.revoked_ms.is_none() && self.expires_ms.is_none_or(|e| e > now)
+    }
+
+    /// A copy for the wire: everything but the HMAC key.
+    pub fn public(&self) -> Self {
+        Self {
+            secret_hash: String::new(),
+            ..self.clone()
+        }
+    }
+}
+
+/// `doc_members` reply (§6.1): the owner's view of one document's sharing.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Members {
+    /// Members, join order.
+    pub members: Vec<Member>,
+    /// Links, creation order (revoked ones included until the owner forgets them).
+    pub links: Vec<ShareLink>,
+}
+
+/// `doc_join` reply (§8.3).
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Joined {
+    /// Capability.
+    pub role: Role,
+    /// Display name.
+    pub name: String,
+    /// Cursor colour.
+    pub color: String,
+}
+
+/// `doc_link_create` reply (§8.2): the URL, returned once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LinkCreated {
+    /// `https://<relay>/d#1.<harness>.<doc>.<secret>`.
+    pub url: String,
+    /// The stored row (no hash).
+    pub link: ShareLink,
 }
 
 /// `meta.json` (§4.2) and the wire `DocMeta` of `doc_open`.
@@ -335,10 +409,12 @@ pub enum Principal {
     },
     /// The helper's own transaction (import, edit).
     Helper,
-    /// A share-link member (step 7).
+    /// A share-link member (§8); `device` is their connection id (fan-out skip, awareness rate slot).
     Member {
         /// Their static key, base64url.
         pub_: String,
+        /// RPC connection id.
+        device: Option<u64>,
     },
     /// The derived file, or a store hook that stands for it.
     File,
@@ -359,7 +435,15 @@ impl Principal {
     /// The connection an update came from, when it came from a connection.
     pub fn conn(&self) -> Option<u64> {
         match self {
-            Self::Owner { device } => *device,
+            Self::Owner { device } | Self::Member { device, .. } => *device,
+            _ => None,
+        }
+    }
+
+    /// The member's static key, when the principal is a member.
+    pub fn member(&self) -> Option<&str> {
+        match self {
+            Self::Member { pub_, .. } => Some(pub_),
             _ => None,
         }
     }
@@ -396,7 +480,7 @@ impl From<&Principal> for Who {
             Principal::Agent { session } => Self::Agent {
                 session: session.to_string(),
             },
-            Principal::Member { pub_ } => Self::Member {
+            Principal::Member { pub_, .. } => Self::Member {
                 pub_: pub_.clone(),
                 name: String::new(),
             },
@@ -438,9 +522,17 @@ pub enum DocEvent {
         /// Its label.
         label: String,
     },
+    /// Sharing changed (§8): a join, rename, role change, revoke, link created or revoked. The owner's
+    /// list is live on it; members see it too (names and colours of the room).
+    Members {
+        /// Members, join order.
+        members: Vec<Member>,
+        /// Links (no hash).
+        links: Vec<ShareLink>,
+    },
     /// The subscription ends.
     Closed {
-        /// Why (`deleted`, `unloaded`, `slow`).
+        /// Why: `deleted`, `unloaded`, `slow`, `demoted` (re-open read-only, §8.1), `revoked` (§8.4).
         reason: String,
     },
 }

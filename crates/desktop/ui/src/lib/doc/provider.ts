@@ -5,6 +5,7 @@ import type { Api } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
 import type { DocId } from '@/rpc/bindings/DocId'
 import type { DocMeta } from '@/rpc/bindings/DocMeta'
+import type { Role } from '@/rpc/bindings/Role'
 import type { Who } from '@/rpc/bindings/Who'
 import type { RpcClient } from '@/rpc/client'
 import { DocStore, type Pending } from './queue'
@@ -29,7 +30,30 @@ export type Authored = { blocks: string[]; by: Who; at: number }
 /** The agent's awareness state while it edits (59 §6.4, §8.5): `{ agent: { doc, blocks, at } }` plus `name`/`color`. */
 export type AgentPresence = { name: string; color: string; blocks: string[]; at: number }
 
+/** A share-link member's identity as `doc_join` answered it (59 §8.3, §8.5). */
+export type GuestUser = { name: string; color: string; role: Role }
+
 type AgentState = { name?: unknown; color?: unknown; agent: { doc: string; blocks: string[]; at: number } }
+
+/**
+ * Awareness whose `user` field is pinned (59 §8.5): BlockNote writes `user` from the host's
+ * `deviceName()` when the editor is created; a guest's name and colour are the harness's
+ * (`Joined`), so every write of `user` lands as those. `role` rides beside it.
+ */
+class PinnedUserAwareness extends Awareness {
+  readonly #user: { name: string; color: string }
+
+  constructor(doc: Y.Doc, guest: GuestUser) {
+    super(doc)
+    this.#user = { name: guest.name, color: guest.color }
+    super.setLocalStateField('user', this.#user)
+    super.setLocalStateField('role', guest.role)
+  }
+
+  override setLocalStateField(field: string, value: unknown): void {
+    super.setLocalStateField(field, field === 'user' ? this.#user : value)
+  }
+}
 
 function isAgentState(state: unknown): state is AgentState {
   if (!state || typeof state !== 'object' || !('agent' in state)) return false
@@ -67,9 +91,11 @@ const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charC
 export class HarnessProvider {
   readonly id: DocId
   readonly doc = new Y.Doc()
-  readonly awareness = new Awareness(this.doc)
+  readonly awareness: Awareness
   meta: DocMeta | null = null
   status: DocStatus = { kind: 'connecting' }
+  /** A viewer's provider (59 §8.1): the editor is `editable: false` (status `readonly`), awareness still flows. */
+  readonly viewer: boolean
   #api: Api
   #client: RpcClient
   #store: DocStore | null
@@ -89,10 +115,13 @@ export class HarnessProvider {
   /** Agent edits announced since this provider opened (59 §5.5: the page menu's undo is enabled by them). */
   agentEdits = 0
 
-  constructor(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL) {
+  /** `guest`: a share-link member's identity (59 §8.3) — pins the awareness `user`, and a viewer never goes `live`. */
+  constructor(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL, guest?: GuestUser) {
     this.#client = client
     this.#api = api
     this.id = id
+    this.awareness = guest ? new PinnedUserAwareness(this.doc, guest) : new Awareness(this.doc)
+    this.viewer = guest?.role === 'viewer'
     this.#store = harness === LOCAL ? null : new DocStore(harness, id)
     this.#loaded = this.#store === null
     this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve()
@@ -101,7 +130,7 @@ export class HarnessProvider {
     this.#offState = client.onState((s) => {
       this.#connected = s === 'open'
       if (s === 'open') void this.#sync()
-      else if (this.status.kind === 'live') this.#set({ kind: 'offline', queued: this.#queue.length })
+      else if (this.status.kind === 'live' || this.status.kind === 'readonly') this.#set({ kind: 'offline', queued: this.#queue.length })
     })
   }
 
@@ -208,7 +237,7 @@ export class HarnessProvider {
     { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
     origin: unknown,
   ): void => {
-    if (origin === HARNESS || this.status.kind !== 'live') return
+    if (origin === HARNESS || (this.status.kind !== 'live' && this.status.kind !== 'readonly')) return
     const changed = [...added, ...updated, ...removed]
     void this.#api.doc_awareness(this.id, b64(encodeAwarenessUpdate(this.awareness, changed))).catch(() => undefined)
   }
@@ -275,7 +304,7 @@ export class HarnessProvider {
         }
         await this.#store?.ack(batch)
       }
-      this.#set({ kind: 'live' })
+      this.#set(this.viewer ? { kind: 'readonly' } : { kind: 'live' })
     } catch (e) {
       if (this.#destroyed) return
       this.#set({ kind: 'offline', queued: this.#queue.length })

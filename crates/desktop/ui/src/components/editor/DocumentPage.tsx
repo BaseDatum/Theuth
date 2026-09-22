@@ -3,6 +3,8 @@ import { ChevronLeft } from 'lucide-react'
 import { type ComponentType, type ReactNode, type Ref } from 'react'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import type { LiveDocument } from '@/components/editor/useDocument'
+import { ParticipantStrip } from '@/components/share/ParticipantStrip'
+import { ShareAction } from '@/components/share/ShareDialog'
 import { MeetingPill } from '@/components/meeting/MeetingPill'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -113,6 +115,7 @@ export function DocumentPage({
   rail,
   below,
   children,
+  actions,
   ...frame
 }: {
   live: LiveDocument
@@ -129,8 +132,18 @@ export function DocumentPage({
   actions?: ReactNode
 }) {
   const mobile = useIsMobile()
+  // 59 §8.2, §8.5: who is here, and the owner's "Share…" — every document page alike.
+  const bar = live.provider ? (
+    <>
+      <ParticipantStrip provider={live.provider} className="mr-2 hidden md:flex" />
+      {actions}
+      <ShareAction provider={live.provider} />
+    </>
+  ) : (
+    actions
+  )
   return (
-    <Frame {...frame}>
+    <Frame {...frame} actions={bar}>
       <div className="flex min-h-0 flex-1">
         <div ref={columnRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
           {above}

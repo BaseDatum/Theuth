@@ -38,6 +38,11 @@ export class LinkTransport implements Transport {
   /** Last `SessionHello`, for the switcher. */
   hello: SessionHello | null = null
 
+  /** The live Noise session's handshake hash (31 §4.2); `null` between handshakes. The §8.3 join proof binds to it. */
+  get handshakeHash(): Uint8Array<ArrayBuffer> | null {
+    return this.#session?.handshakeHash ?? null
+  }
+
   constructor(harness: Harness, opts: LinkOptions = {}) {
     this.harness = harness
     this.#opts = opts
@@ -162,6 +167,7 @@ export class LinkTransport implements Transport {
         this.#rejected = true
         this.#presence('refused')
       }
+      this.#opts.onClose?.(f.reason)
       ws.close(1000)
     } else if (this.#session) {
       const whole = this.#asm.push(await this.#session.recv.decrypt(EMPTY, f.payload))

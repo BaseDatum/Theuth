@@ -76,3 +76,54 @@ pub async fn pages(State(app): State<App>, req: Request) -> Response {
     }
     res
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::routing::get;
+
+    use super::*;
+    use crate::relay::Relay;
+
+    /// A `--web` dir with one `index.html`, and the router `main` builds around it.
+    fn app() -> (Router, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("theuth-relay-web-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<!doctype html><div id=root></div>").unwrap();
+        let web = Arc::new(Web::new(&dir, Signer::new(None), false));
+        let app = App {
+            relay: Arc::new(Relay::new(64)),
+            web: Some(web),
+        };
+        let router = Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .fallback(pages)
+            .with_state(app);
+        (router, dir)
+    }
+
+    /// 59 §8.2, decision 12: `/d` (and `/d/`) is the same bundle `/link` serves, same CSP, cookie
+    /// issued; the share link's payload is a URL fragment, which no HTTP request line carries — the
+    /// server sees `/d` and nothing else (§8.7).
+    #[tokio::test]
+    async fn d_serves_the_bundle_with_csp() {
+        let (router, dir) = app();
+        for path in ["/d", "/d/", "/link", "/"] {
+            let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+            assert!(req.uri().to_string().find('#').is_none());
+            let res = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert_eq!(res.headers().get(CONTENT_SECURITY_POLICY).unwrap(), CSP, "{path}");
+            assert!(res.headers().get(SET_COOKIE).is_some_and(|c| c.to_str().unwrap().starts_with("__Host-link=")));
+            let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+            assert_eq!(&body[..], b"<!doctype html><div id=root></div>", "{path}");
+        }
+        // Browsers never send the fragment (RFC 9112 §3.2); were one to arrive, `http` keeps it out of
+        // the path and query, which is all the relay ever reads or could log.
+        let uri: axum::http::Uri = "/d#1.h.d.s".parse().unwrap();
+        assert_eq!((uri.path(), uri.query()), ("/d", None));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

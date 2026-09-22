@@ -125,6 +125,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # Upstream master includes PR #388; not yet in a crates.io release (21 §2.1).
 slack-morphism = { git = "https://github.com/abdolence/slack-morphism-rust", rev = "e2a4b014b2bedc82c1ccfeae1706e0f2d6a184a3", features = ["hyper"] }
 sha2 = "0.10"
+hmac = "0.12"
 # Documents (design doc 59): `yrs` = the Yjs-compatible CRDT the harness holds as authority; `sync` = y-protocols
 # awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
 yrs = { version = "=0.28.0", features = ["sync"] }

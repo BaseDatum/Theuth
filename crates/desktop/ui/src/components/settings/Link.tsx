@@ -160,7 +160,8 @@ export function Link() {
       </Section>
       <p className="text-[13px] text-fg-tertiary">
         The relay carries encrypted traffic between your devices and this harness. It can see that they are connected, not
-        what they say.
+        what they say. Share links connect the other person to this Mac through the relay the same way your devices
+        connect; the document is never stored on the relay, so it is available while this Mac is.
       </p>
     </>
   )

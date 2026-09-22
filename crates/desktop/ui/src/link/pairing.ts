@@ -20,10 +20,11 @@ export type PairingKey = {
 /** WebSocket subprotocol both relay sockets negotiate. */
 export const SUBPROTOCOL = 'theuth-link-1'
 
-/** Test/script seams: a WebSocket constructor and a device identity (the script has no IndexedDB). */
+/** Test/script seams: a WebSocket constructor and a device identity (the script has no IndexedDB); `onClose` sees every relay `CLOSE` reason (the guest page keys its copy on `3`). */
 export type LinkOptions = {
   ws?: typeof WebSocket
   identity?: () => Promise<Identity>
+  onClose?: (reason: number) => void
 }
 
 /** `wss|ws://<relayHost>/h/<harness id>`. */

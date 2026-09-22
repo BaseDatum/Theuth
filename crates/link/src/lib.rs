@@ -296,6 +296,18 @@ impl Message<Revoke> for LinkActor {
     }
 }
 
+impl Message<DropGuest> for LinkActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: DropGuest, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let st = self.ctx.lock();
+        // Each conn task sends CLOSE 0 and removes itself.
+        for c in st.conns.values().filter(|c| c.device == Some(m.key)) {
+            c.cancel.cancel();
+        }
+    }
+}
+
 /// This machine's hostname; `"theuth"` when `hostname` fails.
 fn hostname() -> String {
     std::process::Command::new("hostname")
@@ -338,6 +350,7 @@ impl runtime::Plugin for LinkPlugin {
             pairing: None,
             connected: false,
             conns: Default::default(),
+            guests: Default::default(),
         };
         let mut actor = LinkActor {
             ctx: Ctx::new(rt.clone(), state),

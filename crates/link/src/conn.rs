@@ -76,6 +76,18 @@ pub enum Handshake {
         /// Conn mode from the msg1 payload (32 §4.2); empty payload → 0.
         mode: u8,
     },
+    /// Unknown static that completed `IK` (59 §8.3): a guest conn, mode 2. Nothing but `doc_join`
+    /// until `document` admits the static; the caller applies the rate limit before sending msg2.
+    Guest {
+        /// Transport state.
+        transport: TransportState,
+        /// Guest static.
+        key: [u8; 32],
+        /// msg2 to send.
+        msg2: Vec<u8>,
+        /// Noise handshake hash: what the join proof binds to.
+        handshake_hash: [u8; 32],
+    },
     /// Pairing: the row is written after the first record decrypts.
     Pair {
         /// Transport state.
@@ -93,9 +105,9 @@ fn static_of(hs: &snow::HandshakeState) -> Option<[u8; 32]> {
     hs.get_remote_static()?.try_into().ok()
 }
 
-/// Read `msg1` as IK; if it authenticates a known static → session (payload
-/// `[]` or `[mode]`; anything longer is refused); else, with `psk`, re-read it
-/// as IKpsk2 → pairing; else `None` (CLOSE 3).
+/// Read `msg1` as IK; a known static → session (payload `[]` or `[mode]`; anything longer is
+/// refused), an unknown one → guest (59 §8.3); if IK does not read, with `psk`, re-read it as
+/// IKpsk2 → pairing; else `None` (CLOSE 3).
 pub fn respond(
     msg1: &[u8],
     identity: &Identity,
@@ -115,7 +127,6 @@ pub fn respond(
         .build_responder()
         && let Ok(n) = hs.read_message(msg1, &mut payload)
         && let Some(key) = static_of(&hs)
-        && known(&key)
     {
         let mode = match &payload[..n] {
             [] => 0,
@@ -129,11 +140,20 @@ pub fn respond(
         .ok()?;
         let n = hs.write_message(&hello, &mut msg2).ok()?;
         msg2.truncate(n);
-        return Some(Handshake::Session {
+        if known(&key) {
+            return Some(Handshake::Session {
+                transport: hs.into_transport_mode().ok()?,
+                key,
+                msg2,
+                mode,
+            });
+        }
+        let handshake_hash: [u8; 32] = hs.get_handshake_hash().try_into().ok()?;
+        return Some(Handshake::Guest {
             transport: hs.into_transport_mode().ok()?,
             key,
             msg2,
-            mode,
+            handshake_hash,
         });
     }
 
@@ -278,6 +298,33 @@ pub async fn run(mut c: Conn) {
             hello,
             msg2,
         }) => (transport, key, Some(hello), msg2, 0),
+        Some(Handshake::Guest {
+            mut transport,
+            key,
+            msg2,
+            handshake_hash,
+        }) => {
+            // 59 §8.3, §11: the DH is spent; the budget decides whether msg2 goes out.
+            let admitted = {
+                let mut st = c.ctx.lock();
+                let per_minute = st.cfg.guest_handshakes_per_minute;
+                let ok = st.guests.take(per_minute, Instant::now().into_std());
+                if ok && let Some(h) = st.conns.get_mut(&c.id) {
+                    h.device = Some(key);
+                }
+                ok
+            };
+            if !admitted {
+                tracing::debug!(conn = c.id, "guest handshake over the per-minute budget; refused");
+                return c.close(CLOSE_REFUSED).await;
+            }
+            if !c.send(msg2).await {
+                return;
+            }
+            run_guest(&mut c, &mut transport, key, handshake_hash, deadline).await;
+            c.ctx.lock().conns.remove(&c.id);
+            return;
+        }
         None => return c.close(CLOSE_REFUSED).await,
     };
     if !c.send(msg2).await {
@@ -381,6 +428,110 @@ async fn run_api(
         }
     }
     session
+}
+
+/// Methods a mode-2 conn may call (59 §8.3): `doc_join` to become a member, then the member
+/// subset of `doc_*`. `document` checks membership and role on every one of them; this list only
+/// keeps a stranger off the rest of the API.
+pub const GUEST_METHODS: [&str; 7] = [
+    "doc_join",
+    "doc_open",
+    "doc_subscribe",
+    "doc_unsubscribe",
+    "doc_update",
+    "doc_awareness",
+    "doc_set_name",
+];
+
+/// A guest conn has this long after `IK` to be admitted to some document (59 §8.3).
+const JOIN_DEADLINE: Duration = Duration::from_secs(5);
+/// Refused member calls that close a guest conn (59 §11: "three refusals close the conn").
+const MAX_REFUSALS: u8 = 3;
+
+#[derive(Deserialize)]
+struct Envelope<'a> {
+    #[serde(borrow)]
+    method: Option<&'a str>,
+    #[serde(borrow)]
+    id: Option<&'a JsonRawValue>,
+}
+
+/// `Some(response)` when `text` is a request a guest may not make: `-32601` with the request's id.
+/// Unparseable requests pass through — jsonrpsee answers those with its own parse error.
+pub fn guest_gate(text: &[u8]) -> Option<Box<JsonRawValue>> {
+    let env: Envelope<'_> = serde_json::from_slice(text).ok()?;
+    let method = env.method?;
+    if GUEST_METHODS.contains(&method) {
+        return None;
+    }
+    let id = env.id.map_or("null", JsonRawValue::get);
+    JsonRawValue::from_string(format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":-32601,"message":"Method not found"}}}}"#
+    ))
+    .ok()
+}
+
+/// Mode 2 (59 §8.3): like [`run_api`] with a guest [`RpcPeer`] (static + handshake hash for the
+/// join proof), [`guest_gate`] on every request, `CLOSE 3` when nothing admitted the static within
+/// [`JOIN_DEADLINE`] or after [`MAX_REFUSALS`] refused member calls. Return visits need no join: a
+/// member's first `doc_open`/`doc_subscribe` succeeds and marks the conn joined.
+async fn run_guest(
+    c: &mut Conn,
+    transport: &mut TransportState,
+    key: [u8; 32],
+    handshake_hash: [u8; 32],
+    deadline: Instant,
+) {
+    let (peer, _peer_guard) = RpcPeer::open_guest(key, handshake_hash);
+    let guest = peer.clone();
+    let methods = tokio::select! {
+        _ = c.cancel.cancelled() => return c.close(CLOSE_NORMAL).await,
+        d = tokio::time::timeout_at(deadline, c.ctx.dispatch()) => match d {
+            Ok(d) => Arc::new(peer_methods(&d.methods, peer)),
+            Err(_) => return c.close(CLOSE_REFUSED).await,
+        },
+    };
+    let guest = guest.guest().expect("opened as guest");
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Box<JsonRawValue>>(256);
+    let mut asm = Reassembler::default();
+    let mut buf = vec![0u8; MAX_MSG];
+    let join_deadline = tokio::time::sleep_until(Instant::now() + JOIN_DEADLINE);
+    tokio::pin!(join_deadline);
+
+    loop {
+        tokio::select! {
+            _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; break }
+            _ = &mut join_deadline, if !guest.joined() => {
+                tracing::debug!(conn = c.id, "guest did not join within {JOIN_DEADLINE:?}; refused");
+                c.close(CLOSE_REFUSED).await;
+                break
+            }
+            m = c.inbound.recv() => {
+                let Some(bytes) = m else { break };
+                let Ok(n) = transport.read_message(&bytes, &mut buf) else {
+                    c.close(CLOSE_REFUSED).await;
+                    break;
+                };
+                if let Some(text) = asm.push(&buf[..n]) {
+                    match guest_gate(&text) {
+                        Some(refused) => {
+                            if !c.write_records(transport, refused.get().as_bytes(), &mut buf).await { break }
+                        }
+                        None => { tokio::spawn(dispatch(methods.clone(), text, resp_tx.clone())); }
+                    }
+                }
+            }
+            r = resp_rx.recv() => {
+                let Some(raw) = r else { break };
+                if !c.write_records(transport, raw.get().as_bytes(), &mut buf).await { break }
+                if guest.refusals() >= MAX_REFUSALS {
+                    tracing::debug!(conn = c.id, "guest refused {MAX_REFUSALS} times; closed");
+                    c.close(CLOSE_REFUSED).await;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Mode 1 (32 §4.3): hand a [`RecordChannel`] to the ACP agent half and pump
@@ -636,9 +787,24 @@ mod tests {
         let mut msg1 = vec![0u8; MAX_MSG];
         let mut buf = vec![0u8; MAX_MSG];
 
-        // Unknown device, IK, no pairing → refused.
+        // Unknown device, IK, no pairing → a guest conn (59 §8.3), with the handshake hash both sides hold.
         let mut dev = initiator("IK", &dpriv, &harness, None);
         let n = dev.write_message(&[], &mut msg1).unwrap();
+        let Some(Handshake::Guest {
+            key,
+            msg2,
+            handshake_hash,
+            ..
+        }) = respond(&msg1[..n], &harness, "h", |_| false, None)
+        else {
+            panic!("expected guest");
+        };
+        assert_eq!(key, dpub);
+        dev.read_message(&msg2, &mut buf).unwrap();
+        assert_eq!(dev.get_handshake_hash(), &handshake_hash);
+        // A payload longer than the mode byte is still refused.
+        let mut dev = initiator("IK", &dpriv, &harness, None);
+        let n = dev.write_message(&[2, 2], &mut msg1).unwrap();
         assert!(respond(&msg1[..n], &harness, "h", |_| false, None).is_none());
 
         // Unknown device, IKpsk2 msg1, pairing pending → Pair; IK read fails cleanly first.
@@ -700,11 +866,52 @@ mod tests {
         let n = dev_t.read_message(&enc, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"\x01hi");
 
-        // Known device but IK msg1 from a different (unpaired) key with a pairing pending
-        // → falls through to IKpsk2, which fails (no psk mixed) → refused.
-        let (opriv, _) = keypair();
+        // Another (unpaired) key sends IK while a pairing is pending: IK reads → guest, not pairing.
+        let (opriv, opub) = keypair();
         let mut other = initiator("IK", &opriv, &harness, None);
         let n = other.write_message(&[], &mut msg1).unwrap();
-        assert!(respond(&msg1[..n], &harness, "h", |k| k == &dpub, Some(&psk)).is_none());
+        assert!(matches!(
+            respond(&msg1[..n], &harness, "h", |k| k == &dpub, Some(&psk)),
+            Some(Handshake::Guest { key, .. }) if key == opub
+        ));
+    }
+
+    #[test]
+    fn guest_gate_admits_member_methods_only() {
+        for m in GUEST_METHODS {
+            let req = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{m}","params":[]}}"#);
+            assert!(guest_gate(req.as_bytes()).is_none(), "{m}");
+        }
+        for m in ["list_sessions", "doc_list", "doc_link_create", "doc_members", "info", "send_input"] {
+            let req = format!(r#"{{"jsonrpc":"2.0","id":"a-{m}","method":"{m}","params":[]}}"#);
+            let refused = guest_gate(req.as_bytes()).expect(m);
+            let v: serde_json::Value = serde_json::from_str(refused.get()).unwrap();
+            assert_eq!(v["id"], format!("a-{m}"));
+            assert_eq!(v["error"]["code"], -32601);
+        }
+        // No id → null id; no method → jsonrpsee's problem, not ours; garbage passes through too.
+        let v: serde_json::Value =
+            serde_json::from_str(guest_gate(br#"{"jsonrpc":"2.0","method":"info"}"#).unwrap().get()).unwrap();
+        assert!(v["id"].is_null());
+        assert!(guest_gate(br#"{"jsonrpc":"2.0","id":1}"#).is_none());
+        assert!(guest_gate(b"not json").is_none());
+    }
+
+    #[test]
+    fn guest_bucket_admits_ten_per_minute() {
+        let mut b = crate::state::Bucket::default();
+        let t0 = std::time::Instant::now();
+        for _ in 0..10 {
+            assert!(b.take(10, t0));
+        }
+        assert!(!b.take(10, t0));
+        // Six seconds refill one token; a minute refills the lot but never past the cap.
+        assert!(b.take(10, t0 + Duration::from_secs(6)));
+        assert!(!b.take(10, t0 + Duration::from_secs(6)));
+        let t1 = t0 + Duration::from_secs(600);
+        for _ in 0..10 {
+            assert!(b.take(10, t1));
+        }
+        assert!(!b.take(10, t1));
     }
 }
