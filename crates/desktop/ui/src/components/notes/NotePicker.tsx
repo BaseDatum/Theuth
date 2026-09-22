@@ -1,6 +1,7 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, StickyNote } from 'lucide-react'
 import { toast } from 'sonner'
+import { createNote } from '@/components/notes/create'
 import { ago } from '@/components/sidebar/AgentTree'
 import {
   CommandDialog,
@@ -34,13 +35,14 @@ export function NotePicker({
   onPick: (note: DocSummary) => void
 }) {
   const api = useApi()
+  const qc = useQueryClient()
   const notes = useNotes()
   const pick = (note: DocSummary) => {
     onPick(note)
     onOpenChange(false)
   }
   const create = useMutation({
-    mutationFn: () => api.doc_create('Untitled', null),
+    mutationFn: () => createNote(api, qc, notes.data ?? []),
     onSuccess: pick,
     onError: (e) => toast.error(e.message),
   })

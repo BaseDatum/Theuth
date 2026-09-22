@@ -325,9 +325,18 @@ html .bn-root[data-color-scheme="dark"] {
 /* The paper (59 §24.y): every document page — notes, knowledge, artifacts, the meeting pane, the guest page — is a
    centred `--card` column with a hairline border and shadow on the pane's canvas (`bg-background`, set by the editor);
    edge to edge under `md`, 48/64 px padding on desktop; `[data-paper="dense"]` (the meeting pane) tightens it.
-   `.theuth-paper` is the same sheet for a page rendered without BlockNote (the knowledge read-only fallback). */
+   `.theuth-paper` is the same sheet for a page rendered without BlockNote (the knowledge read-only fallback).
+   §24.8: the canvas is a column flex and the paper its one growing item, so an empty note is still a page — the
+   paper fills the canvas below the bar (minus the canvas padding, the status line and the mobile toolbar's
+   clearance; the pane already follows the keyboard) and grows with content. Every point of it is the editable
+   element, so a click anywhere on the page puts the caret in the nearest (last) block. */
+html .bn-container {
+  display: flex;
+  flex-direction: column;
+}
 html .bn-editor,
 html .theuth-paper {
+  flex: 1 0 auto;
   width: 100%;
   max-width: 800px;
   margin-inline: auto;
