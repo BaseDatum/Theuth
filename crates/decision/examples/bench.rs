@@ -17,16 +17,24 @@ use decision::laya::{self, Sequence};
 use decision::{Candidate, Question};
 use tokenizers::Tokenizer;
 
+/// Peak resident set (`ru_maxrss`); `NaN` where `getrusage` does not exist.
 fn rss_mib() -> f64 {
-    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
-    // macOS reports bytes, Linux kilobytes.
-    let bytes = if cfg!(target_os = "macos") {
-        ru.ru_maxrss as f64
-    } else {
-        ru.ru_maxrss as f64 * 1024.0
-    };
-    bytes / (1024.0 * 1024.0)
+    #[cfg(unix)]
+    {
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
+        // macOS reports bytes, Linux kilobytes.
+        let bytes = if cfg!(target_os = "macos") {
+            ru.ru_maxrss as f64
+        } else {
+            ru.ru_maxrss as f64 * 1024.0
+        };
+        bytes / (1024.0 * 1024.0)
+    }
+    #[cfg(not(unix))]
+    {
+        f64::NAN
+    }
 }
 
 /// Resident set *now* (`ps -o rss=`, KiB), as opposed to `ru_maxrss`'s peak: a load-time copy

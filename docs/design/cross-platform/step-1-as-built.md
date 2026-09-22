@@ -32,6 +32,14 @@ Storage_FileSystem, System_Console, System_JobObjects, System_Threading,
 UI_Shell, UI_WindowsAndMessaging) and `self-replace 1.5`, both
 Windows-only.
 
+## Checkout prerequisites (every host)
+
+`cargo check --workspace --all-targets` needs `bindings/methods.json`
+(gitignored): `crates/nodes/src/client.rs` `include_str!`s it in its lib
+test. Generate it first with `just ts-desktop` (or `cargo test -p rpc
+--features ts export_bindings`). Environment, not code — a fresh Windows
+clone fails the `nodes` lib test without it.
+
 ## Windows implementations — unverified from the Mac
 
 Each carries `// ponytail: unverified on Windows — <check>` at the module:
