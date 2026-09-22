@@ -180,13 +180,17 @@ fn state_of(probe: &Mutex<Probe>) -> LoginPathState {
 
 /// `PATH` as the user's login shell sets it: `$SHELL -l -i -c 'printf %s
 /// "$PATH"'` (fallback `/bin/zsh` on macOS, `/bin/bash` elsewhere) with a
-/// [`LOGIN_PATH_TIMEOUT`], stdin from `/dev/null`, stderr discarded. `-i`
-/// stays on because macOS users set `PATH` in `.zshrc`, which only an
-/// interactive shell reads. A success is cached for the process; a failure
-/// or timeout is retried by the next caller, up to [`LOGIN_PATH_ATTEMPTS`],
-/// then the inherited `PATH` is kept for good (one warning, debug before).
-/// Concurrent callers share one in-flight probe. `None` = keep the
-/// inherited `PATH`; immediate when [`NO_LOGIN_PATH`] is `1`.
+/// [`LOGIN_PATH_TIMEOUT`], stdin from `/dev/null`, stderr discarded, and on
+/// unix in its own session (`setsid`) so it has no controlling terminal.
+/// `-i` stays on because macOS users set `PATH` in `.zshrc`, which only an
+/// interactive shell reads; but an interactive zsh that can reach the tty
+/// takes its foreground (`tcsetpgrp`), stopping the TUI with `SIGTTOU` and
+/// killing the outer shell with `EIO`. A success is cached for the process;
+/// a failure or timeout is retried by the next caller, up to
+/// [`LOGIN_PATH_ATTEMPTS`], then the inherited `PATH` is kept for good (one
+/// warning, debug before). Concurrent callers share one in-flight probe.
+/// `None` = keep the inherited `PATH`; immediate when [`NO_LOGIN_PATH`] is
+/// `1`.
 pub async fn login_path() -> Option<String> {
     if std::env::var_os(NO_LOGIN_PATH).is_some_and(|v| v == "1") {
         return None;
@@ -256,15 +260,28 @@ async fn login_path_with(probe: &Mutex<Probe>, shell: &OsStr, timeout: Duration)
 }
 
 /// Run `shell -l -i -c 'printf %s "$PATH"'` once; `Err` says why it gave no
-/// usable `PATH`.
+/// usable `PATH`. On unix the child is a new session leader, so it has no
+/// controlling terminal and `zsh -i` cannot open `/dev/tty` or `tcsetpgrp`
+/// the caller's terminal away. A new process group alone would not do: it
+/// still shares the session's tty.
 async fn probe_with(shell: &OsStr, timeout: Duration) -> Result<String, String> {
-    let run = tokio::process::Command::new(shell)
-        .args(["-l", "-i", "-c", r#"printf %s "$PATH""#])
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(["-l", "-i", "-c", r#"printf %s "$PATH""#])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    // SAFETY: `setsid` is async-signal-safe and touches no parent state.
+    unsafe {
+        cmd.pre_exec(|| {
+            if nix::libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let run = cmd.output();
     match tokio::time::timeout(timeout, run).await {
         Ok(Ok(out)) if out.status.success() => {
             let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
@@ -563,6 +580,25 @@ mod tests {
         );
         let calls = std::fs::read_to_string(format!("{}.calls", counted.display())).unwrap();
         assert_eq!(calls, "/once");
+    }
+
+    /// The probe child is its own session: no controlling tty to steal, and
+    /// a process group other than ours.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn probe_child_has_no_controlling_terminal() {
+        let shell = fake_shell(
+            r#"if (exec 3</dev/tty) 2>/dev/null; then printf HASTTY; else printf NOTTY; fi
+printf ' %s' "$(ps -o pgid= -p $$)""#,
+        );
+        let out = probe_with(shell.as_os_str(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        let (tty, pgid) = out.split_once(' ').unwrap();
+        assert_eq!(tty, "NOTTY");
+        // SAFETY: getpgrp takes no arguments and cannot fail.
+        let ours = unsafe { nix::libc::getpgrp() };
+        assert_ne!(pgid.trim().parse::<i32>().unwrap(), ours, "{out}");
     }
 
     #[tokio::test]
