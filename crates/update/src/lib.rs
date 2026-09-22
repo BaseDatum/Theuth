@@ -7,7 +7,6 @@
 //! - [`run_once`] for `t --update`
 
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -145,8 +144,7 @@ impl Message<Landed> for UpdateActor {
         let Some(ready) = self.ready.as_ref().filter(|r| r.applied) else {
             return false;
         };
-        let managed =
-            std::os::unix::process::parent_id() == 1 || std::env::var_os("INVOCATION_ID").is_some();
+        let managed = platform::service::managed();
         let alone = self.attached.as_ref().is_some_and(|f| f() == 0);
         if managed && alone && self.last_turn.elapsed() >= IDLE_BEFORE_EXIT {
             tracing::info!("update: {} in place, exiting for restart", ready.version);
@@ -435,9 +433,10 @@ fn is_doc_helper_name(name: &str) -> bool {
 /// Step 3: the payload holds `theuth`, one `theuth-app-parser-<hash>` and at most one
 /// `theuth-documents-<version>` (regular files, nothing else). All land beside `exe` as `<name>.new.<pid>-<nonce>`,
 /// `chmod 755`; the new `theuth` is asked which helper hash it was compiled against
-/// and must name the one shipped beside it; then rename: helper first, then
+/// and must name the one shipped beside it; then swap: helper first, then
 /// `theuth`, so a `theuth` that exists always has its helper. Same directory, so each
-/// rename is atomic and the running image is untouched (39 §2.2 `ETXTBSY`).
+/// swap is an atomic rename and the running image is untouched (39 §2.2 `ETXTBSY`);
+/// on Windows the running `theuth.exe` goes through `self-replace` (58 §0.5).
 /// The staging names are private to this install (created with `create_new`),
 /// so two updaters aimed at one `theuth` never probe, rename, or delete each
 /// other's files: the pair that lands is always the pair that was probed. A
@@ -460,7 +459,7 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
                     let _ = std::fs::remove_file(new);
                     continue;
                 }
-                std::fs::rename(new, dest)
+                platform::files::replace_executable(new, dest)
                     .with_context(|| format!("replace {}", dest.display()))?;
             }
             Ok(())
@@ -565,7 +564,7 @@ fn unpack(
         staged.push((new.clone(), dest));
         std::io::copy(&mut entry, &mut file).with_context(|| new.display().to_string())?;
         drop(file);
-        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
+        platform::files::set_executable(&new)
             .with_context(|| new.display().to_string())?;
     }
     let Some(hash) = helper else {
@@ -807,7 +806,9 @@ mod tests {
             b"#!/bin/sh\necho helper\n"
         );
         assert_eq!(std::fs::read(dir.path().join(&doc_helper)).unwrap(), b"docs");
+        #[cfg(unix)]
         for f in [&exe, &dir.path().join(&helper), &dir.path().join(&doc_helper)] {
+            use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
                 std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
                 0o755,
