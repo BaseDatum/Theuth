@@ -20,8 +20,9 @@ use monty_pool::{
     ResumeValue, TurnEvent, on_print_sync,
 };
 use monty_types::{
-    ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, NameLookupResult,
-    ResourceLimits,
+    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, ObjectRef, OsPolicy,
+    ResourceLimits, SandboxTimeZone,
+    unstable::{self, MontyNode},
 };
 use regex::Regex;
 use runtime::{SessionId, TurnId};
@@ -61,11 +62,9 @@ parameters and description. `/cwd` is the working directory (read-only); write f
 
 const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
-generators, no class inheritance; stdlib: json re math datetime collections itertools
-functools dataclasses pathlib base64 asyncio(gather). State persists, except names
-starting with `_`, which do not carry across cells. A tool error inside a coroutine
-passed to `gather` cannot be caught inside that coroutine (monty bug): catch around
-the `gather` itself, or await tools one at a time. `shell()` returns the output when
+generators, no class inheritance; stdlib: json re math datetime time random copy collections
+itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
+names starting with `_`, which do not carry across cells. `shell()` returns the output when
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
 result arrives later as <job_result>. A PTY job whose screen stops changing for a minute
 wakes you with <job_idle> and the screen: the program is likely waiting on you.
@@ -401,58 +400,67 @@ fn help(spec: &ToolSpec) -> String {
 /// JSON → sandbox value.
 pub fn to_monty(v: &Value) -> MontyObject {
     match v {
-        Value::Null => MontyObject::None,
-        Value::Bool(b) => MontyObject::Bool(*b),
+        Value::Null => MontyObject::none(),
+        Value::Bool(b) => MontyObject::bool(*b),
         Value::Number(n) => n.as_i64().map_or_else(
-            || MontyObject::Float(n.as_f64().unwrap_or(f64::NAN)),
-            MontyObject::Int,
+            || MontyObject::float(n.as_f64().unwrap_or(f64::NAN)),
+            MontyObject::int,
         ),
-        Value::String(s) => MontyObject::String(s.clone()),
-        Value::Array(a) => MontyObject::List(a.iter().map(to_monty).collect()),
+        Value::String(s) => MontyObject::string(s.clone()),
+        Value::Array(a) => MontyObject::list(a.iter().map(to_monty)),
         Value::Object(o) => MontyObject::dict(
             o.iter()
-                .map(|(k, v)| (MontyObject::String(k.clone()), to_monty(v)))
-                .collect::<Vec<_>>(),
+                .map(|(k, v)| (MontyObject::string(k.clone()), to_monty(v))),
         ),
     }
 }
 
 /// Sandbox value → JSON; dict keys are stringified, exotic values become their repr.
-pub fn from_monty(o: &MontyObject) -> Value {
-    match o {
-        MontyObject::None => Value::Null,
-        MontyObject::Bool(b) => Value::Bool(*b),
-        MontyObject::Int(i) => Value::from(*i),
-        MontyObject::Float(f) => {
-            serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
-        }
-        MontyObject::String(s) => Value::String(s.clone()),
-        MontyObject::Bytes(b) => Value::String(String::from_utf8_lossy(b).into_owned()),
-        MontyObject::List(items)
-        | MontyObject::Tuple(items)
-        | MontyObject::Set(items)
-        | MontyObject::FrozenSet(items)
-        | MontyObject::NamedTuple { values: items, .. } => {
-            Value::Array(items.iter().map(from_monty).collect())
-        }
-        MontyObject::Dict(pairs) => Value::Object(
+pub fn from_monty(o: ObjectRef<'_>) -> Value {
+    if o.type_name() == "NoneType" {
+        return Value::Null;
+    }
+    if let Some(b) = o.as_bool() {
+        return Value::Bool(b);
+    }
+    if let Some(i) = o.as_int() {
+        return Value::from(i);
+    }
+    if o.type_name() == "float" {
+        return o
+            .as_float()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number);
+    }
+    if let Some(s) = o.as_str() {
+        return Value::String(s.to_owned());
+    }
+    if let Some(items) = o.items() {
+        return Value::Array(items.into_iter().map(from_monty).collect());
+    }
+    if let Some(pairs) = o.pairs() {
+        return Value::Object(
             pairs
-                .iter()
+                .into_iter()
                 .map(|(k, v)| {
-                    let key = match k {
-                        MontyObject::String(s) => s.clone(),
-                        other => other.py_repr(),
-                    };
-                    (key, from_monty(v))
+                    (
+                        k.as_str().map_or_else(|| k.py_repr(), str::to_owned),
+                        from_monty(v),
+                    )
                 })
                 .collect(),
-        ),
-        MontyObject::Date(d) => Value::String(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
-        MontyObject::DateTime(d) => Value::String(format!(
+        );
+    }
+    // Leaves the stable accessors cannot read; `unstable` is the crate's own
+    // escape hatch and may move at the next monty bump.
+    match unstable::node(o) {
+        MontyNode::Bytes(b) => Value::String(String::from_utf8_lossy(b).into_owned()),
+        MontyNode::Date(d) => Value::String(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
+        MontyNode::DateTime(d) => Value::String(format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
             d.year, d.month, d.day, d.hour, d.minute, d.second
         )),
-        other => Value::String(other.py_repr()),
+        _ => Value::String(o.py_repr()),
     }
 }
 
@@ -646,6 +654,19 @@ impl Repl {
             }),
             type_check: true,
             type_check_stubs: Some(stubs(&specs)),
+            // The worker answers `datetime.now()`/`date.today()` itself (beta.2
+            // `OsPolicy`); pin its zone to the host's so naive values read as
+            // host local time, as the host-answered calls did before.
+            // ponytail: fixed offset sampled per turn, no DST rule; use
+            // `SandboxTimeZone::named` (needs the `tzdb` feature) if a turn
+            // spanning a DST switch matters.
+            os_policy: OsPolicy {
+                timezone: SandboxTimeZone::Fixed {
+                    offset_seconds: chrono::Local::now().offset().local_minus_utc(),
+                    name: None,
+                },
+                ..OsPolicy::default()
+            },
             ..ReplConfig::default()
         };
         let dir = data_dir.join("runtime");
@@ -659,7 +680,21 @@ impl Repl {
         let mut mounts = Vec::with_capacity(2);
         let spill = cx.spill_dir.join(session.to_string());
         let _ = std::fs::create_dir_all(&spill);
-        for (virt, host) in [("/cwd", &cx.cwd), ("/spill", &spill)] {
+        // beta.2 refuses mounts whose host directories nest (cwd = home with
+        // the data dir under it); the spill is then reachable through `/cwd`.
+        let nested = match (
+            std::fs::canonicalize(&cx.cwd),
+            std::fs::canonicalize(&spill),
+        ) {
+            (Ok(a), Ok(b)) => a.starts_with(&b) || b.starts_with(&a),
+            _ => false,
+        };
+        let spill_mount = if nested {
+            None
+        } else {
+            Some(("/spill", &spill))
+        };
+        for (virt, host) in std::iter::once(("/cwd", &cx.cwd)).chain(spill_mount) {
             match MountSpec::new(virt, host, MountSpecMode::ReadOnly) {
                 Ok(m) => mounts.push(m),
                 Err(e) => tracing::warn!("mount {virt} → {}: {e}", host.display()),
@@ -774,19 +809,7 @@ impl Repl {
         let (mut body, is_error) = match outcome {
             Ok(v) => (render_value(&stdout, &v), false),
             Err(PoolError::Runtime(exc)) if exc.exc_type() != ExcType::MemoryError => {
-                let text = exc.to_string();
-                // pydantic/monty: a host-future error inside a gathered coroutine
-                // bypasses its try/except; two of them stall the scheduler. The
-                // internal message is useless to the model; name the workaround.
-                let text = if text.contains("asyncio scheduler stalled") {
-                    format!(
-                        "{text}\n(monty bug: a tool raised inside a coroutine passed to asyncio.gather; \
-                         exceptions cannot be caught there. Catch around the gather itself, or await the tools one at a time.)"
-                    )
-                } else {
-                    text
-                };
-                (join_out(&stdout, &text), true)
+                (join_out(&stdout, &exc.to_string()), true)
             }
             Err(PoolError::Typing(diag)) => {
                 return self.finish_output(format!("type check failed:\n{diag}"), true, files);
@@ -833,7 +856,7 @@ impl Repl {
             }
             self.candidates.insert(name.clone());
             cell_names.insert(name.clone());
-            inputs.push((name, MontyObject::String(stdout)));
+            inputs.push((name, MontyObject::string(stdout)));
         }
         if !self.candidates.is_empty() || !inputs.is_empty() {
             self.probe(inputs).await;
@@ -895,22 +918,18 @@ impl Repl {
             .drive(&code, inputs, true, "", &mut Vec::new(), &mut quiet)
             .await
         {
-            Ok(MontyObject::List(rows)) => {
+            Ok(v) if v.type_name() == "list" => {
                 let mut seen = BTreeMap::new();
-                for row in &rows {
-                    if let MontyObject::Tuple(t) = row
-                        && let [MontyObject::String(name), MontyObject::String(kind), len] =
-                            t.as_slice()
+                for row in v.as_ref().items().unwrap_or_default() {
+                    if let Some(t) = row.items()
+                        && let [name, kind, len] = t.as_slice()
+                        && let (Some(name), Some(kind)) = (name.as_str(), kind.as_str())
                     {
-                        let len = match len {
-                            MontyObject::Int(n) => usize::try_from(*n).ok(),
-                            _ => None,
-                        };
                         seen.insert(
-                            name.clone(),
+                            name.to_owned(),
                             Slot {
-                                kind: kind.clone(),
-                                len,
+                                kind: kind.to_owned(),
+                                len: len.as_int().and_then(|n| usize::try_from(n).ok()),
                             },
                         );
                     }
@@ -918,7 +937,7 @@ impl Repl {
                 self.candidates.retain(|n| seen.contains_key(n));
                 self.names = seen;
             }
-            Ok(other) => tracing::warn!("runtime probe returned {other:?}"),
+            Ok(other) => tracing::warn!("runtime probe returned {}", other.py_repr()),
             Err(e) => tracing::warn!("runtime probe failed: {e}"),
         }
     }
@@ -1005,15 +1024,14 @@ impl Repl {
                 TurnEvent::Complete(v) => return Ok(v),
                 TurnEvent::NameLookup { name, .. } => {
                     let answer = match name.as_str() {
-                        "tools" | "help" => NameLookupResult::Value(MontyObject::Function {
-                            name,
-                            docstring: None,
-                        }),
+                        "tools" | "help" => {
+                            NameLookupResult::Value(MontyObject::function(name, None))
+                        }
                         _ => match find_tool(&cx.registry, cx.session, &name).await {
-                            Some(spec) => NameLookupResult::Value(MontyObject::Function {
+                            Some(spec) => NameLookupResult::Value(MontyObject::function(
                                 name,
-                                docstring: Some(summary(&spec.description)),
-                            }),
+                                Some(summary(&spec.description)),
+                            )),
                             None => NameLookupResult::Undefined,
                         },
                     };
@@ -1022,43 +1040,33 @@ impl Repl {
                 TurnEvent::FunctionCall {
                     function_name,
                     args,
-                    kwargs,
                     call_id: fid,
                     ..
                 } => {
                     let answer = match function_name.as_str() {
                         "tools" => {
-                            let query = first_arg(&args, &kwargs, "query");
-                            let query = query.as_ref().and_then(|q| match q {
-                                MontyObject::String(s) => Some(s.as_str()),
-                                _ => None,
-                            });
+                            let query = first_arg(&args, "query").and_then(|q| q.as_str());
                             let specs = cx
                                 .registry
                                 .ask(ListTools(Some(cx.session)))
                                 .await
                                 .unwrap_or_default();
-                            ResumeValue::Return(MontyObject::List(
+                            ResumeValue::Return(MontyObject::list(
                                 specs
                                     .iter()
                                     .map(signature)
                                     .filter(|line| query.is_none_or(|q| line.contains(q)))
-                                    .map(MontyObject::String)
-                                    .collect(),
+                                    .map(MontyObject::string),
                             ))
                         }
-                        "help" => match first_arg(&args, &kwargs, "name") {
-                            Some(MontyObject::String(name)) => {
-                                match find_tool(&cx.registry, cx.session, &name).await {
-                                    Some(spec) => {
-                                        ResumeValue::Return(MontyObject::String(help(&spec)))
-                                    }
-                                    None => ResumeValue::Error(MontyException::new(
-                                        ExcType::ValueError,
-                                        Some(format!("help: unknown tool {name:?}")),
-                                    )),
-                                }
-                            }
+                        "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
+                            Some(name) => match find_tool(&cx.registry, cx.session, &name).await {
+                                Some(spec) => ResumeValue::Return(MontyObject::string(help(&spec))),
+                                None => ResumeValue::Error(MontyException::new(
+                                    ExcType::ValueError,
+                                    Some(format!("help: unknown tool {name:?}")),
+                                )),
+                            },
                             _ => ResumeValue::Error(MontyException::new(
                                 ExcType::TypeError,
                                 Some("help(name: str) takes one string argument".into()),
@@ -1068,7 +1076,7 @@ impl Repl {
                             Some(spec) => {
                                 n += 1;
                                 let id = format!("{call_id}.{n}");
-                                let args = merge_args(&spec, args, kwargs);
+                                let args = merge_args(&spec, &args);
                                 cx.rt
                                     .publish(AgentEvent::ToolCallStarted {
                                         session: cx.session,
@@ -1203,34 +1211,18 @@ async fn find_tool(
         .find(|s| sanitize_ident(&s.name) == ident)
 }
 
-fn first_arg(
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
-    name: &str,
-) -> Option<MontyObject> {
-    args.first().cloned().or_else(|| {
-        kwargs
-            .iter()
-            .find(|(k, _)| matches!(k, MontyObject::String(s) if s == name))
-            .map(|(_, v)| v.clone())
-    })
+fn first_arg<'a>(args: &'a CallArgs, name: &str) -> Option<ObjectRef<'a>> {
+    args.arg(0).or_else(|| args.kwarg(name))
 }
 
 /// kwargs by name; positional args in signature order; unknown kwargs pass through.
-fn merge_args(
-    spec: &ToolSpec,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
-) -> Value {
+fn merge_args(spec: &ToolSpec, args: &CallArgs) -> Value {
     let mut obj = serde_json::Map::new();
-    for (name, v) in params(&spec.schema).iter().map(|p| p.name).zip(&args) {
+    for (name, v) in params(&spec.schema).iter().map(|p| p.name).zip(args.args()) {
         obj.insert(name.to_owned(), from_monty(v));
     }
-    for (k, v) in &kwargs {
-        let key = match k {
-            MontyObject::String(s) => s.clone(),
-            other => other.py_repr(),
-        };
+    for (k, v) in args.kwargs() {
+        let key = k.as_str().map_or_else(|| k.py_repr(), str::to_owned);
         obj.insert(key, from_monty(v));
     }
     Value::Object(obj)
@@ -1286,49 +1278,19 @@ fn tool_result(name: &str, out: ToolOutput) -> ResumeValue {
         Some(v) => to_monty(&v),
         None => match serde_json::from_str::<Value>(&out.content) {
             Ok(v @ (Value::Object(_) | Value::Array(_))) => to_monty(&v),
-            _ => MontyObject::String(out.content),
+            _ => MontyObject::string(out.content),
         },
     };
     ResumeValue::Return(value)
 }
 
-/// OS calls no mount covers: clock from the host, empty environment, else the
-/// call's own default (`NotHandled`).
-fn os_answer(function_name: &str, args: &[MontyObject]) -> ResumeValue {
+/// OS calls no mount covers: empty environment, else the call's own default
+/// (`NotHandled`). Clocks are the worker's, in the host's zone (`os_policy`).
+fn os_answer(function_name: &str, args: &CallArgs) -> ResumeValue {
     match function_name {
-        "datetime.now" => {
-            let now = chrono::Utc::now();
-            let (offset, tz_name) = match args.first() {
-                Some(MontyObject::TimeZone(tz)) => (Some(tz.offset_seconds), tz.name.clone()),
-                _ => (None, None),
-            };
-            let local = match offset {
-                Some(o) => now + chrono::Duration::seconds(i64::from(o)),
-                None => chrono::Local::now().naive_local().and_utc(),
-            };
-            use chrono::{Datelike, Timelike};
-            ResumeValue::Return(MontyObject::DateTime(MontyDateTime {
-                year: local.year(),
-                month: local.month() as u8,
-                day: local.day() as u8,
-                hour: local.hour() as u8,
-                minute: local.minute() as u8,
-                second: local.second() as u8,
-                microsecond: local.timestamp_subsec_micros(),
-                offset_seconds: offset,
-                timezone_name: tz_name,
-            }))
+        "os.getenv" => {
+            ResumeValue::Return(args.arg(1).map_or_else(MontyObject::none, |d| d.to_owned()))
         }
-        "date.today" => {
-            use chrono::Datelike;
-            let d = chrono::Local::now().date_naive();
-            ResumeValue::Return(MontyObject::Date(MontyDate {
-                year: d.year(),
-                month: d.month() as u8,
-                day: d.day() as u8,
-            }))
-        }
-        "os.getenv" => ResumeValue::Return(args.get(1).cloned().unwrap_or(MontyObject::None)),
         "os.environ" => ResumeValue::Return(MontyObject::dict(Vec::new())),
         _ => ResumeValue::NotHandled,
     }
@@ -1337,9 +1299,9 @@ fn os_answer(function_name: &str, args: &[MontyObject]) -> ResumeValue {
 /// stdout + `→ repr` for a completed cell (uncapped stdout; capping happens
 /// in [`render_capped`] once the `outN` name is known).
 fn render_value(stdout: &str, v: &MontyObject) -> String {
-    let repr = match v {
-        MontyObject::None => None,
-        other => Some(cap(&other.py_repr(), |n| {
+    let repr = match v.type_name() {
+        "NoneType" => None,
+        _ => Some(cap(&v.py_repr(), |n| {
             format!("[… {n} chars omitted; the value is in the heap — slice or search it]")
         })),
     };
@@ -1453,9 +1415,9 @@ mod tests {
     #[test]
     fn json_round_trip() {
         let v = serde_json::json!({"a": [1, 2.5, null, true, "s"], "b": {"c": {}}});
-        assert_eq!(from_monty(&to_monty(&v)), v);
-        let d = MontyObject::dict(vec![(MontyObject::Int(1), MontyObject::String("a".into()))]);
-        assert_eq!(from_monty(&d), serde_json::json!({"1": "a"}));
+        assert_eq!(from_monty(to_monty(&v).as_ref()), v);
+        let d = MontyObject::dict([(MontyObject::int(1), MontyObject::string("a"))]);
+        assert_eq!(from_monty(d.as_ref()), serde_json::json!({"1": "a"}));
     }
 
     /// A pool over the `monty` binary on `PATH` (the test runner is not a
