@@ -14,11 +14,25 @@ import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
+import type { Track } from '@/rpc/bindings/Track'
 import type { PostStage } from '@/rpc/bindings/PostStage'
 import { on } from '@/store/sessions'
 
 /** Oracle verdicts kept per meeting (57 §3.4 data path). */
 export const ORACLE_KEEP = 50
+/** Live transcript lines kept for the island's transcript dropdown (03 §2); `meeting_live` holds the full 2 000. */
+export const LINES_KEEP = 200
+
+/** One live transcript row; `open` = rolling partial (02 §2), replaced in place by the track's next `Utterance`. */
+export type Line = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean }
+
+export const toLine = (u: { track: Track; t0_ms: bigint; text: string; request: boolean }, open = false): Line => ({
+  track: u.track,
+  t0_ms: Number(u.t0_ms),
+  text: u.text,
+  request: u.request,
+  open,
+})
 
 export type MeetingSlice = {
   meeting: string | null
@@ -46,6 +60,8 @@ export type MeetingSlice = {
   oracle: OracleDecision[]
   /** The batch the oracle is deciding right now (`⚡ deciding`), until its verdict lands. */
   deciding: string | null
+  /** The last `LINES_KEEP` live transcript rows, oldest first; at most one `open` row per track. */
+  lines: Line[]
 }
 
 type MeetingStore = MeetingSlice & {
@@ -53,7 +69,7 @@ type MeetingStore = MeetingSlice & {
   /** Step the cursor (`+1` newer, `-1` older). */
   move(delta: number): void
   markTapped(topic: TopicId): void
-  hydrate(status: MeetingStatus, briefs: Brief[]): void
+  hydrate(status: MeetingStatus, briefs: Brief[], lines: Line[]): void
 }
 
 const EMPTY: MeetingSlice = {
@@ -74,6 +90,7 @@ const EMPTY: MeetingSlice = {
   progress: null,
   oracle: [],
   deciding: null,
+  lines: [],
 }
 
 /** 57 §3.4 / §3.5 counters: `⚡ 14 skipped · 3 briefs · 2 escalated · 5 tier 2 calls · agreed 92 %`. */
@@ -112,6 +129,12 @@ export const live = (state: MeetingState): boolean => state === 'Recording' || s
 /** Recording clock now. */
 export function elapsed(s: Pick<MeetingSlice, 'state' | 'elapsedMs' | 'clockAt'>, now = Date.now()): number {
   return s.elapsedMs + (s.state === 'Recording' ? now - s.clockAt : 0)
+}
+
+/** `mm:ss` on the recording clock; minutes run past 59. */
+export const mmss = (ms: number): string => {
+  const s = Math.floor(ms / 1000)
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
 /** Pure transition; exported for the tests. */
@@ -169,6 +192,11 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
       const oracle = i >= 0 ? s.oracle.map((d, j) => (j === i ? e.decision : d)) : [...s.oracle, e.decision].slice(-ORACLE_KEEP)
       return { ...s, oracle, deciding: s.deciding === e.decision.batch_id ? null : s.deciding }
     }
+    case 'Utterance': {
+      if (s.meeting !== e.meeting) return s
+      const kept = s.lines.filter((l) => !(l.open && l.track === e.track))
+      return { ...s, lines: [...kept, toLine(e, !e.final)].slice(-LINES_KEEP) }
+    }
     default:
       return s
   }
@@ -185,7 +213,7 @@ export const useMeeting = create<MeetingStore>()((set, get) => ({
     set({ cursor, unseen: Math.min(s.unseen, s.briefs.length - 1 - cursor) })
   },
   markTapped: (topic) => set((s) => ({ tapped: s.tapped.includes(topic) ? s.tapped : [...s.tapped, topic] })),
-  hydrate(status, briefs) {
+  hydrate(status, briefs, lines) {
     const at = status.cursor ? briefs.findIndex((b) => b.id === status.cursor) : -1
     set({
       ...EMPTY,
@@ -199,6 +227,7 @@ export const useMeeting = create<MeetingStore>()((set, get) => ({
       briefs,
       cursor: at >= 0 ? at : briefs.length - 1,
       approvalWaiting: status.approval_waiting,
+      lines,
     })
   },
 }))
@@ -206,11 +235,14 @@ export const useMeeting = create<MeetingStore>()((set, get) => ({
 /** The brief under the cursor. */
 export const current = (s: Pick<MeetingSlice, 'briefs' | 'cursor'>): Brief | undefined => s.briefs[s.cursor]
 
-/** `meeting_status` + `meeting_briefs` → the store (mount, reconnect). Errors (meetings disabled) leave it empty. */
+/** `meeting_status` + `meeting_briefs` + `meeting_live` → the store (mount, reconnect). Errors (meetings disabled) leave it empty. */
 export async function hydrateMeeting(api: Api): Promise<void> {
   const status = await api.meeting_status()
-  const briefs = status.meeting && live(status.state) ? await api.meeting_briefs(status.meeting) : []
-  useMeeting.getState().hydrate(status, briefs)
+  const [briefs, lines] =
+    status.meeting && live(status.state)
+      ? await Promise.all([api.meeting_briefs(status.meeting), api.meeting_live(status.meeting).then((us) => us.slice(-LINES_KEEP).map((u) => toLine(u)))])
+      : [[], []]
+  useMeeting.getState().hydrate(status, briefs, lines)
 }
 
 /** Wire the `MeetingEvent`s (and the meeting session's turn activity) to the store; once per webview. Returns the unsubscribe. */
@@ -227,6 +259,7 @@ export function installMeetingListeners(): () => void {
         'TopicAdded',
         'TopicRemoved',
         'Brief',
+        'Utterance',
         'Listening',
         'ApprovalWaiting',
         'PostProgress',
