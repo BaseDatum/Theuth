@@ -54,6 +54,8 @@ class Client {
   #state: ConnState = 'open'
   #listeners = new Set<(s: ConnState) => void>()
   subscribed = 0
+  /** The provider's `doc_subscribe` item handler; a test pushes events through it. */
+  item: ((e: unknown) => void) | null = null
   set(s: ConnState) {
     this.#state = s
     for (const cb of this.#listeners) cb(s)
@@ -63,8 +65,9 @@ class Client {
     cb(this.#state)
     return () => this.#listeners.delete(cb)
   }
-  async stream() {
+  async stream(_m: string, _p: unknown[], _u: string, item: (e: unknown) => void) {
     this.subscribed++
+    this.item = item
     return async () => {}
   }
   as = () => this as unknown as RpcClient
@@ -137,6 +140,20 @@ describe('HarnessProvider offline queue', () => {
     const diff = Y.encodeStateAsUpdate(h.doc, unb64(sv as string))
     expect(diff.length).toBeGreaterThan(h.chunk) // the reply really was several chunks
     expect(applied).toEqual([diff.length]) // joined and applied as one update
+    p.destroy()
+  })
+
+  test('a Meta event renames meta and reaches onEvent (59 §24.9: the guest header follows a rename)', async () => {
+    const h = new Harness()
+    const client = new Client()
+    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    await settle()
+    expect(p.meta?.title).toBe('t')
+    const seen: string[] = []
+    p.onEvent((e) => seen.push(e.type))
+    client.item?.({ type: 'Meta', title: 'Renamed' })
+    expect(p.meta?.title).toBe('Renamed')
+    expect(seen).toEqual(['Meta'])
     p.destroy()
   })
 

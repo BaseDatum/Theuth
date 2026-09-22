@@ -1465,6 +1465,7 @@ impl Message<Rename> for DocumentActor {
             tx.send(Err(format!("{e:#}")));
             return reply;
         }
+        self.fan_out(&m.doc, DocEvent::Meta { title: title.clone() }, None);
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
