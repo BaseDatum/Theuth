@@ -690,6 +690,11 @@ pub struct AgentInfo {
     /// Live facts (62 §3.2); `state` duplicates `activity.state`.
     #[serde(default)]
     pub activity: SessionActivity,
+    /// Risk ceiling the parent set with `spawn_subagent(tools=…)` (12 §5);
+    /// `None` = no cap. Known for children spawned in this process only.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cap: Option<tools::Risk>,
 }
 
 /// Live facts about one session, computed on `Agents` (62 §0.5, §3.2).
@@ -1491,6 +1496,10 @@ pub enum AgentEvent {
         child: SessionId,
         /// Peer name, unique among the parent's children.
         name: String,
+        /// `spawn_subagent(tools=…)` ceiling for the child and its descendants; `None` = no cap.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        cap: Option<tools::Risk>,
     },
     /// Text injected into `session` by the harness (subagent result, peer
     /// message, finished or quiet job), for transcripts.
