@@ -426,6 +426,30 @@ does. Input arriving meanwhile queues as steering. The cost is a few
 seconds every third tool-using turn; the gain is no clone of the history
 and no second writer of the session's state.
 
+**As built (2026-09-22, detached harvest).** The cadence harvest and
+`/knowledge harvest` no longer own the session while the model call runs.
+`Turn::spawn_harvest` copies the finished frame (head, rows, baseline, tools,
+the stored image index, cwd) into a `Turn`-less `Turn`, publishes
+`Harvesting`, and `tokio::spawn`s `Turn::harvest_frame` on it; the state goes
+home at once (`TurnDone`), so the next turn starts immediately and the
+harvest result lands when it lands. `turns_since_harvest` resets at the
+trigger. One harvest per session: `SessionState::harvest_task` — a trigger
+while it runs is skipped with a warning (`/knowledge harvest` →
+`Err("harvest in flight")`), never queued; the session's stop aborts it (each
+put is its own commit, so a cut-off harvest is partial, not inconsistent).
+`Harvested` is published when the task ends — with zero counts on failure —
+so clients drop the label either way; it may now arrive after `TurnFinished`
+or during the next turn, and the TUI/desktop keep `harvesting` as a flag
+separate from the turn's activity, shown only while the session is otherwise
+idle. The `HarvestNow`/`Harvest` reply still carries the `HarvestResult`, sent
+when the detached task finishes. Consequences: a one-shot client that exits
+on `TurnFinished` takes the harvest with it (the paragraph above no longer
+holds; run `/knowledge harvest` explicitly), and the detached copy consults
+no pending images (52 §7.2) — a note appended from outside the turn would be
+a second writer of the session — so an unobserved image stays a stable marker
+in that one request. The **pre-compaction harvest stays synchronous**:
+compaction blocks by design and needs the frame before the cut.
+
 `depth == 0`: children do not harvest. A child's findings reach the parent
 as `<subagent_result>` text and the parent's harvest sees them; ten children
 harvesting the same task would be ten calls for one fact.
