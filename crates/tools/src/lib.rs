@@ -67,7 +67,7 @@ pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
     GetApprovals, GetPtyIdle, HiddenTools, InspectTool, InstallCommunicationAccess, Invoke,
     ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
-    SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
+    SetCap, SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
 pub use registry::{
@@ -99,6 +99,37 @@ pub enum Risk {
     Mutating,
     /// Irreversible or unbounded (arbitrary shell, delete, network writes).
     Destructive,
+}
+
+impl Risk {
+    /// The serde name: `read_only` | `mutating` | `destructive`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Mutating => "mutating",
+            Self::Destructive => "destructive",
+        }
+    }
+}
+
+impl std::fmt::Display for Risk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Risk {
+    type Err = String;
+
+    /// The serde names; anything else names them in the error.
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "read_only" => Ok(Self::ReadOnly),
+            "mutating" => Ok(Self::Mutating),
+            "destructive" => Ok(Self::Destructive),
+            _ => Err(format!("unknown risk `{s}`; use read_only | mutating | destructive")),
+        }
+    }
 }
 
 /// What the model sees for a tool.
@@ -518,6 +549,8 @@ fn prompt_block(data_dir: &std::path::Path) -> String {
          a tool named `<server>__<tool>` is one that two servers both offer. \
          Each tool call is allowed, asked of the user, or denied by `tools.policy` in {d}/config.yaml \
          according to its risk; you cannot approve your own calls, and a `denied by policy` result is final. \
+         A subagent spawned with `tools: read_only` (or `mutating`) only sees tools at or below that risk; \
+         a call above it is `denied: subagent is capped`. \
          Remote servers that answer 401 need the user to log in (`l` on the server in /mcp); you cannot."
     )
 }
