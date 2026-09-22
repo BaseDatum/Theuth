@@ -609,6 +609,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                         <MessageSquare aria-hidden />
                         <span className="min-w-0 flex-1 truncate">
                           {s.name ? `↳ ${s.name}` : s.title || s.id.slice(0, 8)}
+                          {s.archived && <Archived />}
                         </span>
                         <span className="text-xs text-fg-tertiary">{ago(s.updated_at)}</span>
                       </CommandItem>
@@ -849,11 +850,21 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
   )
 }
 
+/** Muted marker after the title of an archived chat (51 §3): hidden from the sidebar, still found here. */
+function Archived() {
+  return <span className="ml-1.5 text-xs text-fg-tertiary">Archived</span>
+}
+
 function SessionRow({ hit }: { hit: SearchHit }) {
   const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title || hit.session.slice(0, 8)
   return (
     <Lines
-      title={title}
+      title={
+        <>
+          {title}
+          {hit.archived && <Archived />}
+        </>
+      }
       snippet={hit.kind === 'message' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : null}
       meta={[
         hit.kind === 'title' ? 'title' : hit.role,

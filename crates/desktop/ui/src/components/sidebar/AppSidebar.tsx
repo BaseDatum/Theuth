@@ -41,6 +41,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // State, not a ref: `SessionList`'s virtualizer reads the scroll element in its layout effect,
   // which runs before this parent's ref would attach; the state change re-renders it with the element.
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
+  // Slot for `SessionList`'s multi-select bar: a sibling below the scroller, so the bar stays put while the list scrolls.
+  const [barEl, setBarEl] = useState<HTMLDivElement | null>(null)
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
@@ -125,8 +127,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuItem>
           )}
         </SidebarMenu>
-        <SessionList scrollEl={scrollEl} active={session} />
+        <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>
+      <div ref={setBarEl} className="shrink-0 empty:hidden" />
       <SidebarFooter className="px-1.5">
         <SidebarMenu>
           <SidebarMenuItem>
