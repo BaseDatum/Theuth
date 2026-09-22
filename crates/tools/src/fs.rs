@@ -5,29 +5,52 @@
 //! Paths are resolved against the process cwd; `~` is not expanded.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
-/// Output cap for `read_file`.
+/// Output cap for `read_file`: the hard backstop after the line caps.
 const MAX_BYTES: usize = 64 * 1024;
+/// Lines shown when no `limit` is given.
+const DEFAULT_LINES: usize = 2000;
+/// Longest line echoed back; longer lines are cut with ` …[+K chars]`.
+const MAX_LINE_CHARS: usize = 2000;
 
 // The marker literals are split with `concat!` so this source file does not
 // itself contain them: `write_file`/`edit` refuse content that does.
-/// First line of a cut `read_file` result; followed by exact byte/line counts.
+/// First line of every `read_file` result:
+/// `[read_file <path>: N lines, B bytes; showing lines a–b]`.
+pub const READ_HEADER_PREFIX: &str = concat!("[read_", "file ");
+/// The header's range clause; together with [`READ_HEADER_PREFIX`] on one
+/// line it identifies a pasted header.
+pub const READ_HEADER_SHOWING: &str = concat!("; show", "ing");
+/// End of the header of an `outline=true` result.
+pub const READ_HEADER_OUTLINE: &str = concat!("; out", "line]");
+/// First line of a `read_file` result cut at 64 KiB by the pre-header
+/// format; still refused on write.
 pub const TRUNCATED_HEAD_PREFIX: &str = concat!("[read_file: ", "showing bytes ");
-/// Last line of a cut `read_file` result.
-pub const TRUNCATED_TAIL: &str =
-    concat!("[truncated at 64 KiB; ", "use offset/limit to read more]");
+/// End of the footer of a `read_file` result that stopped before EOF:
+/// `[read_file: N more lines; use offset/limit, tail or ranges]`.
+pub const TRUNCATED_TAIL: &str = concat!("; use offset/limit, ", "tail or ranges]");
 
-/// Err when `content` carries a `read_file` truncation marker: writing it
-/// back would persist a file cut at 64 KiB (the 2026-09-21 loss).
-pub(crate) fn refuse_truncated(content: &str) -> anyhow::Result<()> {
+/// Err when `content` looks like `read_file` output: a truncation marker
+/// (writing it back would persist a file cut at 64 KiB — the 2026-09-21
+/// loss) or a pasted header. Line-number prefixes alone are not refused:
+/// TSV files legitimately have them.
+pub(crate) fn refuse_read_output(content: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !content.contains(TRUNCATED_HEAD_PREFIX) && !content.contains(TRUNCATED_TAIL),
         "refusing to write: content contains a read_file truncation marker — the source read was cut at 64 KiB; read with offset/limit or use edit for targeted changes"
+    );
+    anyhow::ensure!(
+        !content.lines().any(|l| {
+            l.starts_with(READ_HEADER_PREFIX)
+                && (l.contains(READ_HEADER_SHOWING) || l.ends_with(READ_HEADER_OUTLINE))
+        }),
+        "refusing to write: content looks like read_file output (header/line numbers); write the file's real text"
     );
     Ok(())
 }
@@ -43,6 +66,49 @@ pub struct ReadFileArgs {
     /// Maximum number of lines to return.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Return the last N lines instead; not combinable with `offset`/`limit`.
+    #[serde(default)]
+    pub tail: Option<usize>,
+    /// 1-based inclusive `[start, end]` line windows, shown in the order
+    /// given, each under an `@@ lines a–b @@` line; at most `limit` lines in
+    /// total (default 2000). Not combinable with `offset`/`tail`.
+    #[serde(default)]
+    pub ranges: Option<Vec<[usize; 2]>>,
+    /// Prefix each line with its right-aligned line number and a tab
+    /// (`cat -n`); default true. `false` returns the raw text.
+    #[serde(default = "yes")]
+    pub numbers: bool,
+    /// Return the file's symbol outline (as `code_outline` renders it)
+    /// instead of its text; needs the codeindex plugin. Not combinable with
+    /// any other option.
+    #[serde(default)]
+    pub outline: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Renders a source file's symbol outline for `read_file(outline=true)`;
+/// `Ok(None)` when the file is outside every indexed root or its language
+/// is not indexed. Registered once by the codeindex plugin via
+/// [`set_outliner`] (`tools` must not depend on `codeindex`).
+#[async_trait::async_trait]
+pub trait Outliner: Send + Sync {
+    /// The outline text for `path`, or `None` when the file is not indexed.
+    async fn outline(&self, path: &Path) -> anyhow::Result<Option<String>>;
+}
+
+static OUTLINER: OnceLock<Arc<dyn Outliner>> = OnceLock::new();
+
+/// Install the process-wide [`Outliner`]; `false` if one is already set.
+pub fn set_outliner(o: Arc<dyn Outliner>) -> bool {
+    OUTLINER.set(o).is_ok()
+}
+
+/// The installed [`Outliner`], if any.
+pub fn outliner() -> Option<Arc<dyn Outliner>> {
+    OUTLINER.get().cloned()
 }
 
 /// Read a text file, or a document rendered as Markdown.
@@ -55,55 +121,274 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown. Optional `offset`/`limit` select a 1-based line window. Output is capped at 64 KiB: a cut result starts with a `[read_file: …]` header giving exact byte/line counts and ends with a `[truncated …]` footer; read the rest with offset/limit and never write a cut result back. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown; paths are relative to the process cwd, `~` is not expanded. Line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let shown = a.path.display().to_string();
         let bytes = tokio::fs::read(&a.path)
             .await
-            .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
+            .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
         // A detected document that fails to convert is an error the model can
         // act on, never 64 KiB of object streams; undetected bytes stay text.
-        let text: String = match crate::doc::format(&bytes) {
+        let (note, text) = match crate::doc::format(&bytes) {
             Some(fmt) => {
                 let md = crate::doc::to_markdown(bytes, fmt)
                     .await
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", a.path.display()))?;
-                format!(
-                    "[{}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]\n{md}",
-                    a.path.display()
-                )
+                    .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+                let note = format!(
+                    "[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]"
+                );
+                (Some(note), md)
             }
-            None => String::from_utf8_lossy(&bytes).into_owned(),
+            None => (None, String::from_utf8_lossy(&bytes).into_owned()),
         };
-        let mut out: String = match (a.offset, a.limit) {
-            (None, None) => text,
-            (offset, limit) => text
-                .lines()
-                .skip(offset.unwrap_or(1).saturating_sub(1))
-                .take(limit.unwrap_or(usize::MAX))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
-        if out.len() > MAX_BYTES {
-            let mut cut = MAX_BYTES;
-            while !out.is_char_boundary(cut) {
-                cut -= 1;
+        let all: Vec<&str> = text.lines().collect();
+        let total = all.len();
+        let mut sel = select(&a, &shown, total)?;
+        if a.outline {
+            let Some(o) = outliner() else {
+                anyhow::bail!("outline needs the codeindex plugin (codeindex.enabled)");
+            };
+            match o.outline(&a.path).await? {
+                Some(outline) => {
+                    return Ok(ToolOutput::ok(format!(
+                        "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes{READ_HEADER_OUTLINE}\n{outline}",
+                        text.len()
+                    )));
+                }
+                None => sel
+                    .notes
+                    .push("no outline for this language, showing text".into()),
             }
-            let (bytes_total, lines_total) = (out.len(), out.lines().count());
-            out.truncate(cut);
-            let lines_shown = out.lines().count();
-            out.insert_str(
-                0,
-                &format!(
-                    "{TRUNCATED_HEAD_PREFIX}0–{cut} of {bytes_total} (lines 1–{lines_shown} of {lines_total}); truncated — use offset/limit, or edit for changes]\n"
-                ),
-            );
+        }
+        let width = match sel.windows.iter().map(|w| w.1).max() {
+            Some(last) if a.numbers => last.checked_ilog10().map_or(1, |d| d as usize + 1),
+            _ => 0,
+        };
+        let mut body = String::new();
+        let mut seps = Vec::new();
+        let mut long = 0;
+        for &(first, end) in &sel.windows {
+            if sel.ranged {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                seps.push(body.len());
+                body.push_str(&format!("@@ lines {first}–{end} @@"));
+            }
+            if end >= first {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                long += render(&mut body, &all[first - 1..end], first, width);
+            }
+        }
+        let requested: usize = sel
+            .windows
+            .iter()
+            .map(|&(f, e)| (e + 1).saturating_sub(f))
+            .sum();
+        let mut count = requested;
+        let cut = body.len() > MAX_BYTES;
+        if cut {
+            let mut at = MAX_BYTES;
+            while !body.is_char_boundary(at) {
+                at -= 1;
+            }
+            body.truncate(at);
+            if body.ends_with('\n') {
+                body.pop();
+            }
+            // The line the cut lands in is shown partially and counts;
+            // separator lines do not.
+            count = body.matches('\n').count() + 1 - seps.iter().filter(|&&s| s < at).count();
+        }
+        let mut out = format!(
+            "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes",
+            text.len()
+        );
+        let first = sel.windows.first().map_or(1, |w| w.0);
+        let last = first + count - count.min(1);
+        if sel.ranged {
+            let n = sel.windows.len();
+            let s = if n == 1 { "" } else { "s" };
+            out.push_str(&format!(
+                "{READ_HEADER_SHOWING} {n} range{s}, {count} lines"
+            ));
+        } else if count == 0 {
+            out.push_str(&format!("{READ_HEADER_SHOWING} 0 lines"));
+        } else if last < total {
+            out.push_str(&format!(
+                "{READ_HEADER_SHOWING} lines {first}–{last} of {total}"
+            ));
+        } else {
+            out.push_str(&format!("{READ_HEADER_SHOWING} lines {first}–{last}"));
+        }
+        for note in &sel.notes {
+            out.push_str("; ");
+            out.push_str(note);
+        }
+        if long > 0 {
+            out.push_str(&format!("; {long} long lines cut"));
+        }
+        if cut {
+            out.push_str("; cut at 64 KiB — read the rest with offset/limit");
+        }
+        out.push(']');
+        if let Some(note) = note {
             out.push('\n');
-            out.push_str(TRUNCATED_TAIL);
+            out.push_str(&note);
+        }
+        if !body.is_empty() {
+            out.push('\n');
+            out.push_str(&body);
+        }
+        if cut || sel.capped {
+            let more = if sel.ranged {
+                sel.more + requested - count
+            } else {
+                total - last
+            };
+            out.push_str(&format!("\n[read_file: {more} more lines{TRUNCATED_TAIL}"));
         }
         Ok(ToolOutput::ok(out))
     }
+}
+
+/// The line windows a read shows, resolved against a file of `total` lines.
+#[derive(Debug, Default)]
+struct Selection {
+    /// 1-based inclusive `(first, last)`; `last < first` is an empty window.
+    windows: Vec<(usize, usize)>,
+    /// `ranges` mode: every window is preceded by an `@@ lines a–b @@` line.
+    ranged: bool,
+    /// The default or `limit` line cap stopped the read before what was
+    /// asked for: the footer is added.
+    capped: bool,
+    /// Requested lines the cap dropped (`ranges` only; a plain window
+    /// derives it from `total`).
+    more: usize,
+    /// Header notes, e.g. `range 3 clamped to 1800–1842`.
+    notes: Vec<String>,
+}
+
+fn select(a: &ReadFileArgs, shown: &str, total: usize) -> anyhow::Result<Selection> {
+    let mut sel = Selection::default();
+    let set = |n: &str| match n {
+        "tail" => a.tail.is_some(),
+        "offset" => a.offset.is_some(),
+        "limit" => a.limit.is_some(),
+        "ranges" => a.ranges.is_some(),
+        "outline" => a.outline,
+        _ => !a.numbers,
+    };
+    for (x, y) in [
+        ("tail", "offset"),
+        ("tail", "limit"),
+        ("tail", "ranges"),
+        ("ranges", "offset"),
+        ("outline", "offset"),
+        ("outline", "limit"),
+        ("outline", "tail"),
+        ("outline", "ranges"),
+        ("outline", "numbers=false"),
+    ] {
+        anyhow::ensure!(
+            !(set(x) && set(y)),
+            "`{x}` cannot be combined with `{y}`; pass one of them"
+        );
+    }
+    if let Some(n) = a.tail {
+        sel.windows.push((total.saturating_sub(n) + 1, total));
+        return Ok(sel);
+    }
+    if let Some(ranges) = &a.ranges {
+        anyhow::ensure!(
+            !ranges.is_empty(),
+            "`ranges` is empty; pass 1-based inclusive [start, end] pairs"
+        );
+        sel.ranged = true;
+        let mut budget = a.limit.unwrap_or(DEFAULT_LINES);
+        for (i, &[start, end]) in ranges.iter().enumerate() {
+            let i = i + 1;
+            anyhow::ensure!(start >= 1, "range {i} [{start}, {end}]: lines are 1-based");
+            anyhow::ensure!(
+                end >= start,
+                "range {i} [{start}, {end}]: end is before start"
+            );
+            anyhow::ensure!(
+                start <= total,
+                "{shown}: range {i} [{start}, {end}] is past the end of the file ({total} lines)"
+            );
+            let mut end = end;
+            if end > total {
+                end = total;
+                sel.notes
+                    .push(format!("range {i} clamped to {start}–{end}"));
+            }
+            let want = end + 1 - start;
+            if want > budget {
+                sel.capped = true;
+                sel.more += want - budget;
+                if budget > 0 {
+                    sel.windows.push((start, start + budget - 1));
+                }
+                budget = 0;
+            } else {
+                budget -= want;
+                sel.windows.push((start, end));
+            }
+        }
+        return Ok(sel);
+    }
+    let first = a.offset.unwrap_or(1).max(1);
+    anyhow::ensure!(
+        first <= total.max(1),
+        "{shown}: offset {first} is past the end of the file ({total} lines)"
+    );
+    let end = match a.limit {
+        Some(n) => (first - 1).saturating_add(n).min(total),
+        None => {
+            let end = (first - 1 + DEFAULT_LINES).min(total);
+            sel.capped = end < total;
+            end
+        }
+    };
+    sel.windows.push((first, end));
+    Ok(sel)
+}
+
+/// Append `lines` to `out`, numbered from `first` in `cat -n` shape
+/// (right-aligned to `width`, one tab, the line verbatim) unless `width`
+/// is 0. Lines over [`MAX_LINE_CHARS`] are cut with ` …[+K chars]`;
+/// returns how many were.
+fn render(out: &mut String, lines: &[&str], first: usize, width: usize) -> usize {
+    use std::fmt::Write;
+    out.reserve(lines.iter().map(|l| l.len() + width + 2).sum());
+    let mut long = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if width > 0 {
+            write!(out, "{:>width$}\t", first + i).unwrap();
+        }
+        match line.char_indices().nth(MAX_LINE_CHARS) {
+            Some((at, _)) => {
+                long += 1;
+                write!(
+                    out,
+                    "{} …[+{} chars]",
+                    &line[..at],
+                    line[at..].chars().count()
+                )
+                .unwrap();
+            }
+            None => out.push_str(line),
+        }
+    }
+    long
 }
 
 /// Arguments for [`WriteFile`].
@@ -131,7 +416,7 @@ impl Tool for WriteFile {
     }
 
     async fn call(&self, a: WriteFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
-        refuse_truncated(&a.content)?;
+        refuse_read_output(&a.content)?;
         let shown = a.path.display().to_string();
         let existing = match tokio::fs::read(&a.path).await {
             Ok(bytes) => Some(bytes),
@@ -371,41 +656,384 @@ mod tests {
             path: path.to_owned(),
             offset,
             limit,
+            tail: None,
+            ranges: None,
+            numbers: true,
+            outline: false,
         }
+    }
+
+    fn header(p: &Path, total_lines: usize, bytes: usize, rest: &str) -> String {
+        format!(
+            "{READ_HEADER_PREFIX}{}: {total_lines} lines, {bytes} bytes{READ_HEADER_SHOWING} {rest}]",
+            p.display()
+        )
+    }
+
+    #[tokio::test]
+    async fn read_numbers_lines_cat_n_style_under_an_exact_header() {
+        let text: String = (1..=12).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        let mut want = header(&p, 12, text.len(), "lines 1–12");
+        for i in 1..=12 {
+            want.push_str(&format!("\n{i:>2}\tl{i}"));
+        }
+        assert_eq!(out, want);
+        // Width follows the largest number shown, not the file's.
+        let out = read(args(&p, Some(8), Some(2))).await;
+        assert_eq!(
+            out,
+            format!(
+                "{}\n8\tl8\n9\tl9",
+                header(&p, 12, text.len(), "lines 8–9 of 12")
+            )
+        );
+        // Empty lines keep their number; a limit past EOF clamps.
+        let p = scratch("a\n\nc");
+        let out = read(args(&p, Some(2), Some(50))).await;
+        assert_eq!(out, format!("{}\n2\t\n3\tc", header(&p, 3, 4, "lines 2–3")));
+    }
+
+    #[tokio::test]
+    async fn read_numbers_false_gives_raw_text_with_header() {
+        let p = scratch("a\n\nc\n");
+        let mut a = args(&p, None, None);
+        a.numbers = false;
+        assert_eq!(
+            read(a).await,
+            format!("{}\na\n\nc", header(&p, 3, 5, "lines 1–3"))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_empty_file_and_offset_past_eof() {
+        let p = scratch("");
+        assert_eq!(
+            read(args(&p, None, None)).await,
+            header(&p, 0, 0, "0 lines")
+        );
+        let p = scratch("a\nb\n");
+        let err = Tool::call(&ReadFile, args(&p, Some(3), None), cx())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.ends_with("offset 3 is past the end of the file (2 lines)"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
     async fn read_over_cap_is_marked_at_both_ends_with_exact_counts() {
-        // 1000 lines × 70 bytes = 70 000 bytes, 1 000 lines; the cap falls
-        // mid-line 937 (65536 / 70 = 936.2), so 937 partial lines are shown.
+        // 1000 lines × 70 bytes = 70 000 bytes; raw, the cap falls mid-line
+        // 937 (65536 / 70 = 936.2); numbered (+5 bytes a line) mid-line 874.
         let line = format!("{}\n", "x".repeat(69));
         let p = scratch(&line.repeat(1000));
+        let mut a = args(&p, None, None);
+        a.numbers = false;
+        let out = read(a).await;
+        let head = out.lines().next().unwrap();
+        let footer = |more: usize| format!("\n[read_file: {more} more lines{TRUNCATED_TAIL}");
+        assert_eq!(
+            head,
+            header(
+                &p,
+                1000,
+                70000,
+                "lines 1–937 of 1000; cut at 64 KiB — read the rest with offset/limit"
+            )
+        );
+        assert!(out.ends_with(&footer(63)), "{}", &out[out.len() - 80..]);
+        let body = &out[head.len() + 1..out.len() - footer(63).len()];
+        assert_eq!(body.len(), MAX_BYTES);
+        assert_eq!(body, &line.repeat(1000)[..MAX_BYTES]);
+
         let out = read(args(&p, None, None)).await;
         let head = out.lines().next().unwrap();
         assert_eq!(
             head,
-            format!(
-                "{TRUNCATED_HEAD_PREFIX}0–65536 of 70000 (lines 1–937 of 1000); truncated — use offset/limit, or edit for changes]"
+            header(
+                &p,
+                1000,
+                70000,
+                "lines 1–874 of 1000; cut at 64 KiB — read the rest with offset/limit"
             )
         );
-        assert!(
-            out.ends_with(&format!("\n{TRUNCATED_TAIL}")),
-            "{}",
-            &out[out.len() - 80..]
-        );
-        let body = &out[head.len() + 1..out.len() - TRUNCATED_TAIL.len() - 1];
+        assert!(out.ends_with(&footer(126)), "{}", &out[out.len() - 80..]);
+        let body = &out[head.len() + 1..out.len() - footer(126).len()];
         assert_eq!(body.len(), MAX_BYTES);
-        assert_eq!(body, &line.repeat(1000)[..MAX_BYTES]);
+        assert!(body.starts_with(&format!("   1\t{}\n   2\t", "x".repeat(69))));
+    }
+
+    #[tokio::test]
+    async fn read_defaults_to_2000_lines_with_a_footer() {
+        let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        let mut want = header(&p, 2500, text.len(), "lines 1–2000 of 2500");
+        for i in 1..=2000 {
+            want.push_str(&format!("\n{i:>4}\t{i}"));
+        }
+        want.push_str(&format!("\n[read_file: 500 more lines{TRUNCATED_TAIL}"));
+        assert_eq!(out, want);
+        // An explicit limit is the model's choice: no footer.
+        let out = read(args(&p, Some(2400), Some(50))).await;
+        assert!(out.starts_with(&header(&p, 2500, text.len(), "lines 2400–2449 of 2500")));
+        assert!(out.ends_with("\n2449\t2449"), "{}", &out[out.len() - 40..]);
+        // Offset without limit: the window starts there and may reach EOF.
+        let out = read(args(&p, Some(2400), None)).await;
+        assert!(out.starts_with(&header(&p, 2500, text.len(), "lines 2400–2500")));
+        assert!(out.ends_with("\n2500\t2500"), "{}", &out[out.len() - 40..]);
+    }
+
+    #[tokio::test]
+    async fn read_cuts_long_lines_at_a_char_boundary() {
+        let long = format!("{}é{}", "a".repeat(1999), "b".repeat(10));
+        let text = format!("short\n{long}\n{long}\n");
+        let p = scratch(&text);
+        let out = read(args(&p, None, None)).await;
+        assert_eq!(
+            out,
+            format!(
+                "{}\n1\tshort\n2\t{cut}\n3\t{cut}",
+                header(&p, 3, text.len(), "lines 1–3; 2 long lines cut"),
+                cut = format!("{}é …[+10 chars]", "a".repeat(1999)),
+            )
+        );
+        let p = scratch(&"a".repeat(2000));
+        assert!(!read(args(&p, None, None)).await.contains("…["));
+    }
+
+    #[tokio::test]
+    async fn read_tail_shows_the_last_lines_with_real_numbers() {
+        let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let mut a = args(&p, None, None);
+        a.tail = Some(3);
+        assert_eq!(
+            read(a).await,
+            format!(
+                "{}\n118\tl118\n119\tl119\n120\tl120",
+                header(&p, 120, text.len(), "lines 118–120")
+            )
+        );
+        // More than the file has: the whole file, no footer.
+        let mut a = args(&p, None, None);
+        a.tail = Some(500);
+        let out = read(a).await;
+        assert!(out.starts_with(&header(&p, 120, text.len(), "lines 1–120")));
+        assert!(out.ends_with("\n120\tl120"));
+        for (offset, limit, conflict) in [(Some(2), None, "offset"), (None, Some(2), "limit")] {
+            let mut a = args(&p, offset, limit);
+            a.tail = Some(3);
+            let err = Tool::call(&ReadFile, a, cx())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!("`tail` cannot be combined with `{conflict}`; pass one of them")
+            );
+        }
+    }
+
+    struct FakeOutliner;
+
+    #[async_trait::async_trait]
+    impl Outliner for FakeOutliner {
+        async fn outline(&self, path: &Path) -> anyhow::Result<Option<String>> {
+            Ok((path.extension().is_some_and(|e| e == "rs"))
+                .then(|| format!("outline of {}", path.display())))
+        }
+    }
+
+    // The hook is process-global, so every outline expectation lives in
+    // this one test: the unregistered error first, then Some/None.
+    #[tokio::test]
+    async fn read_outline_uses_the_registered_hook() {
+        let dir = std::env::temp_dir().join(format!("theuth-outline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("a.rs");
+        std::fs::write(&rs, "fn a() {}\nfn b() {}\n").unwrap();
+        let outline = |p: &Path| {
+            let mut a = args(p, None, None);
+            a.outline = true;
+            a
+        };
+        assert_eq!(
+            read_err(outline(&rs)).await,
+            "outline needs the codeindex plugin (codeindex.enabled)"
+        );
+        assert!(set_outliner(Arc::new(FakeOutliner)));
+        assert!(!set_outliner(Arc::new(FakeOutliner)));
+        let out = read(outline(&rs)).await;
+        assert_eq!(
+            out,
+            format!(
+                "{READ_HEADER_PREFIX}{}: 2 lines, 20 bytes{READ_HEADER_OUTLINE}\noutline of {}",
+                rs.display(),
+                rs.display()
+            )
+        );
+        assert!(refuse_read_output(&out).is_err());
+        let txt = dir.join("a.txt");
+        std::fs::write(&txt, "plain\n").unwrap();
+        assert_eq!(
+            read(outline(&txt)).await,
+            format!(
+                "{}\n1\tplain",
+                header(
+                    &txt,
+                    1,
+                    6,
+                    "lines 1–1; no outline for this language, showing text"
+                )
+            )
+        );
+        for (field, conflict) in [("offset", "offset"), ("numbers", "numbers=false")] {
+            let mut a = outline(&rs);
+            match field {
+                "offset" => a.offset = Some(1),
+                _ => a.numbers = false,
+            }
+            assert_eq!(
+                read_err(a).await,
+                format!("`outline` cannot be combined with `{conflict}`; pass one of them")
+            );
+        }
+    }
+
+    async fn read_err(a: ReadFileArgs) -> String {
+        Tool::call(&ReadFile, a, cx())
+            .await
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn read_ranges_emit_separators_in_the_order_given() {
+        let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let mut a = args(&p, None, None);
+        a.ranges = Some(vec![[100, 101], [5, 6], [100, 100]]);
+        assert_eq!(
+            read(a).await,
+            format!(
+                "{}\n@@ lines 100–101 @@\n100\tl100\n101\tl101\n@@ lines 5–6 @@\n  5\tl5\n  6\tl6\n@@ lines 100–100 @@\n100\tl100",
+                header(&p, 120, text.len(), "3 ranges, 5 lines")
+            )
+        );
+        // Past EOF clamps with a note; entirely past EOF is an error.
+        let mut a = args(&p, None, None);
+        a.ranges = Some(vec![[1, 1], [118, 500]]);
+        assert_eq!(
+            read(a).await,
+            format!(
+                "{}\n@@ lines 1–1 @@\n  1\tl1\n@@ lines 118–120 @@\n118\tl118\n119\tl119\n120\tl120",
+                header(
+                    &p,
+                    120,
+                    text.len(),
+                    "2 ranges, 4 lines; range 2 clamped to 118–120"
+                )
+            )
+        );
+        let past = format!(
+            "{}: range 2 [121, 130] is past the end of the file (120 lines)",
+            p.display()
+        );
+        for (ranges, msg) in [
+            (vec![[1, 1], [121, 130]], past.as_str()),
+            (vec![[0, 3]], "range 1 [0, 3]: lines are 1-based"),
+            (vec![[7, 3]], "range 1 [7, 3]: end is before start"),
+            (
+                vec![],
+                "`ranges` is empty; pass 1-based inclusive [start, end] pairs",
+            ),
+        ] {
+            let mut a = args(&p, None, None);
+            a.ranges = Some(ranges);
+            assert_eq!(read_err(a).await, msg);
+        }
+        for (offset, tail, conflict) in [
+            (Some(1), None, ("ranges", "offset")),
+            (None, Some(1), ("tail", "ranges")),
+        ] {
+            let mut a = args(&p, offset, None);
+            a.tail = tail;
+            a.ranges = Some(vec![[1, 2]]);
+            assert_eq!(
+                read_err(a).await,
+                format!(
+                    "`{}` cannot be combined with `{}`; pass one of them",
+                    conflict.0, conflict.1
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_ranges_share_the_line_limit() {
+        let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
+        let p = scratch(&text);
+        let mut a = args(&p, None, Some(3));
+        a.ranges = Some(vec![[10, 11], [50, 60], [70, 70]]);
+        assert_eq!(
+            read(a).await,
+            format!(
+                "{}\n@@ lines 10–11 @@\n10\tl10\n11\tl11\n@@ lines 50–50 @@\n50\tl50\n[read_file: 11 more lines{TRUNCATED_TAIL}",
+                header(&p, 120, text.len(), "2 ranges, 3 lines")
+            )
+        );
+        // The default window applies across ranges too.
+        let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
+        let p = scratch(&text);
+        let mut a = args(&p, None, None);
+        a.ranges = Some(vec![[1, 1500], [2000, 2500]]);
+        let out = read(a).await;
+        assert!(out.starts_with(&header(&p, 2500, text.len(), "2 ranges, 2000 lines")));
+        assert!(out.contains("\n@@ lines 2000–2499 @@\n"));
+        assert!(out.ends_with(&format!(
+            "\n2499\t2499\n[read_file: 1 more lines{TRUNCATED_TAIL}"
+        )));
     }
 
     #[tokio::test]
     async fn read_window_under_cap_has_no_markers() {
         let line = format!("{}\n", "x".repeat(69));
         let p = scratch(&line.repeat(1000));
-        let out = read(args(&p, Some(2), Some(3))).await;
-        assert_eq!(out, line.repeat(3).trim_end());
+        let mut a = args(&p, Some(2), Some(3));
+        a.numbers = false;
+        let out = read(a).await;
+        assert_eq!(
+            out,
+            format!(
+                "{}\n{}",
+                header(&p, 1000, 70000, "lines 2–4 of 1000"),
+                line.repeat(3).trim_end()
+            )
+        );
         let all = read(args(&p, Some(1), Some(1000))).await;
-        assert!(all.starts_with(TRUNCATED_HEAD_PREFIX) && all.ends_with(TRUNCATED_TAIL));
+        assert!(all.contains("; cut at 64 KiB") && all.ends_with(TRUNCATED_TAIL));
+    }
+
+    #[tokio::test]
+    async fn guard_refuses_pasted_header_but_not_tsv_numbers() {
+        let p = scratch("x");
+        let pasted = format!("{}\n1\tfoo\n2\tbar", header(&p, 2, 8, "lines 1–2"));
+        let err = write(&p, &pasted).await.unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "refusing to write: content looks like read_file output (header/line numbers); write the file's real text"
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
+        write(&p, "1\tfoo\n2\tbar\n").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "1\tfoo\n2\tbar\n");
+        // A header mid-file (e.g. quoted in prose) is still refused; the
+        // prefix without the range clause is not.
+        assert!(refuse_read_output(&format!("doc\n{pasted}")).is_err());
+        assert!(refuse_read_output(&format!("{READ_HEADER_PREFIX}notes]\nbody")).is_ok());
     }
 
     #[tokio::test]

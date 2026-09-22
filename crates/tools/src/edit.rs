@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
-use crate::fs::refuse_truncated;
+use crate::fs::refuse_read_output;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Which tier of the matching ladder found `old`.
@@ -29,6 +29,9 @@ pub enum Tier {
     LineTrimmed,
     /// Whole lines, every whitespace run collapsed to one space.
     WhitespaceNormalised,
+    /// `cat -n` prefixes (`N<tab>`, as `read_file` prints them) stripped
+    /// from `old`, then the tiers above rerun.
+    LineNumbersStripped,
 }
 
 impl Tier {
@@ -38,6 +41,7 @@ impl Tier {
             Tier::Exact => "exact",
             Tier::LineTrimmed => "line-trimmed",
             Tier::WhitespaceNormalised => "whitespace-normalised",
+            Tier::LineNumbersStripped => "line-numbers-stripped",
         }
     }
 }
@@ -64,6 +68,57 @@ struct Span {
 /// the error messages, which are written for the model: a miss reports the
 /// closest region with a diff, an ambiguous match lists the line numbers.
 pub fn apply(text: &str, old: &str, new: &str, all: bool, path: &str) -> anyhow::Result<Applied> {
+    if let Some(a) = ladder(text, old, new, all, path)? {
+        return Ok(a);
+    }
+    // Loosest tier: `old` pasted from read_file with its `N<tab>` prefixes.
+    // Only reached when the numbered text did not match, so a file whose
+    // lines really look like that is never affected.
+    if let Some(stripped) = strip_line_numbers(old) {
+        let new_stripped = strip_line_numbers(new);
+        let new = new_stripped.as_deref().unwrap_or(new);
+        if let Some(mut a) = ladder(text, &stripped, new, all, path)? {
+            a.tier = Tier::LineNumbersStripped;
+            return Ok(a);
+        }
+    }
+    let old_body = old.strip_suffix('\n').unwrap_or(old);
+    Err(not_found(text, &Lines::new(text), old_body, path))
+}
+
+/// `s` with a `cat -n` prefix (`^\s*\d+\t`) removed from every line, or
+/// `None` unless every non-blank line has one (and there is at least one).
+fn strip_line_numbers(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut any = false;
+    for (i, line) in s.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        let t = line.trim_start();
+        let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+        let rest = t[digits..].strip_prefix('\t')?;
+        if digits == 0 {
+            return None;
+        }
+        any = true;
+        out.push_str(rest);
+    }
+    any.then_some(out)
+}
+
+/// The three whitespace tiers; `None` when `old` is not in `text`.
+fn ladder(
+    text: &str,
+    old: &str,
+    new: &str,
+    all: bool,
+    path: &str,
+) -> anyhow::Result<Option<Applied>> {
     let exact: Vec<Span> = text
         .match_indices(old)
         .map(|(i, _)| Span {
@@ -73,7 +128,7 @@ pub fn apply(text: &str, old: &str, new: &str, all: bool, path: &str) -> anyhow:
         })
         .collect();
     if !exact.is_empty() {
-        return splice(text, exact, all, Tier::Exact, path);
+        return splice(text, exact, all, Tier::Exact, path).map(Some);
     }
     let lines = Lines::new(text);
     // A trailing newline in `old` means "through the end of the last line",
@@ -88,7 +143,7 @@ pub fn apply(text: &str, old: &str, new: &str, all: bool, path: &str) -> anyhow:
         });
         if !trimmed.is_empty() {
             let spans = lines.spans(trimmed, n, old_nl);
-            return splice(text, spans, all, Tier::LineTrimmed, path);
+            return splice(text, spans, all, Tier::LineTrimmed, path).map(Some);
         }
         let old_norm: Vec<String> = old_lines.iter().map(|l| normalise(l)).collect();
         let normalised = lines.windows(n, |window| {
@@ -106,10 +161,10 @@ pub fn apply(text: &str, old: &str, new: &str, all: bool, path: &str) -> anyhow:
         });
         if !normalised.is_empty() {
             let spans = lines.spans(normalised, n, old_nl);
-            return splice(text, spans, all, Tier::WhitespaceNormalised, path);
+            return splice(text, spans, all, Tier::WhitespaceNormalised, path).map(Some);
         }
     }
-    Err(not_found(text, &lines, old_body, path))
+    Ok(None)
 }
 
 /// Apply non-overlapping ascending `spans` (or error on ambiguity).
@@ -518,7 +573,7 @@ impl EditArgs {
             let check = || -> anyhow::Result<()> {
                 anyhow::ensure!(!op.old.is_empty(), "`old` must not be empty");
                 anyhow::ensure!(op.old != op.new, "no-op: old and new are identical");
-                refuse_truncated(&op.new)
+                refuse_read_output(&op.new)
             };
             check().map_err(|e| label(e, i, n))?;
         }
@@ -546,7 +601,7 @@ impl Tool for Edit {
     const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines; a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed. A `new` carrying a read_file truncation marker is refused; paths are relative to the process cwd, `~` is not expanded.".into()
+        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines, and as a last resort `cat -n` line-number prefixes (`N<tab>`, as read_file prints them) are stripped from `old` (and from `new` when every line has them); a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed. A `new` carrying a read_file header or truncation marker is refused; paths are relative to the process cwd, `~` is not expanded.".into()
     }
 
     async fn call(&self, a: EditArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -836,6 +891,42 @@ mod tests {
         // all=true takes every match of the tier that matched.
         let a = ok("  foo\nx\n  foo\n", "foo ", "bar", true);
         assert_eq!((a.text.as_str(), a.count), ("  bar\nx\n  bar\n", 2));
+    }
+
+    #[test]
+    fn line_numbers_pasted_from_read_file_are_stripped_last() {
+        let file = "fn f() {\n    a();\n\n    b();\n}\n";
+        // Numbered `old`, plain `new`: `new` is used as given.
+        let a = ok(
+            file,
+            "2\t    a();\n3\t\n4\t    b();",
+            "    a();\n    c();",
+            false,
+        );
+        assert_eq!(a.tier, Tier::LineNumbersStripped);
+        assert_eq!(a.text, "fn f() {\n    a();\n    c();\n}\n");
+        // Both numbered (right-aligned widths too): both stripped.
+        let a = ok(
+            file,
+            " 9\t    a();\n10\t\n11\t    b();",
+            " 9\t    a();\n10\t    d();",
+            false,
+        );
+        assert_eq!(a.tier, Tier::LineNumbersStripped);
+        assert_eq!(a.text, "fn f() {\n    a();\n    d();\n}\n");
+        // `new` with prefixes on only some lines is left alone.
+        let a = ok(file, "4\t    b();", "4\t    b();\n    e();", false);
+        assert_eq!(a.text, "fn f() {\n    a();\n\n4\t    b();\n    e();\n}\n");
+        // A file whose lines really are `N<tab>…` matches exactly, unstripped.
+        let tsv = "1\tfoo\n2\tbar\n";
+        let a = ok(tsv, "1\tfoo\n2\tbar\n", "1\tFOO\n2\tbar\n", false);
+        assert_eq!(a.tier, Tier::Exact);
+        assert_eq!(a.text, "1\tFOO\n2\tbar\n");
+        // Some lines numbered, some not: nothing is stripped, not found.
+        let e = err(file, "2\t    a();\n    b();", "x", false);
+        assert!(e.starts_with("old not found in f.rs"), "{e}");
+        assert_eq!(strip_line_numbers("  \n\n"), None);
+        assert_eq!(strip_line_numbers("12 x\n"), None);
     }
 
     #[test]

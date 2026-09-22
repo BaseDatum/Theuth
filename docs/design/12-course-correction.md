@@ -265,3 +265,11 @@ As-built 2026-09-22 (tier-0 tools): `glob` (`glob.rs`, ReadOnly) joins the file 
 | 8 lib.rs re-exports | none | agent | as touched |
 
 Wave 1, parallel: {1} · {2+3, one owner: both edit `signal/src/lib.rs` `start`} · {4+6, one owner: both edit `loop_.rs`} · {5}. Wave 2, after 1 is green (needs `lookup_when` and a stable `loop_.rs`): step 9 as three parallel owners against the §9.1 contract — the crate, the agent cutover, the frontends+binary+docs — plus step 10 (`tools/fs.rs`, free once step 5 has released `crates/tools`). Wave 3: 7, then the final gates.
+
+### As built, 2026-09-22 — `read_file` upgrade (§10 file tools)
+
+- Every text read starts with `[read_file <path>: N lines, B bytes; showing lines a–b[ of N]…]`; lines are `N<tab>text` (`cat -n`, width of the largest number shown) unless `numbers=false`. Rendered documents keep their `[path: Pdf rendered as Markdown; …]` note as line 2.
+- Default window 2000 lines (`DEFAULT_LINES`); lines over 2000 chars are cut with ` …[+K chars]` (header `; L long lines cut`); the 64 KiB backstop stays (header `; cut at 64 KiB …`). Any early stop ends with `[read_file: N more lines; use offset/limit, tail or ranges]`.
+- Selection: `offset`/`limit`; `tail=N`; `ranges=[[a,b],…]` (each under `@@ lines a–b @@`, shared `limit`, past-EOF clamp noted, wholly past EOF is an error); `outline=true` → the `code_outline` render through `tools::fs::Outliner`, installed by `codeindex::outline_hook` at plugin start (no outliner → error; unindexed file → text with `; no outline for this language, showing text`). Conflicting selectors are errors naming both.
+- Return type stays `str` (no `structured`): skills string-slice `src = await read_file(...)`, and `structured` would replace the Python value in the Monty runtime.
+- Guard `refuse_read_output` (was `refuse_truncated`) also refuses a pasted header (`[read_file …; showing…]` / `…; outline]`); `N<tab>` prefixes alone are legitimate (TSV) and pass. `edit` strips `cat -n` prefixes from `old` (and `new` when every line has one) as a last tier, `line-numbers-stripped`.

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub mod git;
 pub mod index;
 pub mod lang;
+pub mod outline_hook;
 pub mod parse;
 pub mod rank;
 pub mod resolve;
@@ -195,6 +196,7 @@ impl runtime::Plugin for CodeindexPlugin {
         };
         let actor = CodeindexActor::spawn(CodeindexActor { ix: ix.clone() });
         actor.register(CODEINDEX_ACTOR)?;
+        outline_hook::register(ix.clone());
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
