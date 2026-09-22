@@ -23,6 +23,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { AgentTree } from './AgentTree'
+import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
 import { SessionItem } from './SessionItem'
 
 export type Row =
@@ -40,11 +41,13 @@ export const newChatLabel = (project: string | null) => (project === null ? 'New
 
 /**
  * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown on
- * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" lands on `/` with the picker preset.
+ * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" lands on `/` with the picker preset and
+ * whose "Icon & colour…" opens the style dialog (not for Ungrouped). The project's glyph sits left of the name.
  */
 function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [styling, setStyling] = useState(false)
   return (
     <div className="group/menu-item relative">
       <button
@@ -58,6 +61,7 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
         }}
       >
         {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+        <ProjectIcon project={project} className="size-4" />
         <span className="truncate">{project ?? UNGROUPED}</span>
       </button>
       <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -70,9 +74,11 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
           <DropdownMenuItem onSelect={() => void navigate({ to: '/', search: project === null ? {} : { project } })}>
             {newChatLabel(project)}
           </DropdownMenuItem>
+          {project !== null && <DropdownMenuItem onSelect={() => setStyling(true)}>Icon &amp; colour…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={toggle}>{collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {project !== null && <ProjectStyleDialog project={project} open={styling} onOpenChange={setStyling} />}
     </div>
   )
 }

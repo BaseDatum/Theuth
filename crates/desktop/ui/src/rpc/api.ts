@@ -76,6 +76,7 @@ import type { PeerPage } from '@/rpc/bindings/PeerPage'
 import type { PeerReceipt } from '@/rpc/bindings/PeerReceipt'
 import type { PeerRecord } from '@/rpc/bindings/PeerRecord'
 import type { PeerScope } from '@/rpc/bindings/PeerScope'
+import type { ProjectStyle } from '@/rpc/bindings/ProjectStyle'
 import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import type { RegistryAgent } from '@/rpc/bindings/RegistryAgent'
 import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
@@ -310,6 +311,8 @@ export interface Api {
   list_providers(): Promise<ProviderInfo[]>
   list_queued(session: SessionId): Promise<QueuedInput[]>
   list_sessions(): Promise<SessionSummary[]>
+  /** Every styled project's icon and colour (51 §3 as-built). */
+  list_project_styles(): Promise<ProjectStyle[]>
   list_skills(): Promise<SkillMeta[]>
   list_tools(): Promise<ToolSpec[]>
   /** `settled_only`: read through the idle actor and tag `settled`; a busy session answers `settled: false` and the caller discards the page (48 §5). */
@@ -453,6 +456,8 @@ export interface Api {
   leave_session(session: SessionId, lease_secret: string | null): Promise<CloseResult>
   /** Set or clear (`null`) the root's project label (51 §3); `SessionMetadataChanged` follows. */
   set_session_project(session: SessionId, project: string | null): Promise<void>
+  /** Set project `name`'s icon (lucide name) and colour (palette key); both `null` clears. No event: refetch `list_project_styles`. */
+  set_project_style(name: string, icon: string | null, color: string | null): Promise<null>
   /** Like `put_attachment`, but under `session`'s storage root (private scratch when private). */
   put_session_attachment(session: SessionId, bytes_base64: string, file_ext: string): Promise<string>
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
@@ -656,6 +661,7 @@ export const METHODS = [
   'list_nodes',
   'list_peer_messages',
   'list_peers',
+  'list_project_styles',
   'list_providers',
   'list_queued',
   'list_schedules',
@@ -743,6 +749,7 @@ export const METHODS = [
   'set_meeting_oracle_mode',
   'set_model',
   'set_peer_scope',
+  'set_project_style',
   'set_pty_idle',
   'set_secret',
   'set_session_project',
