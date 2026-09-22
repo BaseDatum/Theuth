@@ -35,7 +35,7 @@ use runtime::SessionId;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, SqliteConnection};
 
-use crate::SessionSummary;
+use crate::{ProjectStyle, SessionSummary};
 use crate::context::{
     Active, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget, Mask,
     entry, project,
@@ -1367,6 +1367,60 @@ impl Store {
         .await?;
         row.map(|(p,)| p)
             .ok_or_else(|| anyhow::anyhow!("no such session"))
+    }
+
+    /// The style row of project `name`, if any (51 §3 as-built).
+    pub async fn project_style(&self, name: &str) -> anyhow::Result<Option<ProjectStyle>> {
+        Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT name, icon, color FROM projects WHERE name = ?",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(name, icon, color)| ProjectStyle { name, icon, color }))
+    }
+
+    /// Every styled project, by name.
+    pub async fn list_project_styles(&self) -> anyhow::Result<Vec<ProjectStyle>> {
+        Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT name, icon, color FROM projects ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|(name, icon, color)| ProjectStyle { name, icon, color })
+        .collect())
+    }
+
+    /// Upsert the style of project `name` (the caller normalized the label);
+    /// both `None` deletes the row. Unknown icon or colour keys are an error
+    /// ([`project::validate_style`]).
+    pub async fn set_project_style(
+        &self,
+        name: &str,
+        icon: Option<&str>,
+        color: Option<&str>,
+    ) -> anyhow::Result<()> {
+        crate::project::validate_style(icon, color).map_err(anyhow::Error::msg)?;
+        if icon.is_none() && color.is_none() {
+            sqlx::query("DELETE FROM projects WHERE name = ?")
+                .bind(name)
+                .execute(&self.pool)
+                .await?;
+            return Ok(());
+        }
+        sqlx::query(
+            "INSERT INTO projects (name, icon, color, updated_at) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET icon = excluded.icon, color = excluded.color, \
+             updated_at = excluded.updated_at",
+        )
+        .bind(name)
+        .bind(icon)
+        .bind(color)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -3337,6 +3391,39 @@ mod tests {
                 .to_string(),
             "no such session"
         );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn project_style_round_trips_and_rejects_unknown_keys() {
+        let (store, _, dir) = fresh().await;
+        let style = |icon: &str, color: Option<&str>| ProjectStyle {
+            name: "Alpha".into(),
+            icon: Some(icon.into()),
+            color: color.map(str::to_owned),
+        };
+        assert_eq!(store.project_style("Alpha").await.unwrap(), None);
+        store.set_project_style("Alpha", Some("Rocket"), Some("teal")).await.unwrap();
+        store.set_project_style("Beta", None, Some("red")).await.unwrap();
+        assert_eq!(store.project_style("Alpha").await.unwrap(), Some(style("Rocket", Some("teal"))));
+        assert_eq!(store.list_project_styles().await.unwrap().len(), 2);
+        // A second set replaces, never merges; both `None` drops the row.
+        store.set_project_style("Alpha", Some("Bug"), None).await.unwrap();
+        assert_eq!(store.project_style("Alpha").await.unwrap(), Some(style("Bug", None)));
+        store.set_project_style("Alpha", None, None).await.unwrap();
+        assert_eq!(
+            store.list_project_styles().await.unwrap().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["Beta"]
+        );
+        // Allow-listed keys only, and the rejected write leaves the row alone.
+        assert!(store.set_project_style("Beta", Some("Skull"), None).await.is_err());
+        assert!(store.set_project_style("Beta", Some("Bug"), Some("#ff0000")).await.is_err());
+        assert_eq!(store.project_style("Beta").await.unwrap(), Some(ProjectStyle {
+            name: "Beta".into(),
+            icon: None,
+            color: Some("red".into()),
+        }));
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

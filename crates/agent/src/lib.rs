@@ -1242,6 +1242,37 @@ pub struct SessionSummary {
     pub retention: tools::Retention,
 }
 
+/// A project's icon and colour (51 §3 as-built): one row per styled project,
+/// keyed by the label; both fields are allow-listed keys ([`project::ICONS`],
+/// [`project::COLORS`]) that every client maps through its own theme.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProjectStyle {
+    /// The project label (`sessions.project`).
+    pub name: String,
+    /// Lucide icon name, `None` for the client's neutral default.
+    pub icon: Option<String>,
+    /// Palette key, `None` for the client's neutral default.
+    pub color: Option<String>,
+}
+
+/// `ask` → `Vec<ProjectStyle>`: every styled project, by name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListProjectStyles;
+
+/// `ask` → `Result<(), String>`: set a project's icon and colour (51 §3
+/// as-built); both `None` drops the row. The label is normalized like
+/// [`SetSessionProject`]; icon and colour must be allow-listed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetProjectStyle {
+    /// Project label.
+    pub name: String,
+    /// Lucide icon name.
+    pub icon: Option<String>,
+    /// Palette key.
+    pub color: Option<String>,
+}
+
 /// Rendered history for UIs (tool traffic collapsed to summaries). Every
 /// variant carries `context`: the stored row's context-removal identity and
 /// membership (design doc 48 §3.3) — the actual message (not its turn

@@ -93,7 +93,7 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{frame, repl, search, spill};
-use crate::{SetSessionProject, project};
+use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::SessionCostQuery;
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
@@ -6294,6 +6294,29 @@ impl Message<SetSessionProject> for Agents {
             })
             .await;
         Ok(())
+    }
+}
+
+impl Message<ListProjectStyles> for Agents {
+    type Reply = Result<Vec<crate::ProjectStyle>, String>;
+
+    async fn handle(&mut self, _: ListProjectStyles, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.list_project_styles().await.map_err(|e| e.to_string())
+    }
+}
+
+impl Message<SetProjectStyle> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SetProjectStyle, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // Same label rule as `SetSessionProject`, so a style row always names
+        // a label a session can carry. Styles live in the durable store only,
+        // like the session list the sidebar groups (`ListSessions`).
+        let name = project::normalize_project(Some(&m.name))?.unwrap_or_default();
+        self.store
+            .set_project_style(&name, m.icon.as_deref(), m.color.as_deref())
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
