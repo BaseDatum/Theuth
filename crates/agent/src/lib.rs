@@ -1755,6 +1755,8 @@ pub struct AgentConfig {
     pub escalate_model: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
+    /// Human broadcast limits (62 §7).
+    pub broadcast: BroadcastConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -1780,8 +1782,23 @@ impl Default for AgentConfig {
             vision_model: None,
             escalate_model: None,
             knowledge: KnowledgeUse::default(),
+            broadcast: BroadcastConfig::default(),
             surface: SurfaceConfig::default(),
         }
+    }
+}
+
+/// `agent.broadcast`: human broadcast limits (62 §7).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BroadcastConfig {
+    /// Most sessions one broadcast may reach; more is refused before any send.
+    pub max_targets: usize,
+}
+
+impl Default for BroadcastConfig {
+    fn default() -> Self {
+        Self { max_targets: 32 }
     }
 }
 
