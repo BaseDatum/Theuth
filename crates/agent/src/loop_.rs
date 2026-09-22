@@ -133,6 +133,9 @@ pub struct UserInput {
     /// task started, or an owned child's assignment. `None` for a human or
     /// unrelated harness input, which stays private to the session.
     pub scope: Option<Uuid>,
+    /// `true`: hold until the running turn ends instead of injecting after
+    /// the current tool batch (62 §0.3). Ignored when idle: a turn starts now.
+    pub defer: bool,
 }
 
 /// What one input carries into the context: text plus image files (17 §2).
@@ -152,6 +155,8 @@ pub struct Input {
     /// Private provenance of a peer input (50 §7, §9); `None` for a human or
     /// harness input.
     pub peer: Option<PeerMeta>,
+    /// See [`UserInput::defer`]; read only while queued.
+    pub defer: bool,
 }
 
 /// The durable exchange and admitted generation behind a peer input. Rides
@@ -230,6 +235,27 @@ impl TurnScope {
         let plain_notice = input.peer.as_ref().is_some_and(|p| !p.isolated);
         (plain_notice && input.scope.is_none()) || input.scope == self.scope
     }
+}
+
+/// Mid-turn drain (50 §6.3, 62 §0.3): `(take, keep)` — what a running turn of
+/// `scope` injects now, and what stays queued. A deferred input always stays.
+fn split_steer(queue: Vec<Queued>, scope: TurnScope) -> (Vec<Queued>, Vec<Queued>) {
+    queue
+        .into_iter()
+        .partition(|(_, i)| !i.defer && scope.admits(i))
+}
+
+/// Turn-end batch (50 §6.3): `(take, keep)` — the oldest queued input and every
+/// later one its scope admits, `defer` cleared (an opener is an ordinary
+/// opener), and what stays queued for its own turn. `queue` must be non-empty.
+fn split_next(queue: Vec<Queued>) -> (Vec<Queued>, Vec<Queued>) {
+    let scope = TurnScope::of(&queue[0].1);
+    let (mut take, keep): (Vec<Queued>, Vec<Queued>) =
+        queue.into_iter().partition(|(_, i)| scope.admits(i));
+    for (_, i) in &mut take {
+        i.defer = false;
+    }
+    (take, keep)
 }
 
 /// 50 §8: whether `input` opens a turn bounded by the child-work cap — a
@@ -794,10 +820,10 @@ impl Session {
     /// own turn. `None` when nothing is queued.
     fn next_batch(&self) -> Option<Vec<Queued>> {
         let mut queue = self.shared.steer.lock().unwrap_or_else(|p| p.into_inner());
-        let scope = TurnScope::of(&queue.first()?.1);
-        let (take, keep): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut *queue)
-            .into_iter()
-            .partition(|(_, i)| scope.admits(i));
+        if queue.is_empty() {
+            return None;
+        }
+        let (take, keep) = split_next(std::mem::take(&mut *queue));
         *queue = keep;
         Some(take)
     }
@@ -988,6 +1014,7 @@ impl Message<UserInput> for Session {
             files,
             ticket,
             scope,
+            defer,
         }: UserInput,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
@@ -998,6 +1025,7 @@ impl Message<UserInput> for Session {
             ticket,
             scope,
             peer: None,
+            defer,
         };
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
@@ -1008,7 +1036,7 @@ impl Message<UserInput> for Session {
             session: self.shared.id,
             id,
             text: input.text.clone(),
-            defer: false,
+            defer,
         });
         self.shared
             .steer
@@ -1042,6 +1070,7 @@ impl Message<PeerInput> for Session {
                 generation: m.generation,
                 isolated: m.isolated,
             }),
+            defer: false,
         };
         if self.inflight.is_none() {
             let me = ctx.actor_ref().clone();
@@ -1443,6 +1472,7 @@ impl Message<RestartTurn> for Session {
                 ticket: m.ticket,
                 scope: None,
                 peer: None,
+                defer: false,
             },
             None => {
                 let opener = store
@@ -1458,6 +1488,7 @@ impl Message<RestartTurn> for Session {
                     ticket: m.ticket,
                     scope: None,
                     peer: None,
+                    defer: false,
                 }
             }
         };
@@ -2794,13 +2825,11 @@ impl Turn {
         }
     }
 
-    /// Queued inputs this turn's scope admits now (50 §6.3); the rest stay
-    /// queued for their own turn after this one.
+    /// Queued inputs this turn's scope admits now (50 §6.3); the rest — and
+    /// every deferred input (62 §0.3) — stay queued for the turn's end.
     fn drain_steer(&self) -> Vec<Queued> {
         let mut queue = self.shared.steer.lock().unwrap_or_else(|p| p.into_inner());
-        let (take, keep): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut *queue)
-            .into_iter()
-            .partition(|(_, i)| self.scope.admits(i));
+        let (take, keep) = split_steer(std::mem::take(&mut *queue), self.scope);
         *queue = keep;
         take
     }
@@ -5392,6 +5421,7 @@ mod tests {
                 generation: generation.clone(),
                 isolated,
             }),
+            defer: false,
         }
     }
 
@@ -5403,6 +5433,7 @@ mod tests {
             ticket: None,
             scope,
             peer: None,
+            defer: false,
         }
     }
 
@@ -5440,6 +5471,38 @@ mod tests {
         assert!(!result_turn.isolated);
         assert!(result_turn.admits(&reply_in_a) && result_turn.admits(&notice));
         assert!(!result_turn.admits(&human) && !result_turn.admits(&task_b));
+    }
+
+    /// 62 §0.3: a deferred input queued mid-turn is skipped by the mid-turn
+    /// drain and taken by the turn-end batch with `defer` cleared; it stays
+    /// in the queue under its id meanwhile, where `WithdrawInput` finds it.
+    /// (Pure partition functions: a mid-turn `Session` fixture is not
+    /// available in this module's tests.)
+    #[test]
+    fn deferred_input_waits_for_turn_end() {
+        let steer_id = InputId::new();
+        let next_id = InputId::new();
+        let deferred = Input {
+            defer: true,
+            ..harness_input(None)
+        };
+        let queue: Vec<Queued> = vec![(Some(steer_id), harness_input(None)), (Some(next_id), deferred)];
+
+        let (take, mut keep) = split_steer(queue, TurnScope::default());
+        assert_eq!(take.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [Some(steer_id)]);
+        assert_eq!(keep.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [Some(next_id)]);
+        assert!(keep[0].1.defer);
+
+        // `WithdrawInput` removes by id from the kept queue.
+        let at = keep.iter().position(|(q, _)| *q == Some(next_id)).unwrap();
+        let withdrawn = keep.remove(at);
+        assert!(keep.is_empty());
+
+        let (take, keep) = split_next(vec![withdrawn]);
+        assert_eq!(take.len(), 1);
+        assert!(keep.is_empty());
+        assert_eq!(take[0].0, Some(next_id));
+        assert!(!take[0].1.defer, "an opener is an ordinary opener");
     }
 
     /// 50 §8: under `max_concurrent = 1` a scoped child's first turn must

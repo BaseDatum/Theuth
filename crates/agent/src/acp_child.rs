@@ -904,6 +904,9 @@ impl Message<UserInput> for AcpChild {
             id,
             text,
             files: _,
+            // No mid-turn injection on the ACP prompt path: every queued
+            // input waits for the turn already, so `defer` changes nothing (62 §3.1).
+            defer: _,
             ticket,
             scope,
         }: UserInput,
@@ -923,9 +926,6 @@ impl Message<UserInput> for AcpChild {
         }
         if self.harness.is_none() || self.turn.is_some() {
             if let Some(id) = q.id {
-                // `q.defer` is a no-op here: the ACP prompt path has no
-                // mid-turn injection, so every queued input already waits
-                // for the turn to end (62 §3.1).
                 self.publish(AgentEvent::InputQueued {
                     session: self.id,
                     id,

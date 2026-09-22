@@ -727,6 +727,7 @@ impl Agents {
     /// errors surface as `AgentEvent::Error`. A rejected attachment drops the
     /// whole input (17 §3.1). The input's ticket is admitted here, before
     /// the actor `tell`, so a yield decision handled after this sees it (47 §4.3).
+    /// `delivery` says how it lands on a busy session (62 §0.3).
     async fn input(
         &mut self,
         session: Option<SessionId>,
@@ -734,18 +735,22 @@ impl Agents {
         text: String,
         files: Vec<PathBuf>,
         origin: InputOrigin,
+        delivery: Delivery,
     ) -> SessionId {
         let sid = session.unwrap_or_default();
         let ticket = self.ledger.admit(sid, origin, id);
-        self.route(sid, id, text, files, ticket, None).await
+        let defer = matches!(delivery, Delivery::NextTurn);
+        self.route(sid, id, text, files, ticket, None, defer).await
     }
 
     /// [`Agents::input`] with a ticket admitted earlier (a queued child's first
     /// turn). `scope` is the A2A request scope the input belongs to (an owned
     /// child's assignment, the result of the task's own work); `None` is a
-    /// private input (50 §6.3). A routing failure — a rejected attachment, no
+    /// private input (50 §6.3). `defer` holds a busy session's input until
+    /// its turn ends (62 §0.3). A routing failure — a rejected attachment, no
     /// actor, or a `tell` into a closed mailbox — releases the ticket: no
     /// runner ever held it.
+    #[allow(clippy::too_many_arguments)]
     async fn route(
         &mut self,
         sid: SessionId,
@@ -754,6 +759,7 @@ impl Agents {
         files: Vec<PathBuf>,
         ticket: InputTicket,
         scope: Option<Uuid>,
+        defer: bool,
     ) -> SessionId {
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
@@ -768,6 +774,7 @@ impl Agents {
                         files,
                         ticket: Some(ticket),
                         scope,
+                        defer,
                     })
                     .await
             }
@@ -791,8 +798,9 @@ impl Agents {
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        delivery: Delivery,
     ) -> SessionId {
-        self.input(session, id, text, files, InputOrigin::External)
+        self.input(session, id, text, files, InputOrigin::External, delivery)
             .await
     }
 
@@ -867,7 +875,7 @@ impl Agents {
             tracing::info!(session = %to, "{from}: result dropped, its request scope is closed");
             return;
         }
-        self.route(to, None, wrapped, Vec::new(), ticket, scope)
+        self.route(to, None, wrapped, Vec::new(), ticket, scope, false)
             .await;
         self.rt
             .publish(AgentEvent::MessageDelivered {
@@ -1910,7 +1918,9 @@ impl Message<SendInput> for Agents {
         m: SendInput,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self.human_input(m.session, None, m.text, m.files).await)
+        Ok(self
+            .human_input(m.session, None, m.text, m.files, m.delivery)
+            .await)
     }
 }
 
@@ -1930,6 +1940,7 @@ impl Message<UseSkill> for Agents {
                 text,
                 Vec::new(),
                 InputOrigin::External,
+                Delivery::Steer,
             )
             .await)
     }
@@ -1939,7 +1950,7 @@ impl Message<Steer> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
-        self.human_input(Some(m.session), Some(m.id), m.text, m.files)
+        self.human_input(Some(m.session), Some(m.id), m.text, m.files, m.delivery)
             .await;
     }
 }
@@ -2755,7 +2766,7 @@ impl Message<StartChildTurn> for Agents {
         let Ok(scope) = self.claim_child_turn(child, m.ticket).await else {
             return;
         };
-        self.route(child, None, m.text, Vec::new(), m.ticket, scope)
+        self.route(child, None, m.text, Vec::new(), m.ticket, scope, false)
             .await;
         let me = ctx.actor_ref().clone();
         let after = Duration::from_secs(self.cfg.subagents.max_runtime_secs);
@@ -7850,6 +7861,7 @@ pub(crate) mod tests {
             "x".into(),
             vec![PathBuf::from("/nonexistent/theuth.png")],
             InputOrigin::External,
+            Delivery::Steer,
         )
         .await;
         assert_eq!(a.ledger.activity(p), None);
