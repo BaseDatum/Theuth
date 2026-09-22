@@ -433,8 +433,18 @@ stops; the gap is recorded.
 Two engines, two VADs (§3.1). Utterances from the mic are `me:`; from the
 system, `them:`. The live transcript is written to `live.jsonl` (one
 utterance per line) and published as `MeetingEvent::Utterance` for the
-control center's live log (the island never shows it — the user asked for
-no live transcript display).
+control center's live log and the island's transcript dropdown.
+
+*As built (2026-09):* the island originally showed no transcript (the user
+asked for none); it now has a collapsed-by-default disclosure between the
+brief pane and the request box (`components/meeting/IslandTranscript.tsx`).
+`store/meeting.ts` keeps the last `LINES_KEEP` (200) rows from `Utterance`
+events (a `final: false` partial replaces its track's open row) and seeds
+them from `meeting_live` on hydrate. Collapsed: one row, `▸ Transcript` plus
+the newest line's `me:`/`them:` preview. Open: eight lines scrolling inside
+the island, pinned to the newest until the user scrolls up; the window grows
+to fit through the island's content-fit measurement, like the brief pane.
+Open/closed persists in `localStorage` (`island.transcript.open`).
 
 ### 4.4 Batching into the session
 

@@ -3,7 +3,7 @@ import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefSource } from '@/rpc/bindings/BriefSource'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { type MeetingSlice, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting } from './meeting'
+import { type MeetingSlice, LINES_KEEP, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting } from './meeting'
 
 const M = 'm1'
 const brief = (id: string, source: BriefSource, topic: string | null = null): Brief => ({
@@ -130,4 +130,36 @@ test('57 §3.4: OracleDeciding lights the chip; a verdict replaces it and an out
   for (let i = 0; i < ORACLE_KEEP + 5; i++) s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict(`01:00:${String(i).padStart(2, '0')}`, 'skip') })
   expect(s.oracle.length).toBe(ORACLE_KEEP)
   expect(oracleSummary([])).toBeNull()
+})
+
+const said = (track: 'Mic' | 'System', text: string, t0: number, final = true, meeting = M): MeetingEvent => ({
+  type: 'Utterance',
+  meeting,
+  track,
+  t0_ms: BigInt(t0),
+  t1_ms: BigInt(t0 + 500),
+  text,
+  request: false,
+  final,
+})
+
+test('02 §2: a partial replaces its track’s open row in place, a final commits it; other tracks and meetings are untouched', () => {
+  let s = fresh()
+  s = reduce(s, said('System', 'so the', 1000, false))
+  s = reduce(s, said('Mic', 'right', 1200))
+  s = reduce(s, said('System', 'so the DR', 1000, false))
+  expect(s.lines.map((l) => [l.track, l.text, l.open])).toEqual([
+    ['Mic', 'right', false],
+    ['System', 'so the DR', true],
+  ])
+  s = reduce(s, said('System', 'so the DR sync', 1000))
+  expect(s.lines.map((l) => [l.text, l.open])).toEqual([
+    ['right', false],
+    ['so the DR sync', false],
+  ])
+  s = reduce(s, said('Mic', 'elsewhere', 2000, true, 'other'))
+  expect(s.lines.length).toBe(2)
+  for (let i = 0; i < LINES_KEEP + 5; i++) s = reduce(s, said('Mic', `l${i}`, 3000 + i))
+  expect(s.lines.length).toBe(LINES_KEEP)
+  expect(s.lines[0]?.text).toBe('l5')
 })

@@ -1,12 +1,14 @@
 // 53 decision 8, 11 / 03 §2: the island — a 440 × 44 strip at the notch (meters, recording clock, topic
-// buttons, badges, the eye, ⋮ pause/stop) that grows to fit the brief pane when one is showing. Runs in its own
-// non-activating `NSPanel` webview; the shell shows/hides/places it through `lib/tauri.ts`. State is
-// `store/meeting.ts`; `Level` bypasses React (CSS variables on a ref).
+// buttons, badges, the eye, ⋮ pause/stop) that grows to fit the brief pane when one is showing, the transcript
+// dropdown (`IslandTranscript`, collapsed by default) and the request box. Runs in its own non-activating
+// `NSPanel` webview; the shell shows/hides/places it through `lib/tauri.ts`. State is `store/meeting.ts`;
+// `Level` bypasses React (CSS variables on a ref).
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, Zap, ZoomIn } from 'lucide-react'
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
+import { IslandTranscript } from '@/components/meeting/IslandTranscript'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import {
@@ -22,7 +24,7 @@ import { cn } from '@/lib/utils'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { current, elapsed, live, oracleSummary, useMeeting } from '@/store/meeting'
+import { current, elapsed, live, mmss, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 
@@ -40,11 +42,6 @@ function badge(d: Degradation): string | null {
   if (d === 'NoNote') return 'no note'
   if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
   return null
-}
-
-const mmss = (ms: number): string => {
-  const s = Math.floor(ms / 1000)
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
 export function Island() {
@@ -304,6 +301,7 @@ export function Island() {
           </div>
         </div>
       )}
+      <IslandTranscript measure={measure} />
       <RequestBox measure={measure} />
     </div>
   )
