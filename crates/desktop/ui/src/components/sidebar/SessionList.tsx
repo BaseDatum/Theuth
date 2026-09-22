@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, MoreHorizontal } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -15,6 +15,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { leaves, usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { nextSelection, type SelectMode } from '@/lib/selection'
@@ -30,6 +32,48 @@ export type Row =
 
 /** Sidebar name of the `null` project bucket (51 §3). */
 export const UNGROUPED = 'Ungrouped'
+
+/** Menu label of the project header's new-chat action; `null` is the ungrouped bucket. */
+export const newChatLabel = (project: string | null) => (project === null ? 'New chat (no project)' : `New chat in “${project}”`)
+
+/**
+ * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown on
+ * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" lands on `/` with the picker preset.
+ */
+function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="group/menu-item relative">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary"
+        aria-expanded={!collapsed}
+        onClick={toggle}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setOpen(true)
+        }}
+      >
+        {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+        <span className="truncate">{project ?? UNGROUPED}</span>
+      </button>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuAction showOnHover className="top-3.5 right-2" aria-label="Project options">
+            <MoreHorizontal />
+          </SidebarMenuAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" className="w-48">
+          <DropdownMenuItem onSelect={() => void navigate({ to: '/', search: project === null ? {} : { project } })}>
+            {newChatLabel(project)}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={toggle}>{collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
 
 const DAY = 86_400_000
 
@@ -171,11 +215,10 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
               style={{ transform: `translateY(${item.start}px)` }}
             >
               {'project' in row ? (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary"
-                  aria-expanded={!row.collapsed}
-                  onClick={() =>
+                <ProjectHeader
+                  project={row.project}
+                  collapsed={row.collapsed}
+                  toggle={() =>
                     setCollapsed((prev) => {
                       const next = new Set(prev)
                       const k = row.project ?? ''
@@ -183,10 +226,7 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
                       return next
                     })
                   }
-                >
-                  {row.collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
-                  <span className="truncate">{row.project ?? UNGROUPED}</span>
-                </button>
+                />
               ) : 'label' in row ? (
                 <div className="px-2.5 pt-4 pb-1.5 text-xs font-medium text-fg-tertiary">{row.label}</div>
               ) : 'session' in row ? (

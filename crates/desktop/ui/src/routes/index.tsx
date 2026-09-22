@@ -7,13 +7,21 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { usePrivate } from '@/lib/private'
 
-export const Route = createFileRoute('/')({ component: Index })
+export const Route = createFileRoute('/')({
+  // `?project=<label>`: the sidebar's "New chat in <project>" preselects the picker (51 §3).
+  validateSearch: (s: Record<string, unknown>): { project?: string } =>
+    typeof s.project === 'string' && s.project !== '' ? { project: s.project } : {},
+  component: Index,
+})
 
 /** New chat: nothing exists until the first `send_input(null, …)` / `create_session` reply names the session. */
 function Index() {
+  const { project: preset } = Route.useSearch()
   const [effort, setEffort] = useState<string | null>()
   const [priv, setPriv] = useState(false)
-  const [project, setProject] = useState<string | null>(null)
+  const [project, setProject] = useState<string | null>(preset ?? null)
+  // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
+  useEffect(() => setProject(preset ?? null), [preset])
   useEffect(() => {
     document.title = ''
   }, [])
