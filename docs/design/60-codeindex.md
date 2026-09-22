@@ -345,7 +345,7 @@ Effort: step 1 is the largest (crate skeleton, four grammars, tags plumbing, sto
 - Rust `pub use` re-export depth (v1: one level). `unresolved` is 8 rows on this repo; not needed yet.
 - Whether the map's `focus` should accept a free-text task string and pick identifiers from it (aider's `mentioned_idents` come from the chat). v1: identifiers and paths only; the model can extract words itself.
 - Java/C/C++/Bash: add when a tree here needs them; Bash has no tags query at all.
-- The real binary has never been run headless with the plugin (§19.4, §20.4, §21.4, §22.4): six `RegisterTool` lines, the `PROMPT` text and one RPC method in the knowledge/scrape shape, not exercised end to end.
+- ~~The real binary has never been run headless with the plugin~~ — done 2026-09-22 after the step-4 merge (`1d46fb4`): `t --serve --data-dir /tmp/codeindex-smoke` (fresh data dir, `secrets.key_store: file`, `THEUTH_RPC__LISTEN=127.0.0.1:7863` — the env override a running harness exports beats `rpc.listen` in the config) logged `started plugin="codeindex"`, `registered prompt block plugin="codeindex" chars=1297` and six `registered tool tool=code_*` lines; over the WebSocket (bun client, Bearer token) `list_tools` returned 97 tools including `code_find/outline/refs/symbol/map/impact` with `risk=read_only`, `returns=dict`, and `codeindex_stats("/Users/Sky.Moore/Develop/theuth")` returned the `IndexStats` shape (all zero: stats reports without reconciling, by design). Still not exercised over the wire: a `code_*` call through a live agent turn (needs a model key; the crate's integration tests cover the tool bodies).
 
 ## 18. Status
 
