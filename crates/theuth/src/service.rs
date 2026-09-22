@@ -1,12 +1,16 @@
 //! `t --install-service` / `t --uninstall-service`: run this harness as a
-//! background service through the login shell and pair it to a parent as a
-//! node (design doc 32 §5.1; the shell argument is 18 §2 with the pty
-//! dropped). A launchd LaunchAgent on macOS, a systemd user unit on Linux;
-//! anything else gets the `ExecStart` line to place by hand.
+//! background service and pair it to a parent as a node (design doc 32 §5.1).
+//! The unit is [`platform::service::ServiceUnit`]'s (58 §0.6): a launchd
+//! LaunchAgent, a systemd user unit or a Task Scheduler logon task, running
+//! `exec t --headless` through the login shell on Unix (18 §2 with the pty
+//! dropped) and `t.exe --headless` directly on Windows; anything else gets
+//! the `ExecStart` line to place by hand.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use platform::service::{ServiceUnit, log_path};
 
 /// `--install-service` options.
 pub struct Opts {
@@ -18,8 +22,6 @@ pub struct Opts {
     pub pair: bool,
 }
 
-/// Unit name on both platforms.
-const UNIT: &str = "theuth";
 /// 18 §4: readiness is the port, not the log.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -44,7 +46,7 @@ pub async fn install(
     let exe = std::env::current_exe()?.canonicalize()?;
     let data_dir = data_dir.canonicalize()?;
     std::fs::create_dir_all(data_dir.join("logs"))?;
-    let argv = shell_argv(&shell(std::env::var_os("SHELL")), &exe, &data_dir);
+    let argv = argv(&exe, &data_dir);
     let scope = install_unit(&argv, &data_dir)?;
 
     let listen = crate::link_cli::listen(config);
@@ -74,36 +76,9 @@ pub async fn install(
 
 /// Stop and remove the unit. `data_dir` (identity, `devices.yaml`) is not
 /// touched: every pairing survives a re-install.
-#[cfg(target_os = "macos")]
 pub async fn uninstall() -> anyhow::Result<()> {
-    let uid = uid()?;
-    run("launchctl", &["bootout", &format!("gui/{uid}/{UNIT}")]);
-    remove(&plist_path()?)?;
-    println!(
-        "removed launchd gui/{uid}/{UNIT} and {}",
-        plist_path()?.display()
-    );
+    println!("removed {}", ServiceUnit::current().uninstall()?);
     Ok(())
-}
-
-/// Stop and remove the unit. `data_dir` (identity, `devices.yaml`) is not
-/// touched: every pairing survives a re-install.
-#[cfg(target_os = "linux")]
-pub async fn uninstall() -> anyhow::Result<()> {
-    run("systemctl", &["--user", "disable", "--now", UNIT]);
-    remove(&systemd_path()?)?;
-    run("systemctl", &["--user", "daemon-reload"]);
-    println!(
-        "removed systemd --user {UNIT} and {}",
-        systemd_path()?.display()
-    );
-    Ok(())
-}
-
-/// No unit on this OS: nothing was installed, nothing to remove.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub async fn uninstall() -> anyhow::Result<()> {
-    anyhow::bail!("no service support on this OS; nothing to remove")
 }
 
 /// Poll the RPC port with the token until it answers or [`READY_TIMEOUT`]
@@ -132,71 +107,42 @@ async fn wait_ready(data_dir: &Path, listen: &str) -> jsonrpsee::ws_client::WsCl
     std::process::exit(1)
 }
 
-/// Write, load and start the LaunchAgent; returns the scope for the banner.
-#[cfg(target_os = "macos")]
+/// Write, load and start the unit; returns the scope for the banner. With
+/// no unit format for this OS (FreeBSD rc.d, OpenRC): hand over the exec
+/// line; `link.enabled` is already set.
 fn install_unit(argv: &[String], data_dir: &Path) -> anyhow::Result<String> {
-    let uid = uid()?;
-    let path = plist_path()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, plist(argv, data_dir))?;
-    let plist = path.display().to_string();
-    run("launchctl", &["bootout", &format!("gui/{uid}/{UNIT}")]);
-    if !run("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]) {
-        anyhow::bail!("launchctl bootstrap failed; see `launchctl print gui/{uid}/{UNIT}`");
-    }
-    println!(
-        "a LaunchAgent runs while you are logged in; for a Mac nobody sits at, turn on \
-         automatic login (System Settings › Users & Groups › Login Options)"
-    );
-    Ok(format!("launchd gui/{uid}/{UNIT}"))
-}
-
-/// Write, load and start the systemd user unit; returns the scope for the banner.
-#[cfg(target_os = "linux")]
-fn install_unit(argv: &[String], _data_dir: &Path) -> anyhow::Result<String> {
-    let path = systemd_path()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, systemd_unit(argv))?;
-    let user = std::env::var("USER").unwrap_or_default();
-    if !run("loginctl", &["enable-linger", &user]) {
+    let unit = ServiceUnit::current();
+    if unit == ServiceUnit::None {
+        println!("no service support on this OS. link.enabled was set; run this at boot:");
         println!(
-            "could not enable lingering; without it the service stops at logout. Run: \
-             sudo loginctl enable-linger {user}"
+            "ExecStart={}",
+            argv.iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
+        std::process::exit(2)
     }
-    run("systemctl", &["--user", "daemon-reload"]);
-    // `enable` + `restart` rather than `enable --now`: a re-run on a running
-    // service must pick up the unit and config it just rewrote.
-    if !(run("systemctl", &["--user", "enable", UNIT])
-        && run("systemctl", &["--user", "restart", UNIT]))
-    {
-        anyhow::bail!("systemctl --user failed; see `systemctl --user status {UNIT}`");
+    let installed = unit.install(argv, data_dir)?;
+    if let Some(note) = installed.note {
+        println!("{note}");
     }
-    Ok(format!("systemd --user {UNIT}"))
+    Ok(installed.scope)
 }
 
-/// No unit format for this OS (FreeBSD rc.d, OpenRC, Windows): hand over the
-/// exec line; `link.enabled` is already set.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn install_unit(argv: &[String], _data_dir: &Path) -> anyhow::Result<String> {
-    println!("no service support on this OS. link.enabled was set; run this at boot:");
-    println!(
-        "ExecStart={}",
-        argv.iter()
-            .map(|a| format!("{a:?}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    std::process::exit(2)
-}
-
-/// `<data_dir>/logs/service.log`: the unit's stdout and stderr.
-fn log_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("logs").join("service.log")
+/// The unit's command line: `exec t --headless` through the login shell on
+/// Unix so the daemon inherits the login environment; `t.exe --headless`
+/// directly on Windows, which has no login-shell environment (58 §0.3).
+fn argv(exe: &Path, data_dir: &Path) -> Vec<String> {
+    if cfg!(windows) {
+        return vec![
+            exe.display().to_string(),
+            "--headless".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.display().to_string(),
+        ];
+    }
+    shell_argv(&shell(std::env::var_os("SHELL")), exe, data_dir)
 }
 
 /// `$SHELL` when it is an executable file, else the 18 §4 fallback (which
@@ -244,109 +190,6 @@ fn sq(p: &Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn plist(argv: &[String], data_dir: &Path) -> String {
-    fn xml(s: &str) -> String {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-    }
-    let args: String = argv
-        .iter()
-        .map(|a| format!("    <string>{}</string>\n", xml(a)))
-        .collect();
-    let log = xml(&log_path(data_dir).display().to_string());
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{UNIT}</string>
-  <key>ProgramArguments</key>
-  <array>
-{args}  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>THEUTH_LAUNCH</key>
-    <string>1</string>
-    <key>TERM</key>
-    <string>xterm-256color</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>5</integer>
-  <key>StandardOutPath</key>
-  <string>{log}</string>
-  <key>StandardErrorPath</key>
-  <string>{log}</string>
-</dict>
-</plist>
-"#
-    )
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn systemd_unit(argv: &[String]) -> String {
-    // systemd's double-quoted word: `"` and `\` escaped, `'` literal, so the
-    // shell sees `'\''` for an apostrophe in a path.
-    let (shell, cmd) = argv.split_at(argv.len() - 1);
-    let cmd = cmd[0].replace('\\', r"\\").replace('"', r#"\""#);
-    format!(
-        "[Unit]\nDescription=theuth harness\nAfter=network-online.target\n\n[Service]\nExecStart={} \"{cmd}\"\n\
-         Environment=THEUTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null\nRestart=on-failure\nRestartSec=2\n\n\
-         [Install]\nWantedBy=default.target\n",
-        shell.join(" ")
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn plist_path() -> anyhow::Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("no home dir"))?
-        .join("Library/LaunchAgents")
-        .join(format!("{UNIT}.plist")))
-}
-
-#[cfg(target_os = "linux")]
-fn systemd_path() -> anyhow::Result<PathBuf> {
-    Ok(dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("no config dir"))?
-        .join("systemd/user")
-        .join(format!("{UNIT}.service")))
-}
-
-/// The user's uid for `launchctl gui/<uid>`, from `id -u` (no libc dep).
-#[cfg(target_os = "macos")]
-fn uid() -> anyhow::Result<u32> {
-    let out = std::process::Command::new("id").arg("-u").output()?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().parse()?)
-}
-
-/// Run to completion; `true` on exit 0. Output is the user's to read.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn run(cmd: &str, args: &[&str]) -> bool {
-    std::process::Command::new(cmd)
-        .args(args)
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Delete a file, treating "already gone" as done.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn remove(p: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(p) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
-}
-
 /// This machine's hostname; `"theuth"` when `hostname` fails.
 fn hostname() -> String {
     std::process::Command::new("hostname")
@@ -377,29 +220,6 @@ mod tests {
             a[4],
             r"exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\''s here/.theuth'"
         );
-    }
-
-    #[test]
-    fn plist_carries_exec_and_log() {
-        let p = plist(&argv(), Path::new("/Users/me/it's here/.theuth"));
-        assert!(p.contains(
-            r"<string>exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\''s here/.theuth'</string>"
-        ));
-        assert!(p.contains("<string>/Users/me/it's here/.theuth/logs/service.log</string>"));
-        assert!(p.contains("<key>THEUTH_LAUNCH</key>\n    <string>1</string>"));
-    }
-
-    #[test]
-    fn systemd_unit_carries_exec() {
-        let u = systemd_unit(&argv());
-        assert!(
-            u.contains(
-                r#"ExecStart=/bin/zsh -l -i -c "exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\\''s here/.theuth'""#
-            ),
-            "{u}"
-        );
-        assert!(u.contains("Environment=THEUTH_LAUNCH=1 TERM=xterm-256color\nStandardInput=null"));
-        assert!(u.contains("WantedBy=default.target"));
     }
 
     #[test]

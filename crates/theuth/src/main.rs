@@ -597,6 +597,11 @@ async fn run() -> anyhow::Result<()> {
         plugins.push(Box::new(a2a::A2aPlugin));
         plugins.push(Box::new(update::UpdatePlugin));
         plugins.push(Box::new(voice::VoicePlugin));
+        // 58 §3.2: Core Audio and the NSPanel island exist on macOS only; elsewhere
+        // `meeting_*` is absent until §6 lands its capture backends.
+        // ponytail: no `supported()` (58 §3.3) in the meeting status RPC yet — the
+        // crate's internals are out of this step's scope; add it with §6.
+        #[cfg(target_os = "macos")]
         plugins.push(Box::new(meeting::MeetingPlugin));
         plugins.push(Box::new(decision::DecisionPlugin));
         if cli.serve || cli.headless {

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 runtime = { workspace = true }
+platform = { workspace = true }
 tools = { workspace = true }
 document = { workspace = true }
 knowledge = { workspace = true }
@@ -32,7 +33,6 @@ update = { workspace = true }
 artifact = { workspace = true }
 app = { workspace = true }
 voice = { workspace = true }
-meeting = { workspace = true }
 decision = { workspace = true }
 chrono = { workspace = true }  # --decision-export --since
 secrets = { workspace = true }
@@ -54,6 +54,10 @@ monty-alloc = { workspace = true }
 monty-types = { workspace = true }
 tracing-appender = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+
+# 58 §3.2: platform-bound plugins. `meeting` is Core Audio + NSPanel (53) until §6's capture backends.
+[target.'cfg(target_os = "macos")'.dependencies]
+meeting = { workspace = true }
 
 [lints]
 workspace = true
