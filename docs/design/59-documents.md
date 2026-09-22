@@ -1029,6 +1029,22 @@ schema knowledge).
 Proposed. Nothing in this document is built; §2 is what was verified in the
 repository and upstream on 2026-09-21.
 
+### 16.1 Status after step 8 (2026-09-22)
+
+Implemented on `feature/documents` (steps 1–8, §17–§24; not merged to `main`).
+Verified headless on one Mac: knowledge/notes/artifacts/meeting documents
+with export and diff import (§17–§19, §21), agent tools with attribution and
+undo (§18), link devices over mode 0 with the IndexedDB queue (§20), the
+mobile toolbar under iPhone emulation (§22), share links, guest joins,
+roles, revocation (§23), and the §11 limits, member-text labelling,
+retention and config (§24), with `cargo test -p document -p link -p rpc -p
+relay -p artifact -p meeting`, the helper's `bun test` and the UI's `tsc` /
+vitest / `vite build` green. Awaiting Sky's device pass: the iPad/Mac
+convergence check (§20 "Manual device pass"), the physical-iPhone toolbar
+check (§22), and a phone-browser share link (§23) — procedures in §24 "For
+Sky". Deliberately not built: `daily` snapshots, owner display name, notes
+search category, `Artifact.doc` (§24 "Left").
+
 ## 17. As built — step 1 (2026-09-21)
 
 Branch `feature/documents` (worktree off main b2b1a5e), commits

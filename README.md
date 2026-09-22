@@ -28,6 +28,7 @@ just run -- --slack-manifest   # manual path: print the Slack app manifest for a
 just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed/editors (agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 just helper                # app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser; apps need it beside `t`
+just documents-helper      # BlockNote documents helper (bun build --compile) → packages/documents/dist/theuth-documents; debug `t` finds it there, release layouts beside `t` as theuth-documents-<protocol>
 THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser just run   # dev run with that helper (release layouts find theuth-app-parser-<hash> next to `t` on their own)
 just install               # release `t` + `theuth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running t
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
@@ -188,10 +189,14 @@ Config (`~/.theuth/`, created on first run; details in
     enabled: true          # false: no store, no knowledge_* tools, no hints, no harvest
   documents:               # design doc 59; the BlockNote editor's Yjs documents
     enabled: true          # false: no store, no helper, no doc_* methods; concepts open as raw text
-    export_debounce_ms: 400
-    max_doc_bytes: 8388608
-    snapshots_keep: 30
-    agent_color: "#7c3aed"
+    export_debounce_ms: 400      # settle time before the derived .md is rewritten (hard cap 3 s)
+    max_doc_bytes: 8388608       # an update that would grow a document past this is refused (DocTooLarge); one update is capped at 48 KiB
+    snapshots_keep: 30           # automatic (daily) snapshots kept per document; labelled ones (artifact-v*, meeting-*, import-file, manual) are never pruned
+    agent_color: "#7c3aed"       # the agent's presence and typewriter reveal colour
+    max_members: 64              # members per shared document; the 65th join is refused
+    sharing: on                  # off: no new share links, members still connect; disabled: members refused too
+    idle_unload_secs: 600        # unload an unsubscribed document after this idle time (its log is compacted into snapshot.yjs)
+    max_open_docs: 256           # documents held in memory at most
   web:
     engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless; search_web / read_url
   scrape:                         # design doc 38; scrape_url / crawl / map_site
@@ -228,6 +233,7 @@ Config (`~/.theuth/`, created on first run; details in
     relay: wss://relay.theuth.io   # self-host: your `theuth-relay` URL
     name: ""                      # display name in the QR and on devices; "" → hostname
     max_devices: 16
+    guest_handshakes_per_minute: 10  # share-link guests (design doc 59 §8) admitted per minute; 5 s to join, 3 refused calls close the conn
   nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `t --install-service`
     enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
   schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
@@ -506,6 +512,17 @@ upgrade is Noise-encrypted end to end between your device and your harness,
 so the relay (ours or anyone's) sees ciphertext, frame sizes, timing, IP
 addresses and the harness id — never your messages, keys or which device
 is connected. Design: [`docs/design/31-link.md`](docs/design/31-link.md).
+
+Share links (design doc 59 §8): a note or concept can be shared by URL,
+`https://<relay>/d#1.<harness>.<doc>.<secret>`. Whoever opens it in a browser
+joins that one document as an editor or viewer over the same relay, with the
+secret in the fragment the relay never sees; the harness stores only its hash.
+What the relay learns is the same as above plus that some browser loaded `/d`
+and that a guest connection reached your harness id from some IP. Links have
+an expiry and can be revoked; members can be demoted or removed from the Share
+dialog; guests reach only the `doc_*` methods of that document. Text a member
+wrote is labelled `doc-member:<id>` when the agent reads the document, and
+the agent is told to treat it as data, never as instructions.
 
 ## Communication
 

@@ -647,7 +647,7 @@ pub trait Api {
     /// current awareness states.
     #[method(name = "doc_open", with_extensions)]
     async fn doc_open(&self, doc: document::DocId, sv: Option<String>) -> RpcResult<document::DocOpen>;
-    /// One base64 v1 update from this connection; refused with `DocTooLarge` past the cap.
+    /// One base64 v1 update from this connection; refused with `UpdateTooLarge` over 48 KiB and `DocTooLarge` past the document cap.
     #[method(name = "doc_update", with_extensions)]
     async fn doc_update(&self, doc: document::DocId, update: String) -> RpcResult<()>;
     /// One base64 awareness update (y-protocols) from this connection; relayed, never stored.
