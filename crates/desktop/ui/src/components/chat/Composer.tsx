@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, AudioLines, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
+import { ArrowUp, AudioLines, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -35,6 +35,7 @@ import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { NotePicker } from '@/components/notes/NotePicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
+import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { HeldStrip } from './HeldStrip'
 import { LevelMeter } from './LevelMeter'
@@ -390,7 +391,7 @@ export function Composer({
       reset()
       if (session && running) {
         const id = crypto.randomUUID()
-        applyEvents([{ type: 'InputQueued', session, id, text: body }])
+        applyEvents([{ type: 'InputQueued', session, id, text: body, defer: false }])
         mode(session)
         // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
         if (interject) await api.cancel(session)
@@ -631,6 +632,9 @@ export function Composer({
               </Button>
               <Button variant="ghost" className="w-full justify-start" onClick={() => setPickingNote(true)}>
                 <StickyNote /> Attach note…
+              </Button>
+              <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
+                <Megaphone /> Send to many…
               </Button>
             </PopoverContent>
           </Popover>

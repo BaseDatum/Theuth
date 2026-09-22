@@ -498,7 +498,7 @@ export function apply(
     case "InputQueued":
       return slice.queued.some((q) => q.id === e.id)
         ? slice
-        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text }] };
+        : { ...slice, queued: [...slice.queued, { id: e.id, text: e.text, defer: e.defer }] };
     case "InputWithdrawn": {
       const queued = slice.queued.filter((q) => q.id !== e.id);
       return queued.length === slice.queued.length
