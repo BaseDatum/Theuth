@@ -16,6 +16,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
+import { openNewChat } from '@/components/chat/NewChatPane'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { settings } from '@/components/chat/slash'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -48,7 +49,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
   const hasMeetings = useHasMeetings()
-  // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a plain click still goes to `/`.
+  // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
+  // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
 
   return (
@@ -93,7 +95,14 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/" {...dragNew}>
+              <Link
+                to="/"
+                {...dragNew}
+                onClick={(e) => {
+                  e.preventDefault()
+                  openNewChat(navigate)
+                }}
+              >
                 <SquarePen /> New chat
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
               </Link>

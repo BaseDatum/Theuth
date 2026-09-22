@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { SidebarMenuAction } from '@/components/ui/sidebar'
+import { openNewChat } from '@/components/chat/NewChatPane'
 import { leaves, usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { nextSelection, type SelectMode } from '@/lib/selection'
@@ -41,8 +42,9 @@ export const newChatLabel = (project: string | null) => (project === null ? 'New
 
 /**
  * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown on
- * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" lands on `/` with the picker preset and
- * whose "Icon & colour…" opens the style dialog (not for Ungrouped). The project's glyph sits left of the name.
+ * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" opens a new chat with the picker preset
+ * (`openNewChat`: the focused pane when split, else `/?project=`) and whose "Icon & colour…" opens the style dialog
+ * (not for Ungrouped). The project's glyph sits left of the name.
  */
 function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
   const navigate = useNavigate()
@@ -71,7 +73,7 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
           </SidebarMenuAction>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="w-48">
-          <DropdownMenuItem onSelect={() => void navigate({ to: '/', search: project === null ? {} : { project } })}>
+          <DropdownMenuItem onSelect={() => openNewChat(navigate, project)}>
             {newChatLabel(project)}
           </DropdownMenuItem>
           {project !== null && <DropdownMenuItem onSelect={() => setStyling(true)}>Icon &amp; colour…</DropdownMenuItem>}

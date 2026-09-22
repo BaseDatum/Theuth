@@ -1,11 +1,11 @@
-import { useNavigate } from '@tanstack/react-router'
+import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { useEffect, useId, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { usePanes } from '@/lib/panes'
+import { draftProject, usePanes } from '@/lib/panes'
 import { usePrivate } from '@/lib/private'
 
 /**
@@ -45,7 +45,19 @@ export function NewChat({
 }
 
 /**
- * A split pane holding a New chat dropped from the sidebar (25 §12.3). `id` is the draft leaf's client id; the
+ * The sidebar's New chat, ⇧⌘O and the project header's "New chat in <project>" (25 §12.3): with the view split, the
+ * focused pane becomes a draft and the URL stays put; a single pane goes to the whole-window `/` as before.
+ */
+export function openNewChat(navigate: UseNavigateResult<string>, project?: string | null): void {
+  const panes = usePanes.getState()
+  const draft = panes.fresh(project)
+  if (!draft) void navigate({ to: '/', search: project ? { project } : {} })
+  // A new draft's pane takes the caret on mount; a kept one has to be told.
+  else if (draft === panes.focused) window.dispatchEvent(new Event('theuth:focus-composer'))
+}
+
+/**
+ * A split pane holding a New chat opened from the sidebar (25 §12.3). `id` is the draft leaf's client id; the
  * URL stays on the previously focused chat, and the first send swaps the created session into this leaf.
  */
 export function NewChatPane({ id, first }: { id: string; first: boolean }) {
@@ -66,7 +78,7 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
     usePanes.getState().place(id, session, 'center')
     void navigate({ to: '/c/$session', params: { session } })
   }
-  return <NewChat pane={id} first={first} onClose={close} onCreated={created} />
+  return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} />
 }
 
 /** Private toggle, project picker and the retention warning with its acknowledgement (51 §1, §8.3); sits under the composer. */

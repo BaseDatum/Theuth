@@ -1,5 +1,6 @@
 import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react-router'
 import { type CSSProperties, useEffect, useState } from 'react'
+import { openNewChat } from '@/components/chat/NewChatPane'
 import { DragOverlay } from '@/components/chat/Panes'
 import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
@@ -25,7 +26,7 @@ function Root() {
 
   useEffect(() => {
     const toggle = () => setOpen((o) => !o)
-    const fresh = () => void navigate({ to: '/' })
+    const fresh = () => openNewChat(navigate)
     const shortcuts = () => void settings(navigate, 'shortcuts', session)
     window.addEventListener('theuth:toggle-sidebar', toggle)
     window.addEventListener('theuth:new-chat', fresh)
