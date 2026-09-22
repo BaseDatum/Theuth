@@ -242,6 +242,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 if std::mem::take(&mut m.refresh_communication) {
                     let _ = commands.send(Command::GetCommunication(m.session));
                 }
+                // The engine behind the calls changed (63 §2.3): the shown
+                // session and its subtree, loaded from the new one.
+                if std::mem::take(&mut m.reselect)
+                    && let Some(session) = m.session
+                {
+                    let _ = commands.send(Command::Load {
+                        session,
+                        settled_only: false,
+                    });
+                    let _ = commands.send(Command::ListAgents(session));
+                }
                 // Only the open `/peers` menu sets this; a stale flag after it closed is dropped.
                 if std::mem::take(&mut m.refresh_peers)
                     && let Some(Menu::Peers { session, .. }) = &m.menu

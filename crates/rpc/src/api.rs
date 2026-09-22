@@ -135,8 +135,10 @@ pub struct Info {
     pub app_enabled: bool,
 }
 
-/// The wire API. `#[rpc(server)]` generates `ApiServer` (+ `into_rpc()`).
-#[rpc(server)]
+/// The wire API. `#[rpc(server, client)]` generates `ApiServer` (+
+/// `into_rpc()`) and `ApiClient`, the same methods on any jsonrpsee client —
+/// the in-process [`crate::client::Local`] or a WebSocket (63 §2.3).
+#[rpc(server, client)]
 pub trait Api {
     /// Version, data dir, default model, approvals and compaction style in one
     /// call: the client's startup snapshot.

@@ -25,6 +25,7 @@ use tower::Service;
 pub mod acp;
 pub mod api;
 pub mod bridge;
+pub mod client;
 pub mod engine;
 pub mod search;
 
@@ -33,7 +34,7 @@ mod export;
 
 pub use self::search::SearchToolsPlugin;
 pub use acp::AcpPlugin;
-pub use api::ApiServer;
+pub use api::{ApiClient, ApiServer};
 
 /// `[rpc]` config section.
 #[derive(Clone, Debug, Serialize, Deserialize)]
