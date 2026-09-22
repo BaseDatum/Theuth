@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Bundled models.dev catalog: context limits, capabilities, provider/model id resolution"
 
 [dependencies]
+platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

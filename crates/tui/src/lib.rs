@@ -739,16 +739,7 @@ async fn execute(
         }
         // Detached, like `computer_open`: the TUI runs on the harness host, so the path is local.
         Command::OpenPath(path) => {
-            let mut cmd = tokio::process::Command::new(if cfg!(target_os = "macos") {
-                "open"
-            } else {
-                "xdg-open"
-            });
-            cmd.arg(&path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            cmd.spawn()
+            platform::open::open_path(&path)
                 .map_err(|e| anyhow::anyhow!("could not open {}: {e}", path.display()))?;
             return Ok(());
         }

@@ -19,7 +19,6 @@ pub mod tools;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
@@ -200,16 +199,15 @@ fn tail_2k(s: &str) -> &str {
     &s[cut..]
 }
 
-/// Run `until` through `$SHELL -lc` (else `/bin/sh`) in `cwd`, no stdin
-/// (33 §3.1). `Ok((exit code, output tail))`; `Err(why)` when it did not exit
-/// in [`UNTIL_TIMEOUT`] or could not start.
+/// Run `until` through the login shell ([`platform::shell`], `-lc`) in `cwd`,
+/// no stdin (33 §3.1). `Ok((exit code, output tail))`; `Err(why)` when it did
+/// not exit in [`UNTIL_TIMEOUT`], could not start, or this host has no login shell.
 async fn until_check(cmd: &str, cwd: Option<&Path>) -> Result<(Option<i32>, String), String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-    let mut c = tokio::process::Command::new(shell);
-    c.arg("-lc")
-        .arg(cmd)
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
+    // ponytail: ShellKind::Brush is 58 §11 step 3
+    let Some(mut c) = platform::shell().command(cmd, true) else {
+        return Err("until: no login shell on this platform (brush in-process is 58 step 3)".into());
+    };
+    c.kill_on_drop(true);
     if let Some(d) = cwd {
         c.current_dir(d);
     }

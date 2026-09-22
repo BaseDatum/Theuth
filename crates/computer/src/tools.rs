@@ -370,44 +370,22 @@ pub struct OpenArgs {
     pub url: Option<String>,
 }
 
-/// The detached OS command behind `computer_open`.
-fn open_command(app: Option<&str>, url: Option<&str>) -> Result<tokio::process::Command, String> {
-    let mut cmd = match (app, url) {
-        (Some(app), None) => {
-            if cfg!(target_os = "macos") {
-                let mut c = tokio::process::Command::new("open");
-                c.arg("-a").arg(app);
-                c
-            } else {
-                tokio::process::Command::new(app)
-            }
-        }
-        (None, Some(url)) => {
-            let mut c = tokio::process::Command::new(if cfg!(target_os = "macos") {
-                "open"
-            } else {
-                "xdg-open"
-            });
-            c.arg(url);
-            c
-        }
+/// `computer_open`'s body: exactly one of `app` / `url`, handed to the OS detached.
+fn open_one(app: Option<&str>, url: Option<&str>) -> Result<(), String> {
+    match (app, url) {
+        (Some(app), None) => platform::open::open_app(app),
+        (None, Some(url)) => platform::open::open_url(url),
         _ => return Err("give app or url, not both".to_owned()),
-    };
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    Ok(cmd)
+    }
+    .map_err(|e| format!("could not open: {e}"))
 }
 
 computer_tool!(
-    /// `computer_open`: `open -a <app>` / `open <url>` on macOS, `<app>` / `xdg-open <url>` elsewhere; detached.
+    /// `computer_open`: [`platform::open::open_app`] / [`platform::open::open_url`], detached.
     OpenTool, "computer_open", Risk::Mutating, OpenArgs,
     "Launch or bring forward an application by name (`app`), or open a URL with the OS default handler (`url`), which for http(s) is the user's real, signed-in browser. Give exactly one. Returns at once; take a computer_screenshot to see the result.",
     |_ctx, a, _cx| {
-        let mut cmd = try_out!(open_command(a.app.as_deref(), a.url.as_deref()));
-        if let Err(e) = cmd.spawn() {
-            return Ok(ToolOutput::err(format!("could not open: {e}")));
-        }
+        try_out!(open_one(a.app.as_deref(), a.url.as_deref()));
         let what = a.app.or(a.url).unwrap_or_default();
         Ok(ToolOutput::ok(format!("opened {what}")))
     }
@@ -466,10 +444,8 @@ mod tests {
 
     #[test]
     fn open_requires_exactly_one_target() {
-        assert!(open_command(None, None).is_err());
-        assert!(open_command(Some("Safari"), Some("https://x")).is_err());
-        assert!(open_command(Some("Safari"), None).is_ok());
-        assert!(open_command(None, Some("https://x")).is_ok());
+        assert!(open_one(None, None).is_err());
+        assert!(open_one(Some("Safari"), Some("https://x")).is_err());
     }
 
     #[test]

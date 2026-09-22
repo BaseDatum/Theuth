@@ -627,7 +627,7 @@ pub enum Command {
         /// Its file name.
         name: String,
     },
-    /// Open a local file with the OS default handler (`open` / `xdg-open`, detached).
+    /// Open a local file with the OS default handler ([`platform::open::open_path`], detached).
     OpenPath(PathBuf),
     /// `list_secrets`.
     ListSecrets,

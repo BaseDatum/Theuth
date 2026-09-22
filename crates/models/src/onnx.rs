@@ -19,14 +19,8 @@ use std::sync::Mutex;
 /// `models/` is a runtime.
 pub const DIR: &str = "onnxruntime";
 
-/// The dylib name Microsoft's release ships as, without its version.
-pub const LIB: &str = if cfg!(target_os = "macos") {
-    "libonnxruntime.dylib"
-} else if cfg!(target_os = "windows") {
-    "onnxruntime.dll"
-} else {
-    "libonnxruntime.so"
-};
+/// The dylib name Microsoft's release ships as, without its version ([`platform::ort::ort_library_name`]).
+pub const LIB: &str = platform::ort::ort_library_name();
 
 /// The loaded runtime, once `ort::init_from(..).commit()` has run. A failed search is not
 /// cached: the downloader may land the file while the daemon runs.
