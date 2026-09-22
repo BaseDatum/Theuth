@@ -14373,6 +14373,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "browser",
+ "chrono",
  "codeindex",
  "computer",
  "decision",
@@ -14382,6 +14383,7 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "knowledge",
+ "libc",
  "link",
  "meeting",
  "nodes",
@@ -14406,6 +14408,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

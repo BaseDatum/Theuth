@@ -25,6 +25,7 @@ use tower::Service;
 pub mod acp;
 pub mod api;
 pub mod bridge;
+pub mod engine;
 pub mod search;
 
 #[cfg(test)]

@@ -409,10 +409,13 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("subprocess") {
         std::process::exit(i32::from(worker::run()));
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run());
+    // A failed start (a plugin refused) still unlinks engine.json (63 §2.1).
+    rpc::engine::release();
+    result
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -495,6 +498,38 @@ async fn run() -> anyhow::Result<()> {
     }
     if cli.uninstall_service {
         return service::uninstall().await;
+    }
+
+    // 63 §0.1: one engine per data dir. The lock decides; a refusal names
+    // the holder. `THEUTH_LAUNCH` marks the desktop app's daemon (18 §4).
+    use rpc::engine::Host;
+    let host = if cli.headless {
+        if std::env::var_os("THEUTH_LAUNCH").is_some() {
+            Host::Desktop
+        } else {
+            Host::Headless
+        }
+    } else if cli.link_signal {
+        Host::Signal
+    } else if cli.acp {
+        Host::Acp
+    } else if cli.prompt.is_some() {
+        Host::Prompt
+    } else {
+        Host::Tui
+    };
+    let listen = (cli.serve || cli.headless).then(|| link_cli::listen(&config));
+    match rpc::engine::acquire(&data_dir, host, listen) {
+        Ok(lease) => rpc::engine::hold(lease),
+        Err(rpc::engine::Error::Running(running)) => {
+            let attach = matches!(host, Host::Tui | Host::Prompt | Host::Acp);
+            eprintln!(
+                "{running}{}",
+                if attach { " (attach arrives in step 2)" } else { "" }
+            );
+            std::process::exit(3);
+        }
+        Err(e) => return Err(e.into()),
     }
 
     // The TUI owns the terminal; logs go to a file.
@@ -658,6 +693,7 @@ async fn run() -> anyhow::Result<()> {
     // whose child never closed its end would otherwise pin the process.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(_guard);
+    rpc::engine::release();
     std::process::exit(0)
 }
 
