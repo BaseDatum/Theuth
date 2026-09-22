@@ -9,6 +9,7 @@ import type { Kind } from '@/rpc/bindings/Kind'
 import type { Loaded } from '@/rpc/bindings/Loaded'
 import type { Retention } from '@/rpc/bindings/Retention'
 import type { SessionId } from '@/rpc/bindings/SessionId'
+import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { HistoryEntry as BoundHistory } from '@/rpc/bindings/HistoryEntry'
 import type { TurnId } from '@/rpc/bindings/TurnId'
 import type { VisionNote } from '@/rpc/bindings/VisionNote'
@@ -94,6 +95,8 @@ export type AgentInfo = {
   project?: string | null
   /** Storage class of the root (51 §4); `#[serde(default)]` = durable. */
   retention?: Retention
+  /** Live facts (62 §3.2); `#[serde(default)]`, absent from harnesses older than 62. */
+  activity?: SessionActivity
 }
 
 /** `AgentEvent::TitleChanged`: the titler or `rename_session` wrote a title. */
