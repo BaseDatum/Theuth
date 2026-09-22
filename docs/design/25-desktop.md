@@ -915,8 +915,28 @@ draft — it moves to the first real survivor, or stays where it is when only
 a draft remains; a route landing (`show`) replaces the focused draft like
 any other focused pane, so a sidebar click while a draft is focused
 discards the draft (its typed text with it). Phones offer no drag
-(`touch()` guard in the hook); the `new-chat` shortcut is unchanged. Not
-done: clicking the sidebar row of the chat the URL already names while a
-draft is focused is a same-URL navigation and does not refocus that pane
-(press the pane instead); `ModelMenu` still treats every `session={null}`
-composer as focused for the `/model` surface.
+(`touch()` guard in the hook). Not done: clicking the sidebar row of the
+chat the URL already names while a draft is focused is a same-URL
+navigation and does not refocus that pane (press the pane instead);
+`ModelMenu` still treats every `session={null}` composer as focused for the
+`/model` surface.
+
+New chat in the focused pane (2026-09-22, later the same day): with the
+view split, the sidebar's **New chat** row, the `new-chat` shortcut (⇧⌘O →
+`theuth:new-chat`) and the project header's "New chat in <project>" no
+longer leave for the whole-window `/` — that tore the layout down. All three
+call `openNewChat(navigate, project?)` (`components/chat/NewChatPane.tsx`),
+which asks the store's `fresh(project?)`: with ≥ 2 leaves the focused pane
+(fallback: the first) is replaced by a fresh draft leaf, focused, and its
+composer takes the caret; the URL stays on the chat it named, the same rule
+as the drop. A focused draft is kept, not stacked — the action only refocuses
+its composer (also when it arrives with a project preset; the picker is one
+click away and the typed text survives). With a single pane, no tree, or off
+`/c/…`, `fresh` returns `null` and the caller navigates to `/` (with
+`?project=` when preset) exactly as before — phones, having no drag, always
+take this path and the sheet closes on the navigation. Only the THEUTH mark
+is a plain link to `/`. The preset rides in the leaf id,
+`draft:<uuid>?project=<encoded label>` (`newDraft(project)` /
+`draftProject(id)`): the tree logic keeps treating the id as opaque, and
+`NewChatPane` hands it to `NewChat`'s `preset` like `routes/index.tsx` does
+from the URL. Drag-drop of New chat is unchanged.
