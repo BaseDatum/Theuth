@@ -69,6 +69,9 @@ pub(crate) struct Open {
     export_due: Option<Instant>,
     export_first: Option<Instant>,
     exporting: bool,
+    /// The owner hears [`Exported`] once this passes with the file settled (§4.3 as built: `export_quiet_secs`
+    /// after the last update) — or at once when the document has no subscriber, unloads, or the harness stops.
+    notify_due: Option<Instant>,
     /// The last agent edit's inverse (§5.5 "Undo last agent edit"); one level, in memory.
     last_agent_edit: Option<LastAgentEdit>,
     /// Bumped per agent presence; a delayed clear only fires for its own generation.
@@ -230,6 +233,8 @@ pub struct DocumentActor {
     imports: HashMap<u64, Import>,
     edits: HashMap<u64, PendingEdit>,
     last_sweep: Option<Instant>,
+    /// Set by [`Flush`]: every export that lands from here on is reported to its owner at once.
+    shutting_down: bool,
 }
 
 impl DocumentActor {
@@ -246,6 +251,7 @@ impl DocumentActor {
             imports: HashMap::new(),
             edits: HashMap::new(),
             last_sweep: None,
+            shutting_down: false,
         }
     }
 
@@ -281,6 +287,7 @@ impl DocumentActor {
                     export_due: None,
                     export_first: None,
                     exporting: false,
+                    notify_due: None,
                     last_agent_edit: None,
                     agent_gen: 0,
                     awareness_rate: HashMap::new(),
@@ -401,13 +408,40 @@ impl DocumentActor {
 
     fn schedule_export(&mut self, doc: &DocId) {
         let debounce = Duration::from_millis(self.cfg.export_debounce_ms);
+        let quiet = Duration::from_secs(self.cfg.export_quiet_secs);
         if let Some(o) = self.open.get_mut(doc)
             && !o.meta.derived.is_empty()
         {
             let now = Instant::now();
             o.export_due = Some(now + debounce);
             o.export_first.get_or_insert(now);
+            o.notify_due = Some(now + quiet);
         }
+    }
+
+    /// Whether `doc`'s owner is to hear [`Exported`] now: an update is waiting to be reported, the file holds
+    /// it (no export pending or in flight), and the quiet period passed — or nobody is typing (no subscriber),
+    /// or the harness is stopping.
+    fn owner_due(&self, doc: &DocId, o: &Open, now: Instant) -> bool {
+        o.notify_due.is_some_and(|due| {
+            !o.exporting
+                && o.export_due.is_none()
+                && (now >= due || self.shutting_down || !self.subs.contains_key(doc))
+        })
+    }
+
+    /// Tell `doc`'s owner its derived file is settled (§7): knowledge commits, the artifact store versions.
+    async fn notify_owner(&mut self, doc: &DocId) {
+        let Some(o) = self.open.get_mut(doc) else {
+            return;
+        };
+        o.notify_due = None;
+        let ev = Exported {
+            doc: doc.clone(),
+            binding: o.meta.binding.clone(),
+            path: self.data_dir.join(&o.meta.derived),
+        };
+        self.rt.publish(ev).await;
     }
 
     /// The derived file's text when `doc` was never synced with it — no export or import ever
@@ -645,6 +679,16 @@ impl DocumentActor {
         }
         if let Some(o) = self.open.remove(doc) {
             self.helper.close(doc).log("close");
+            // A quiet period still running at unload is over: the owner hears now, nothing is lost.
+            if o.notify_due.is_some() && !o.exporting && o.export_due.is_none() {
+                let rt = self.rt.clone();
+                let ev = Exported {
+                    doc: doc.clone(),
+                    binding: o.meta.binding.clone(),
+                    path: self.data_dir.join(&o.meta.derived),
+                };
+                tokio::spawn(async move { rt.publish(ev).await });
+            }
             if o.authors_dirty {
                 let store = self.store.clone();
                 tokio::spawn(async move {
@@ -1112,13 +1156,11 @@ impl Message<ExportDone> for DocumentActor {
                 }
                 self.fan_out(&m.doc, DocEvent::Exported, None);
                 self.rt.publish(DocumentChanged::of(&meta, false)).await;
-                self.rt
-                    .publish(Exported {
-                        doc: m.doc,
-                        binding: meta.binding,
-                        path: self.data_dir.join(&meta.derived),
-                    })
-                    .await;
+                // The owner waits for the quiet period (Tick) unless nobody is typing or the harness is stopping.
+                let due = self.open.get(&m.doc).is_some_and(|o| self.owner_due(&m.doc, o, Instant::now()));
+                if due {
+                    self.notify_owner(&m.doc).await;
+                }
             }
             Err(e) => {
                 tracing::warn!(doc = %m.doc, error = %e, "document export failed; retrying");
@@ -1836,7 +1878,8 @@ impl Message<HelperEvent> for DocumentActor {
     }
 }
 
-/// `tell` every 250 ms: exports due, snapshot policy, idle unload, hourly trash sweep (§4.1, §4.3, §4.7, §7.3).
+/// `tell` every 250 ms: exports due, owner notifications past their quiet period, snapshot policy, idle unload,
+/// hourly trash sweep (§4.1, §4.3, §4.7, §7.3).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tick;
 
@@ -1848,12 +1891,16 @@ impl Message<Tick> for DocumentActor {
         let mut exports = Vec::new();
         let mut snapshots = Vec::new();
         let mut unloads = Vec::new();
+        let mut notifies = Vec::new();
         for (id, o) in &self.open {
             if !o.exporting
                 && let Some(due) = o.export_due
                 && (now >= due || o.export_first.is_some_and(|f| now >= f + EXPORT_CAP))
             {
                 exports.push(id.clone());
+            }
+            if self.owner_due(id, o, now) {
+                notifies.push(id.clone());
             }
             if o.log_bytes > LOG_MAX_BYTES || o.log_count > LOG_MAX_COUNT {
                 snapshots.push(id.clone());
@@ -1868,6 +1915,9 @@ impl Message<Tick> for DocumentActor {
         }
         for id in exports {
             self.export(&id, None);
+        }
+        for id in notifies {
+            self.notify_owner(&id).await;
         }
         for id in snapshots {
             if let Err(e) = self.snapshot(&id, None) {
@@ -1902,6 +1952,30 @@ impl Message<Tick> for DocumentActor {
                 Ok(n) if n > 0 => tracing::info!(removed = n, "documents trash swept"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "documents trash sweep failed"),
+            }
+        }
+    }
+}
+
+/// `ask` → `()` at harness shutdown: every pending derived-file write is fired and every settled edit is
+/// reported to its owner now, whatever its quiet period says (§4.3 as built: nothing waits out the process).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flush;
+
+impl Message<Flush> for DocumentActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Flush, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.shutting_down = true;
+        let now = Instant::now();
+        let waiting: Vec<DocId> = self.open.iter().filter(|(_, o)| o.notify_due.is_some()).map(|(id, _)| id.clone()).collect();
+        for id in waiting {
+            let Some(o) = self.open.get(&id) else { continue };
+            if o.export_due.is_some() && !o.exporting {
+                // Fired now; it reports through `ExportDone` (`shutting_down`), like one already in flight.
+                self.export(&id, None);
+            } else if self.owner_due(&id, o, now) {
+                self.notify_owner(&id).await;
             }
         }
     }
