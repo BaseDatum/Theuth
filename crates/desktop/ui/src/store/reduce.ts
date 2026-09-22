@@ -608,6 +608,10 @@ export function apply(
     // A full snapshot committed with its tool batch; the settled reload carries the same list, so `live` is untouched.
     case "TodoChanged":
       return reconcileTodos(slice, e.snapshot, true);
+    // One round settled (51 §6.4): the gauge moves with the cost pill. Same figure `TurnFinished`
+    // would carry, so it is not an estimate; a settled snapshot is unaffected, so `live` holds.
+    case "ContextUsed":
+      return { ...slice, context: e.context, contextEstimated: false };
     // The store moved past what is on screen (48 §5): controls disable, in-flight pages and snapshots
     // are discarded, and the route reloads through the settled path. The revision we already installed
     // (our own edit's echo) changes nothing unless a refused reload left us stale.

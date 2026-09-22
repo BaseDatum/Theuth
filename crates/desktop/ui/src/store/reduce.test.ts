@@ -514,6 +514,15 @@ test('turn activity bumps live; bookkeeping (jobs, queue, title) does not; a tur
   expect(done).toMatchObject({ context: 42, contextEstimated: false, running: false })
 })
 
+test('ContextUsed moves the gauge mid-turn without ending the turn or bumping live; the turn end still lands', () => {
+  const s1 = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 }, ctx())
+  const s2 = apply({ ...s1, contextEstimated: true }, { type: 'ContextUsed', session: S, turn: T, context: 1200 }, ctx())
+  expect(s2).toMatchObject({ context: 1200, contextEstimated: false, running: true, live: s1.live })
+  const s3 = apply(s2, { type: 'ContextUsed', session: S, turn: T, context: 3400 }, ctx())
+  expect(s3.context).toBe(3400)
+  expect(apply(s3, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 3400 }, ctx())).toMatchObject({ context: 3400, running: false })
+})
+
 test('fromHistory carries the row context onto every card it becomes', () => {
   const context = msg(7)
   const cards = fromHistory({
