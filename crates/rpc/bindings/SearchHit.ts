@@ -52,4 +52,9 @@ updated_at: string,
  * The matched message was removed from the model's context (48 §2.2);
  * the transcript still holds it. `false` for title hits.
  */
-context_removed: boolean, };
+context_removed: boolean, 
+/**
+ * The session's root is archived (51 §3): hidden from the sidebar, still
+ * found here.
+ */
+archived: boolean, };
