@@ -127,6 +127,25 @@ owner and its artifacts are omitted entirely, not represented by placeholders.
 Labels are escaped display data. TUI uses headings; shared React uses collapsible
 sections. No project routes, tables, actor, watcher, or search category.
 
+As built 2026-09-22 (branch `feature/archive-chats`): **archived** sits beside
+`pinned` as a second root flag. Migration `0016_archived.sql` adds
+`sessions.archived INTEGER NOT NULL DEFAULT 0`; `Store::set_archived(id, bool)`
+writes the row (callers pass the root), and every reader resolves the root's
+value through the same recursive lineage subquery as `project`
+(`store.rs::root_col!`), so `SessionSummary.archived` is true on every row of an
+archived tree. RPC `archive_session(session, archived)` mirrors `pin_session`
+(`Agents` message `ArchiveSession`; no event, like `PinSession` — the desktop
+invalidates its `sessions` query after the call); it also invalidates the search
+index so hits pick the flag up. `list_sessions` keeps returning archived rows
+(the TUI picker, Slack title lookup and the desktop lookups by id all need them);
+the desktop sidebar filters: archived roots leave the pinned and project groups
+for one `Archived (N)` header at the very bottom, collapsed by default, whose
+rows render muted and whose `…` menu offers Unarchive. The row menu and the
+multi-select bar offer Archive (Unarchive when every selected row is archived).
+Opening an archived chat (search, the Archived group) is the ordinary
+`/c/$session` route. A fork of an archived chat is a live root. Search still
+returns archived sessions; see 49 §7 for the marker.
+
 ## 4. Private ownership and access
 
 ### 4.1 Creation and one owner
