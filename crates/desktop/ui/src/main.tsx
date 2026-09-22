@@ -4,6 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { toast } from 'sonner'
 import { App } from '@/App'
+import { GuestApp } from '@/components/share/GuestApp'
+import { isGuest } from '@/link/guest'
 import { trackPinch } from '@/lib/pinch'
 import { container } from '@/lib/platform'
 import { initTheme } from '@/lib/theme'
@@ -22,8 +24,5 @@ if (container() !== 'web') {
 
 const root = document.getElementById('root')
 if (!root) throw new Error('#root missing')
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// 59 §8.2: the relay serves this bundle at `/d` too; a share link boots the guest container instead of the app.
+createRoot(root).render(<StrictMode>{isGuest() ? <GuestApp /> : <App />}</StrictMode>)
