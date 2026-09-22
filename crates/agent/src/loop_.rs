@@ -51,7 +51,7 @@ use models::Resolved;
 use monty_pool::Pool;
 use runtime::{InputId, Runtime, SessionId, TurnId};
 use sha2::Digest as _;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
@@ -345,7 +345,9 @@ pub struct CompactNow {
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
-/// (10 §5.2). `Err("turn in flight")` while a turn runs.
+/// (10 §5.2). `Err("turn in flight")` while a turn runs, `Err("harvest in
+/// flight")` while the previous harvest still does. The state is held only
+/// to snapshot the frame; the reply lands when the detached harvest does.
 pub struct HarvestNow;
 
 /// `ask` → `Result<ContextSnapshot, String>`: the active-context inventory
@@ -431,6 +433,11 @@ pub struct SessionState {
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
     pub title_task: Option<JoinHandle<()>>,
+    /// The detached harvest of the finished frame (10 §5.2 as built): one per
+    /// session — a trigger while it runs is skipped — aborted when the session
+    /// stops. Its puts are individual commits, so a cut-off harvest is partial,
+    /// never inconsistent.
+    pub harvest_task: Option<JoinHandle<()>>,
 }
 
 impl SessionState {
@@ -460,6 +467,7 @@ impl SessionState {
             files_written: BTreeSet::new(),
             window_hint: 0,
             title_task: None,
+            harvest_task: None,
         }
     }
 
@@ -524,10 +532,12 @@ impl Actor for Session {
     }
 
     /// 51 §6.1: nothing of this session outlives its actor — the detached
-    /// title call is fenced by `closed` and, when the state is home, joined.
+    /// title and harvest calls are fenced by `closed` and, when the state is
+    /// home, joined.
     async fn on_stop(&mut self, _: WeakActorRef<Self>, _: ActorStopReason) -> Result<(), Infallible> {
         self.shared.closed.cancel();
-        if let Some(task) = self.state.as_mut().and_then(|s| s.title_task.take()) {
+        let detached = |s: &mut SessionState| [s.title_task.take(), s.harvest_task.take()];
+        for task in self.state.as_mut().into_iter().flat_map(detached).flatten() {
             task.abort();
             let _ = task.await;
         }
@@ -1648,7 +1658,8 @@ impl Message<HarvestNow> for Session {
 
     /// `/knowledge harvest` (10 §5.2): the [`CompactNow`] shape — refused
     /// while a turn is in flight, otherwise a `Turn`-less task owns the state
-    /// and `inflight` until the harvest returns.
+    /// and `inflight` only for the rebase and the frame snapshot; the harvest
+    /// itself runs detached ([`Turn::spawn_harvest`]) and the reply follows it.
     async fn handle(&mut self, _: HarvestNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
@@ -1661,9 +1672,12 @@ impl Message<HarvestNow> for Session {
         let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            let result = turn.harvest_now().await;
+            let started = turn.harvest_now().await;
             let _ = me.tell(TurnDone(turn.state)).await;
-            tx.send(result);
+            tx.send(match started {
+                Ok(landed) => landed.await.unwrap_or_else(|_| Err("session closed".into())),
+                Err(e) => Err(e),
+            });
         });
         reply
     }
@@ -3009,21 +3023,19 @@ impl Turn {
                 repl.close().await;
             }
         }
-        // 10 §5.2 trigger (a), before `TurnFinished`: one-shot clients (`theuth -p`)
-        // exit on that event, so a harvest published after it is always cancelled.
-        // Inline rather than concurrent with the next turn: the state is still
-        // owned here, so input arriving meanwhile queues as steering.
+        // 10 §5.2 trigger (a), as built: the frame is snapshotted here and the
+        // harvest runs detached, so the state goes home and the next turn is
+        // never delayed by it. `Harvesting` still precedes `TurnFinished`; a
+        // one-shot client (`theuth -p`) that exits on it takes the harvest with
+        // it. The count resets at the trigger: a harvest skipped because the
+        // previous one still runs is not queued.
         let harvestable = self.calls > 0 && !interrupted && self.shared.depth == 0;
         let every = self.shared.cfg.knowledge.harvest_every;
         if harvestable && registry.is_some() && self.knowledge().is_some() {
             self.state.turns_since_harvest += 1;
             if every > 0 && self.state.turns_since_harvest >= every {
                 self.state.turns_since_harvest = 0;
-                self.publish(AgentEvent::Harvesting {
-                    session: self.shared.id,
-                })
-                .await;
-                if let Err(e) = self.harvest_with().await {
+                if let Err(e) = self.spawn_harvest(None).await {
                     tracing::warn!(session = %self.shared.id, "harvest: {e}");
                 }
             }
@@ -3824,10 +3836,13 @@ impl Turn {
         .await
     }
 
-    /// `/knowledge harvest` between turns (10 §5.2): rebase, then [`Turn::harvest`].
-    async fn harvest_now(&mut self) -> Result<HarvestResult, String> {
+    /// `/knowledge harvest` between turns (10 §5.2): rebase, then
+    /// [`Turn::spawn_harvest`]; `Ok` resolves once the detached harvest lands.
+    async fn harvest_now(&mut self) -> Result<oneshot::Receiver<Result<HarvestResult, String>>, String> {
         self.between_turns().await?;
-        self.harvest_with().await
+        let (tx, rx) = oneshot::channel();
+        self.spawn_harvest(Some(tx)).await?;
+        Ok(rx)
     }
 
     /// The mini-turn preamble shared by `/compact` and `/knowledge harvest`:
@@ -3852,10 +3867,66 @@ impl Turn {
         Ok((current, transport))
     }
 
-    /// [`Turn::resolve`] then [`Turn::harvest`].
-    async fn harvest_with(&mut self) -> Result<HarvestResult, String> {
+    /// 10 §5.2 as built: the harvest runs detached from the session. The
+    /// finished frame — head, rows, baseline, tools, image index, cwd — is
+    /// copied into a `Turn`-less [`Turn`] owning nothing of the session, and
+    /// [`Turn::harvest_frame`] runs on it while the state goes home. One per
+    /// session: `Err("harvest in flight")` while the previous one runs; the
+    /// task is aborted when the session stops and its call cancels on
+    /// `closed`, so what its puts committed so far is all that lands.
+    /// Accounted as this turn's [`CallKind::Harvest`]. `Harvesting` is
+    /// published here, `Harvested` when the task ends — with zero counts on
+    /// failure, so clients drop the label either way. `reply` gets the result.
+    async fn spawn_harvest(
+        &mut self,
+        reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
+    ) -> Result<(), String> {
+        if self.state.harvest_task.as_ref().is_some_and(|t| !t.is_finished()) {
+            return Err("harvest in flight".into());
+        }
+        self.knowledge().ok_or(if self.shared.resources.is_private() {
+            "knowledge harvest is disabled in a private session"
+        } else {
+            "knowledge is off"
+        })?;
+        if self.state.history.is_empty() {
+            return Err("nothing to harvest".into());
+        }
         let (current, transport) = self.resolve().await?;
-        self.harvest(&current, transport).await
+        let images = self.image_index(&current).await?;
+        let mut state = SessionState::resume(
+            self.state.epoch,
+            self.state.head.clone(),
+            self.state.history.clone(),
+        );
+        state.baseline = self.state.baseline.clone();
+        let mut detached = Turn::new(
+            self.shared.clone(),
+            self.turn,
+            self.shared.closed.child_token(),
+            state,
+        );
+        detached.tools = self.tools.clone();
+        detached.cwd = self.cwd.clone();
+        let session = self.shared.id;
+        self.publish(AgentEvent::Harvesting { session }).await;
+        self.state.harvest_task = Some(tokio::spawn(async move {
+            let result = detached.harvest_frame(&current, transport, &images).await;
+            if let Err(e) = &result {
+                tracing::warn!(session = %session, "harvest: {e}");
+                detached
+                    .publish(AgentEvent::Harvested {
+                        session,
+                        added: 0,
+                        updated: 0,
+                    })
+                    .await;
+            }
+            if let Some(tx) = reply {
+                let _ = tx.send(result);
+            }
+        }));
+        Ok(())
     }
 
     /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
@@ -4263,13 +4334,27 @@ impl Turn {
         }
     }
 
-    /// Harvest (10 §5.4): ask the finished frame for durable knowledge as OKF
-    /// documents and write them. Nothing is persisted to the session; an
-    /// overflow is an `Err` (the frame is about to be compacted anyway).
+    /// Harvest (10 §5.4) inline, before a compaction: the frame is about to be
+    /// cut, so pending images are inspected first (52 §7.2) and an overflow is
+    /// an `Err` (no trim). Nothing is persisted to the session.
     async fn harvest(
         &mut self,
         current: &Current,
         transport: Transport,
+    ) -> Result<HarvestResult, String> {
+        let images = self.prepare_images(current).await?;
+        self.harvest_frame(current, transport, &images).await
+    }
+
+    /// Harvest (10 §5.4): ask the frame, projected over `images` (52 §4.2),
+    /// for durable knowledge as OKF documents and write them. Reads the frame
+    /// and the knowledge store only — also what a detached copy of the turn
+    /// runs ([`Turn::spawn_harvest`]).
+    async fn harvest_frame(
+        &self,
+        current: &Current,
+        transport: Transport,
+        images: &[VisionImage],
     ) -> Result<HarvestResult, String> {
         let knowledge = self.knowledge().ok_or(if self.shared.resources.is_private() {
             "knowledge harvest is disabled in a private session"
@@ -4294,9 +4379,7 @@ impl Turn {
             });
         let cwd = self.cwd.to_string_lossy();
         let instruction = knowledge::harvest::instruction(&related, &cwd);
-        // 52 §7.2: the harvest reads the frame, so pending images are inspected first.
-        let images = self.prepare_images(current).await?;
-        let (head, mut full) = self.projected(&images);
+        let (head, mut full) = self.projected(images);
         full.push(ChatMessage::user(&instruction));
         let text = self
             .continuation(
@@ -4380,6 +4463,31 @@ impl Turn {
             .clone()
     }
 
+    /// The stored image index and notes when `current` is text-only and the
+    /// frame has images (52 §5.1); `None` (no store read) otherwise.
+    async fn vision_frame(&self, current: &Current) -> Result<Option<crate::store::VisionFrame>, String> {
+        if current.vision()
+            || !(self.state.head.as_ref().is_some_and(has_images)
+                || self.state.history.iter().any(|(_, m)| has_images(m)))
+        {
+            return Ok(None);
+        }
+        self.shared
+            .store
+            .vision_frame(self.shared.id)
+            .await
+            .map(Some)
+            .map_err(|e| format!("store: {e:#}"))
+    }
+
+    /// The image index for a detached harvest (52 §7.2 as built): read as it
+    /// stands, nothing consulted — a note appended from outside the turn would
+    /// be a second writer of the session — so an image still pending stays a
+    /// stable marker in that one request.
+    async fn image_index(&self, current: &Current) -> Result<Vec<VisionImage>, String> {
+        Ok(self.vision_frame(current).await?.map(|vf| vf.images).unwrap_or_default())
+    }
+
     /// 52 §5.1: before a text-only request, every active image without an
     /// effective observation is consulted about, one group at a time and in
     /// order, each appending its note; the returned index projects the frame.
@@ -4390,18 +4498,9 @@ impl Turn {
     /// a model resolution error, or a store refusal — an uncommitted
     /// observation is not evidence, so the caller stops.
     async fn prepare_images(&mut self, current: &Current) -> Result<Vec<VisionImage>, String> {
-        if current.vision()
-            || !(self.state.head.as_ref().is_some_and(has_images)
-                || self.state.history.iter().any(|(_, m)| has_images(m)))
-        {
+        let Some(vf) = self.vision_frame(current).await? else {
             return Ok(Vec::new());
-        }
-        let vf = self
-            .shared
-            .store
-            .vision_frame(self.shared.id)
-            .await
-            .map_err(|e| format!("store: {e:#}"))?;
+        };
         let pending: Vec<&VisionImage> = vision::pending(&vf.images, &vf.notes)
             .into_iter()
             .filter(|im| !self.vision_failed.contains(&im.source))
@@ -4858,6 +4957,10 @@ mod side;
 /// 52 §10 gates against a fake provider, through a real turn.
 #[cfg(test)]
 mod vision_fallback_tests;
+
+/// 10 §5.2 as built: the detached harvest, against the same fake provider.
+#[cfg(test)]
+mod harvest_tests;
 
 #[cfg(test)]
 mod tests {
