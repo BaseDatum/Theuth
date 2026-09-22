@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Cog, Eye, LoaderCircle, type LucideIcon, Mic, MoreHorizontal, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Cog, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -25,7 +25,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { useProjects } from '@/components/chat/ProjectPicker'
-import { ProjectIcon } from './ProjectStyle'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
@@ -237,17 +236,6 @@ export const SessionItem = memo(function SessionItem({
               <SessionActivity id={id} />
               <SessionJobs id={id} />
               <span className="truncate">{shown}</span>
-              {project === 'meetings' ? (
-                // 53 / 01 §0.1: a meeting's session; the sidebar filters on `project`.
-                <Mic className="ml-auto size-3.5 shrink-0 text-fg-tertiary" aria-label="Meeting" />
-              ) : (
-                project && (
-                  <span className="ml-auto flex shrink-0 items-center gap-1 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
-                    <ProjectIcon project={project} className="size-2.5" />
-                    {project}
-                  </span>
-                )
-              )}
             </Link>
           </SidebarMenuButton>
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
