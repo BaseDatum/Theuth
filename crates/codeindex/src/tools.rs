@@ -1,7 +1,8 @@
-//! `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol` (60
-//! §8). Risk `ReadOnly`, `DIRECT = false`, `CONSUMES_SECRETS = false`:
-//! arguments are names, paths and budgets.
+//! `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol`,
+//! `code_impact` (60 §8). Risk `ReadOnly`, `DIRECT = false`,
+//! `CONSUMES_SECRETS = false`: arguments are names, paths, ranges and budgets.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,22 +12,27 @@ use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
+use crate::git::{self, Change, Git, Span};
 use crate::index::{Codeindex, Reconciled, RootIndex};
+use crate::lang::Language;
+use crate::parse::{Parsers, parse};
 use crate::rank::{self, Graph, Tag};
 use crate::store::{self, Definition, OutlineRow, RefHit};
 use crate::{root, walk};
 
-/// Plugin prompt block (60 §8), the tools of steps 1–3.
-pub const PROMPT: &str = "code_find, code_outline, code_refs, code_map and code_symbol are runtime functions over a \
+/// Plugin prompt block (60 §8): the six tools.
+pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol and code_impact are runtime functions over a \
 tree-sitter index of a source tree (default root: the git repo of the cwd; first call indexes). Use them before \
 grep/read_file when the question is structural: where something is defined (code_find(name=\"X\") → rows of {path, \
 line_start, kind, signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who \
 references a symbol (code_refs(symbol=\"X\") → refs with provenance/confidence saying how sure; `ambiguous` counts the \
 same-name references that could not be attributed; several definitions → `candidates`, pick one by symbol_id or \
 path:line), a ranked map of the tree to brief a subagent (code_map(focus=[\"X\", \"src/y.rs\"], budget=1500) → the \
-most-referenced definitions grouped by file, personalised toward focus identifiers and paths), or everything about one \
-definition in one call (code_symbol(symbol=\"X\") → definition, body, callers, callees). Results are values with a \
-`content` text render; put m[\"content\"] into a brief instead of re-reading files.";
+most-referenced definitions grouped by file, personalised toward focus identifiers and paths), everything about one \
+definition in one call (code_symbol(symbol=\"X\") → definition, body, callers, callees, co-changed files), or what a \
+diff touches (code_impact(git_range=\"main..HEAD\") or files=[...] → changed definitions, the files that reference or \
+import them, transitive importers, tests). Results are values with a `content` text render; put m[\"content\"] into a \
+brief instead of re-reading files.";
 
 /// Default output budget in estimated tokens (60 §0.9).
 const DEFAULT_BUDGET: u32 = 4000;
@@ -53,7 +59,10 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, ix: Arc<Codeindex>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(CodeMapTool(Arc::clone(&ix)))))
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(CodeSymbolTool(ix)))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(CodeSymbolTool(Arc::clone(&ix)))))
+        .await;
+    let _ = reg.ask(RegisterTool(Arc::new(CodeImpactTool(ix)))).await;
 }
 
 fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
@@ -619,7 +628,7 @@ impl Tool for CodeMapTool {
 pub struct CodeSymbolArgs {
     /// Symbol: a name (`open_db`), a definition site (`path/to/file.rs:123`), or a numeric symbol_id from code_find.
     pub symbol: String,
-    /// Sections to return; default all of definition, body, callers, callees (cochange arrives in step 4).
+    /// Sections to return; default all five: definition, body, callers, callees, cochange.
     #[serde(default)]
     pub sections: Option<Vec<String>>,
     /// Repository root; default: the git top-level of the process cwd, else the cwd.
@@ -635,6 +644,8 @@ pub struct CodeSymbolTool(pub Arc<Codeindex>);
 
 /// Section names, in output order.
 const SECTIONS: [&str; 5] = ["definition", "body", "callers", "callees", "cochange"];
+/// Co-change partners shown (60 §8).
+const COCHANGE_TOP: i64 = 10;
 /// Body lines shown whole; longer bodies show head/tail around a cut marker.
 const BODY_MAX: usize = 200;
 const BODY_HEAD: usize = 120;
@@ -711,7 +722,7 @@ impl Tool for CodeSymbolTool {
     type Args = CodeSymbolArgs;
 
     fn description(&self) -> String {
-        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [], root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default the first four); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
+        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
     }
 
     async fn call(&self, a: CodeSymbolArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -724,7 +735,7 @@ impl Tool for CodeSymbolTool {
             return Ok(ToolOutput::err("symbol is empty"));
         }
         let wanted: Vec<&str> = match &a.sections {
-            None => SECTIONS[..4].to_vec(),
+            None => SECTIONS.to_vec(),
             Some(v) => {
                 let mut w = Vec::new();
                 for s in v {
@@ -839,9 +850,23 @@ impl Tool for CodeSymbolTool {
                     format!("-- callees: {} resolved target{} --\n{b}", groups.len(), if groups.len() == 1 { "" } else { "s" })
                 }
                 _ => {
-                    out.insert("cochange".into(), serde_json::json!([]));
-                    out.insert("note".into(), "co-change arrives in step 4".into());
-                    "-- cochange: co-change arrives in step 4 --".into()
+                    let file = store::file(&ri.pool, &def.path).await?;
+                    let partners = match file {
+                        Some(f) => store::cochange_partners(&ri.pool, f.id, COCHANGE_TOP).await?,
+                        None => Vec::new(),
+                    };
+                    let lines: Vec<String> = partners.iter().map(|(p, n)| format!("{p} ×{n}")).collect();
+                    let (b, kept, d) = budget_render(&lines, per);
+                    dropped += d;
+                    out.insert(
+                        "cochange".into(),
+                        partners[..kept].iter().map(|(p, n)| serde_json::json!({"path": p, "count": n})).collect::<Vec<_>>().into(),
+                    );
+                    if partners.is_empty() {
+                        format!("-- cochange: no commits changed {} together with another indexed file --", def.path)
+                    } else {
+                        format!("-- cochange: files committed together with {} (top {}) --\n{b}", def.path, partners.len())
+                    }
                 }
             };
             if !text.is_empty() {
@@ -866,12 +891,353 @@ impl Tool for CodeSymbolTool {
     }
 }
 
+/// Arguments for [`CodeImpactTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CodeImpactArgs {
+    /// Changed files (root-relative or absolute under the root); every definition in them counts as changed. Exactly one of files / git_range.
+    #[serde(default)]
+    pub files: Option<Vec<PathBuf>>,
+    /// Revision range: `A..B`, `A...B` (merge-base..B), a single revision `R` (= `R^..R`: `HEAD~1`, `main`, a sha), or `WORKTREE` (HEAD against the working tree). Hunks are mapped to definitions by line.
+    #[serde(default)]
+    pub git_range: Option<String>,
+    /// Keep test files in `direct`/`transitive` (default false; they always appear in `tests`).
+    #[serde(default)]
+    pub include_tests: Option<bool>,
+    /// Repository root; default: the git top-level of the process cwd, else the cwd.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
+    /// Output budget in estimated tokens (chars/3) for `content`; rows beyond it are dropped and counted. Default 4000.
+    #[serde(default)]
+    pub budget: Option<u32>,
+}
+
+/// `code_impact`: what a change touches (60 §8) — changed definitions, their
+/// referencers, transitive importers, tests.
+pub struct CodeImpactTool(pub Arc<Codeindex>);
+
+/// Importer BFS depth for `transitive`.
+const TRANSITIVE_DEPTH: usize = 3;
+
+/// A definition as `code_impact` maps hunks onto it: from the index
+/// (`id` set) or from a parse of the range's new-side blob (`id` unset —
+/// the index describes the working tree, whose lines may have moved).
+struct Sym {
+    id: Option<i64>,
+    name: String,
+    kind: String,
+    line_start: i64,
+    line_end: i64,
+}
+
+/// The definitions `spans` touch: any intersecting a [`Span::Lines`]/
+/// [`Span::All`], the innermost containing a [`Span::Point`]. Source order,
+/// no duplicates.
+fn touched<'a>(rows: &'a [Sym], spans: &[Span]) -> Vec<&'a Sym> {
+    let mut out: Vec<(usize, &Sym)> = Vec::new();
+    for sp in spans {
+        match sp {
+            Span::Point(_) => {
+                if let Some(r) = rows.iter().enumerate().filter(|(_, r)| sp.touches(r.line_start, r.line_end)).min_by_key(|(_, r)| r.line_end - r.line_start) {
+                    out.push(r);
+                }
+            }
+            _ => out.extend(rows.iter().enumerate().filter(|(_, r)| sp.touches(r.line_start, r.line_end))),
+        }
+    }
+    out.sort_by_key(|(i, _)| *i);
+    out.dedup_by_key(|(i, _)| *i);
+    out.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Parse each change's new-side bytes with the file's language; `None` when
+/// there are none or the language has no tags.
+fn parse_new_sides(changes: &[Change]) -> Vec<Option<Vec<Sym>>> {
+    let mut parsers = Parsers::default();
+    changes
+        .iter()
+        .map(|c| {
+            let src = c.new.as_deref()?;
+            let lang = Language::from_ext(std::path::Path::new(&c.path).extension()?.to_str()?);
+            let p = parse(&mut parsers, lang.tags()?, lang, src)?;
+            Some(
+                p.symbols
+                    .iter()
+                    .map(|s| Sym { id: None, name: s.name.clone(), kind: s.kind.to_owned(), line_start: s.line_start, line_end: s.line_end })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// `ids` plus every Go file sharing a package with a Go file in it (a Go
+/// import targets the package's first file only, 60 §20 deviation 5).
+fn widen_go(ids: &HashSet<i64>, files: &[store::FileRef]) -> HashSet<i64> {
+    let pkgs: HashSet<&str> = files
+        .iter()
+        .filter(|f| ids.contains(&f.id) && f.language == "go")
+        .filter_map(|f| f.package.as_deref())
+        .collect();
+    let mut out = ids.clone();
+    if !pkgs.is_empty() {
+        out.extend(files.iter().filter(|f| f.language == "go" && f.package.as_deref().is_some_and(|p| pkgs.contains(p))).map(|f| f.id));
+    }
+    out
+}
+
+#[async_trait::async_trait]
+impl Tool for CodeImpactTool {
+    const NAME: &'static str = "code_impact";
+    const RETURNS: &'static str = "dict";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = false;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = CodeImpactArgs;
+
+    fn description(&self) -> String {
+        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
+    }
+
+    async fn call(&self, a: CodeImpactArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let (ri, r) = match open(&self.0, a.root.as_deref()).await {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        let range = a.git_range.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let (mode, changes, range_ids): (&str, Vec<Change>, Option<(Option<String>, String)>) = match (&a.files, range) {
+            (Some(_), Some(_)) => return Ok(ToolOutput::err("pass files or git_range, not both")),
+            (None, None) => return Ok(ToolOutput::err("pass files=[...] or git_range=\"A..B\" | \"HEAD~1\" | \"WORKTREE\"")),
+            (Some(files), None) => {
+                let mut out = Vec::with_capacity(files.len());
+                for p in files {
+                    match root::under_root(&ri.root, p) {
+                        Ok(rel) => out.push(Change { path: root::rel_str(&rel), status: git::Status::Modified, spans: vec![Span::All], new: None }),
+                        Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+                    }
+                }
+                ("files", out, None)
+            }
+            (None, Some(spec)) => {
+                let (root, spec) = (ri.root.clone(), spec.to_owned());
+                let indexed: Vec<String> = store::known_files(&ri.pool).await?.into_keys().collect();
+                let res = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                    let Some(g) = Git::open(&root)? else { anyhow::bail!("{} is not in a git repository; pass files=[...]", root.display()) };
+                    let range = g.range(&spec)?;
+                    let ids = match &range {
+                        git::Range::Worktree => (Some("HEAD".to_owned()), "WORKTREE".to_owned()),
+                        git::Range::Commits { old, new } => (old.map(|o| o.to_string()), new.to_string()),
+                    };
+                    Ok((g.changes(&range, &root, indexed.iter().map(String::as_str))?, ids))
+                })
+                .await?;
+                match res {
+                    Ok((c, ids)) => ("range", c, Some(ids)),
+                    Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+                }
+            }
+        };
+        let (changes, new_sides) = tokio::task::spawn_blocking(move || {
+            let parsed = parse_new_sides(&changes);
+            (changes, parsed)
+        })
+        .await?;
+        let files = store::all_files(&ri.pool).await?;
+        let by_path: HashMap<&str, &store::FileRef> = files.iter().map(|f| (f.path.as_str(), f)).collect();
+        let by_id: HashMap<i64, &store::FileRef> = files.iter().map(|f| (f.id, f)).collect();
+
+        // Changed files → changed definitions.
+        let mut changed_rows: Vec<serde_json::Value> = Vec::new();
+        let mut changed_lines: Vec<String> = Vec::new();
+        let mut unindexed: Vec<&str> = Vec::new();
+        let mut changed_files: HashSet<i64> = HashSet::new();
+        let mut symbol_ids: Vec<i64> = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
+        let mut sym_names: Vec<String> = Vec::new();
+        for (c, blob_syms) in changes.iter().zip(&new_sides) {
+            let Some(f) = by_path.get(c.path.as_str()) else {
+                if c.status == git::Status::Deleted {
+                    changed_rows.push(serde_json::json!({"path": c.path, "status": c.status, "symbols_changed": []}));
+                    changed_lines.push(format!("{} [deleted]", c.path));
+                } else {
+                    unindexed.push(&c.path);
+                }
+                continue;
+            };
+            changed_files.insert(f.id);
+            let rows: Vec<Sym> = store::outline(&ri.pool, f.id)
+                .await?
+                .into_iter()
+                .map(|r| Sym { id: Some(r.id), name: r.name, kind: r.kind, line_start: r.line_start, line_end: r.line_end })
+                .collect();
+            // Spans are lines of the new side; map them on its own parse when we have
+            // one, then find the index's rows by (name, kind) in the same file.
+            let hit: Vec<&Sym> = touched(blob_syms.as_deref().unwrap_or(&rows), &c.spans);
+            for h in &hit {
+                match h.id {
+                    Some(id) => symbol_ids.push(id),
+                    None => symbol_ids.extend(rows.iter().filter(|r| r.name == h.name && r.kind == h.kind).filter_map(|r| r.id)),
+                }
+            }
+            sym_names.extend(hit.iter().map(|s| s.name.clone()));
+            let status = serde_json::to_value(c.status)?;
+            let list = if hit.is_empty() {
+                if rows.is_empty() { " (no symbols)".to_owned() } else { " (no definition in the hunks)".to_owned() }
+            } else {
+                format!(": {}", hit.iter().map(|s| format!("{} ({}:{})", s.name, s.kind, s.line_start)).collect::<Vec<_>>().join(", "))
+            };
+            changed_lines.push(format!("{} [{}]{list}", c.path, status.as_str().unwrap_or("?")));
+            changed_rows.push(serde_json::json!({
+                "path": c.path, "status": status,
+                "symbols_changed": hit.iter().map(|s| serde_json::json!({"name": s.name, "kind": s.kind, "line": s.line_start})).collect::<Vec<_>>(),
+            }));
+        }
+        symbol_ids.sort_unstable();
+        symbol_ids.dedup();
+        sym_names.sort_unstable();
+        sym_names.dedup();
+        names.extend(sym_names.iter().map(String::as_str));
+
+        // Direct: resolved refs into the changed definitions (≥ 0.5), plus importers of the changed
+        // files. A changed file referencing *another* changed file's definitions is listed too,
+        // flagged `changed` (the coupling inside a diff is what a reviewer reads first).
+        let mut direct: HashMap<i64, Vec<String>> = HashMap::new();
+        for (file_id, name, target) in store::referencers(&ri.pool, &symbol_ids).await? {
+            if file_id != target && by_id.contains_key(&file_id) {
+                direct.entry(file_id).or_default().push(name);
+            }
+        }
+        let edges = store::import_edges(&ri.pool).await?;
+        let mut importers: HashMap<i64, Vec<i64>> = HashMap::new();
+        for &(src, dst) in &edges {
+            importers.entry(dst).or_default().push(src);
+        }
+        let targets = widen_go(&changed_files, &files);
+        for &(src, dst) in &edges {
+            if targets.contains(&dst) && by_id.contains_key(&src) {
+                let via = direct.entry(src).or_default();
+                if !via.iter().any(|v| v == IMPORT_VIA) {
+                    via.push(IMPORT_VIA.to_owned());
+                }
+            }
+        }
+        // Transitive: importers of direct files, depth ≤ 3, minus changed and direct.
+        let mut transitive: HashMap<i64, usize> = HashMap::new();
+        let mut frontier: HashSet<i64> = direct.keys().copied().collect();
+        for depth in 1..=TRANSITIVE_DEPTH {
+            let mut next = HashSet::new();
+            for t in widen_go(&frontier, &files) {
+                for &src in importers.get(&t).map_or(&[][..], Vec::as_slice) {
+                    if !changed_files.contains(&src) && !direct.contains_key(&src) && !transitive.contains_key(&src) && by_id.contains_key(&src) {
+                        transitive.insert(src, depth);
+                        next.insert(src);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        let include_tests = a.include_tests.unwrap_or(false);
+        let is_test = |id: &i64| by_id.get(id).is_some_and(|f| f.is_test);
+        let mut tests: Vec<&str> = changed_files
+            .iter()
+            .chain(direct.keys())
+            .chain(transitive.keys())
+            .filter(|id| is_test(id))
+            .map(|id| by_id[id].path.as_str())
+            .collect();
+        tests.sort_unstable();
+        tests.dedup();
+        let mut direct: Vec<(&str, Vec<String>, bool, bool)> = direct
+            .into_iter()
+            .filter(|(id, _)| include_tests || !is_test(id))
+            .map(|(id, mut via)| {
+                via.sort_unstable();
+                via.dedup();
+                (by_id[&id].path.as_str(), via, is_test(&id), changed_files.contains(&id))
+            })
+            .collect();
+        // Files outside the change first, then by how much of it they use.
+        direct.sort_by(|a, b| a.3.cmp(&b.3).then_with(|| b.1.len().cmp(&a.1.len())).then_with(|| a.0.cmp(b.0)));
+        let mut transitive: Vec<(&str, usize)> = transitive
+            .into_iter()
+            .filter(|(id, _)| include_tests || !is_test(id))
+            .map(|(id, d)| (by_id[&id].path.as_str(), d))
+            .collect();
+        transitive.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
+        let ambiguous_skipped = store::impact_skipped(&ri.pool, &symbol_ids, &names).await?;
+        let changed_ids: Vec<i64> = changed_files.iter().copied().collect();
+        let unresolved_imports = store::unresolved_imports_in(&ri.pool, &changed_ids).await?;
+        unindexed.sort_unstable();
+
+        let header = format!(
+            "{}: {} changed file{}, {} definition{}; direct {}, transitive {}, tests {}; {ambiguous_skipped} ambiguous skipped, {unresolved_imports} unresolved imports{}",
+            match &range_ids {
+                Some((Some(o), n)) => format!("{}..{}", &o[..o.len().min(12)], &n[..n.len().min(12)]),
+                Some((None, n)) => format!("(root)..{}", &n[..n.len().min(12)]),
+                None => "files".to_owned(),
+            },
+            changed_rows.len(),
+            if changed_rows.len() == 1 { "" } else { "s" },
+            symbol_ids.len(),
+            if symbol_ids.len() == 1 { "" } else { "s" },
+            direct.len(),
+            transitive.len(),
+            tests.len(),
+            if unindexed.is_empty() { String::new() } else { format!(", {} unindexed", unindexed.len()) },
+        );
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("-- changed --".into());
+        lines.extend(changed_lines);
+        if !unindexed.is_empty() {
+            lines.push("-- unindexed (ignored or unknown language) --".into());
+            lines.extend(unindexed.iter().map(|p| (*p).to_owned()));
+        }
+        lines.push(format!("-- direct: {} files --", direct.len()));
+        lines.extend(direct.iter().map(|(p, via, t, c)| {
+            format!("{p}{}{} via {}", if *c { " [changed]" } else { "" }, if *t { " [test]" } else { "" }, via.join(", "))
+        }));
+        lines.push(format!("-- transitive: {} files --", transitive.len()));
+        lines.extend(transitive.iter().map(|(p, d)| format!("{p} (depth {d})")));
+        lines.push(format!("-- tests: {} files --", tests.len()));
+        lines.extend(tests.iter().map(|p| (*p).to_owned()));
+        let (body, _, dropped) = budget_render(&lines, a.budget.unwrap_or(DEFAULT_BUDGET).saturating_sub(estimate_tokens(header.len())));
+        let mut text = format!("{header}\n{body}");
+        if r.stale {
+            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        }
+        let e = Envelope::new(&ri, &r, dropped);
+        Ok(structured(
+            text.clone(),
+            serde_json::json!({
+                "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
+                "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                "mode": mode,
+                "range": range_ids.map(|(o, n)| serde_json::json!({"old": o, "new": n})),
+                "include_tests": include_tests,
+                "changed": changed_rows,
+                "unindexed": unindexed,
+                "direct": direct.iter().map(|(p, via, t, c)| serde_json::json!({"path": p, "via": via, "is_test": t, "changed": c})).collect::<Vec<_>>(),
+                "transitive": transitive.iter().map(|(p, d)| serde_json::json!({"path": p, "depth": d})).collect::<Vec<_>>(),
+                "tests": tests,
+                "ambiguous_skipped": ambiguous_skipped,
+                "unresolved_imports": unresolved_imports,
+                "content": text,
+            }),
+        ))
+    }
+}
+
+/// `via` entry of a direct file that imports a changed file.
+const IMPORT_VIA: &str = "<import>";
+
 const _: () = {
     assert!(!<CodeFindTool as Tool>::DIRECT);
     assert!(!<CodeOutlineTool as Tool>::DIRECT);
     assert!(!<CodeRefsTool as Tool>::DIRECT);
     assert!(!<CodeMapTool as Tool>::DIRECT);
     assert!(!<CodeSymbolTool as Tool>::DIRECT);
+    assert!(!<CodeImpactTool as Tool>::DIRECT);
 };
 
 #[cfg(test)]

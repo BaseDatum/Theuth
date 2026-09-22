@@ -19,6 +19,9 @@ const MAX_ITER: usize = 50;
 const TOLERANCE: f64 = 1e-6;
 /// Self-edge weight for files that define something nobody references.
 const SELF_EDGE: f64 = 0.1;
+/// Weight of an `imports` edge before `mul` (60 §22): a `pub use` re-export
+/// otherwise carries the crate root's whole rank to one module.
+const IMPORT_EDGE: f64 = 0.1;
 /// Pseudo-identifier of an `imports` edge.
 const IMPORT: &str = "<import>";
 /// Pseudo-identifier of a self-edge.
@@ -228,8 +231,8 @@ impl Graph {
         for e in &self.edges {
             let (Some(&s), Some(&d)) = (self.idx.get(&e.src), self.idx.get(&e.dst)) else { continue };
             #[allow(clippy::cast_precision_loss)]
-            let w = mul(&e.name, s) * (e.n.max(1) as f64).sqrt();
-            edges.push((s, d, e.name.as_str(), w));
+            let base = if e.name == IMPORT { IMPORT_EDGE } else { (e.n.max(1) as f64).sqrt() };
+            edges.push((s, d, e.name.as_str(), mul(&e.name, s) * base));
             incoming[d] = true;
         }
         // A focus file's own definitions are what the caller wants to see:

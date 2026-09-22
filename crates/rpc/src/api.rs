@@ -37,6 +37,7 @@ use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseAp
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
+use codeindex::{CODEINDEX_ACTOR, CodeindexActor, IndexStats};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -652,6 +653,11 @@ pub trait Api {
     /// Harvest `session`'s finished frame now (design doc 10 §5.2). Refused while a turn is running.
     #[method(name = "knowledge_harvest", with_extensions)]
     async fn knowledge_harvest(&self, session: SessionId) -> RpcResult<HarvestResult>;
+    /// Row counts and freshness of the code index for `root` (default: the
+    /// git top-level of the process cwd; design doc 60 §10). Opens the
+    /// index without reconciling it.
+    #[method(name = "codeindex_stats")]
+    async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -1312,6 +1318,14 @@ fn secrets() -> RpcResult<ActorRef<secrets::SecretsActor>> {
 fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     lookup::<KnowledgeActor>(KNOWLEDGE_ACTOR).map_err(|e| match e.code() {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "knowledge is disabled", None::<()>),
+        _ => e,
+    })
+}
+
+/// The codeindex actor; `codeindex.enabled: false` means it was never spawned (60 §10).
+fn codeindex() -> RpcResult<ActorRef<CodeindexActor>> {
+    lookup::<CodeindexActor>(CODEINDEX_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "codeindex is disabled", None::<()>),
         _ => e,
     })
 }
@@ -2394,6 +2408,10 @@ impl ApiServer for Server {
     ) -> RpcResult<HarvestResult> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
+    }
+
+    async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats> {
+        send(&codeindex()?, codeindex::Stats { root: root.map(PathBuf::from) }).await
     }
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {

@@ -10,6 +10,7 @@ use std::time::Instant;
 use anyhow::Context;
 use sqlx::SqlitePool;
 
+use crate::git::Git;
 use crate::lang::Language;
 use crate::parse::{ParsedFile, Parsers, parse};
 use crate::rank;
@@ -63,6 +64,8 @@ pub struct Reconciled {
     pub truncated_walk: bool,
     /// `files` rows after this call.
     pub indexed_files: i64,
+    /// The co-change walk ran this call (HEAD moved): `(commits walked, ms)`.
+    pub cochange_walk: Option<(usize, u128)>,
 }
 
 impl Codeindex {
@@ -124,43 +127,79 @@ impl Codeindex {
         if d.changed.is_empty() && d.delete.is_empty() {
             out.stale = ri.background.load(Ordering::Acquire);
             out.pending = ri.pending.load(Ordering::Acquire);
-            out.indexed_files = store::counts(&ri.pool).await?.files;
-            return Ok(out);
-        }
-        if force || d.known == 0 || d.changed.len() + d.gone <= self.cfg.sync_limit {
+        } else if force || d.known == 0 || d.changed.len() + d.gone <= self.cfg.sync_limit {
             let t = Instant::now();
             out.removed = d.gone;
             out.reparsed = self.write(ri, d.changed, d.delete).await?;
             tracing::info!(root = %ri.root.display(), reparsed = out.reparsed, removed = out.removed, ms = t.elapsed().as_millis(), "codeindex reconciled");
+        } else {
+            out.stale = true;
+            out.pending = d.changed.len();
             out.indexed_files = store::counts(&ri.pool).await?.files;
+            if ri
+                .background
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                ri.pending.store(d.changed.len(), Ordering::Release);
+                let (me, ri2) = (Arc::clone(self), Arc::clone(ri));
+                tokio::spawn(async move {
+                    // Re-diff under the lock: the world may have moved on.
+                    let _g = ri2.write.lock().await;
+                    let r = match me.diff(&ri2).await {
+                        Ok(d) => me.write(&ri2, d.changed, d.delete).await.map(|n| (n, d.gone)),
+                        Err(e) => Err(e),
+                    };
+                    match r {
+                        Ok((n, gone)) => tracing::info!(root = %ri2.root.display(), reparsed = n, removed = gone, "codeindex background reconcile done"),
+                        Err(e) => tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex background reconcile failed"),
+                    }
+                    if let Err(e) = me.cochange(&ri2).await {
+                        tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex co-change walk failed");
+                    }
+                    ri2.pending.store(0, Ordering::Release);
+                    ri2.background.store(false, Ordering::Release);
+                });
+            }
             return Ok(out);
         }
-        out.stale = true;
-        out.pending = d.changed.len();
-        out.indexed_files = store::counts(&ri.pool).await?.files;
-        if ri
-            .background
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            ri.pending.store(d.changed.len(), Ordering::Release);
-            let (me, ri2) = (Arc::clone(self), Arc::clone(ri));
-            tokio::spawn(async move {
-                // Re-diff under the lock: the world may have moved on.
-                let _g = ri2.write.lock().await;
-                let r = match me.diff(&ri2).await {
-                    Ok(d) => me.write(&ri2, d.changed, d.delete).await.map(|n| (n, d.gone)),
-                    Err(e) => Err(e),
-                };
-                match r {
-                    Ok((n, gone)) => tracing::info!(root = %ri2.root.display(), reparsed = n, removed = gone, "codeindex background reconcile done"),
-                    Err(e) => tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex background reconcile failed"),
-                }
-                ri2.pending.store(0, Ordering::Release);
-                ri2.background.store(false, Ordering::Release);
-            });
+        if !out.stale {
+            match self.cochange(ri).await {
+                Ok(w) => out.cochange_walk = w,
+                Err(e) => tracing::warn!(root = %ri.root.display(), error = format!("{e:#}"), "codeindex co-change walk failed"),
+            }
         }
+        out.indexed_files = store::counts(&ri.pool).await?.files;
         Ok(out)
+    }
+
+    /// 60 §0.11: when the root is a git repository, `cochange_commits > 0`
+    /// and HEAD moved since `meta.cochange_head`, walk the first-parent
+    /// history and rewrite `cochanges`. Not a repo → nothing. Returns
+    /// `(commits walked, ms)` when the walk ran.
+    async fn cochange(&self, ri: &RootIndex) -> anyhow::Result<Option<(usize, u128)>> {
+        let limit = self.cfg.cochange_commits as usize;
+        if limit == 0 {
+            return Ok(None);
+        }
+        let root = ri.root.clone();
+        let head = tokio::task::spawn_blocking(move || Ok::<_, anyhow::Error>(Git::open(&root)?.and_then(|g| g.head()))).await??;
+        let Some(head) = head.map(|h| h.to_string()) else { return Ok(None) };
+        if store::meta(&ri.pool, "cochange_head").await?.as_deref() == Some(head.as_str()) {
+            return Ok(None);
+        }
+        let t = Instant::now();
+        let indexed: HashMap<String, i64> = store::known_files(&ri.pool).await?.into_iter().map(|(p, (id, ..))| (p, id)).collect();
+        let root = ri.root.clone();
+        let (rows, walked) = tokio::task::spawn_blocking(move || {
+            let Some(g) = Git::open(&root)? else { return Ok::<_, anyhow::Error>((Vec::new(), 0)) };
+            g.cochanges(limit, &indexed)
+        })
+        .await??;
+        store::replace_cochanges(&ri.pool, &rows, &head).await?;
+        let ms = t.elapsed().as_millis();
+        tracing::info!(root = %ri.root.display(), commits = walked, pairs = rows.len(), ms, "codeindex co-change walk");
+        Ok(Some((walked, ms)))
     }
 
     /// Walk and diff against `files`.
@@ -248,25 +287,32 @@ impl Codeindex {
         // without `focus` and `code_find`'s ordering are lookups.
         let t = Instant::now();
         let (nodes, iterations) = rank::persist(&ri.pool).await?;
-        tracing::debug!(parse_ms, apply_ms, resolve_ms, rank_ms = t.elapsed().as_millis(), rank_nodes = nodes, rank_iterations = iterations, resolved_files = targets.len(), "codeindex write phases");
+        let rank_ms = t.elapsed().as_millis();
+        store::set_meta(&ri.pool, "rank_iterations", &iterations.to_string()).await?;
+        store::set_meta(&ri.pool, "rank_ms", &rank_ms.to_string()).await?;
+        tracing::debug!(parse_ms, apply_ms, resolve_ms, rank_ms, rank_nodes = nodes, rank_iterations = iterations, resolved_files = targets.len(), "codeindex write phases");
         Ok(writes.len())
     }
 
     /// Row counts and freshness for `root` (60 §10).
     pub async fn stats(&self, ri: &RootIndex) -> anyhow::Result<IndexStats> {
         let c = store::counts(&ri.pool).await?;
-        let last: Option<String> =
-            sqlx::query_scalar("SELECT value FROM meta WHERE key = 'last_reconcile_at'")
-                .fetch_optional(&ri.pool)
-                .await?;
+        let num = |v: Option<String>| v.and_then(|s| s.parse().ok());
         Ok(IndexStats {
             root: ri.root.clone(),
             files: c.files,
+            parsed_files: c.parsed_files,
             symbols: c.symbols,
             refs: c.refs,
             resolved: c.resolved,
             ambiguous: c.ambiguous,
-            last_reconcile: last.and_then(|s| s.parse().ok()),
+            imports: c.imports,
+            unresolved_imports: c.unresolved_imports,
+            cochange_pairs: c.cochange_pairs,
+            last_reconcile_at: num(store::meta(&ri.pool, "last_reconcile_at").await?),
+            git_head: store::meta(&ri.pool, "git_head").await?,
+            rank_iterations: num(store::meta(&ri.pool, "rank_iterations").await?),
+            rank_ms: num(store::meta(&ri.pool, "rank_ms").await?),
             stale: ri.background.load(Ordering::Acquire),
             pending: ri.pending.load(Ordering::Acquire),
         })

@@ -1,12 +1,14 @@
 //! Code index plugin (design doc 60): symbols and references of a source tree
 //! from tree-sitter's shipped tags queries, in one derived SQLite per root
-//! under `<data_dir>/codeindex/`, reconciled by mtime on every call. Steps 1–3
-//! of 60 §16: store, parse, import/name resolution, PageRank map, `code_find`,
-//! `code_outline`, `code_refs`, `code_map`, `code_symbol`.
+//! under `<data_dir>/codeindex/`, reconciled by mtime on every call. Steps 1–4
+//! of 60 §16: store, parse, import/name resolution, PageRank map, git signals
+//! (`gix` diffs and the co-change walk), `code_find`, `code_outline`,
+//! `code_refs`, `code_map`, `code_symbol`, `code_impact`.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`CODEINDEX_ACTOR`] actor ([`CodeindexActor`]): [`Handle`],
 //!   [`Stats`], [`Reconcile`]
+//! - the `codeindex_stats` RPC method answers [`Stats`] (60 §10)
 //! - no events in v1 (60 §10)
 
 use std::path::PathBuf;
@@ -18,6 +20,7 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+pub mod git;
 pub mod index;
 pub mod lang;
 pub mod parse;
@@ -67,23 +70,38 @@ impl Default for CodeindexConfig {
     }
 }
 
-/// Reply of [`Stats`] and [`Reconcile`] (60 §10).
+/// Reply of [`Stats`] and [`Reconcile`] (60 §10); the `codeindex_stats` RPC payload.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct IndexStats {
     /// Canonical root.
     pub root: PathBuf,
     /// `files` rows.
     pub files: i64,
+    /// Files with a parsed language (graph nodes).
+    pub parsed_files: i64,
     /// `symbols` rows.
     pub symbols: i64,
     /// `refs` rows.
     pub refs: i64,
-    /// Resolved refs (0 until step 2).
+    /// Refs with a `to_symbol`.
     pub resolved: i64,
-    /// Ambiguous refs (0 until step 2).
+    /// Refs left `ambiguous`.
     pub ambiguous: i64,
+    /// `imports` rows.
+    pub imports: i64,
+    /// Imports with `provenance = 'unresolved'`.
+    pub unresolved_imports: i64,
+    /// `cochanges` rows (0 outside a git repo or with `cochange_commits: 0`).
+    pub cochange_pairs: i64,
     /// Unix seconds of the last write.
-    pub last_reconcile: Option<u64>,
+    pub last_reconcile_at: Option<u64>,
+    /// HEAD at the last co-change walk.
+    pub git_head: Option<String>,
+    /// PageRank iterations of the last write.
+    pub rank_iterations: Option<u64>,
+    /// PageRank wall time of the last write, ms.
+    pub rank_ms: Option<u64>,
     /// A background reconcile is running.
     pub stale: bool,
     /// Files that background reconcile still has to write.
