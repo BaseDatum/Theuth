@@ -30,19 +30,20 @@ fmt:
 run *ARGS:
     cargo run -p theuth -- {{ARGS}}
 
-# Release build of `t` + its app parser helper copied into ~/.cargo/bin. Not
-# `cargo install`: that re-resolves (index + git fetch every time) and rebuilds
-# in a scratch dir. The helper lands as theuth-app-parser-<hash> beside `t`
-# (46 §2.1); older hashes are left in place for any still-running `t`.
-install: helper
+# Release build of `t` + its helpers copied into ~/.cargo/bin (or $THEUTH_INSTALL_BIN). Not `cargo install`:
+# that re-resolves (index + git fetch every time) and rebuilds in a scratch dir.
+# The helpers land as theuth-app-parser-<hash> (46 §2.1) and theuth-documents-<version>
+# (59 §3.2) beside `t`; older names are left in place for any still-running `t`.
+install: helper documents-helper
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
     cargo build --release -p theuth
-    bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+    bin="${THEUTH_INSTALL_BIN:-${CARGO_HOME:-$HOME/.cargo}/bin}"
     install -m 755 "$HELPER_SRC" "$bin/$HELPER.new" && mv -f "$bin/$HELPER.new" "$bin/$HELPER"
+    install -m 755 "$DOC_HELPER_SRC" "$bin/$DOC_HELPER.new" && mv -f "$bin/$DOC_HELPER.new" "$bin/$DOC_HELPER"
     install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
-    echo "installed $(command -v t) + $bin/$HELPER"
+    echo "installed $(command -v t) + $bin/$HELPER + $bin/$DOC_HELPER"
 
 # Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
 # checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
@@ -55,15 +56,13 @@ helper:
 
 # Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
 # `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`
-# find it there; release packaging copies it beside `t` as theuth-documents-<version>.
+# find it there; `install` and the package recipes copy it beside `t` as theuth-documents-<version>.
 documents-helper:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd packages/documents
-    [[ "${THEUTH_SKIP_BUN_INSTALL:-0}" == "1" ]] || bun install --frozen-lockfile
-    bun run build:helper
-    ./dist/theuth-documents --version
-    printf '' | ./dist/theuth-documents
+    source scripts/app-parser-env.sh
+    build_doc_helper
+    echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
 # Export TypeScript bindings for the RPC wire types.
 ts:

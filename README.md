@@ -30,7 +30,7 @@ just ts                    # TypeScript bindings for the wire types → bindings
 just helper                # app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser; apps need it beside `t`
 just documents-helper      # BlockNote documents helper (bun build --compile) → packages/documents/dist/theuth-documents; debug `t` finds it there, release layouts beside `t` as theuth-documents-<protocol>
 THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser just run   # dev run with that helper (release layouts find theuth-app-parser-<hash> next to `t` on their own)
-just install               # release `t` + `theuth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running t
+just install               # release `t` + `theuth-app-parser-<hash>` + `theuth-documents-<protocol>` into ~/.cargo/bin; older helpers stay for any still-running t
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
 just package-linux         # .deb/.rpm/.AppImage with the `t` sidecar, on a Linux host; no meetings recorder there (53: macOS only)
