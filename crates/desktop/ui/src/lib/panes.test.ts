@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { leaves, usePanes } from './panes'
+import { isDraft, leaves, newDraft, usePanes } from './panes'
 
 const reset = () => usePanes.setState({ root: null, focused: null, drag: null })
 
@@ -37,4 +37,33 @@ test('a route landing on a session outside the tree shows it in the focused pane
   usePanes.getState().show('b')
   expect(leaves(usePanes.getState().root!)).toEqual(['z', 'b'])
   expect(usePanes.getState().focused).toBe('b')
+})
+
+test('a dropped New chat is a draft leaf until its first send swaps the created session in', () => {
+  reset()
+  const d = newDraft()
+  expect(isDraft(d)).toBe(true)
+  expect(isDraft('a')).toBe(false)
+  usePanes.getState().place('a', d, 'right')
+  expect(leaves(usePanes.getState().root!)).toEqual(['a', d])
+  expect(usePanes.getState().focused).toBe(d)
+  usePanes.getState().place(d, 's1', 'center')
+  expect(leaves(usePanes.getState().root!)).toEqual(['a', 's1'])
+  expect(usePanes.getState().focused).toBe('s1')
+})
+
+test('a lone draft is not collapsed to the route chat; closing hands the URL a real survivor, never a draft', () => {
+  reset()
+  const d = newDraft()
+  // Centre drop on the single chat replaces it with the draft: the tree must survive, or the chat would come back.
+  usePanes.getState().place('a', d, 'center')
+  expect(leaves(usePanes.getState().root!)).toEqual([d])
+  usePanes.getState().place(d, 'b', 'left')
+  usePanes.getState().place('b', 'c', 'top')
+  usePanes.getState().focus('c')
+  expect(usePanes.getState().close('c')).toBe('b')
+  usePanes.getState().focus('b')
+  expect(usePanes.getState().close('b')).toBeNull()
+  expect(usePanes.getState().focused).toBe(d)
+  expect(leaves(usePanes.getState().root!)).toEqual([d])
 })
