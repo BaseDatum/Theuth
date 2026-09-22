@@ -130,10 +130,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     tracing::info!(listen = %cli.listen, tls = cli.tls.is_some(), web = ?cli.web, site = ?cli.site, max_conns = cli.max_conns, "theuth-relay up");
 
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
+        r = platform::process::stop_signal() => r?,
         r = servers.join_next() => return r.expect("one server")?.context("serve"),
     }
     tracing::info!("shutting down");

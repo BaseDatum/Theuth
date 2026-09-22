@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
+platform = { workspace = true }  # SIGTERM / console-close stop signal
 tokio-util = { workspace = true }
 axum = { workspace = true }
 axum-server = { workspace = true }
