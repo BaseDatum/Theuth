@@ -458,7 +458,7 @@ it would be a second write path outside the approval system.
 ### 4.5 Limits
 
 `ReplConfig.limits = Some(ResourceLimits { max_memory: Some(512 MiB),
-max_suspensions: 100_000, ..Default })` — no `max_duration`, default
+max_suspensions: 100_000, max_total_sleep: Some(600 s), ..Default })` — no `max_duration`, default
 recursion depth. No `max_duration` because it is a cumulative
 session-lifetime budget that travels in
 the dump; a long session would spend it and every later cell would fail.
@@ -468,6 +468,11 @@ right unit (a cell that awaits an approval for ten minutes is fine; a
 cell that spins for a minute is not). `max_suspensions` is per checkout
 and checkouts are per turn, so a loop that calls a tool 1 000 times is
 fine and a runaway loop is not.
+Sleeps are not compute: `os_policy.sleep = SleepMode::System(300 s)` clamps
+each `time.sleep`/`asyncio.sleep` to 300 s, the host waits it out with the
+cell permit released (no protocol turn is open, so `request_timeout` does
+not run), and `max_total_sleep = 600 s` per checkout (per turn, like
+`max_suspensions`) rejects the sleep that would cross it (§15).
 
 Pool: `PoolConfig::subprocess(&monty_bin)` with `min_processes 1`,
 `max_processes = subagents.max_concurrent + 1`, `request_timeout Some(60
@@ -892,12 +897,26 @@ github.com/pydantic/monty/releases/tag/v1.0.0-beta.2):
 - `Checkout::restore` returns `(Option<TurnEvent>, Option<String>)`; the
   bridge only checks `Err`.
 - `ResourceLimits`: `max_duration` replaced by `max_feed_duration`,
-  `max_turn_duration`, `max_total_sleep` (#880); theuth sets none of them
-  (§4.5 unchanged: `max_memory` + `max_suspensions`).
+  `max_turn_duration`, `max_total_sleep` (#880); theuth sets
+  `max_total_sleep` = 600 s per checkout (`MAX_TOTAL_SLEEP`), the other two not
+  (§4.5 otherwise unchanged: `max_memory` + `max_suspensions`).
 - `ReplConfig::os_policy: OsPolicy` (#892, #902, #898): the worker now
-  answers `datetime.now`/`date.today`/`time.time` from its own clock and
-  performs `time.sleep`/`asyncio.sleep` (capped at 10 s, no host round
-  trip). Default zone is UTC, so theuth sets `SandboxTimeZone::Fixed` to the
+  answers `datetime.now`/`date.today`/`time.time` from its own clock.
+  `time.sleep`/`asyncio.sleep` under `SleepMode::System(max)` are *not*
+  performed by the worker: it clamps the delay to `max`, the pool charges
+  `max_total_sleep` and hands `TurnEvent::OsCall { system_sleep: Some(d) }`
+  to the host, which must wait and resume with `None`. Until this was
+  honoured every sleep raised `RuntimeError: 'system.sleep' is not
+  supported in this environment` (measured). `drive` now sleeps `d`
+  host-side with the cell permit released, then resumes; the cap is
+  `MAX_SLEEP` = 300 s per call (monty's default is 10 s); the total is 600 s
+  per checkout, i.e. per turn — the pool's `sleep_used` resets only on a
+  new checkout/restore — and the sleep that would cross it is rejected
+  before waiting with an uncatchable `TimeoutError: sleep limit exceeded:
+  Xs > 600s`; the session survives (measured with 3 s/5 s caps).
+  The async form is answered settled after the wait, so a gathered sleep
+  does not overlap its siblings (`ponytail:` note in `drive`).
+  Default zone is UTC, so theuth sets `SandboxTimeZone::Fixed` to the
   host's current UTC offset per `Repl::open` — naive `datetime.now()` and
   `date.today()` still read as host local time, which is what the
   host-answered calls returned before (verified: sandbox `(19, 37)` vs host
