@@ -138,8 +138,8 @@ export function ShareDialog({ provider, open, onOpenChange }: { provider: Harnes
                   {l.name ? ` · ${l.name}` : ''}
                 </span>
                 <span className="text-xs text-fg-tertiary">
-                  created {at(l.created_ms)}
-                  {l.expires_ms === null ? '' : ` · expires ${at(l.expires_ms)}`}
+                  created {at(l.created_ms)} ago
+                  {l.expires_ms === null ? '' : ` · expires ${new Date(Number(l.expires_ms)).toLocaleDateString()}`}
                 </span>
                 <Button variant="outline" size="sm" disabled={revokeLink.isPending} onClick={() => revokeLink.mutate(l.id)}>
                   Revoke

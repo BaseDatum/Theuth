@@ -42,7 +42,7 @@ async function guest(): Promise<Guest & { open: boolean }> {
   const refused = Promise.withResolvers<boolean>()
   const poll = setInterval(() => closes.length > 0 && refused.resolve(false), 10)
   const giveUp = setTimeout(() => refused.resolve(false), 8000)
-  const opened = await Promise.race([client.connect().then(() => true), refused.promise])
+  const opened = await Promise.race([client.connect().then(() => true, () => false), refused.promise])
   clearInterval(poll)
   clearTimeout(giveUp)
   return { client, transport, closes, api, pub: id.pub, open: opened }
