@@ -1,13 +1,24 @@
 cask "theuth" do
   version "@VERSION@"
   sha256 "@SHA_DMG@"
+
   url "@BASE_URL@/#{version}/theuth_#{version}_macos-aarch64.dmg"
   name "theuth"
   desc "Desktop app for the theuth harness"
-  homepage "https://github.com/skymoore/theuth"
-  depends_on arch: :arm64
-  depends_on macos: ">= :monterey"
+  homepage "https://theuth.io/"
+
+  livecheck do
+    url "@BASE_URL@/latest.json"
+    strategy :json do |json|
+      json["version"]
+    end
+  end
+
   auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: :sequoia
+
   app "theuth.app"
+
   zap trash: "~/Library/Application Support/io.theuth.mac"
 end

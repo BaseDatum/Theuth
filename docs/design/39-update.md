@@ -367,14 +367,21 @@ so 18 §3 holds: it is never restarted from inside.
 ### 3.5 Homebrew: `basedatum/tap`
 
 Repository `github.com/basedatum/homebrew-tap`, two files, both written by
-`release-s3.sh` (§5.3) — nobody edits them by hand.
+`release-s3.sh` (§5.3) — nobody edits them by hand. Homepage is
+`https://theuth.io/` (trailing slash: cask style requires it):
+`github.com/skymoore/theuth` is private, and an unreachable homepage fails
+`brew audit --online`. The formula has no `livecheck`: the download `url`
+lives inside `on_macos`, so a `livecheck` `url` earlier in the file is the
+first `url` and `FormulaAudit/LivecheckUrlSymbol` mistakes it for `:stable`.
+RuboCop disable comments are rejected. The cask carries `livecheck`.
 
-`Formula/theuth.rb` — a binary formula, no build step, both OSes:
+`Formula/theuth.rb` — a binary formula, no build step, both OSes (the
+`on_linux` block is omitted when `THEUTH_RELEASE_LINUX=skip`):
 
 ```ruby
 class Theuth < Formula
   desc "Harness that does things for the user"
-  homepage "https://github.com/skymoore/theuth"
+  homepage "https://theuth.io/"
   version "0.2.0"
   license "MIT"
 
@@ -397,28 +404,49 @@ class Theuth < Formula
 
   def install
     bin.install "t"
+    # theuth-app-parser-<hash> (46 §2.1) and theuth-documents-<protocol> (59 §3.2)
+    bin.install Dir["theuth-app-parser-*"].fetch(0)
+    bin.install Dir["theuth-documents-*"].fetch(0)
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/t --version")
+    helper = Dir[bin/"theuth-app-parser-*"].fetch(0)
+    assert_match File.basename(helper).delete_prefix("theuth-app-parser-"), shell_output("#{helper} --version")
+    docs = Dir[bin/"theuth-documents-*"].fetch(0)
+    assert_match File.basename(docs).delete_prefix("theuth-documents-"), shell_output("#{docs} --version")
   end
 end
 ```
 
-`Casks/theuth.rb` — the `.app`, macOS arm64:
+`Casks/theuth.rb` — the `.app`, macOS arm64. `depends_on macos: :sequoia`
+matches `tauri.macos.conf.json` `minimumSystemVersion` 15.0; a string
+`">= :monterey"` is the deprecated form and is also below what the `.app`
+declares, which fails `brew audit --online`:
 
 ```ruby
 cask "theuth" do
   version "0.2.0"
   sha256 "<SHA256SUMS of the DMG>"
+
   url "https://s3.rwx.dev/theuth/releases/#{version}/theuth_#{version}_macos-aarch64.dmg"
   name "theuth"
   desc "Desktop app for the theuth harness"
-  homepage "https://github.com/skymoore/theuth"
-  depends_on arch: :arm64
-  depends_on macos: ">= :monterey"
+  homepage "https://theuth.io/"
+
+  livecheck do
+    url "https://s3.rwx.dev/theuth/releases/latest.json"
+    strategy :json do |json|
+      json["version"]
+    end
+  end
+
   auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: :sequoia
+
   app "theuth.app"
+
   zap trash: "~/Library/Application Support/io.theuth.mac"
 end
 ```
@@ -597,11 +625,15 @@ Last step, after `latest.json` is live (so a formula never points at an
 object that is not yet readable): `git clone --depth 1
 git@github.com:basedatum/homebrew-tap`, write `Formula/theuth.rb` and
 `Casks/theuth.rb` from the two templates in §3.5 with `VERSION` and the
-`SHA256SUMS` lines filled in, `brew audit --strict --formula Formula/theuth.rb`
-and `brew audit --cask Casks/theuth.rb` (syntax, url reachability, sha —
-brew is on the release Mac), `git commit -m "theuth ${VERSION}"`, `git push`.
-A failed audit leaves the tap untouched and the release otherwise
-complete: Homebrew installs simply see the new version one run later.
+`SHA256SUMS` lines filled in. Homebrew rejects `brew audit <path>.rb`, so
+the script stages those files in the installed `basedatum/tap` checkout and
+runs `brew style` plus `brew audit --strict --online` on
+`basedatum/tap/theuth` (formula and cask: syntax, url reachability, sha256,
+livecheck against `latest.json`, the cask's minimum macOS versus the
+`.app`). It restores that checkout, then `git commit -m "theuth ${VERSION}"`
+and `git push` from the clone. A failed audit leaves the tap untouched and
+the release otherwise complete: Homebrew installs simply see the new version
+one run later.
 
 ### 5.4 Env
 

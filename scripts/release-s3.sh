@@ -17,8 +17,8 @@
 #                        is not installed — cargo tauri signer has no verify subcommand)
 #   latest.json          jq; {version, platforms: {darwin-aarch64, cli-macos-aarch64,
 #                        cli-linux-x86_64, cli-linux-aarch64}} — written last
-#   delete staging/<ver>/
-#   tap bump (§5.3)      clone $THEUTH_TAP_REPO, render Formula/theuth.rb + Casks/theuth.rb, brew audit,
+#   tap bump (§5.3)      clone $THEUTH_TAP_REPO, render Formula/theuth.rb + Casks/theuth.rb,
+#                        brew style + brew audit --strict --online by name (path audit is disabled),
 #                        commit "theuth <ver>", push
 #
 # dist/ = target/release/dist (package-update-macos.sh). Objects under <ver>/ are never
@@ -334,7 +334,36 @@ if [[ "$PRERELEASE" != "1" ]]; then
   cp "$DIST/tap/Casks/theuth.rb" "$TAP/Casks/theuth.rb"
   AUDIT_OK=1
   if command -v brew >/dev/null 2>&1; then
-    (cd "$TAP" && brew audit --strict --formula Formula/theuth.rb && brew audit --cask Casks/theuth.rb) || AUDIT_OK=0
+    # Homebrew rejects `brew audit path.rb` (odisabled). Named audit reads the
+    # installed tap, so stage the rendered files there and restore afterwards.
+    # --online checks url reachability and sha256 (39 §5.3).
+    INSTALLED="$(brew --repo basedatum/homebrew-tap 2>/dev/null || true)"
+    if [[ ! -d "${INSTALLED:-}/Formula" ]]; then
+      brew tap basedatum/tap
+      INSTALLED="$(brew --repo basedatum/homebrew-tap)"
+    fi
+    BACKUP="$(mktemp -d)"
+    [[ -f "$INSTALLED/Formula/theuth.rb" ]] && cp "$INSTALLED/Formula/theuth.rb" "$BACKUP/formula.rb"
+    [[ -f "$INSTALLED/Casks/theuth.rb" ]] && cp "$INSTALLED/Casks/theuth.rb" "$BACKUP/cask.rb"
+    restore_installed_tap() {
+      if [[ -f "$BACKUP/formula.rb" ]]; then cp "$BACKUP/formula.rb" "$INSTALLED/Formula/theuth.rb"
+      else rm -f "$INSTALLED/Formula/theuth.rb"; fi
+      if [[ -f "$BACKUP/cask.rb" ]]; then cp "$BACKUP/cask.rb" "$INSTALLED/Casks/theuth.rb"
+      else rm -f "$INSTALLED/Casks/theuth.rb"; fi
+      rm -rf "$BACKUP"
+    }
+    cp "$TAP/Formula/theuth.rb" "$INSTALLED/Formula/theuth.rb"
+    cp "$TAP/Casks/theuth.rb" "$INSTALLED/Casks/theuth.rb"
+    if brew style --formula basedatum/tap/theuth \
+      && brew style --cask basedatum/tap/theuth \
+      && brew audit --strict --online --formula basedatum/tap/theuth \
+      && brew audit --strict --online --cask basedatum/tap/theuth
+    then
+      AUDIT_OK=1
+    else
+      AUDIT_OK=0
+    fi
+    restore_installed_tap
   else
     echo "    brew not found: audit skipped"
   fi
@@ -348,6 +377,10 @@ if [[ "$PRERELEASE" != "1" ]]; then
   else
     (cd "$TAP" && git add Formula/theuth.rb Casks/theuth.rb && git commit --quiet -m "theuth $VERSION" && git push --quiet)
     TAP_STATUS="pushed theuth $VERSION"
+    # The release Mac's brew checkout still has the previous formula until this.
+    if [[ -n "${INSTALLED:-}" ]]; then
+      git -C "$INSTALLED" pull --ff-only --quiet || echo "    installed tap not fast-forwarded; brew update will pick it up"
+    fi
   fi
 fi
 
