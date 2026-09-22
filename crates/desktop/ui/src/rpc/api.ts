@@ -22,6 +22,7 @@ import type { ContextRemoval } from '@/rpc/bindings/ContextRemoval'
 import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import type { DictationId } from '@/rpc/bindings/DictationId'
+import type { HelperStatus } from '@/rpc/bindings/HelperStatus'
 import type { DictationState } from '@/rpc/bindings/DictationState'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
@@ -218,6 +219,8 @@ export interface Api {
   doc_rename(doc: DocId, title: string): Promise<null>
   /** Move a note to the trash (swept after 30 days); other kinds reject `delete_via_owner`. */
   doc_delete(doc: DocId): Promise<null>
+  /** The documents helper beside `t` (59 §3.2): missing = notes, knowledge editing and meeting notes are disabled. */
+  documents_status(): Promise<HelperStatus>
   /** A document's members and share links (59 §8; owner only). */
   doc_members(doc: DocId): Promise<Members>
   /** Rename or re-role a member (owner only); demoting an editor closes their subscription with `Closed{demoted}`. */
@@ -583,6 +586,7 @@ export const METHODS = [
   'doc_link_create',
   'doc_link_revoke',
   'doc_list',
+  'documents_status',
   'doc_member_revoke',
   'doc_member_set',
   'doc_members',

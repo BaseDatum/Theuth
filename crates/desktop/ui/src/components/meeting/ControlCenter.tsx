@@ -30,7 +30,13 @@ type LogRow = { track: Track; t0_ms: number; text: string; request: boolean; ope
 const STAGES: PostStage[] = ['Transcribing', 'Diarizing', 'Aligning']
 
 const degradationText = (d: Degradation): string =>
-  typeof d === 'string' ? d : 'SttDown' in d ? `STT down (${d.SttDown})` : `${d.PermissionDenied} denied`
+  d === 'NoNote'
+    ? 'no meeting note: the documents helper is missing (Settings › Harness › Documents)'
+    : typeof d === 'string'
+      ? d
+      : 'SttDown' in d
+        ? `STT down (${d.SttDown})`
+        : `${d.PermissionDenied} denied`
 
 const hhmmss = (ms: number): string => {
   const s = Math.floor(ms / 1000)

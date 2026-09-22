@@ -187,6 +187,8 @@ pub enum Degradation {
     NearMaxLength,
     /// A TCC prompt was denied.
     PermissionDenied(Permission),
+    /// Documents run but refused the meeting's note (59 §7.4; the documents helper missing): no note, no summary note.
+    NoNote,
 }
 
 /// The two TCC services a meeting needs.
@@ -1561,12 +1563,16 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         Ok(dir) => dir,
         Err(e) => return Begun::failed(manifest, format!("{e:#}")),
     };
-    // 59 §7.4: one note per meeting, from the first second; `None` when documents are off.
+    // 59 §7.4: one note per meeting, from the first second; `None` when documents are off — or refused
+    // (the helper missing), which the user must see: the meeting goes on without a note or a summary note.
     manifest.note = note::create(
         manifest.id,
         manifest.title.as_deref().unwrap_or(&setup.title),
     )
     .await;
+    if manifest.note.is_none() && document::Handle::lookup().is_some() {
+        manifest.degraded.push(Degradation::NoNote);
+    }
     let pid = manifest.process.pid;
     let file_title = setup.title.clone();
     let opened =

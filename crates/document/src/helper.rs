@@ -73,6 +73,29 @@ pub fn helper_path() -> PathBuf {
     beside
 }
 
+/// Whether the helper `t` would spawn is there (surfaced by `documents_status`, shown in Settings;
+/// a missing helper disables notes, knowledge editing and meeting notes).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct HelperStatus {
+    /// Where [`helper_path`] points.
+    pub path: String,
+    /// The file exists there.
+    pub found: bool,
+    /// The protocol version this `t` wants (`theuth-documents-<version>`).
+    pub version: String,
+}
+
+/// The current [`HelperStatus`].
+pub fn helper_status() -> HelperStatus {
+    let path = helper_path();
+    HelperStatus {
+        found: path.is_file(),
+        path: path.display().to_string(),
+        version: protocol_version().to_owned(),
+    }
+}
+
 /// `import` mode (§4.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
