@@ -46,7 +46,7 @@ pub const DOCUMENT_ACTOR: &str = "document";
 /// Name of the `Y.XmlFragment` the blocks live in (`packages/documents/src/schema.ts` `FRAGMENT`).
 pub const FRAGMENT: &str = "document-store";
 
-/// `documents:` config section (59 §12; the keys step 1–2 read).
+/// `documents:` config section (59 §12 plus the two §4.7 memory knobs).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DocumentsConfig {
@@ -64,6 +64,10 @@ pub struct DocumentsConfig {
     pub max_members: usize,
     /// `on` (default) | `off` (`doc_link_create` refuses; members still connect) | `disabled` (members refused too) (§12).
     pub sharing: String,
+    /// Unload a document with no subscriber after this long idle (§4.7); the log is compacted into `snapshot.yjs`.
+    pub idle_unload_secs: u64,
+    /// Documents kept in memory at most (§4.7); past it the longest idle without subscribers is unloaded.
+    pub max_open_docs: usize,
 }
 
 impl Default for DocumentsConfig {
@@ -76,6 +80,8 @@ impl Default for DocumentsConfig {
             agent_color: "#7c3aed".to_owned(),
             max_members: 64,
             sharing: "on".to_owned(),
+            idle_unload_secs: 600,
+            max_open_docs: 256,
         }
     }
 }

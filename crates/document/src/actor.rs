@@ -39,10 +39,6 @@ use crate::{DocumentsConfig, Exported, FRAGMENT};
 const LOG_MAX_BYTES: usize = 1024 * 1024;
 /// … or this many records.
 const LOG_MAX_COUNT: usize = 1000;
-/// Unload after this long idle with no subscriber (§4.7).
-const IDLE_UNLOAD: Duration = Duration::from_secs(600);
-/// At most this many loaded documents (§4.7).
-const MAX_OPEN: usize = 256;
 /// Export debounce hard cap (§4.3).
 const EXPORT_CAP: Duration = Duration::from_secs(3);
 /// `doc_open` state chunk: 36 KiB raw → 48 KiB base64 (§4.7).
@@ -649,7 +645,7 @@ impl DocumentActor {
     }
 
     fn enforce_open_cap(&mut self) {
-        while self.open.len() > MAX_OPEN {
+        while self.open.len() > self.cfg.max_open_docs {
             let victim = self
                 .open
                 .iter()
@@ -1826,7 +1822,7 @@ impl Message<Tick> for DocumentActor {
             if !o.exporting
                 && o.export_due.is_none()
                 && !self.subs.contains_key(id)
-                && now.duration_since(o.idle_since) > IDLE_UNLOAD
+                && now.duration_since(o.idle_since) > Duration::from_secs(self.cfg.idle_unload_secs)
             {
                 unloads.push(id.clone());
             }

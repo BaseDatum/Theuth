@@ -394,8 +394,9 @@ impl Store {
     }
 }
 
-/// Labels the store may prune (§4.6); everything else was asked for by name.
-const AUTO_LABELS: &[&str] = &["import-file", "daily"];
+/// Labels the store may prune (§4.6): only the automatic daily one. `import-file` (the state before a
+/// large foreign edit), `artifact-v*`, `meeting-*` and manual labels are the history a person may need.
+const AUTO_LABELS: &[&str] = &["daily"];
 
 fn sanitize(label: &str) -> String {
     label
@@ -603,11 +604,15 @@ mod tests {
         let m = meta(Binding::Note);
         store.create(&m).await.unwrap();
         let doc = Doc::new();
-        for i in 0..4 {
+        for i in 0..6 {
             std::thread::sleep(Duration::from_millis(2));
-            store
-                .snapshot(&m.id, &doc, Some(if i == 1 { "manual" } else { "daily" }))
-                .unwrap();
+            let label = match i {
+                1 => "manual",
+                3 => "import-file",
+                4 => "artifact-v2",
+                _ => "daily",
+            };
+            store.snapshot(&m.id, &doc, Some(label)).unwrap();
         }
         store.prune_snapshots(&m.id, 2).unwrap();
         let labels: Vec<String> = store
@@ -616,7 +621,8 @@ mod tests {
             .into_iter()
             .map(|s| s.label)
             .collect();
-        assert_eq!(labels, vec!["daily", "daily", "manual"]);
+        // Newest first: the two newest dailies stay, the oldest daily (i = 0) went, every other label is kept.
+        assert_eq!(labels, vec!["daily", "artifact-v2", "import-file", "daily", "manual"]);
     }
 
     #[tokio::test]

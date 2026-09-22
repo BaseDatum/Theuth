@@ -281,11 +281,11 @@ async fn knowledge_document_round_trip_export_import_restart() {
     let again = wait_for(&derived, |_| true, Duration::from_secs(3)).await;
     assert_eq!(again, after, "identical markdown before and after restart");
 
-    // Refuse beyond the cap.
+    // Refuse beyond the per-update cap (the document cap is exercised in `limits_doc_size_update_size_awareness_cap`).
     let doc = Doc::new();
     let t = doc.get_or_insert_text("big");
     let mut txn = doc.transact_mut();
-    t.insert(&mut txn, 0, &"a".repeat(9 * 1024 * 1024));
+    t.insert(&mut txn, 0, &"a".repeat(64 * 1024));
     let big = {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(txn.encode_update_v1())
@@ -300,7 +300,7 @@ async fn knowledge_document_round_trip_export_import_restart() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("DocTooLarge"), "{err}");
+    assert!(err.starts_with("UpdateTooLarge"), "{err}");
     stop(actor).await;
 }
 
@@ -1077,4 +1077,108 @@ fn note_bytes(data_dir: &Path, doc: &document::DocId) -> usize {
         .iter()
         .map(|f| std::fs::metadata(d.join(f)).map(|m| m.len() as usize).unwrap_or(0))
         .sum()
+}
+
+/// Design 59 §4.7 / §4.1: an idle document with no subscriber is unloaded after `idle_unload_secs`;
+/// its `updates.log` is compacted into `snapshot.yjs` first and the reload yields the identical state.
+/// `max_open_docs` unloads the longest-idle document when one more is opened.
+#[tokio::test]
+async fn idle_unload_compacts_the_log_and_reloads_identically() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start_with(dir.path(), &bin, DocumentsConfig { idle_unload_secs: 1, max_open_docs: 1, ..DocumentsConfig::default() }).await;
+    let owner = Principal::Owner { device: Some(1) };
+    let a = actor.ask(CreateNote { title: "A".into(), markdown: "one\n".into(), by: owner.clone() }).await.unwrap().id;
+    let mut sub = actor.ask(Subscribe { doc: a.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
+    for s in ["x", "y", "z"] {
+        actor.ask(ApplyUpdate { doc: a.clone(), update: scratch_update(s), by: owner.clone() }).await.unwrap();
+    }
+    let before = actor.ask(OpenDoc { doc: a.clone(), sv: None, by: owner.clone() }).await.unwrap();
+    let dir_a = dir.path().join(format!("documents/{a}"));
+    let log_len = std::fs::metadata(dir_a.join("updates.log")).unwrap().len();
+    assert!(log_len > 0, "the three updates are in the log");
+
+    // Subscribed: never unloaded, however idle.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    while let Ok(ev) = sub.try_recv() {
+        assert!(!matches!(ev, DocEvent::Closed { .. }), "unloaded under a live subscriber");
+    }
+    assert_eq!(std::fs::metadata(dir_a.join("updates.log")).unwrap().len(), log_len, "no compaction while subscribed");
+    drop(sub);
+    // Unsubscribed and idle past a second: unloaded; the log is folded into snapshot.yjs.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while std::fs::metadata(dir_a.join("updates.log")).unwrap().len() > 0 {
+        assert!(Instant::now() < deadline, "the document was not unloaded within 6 s");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(std::fs::metadata(dir_a.join("snapshot.yjs")).unwrap().len() > 0);
+    let after = actor.ask(OpenDoc { doc: a.clone(), sv: None, by: owner.clone() }).await.unwrap();
+    let full = |o: &document::DocOpen| -> Vec<u8> {
+        let bytes: Vec<u8> = o.state.iter().flat_map(|c| base64::engine::general_purpose::STANDARD.decode(c).unwrap()).collect();
+        let doc = Doc::new();
+        doc.transact_mut().apply_update(yrs::updates::decoder::Decode::decode_v1(&bytes).unwrap()).unwrap();
+        use yrs::ReadTxn as _;
+        doc.transact().encode_state_as_update_v1(&yrs::StateVector::default())
+    };
+    assert_eq!(full(&before), full(&after), "reload after compaction is identical");
+    assert_eq!(after.meta.updated_ms, before.meta.updated_ms);
+
+    // `max_open_docs: 1`: opening B evicts A (idle, no subscriber) at once.
+    let b = actor.ask(CreateNote { title: "B".into(), markdown: "two\n".into(), by: owner.clone() }).await.unwrap().id;
+    tokio::time::sleep(Duration::from_millis(500)).await; // B's create export settles; nothing is `exporting`
+    actor.ask(ApplyUpdate { doc: a.clone(), update: scratch_update("w"), by: owner.clone() }).await.unwrap();
+    assert!(std::fs::metadata(dir_a.join("updates.log")).unwrap().len() > 0, "A is loaded again with one log record");
+    actor.ask(OpenDoc { doc: b.clone(), sv: None, by: owner.clone() }).await.unwrap();
+    assert_eq!(std::fs::metadata(dir_a.join("updates.log")).unwrap().len(), 0, "A was evicted and compacted when B loaded");
+    stop(actor).await;
+}
+
+/// Design 59 §12 `sharing`: `off` refuses new links but members keep working; `disabled` refuses
+/// members too (their calls answer `sharing_disabled`, joins `sharing_off`).
+#[tokio::test]
+async fn sharing_off_and_disabled() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // `on`: a link and a member.
+    let actor = start(dir.path(), &bin).await;
+    let doc = actor.ask(CreateNote { title: "S".into(), markdown: "hi\n".into(), by: Principal::Owner { device: None } }).await.unwrap().id;
+    let (_, secret) = actor.ask(LinkCreate { doc: doc.clone(), role: Role::Editor, name: None, expires_ms: None }).await.unwrap();
+    let key = secret_hash(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&secret).unwrap());
+    let guest = [3u8; 32];
+    let h = [1u8; 32];
+    let join = || Join { doc: doc.clone(), guest_pub: guest, handshake_hash: h.to_vec(), proof: proof(&key, &h, &guest).to_vec(), name: None };
+    actor.ask(join()).await.unwrap();
+    let member = Principal::Member { pub_: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(guest), device: Some(2) };
+    stop(actor).await;
+
+    // `off`: no new link; the existing member opens, writes, re-joins (idempotent) as before.
+    let actor = start_with(dir.path(), &bin, DocumentsConfig { sharing: "off".into(), ..DocumentsConfig::default() }).await;
+    assert_eq!(
+        actor.ask(LinkCreate { doc: doc.clone(), role: Role::Editor, name: None, expires_ms: None }).await.unwrap_err().to_string(),
+        "sharing_off"
+    );
+    actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap();
+    actor.ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("m"), by: member.clone() }).await.unwrap();
+    actor.ask(join()).await.unwrap();
+    stop(actor).await;
+
+    // `disabled`: members are refused everywhere; the owner is untouched.
+    let actor = start_with(dir.path(), &bin, DocumentsConfig { sharing: "disabled".into(), ..DocumentsConfig::default() }).await;
+    assert_eq!(actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: member.clone() }).await.unwrap_err().to_string(), "sharing_disabled");
+    assert_eq!(actor.ask(Subscribe { doc: doc.clone(), by: member.clone() }).await.unwrap_err().to_string(), "sharing_disabled");
+    assert_eq!(
+        actor.ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("n"), by: member.clone() }).await.unwrap_err().to_string(),
+        "sharing_disabled"
+    );
+    assert_eq!(actor.ask(join()).await.unwrap_err().to_string(), JoinError::SharingOff.to_string());
+    actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: Principal::Owner { device: Some(1) } }).await.unwrap();
+    stop(actor).await;
 }

@@ -147,8 +147,13 @@ agent:
 #   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
 #   export_debounce_ms: 400  # settle time before the derived .md is rewritten (hard cap 3 s)
 #   max_doc_bytes: 8388608   # an update that would grow a document past this is refused (DocTooLarge)
-#   snapshots_keep: 30       # automatic snapshots kept per document; labelled ones are never pruned
+#   snapshots_keep: 30       # automatic (daily) snapshots kept per document; labelled ones are never pruned
 #   agent_color: '#7c3aed'  # the agent's presence and typewriter reveal colour in every editor
+#   max_members: 64          # members per shared document; the 65th join is refused
+#   sharing: on              # off: no new share links, members still connect; disabled: members refused too
+#   idle_unload_secs: 600    # unload an unsubscribed document after this idle time (log compacted into snapshot.yjs)
+#   max_open_docs: 256       # documents held in memory at most; the longest idle is unloaded past it
+#                            # guest handshakes are rated under `link.guest_handshakes_per_minute` (10)
 
 # surface:                   # Mermaid / json-render blocks in replies (design doc 30)
 #   enabled: true            # false: no prompt block, no rendering; fences stay code blocks
@@ -198,6 +203,7 @@ agent:
 #   relay: wss://relay.theuth.io   # self-host: your `theuth-relay` URL
 #   name: \"\"                 # display name in the QR and on devices; \"\" → hostname
 #   max_devices: 16
+#   guest_handshakes_per_minute: 10  # share-link guests (design doc 59 §8.3) admitted per minute; over budget → CLOSE 3
 
 # nodes:                     # harnesses on other machines this one can run sessions on (design doc 32). `/nodes add <key>` pairs; the node runs `t --install-service`.
 #   enabled: true            # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
