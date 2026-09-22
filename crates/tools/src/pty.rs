@@ -29,7 +29,8 @@ use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
 use crate::activity::{self, Activity, Kind, Tracked};
 use crate::jobs::{
-    self, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log, admit_job, lock, sep,
+    self, Cancel, CancelOrigin, Finished, Job, JobEvent, JobExit, JobId, Jobs, Launch, Log,
+    admit_job, lock, sep,
 };
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
@@ -1261,7 +1262,7 @@ impl Message<Launch<StartPty>> for Jobs {
             cursor: AtomicU64::new(0),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
-        let cancel = Arc::new(Notify::new());
+        let cancel = Arc::new(Cancel::default());
         let (done_tx, done) = oneshot::channel();
         // Same claim protocol as the pipes path (14): first swap owns the result.
         let claimable = Arc::new(AtomicBool::new(true));
@@ -1622,7 +1623,7 @@ struct Run {
     pty: Arc<PtyHandle>,
     child: Box<dyn Child + Send + Sync>,
     rx: mpsc::Receiver<Vec<u8>>,
-    cancel: Arc<Notify>,
+    cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
     started: Instant,
     /// Screen-quiet interval before `<job_idle>` (61 §3.4); `None` = off.
@@ -1777,17 +1778,17 @@ async fn run(mut j: Run) {
     let mut dirty = false;
     let mut tick = tokio::time::interval(jobs::OUTPUT_EVERY);
     let mut idle = j.idle_after.map(|base| Idle::new(base, j.started));
-    let (exit, killed) = loop {
+    let (exit, killed, origin) = loop {
         let due = idle.as_ref().and_then(|i| i.deadline(&j.pty));
         tokio::select! {
             biased;
-            () = j.cancel.notified() => {
+            origin = j.cancel.notified() => {
                 let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
                 // Cancellation is not cessation: the exit is the reaper's.
                 let _ = (&mut waited).await;
-                break (JobExit::Killed, true);
+                break (JobExit::Killed, true, Some(origin));
             }
-            r = &mut waited => break (exit_of(r), false),
+            r = &mut waited => break (exit_of(r), false, None),
             chunk = j.rx.recv() => match chunk {
                 Some(c) => {
                     ingest(&j.pty, &j.log, &mut carry, &c);
@@ -1797,10 +1798,10 @@ async fn run(mut j: Run) {
                 // that do so once its leader is gone). A leader that closed
                 // its tty and lingers gets a second, then SIGKILL.
                 None => break match tokio::time::timeout(Duration::from_secs(1), &mut waited).await {
-                    Ok(r) => (exit_of(r), false),
+                    Ok(r) => (exit_of(r), false, None),
                     Err(_) => {
                         let _ = killpg(pid, nix::sys::signal::Signal::SIGKILL);
-                        (exit_of(waited.await), true)
+                        (exit_of(waited.await), true, None)
                     }
                 },
             },
@@ -1898,14 +1899,18 @@ async fn run(mut j: Run) {
         cursor,
     })
     .await;
-    let inline = j.claimable.swap(false, SeqCst);
+    // The model that called `cancel_job` read this screen before it killed
+    // the job (61) and got the tool reply: its kill is inline, and a kill
+    // from anywhere else carries the one-line notice, never the screen
+    // (14 §1.2 as-built). The `Screen` event above still has the last frame.
+    let inline = j.claimable.swap(false, SeqCst) || origin == Some(CancelOrigin::Tool);
     let event = JobEvent::Finished {
         session: j.session,
         id: j.id.clone(),
         command: j.command,
         exit: exit.clone(),
         secs,
-        output: screen,
+        output: origin.map_or(screen, |o| o.notice().to_owned()),
         inline,
         pty: true,
     };
@@ -2806,7 +2811,9 @@ mod tests {
             kameo::error::SendError::HandlerError(e) if e.contains("out of range")
         ));
 
-        cancel(&fx, "j1").await;
+        // The model's own kill (14 §1.2 as-built): inline, one line, no screen
+        // in the event — the attach below still has the last frame.
+        cancel_from(&fx, "j1", CancelOrigin::Tool).await;
         let exit = loop {
             match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
                 PtyOut::Data(_) => {}
@@ -2814,7 +2821,10 @@ mod tests {
             }
         };
         assert_eq!(exit, JobExit::Killed);
-        finished(&fx).await;
+        assert_eq!(
+            finished(&fx).await,
+            (JobExit::Killed, "killed by cancel_job".to_owned(), true)
+        );
         // A finished job still attaches (last screen, exit set); a resize does not.
         let again = fx
             .jobs
@@ -2924,11 +2934,17 @@ mod tests {
             .port()
     }
 
+    /// A human's kill: the model gets the one-line `<job_result>`.
     async fn cancel(fx: &Fx, id: &str) {
+        cancel_from(fx, id, CancelOrigin::Ui).await;
+    }
+
+    async fn cancel_from(fx: &Fx, id: &str, origin: CancelOrigin) {
         fx.jobs
             .ask(CancelJob {
                 session: fx.session,
                 id: JobId(id.into()),
+                origin,
             })
             .await
             .unwrap();
@@ -3293,14 +3309,16 @@ mod tests {
         assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_err());
         let v = ledger_until(&ledger, &seen, Duration::from_secs(2), |v| v.len() >= 2).await;
         assert_eq!(v[1..], [Seen::Result(op)]);
+        // `/jobs kill`: the result rides the guard as one line, not the screen.
         assert!(matches!(
             lock(&fx.events).iter().last(),
             Some(JobEvent::Finished {
                 pty: true,
                 inline: false,
                 exit: JobExit::Killed,
+                output,
                 ..
-            })
+            }) if output == "killed by the user"
         ));
     }
 

@@ -70,10 +70,11 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob, Decision,
-    Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers,
-    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
-    Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
+    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob,
+    CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs,
+    ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress,
+    RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp,
+    ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -1795,9 +1796,19 @@ impl ApiServer for Server {
         ask::<Jobs, _>(JOBS_ACTOR, ListJobs(session)).await
     }
 
+    /// Every RPC caller is a human surface (TUI `/jobs kill`, the desktop
+    /// row): the model learns of the kill by a one-line `<job_result>`.
     async fn cancel_job(&self, ext: &Extensions, session: SessionId, id: JobId) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        ask::<Jobs, _>(JOBS_ACTOR, CancelJob { session, id }).await
+        ask::<Jobs, _>(
+            JOBS_ACTOR,
+            CancelJob {
+                session,
+                id,
+                origin: CancelOrigin::Ui,
+            },
+        )
+        .await
     }
 
     async fn list_terminals(

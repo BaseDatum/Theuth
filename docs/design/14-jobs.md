@@ -135,6 +135,21 @@ only ever seen by a resumed session, §5). One `<job_result>` per job;
 several finishing during one tool batch arrive as one queued input joined
 by newlines, like `<subagent_result>` today (01 §2.3).
 
+**As-built 2026-09-22 — who killed it decides what arrives.** `CancelJob`
+carries a `CancelOrigin`. `Tool` (the owning model called `cancel_job`):
+the model read the screen it killed — for a PTY job that was the
+`<job_idle>` it acted on (61) — and the tool reply is the acknowledgement,
+so `JobFinished` is published `inline: true` with `output` `killed by
+cancel_job`; nothing is injected (UIs still close the row, and a PTY job's
+final `Screen` event still carries the last frame). `Ui` (`/jobs kill`, the
+desktop row, Signal — every RPC caller) and `Shutdown` (`CloseSessions`):
+`<job_result … exit="killed">` arrives with the one-line body `killed by
+the user` / `killed at shutdown`, never the output or the screen. `timeout`
+and a normal exit are unchanged: the model did not ask for those and
+needs the output. The kill-at-shutdown path (`KillAll`) aborts the task
+and already reports through `Activity::unknown`; it publishes no
+`Finished`.
+
 ### 1.3 `jobs` / `cancel_job`
 
 ```rust

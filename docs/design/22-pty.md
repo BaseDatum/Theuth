@@ -153,7 +153,10 @@ the rows; `wait` adds `matched: ">>> "` or `timed out after 30s`
 `<job_result>` (14 §1.2) is unchanged; the output body for a PTY job is
 the **final screen**, not the log (the log of a TUI is unreadable, and the
 model has been watching the screen all along). The `pty="true"` attribute
-is added so the model knows which it is reading.
+is added so the model knows which it is reading. As-built 2026-09-22: a
+job the model itself killed with `cancel_job` gets no `<job_result>` at
+all (it read that screen as `<job_idle>`, 61), and a kill from a UI
+carries a one-line notice instead of the screen — 14 §1.2 as-built.
 
 ### 2.3 `jobs` table
 

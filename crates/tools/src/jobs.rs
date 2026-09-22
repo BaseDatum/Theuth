@@ -82,7 +82,8 @@ pub enum JobExit {
     /// The job's deadline (`tools.job_timeout_secs`, or the call's shorter
     /// `timeout_secs`) elapsed; the process group was killed.
     Timeout,
-    /// [`CancelJob`] killed the process group.
+    /// [`CancelJob`] killed the process group; the [`CancelOrigin`] decides
+    /// what the model hears about it.
     Killed,
 }
 
@@ -94,6 +95,52 @@ impl std::fmt::Display for JobExit {
             JobExit::Timeout => f.write_str("timeout"),
             JobExit::Killed => f.write_str("killed"),
         }
+    }
+}
+
+/// Who asked [`CancelJob`] for the kill (14 §1.2 as-built). Decides the
+/// `Finished` event: the model that called `cancel_job` already read the
+/// screen it killed (61), so it gets no `<job_result>`; a human or a closing
+/// session gets a one-line notice instead of the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelOrigin {
+    /// The owning session's model called `cancel_job`.
+    Tool,
+    /// A human pressed stop in a UI (`/jobs kill`, the desktop job row).
+    Ui,
+    /// The session is closing ([`CloseSessions`]).
+    Shutdown,
+}
+
+impl CancelOrigin {
+    /// The one-line `Finished.output` for a job this origin killed.
+    pub fn notice(self) -> &'static str {
+        match self {
+            CancelOrigin::Tool => "killed by cancel_job",
+            CancelOrigin::Ui => "killed by the user",
+            CancelOrigin::Shutdown => "killed at shutdown",
+        }
+    }
+}
+
+/// A job task's cancel signal, with who fired it: [`Cancel::fire`] records
+/// the origin before it notifies, so the task's finish path can read it.
+#[derive(Debug, Default)]
+pub(crate) struct Cancel {
+    origin: std::sync::OnceLock<CancelOrigin>,
+    notify: Notify,
+}
+
+impl Cancel {
+    /// The first origin sticks; the permit is stored when nobody waits yet.
+    pub(crate) fn fire(&self, origin: CancelOrigin) {
+        let _ = self.origin.set(origin);
+        self.notify.notify_one();
+    }
+
+    pub(crate) async fn notified(&self) -> CancelOrigin {
+        self.notify.notified().await;
+        *self.origin.get().expect("fire records the origin before it notifies")
     }
 }
 
@@ -175,6 +222,10 @@ pub enum JobEvent {
         output: String,
     },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
+    /// A [`CancelJob`] kill shapes it by [`CancelOrigin`] (14 §1.2 as-built):
+    /// `Tool` → `inline: true` (the `cancel_job` reply was the acknowledgement,
+    /// the model already read the screen it killed — 61); `Ui` / `Shutdown` →
+    /// injected, `output` a one-line notice. Never the screen or the log.
     #[serde(rename = "JobFinished")]
     Finished {
         /// Owning session.
@@ -188,10 +239,12 @@ pub enum JobEvent {
         /// Wall time from spawn to exit.
         secs: u64,
         /// stdout+stderr, truncated to 64 KiB; the agent applies spill. For
-        /// a PTY job the final screen text (22 §2.2).
+        /// a PTY job the final screen text (22 §2.2). For a `Killed` job the
+        /// origin's [`CancelOrigin::notice`].
         output: String,
         /// The tool call already returned this result (exited within the
-        /// grace window); UIs still count it, the agent must not inject it.
+        /// grace window), or the model killed it; UIs still count it, the
+        /// agent must not inject it.
         inline: bool,
         /// Ran on a pseudo-terminal (22): `output` is a screen, not a log.
         pty: bool,
@@ -292,6 +345,8 @@ pub struct CancelJob {
     pub session: SessionId,
     /// Job.
     pub id: JobId,
+    /// Who asked; shapes the `Finished` event.
+    pub origin: CancelOrigin,
 }
 
 /// `ask` → [`CloseAck`] (owner `"jobs"`): the [`crate::CloseTree`] barrier's Jobs
@@ -432,7 +487,7 @@ pub(crate) struct Job {
     pub(crate) log_path: PathBuf,
     pub(crate) log: Arc<Mutex<Log>>,
     pub(crate) pgids: Arc<Mutex<Vec<i32>>>,
-    pub(crate) cancel: Arc<Notify>,
+    pub(crate) cancel: Arc<Cancel>,
     pub(crate) task: AbortHandle,
     /// `start`'s label (22 §2.1); PTY jobs only.
     pub(crate) name: Option<String>,
@@ -699,7 +754,7 @@ impl Message<Launch<Start>> for Jobs {
         let (file, params, out_r, err_r) =
             setup(&dir, log_file, &m.shell, &pgids).map_err(|e| format!("{e:#}"))?;
         let log = Arc::new(Mutex::new(Log::new(file)));
-        let cancel = Arc::new(Notify::new());
+        let cancel = Arc::new(Cancel::default());
         let (done_tx, done) = oneshot::channel();
         // Whoever swaps this first owns the result: the grace waiter (reply
         // `Running`, the result is owed to the model) or the task (reply
@@ -813,7 +868,7 @@ impl Message<CancelJob> for Jobs {
         }
         // The task kills the groups and finishes as `Killed`; killing here
         // would race its normal-exit arm into `Exited(137)`.
-        job.cancel.notify_one();
+        job.cancel.fire(m.origin);
         Ok(())
     }
 }
@@ -838,7 +893,7 @@ impl Message<CloseSessions> for Jobs {
                     // As `CancelJob`: the task reports `Killed` and settles;
                     // the kill here only makes sure nothing survives a task
                     // that is never polled again.
-                    job.cancel.notify_one();
+                    job.cancel.fire(CancelOrigin::Shutdown);
                     kill(&job.pgids);
                     tasks.push((job.id, job.task));
                 }
@@ -1044,7 +1099,7 @@ struct Run {
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
     pgids: Arc<Mutex<Vec<i32>>>,
-    cancel: Arc<Notify>,
+    cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
     /// [`Start::quiet`]: publish nothing, take no row.
     quiet: bool,
@@ -1196,7 +1251,7 @@ async fn run(mut j: Run) {
     let out = drain(j.out_r, j.log.clone());
     let err = drain(j.err_r, j.log.clone());
     let source = SourceInfo::from("shell");
-    let (exit, shell_err, killed) = {
+    let (exit, shell_err, killed, origin) = {
         let mut run = pin!(j.shell.run_string(j.command.as_str(), &source, &j.params));
         let mut deadline = pin!(tokio::time::sleep(j.timeout));
         let mut cancelled = pin!(j.cancel.notified());
@@ -1204,11 +1259,13 @@ async fn run(mut j: Run) {
         loop {
             tokio::select! {
                 biased;
-                () = &mut cancelled => break (JobExit::Killed, None, Some(kill(&j.pgids))),
-                () = &mut deadline => break (JobExit::Timeout, None, Some(kill(&j.pgids))),
+                origin = &mut cancelled => {
+                    break (JobExit::Killed, None, Some(kill(&j.pgids)), Some(origin));
+                }
+                () = &mut deadline => break (JobExit::Timeout, None, Some(kill(&j.pgids)), None),
                 r = &mut run => break match r {
-                    Ok(r) => (JobExit::Exited(u8::from(r.exit_code)), None, None),
-                    Err(e) => (JobExit::Exited(1), Some(e.to_string()), None),
+                    Ok(r) => (JobExit::Exited(u8::from(r.exit_code)), None, None, None),
+                    Err(e) => (JobExit::Exited(1), Some(e.to_string()), None, None),
                 },
                 _ = tick.tick(), if !j.quiet => flush(&j.rt, j.session, &j.id, &j.log).await,
             }
@@ -1276,9 +1333,12 @@ async fn run(mut j: Run) {
             (body, out)
         }
         (JobExit::Killed, None) => {
+            // The `start` reply (a kill inside the grace window) keeps the
+            // body; the event carries only who killed it (14 §1.2 as-built).
             let body = truncate(body);
             let out = ToolOutput::err(format!("{body}{}killed", sep(&body)));
-            (body, out)
+            let origin = origin.expect("Killed comes from the cancel arm");
+            (origin.notice().to_owned(), out)
         }
     };
 
@@ -1287,8 +1347,9 @@ async fn run(mut j: Run) {
         (j.put_back)(j.shell);
     }
     // Claim the result (see `Start`); then the row update is queued before
-    // anyone can react to the reply or the event.
-    let inline = j.claimable.swap(false, SeqCst);
+    // anyone can react to the reply or the event. The model that called
+    // `cancel_job` owes itself nothing: its kill is inline too.
+    let inline = j.claimable.swap(false, SeqCst) || origin == Some(CancelOrigin::Tool);
     // 37 §3.2: a quiet job's output reaches only the `Start` asker.
     let event = (!j.quiet).then(|| JobEvent::Finished {
         session: j.session,
@@ -1430,7 +1491,7 @@ impl Tool for CancelJobTool {
     type Args = CancelJobArgs;
 
     fn description(&self) -> String {
-        "Kill a running background job by id.".into()
+        "Kill a running background job by id. This reply is the whole acknowledgement: no <job_result> follows a job you killed.".into()
     }
 
     async fn call(&self, args: CancelJobArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1443,10 +1504,11 @@ impl Tool for CancelJobTool {
                 .ask(CancelJob {
                     session: cx.session,
                     id: id.clone(),
+                    origin: CancelOrigin::Tool,
                 })
                 .await
             {
-                Ok(()) => ToolOutput::ok(format!("killed {id}")),
+                Ok(()) => ToolOutput::ok(format!("killed {id}; no <job_result> will follow")),
                 Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(e),
                 Err(e) => anyhow::bail!("jobs actor: {e}"),
             },
@@ -1898,10 +1960,16 @@ pub(crate) mod tests {
             .ask(CancelJob {
                 session: fx.session,
                 id: id.clone(),
+                origin: CancelOrigin::Ui,
             })
             .await
             .unwrap();
         assert_eq!(settled(&fx, Duration::from_secs(1)).await.state, "killed");
+        // A human's kill reaches the model as one line, not the output.
+        assert_eq!(
+            finished(&fx).await,
+            (JobExit::Killed, "killed by the user".to_owned(), false)
+        );
         // Reaped by tokio's orphan queue on the next SIGCHLD; allow it a moment.
         let gone = Instant::now() + Duration::from_secs(1);
         while nix::sys::signal::kill(Pid::from_raw(pgid), None).is_ok() {
@@ -1917,6 +1985,7 @@ pub(crate) mod tests {
             .ask(CancelJob {
                 session: fx.session,
                 id,
+                origin: CancelOrigin::Ui,
             })
             .await;
         assert_eq!(refused(again), "j1 already finished");
@@ -1925,9 +1994,33 @@ pub(crate) mod tests {
             .ask(CancelJob {
                 session: fx.session,
                 id: JobId("j9".into()),
+                origin: CancelOrigin::Ui,
             })
             .await;
         assert_eq!(refused(missing), "no such job");
+    }
+
+    /// 14 §1.2 as-built: the model's own `cancel_job` gets no `<job_result>`
+    /// — the event is inline with the one-line notice, the output dropped.
+    #[tokio::test]
+    async fn tool_cancel_is_inline_and_quiet() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let StartReply::Running { id, .. } = spawn_job(&fx, "echo loud; sleep 30").await else {
+            panic!("expected Running");
+        };
+        fx.jobs
+            .ask(CancelJob {
+                session: fx.session,
+                id,
+                origin: CancelOrigin::Tool,
+            })
+            .await
+            .unwrap();
+        assert_eq!(settled(&fx, Duration::from_secs(1)).await.state, "killed");
+        assert_eq!(
+            finished(&fx).await,
+            (JobExit::Killed, "killed by cancel_job".to_owned(), true)
+        );
     }
 
     #[tokio::test]

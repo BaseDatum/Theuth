@@ -374,6 +374,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
                         .ask(tools::CancelJob {
                             session,
                             id: tools::JobId(id.to_owned()),
+                            origin: tools::CancelOrigin::Ui,
                         })
                         .await
                         .map_err(err)?;
