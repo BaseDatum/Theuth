@@ -1093,3 +1093,10 @@ As built — deviations:
     than `CloseSessions`.
 11. Manual acceptance scenarios §9.1–9.7 were not executed end-to-end on real
     devices/harnesses; the automated unit/integration tests listed above ran.
+12. Desktop §3 addendum (2026-09-22): each sidebar project header has a menu
+    (right-click, or a `…` shown on hover and always on phones) with "New chat
+    in <project>" (Ungrouped: "New chat (no project)") and Collapse/Expand.
+    The action navigates to `/?project=<label>`, which preselects the
+    new-chat picker; the root is still created lazily on the first send via
+    `create_session({ project })`, so it lists under its header from creation
+    and no empty row is left if the draft is abandoned.

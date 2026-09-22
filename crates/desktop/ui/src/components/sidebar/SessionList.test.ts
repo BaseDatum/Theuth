@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { buildRows, type Row } from './SessionList'
+import { buildRows, newChatLabel, type Row } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false): SessionSummary => ({
   id,
@@ -34,4 +34,9 @@ test('pinned lead above every project; projects in first-seen order of the newes
   expect(keys(buildRows(sessions, [], new Set(['beta'])))).not.toContain('d')
   expect(keys(buildRows([sessions[0]!], [])).some((k) => k.startsWith('p:'))).toBe(false)
   expect(keys(buildRows([sessions[2]!], []))).toEqual(['h:pinned', 'c'])
+})
+
+test('project header menu label names the project; the null bucket is the plain new chat', () => {
+  expect(newChatLabel('alpha')).toBe('New chat in “alpha”')
+  expect(newChatLabel(null)).toBe('New chat (no project)')
 })
