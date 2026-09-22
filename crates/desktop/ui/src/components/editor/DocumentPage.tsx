@@ -85,8 +85,8 @@ export function Action({
   )
 }
 
-/** The live document in BlockNote (59 §7.1: knowledge is created from its file on first open). */
-export function Live({ provider, status, error, onAsk }: LiveDocument & { onAsk?: (block: string) => void }) {
+/** The live document in BlockNote (59 §7.1: knowledge is created from its file on first open). `dense`: the tighter paper of the meeting pane. */
+export function Live({ provider, status, error, onAsk, dense }: LiveDocument & { onAsk?: (block: string) => void; dense?: boolean }) {
   if (error) {
     return <p className="m-auto max-w-full px-6 text-center text-sm text-danger wrap-anywhere">{error.message}</p>
   }
@@ -99,16 +99,18 @@ export function Live({ provider, status, error, onAsk }: LiveDocument & { onAsk?
       </div>
     )
   }
-  return <BlockEditor provider={provider} status={status} onAsk={onAsk} />
+  return <BlockEditor provider={provider} status={status} onAsk={onAsk} dense={dense} />
 }
 
 /**
  * The live page of one document (59 §7.3): `Frame` + `Live`, with the owner's extras around the editor —
  * `above` (a search return), `rail` (beside the body; under `md` below it), `below` (a note's chat panel),
- * and any dialogs/sheets as `children`.
+ * and any dialogs/sheets as `children`. `fallback` replaces `Live` while the document cannot be shown
+ * (59 §24.y: the knowledge page's read-only markdown view).
  */
 export function DocumentPage({
   live,
+  fallback,
   onAsk,
   columnRef,
   above,
@@ -119,6 +121,7 @@ export function DocumentPage({
   ...frame
 }: {
   live: LiveDocument
+  fallback?: ReactNode
   onAsk?: (block: string) => void
   /** The editor column, for `useSearchFocus` (49 §7). */
   columnRef?: Ref<HTMLDivElement>
@@ -147,7 +150,7 @@ export function DocumentPage({
       <div className="flex min-h-0 flex-1">
         <div ref={columnRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col outline-none">
           {above}
-          <Live {...live} onAsk={onAsk} />
+          {fallback ?? <Live {...live} onAsk={onAsk} />}
           {mobile && rail && (
             <section className="max-h-[40%] shrink-0 overflow-y-auto border-t border-border-subtle">{rail}</section>
           )}

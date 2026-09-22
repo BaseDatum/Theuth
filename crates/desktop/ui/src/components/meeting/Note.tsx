@@ -13,7 +13,7 @@ export function MeetingNote({ doc, className }: { doc: string; className?: strin
   const live = useDocument(target)
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border-subtle', className)}>
-      <Live {...live} />
+      <Live {...live} dense />
     </div>
   )
 }
