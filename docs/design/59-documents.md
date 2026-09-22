@@ -933,6 +933,18 @@ file` / `read only` / `exported 14:02`, and the agent chip while it edits.
   with the keyboard up, toggle a bullet, undo, background the app, return,
   edits converge with the Mac; no toolbar under the keyboard; no zoom on
   focus (`font-size ≥ 16px` on inputs).
+- As built (2026-09-22, `feature/mobile-toolbar-focus`): a toolbar tap must
+  not drop the iOS keyboard. The block-type "sheet" is a chip row that slides
+  out above the bar, inside the bar's focus guard (`pointerdown`, `mousedown`
+  and `touchend` cancelled — not `touchstart`, which would also cancel the
+  groups' horizontal pan; a cancelled `touchend` emits no `click`, so the
+  buttons act on `pointerup`, `tabIndex -1`). Every action ends with a
+  synchronous `editor.focus()` in the tap handler (the only moment iOS
+  honours a programmatic focus); picking a type also puts the caret at the
+  end of the converted block. The link sheet is the exception that needs a
+  text input, so it keeps the Radix `Sheet`, refocuses the editor in its
+  Apply/Remove/dismiss handlers and keeps `onCloseAutoFocus` cancelled so
+  Radix does not return focus to the trigger. Keyboard-down still blurs.
 
 ## 11. Security boundary
 
