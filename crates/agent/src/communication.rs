@@ -372,6 +372,11 @@ pub struct PeerInfo {
     /// Session title, only for the caller's own tree (parent, child, sibling, ancestor, descendant).
     #[serde(default)]
     pub title: Option<String>,
+    /// The title model's keywords for the session (07 §15 as-built): every
+    /// local peer, empty until its first model-written title or for a
+    /// remote peer.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Reply to [`ListPeers`] / `discover_peers`: one page after permission filtering.

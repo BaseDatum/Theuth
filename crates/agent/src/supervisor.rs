@@ -3360,7 +3360,9 @@ impl Agents {
                 } else {
                     PeerState::Stored
                 };
-                // The title is the caller's own tree's business only (62 §0.7).
+                // The title is the caller's own tree's business only (62 §0.7);
+                // the tags cross roots so a model can tell related work apart
+                // (50 §5.1 as-built).
                 let title = (their_root == root).then(|| r.title.clone());
                 let info = PeerInfo {
                     address: format!("session:{}", r.id),
@@ -3374,6 +3376,7 @@ impl Agents {
                     stream: false,
                     activity: None,
                     title,
+                    tags: r.tags.clone(),
                 };
                 if their_root == root {
                     same.push((r.id, info));
@@ -4798,10 +4801,19 @@ impl Message<RenameSession> for Agents {
         if title.is_empty() {
             return Err("empty title".into());
         }
-        self.store_for(m.session)
+        let store = self.store_for(m.session);
+        store
             .set_title(m.session, &title)
             .await
             .map_err(|e| e.to_string())?;
+        // A rename changes the title only; the event repeats the stored tags.
+        let tags = store
+            .session(m.session)
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.tags)
+            .unwrap_or_default();
         // Before the reply: the caller's next search must not be served the
         // old title. The `TitleChanged` bump below arrives through the
         // mailbox after we have answered (and is still needed for titles the
@@ -4820,6 +4832,7 @@ impl Message<RenameSession> for Agents {
             .publish(AgentEvent::TitleChanged {
                 session: m.session,
                 title,
+                tags,
             })
             .await;
         Ok(())
@@ -7676,6 +7689,13 @@ pub(crate) mod tests {
         let mut a = agents_with(true).await;
         let (me, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (other, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let rev = a.store.context_revision(other).await.unwrap();
+        assert!(
+            a.store
+                .set_title_at_revision(other, "Merge design 62", &["rust".into(), "merge".into()], &rev)
+                .await
+                .unwrap()
+        );
         let e = a.communication.0.write().route(me, other).unwrap_err();
         assert_eq!(
             a.route_error(me, other, e),
@@ -7707,8 +7727,10 @@ pub(crate) mod tests {
         assert_eq!(rows[0].address, format!("session:{other}"));
         assert_eq!(rows[0].relationship, PeerRelationship::Root);
         assert_eq!(rows[0].state, PeerState::Idle);
-        // 62 §0.7: liveness detail crosses roots, the title does not.
+        // 62 §0.7: liveness detail crosses roots, the title does not; the
+        // tags do (50 §5.1 as-built), so a model can pick relevant roots.
         assert_eq!(rows[0].title, None);
+        assert_eq!(rows[0].tags, ["rust", "merge"]);
         let act = rows[0].activity.as_ref().expect("activity");
         assert_eq!(act.state, PeerLiveState::Idle);
         assert_eq!((act.jobs, act.ptys, act.children), (0, 0, 0));
@@ -7793,6 +7815,7 @@ pub(crate) mod tests {
             stream: false,
             activity,
             title: None,
+            tags: Vec::new(),
         };
         let act = |state: PeerLiveState, ptys: u16, secs_ago: i64| PeerActivity {
             state,
@@ -8308,6 +8331,7 @@ pub(crate) mod tests {
             .ask(AgentEvent::TitleChanged {
                 session: p,
                 title: String::new(),
+                tags: Vec::new(),
             })
             .await;
         let delivered: Vec<(String, String)> = seen

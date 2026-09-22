@@ -442,7 +442,9 @@ impl Tool for DiscoverPeersTool {
              a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
              `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
              not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `title` is filled only \
-             for your own tree (parent, children, siblings, ancestors, descendants). Rows come working-first, then \
+             for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
+             model assigned, e.g. `[rust, merge]`) come with every local peer, empty until it has a model-written title, \
+             and say what a peer is working on so you can tell which are relevant to you. Rows come working-first, then \
              most recently active; `active_only` keeps only peers with a turn in flight or a running job/PTY. \
              Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the next page. \
              Listing wakes nobody and probes no network."
@@ -501,6 +503,9 @@ impl Tool for DiscoverPeersTool {
                     }
                     if let Some(t) = &p.title {
                         s.push_str(&format!(" title={t:?}"));
+                    }
+                    if !p.tags.is_empty() {
+                        s.push_str(&format!(" [{}]", p.tags.join(", ")));
                     }
                     s
                 })
