@@ -3415,6 +3415,14 @@ impl Turn {
         }
         self.reset_this_round = false;
         self.since = self.state.history.len();
+        // The gauge moves per round, on the cadence of `ModelUsageChanged`,
+        // not only at `TurnFinished` (51 §6.4).
+        self.publish(AgentEvent::ContextUsed {
+            session: self.shared.id,
+            turn,
+            context: self.state.used,
+        })
+        .await;
 
         let stop = end
             .captured_stop_reason
