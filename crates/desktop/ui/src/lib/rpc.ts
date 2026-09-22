@@ -15,6 +15,8 @@ export function useApi(): Api {
 export const queryKeys = {
   sessions: ['sessions'] as const,
   session: (id: string) => ['session', id] as const,
+  /** `list_project_styles()` (51 §3 as-built); the style dialog invalidates it after `set_project_style`. */
+  projectStyles: ['project-styles'] as const,
   /** Prefix of every unified-search page (49 §4.2); invalidated by `useInvalidateOn` and the reconnect/`Lagged` reload. */
   searchAll: ['search'] as const,
   /**

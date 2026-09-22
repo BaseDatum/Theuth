@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -37,6 +38,7 @@ export function ProjectPicker({ id, value, onChange }: { id?: string; value: str
           <SelectItem value={NONE}>None</SelectItem>
           {projects.map((p) => (
             <SelectItem key={p} value={item(p)}>
+              <ProjectIcon project={p} className="size-3.5" />
               {p}
             </SelectItem>
           ))}

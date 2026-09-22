@@ -17,6 +17,7 @@ async fn export_bindings() {
         crate::api::Info,
         agent::AgentEvent,
         agent::SessionSummary,
+        agent::ProjectStyle,
         agent::HistoryEntry,
         agent::Loaded,
         agent::ContextOwner,

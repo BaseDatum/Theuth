@@ -146,6 +146,28 @@ Opening an archived chat (search, the Archived group) is the ordinary
 `/c/$session` route. A fork of an archived chat is a live root. Search still
 returns archived sessions; see 49 §7 for the marker.
 
+As built 2026-09-22 (branch `feature/project-icons`): a project carries an
+**icon** and an **icon colour**, shown left of its name in the sidebar header,
+in the session row's project pill and in the new-chat picker, on desktop and
+phone alike. Migration `0018_project_style.sql` adds
+`projects (name PRIMARY KEY, icon, color, updated_at)`; rows exist only for
+styled projects, keyed by the `sessions.project` label (no rename exists, so
+nothing carries over; deleting the last chat of a project leaves its row, which
+is harmless and reused when the label returns). Values are keys, not hex or
+SVG: `icon` is a lucide name and `color` a palette key, both allow-listed in
+`agent::project::{ICONS, COLORS}` — a copy of the desktop's
+`lib/project-style.ts` (`ICONS`, `COLORS`), which `project-style.test.ts`
+checks against the Rust source so the sets cannot drift. `Store::{project_style,
+list_project_styles, set_project_style}` (both `None` deletes the row;
+unknown keys are an error); RPC `list_project_styles()` and
+`set_project_style(name, icon, color)` (label normalized like
+`set_session_project`; no event, like `pin_session` — the desktop invalidates
+its `projectStyles` query after the call). The header's `…` menu gains
+**Icon & colour…**, a dialog with the 24 icons, the 10 swatches and Clear;
+every tap applies at once. Unstyled projects and Ungrouped render a neutral
+`Folder` in `text-fg-tertiary`, so the glyph slot is constant; colours map to
+Tailwind text classes with a lighter dark-theme step.
+
 ## 4. Private ownership and access
 
 ### 4.1 Creation and one owner

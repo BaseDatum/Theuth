@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { useProjects } from '@/components/chat/ProjectPicker'
+import { ProjectIcon } from './ProjectStyle'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
@@ -235,7 +236,8 @@ export const SessionItem = memo(function SessionItem({
                 <Mic className="ml-auto size-3.5 shrink-0 text-fg-tertiary" aria-label="Meeting" />
               ) : (
                 project && (
-                  <span className="ml-auto shrink-0 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
+                  <span className="ml-auto flex shrink-0 items-center gap-1 rounded-full border border-border-subtle px-1.5 text-[10px] leading-4 text-fg-tertiary">
+                    <ProjectIcon project={project} className="size-2.5" />
                     {project}
                   </span>
                 )
