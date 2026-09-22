@@ -16,6 +16,10 @@ const HARNESS = 'harness'
 const RESTORE = 'restore'
 /** The whole Y.Doc is written to IndexedDB this long after the last change (link devices only). */
 const SAVE_MS = 1000
+/** One `doc_update` over the link, base64 (59 §4.7; `document::MAX_UPDATE_B64`). The replay merges the queue in batches under it. */
+export const MAX_UPDATE_B64 = 48 * 1024
+/** The harness refused an update for good (59 §11 limits): retrying cannot help, the local copy has forked. */
+const REFUSED = /^(UpdateTooLarge|DocTooLarge)\b/
 
 export type DocStatus =
   | { kind: 'connecting' }
@@ -227,10 +231,41 @@ export class HarnessProvider {
     this.#api
       .doc_update(this.id, b64(update))
       .then(() => this.#store?.ack([p]))
-      .catch(() => {
+      .catch((e: unknown) => {
+        if (this.#refused(e, [p])) return
         this.#queue.push(p)
         this.#set({ kind: 'offline', queued: this.#queue.length })
       })
+  }
+
+  /**
+   * A limit refusal (`UpdateTooLarge`, `DocTooLarge`): the update is dropped here and in IndexedDB and the
+   * provider closes with the reason — this copy now holds text the harness never accepted, a reload shows
+   * the harness's state. Not an offline condition: a retry would fail the same way forever.
+   */
+  #refused(e: unknown, dropped: Pending[]): boolean {
+    const message = e instanceof Error ? e.message : String(e)
+    const m = REFUSED.exec(message)
+    if (!m) return false
+    void this.#store?.ack([...dropped, ...this.#queue.splice(0)])
+    this.#set({ kind: 'closed', reason: m[1] === 'UpdateTooLarge' ? 'update too large (48 KiB); reload' : 'document full (8 MiB); reload' })
+    return true
+  }
+
+  /** The longest prefix of the (non-empty) queue whose merged update fits under [`MAX_UPDATE_B64`] — at least one entry. */
+  #batch(): { batch: Pending[]; merged: Uint8Array } {
+    const [first, ...rest] = this.#queue
+    if (!first) throw new Error('empty queue')
+    const batch = [first]
+    let merged = first.update
+    // ponytail: re-merges per entry (O(n²) in queue length); fine for an offline FIFO of keystrokes.
+    for (const p of rest) {
+      const next = Y.mergeUpdates([merged, p.update])
+      if (Math.ceil(next.length / 3) * 4 > MAX_UPDATE_B64) break
+      merged = next
+      batch.push(p)
+    }
+    return { batch, merged }
   }
 
   #localAwareness = (
@@ -291,14 +326,16 @@ export class HarnessProvider {
       }
       if (state.length > 0) Y.applyUpdate(this.doc, state, HARNESS)
       if (opened.awareness !== '') applyAwarenessUpdate(this.awareness, unb64(opened.awareness), HARNESS)
-      // One merged update per round stands for everything typed while offline; another round picks up
-      // what was typed while that one was in flight, so nothing waits for the next reconnect.
+      // Merged batches under the 48 KiB cap stand for everything typed while offline; another round picks
+      // up what was typed while one was in flight, so nothing waits for the next reconnect.
       while (this.#queue.length > 0) {
-        const batch = this.#queue.splice(0)
-        if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: 0 })
+        const { batch, merged } = this.#batch()
+        this.#queue.splice(0, batch.length)
+        if (this.status.kind === 'offline') this.#set({ kind: 'offline', queued: this.#queue.length })
         try {
-          await this.#api.doc_update(this.id, b64(Y.mergeUpdates(batch.map((p) => p.update))))
+          await this.#api.doc_update(this.id, b64(merged))
         } catch (e) {
+          if (this.#refused(e, batch)) return
           this.#queue.unshift(...batch)
           throw e
         }

@@ -29,13 +29,17 @@ fn helper_bin() -> Option<std::path::PathBuf> {
 }
 
 async fn start(data_dir: &Path, bin: &Path) -> ActorRef<DocumentActor> {
+    start_with(data_dir, bin, DocumentsConfig::default()).await
+}
+
+async fn start_with(data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
     let store = store::Store::open(data_dir).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
         export_debounce_ms: 100,
-        ..DocumentsConfig::default()
+        ..cfg
     };
     let actor = DocumentActor::spawn(DocumentActor::new(store, h, cfg, rt));
     actor.register(DOCUMENT_ACTOR).unwrap();
@@ -1009,4 +1013,68 @@ async fn member_text_is_labelled_for_the_agent() {
     let outline = read("outline").await;
     assert!(!outline.contains("doc-member:"), "{outline}");
     stop(actor).await;
+}
+
+/// Design 59 §4.7 / §11: the document cap (`DocTooLarge` on the update that would cross it, the
+/// subscriber sees only accepted updates), the per-update cap (`UpdateTooLarge`, nothing applied),
+/// and the awareness cap (4 states per second per connection relayed, the rest dropped).
+#[tokio::test]
+async fn limits_doc_size_update_size_awareness_cap() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start_with(dir.path(), &bin, DocumentsConfig { max_doc_bytes: 4096, ..DocumentsConfig::default() }).await;
+    let note = actor
+        .ask(CreateNote { title: "Big".into(), markdown: "hello\n".into(), by: Principal::Owner { device: None } })
+        .await
+        .unwrap();
+    let doc = note.id.clone();
+    let watcher = Principal::Owner { device: Some(1) };
+    let writer = Principal::Owner { device: Some(2) };
+    let mut sub = actor.ask(Subscribe { doc: doc.clone(), by: watcher }).await.unwrap();
+    let apply = |s: String| actor.ask(ApplyUpdate { doc: doc.clone(), update: scratch_update(&s), by: writer.clone() });
+
+    apply("a".repeat(1024)).await.unwrap();
+    assert!(matches!(next_event(&mut sub).await, DocEvent::Update { .. }));
+    let err = apply("b".repeat(4096)).await.unwrap_err();
+    assert!(err.to_string().starts_with("DocTooLarge"), "{err}");
+    apply("c".repeat(64)).await.unwrap();
+    // The refused update never reached the subscriber: the next event is the small one.
+    match next_event(&mut sub).await {
+        DocEvent::Update { update, .. } => assert!(update.len() < 1024, "the refused 4 KiB update leaked"),
+        other => panic!("{other:?}"),
+    }
+    assert!(note_bytes(dir.path(), &doc) < 4096, "on disk the document stays under the cap");
+
+    // One update over 48 KiB (base64) is refused before it is decoded or applied.
+    let err = apply("d".repeat(40 * 1024)).await.unwrap_err();
+    assert!(err.to_string().starts_with("UpdateTooLarge"), "{err}");
+    assert!(sub.try_recv().is_err(), "nothing fanned out");
+
+    // Awareness: five states in one second from one connection → four relayed.
+    let mut aw = yrs::sync::Awareness::new(Doc::new());
+    for i in 0..5 {
+        aw.set_local_state(serde_json::json!({ "name": "w", "cursor": i })).unwrap();
+        let state = base64::engine::general_purpose::STANDARD.encode(yrs::updates::encoder::Encode::encode_v1(&aw.update().unwrap()));
+        actor.ask(document::AwarenessUpdateMsg { doc: doc.clone(), state, by: writer.clone() }).await.unwrap();
+    }
+    let mut relayed = 0;
+    while let Ok(ev) = sub.try_recv() {
+        assert!(matches!(ev, DocEvent::Awareness { .. }), "{ev:?}");
+        relayed += 1;
+    }
+    assert_eq!(relayed, 4);
+    stop(actor).await;
+}
+
+/// `snapshot.yjs` + `updates.log` of `doc` on disk — the authority's `bytes` estimate.
+fn note_bytes(data_dir: &Path, doc: &document::DocId) -> usize {
+    let d = data_dir.join(format!("documents/{doc}"));
+    ["snapshot.yjs", "updates.log"]
+        .iter()
+        .map(|f| std::fs::metadata(d.join(f)).map(|m| m.len() as usize).unwrap_or(0))
+        .sum()
 }

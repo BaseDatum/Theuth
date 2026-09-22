@@ -239,16 +239,52 @@ impl Guest {
         self.joined.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// `document` refused a member call (not a member, viewer write); returns the running count.
+    /// `document` refused a member call (not a member, viewer write); returns the running count (saturating).
     pub fn refuse(&self) -> u8 {
-        self.refusals
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .saturating_add(1)
+        use std::sync::atomic::Ordering::Relaxed;
+        let _ = self.refusals.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
+        self.refusals()
     }
 
     /// Refused member calls so far.
     pub fn refusals(&self) -> u8 {
         self.refusals.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Refused member calls that close a guest conn (59 §11: "three refusals close the conn").
+    pub const MAX_REFUSALS: u8 = 3;
+
+    /// Whether the conn has used up its refusals and must close (`CLOSE 3`).
+    pub fn exhausted(&self) -> bool {
+        self.refusals() >= Self::MAX_REFUSALS
+    }
+}
+
+#[cfg(test)]
+mod guest_tests {
+    use super::Guest;
+
+    #[test]
+    fn three_refusals_exhaust_a_guest_and_a_join_stands_apart() {
+        let g = Guest {
+            key: [1; 32],
+            handshake_hash: [2; 32],
+            joined: Default::default(),
+            refusals: Default::default(),
+        };
+        assert!(!g.joined() && !g.exhausted());
+        assert_eq!(g.refuse(), 1);
+        assert_eq!(g.refuse(), 2);
+        assert!(!g.exhausted(), "two refusals keep the conn");
+        assert_eq!(g.refuse(), 3);
+        assert!(g.exhausted());
+        // Joining does not forgive refusals; refusals do not unjoin.
+        g.mark_joined();
+        assert!(g.joined() && g.exhausted());
+        for _ in 0..300 {
+            g.refuse();
+        }
+        assert_eq!(g.refusals(), u8::MAX, "the counter saturates");
     }
 }
 

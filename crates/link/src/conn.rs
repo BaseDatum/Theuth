@@ -445,8 +445,6 @@ pub const GUEST_METHODS: [&str; 7] = [
 
 /// A guest conn has this long after `IK` to be admitted to some document (59 §8.3).
 const JOIN_DEADLINE: Duration = Duration::from_secs(5);
-/// Refused member calls that close a guest conn (59 §11: "three refusals close the conn").
-const MAX_REFUSALS: u8 = 3;
 
 #[derive(Deserialize)]
 struct Envelope<'a> {
@@ -473,8 +471,8 @@ pub fn guest_gate(text: &[u8]) -> Option<Box<JsonRawValue>> {
 
 /// Mode 2 (59 §8.3): like [`run_api`] with a guest [`RpcPeer`] (static + handshake hash for the
 /// join proof), [`guest_gate`] on every request, `CLOSE 3` when nothing admitted the static within
-/// [`JOIN_DEADLINE`] or after [`MAX_REFUSALS`] refused member calls. Return visits need no join: a
-/// member's first `doc_open`/`doc_subscribe` succeeds and marks the conn joined.
+/// [`JOIN_DEADLINE`] or after [`crate::Guest::MAX_REFUSALS`] refused member calls. Return visits need
+/// no join: a member's first `doc_open`/`doc_subscribe` succeeds and marks the conn joined.
 async fn run_guest(
     c: &mut Conn,
     transport: &mut TransportState,
@@ -524,8 +522,8 @@ async fn run_guest(
             r = resp_rx.recv() => {
                 let Some(raw) = r else { break };
                 if !c.write_records(transport, raw.get().as_bytes(), &mut buf).await { break }
-                if guest.refusals() >= MAX_REFUSALS {
-                    tracing::debug!(conn = c.id, "guest refused {MAX_REFUSALS} times; closed");
+                if guest.exhausted() {
+                    tracing::debug!(conn = c.id, "guest refused {} times; closed", crate::Guest::MAX_REFUSALS);
                     c.close(CLOSE_REFUSED).await;
                     break;
                 }

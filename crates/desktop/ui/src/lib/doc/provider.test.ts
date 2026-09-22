@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 import type { Api } from '@/rpc/api'
 import type { ConnState, RpcClient } from '@/rpc/client'
-import { HarnessProvider } from './provider'
+import { HarnessProvider, MAX_UPDATE_B64 } from './provider'
 import { DocStore, MAX_BYTES, resetDb } from './queue'
 
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
@@ -251,5 +251,64 @@ describe('HarnessProvider offline queue', () => {
     await settle()
     expect(h.text()).toBe('m')
     p.destroy()
+  })
+
+  test('a long offline queue replays in merged batches under 48 KiB, each accepted', async () => {
+    const h = new Harness()
+    const client = new Client()
+    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    await settle()
+    client.set('reconnecting')
+    // 40 × 3000 chars ≈ 120 KB of text: far over one update's cap, well under the document's.
+    for (let i = 0; i < 40; i++) type(p, 'x'.repeat(3000))
+    expect(p.status).toEqual({ kind: 'offline', queued: 40 })
+    client.set('open')
+    await settle()
+    expect(p.status).toEqual({ kind: 'live' })
+    expect(h.text().length).toBe(120000)
+    expect(h.updates.length).toBeGreaterThan(1) // several batches …
+    expect(h.updates.length).toBeLessThan(40) // … but merged, not one per keystroke
+    for (const u of h.updates) expect(Math.ceil(u.length / 3) * 4).toBeLessThanOrEqual(MAX_UPDATE_B64)
+    expect((await new DocStore('h', 'd').load()).pending).toEqual([])
+    p.destroy()
+  })
+
+  test('a refused update (UpdateTooLarge / DocTooLarge) closes the provider with the reason instead of retrying', async () => {
+    const h = new Harness()
+    const cap = 1000
+    h.api.doc_update = async (_id: string, update: string) => {
+      if (update.length > cap) throw new Error(`UpdateTooLarge: one update may be ${cap} bytes at most, not ${update.length}`)
+      const u = unb64(update)
+      h.updates.push(u)
+      Y.applyUpdate(h.doc, u)
+      return null
+    }
+    const client = new Client()
+    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    await settle()
+    type(p, 'ok')
+    await settle()
+    expect(h.text()).toBe('ok')
+    type(p, 'p'.repeat(5000)) // one paste the harness will not take
+    await settle()
+    expect(p.status).toEqual({ kind: 'closed', reason: 'update too large (48 KiB); reload' })
+    expect(h.text()).toBe('ok')
+    expect((await new DocStore('h', 'd').load()).pending).toEqual([]) // nothing left to replay on the next open
+    // The same on the replay path, with the document cap.
+    const h2 = new Harness()
+    h2.api.doc_update = async () => {
+      throw new Error('DocTooLarge: document would exceed 8388608 bytes')
+    }
+    const c2 = new Client()
+    const p2 = new HarnessProvider(c2.as(), h2.api, 'e', 'h')
+    await settle()
+    c2.set('reconnecting')
+    type(p2, 'z')
+    c2.set('open')
+    await settle()
+    expect(p2.status).toEqual({ kind: 'closed', reason: 'document full (8 MiB); reload' })
+    expect((await new DocStore('h', 'e').load()).pending).toEqual([])
+    p.destroy()
+    p2.destroy()
   })
 })
