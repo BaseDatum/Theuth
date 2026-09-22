@@ -507,3 +507,27 @@ brief-writing turns are short (one batch in, zero or a few tool calls, one
 `meeting_topic` out) and cache-hot: the head + prompt are a stable prefix
 and each batch adds a few hundred tokens.
 
+### 4.8 As built: the meeting controls in the main window (2026-09-22)
+
+`meetings/03-island.md` deviation 9 put a `MeetingPill` (clock, pause/resume,
+stop, jump to the control center) inline at the right end of every header
+band. In dogfood that failed twice: with two or more chat panes the pill
+landed in the *first* pane's header, mid-window, jammed against that
+session's buttons and reading as its own; and nothing in the session view
+said "back to the meeting" (the clock was the only link). As built now:
+one `MeetingBar` (`components/meeting/MeetingBar.tsx`), mounted once by
+`routes/__root.tsx` as the last child of the routed column, so it is a slim
+full-width band along the **bottom** of the content area — below every pane
+and composer, beside the sidebar, unaffected by pane count or route — while
+`live(state)` holds (Recording or Paused), `null` otherwise. Left: pulsing
+dot + mm:ss (still a link to `/meetings/$id`) and the session's activity;
+right: a labelled **Meeting** button (`aria-label="Open meeting"`, tooltip
+*Back to the meeting*; filled when the open chat is the meeting's own
+session, outlined elsewhere), pause/resume, stop. Bottom rather than the
+top because the top row of the column is the macOS title bar: every route
+header insets `pl-20` for the traffic lights when the sidebar is closed,
+and a bar above them would have to take that inset over and leave the
+headers' gap behind. The per-header mounts (chat, search, knowledge,
+artifacts, documents, notes, meetings, settings) are gone; the control
+center's own pause/stop stay in the bar as before.
+

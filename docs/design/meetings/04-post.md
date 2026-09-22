@@ -267,7 +267,7 @@ prompt block (phase 2) already tells the model to use the tools for the rest.
   (03 §9 deviation 10) rebuilds only the *live* meeting from
   `meeting_status`, the `/meetings/$id` page hydrates `Post/Review/
   Summarizing/Done` from `meeting_get` per id. Pause/stop live in
-  `MeetingPill` (03 deviation 9); the phase-4 buttons go in `ControlCenter.tsx`.
+  `MeetingBar` (53 §4.8, formerly `MeetingPill`, 03 deviation 9); the phase-4 buttons go in `ControlCenter.tsx`.
 - `Review` → the review pane: speaker legend (label, name, proposed
   profile with score → *accept* = `Rename`+`Relabel` to the profile name,
   *enroll* dialog with name + optional knowledge entity picker), segment

@@ -402,7 +402,9 @@ QuickTime Player playing the phase-2 two-voice clip as the meeting app.
    jump to the control center, inline at the right end of every header band
    (chat, search, knowledge, artifacts, meetings, settings) while a meeting
    is live — inline so it pushes the header's own controls left rather than
-   covering them; the control center's own pause/stop moved into it. **Session activity** (`TurnStarted`/`ToolCall*`/
+   covering them; the control center's own pause/stop moved into it.
+   *Superseded 2026-09-22 by one `MeetingBar` along the bottom of the routed
+   column (53 §4.8): the per-header pill mis-landed with split panes.* **Session activity** (`TurnStarted`/`ToolCall*`/
    `TurnFinished` of the meeting session) shows as a spinner + `thinking…`
    / tool name in the strip. All user requests from dogfood.
 10. `useTauri`/`useEventSideEffects`/`installDictationListeners` are skipped
