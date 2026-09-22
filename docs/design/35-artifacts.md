@@ -781,6 +781,7 @@ as the contract.
   is the whole design; the panel's editor is CodeMirror, already present.
   Add when someone edits a report in the panel and wants the model to
   continue from it — not before (00 §1.8).
+  _2026-09-22: 59 §7.2 tried BlockNote as the artifact view; Sky ruled it back to read-only markdown (59 §7.2 as built) — the bound document remains storage the agent edits._
 - **Charts as a first-class kind.** Today the model writes an SVG or a
   Mermaid/json-render fence (30). A `plotters`-backed `chart` kind, or
   Typst's `lilaq`, waits for the first user who asks for a real plot.
