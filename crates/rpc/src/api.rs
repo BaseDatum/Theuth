@@ -34,6 +34,7 @@ use agent::{
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     PrivateTrees, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetSessionProject,
+    ListProjectStyles, ProjectStyle, SetProjectStyle,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
@@ -431,6 +432,20 @@ pub trait Api {
         &self,
         session: SessionId,
         project: Option<String>,
+    ) -> RpcResult<()>;
+    /// Every styled project's icon and colour (51 §3 as-built); projects
+    /// without a row use the client's neutral default.
+    #[method(name = "list_project_styles")]
+    async fn list_project_styles(&self) -> RpcResult<Vec<ProjectStyle>>;
+    /// Set project `name`'s icon (lucide name) and colour (palette key), both
+    /// allow-listed; both `None` clears the style. No event, like
+    /// `pin_session`: clients refetch `list_project_styles`.
+    #[method(name = "set_project_style")]
+    async fn set_project_style(
+        &self,
+        name: String,
+        icon: Option<String>,
+        color: Option<String>,
     ) -> RpcResult<()>;
     /// Store base64 `bytes` under `session`'s tree (51 §8.1): the durable
     /// attachments dir, or the private scratch root — ownership is resolved
@@ -2275,6 +2290,19 @@ impl ApiServer for Server {
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSessionProject { session, project }).await
+    }
+
+    async fn list_project_styles(&self) -> RpcResult<Vec<ProjectStyle>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, ListProjectStyles).await
+    }
+
+    async fn set_project_style(
+        &self,
+        name: String,
+        icon: Option<String>,
+        color: Option<String>,
+    ) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetProjectStyle { name, icon, color }).await
     }
 
     async fn put_session_attachment(
