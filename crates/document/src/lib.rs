@@ -35,8 +35,8 @@ pub use actor::{
     with_heading,
 };
 pub use helper::{
-    Edit as BlockEdit, EditError, HelperStatus, ImportMode, helper_path, helper_status,
-    protocol_version,
+    Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
+    helper_status, protocol_version,
 };
 pub use meta::*;
 pub use share::{
