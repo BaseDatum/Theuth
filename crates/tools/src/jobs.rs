@@ -279,6 +279,11 @@ pub enum StartReply {
 #[derive(Clone, Copy, Debug)]
 pub struct ListJobs(pub SessionId);
 
+/// `ask` → `HashMap<SessionId, (u16, u16)>`: running `(pipe jobs, PTY jobs)`
+/// per requested session (62 §0.5); a session with none may be absent.
+#[derive(Clone, Debug)]
+pub struct JobCounts(pub Vec<SessionId>);
+
 /// `ask` → `Result<(), String>`: SIGKILL a running job's process groups.
 /// Err `no such job` | `j3 already finished`.
 #[derive(Clone, Debug)]
@@ -772,6 +777,27 @@ impl Message<ListJobs> for Jobs {
             .get(&m.0)
             .map(|s| s.jobs.iter().map(|j| j.view(m.0)).collect::<Vec<_>>())
             .unwrap_or_default()
+    }
+}
+
+impl Message<JobCounts> for Jobs {
+    type Reply = HashMap<SessionId, (u16, u16)>;
+
+    async fn handle(&mut self, m: JobCounts, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        m.0.into_iter()
+            .filter_map(|id| {
+                let s = self.sessions.get(&id)?;
+                let (mut jobs, mut ptys) = (0u16, 0u16);
+                for j in s.jobs.iter().filter(|j| j.exit.is_none()) {
+                    if j.on_pty {
+                        ptys = ptys.saturating_add(1);
+                    } else {
+                        jobs = jobs.saturating_add(1);
+                    }
+                }
+                (jobs + ptys > 0).then_some((id, (jobs, ptys)))
+            })
+            .collect()
     }
 }
 

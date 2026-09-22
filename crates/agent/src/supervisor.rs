@@ -179,6 +179,9 @@ pub struct Agents {
     owned_children: HashMap<SessionId, OwnedChild>,
     /// Last `TurnFinished` per session this process saw: `(stop_reason, when)`.
     last_stop: HashMap<SessionId, (String, DateTime<Utc>)>,
+    /// Last input routed into each session by this process (62 §0.5); with
+    /// `last_stop` and the turn start it makes `SessionActivity.last_active`.
+    last_input: HashMap<SessionId, DateTime<Utc>>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -780,11 +783,17 @@ impl Agents {
             }
             Err(e) => Err(e),
         };
-        if let Err(e) = sent {
-            self.ledger.release(sid, ticket);
-            self.network_input_dropped(ticket).await;
-            tracing::error!(session = %sid, "session: {e:#}");
-            self.error(sid, format!("{e:#}")).await;
+        match sent {
+            Ok(()) => {
+                // Human and harness inputs alike (`inject` routes through here): 62 §0.5.
+                self.last_input.insert(sid, Utc::now());
+            }
+            Err(e) => {
+                self.ledger.release(sid, ticket);
+                self.network_input_dropped(ticket).await;
+                tracing::error!(session = %sid, "session: {e:#}");
+                self.error(sid, format!("{e:#}")).await;
+            }
         }
         sid
     }
@@ -3697,17 +3706,103 @@ impl Agents {
             .iter()
             .filter_map(|(_, s)| Some((s.id, s.name.as_deref()?)))
             .collect();
+        let ids: Vec<SessionId> = rows.iter().map(|(_, r)| r.id).collect();
+        let mut activity = self.activity_for(&ids).await;
         let mut out = Vec::with_capacity(rows.len());
         for (depth, row) in &rows {
             let parent = row.parent.unwrap_or(session);
+            // Names of cold siblings are known here; keep the two states equal.
             let state = self.state_of(row.id, Some(parent), &names);
-            let activity = SessionActivity {
-                state: state.clone(),
-                ..SessionActivity::default()
-            };
+            let mut activity = activity.remove(&row.id).unwrap_or_default();
+            activity.state = state.clone();
             out.push(self.info_row(store, row, *depth, parent, state, activity).await);
         }
         out
+    }
+
+    /// [`SessionActivity`] for `ids` (62 §0.5): one `JobCounts` ask for all
+    /// of them, the rest from this actor's maps; the store is read only for
+    /// a cold session's `updated_at`.
+    async fn activity_for(&self, ids: &[SessionId]) -> HashMap<SessionId, SessionActivity> {
+        let counts = match ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR) {
+            Ok(Some(jobs)) => jobs
+                .ask(tools::JobCounts(ids.to_vec()))
+                .await
+                .unwrap_or_default(),
+            _ => HashMap::new(),
+        };
+        self.assemble_activity(ids, &counts).await
+    }
+
+    /// [`Self::activity_for`] given the `JobCounts` reply.
+    async fn assemble_activity(
+        &self,
+        ids: &[SessionId],
+        counts: &HashMap<SessionId, (u16, u16)>,
+    ) -> HashMap<SessionId, SessionActivity> {
+        // Live descendants per ancestor: walk each live session's parent chain.
+        let mut children: HashMap<SessionId, u16> = HashMap::new();
+        for (id, live) in &self.sessions {
+            if !live.actor.is_alive() {
+                continue;
+            }
+            let mut cur = *id;
+            while let Some((p, _)) = self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
+                *children.entry(*p).or_default() += 1;
+                cur = *p;
+            }
+        }
+        let names = HashMap::new();
+        let mut out = HashMap::with_capacity(ids.len());
+        for &id in ids {
+            let parent = self.sessions.get(&id).and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
+            let turn_started_at = self.child_turns.get(&id).map(|ct| ct.started_at);
+            let mut last_active = [
+                self.last_input.get(&id).copied(),
+                self.last_stop.get(&id).map(|(_, at)| *at),
+                turn_started_at,
+            ]
+            .into_iter()
+            .flatten()
+            .max();
+            if last_active.is_none() {
+                last_active = self
+                    .store_for(id)
+                    .session(id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|s| s.updated_at);
+            }
+            let (jobs, ptys) = counts.get(&id).copied().unwrap_or_default();
+            out.insert(
+                id,
+                SessionActivity {
+                    state: self.state_of(id, parent, &names),
+                    last_active,
+                    turn_started_at,
+                    jobs,
+                    ptys,
+                    children: children.get(&id).copied().unwrap_or_default(),
+                    asks: None,
+                    live: self.live(id).is_some(),
+                },
+            );
+        }
+        out
+    }
+
+    /// Every stored session row, durable store first then each open private
+    /// tree's, in each store's `list_sessions` order.
+    async fn all_rows(&self) -> Vec<SessionSummary> {
+        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
+            tracing::error!("list sessions: {e:#}");
+            Vec::new()
+        });
+        for p in self.private.values().filter(|p| !p.closing) {
+            rows.extend(p.store.list_sessions().await.unwrap_or_default());
+        }
+        rows
     }
 
     /// Live state of `id` as the roster shows it (design doc 19 §2.1).
@@ -3775,35 +3870,58 @@ impl Agents {
             activity,
         }
     }
+
+    /// [`ListActivity`]'s rows (62 §3.2): every root, plus every session with
+    /// a live actor or a running job; `depth` from its own root.
+    async fn activity_rows(&self) -> Vec<AgentInfo> {
+        let rows = self.all_rows().await;
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        let mut activity = self.activity_for(&ids).await;
+        // Pre-order like `agents()`: roots in roster order, then each one's
+        // children oldest first. A cold child is skipped but its live
+        // descendants are still walked (their depth counts it).
+        let mut kids: HashMap<SessionId, Vec<&SessionSummary>> = HashMap::new();
+        for r in &rows {
+            if let Some(p) = r.parent {
+                kids.entry(p).or_default().push(r);
+            }
+        }
+        for v in kids.values_mut() {
+            v.sort_by_key(|r| r.created_at);
+        }
+        let mut stack: Vec<(&SessionSummary, u8)> = rows
+            .iter()
+            .filter(|r| r.parent.is_none())
+            .rev()
+            .map(|r| (r, 0))
+            .collect();
+        let mut out = Vec::new();
+        while let Some((row, depth)) = stack.pop() {
+            if let Some(children) = kids.get(&row.id) {
+                stack.extend(children.iter().rev().map(|c| (*c, depth.saturating_add(1))));
+            }
+            let Some(a) = activity.remove(&row.id) else {
+                continue;
+            };
+            if depth > 0 && !a.live && a.jobs + a.ptys == 0 {
+                continue;
+            }
+            let parent = row.parent.unwrap_or(row.id);
+            let state = a.state.clone();
+            out.push(
+                self.info_row(self.store_for(row.id), row, depth, parent, state, a)
+                    .await,
+            );
+        }
+        out
+    }
 }
 
 impl Message<ListActivity> for Agents {
     type Reply = Vec<AgentInfo>;
 
     async fn handle(&mut self, _: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        // Contract stub (62 commit 0): live roots only, activity zeroed.
-        let rows = self.store.list_sessions().await.unwrap_or_else(|e| {
-            tracing::error!("list sessions: {e:#}");
-            Vec::new()
-        });
-        let names = HashMap::new();
-        let mut out = Vec::new();
-        for row in rows
-            .iter()
-            .filter(|r| r.parent.is_none() && self.live(r.id).is_some())
-        {
-            let state = self.state_of(row.id, None, &names);
-            let activity = SessionActivity {
-                state: state.clone(),
-                live: true,
-                ..SessionActivity::default()
-            };
-            out.push(
-                self.info_row(&self.store, row, 0, row.id, state, activity)
-                    .await,
-            );
-        }
-        out
+        self.activity_rows().await
     }
 }
 
@@ -5690,6 +5808,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             timed_out: HashSet::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
+            last_input: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -6092,6 +6211,7 @@ impl Agents {
             self.running.remove(&id);
             self.approvals.remove(&id);
             self.last_stop.remove(&id);
+            self.last_input.remove(&id);
             self.owned_children.remove(&id);
             self.bound.retain(|(s, _), _| *s != id);
             self.delivered.retain(|(s, _), _| *s != id);
@@ -7027,6 +7147,7 @@ pub(crate) mod tests {
             timed_out: HashSet::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
+            last_input: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),
@@ -7865,6 +7986,56 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(a.ledger.activity(p), None);
+    }
+
+    /// 62 §3.2: a root whose model is idle but that owns a running PTY is
+    /// `Idle, ptys: 1, live: true` — the job, not the model, marks it as
+    /// working. (`JobCounts` is fed as a synthetic reply: no `Jobs` actor is
+    /// registered in this harness.)
+    #[tokio::test]
+    async fn activity_counts_a_pty_on_an_idle_root() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let counts = HashMap::from([(root, (0u16, 1u16))]);
+        let act = a.assemble_activity(&[root], &counts).await;
+        let act = &act[&root];
+        assert_eq!(act.state, AgentState::Idle);
+        assert_eq!((act.jobs, act.ptys, act.children), (0, 1, 0));
+        assert!(act.live);
+        assert!(act.last_active.is_some(), "a cold row falls back to `updated_at`");
+        assert!(act.turn_started_at.is_none());
+    }
+
+    /// 62 §3.2: `ListActivity` lists every root, cold or not, and a child only
+    /// while it has an actor or a job; a live child counts toward its root.
+    #[tokio::test]
+    async fn list_activity_keeps_cold_roots_and_drops_cold_children() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let (cold_root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let cold_child = SessionId::new();
+        let live_child = SessionId::new();
+        for (id, name) in [(cold_child, "cold"), (live_child, "live")] {
+            a.session(Some(id), Some((root, name)), None, (None, None))
+                .await
+                .unwrap();
+        }
+        // Going cold: the actor is gone, the row stays.
+        a.sessions.remove(&cold_root);
+        a.sessions.remove(&cold_child);
+
+        let rows = a.activity_rows().await;
+        let ids: Vec<SessionId> = rows.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&root) && ids.contains(&cold_root));
+        assert!(ids.contains(&live_child) && !ids.contains(&cold_child));
+        let by_id: HashMap<SessionId, &AgentInfo> = rows.iter().map(|r| (r.id, r)).collect();
+        assert_eq!((by_id[&root].depth, by_id[&root].parent), (0, root));
+        assert_eq!((by_id[&live_child].depth, by_id[&live_child].parent), (1, root));
+        assert!(by_id[&root].activity.live && !by_id[&cold_root].activity.live);
+        assert_eq!(by_id[&root].activity.children, 1);
+        // Pre-order: a child right after its root.
+        let at = |id| ids.iter().position(|x| *x == id).unwrap();
+        assert_eq!(at(live_child), at(root) + 1);
     }
 
     /// A rename or delete that has replied is visible to the very next search:
