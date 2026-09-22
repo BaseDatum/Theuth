@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useMemo } from 'react'
 import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -33,11 +33,11 @@ export function nameMatch(a: Artifact, q: string): boolean {
 }
 
 /** One `name` in one session: the newest version and the older ones, newest first. */
-type Stack = { head: Artifact; older: Artifact[] }
+export type Stack = { head: Artifact; older: Artifact[] }
 export type Group = { session: string; stacks: Stack[] }
 
-/** Newest first in, grouped by session (ordered by their newest artifact) then collapsed by `name`. */
-function group(all: Artifact[], f: Filter): Group[] {
+/** Newest first in, grouped by session (ordered by their newest artifact) then collapsed by `name`: one lineage, one stack. */
+export function group(all: Artifact[], f: Filter): Group[] {
   const q = f.q.trim()
   const groups = new Map<string, Map<string, Artifact[]>>()
   for (const a of all) {
@@ -126,7 +126,7 @@ export function List({ filter, active }: { filter: Filter; active: string | unde
           <span className="truncate">{sessionLabel(g.session, sessions.data)}</span>
         </Link>
         {g.stacks.map((s) => (
-          <StackRows key={s.head.name} stack={s} active={active} />
+          <Row key={s.head.name} stack={s} active={active} />
         ))}
       </section>
     ))
@@ -147,37 +147,20 @@ export function List({ filter, active }: { filter: Filter; active: string | unde
   )
 }
 
-/** Older versions stay collapsed until one is active; opening is controlled so a hit on an old version expands an already-mounted stack (49 §7). */
-const StackRows = memo(function StackRows({ stack: s, active }: { stack: Stack; active: string | undefined }) {
-  const activeOlder = s.older.some((o) => o.call_id === active)
-  const [open, setOpen] = useState(activeOlder)
-  useEffect(() => {
-    if (activeOlder) setOpen(true)
-  }, [activeOlder])
-  if (s.older.length === 0) return <Row a={s.head} active={s.head.call_id === active} />
-  return (
-    <Collapsible open={open} onOpenChange={setOpen} className="group/stack">
-      <Row a={s.head} active={s.head.call_id === active} />
-      <CollapsibleTrigger className="flex h-7 w-full items-center gap-1 rounded-[10px] pl-[62px] text-xs text-fg-tertiary hover:bg-layer-2">
-        <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/stack:rotate-90" />
-        {s.older.length} older
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        {s.older.map((o) => (
-          <Row key={o.call_id} a={o} active={o.call_id === active} />
-        ))}
-      </CollapsibleContent>
-    </Collapsible>
-  )
-})
-
-const Row = memo(function Row({ a, active }: { a: Artifact; active: boolean }) {
+/**
+ * One lineage is one row (59 §7.2 as built): the newest version's title and `vN` chip, opening the newest;
+ * older versions are reached only through the viewer's version `Select`. The row is active while any of
+ * its versions is the one shown, so the rail keeps the lineage highlighted when the viewer walks back.
+ */
+const Row = memo(function Row({ stack: s, active }: { stack: Stack; active: string | undefined }) {
+  const a = s.head
+  const on = active !== undefined && (a.call_id === active || s.older.some((o) => o.call_id === active))
   return (
     <Link
       to="/artifacts/$callId"
       params={{ callId: a.call_id }}
-      ref={active ? reveal : undefined}
-      className={cn('flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', active && 'bg-layer-3 hover:bg-layer-3')}
+      ref={on ? reveal : undefined}
+      className={cn('flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', on && 'bg-layer-3 hover:bg-layer-3')}
     >
       <Thumb a={a} />
       <div className="min-w-0 flex-1">

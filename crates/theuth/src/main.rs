@@ -160,6 +160,8 @@ agent:
 # documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor
 #   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
 #   export_debounce_ms: 400  # settle time before the derived .md is rewritten (hard cap 3 s)
+#   export_quiet_secs: 60    # no typing for this long before the owner records the edit (knowledge commit, artifact version);
+#                            # flushed at once when the document closes, its last reader leaves, or theuth stops
 #   max_doc_bytes: 8388608   # an update that would grow a document past this is refused (DocTooLarge)
 #   snapshots_keep: 30       # automatic (daily) snapshots kept per document; labelled ones are never pruned
 #   agent_color: '#7c3aed'  # the agent's presence and typewriter reveal colour in every editor

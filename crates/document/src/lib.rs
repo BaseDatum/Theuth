@@ -30,7 +30,7 @@ pub mod watch;
 
 pub use actor::{
     ApplyUpdate, AwarenessUpdateMsg, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
-    EditOutcome, Ensure, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
+    EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
     Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
     with_heading,
 };
@@ -57,6 +57,10 @@ pub struct DocumentsConfig {
     pub enabled: bool,
     /// Debounce between the last accepted update and the derived-file write (§4.3; hard cap 3 s).
     pub export_debounce_ms: u64,
+    /// Quiet period after the last accepted update before the owner hears [`Exported`] (§4.3 as built): typing
+    /// rewrites the file every few seconds, the owner (knowledge commit, artifact version) is told once it stops.
+    /// Flushed at once when the document unloads, its last subscriber leaves, or the harness shuts down.
+    pub export_quiet_secs: u64,
     /// Refuse updates that would push a document's Yjs state past this (§4.7).
     pub max_doc_bytes: usize,
     /// Automatic snapshots kept per document (§4.6); labelled ones are never pruned.
@@ -78,6 +82,7 @@ impl Default for DocumentsConfig {
         Self {
             enabled: true,
             export_debounce_ms: 400,
+            export_quiet_secs: 60,
             max_doc_bytes: 8 * 1024 * 1024,
             snapshots_keep: 30,
             agent_color: "#7c3aed".to_owned(),
@@ -89,8 +94,9 @@ impl Default for DocumentsConfig {
     }
 }
 
-/// Event: a document's derived file was rewritten (§4.3). The file's owner
-/// (knowledge: `sync` → index + commit) reacts; the text is on disk.
+/// Event: a document's derived file was rewritten and its author went quiet (§4.3 as built:
+/// `export_quiet_secs` after the last update, or at once on unload / last subscriber gone /
+/// shutdown). The file's owner (knowledge: `sync` → index + commit; artifacts: a version) reacts.
 #[derive(Clone, Debug)]
 pub struct Exported {
     /// Document.
@@ -215,7 +221,8 @@ impl runtime::Plugin for DocumentPlugin {
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
             loop {
                 tokio::select! {
-                    _ = shutdown.cancelled() => break,
+                    // Shutdown: settled edits reach their owners before `main` exits (§4.3 as built).
+                    _ = shutdown.cancelled() => { let _ = a.ask(Flush).await; break }
                     _ = tick.tick() => {
                         if a.tell(Tick).await.is_err() { break; }
                     }

@@ -709,6 +709,31 @@ shares one via a module-level registry.
 - The artifacts page: `artifacts.$callId.tsx` renders `<Editor>` when
   `artifact.doc` is set; the version chip opens `doc_snapshots`.
 
+**As built (2026-09-22, `feature/artifact-markdown`, Sky's ruling after using it).**
+The desktop UI no longer opens a markdown artifact in BlockNote: `/artifacts/$callId`
+renders every markdown version read-only through the same streamdown `Markdown` as
+before this design (mermaid / json-render surfaces, OS-opening links); `ArtifactDoc`,
+the `doc_resolve` binding lookup, Snapshots and "Attach to chat…" left `Viewer.tsx`.
+The chat card and panel never had the binding. The document behind a markdown
+lineage stays as storage: `show` still imports into it (`Ensure` / `ImportMarkdown`
+stamped `File`, `artifact-v<N>` snapshots), the agent's `doc_*` tools still edit it,
+and an export still becomes the next version through `edit_version` — editing is a
+deliberate agent action, not the default view. The list (`List.tsx`) shows one row per
+`(session, name)` lineage: newest title, `v<latest>` chip, opens the newest; older
+versions are reached only through the viewer's version `Select` (newest first). The
+per-version rows the old stack expanded (whenever the shown version was not the head —
+a chat card opens the `show`'s `call_id`, which edit versions outrank) are gone.
+"Settled" (§4.3) now has two clocks: the derived file is still rewritten
+`export_debounce_ms` after the last update (cap 3 s), but the owner notification
+(`Exported` → knowledge `sync` + commit, artifact `edit_version`) waits
+`documents.export_quiet_secs` (default 60) after the last update — before, it rode every
+file write, so a typing session was one commit or version per ≤ 3 s. It is flushed at
+once when the document has no subscriber (agent tool edits, as before), when its last
+subscriber leaves, at unload, and at shutdown (`Flush` from the tick task). The
+editor footer's `exported HH:MM` line still follows the file write; a pending owner
+notification is in memory only — a crash inside the quiet period leaves the file and the
+Yjs state on disk but no commit/version until the next export of that document.
+
 ### 7.3 Notes
 
 - Sidebar row **Notes** between Knowledge and Artifacts (`AppSidebar.tsx`);
@@ -966,6 +991,7 @@ file` / `read only` / `exported 14:02`, and the agent chip while it edits.
 ```yaml
 documents:
   export_debounce_ms: 400
+  export_quiet_secs: 60   # §7.2 as built: owner notification (commit / artifact version) after this much quiet
   max_doc_bytes: 8388608
   max_members: 64
   guest_joins_per_minute: 10

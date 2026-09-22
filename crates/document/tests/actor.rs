@@ -34,6 +34,10 @@ async fn start(data_dir: &Path, bin: &Path) -> ActorRef<DocumentActor> {
 
 async fn start_with(data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
     let rt = runtime::Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
+    start_in(rt, data_dir, bin, cfg).await
+}
+
+async fn start_in(rt: runtime::Runtime, data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
     let store = store::Store::open(data_dir).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
@@ -1184,5 +1188,70 @@ async fn sharing_off_and_disabled() {
     );
     assert_eq!(actor.ask(join()).await.unwrap_err().to_string(), JoinError::SharingOff.to_string());
     actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: Principal::Owner { device: Some(1) } }).await.unwrap();
+    stop(actor).await;
+}
+
+/// Records every [`document::Exported`] the runtime publishes: what knowledge and the artifact store hear.
+#[derive(kameo::Actor)]
+struct Owner(tokio::sync::mpsc::UnboundedSender<document::Exported>);
+
+impl kameo::message::Message<document::Exported> for Owner {
+    type Reply = ();
+
+    async fn handle(&mut self, m: document::Exported, _: &mut kameo::message::Context<Self, Self::Reply>) {
+        let _ = self.0.send(m);
+    }
+}
+
+async fn exported(heard: &mut tokio::sync::mpsc::UnboundedReceiver<document::Exported>, within: Duration) -> Option<document::Exported> {
+    tokio::time::timeout(within, heard.recv()).await.ok().flatten()
+}
+
+/// Skip the subscriber's own view of the update (and any awareness) up to the file export.
+async fn until_exported(sub: &mut tokio::sync::mpsc::Receiver<DocEvent>) {
+    while next_event(sub).await != DocEvent::Exported {}
+}
+
+/// 59 §4.3 as built: the derived file is rewritten per debounce, but the owner hears `Exported` only after
+/// `export_quiet_secs` without an update — or at once with no subscriber, when the last one leaves, and on `Flush`.
+#[tokio::test]
+async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let owner_actor = Owner::spawn(Owner(tx));
+    rt.subscribe::<Owner, document::Exported>(&owner_actor).await;
+    let actor = start_in(rt, dir.path(), &bin, DocumentsConfig { export_quiet_secs: 2, ..DocumentsConfig::default() }).await;
+    let owner = Principal::Owner { device: Some(1) };
+    let id = actor.ask(CreateNote { title: "Q".into(), markdown: "one\n".into(), by: owner.clone() }).await.unwrap().id;
+    // Nobody is reading: the creation's export reaches the owner at once, as before.
+    assert_eq!(exported(&mut heard, Duration::from_secs(3)).await.map(|e| e.doc), Some(id.clone()));
+
+    // An editor is on it: the file settles within the debounce, the owner waits out the quiet period.
+    let mut sub = actor.ask(Subscribe { doc: id.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("a"), by: owner.clone() }).await.unwrap();
+    until_exported(&mut sub).await; // the file is rewritten per debounce
+    assert!(exported(&mut heard, Duration::from_millis(800)).await.is_none(), "owner told before the quiet period");
+    assert!(exported(&mut heard, Duration::from_secs(4)).await.is_some(), "owner not told after the quiet period");
+
+    // The last subscriber leaves: flushed at once.
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("b"), by: owner.clone() }).await.unwrap();
+    until_exported(&mut sub).await;
+    drop(sub);
+    assert!(exported(&mut heard, Duration::from_secs(1)).await.is_some(), "not flushed when the last subscriber left");
+
+    // Shutdown: `Flush` reports what is settled and fires what is still pending.
+    let mut sub = actor.ask(Subscribe { doc: id.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("c"), by: owner.clone() }).await.unwrap();
+    until_exported(&mut sub).await;
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("d"), by: owner.clone() }).await.unwrap();
+    actor.ask(document::Flush).await.unwrap();
+    assert!(exported(&mut heard, Duration::from_secs(3)).await.is_some(), "not flushed at shutdown");
+    assert!(exported(&mut heard, Duration::from_millis(500)).await.is_none(), "one edit session, one owner notification");
     stop(actor).await;
 }
