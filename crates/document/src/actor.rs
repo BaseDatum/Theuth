@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -22,7 +23,9 @@ use tokio::sync::mpsc;
 use yrs::sync::{Awareness, AwarenessUpdate};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
-use yrs::{ReadTxn, StateVector, Transact, Update};
+use yrs::types::xml::XmlOut;
+use yrs::types::{Change, DeepObservable, Event};
+use yrs::{ReadTxn, StateVector, Transact, TransactionMut, Update, Xml};
 
 use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
 use crate::meta::{
@@ -76,6 +79,10 @@ pub(crate) struct Open {
     agent_gen: u64,
     /// Per connection: start of the current one-second window and the states relayed in it (§6.2 cap).
     awareness_rate: HashMap<Option<u64>, RateSlot>,
+    /// Block ids the last transaction wrote, filled by the deep observer on the fragment (§11 authorship).
+    touched: Arc<Mutex<Vec<String>>>,
+    /// `meta.authors` changed since `meta.json` was last written.
+    authors_dirty: bool,
 }
 
 /// One participant's awareness budget: window start, states relayed since.
@@ -95,6 +102,57 @@ fn admit_awareness(slot: &mut RateSlot, now: Instant) -> bool {
     }
     slot.sent += 1;
     true
+}
+
+/// Block ids `e` wrote (§11 authorship): the nearest enclosing `blockContainer` of the changed
+/// node, and every `blockContainer` a child insert added (a new block's own id).
+fn touched_blocks(txn: &TransactionMut, e: &Event, out: &mut Vec<String>) {
+    let push = |out: &mut Vec<String>, id: String| {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    };
+    let target = match e {
+        Event::XmlText(t) => Some(XmlOut::Text(t.target().clone())),
+        Event::XmlFragment(f) => {
+            for c in f.delta(txn) {
+                if let Change::Added(items) = c {
+                    for item in items {
+                        if let Ok(node) = XmlOut::try_from(item.clone())
+                            && let Some(id) = container_id(txn, &node)
+                        {
+                            push(out, id);
+                        }
+                    }
+                }
+            }
+            Some(f.target().clone())
+        }
+        _ => None,
+    };
+    let mut node = target;
+    while let Some(n) = node {
+        if let Some(id) = container_id(txn, &n) {
+            push(out, id);
+            break;
+        }
+        node = match &n {
+            XmlOut::Element(e) => e.parent(),
+            XmlOut::Text(t) => t.parent(),
+            XmlOut::Fragment(_) => None,
+        };
+    }
+}
+
+/// `id` of `node` when it is a BlockNote `blockContainer`.
+fn container_id(txn: &TransactionMut, node: &XmlOut) -> Option<String> {
+    let XmlOut::Element(el) = node else {
+        return None;
+    };
+    if el.try_tag().is_none_or(|t| &**t != "blockContainer") {
+        return None;
+    }
+    el.get_attribute(txn, "id").map(|v| v.to_string(txn))
 }
 
 /// What "Undo last agent edit" reverts.
@@ -204,6 +262,16 @@ impl DocumentActor {
                 .transact()
                 .encode_state_as_update_v1(&StateVector::default());
             self.helper.open(id, &state, &l.meta.fragment).log("open");
+            let touched = Arc::new(Mutex::new(Vec::new()));
+            let sink = touched.clone();
+            l.doc
+                .get_or_insert_xml_fragment(l.meta.fragment.as_str())
+                .observe_deep("authors", move |txn, events| {
+                    let mut sink = sink.lock().unwrap_or_else(|p| p.into_inner());
+                    for e in events.iter() {
+                        touched_blocks(txn, e, &mut sink);
+                    }
+                });
             self.open.insert(
                 id.clone(),
                 Open {
@@ -220,6 +288,8 @@ impl DocumentActor {
                     last_agent_edit: None,
                     agent_gen: 0,
                     awareness_rate: HashMap::new(),
+                    touched,
+                    authors_dirty: false,
                 },
             );
             self.enforce_open_cap();
@@ -271,10 +341,20 @@ impl DocumentActor {
             ));
         }
         let u = Update::decode_v1(&update).map_err(|e| format!("bad update: {e}"))?;
+        o.touched.lock().unwrap_or_else(|p| p.into_inner()).clear();
         o.doc
             .transact_mut()
             .apply_update(u)
             .map_err(|e| format!("apply update: {e}"))?;
+        // §11: a member's blocks carry their author until someone else writes them.
+        let written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
+        for id in written {
+            let changed = match &by {
+                Principal::Member { pub_, .. } => o.meta.authors.insert(id, pub_.clone()).as_deref() != Some(pub_),
+                _ => o.meta.authors.remove(&id).is_some(),
+            };
+            o.authors_dirty |= changed;
+        }
         let now = now_ms();
         let n = store
             .append(doc, &by, &update)
@@ -548,8 +628,16 @@ impl DocumentActor {
         {
             tracing::warn!(doc = %doc, error = %e, "snapshot at unload failed; log kept");
         }
-        if self.open.remove(doc).is_some() {
+        if let Some(o) = self.open.remove(doc) {
             self.helper.close(doc).log("close");
+            if o.authors_dirty {
+                let store = self.store.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = store.write_meta(&o.meta).await {
+                        tracing::warn!(doc = %o.meta.id, error = %e, "meta.json: authors not saved at unload");
+                    }
+                });
+            }
         }
         if let Some(subs) = self.subs.remove(doc) {
             for s in subs {
@@ -711,7 +799,8 @@ impl Message<OpenDoc> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<(), String>`: one v1 update (base64) from `by`; `DocTooLarge` beyond the cap.
+/// `ask` → `Result<(), String>`: one v1 update (base64) from `by`; `UpdateTooLarge` past [`MAX_UPDATE_B64`],
+/// `DocTooLarge` beyond the document cap.
 #[derive(Clone, Debug)]
 pub struct ApplyUpdate {
     /// Document.
@@ -722,10 +811,20 @@ pub struct ApplyUpdate {
     pub by: Principal,
 }
 
+/// One client update over the link, base64 (§4.7: 48 KiB; the client splits or refuses a bigger one).
+/// Helper transactions (imports, agent edits) are not on the link and are not capped here.
+pub const MAX_UPDATE_B64: usize = 48 * 1024;
+
 impl Message<ApplyUpdate> for DocumentActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: ApplyUpdate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if m.update.len() > MAX_UPDATE_B64 {
+            return Err(format!(
+                "UpdateTooLarge: one update may be {MAX_UPDATE_B64} bytes at most, not {}",
+                m.update.len()
+            ));
+        }
         let update = unb64(&m.update)?;
         self.admit(&m.doc, &m.by, true)?;
         self.apply(&m.doc, update, m.by, false, Vec::new()).await
@@ -857,6 +956,7 @@ impl Message<Ensure> for DocumentActor {
             links: vec![],
             agent: AgentStyle::default(),
             last_export: None,
+            authors: Default::default(),
             created_ms: now,
             updated_ms: now,
         };
@@ -1148,16 +1248,41 @@ impl Message<Outline> for DocumentActor {
             return reply;
         }
         let helper = self.helper.clone();
+        let authors = self.author_labels(&m.doc);
         tokio::spawn(async move {
             tx.send(
                 helper
                     .outline(&m.doc, m.depth)
                     .await
+                    .map(|mut r| {
+                        if !authors.is_empty() {
+                            r.outline = label_outline(&r.outline, &authors);
+                        }
+                        r
+                    })
                     .map_err(|e| e.to_string()),
             );
         });
         reply
     }
+}
+
+/// Outline lines (`<indent><id> …`) of blocks in `authors` get their label appended (§11).
+fn label_outline(outline: &str, authors: &HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(outline.len() + authors.len() * 48);
+    for line in outline.lines() {
+        out.push_str(line);
+        if let Some(id) = line.trim_start().split(' ').next()
+            && let Some(label) = authors.get(id)
+        {
+            out.push_str("  [by ");
+            out.push_str(label);
+            out.push(']');
+        }
+        out.push('\n');
+    }
+    out.pop();
+    out
 }
 
 /// `ask` → `Result<String, String>`: lossy markdown of `doc` or of `blocks`, each block preceded by `<!-- id -->` when `annotate`.
@@ -1181,11 +1306,12 @@ impl Message<Markdown> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
+        let authors = if m.annotate { self.author_labels(&m.doc) } else { HashMap::new() };
         let helper = self.helper.clone();
         tokio::spawn(async move {
             tx.send(
                 helper
-                    .markdown_of(&m.doc, m.blocks.as_deref(), m.annotate)
+                    .markdown_of(&m.doc, m.blocks.as_deref(), m.annotate, &authors)
                     .await
                     .map_err(|e| e.to_string()),
             );
@@ -1283,6 +1409,7 @@ impl DocumentActor {
                 color: self.cfg.agent_color.clone(),
             },
             last_export: None,
+            authors: Default::default(),
             created_ms: now,
             updated_ms: now,
         };
@@ -1714,6 +1841,17 @@ impl Message<Tick> for DocumentActor {
         }
         for id in unloads {
             self.unload(&id, "unloaded");
+        }
+        // §11 authorship coalesced to one `meta.json` write per tick.
+        let dirty: Vec<DocMeta> = self
+            .open
+            .values_mut()
+            .filter_map(|o| std::mem::take(&mut o.authors_dirty).then(|| o.meta.clone()))
+            .collect();
+        for meta in dirty {
+            if let Err(e) = self.store.write_meta(&meta).await {
+                tracing::warn!(doc = %meta.id, error = %e, "meta.json: authors not saved");
+            }
         }
         // Imports that replied but changed nothing send no update: forget them after a grace period.
         self.imports

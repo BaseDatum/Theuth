@@ -491,6 +491,7 @@ mod tests {
             links: vec![],
             agent: AgentStyle::default(),
             last_export: None,
+            authors: Default::default(),
             created_ms: 1,
             updated_ms: 1,
         }

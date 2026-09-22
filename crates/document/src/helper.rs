@@ -367,19 +367,24 @@ impl Helper {
 
     /// Lossy markdown of the whole document (frontmatter block → YAML header).
     pub async fn markdown(&self, doc: &DocId) -> Result<String, Error> {
-        self.markdown_of(doc, None, false).await
+        self.markdown_of(doc, None, false, &Default::default()).await
     }
 
-    /// Lossy markdown of `blocks` (any depth) or the whole document; `annotate` prefixes each block with `<!-- id -->` (§5.1).
+    /// Lossy markdown of `blocks` (any depth) or the whole document; `annotate` prefixes each block with
+    /// `<!-- id -->`, or `<!-- id by <label> -->` for ids in `authors` (§5.1, §11).
     pub async fn markdown_of(
         &self,
         doc: &DocId,
         blocks: Option<&[String]>,
         annotate: bool,
+        authors: &std::collections::HashMap<String, String>,
     ) -> Result<String, Error> {
         let mut fields = json!({ "annotate": annotate });
         if let Some(b) = blocks {
             fields["blocks"] = json!(b);
+        }
+        if !authors.is_empty() {
+            fields["authors"] = json!(authors);
         }
         let v = self.request("markdown", doc, fields).await?;
         v.get("markdown")

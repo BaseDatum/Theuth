@@ -288,6 +288,10 @@ pub struct DocMeta {
     /// tell its own export from a foreign edit.
     #[serde(default)]
     pub last_export: Option<String>,
+    /// Block id → static of the member who last wrote it (§11: `doc_read` labels these blocks;
+    /// an owner/agent/file write to the block clears it). Kept in `meta.json`, absent from older files.
+    #[serde(default)]
+    pub authors: std::collections::BTreeMap<String, String>,
     /// Created, unix ms.
     pub created_ms: i64,
     /// Last accepted update, unix ms.

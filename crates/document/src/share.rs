@@ -121,6 +121,27 @@ impl DocumentActor {
         })
     }
 
+    /// §11: block id → `"<name> · doc-member:<pub8>"` for every block a member last wrote; the
+    /// label `doc_read` puts on that block. A removed member keeps labelling their text as "former member".
+    pub(crate) fn author_labels(&self, doc: &DocId) -> std::collections::HashMap<String, String> {
+        let Some(o) = self.open.get(doc) else {
+            return Default::default();
+        };
+        o.meta
+            .authors
+            .iter()
+            .map(|(id, pub_)| {
+                let name = o
+                    .meta
+                    .members
+                    .iter()
+                    .find(|m| m.pub_ == *pub_)
+                    .map_or("former member", |m| m.name.as_str());
+                (id.clone(), format!("{name} · doc-member:{}", &pub_[..pub_.len().min(8)]))
+            })
+            .collect()
+    }
+
     /// Persist `meta.json` after a members/links change; a failure is logged, the in-memory state stands.
     pub(crate) async fn save_members(&mut self, doc: &DocId) {
         let Some(meta) = self.open.get(doc).map(|o| o.meta.clone()) else {
