@@ -11,12 +11,15 @@
 # ── UI (always native) ────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM oven/bun:1.4-alpine AS web
 # Layout matches the repo: ui tsconfig/vite resolve `@theuth/apps` and the
-# patched `@openuidev/*` install at ../../../packages/apps (46).
-# vite.config.ts also reads ../tauri.conf.json for __APP_VERSION__.
+# patched `@openuidev/*` install at ../../../packages/apps (46), and
+# `@theuth/documents` from source (59). vite.config.ts also reads
+# ../tauri.conf.json for __APP_VERSION__. Documents is consumed from source
+# against the UI's `@blocknote/core` (vite `documentsDeps`); no bun install.
 WORKDIR /src/crates/desktop/ui
 COPY crates/desktop/tauri.conf.json /src/crates/desktop/tauri.conf.json
 COPY packages/apps /src/packages/apps
 RUN bun install --frozen-lockfile --cwd /src/packages/apps
+COPY packages/documents /src/packages/documents
 COPY crates/desktop/ui/package.json crates/desktop/ui/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY crates/desktop/ui/ ./
