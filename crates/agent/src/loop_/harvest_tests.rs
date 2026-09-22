@@ -29,11 +29,12 @@ fn harvested(events: &[AgentEvent]) -> Option<(u32, u32)> {
     })
 }
 
-#[tokio::test]
-async fn harvest_runs_detached_from_the_turn() {
-    let _registry = crate::REGISTRY_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+#[test]
+fn harvest_runs_detached_from_the_turn() {
+    crate::with_test_registry(harvest_scenarios());
+}
+
+async fn harvest_scenarios() {
     let reg_dir = std::env::temp_dir().join(format!("theuth-harvest-reg-{}", Uuid::now_v7()));
     std::fs::create_dir_all(&reg_dir).unwrap();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());

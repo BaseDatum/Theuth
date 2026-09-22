@@ -574,12 +574,13 @@ fn finished(events: &[AgentEvent]) -> (Usage, u32) {
 /// 52 §10 gates: main-authored question, native bypass, no-fallback notice,
 /// explicit failure without an in-turn retry loop, cancellation, batching,
 /// steering, manual summary compaction, accounting, redaction.
-#[tokio::test]
-async fn vision_fallback_contract_against_fake_provider() {
-    // One registry and one vault for the process; every scenario's turn finds them.
-    let _registry = crate::REGISTRY_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+#[test]
+fn vision_fallback_contract_against_fake_provider() {
+    crate::with_test_registry(vision_scenarios());
+}
+
+/// One registry and one vault for the process; every scenario's turn finds them.
+async fn vision_scenarios() {
     let reg_dir = std::env::temp_dir().join(format!("theuth-vision-reg-{}", Uuid::now_v7()));
     std::fs::create_dir_all(&reg_dir).unwrap();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
