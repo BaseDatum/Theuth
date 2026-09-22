@@ -5365,6 +5365,8 @@ impl Model {
                 self.harvesting = false;
                 self.vision = None;
             }
+            // The gauge moves per round, with the cost (51 §6.4).
+            AgentEvent::ContextUsed { context, .. } => self.context = context,
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
                 self.model_id = model;
