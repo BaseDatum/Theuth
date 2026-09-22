@@ -518,7 +518,13 @@ async fn run() -> anyhow::Result<()> {
     } else {
         Host::Tui
     };
-    let listen = (cli.serve || cli.headless).then(|| link_cli::listen(&config));
+    // Every engine serves (63 §6.4): the configured address, or — for a
+    // TUI/-p/--acp without `--serve` — an ephemeral port recorded once bound.
+    let listen = if cli.serve || cli.headless {
+        Some(link_cli::listen(&config))
+    } else {
+        config.find_value("rpc.listen").ok().and_then(|v| v.into_string())
+    };
     // `Some` = attached to the running engine (63 §0.3): TUI, `-p`, `--acp`.
     let attached = match rpc::engine::acquire(&data_dir, host, listen) {
         Ok(lease) => {
@@ -586,7 +592,7 @@ async fn run() -> anyhow::Result<()> {
             // Takeover (63 §2.3): the engine this process would have run —
             // serving RPC, so the desktop app finds it again (§4.2).
             let start_engine: tui::StartEngine = Box::new(|rt| {
-                Box::pin(async move { start_plugins(&rt, engine_plugins(false, true)).await })
+                Box::pin(async move { start_plugins(&rt, engine_plugins(false, false)).await })
             });
             vec![Box::new(tui::TuiPlugin {
                 resume: cli.resume,
@@ -607,8 +613,8 @@ async fn run() -> anyhow::Result<()> {
             }),
         })]
     } else if cli.acp {
-        // stdout is the protocol channel: no TUI, no line printer, no
-        // WebSocket server; tracing already goes to the file (06 §8.13).
+        // stdout is the protocol channel: no TUI, no line printer; tracing
+        // already goes to the file (06 §8.13).
         vec![
             Box::new(tools::ToolsPlugin),
             Box::new(secrets::SecretsPlugin),
@@ -624,8 +630,10 @@ async fn run() -> anyhow::Result<()> {
             Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
-            // The `search` tool (49 §4.4): registration only, no listener.
+            // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
+            // 63 §6.4: attachable, on a loopback port; stdout untouched.
+            Box::new(rpc::RpcPlugin { implicit: true }),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
@@ -678,7 +686,8 @@ async fn run() -> anyhow::Result<()> {
 }
 
 /// The engine's plugin list (every mode but `--acp` and `--link-signal`):
-/// channels run in `--headless`, the RPC server with `serve`.
+/// channels run in `--headless`; the RPC server always (63 §6.4) — on the
+/// configured address with `serve`, else implicitly (ephemeral fallback).
 fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
     let mut plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(tools::ToolsPlugin),
@@ -713,9 +722,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(meeting::MeetingPlugin),
         Box::new(decision::DecisionPlugin),
     ];
-    if serve {
-        plugins.push(Box::new(rpc::RpcPlugin));
-    }
+    plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve }));
     plugins
 }
 

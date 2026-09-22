@@ -55,8 +55,10 @@ impl fmt::Display for Host {
 pub struct Record {
     /// The engine process.
     pub pid: u32,
-    /// `rpc.listen` when the engine serves RPC; `None` for a plain `t`
-    /// (nothing to attach to).
+    /// Where the engine's RPC server listens — `rpc.listen`, or the
+    /// ephemeral loopback port an implicit engine bound (63 §6.4), filled by
+    /// `set_listen` once the bind happened; `None` until then (and for
+    /// `--link-signal`, which serves nothing).
     pub listen: Option<String>,
     /// When the lock was taken.
     pub started: DateTime<Utc>,
@@ -86,11 +88,12 @@ impl fmt::Display for Running {
         let ws = r
             .listen
             .as_deref()
-            .map_or_else(|| "no socket".to_owned(), |l| format!("ws://{l}"));
+            .map_or_else(|| "no socket yet".to_owned(), |l| format!("ws://{l}"));
+        // Every engine serves (63 §6.4); `None` is the moment before its bind.
         let hint = if r.listen.is_some() {
             "run `t` to attach"
         } else {
-            "start it with `t --serve` to attach"
+            "retry in a moment to attach"
         };
         write!(
             f,
@@ -136,6 +139,13 @@ pub struct Lease {
     pub record: Record,
 }
 
+impl Lease {
+    fn write(&self) -> io::Result<()> {
+        let json = serde_json::to_vec_pretty(&self.record).map_err(io::Error::other)?;
+        std::fs::write(&self.path, json)
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -155,6 +165,17 @@ pub fn hold(lease: Lease) {
 /// Drop the parked lease (unlinks `engine.json`); a no-op when none is held.
 pub fn release() {
     HELD.lock().unwrap_or_else(PoisonError::into_inner).take();
+}
+
+/// The RPC server bound: record where (63 §6.4 — an implicit engine binds an
+/// ephemeral port, known only now). No-op when no lease is parked.
+pub fn set_listen(listen: String) {
+    if let Some(lease) = HELD.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+        lease.record.listen = Some(listen);
+        if let Err(e) = lease.write() {
+            tracing::warn!(error = %e, "engine.json rewrite");
+        }
+    }
 }
 
 /// Take the lock and write the record. `Err(Running)` names the holder.
@@ -189,13 +210,13 @@ pub fn acquire(data_dir: &Path, host: Host, listen: Option<String>) -> Result<Le
         version: env!("CARGO_PKG_VERSION").to_owned(),
         id: Uuid::now_v7(),
     };
-    let path = data_dir.join("engine.json");
-    std::fs::write(&path, serde_json::to_vec_pretty(&record).map_err(io::Error::other)?)?;
-    Ok(Lease {
+    let lease = Lease {
         _lock: lock,
-        path,
+        path: data_dir.join("engine.json"),
         record,
-    })
+    };
+    lease.write()?;
+    Ok(lease)
 }
 
 /// The running engine per its record: the file exists, its pid is alive and,
@@ -307,7 +328,23 @@ mod tests {
         let found = discover(&d).unwrap();
         assert_eq!(found.record, lease.record);
         assert!(found.url.is_none());
-        assert!(found.to_string().contains("no socket) — start it with `t --serve`"));
+        assert!(found.to_string().contains("no socket yet) — retry in a moment"));
+    }
+
+    /// 63 §6.4: an implicit engine learns its ephemeral port after `acquire`;
+    /// `set_listen` puts it in the parked record and the file.
+    #[test]
+    fn ephemeral_listen_is_recorded_after_bind() {
+        let d = dir();
+        let lease = acquire(&d, Host::Prompt, None).unwrap();
+        assert_eq!(read(&d).unwrap().listen, None);
+        hold(lease);
+        set_listen("127.0.0.1:49731".into());
+        let r = read(&d).unwrap();
+        assert_eq!(r.listen.as_deref(), Some("127.0.0.1:49731"));
+        assert_eq!(serde_json::from_slice::<Record>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
+        release();
+        assert!(!d.join("engine.json").exists());
     }
 
     #[test]

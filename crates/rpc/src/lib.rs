@@ -54,7 +54,18 @@ impl Default for RpcConfig {
 
 /// The plugin. Reads `<data_dir>/token` (creating it) and requires it as
 /// `Authorization: Bearer <token>` on the WebSocket upgrade.
-pub struct RpcPlugin;
+pub struct RpcPlugin {
+    /// 63 §6.4: the server nobody asked for — the engine behind a `t`, `-p`
+    /// or `--acp` without `--serve` — so every engine is attachable. Binds
+    /// `rpc.listen` when the config sets one, else an ephemeral loopback
+    /// port; a busy configured port falls back to ephemeral with a warning
+    /// instead of failing the start. `false` = `--serve`/`--headless`: the
+    /// configured address, bind failure fatal, as before.
+    pub implicit: bool,
+}
+
+/// Any loopback port.
+const EPHEMERAL: &str = "127.0.0.1:0";
 
 #[async_trait::async_trait]
 impl runtime::Plugin for RpcPlugin {
@@ -63,7 +74,19 @@ impl runtime::Plugin for RpcPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
-        serve(rt, rt.section("rpc")?).await?;
+        let mut cfg: RpcConfig = rt.section("rpc").unwrap_or_default();
+        if self.implicit && configured_listen(rt).is_none() {
+            cfg.listen = EPHEMERAL.to_owned();
+        }
+        let addr = match serve(rt, cfg.clone()).await {
+            Err(e) if self.implicit && cfg.listen != EPHEMERAL => {
+                tracing::warn!(listen = %cfg.listen, error = %e, "rpc.listen busy; binding an ephemeral port");
+                cfg.listen = EPHEMERAL.to_owned();
+                serve(rt, cfg).await?
+            }
+            r => r?,
+        };
+        engine::set_listen(addr.to_string());
         // The link plugin dispatches decrypted device requests into our
         // methods and serves ACP over mode-1 conns (32 §4.3); it registers
         // in its own start, so hand it the dispatch once it is there.
@@ -94,6 +117,12 @@ impl runtime::Plugin for RpcPlugin {
         });
         Ok(())
     }
+}
+
+/// `rpc.listen` as the config (file or `THEUTH_RPC__LISTEN`) sets it, `None`
+/// when it only comes from [`RpcConfig::default`].
+pub fn configured_listen(rt: &Runtime) -> Option<String> {
+    rt.config.find_value("rpc.listen").ok()?.into_string()
 }
 
 /// The full [`api::Api`] as a jsonrpsee `Methods` object, fed by the shared

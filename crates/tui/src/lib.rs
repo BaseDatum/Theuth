@@ -222,7 +222,8 @@ forward!(
 /// to the winner; three attempts, then a plain error. Every switch tells the
 /// UI (`Engine`), which re-selects its session on the new end.
 async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached) {
-    let listen = rt.section::<rpc::RpcConfig>("rpc").unwrap_or_default().listen;
+    // The record's listen until the implicit server binds (63 §6.4).
+    let listen = rpc::configured_listen(&rt);
     let mut client = attached.client;
     let mut start_engine = Some(attached.start_engine);
     for attempt in 1..=3 {
@@ -230,7 +231,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
             tracing::warn!(error = %e, "engine event stream");
         }
         let _ = tx.send(UiEvent::Info("engine gone — starting one…".into()));
-        let running = match rpc::engine::acquire(&rt.data_dir, Host::Tui, Some(listen.clone())) {
+        let running = match rpc::engine::acquire(&rt.data_dir, Host::Tui, listen.clone()) {
             Ok(lease) => {
                 rpc::engine::hold(lease);
                 let Some(start) = start_engine.take() else {
