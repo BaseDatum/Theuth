@@ -1897,6 +1897,7 @@ mod tests {
             matches: 1,
             updated_at: "2026-09-18T10:00:00Z".into(),
             context_removed: false,
+            archived: false,
         }
     }
 

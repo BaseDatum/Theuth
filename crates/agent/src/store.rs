@@ -112,19 +112,25 @@ struct SessionRow {
     agent: Option<String>,
     cwd: Option<String>,
     pinned: bool,
+    archived: bool,
     project: Option<String>,
 }
 
-/// Scalar subquery: the `project` of the root above the outer `sessions` row
-/// (51 §3: children carry none of their own). Correlated on the outer table
-/// name, so the enclosing query must select `FROM sessions` unaliased.
-macro_rules! effective_project {
-    () => {
-        "(WITH RECURSIVE up(id, parent) AS ( \
+/// Scalar subquery: column `$col` of the root above the outer `sessions` row
+/// (51 §3: children carry no `project`/`archived` of their own). Correlated
+/// on the outer table name, so the enclosing query must select `FROM sessions`
+/// unaliased.
+macro_rules! root_col {
+    ($col:literal) => {
+        concat!(
+            "(WITH RECURSIVE up(id, parent) AS ( \
               SELECT sessions.id, sessions.parent \
               UNION ALL \
               SELECT p.id, p.parent FROM sessions p JOIN up ON p.id = up.parent) \
-          SELECT r.project FROM up JOIN sessions r ON r.id = up.id WHERE up.parent IS NULL)"
+          SELECT r.",
+            $col,
+            " FROM up JOIN sessions r ON r.id = up.id WHERE up.parent IS NULL)"
+        )
     };
 }
 
@@ -136,7 +142,9 @@ macro_rules! session_cols {
         concat!(
             "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.model, \
              sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.pinned, ",
-            effective_project!(),
+            root_col!("archived"),
+            " AS archived, ",
+            root_col!("project"),
             " AS project"
         )
     };
@@ -163,6 +171,7 @@ impl TryFrom<SessionRow> for SessionSummary {
             agent: r.agent,
             cwd: r.cwd,
             pinned: r.pinned,
+            archived: r.archived,
             project: r.project,
             retention: tools::Retention::Durable,
         })
@@ -261,6 +270,18 @@ impl Store {
     pub async fn set_pinned(&self, id: SessionId, pinned: bool) -> anyhow::Result<()> {
         sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
             .bind(pinned)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Archive (or unarchive) a session: archived roots and their trees leave
+    /// the sidebar but stay searchable (51 §3). Stored on the row; readers
+    /// resolve the root's value, so call this on the root.
+    pub async fn set_archived(&self, id: SessionId, archived: bool) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET archived = ? WHERE id = ?")
+            .bind(archived)
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -518,14 +539,18 @@ impl Store {
         decode_masked(id, rows)
     }
 
-    /// `(id, title, updated_at)` of every session, for the search index (26 §2).
-    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String)>> {
-        let rows: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT id, title, updated_at FROM sessions")
-                .fetch_all(&self.pool)
-                .await?;
+    /// `(id, title, updated_at, archived)` of every session, for the search
+    /// index (26 §2); `archived` is the root's (49 §7: hits mark archived chats).
+    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String, bool)>> {
+        let rows: Vec<(String, String, String, bool)> = sqlx::query_as(concat!(
+            "SELECT id, title, updated_at, ",
+            root_col!("archived"),
+            " FROM sessions"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
-            .map(|(id, title, updated_at)| Ok((id.parse()?, title, updated_at)))
+            .map(|(id, title, updated_at, archived)| Ok((id.parse()?, title, updated_at, archived)))
             .collect()
     }
 
@@ -749,7 +774,7 @@ impl Store {
         let inserted = sqlx::query(concat!(
             "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, effort, cwd, context_revision, project) \
              SELECT ?, ?, ?, title, model, NULL, NULL, effort, cwd, context_revision, ",
-            effective_project!(),
+            root_col!("project"),
             " FROM sessions WHERE id = ?"
         ))
         .bind(&new)
@@ -1326,7 +1351,7 @@ impl Store {
     pub async fn effective_project(&self, session: SessionId) -> anyhow::Result<Option<String>> {
         let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
             "SELECT ",
-            effective_project!(),
+            root_col!("project"),
             " FROM sessions WHERE id = ?"
         ))
         .bind(session.to_string())
@@ -1724,6 +1749,27 @@ mod tests {
         store.set_pinned(child, false).await.unwrap();
         let list = store.list_sessions().await.unwrap();
         assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [id, child]);
+        // Archiving the root marks its whole tree (the child resolves the
+        // root's flag); the order and the rows themselves are untouched.
+        store.set_archived(id, true).await.unwrap();
+        let list = store.list_sessions().await.unwrap();
+        assert_eq!(
+            list.iter().map(|s| (s.id, s.archived)).collect::<Vec<_>>(),
+            [(id, true), (child, true)]
+        );
+        assert_eq!(
+            store
+                .search_titles()
+                .await
+                .unwrap()
+                .iter()
+                .map(|(s, _, _, a)| (*s, *a))
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from([(id, true), (child, true)])
+        );
+        store.set_archived(id, false).await.unwrap();
+        let list = store.list_sessions().await.unwrap();
+        assert!(list.iter().all(|s| !s.archived));
         assert_eq!(
             store
                 .descendants(id)

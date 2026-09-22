@@ -212,12 +212,17 @@ pub struct SearchHit {
     /// the transcript still holds it. `false` for title hits.
     #[serde(default)]
     pub context_removed: bool,
+    /// The session's root is archived (51 §3): hidden from the sidebar, still
+    /// found here.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 struct Title {
     id: SessionId,
     title: SearchText,
     updated_at: String,
+    archived: bool,
 }
 
 struct Doc {
@@ -254,10 +259,11 @@ impl Index {
             .search_titles()
             .await?
             .into_iter()
-            .map(|(id, title, updated_at)| Title {
+            .map(|(id, title, updated_at, archived)| Title {
                 id,
                 title: SearchText::new(title),
                 updated_at,
+                archived,
             })
             .collect();
         let docs = store
@@ -376,6 +382,7 @@ impl Index {
                     matches: counts.get(&c.session).copied().unwrap_or(0),
                     updated_at: t.map(|t| t.updated_at.clone()).unwrap_or_default(),
                     context_removed: c.removed,
+                    archived: t.is_some_and(|t| t.archived),
                 }
             })
             .collect()
@@ -399,6 +406,7 @@ mod tests {
                     id: sid(*id),
                     title: SearchText::new(*t),
                     updated_at: format!("2026-09-{:02}T00:00:00Z", i + 1),
+                    archived: false,
                 })
                 .collect(),
             docs: docs
@@ -435,6 +443,22 @@ mod tests {
         assert!(by(1).context_removed);
         assert!(!by(2).context_removed);
         assert!(!idx.search("notes", 10).iter().any(|h| h.context_removed));
+    }
+
+    /// An archived session is still found (51 §3) and every kind of hit on
+    /// it says so; a live one never does.
+    #[test]
+    fn archived_sessions_stay_indexed_and_labeled() {
+        let mut idx = index(
+            &[(1, "deploy notes"), (2, "other")],
+            &[(1, 3, "deploy the edge"), (2, 4, "deploy the core")],
+        );
+        idx.titles[0].archived = true;
+        let hits = idx.search("deploy", 10);
+        let by = |n: u128| hits.iter().find(|h| h.session == sid(n)).unwrap();
+        assert!(by(1).archived);
+        assert!(!by(2).archived);
+        assert!(idx.search("edge", 10)[0].archived);
     }
 
     #[test]

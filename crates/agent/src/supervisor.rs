@@ -74,6 +74,7 @@ use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
+    ArchiveSession,
     AgentState, AncestorInfo, Ancestors, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
     BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems, Delivery,
     SessionActivity,
@@ -4860,6 +4861,24 @@ impl Message<PinSession> for Agents {
             .set_pinned(m.session, m.pinned)
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ArchiveSession> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: ArchiveSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.store_for(m.session)
+            .set_archived(m.session, m.archived)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Session hits carry the flag (49 §7): the next search rebuilds.
+        self.search.invalidate();
+        Ok(())
     }
 }
 

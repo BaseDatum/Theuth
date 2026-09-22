@@ -10780,6 +10780,7 @@ mod tests {
             matches: 1,
             updated_at: String::new(),
             context_removed: false,
+            archived: false,
         }
     }
 
@@ -14599,6 +14600,7 @@ mod tests {
             agent: None,
             cwd: None,
             pinned: false,
+            archived: false,
             project: project.map(str::to_owned),
             retention: Retention::Durable,
         }

@@ -1933,6 +1933,7 @@ mod tests {
             matches: 2,
             updated_at: "2026-09-18T10:00:00Z".into(),
             context_removed: true,
+            archived: false,
         };
         let mut page = SearchPage::ready(vec![session], 10);
         page.has_more = true;

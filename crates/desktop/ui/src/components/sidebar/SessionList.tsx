@@ -1,8 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MoreHorizontal } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -27,6 +28,7 @@ import { SessionItem } from './SessionItem'
 export type Row =
   | { key: string; label: string }
   | { key: string; project: string | null; collapsed: boolean }
+  | { key: string; archived: number; collapsed: boolean }
   | { key: string; session: SessionSummary }
   | { key: string; tree: string }
 
@@ -101,9 +103,16 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
  * Pinned top-level sessions first under one `Pinned` header, then the rest newest first with day-group headers;
  * the root of every open chat (the URL's and each split pane's) is followed by its agent tree. With any project
  * set (51 §3), unpinned roots are bucketed by project in first-seen order of that ordering, `Ungrouped` last,
- * under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
+ * under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped). Archived roots (51 §3)
+ * leave all of that for one `Archived (N)` header at the very bottom, collapsed unless `archivedOpen`; their
+ * children only ever render under them (as the tree of an open chat), never as orphans above.
  */
-export function buildRows(sessions: SessionSummary[], open: readonly string[], collapsed: ReadonlySet<string> = new Set()): Row[] {
+export function buildRows(
+  sessions: SessionSummary[],
+  open: readonly string[],
+  collapsed: ReadonlySet<string> = new Set(),
+  archivedOpen = false,
+): Row[] {
   const now = Date.now()
   const roots = new Set(open.map((id) => rootOf(sessions, id)))
   const rows: Row[] = []
@@ -111,7 +120,8 @@ export function buildRows(sessions: SessionSummary[], open: readonly string[], c
     rows.push({ key: s.id, session: s })
     if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
   }
-  const top = sessions.filter((s) => s.parent === null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const all = sessions.filter((s) => s.parent === null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const top = all.filter((s) => !s.archived)
   const pinned = top.filter((s) => s.pinned)
   if (pinned.length) {
     rows.push({ key: 'h:pinned', label: 'Pinned' })
@@ -141,24 +151,47 @@ export function buildRows(sessions: SessionSummary[], open: readonly string[], c
       push(s)
     }
   }
+  const archived = all.filter((s) => s.archived)
+  if (archived.length) {
+    rows.push({ key: 'p:archived', archived: archived.length, collapsed: !archivedOpen })
+    if (archivedOpen) archived.forEach(push)
+  }
   return rows
 }
 
 /**
  * The chat list (`list_sessions`), virtualized on the sidebar's scroll container.
  * ⌘-click toggles a chat into a selection, ⇧-click extends it from the last one
- * (Finder rules); a bar under the list deletes them together. Esc clears.
+ * (Finder rules); a bar deletes or archives them together. Esc clears. The bar is
+ * portaled into `barEl`, the sidebar's slot below the scroll container, so it stays
+ * visible while the list scrolls. (It used to be a `sticky bottom-0` child of the
+ * scroller, which is a flex column: the `<ul>` is a shrinkable flex item whose only
+ * content is absolutely positioned, so past the viewport its virtualizer height
+ * collapsed to the leftover space, the bar's static position landed right under it
+ * and sticky — a one-sided constraint — let it scroll away with the list.)
  */
-export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | null; active: string | undefined }) {
+export function SessionList({
+  scrollEl,
+  barEl,
+  active,
+}: {
+  scrollEl: HTMLDivElement | null
+  barEl: HTMLDivElement | null
+  active: string | undefined
+}) {
   const api = useApi()
+  const qc = useQueryClient()
   const navigate = useNavigate()
   const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const [archivedOpen, setArchivedOpen] = useState(false)
   const root = usePanes((s) => s.root)
   const open = useMemo(() => (root ? leaves(root) : active ? [active] : []), [root, active])
-  const rows = useMemo(() => buildRows(sessions, open, collapsed), [sessions, open, collapsed])
+  const rows = useMemo(() => buildRows(sessions, open, collapsed, archivedOpen), [sessions, open, collapsed, archivedOpen])
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
+  // Every selected row is archived: the bar offers Unarchive instead of Archive.
+  const allArchived = selected.size > 0 && [...selected].every((id) => sessions.find((s) => s.id === id)?.archived)
   // Visible top-level order for ⇧-click ranges, and the range's start; refs so
   // `select` stays stable and the memoized items do not re-render per list change.
   const order = useRef<string[]>([])
@@ -193,6 +226,18 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
     if (root && ids.includes(root) && !failed.includes(root)) void navigate({ to: '/' })
   }
 
+  const archive = async () => {
+    const ids = [...selected]
+    const results = await Promise.allSettled(ids.map((id) => api.archive_session(id, !allArchived)))
+    const failed = ids.filter((_, i) => results[i]?.status === 'rejected')
+    setSelected(new Set(failed))
+    if (failed.length) {
+      const first = results.find((r) => r.status === 'rejected')?.reason
+      toast.error(`${failed.length} of ${ids.length} not ${allArchived ? 'unarchived' : 'archived'}: ${first instanceof Error ? first.message : String(first)}`)
+    }
+    void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+  }
+
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollEl,
@@ -202,7 +247,8 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
   })
   return (
     <>
-      <ul className="relative block px-1.5" style={{ height: v.getTotalSize() }}>
+      {/* `shrink-0`: a flex item of the scroller; without it the column layout squeezes the measured height away. */}
+      <ul className="relative block shrink-0 px-1.5" style={{ height: v.getTotalSize() }}>
         {v.getVirtualItems().map((item) => {
           const row = rows[item.index]
           if (!row) return null
@@ -227,6 +273,16 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
                     })
                   }
                 />
+              ) : 'archived' in row ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-tertiary"
+                  aria-expanded={!row.collapsed}
+                  onClick={() => setArchivedOpen((prev) => !prev)}
+                >
+                  {row.collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                  <span className="truncate">Archived ({row.archived})</span>
+                </button>
               ) : 'label' in row ? (
                 <div className="px-2.5 pt-4 pb-1.5 text-xs font-medium text-fg-tertiary">{row.label}</div>
               ) : 'session' in row ? (
@@ -234,6 +290,7 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
                   id={row.session.id}
                   title={row.session.title}
                   pinned={row.session.pinned}
+                  archived={row.session.archived}
                   project={row.session.project}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}
@@ -247,17 +304,23 @@ export function SessionList({ scrollEl, active }: { scrollEl: HTMLDivElement | n
           )
         })}
       </ul>
-      {selected.size > 0 && (
-        <div className="sticky bottom-0 mt-2 flex items-center gap-1 border-t border-border-subtle bg-sidebar px-3 py-2 text-sm">
-          <span className="flex-1 truncate">{selected.size} selected</span>
-          <Button variant="ghost" size="sm" onClick={() => select('', 'clear')}>
-            Cancel
-          </Button>
-          <Button variant="destructive" size="sm" onClick={() => setConfirming(true)}>
-            Delete
-          </Button>
-        </div>
-      )}
+      {selected.size > 0 &&
+        barEl &&
+        createPortal(
+          <div className="flex items-center gap-0.5 border-t border-border-subtle bg-sidebar px-2 py-2 text-sm">
+            <span className="flex-1 truncate pl-1">{selected.size} selected</span>
+            <Button variant="ghost" size="icon-sm" aria-label="Clear selection" title="Clear selection" onClick={() => select('', 'clear')}>
+              <X />
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void archive()}>
+              {allArchived ? 'Unarchive' : 'Archive'}
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => setConfirming(true)}>
+              Delete
+            </Button>
+          </div>,
+          barEl,
+        )}
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent>
           <AlertDialogHeader>

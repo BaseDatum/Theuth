@@ -89,12 +89,14 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
 
 /**
  * One chat in the list: title (live from `TitleChanged`), project pill (51 §3), active highlight, hover `…` menu with
- * pin, inline rename, move to project (existing or new) and delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection.
+ * pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click / ⇧-click / menu > Select feed the
+ * list's multi-selection. An archived row (51 §3) renders muted and its menu offers Unarchive.
  */
 export const SessionItem = memo(function SessionItem({
   id,
   title,
   pinned,
+  archived,
   project,
   active,
   selected,
@@ -104,6 +106,7 @@ export const SessionItem = memo(function SessionItem({
   id: string
   title: string
   pinned: boolean
+  archived: boolean
   project: string | null
   active: boolean
   selected: boolean
@@ -163,6 +166,15 @@ export const SessionItem = memo(function SessionItem({
     }
   }
 
+  const archive = async () => {
+    try {
+      await api.archive_session(id, !archived)
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   return (
     <div className="group/menu-item relative">
       {editing !== null ? (
@@ -185,7 +197,7 @@ export const SessionItem = memo(function SessionItem({
             asChild
             isActive={active}
             aria-selected={selected}
-            className={cn('h-9 rounded-[10px] px-2.5', selected && 'bg-sidebar-accent')}
+            className={cn('h-9 rounded-[10px] px-2.5', selected && 'bg-sidebar-accent', archived && 'text-fg-tertiary')}
           >
             <Link
               to="/c/$session"
@@ -235,6 +247,7 @@ export const SessionItem = memo(function SessionItem({
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-48">

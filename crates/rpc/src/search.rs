@@ -699,9 +699,10 @@ fn render(query: &str, resp: &SearchResponse, stop: Option<Stop>) -> String {
                     };
                     let _ = writeln!(
                         s,
-                        "- session {} {:?} ({where_}, {} matching messages, updated {}){}: {}",
+                        "- session {} {:?}{} ({where_}, {} matching messages, updated {}){}: {}",
                         h.session,
                         clean(&h.title),
+                        if h.archived { " (archived)" } else { "" },
                         h.matches,
                         h.updated_at,
                         if h.context_removed {

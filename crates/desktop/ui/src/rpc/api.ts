@@ -441,6 +441,8 @@ export interface Api {
   rename_session(session: SessionId, title: string): Promise<null>
   /** Pin or unpin a session; pinned sessions lead `list_sessions`. */
   pin_session(session: SessionId, pinned: boolean): Promise<null>
+  /** Archive or unarchive a root (51 §3); archived trees leave the sidebar but stay in `list_sessions` (flagged) and search. */
+  archive_session(session: SessionId, archived: boolean): Promise<null>
   /** Delete a session and its subagents; `SessionDeleted` per removed id follows. Refused mid-turn. */
   delete_session(session: SessionId): Promise<null>
   /** New root with retention/project/cwd (51 §4.1); private needs `view` and returns a `lease_secret`. */
@@ -558,6 +560,7 @@ export const METHODS = [
   'app_call_status',
   'app_call_tool',
   'app_close',
+  'archive_session',
   'artifact_search_match',
   'brief_delete',
   'brief_get',
