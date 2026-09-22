@@ -571,6 +571,52 @@ Anything wider than `width` after layout (a `Grid` of long cells) →
   this). Mermaid renders are serialised through the plugin; R4 re-parses
   ≤ 256 KiB per frame, which is under 1 ms.
 
+### 8.3 Desktop mermaid block (as-built, 2026-09-22)
+
+```` ```mermaid ```` fences no longer reach streamdown's built-in block:
+`plugins.renderers` maps the language to `components/chat/Mermaid.tsx`
+(`MermaidFence`), which renders through `@streamdown/mermaid`'s configured
+instance (§11 settings unchanged) and owns the rest. Why: the artifact panel
+is a Radix modal `Sheet`, which sets `pointer-events: none` on `body` while
+open; streamdown's fullscreen is a bare `createPortal(document.body)`, so
+in that panel wheel and pointer events never reached its pan/zoom (the chat
+transcript, outside any modal, was unaffected). Its `Mermaid` component is
+not exported, its zoom steps about the centre, and its toolbar takes no
+extra buttons, so the block was replaced rather than patched.
+
+- **Pan/zoom** (`Diagram`): wheel zooms about the cursor (`t' = p − (p − t)·k`,
+  content box = surface box, `transform-origin: 0 0`), one pointer drags, two
+  pointers pinch about their midpoint, double-tap/click resets — pointer
+  events throughout, so mouse, trackpad and fingers share one path and
+  `lib/pinch.ts` (synthetic wheel from touch) is gone. The surface has
+  `touch-action: none`, `overflow: hidden`, a non-passive `touchmove`
+  `preventDefault` for two fingers (the viewport is not scale-locked), and
+  no transition (drag jitter, see the 2026-09-15 CSS fix it replaces).
+- **Fullscreen** (`Fullscreen`): our `Dialog` (Radix), full-bleed, no scroll
+  container. Nested under the panel's Sheet, Radix's layer stack gives the
+  inner content `pointer-events: auto`, Esc closes only the diagram, focus
+  is trapped. Controls (Copy PNG · Save PNG… · Save SVG… · Reset · Close)
+  are `Button size="icon"`: 36 px, 44 px on coarse pointers, offset by the
+  safe areas. The inline overlay has the same export buttons plus
+  Fullscreen, shown on hover/focus and always on coarse pointers.
+- **Export** (`lib/mermaid-export.ts`): `standalone()` gives the rendered
+  svg explicit `width`/`height` from its `viewBox`, drops mermaid's
+  `width="100%"`/`max-width`, and paints a white rect over the whole box
+  (+1 unit each side, so a shifted origin or pixel rounding leaves no
+  transparent strip); mermaid's own `<style>` makes it self-contained, so
+  nothing from the page is inlined. `rasterize()` decodes it through an
+  `<img>` into a 2× canvas → `image/png` blob. Copy PNG writes a
+  `ClipboardItem` whose blob is a *promise* (Safari only honours writes
+  still inside the click's activation). Save: in a browser, `<a download>`
+  named `diagram-<fnv1a of source>.{png,svg}`; in the desktop shell on the
+  local daemon, `put_attachment` (the only byte sink the shell has — no fs
+  plugin) then `revealItemInDir`; hidden elsewhere (iOS, remote harness).
+  `ponytail:` `@tauri-apps/plugin-fs` + the `save()` dialog would give a
+  chosen path and name.
+- **Streaming**: every source change re-renders; a failed render keeps the
+  last good svg and, once the fence is closed, shows the §8 error card
+  (`Diagram unavailable · <mermaid parse error> · source`).
+
 ## 9. Text channels: Slack, Signal, `message_user`
 
 `surface::flatten(text, 60)` runs where each channel turns the assistant's
