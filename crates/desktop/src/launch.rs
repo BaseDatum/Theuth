@@ -210,13 +210,16 @@ fn command(shell: &Path, script: &str, port: u16) -> CommandBuilder {
     cmd
 }
 
-/// `$SHELL` when it exists, else `/bin/zsh` — said in the transcript (18 §4).
+/// The login shell when `$SHELL` is unset: zsh on macOS, `sh` elsewhere.
+const FALLBACK_SHELL: &str = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+
+/// `$SHELL` when it exists, else [`FALLBACK_SHELL`] — said in the transcript (18 §4).
 fn shell(log: &Mutex<Vec<u8>>) -> PathBuf {
     match std::env::var_os("SHELL").map(PathBuf::from) {
         Some(s) if s.is_file() => s,
         _ => {
-            append(log, b"SHELL unset or not executable; using /bin/zsh\r\n");
-            PathBuf::from("/bin/zsh")
+            append(log, format!("SHELL unset or not executable; using {FALLBACK_SHELL}\r\n").as_bytes());
+            PathBuf::from(FALLBACK_SHELL)
         }
     }
 }
@@ -331,7 +334,7 @@ mod tests {
         let shell = std::env::var_os("SHELL")
             .map(PathBuf::from)
             .filter(|s| s.is_file())
-            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+            .unwrap_or_else(|| PathBuf::from(FALLBACK_SHELL));
         let mut child = pair
             .slave
             .spawn_command(command(&shell, "exec env", 7802))

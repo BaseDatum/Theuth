@@ -8,9 +8,10 @@
 
 pub mod render;
 pub mod session;
+pub mod systemone;
 pub mod tools;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ::tools::{
@@ -150,6 +151,9 @@ pub fn warmup(cfg: &BrowserConfig) {
 pub struct Browsers {
     cfg: BrowserConfig,
     sessions: HashMap<SessionId, (session::Handle, Instant)>,
+    /// Sessions that ran `browser_run` and are still in a turn / open (57 §2.1): while any
+    /// is here the browser checkpoint stays resident; the last one leaving releases it.
+    systemone: HashSet<SessionId>,
 }
 
 impl Browsers {
@@ -158,6 +162,7 @@ impl Browsers {
         Self {
             cfg,
             sessions: HashMap::new(),
+            systemone: HashSet::new(),
         }
     }
 
@@ -175,6 +180,32 @@ impl Browsers {
         }
         *last_used = Instant::now();
         handle.clone()
+    }
+
+    /// `session` is done with the decision model for now (turn ended, `browser_close`, isolate
+    /// dropped): when it was the last one, release the browser checkpoint (57 §2.1 item 1).
+    fn systemone_done(&mut self, session: SessionId, reason: &'static str) {
+        if self.systemone.remove(&session) && self.systemone.is_empty() {
+            tokio::spawn(async move {
+                let Ok(Some(engine)) =
+                    kameo::actor::ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)
+                else {
+                    return;
+                };
+                let _ = engine
+                    .tell(decision::Release {
+                        checkpoint: Some(decision::BROWSER_CHECKPOINT.to_owned()),
+                        reason,
+                    })
+                    .await;
+            });
+        }
+    }
+
+    /// Drop `session`'s isolate (if any) and its System-1 claim.
+    fn drop_session(&mut self, session: SessionId) -> Option<session::Handle> {
+        self.systemone_done(session, "browser session closed");
+        self.sessions.remove(&session).map(|(h, _)| h)
     }
 }
 
@@ -205,6 +236,17 @@ pub struct Call {
 pub struct Close {
     /// Session whose thread ends.
     pub session: SessionId,
+}
+
+/// `tell`: `session` ran `browser_run` (`active: true`) — the browser checkpoint stays
+/// resident until every such session is done: its turn ends (`AgentEvent::TurnFinished`), it
+/// calls `browser_close` (`active: false`), or its isolate is dropped (57 §2.1 item 1).
+#[derive(Clone, Copy, Debug)]
+pub struct SystemOne {
+    /// The session.
+    pub session: SessionId,
+    /// `true` = ran `browser_run`; `false` = done with it.
+    pub active: bool,
 }
 
 /// `ask` → `Option<String>`: base64 PNG of the session's current page for a
@@ -321,7 +363,29 @@ impl Message<Close> for Browsers {
     type Reply = ();
 
     async fn handle(&mut self, m: Close, _: &mut Context<Self, Self::Reply>) {
-        self.sessions.remove(&m.session);
+        self.drop_session(m.session);
+    }
+}
+
+impl Message<SystemOne> for Browsers {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SystemOne, _: &mut Context<Self, Self::Reply>) {
+        if m.active {
+            self.systemone.insert(m.session);
+        } else {
+            self.systemone_done(m.session, "browser_close");
+        }
+    }
+}
+
+impl Message<agent::AgentEvent> for Browsers {
+    type Reply = ();
+
+    async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+        if let agent::AgentEvent::TurnFinished { session, .. } = e {
+            self.systemone_done(session, "turn finished");
+        }
     }
 }
 
@@ -330,13 +394,16 @@ impl Message<Sweep> for Browsers {
 
     async fn handle(&mut self, _: Sweep, _: &mut Context<Self, Self::Reply>) {
         let idle = Duration::from_secs(self.cfg.idle_secs);
-        self.sessions.retain(|session, (_, last_used)| {
-            let keep = last_used.elapsed() < idle;
-            if !keep {
-                tracing::info!(%session, "browser isolate idle, dropping");
-            }
-            keep
-        });
+        let gone: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, (_, last_used))| last_used.elapsed() >= idle)
+            .map(|(s, _)| *s)
+            .collect();
+        for session in gone {
+            tracing::info!(%session, "browser isolate idle, dropping");
+            self.drop_session(session);
+        }
     }
 }
 
@@ -344,7 +411,9 @@ impl Message<CloseAll> for Browsers {
     type Reply = ();
 
     async fn handle(&mut self, _: CloseAll, _: &mut Context<Self, Self::Reply>) {
-        self.sessions.clear();
+        for session in self.sessions.keys().copied().collect::<Vec<_>>() {
+            self.drop_session(session);
+        }
     }
 }
 
@@ -360,8 +429,8 @@ impl Message<CloseTree> for Browsers {
         let exits: Vec<_> = m
             .subtree
             .iter()
-            .filter_map(|s| self.sessions.remove(s))
-            .map(|(handle, _)| handle.exited())
+            .filter_map(|s| self.drop_session(*s))
+            .map(|handle| handle.exited())
             .collect();
         let Some(tx) = tx else { return reply };
         tokio::spawn(async move {
@@ -402,8 +471,10 @@ impl runtime::Plugin for BrowserPlugin {
             tracing::info!("browser disabled by config");
             return Ok(());
         }
-        let actor = Browsers::spawn(Browsers::new(cfg.clone()));
+        let actor = Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
         actor.register(BROWSER_ACTOR)?;
+        // 57 §2.1: a turn ending releases the browser checkpoint its `browser_run` loaded.
+        rt.subscribe::<Browsers, agent::AgentEvent>(&actor).await;
 
         let sweeper = actor.clone();
         tokio::spawn(async move {

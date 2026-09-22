@@ -142,7 +142,9 @@ mod desktop {
     use std::time::Duration;
 
     use anyhow::Context;
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    #[cfg(target_os = "macos")]
+    use tauri::menu::Submenu;
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
@@ -210,8 +212,10 @@ mod desktop {
             update::check_update,
             update::install_update,
         ]);
+        // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
+        #[cfg(target_os = "macos")]
+        let builder = builder.menu(app_menu);
         builder
-            .menu(app_menu)
             .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
             .on_window_event(|window, event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
@@ -287,6 +291,7 @@ mod desktop {
     /// Tauri's default macOS menu minus About, with Quit as our own item so ⌘Q goes
     /// through the `quit-requested` handshake instead of `terminate:` (25 §4.5:
     /// the menu stays so ⌘C/⌘V/⌘A/⌘W reach the webview under Accessory policy).
+    #[cfg(target_os = "macos")]
     fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         Menu::with_items(
             app,

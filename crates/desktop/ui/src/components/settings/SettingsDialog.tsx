@@ -4,6 +4,7 @@ import {
   CalendarClock,
   ChevronLeft,
   ChevronRight,
+  FlaskConical,
   KeyRound,
   Keyboard,
   Link2,
@@ -33,6 +34,8 @@ import { Connections } from '@/components/settings/Connections'
 import { General } from '@/components/settings/General'
 import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
+import { useHasMeetings } from '@/components/meeting/MeetingList'
+import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
@@ -54,6 +57,7 @@ const TABS = [
   ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
+  ['labs', 'Labs', FlaskConical],
   ['skills', 'Skills', Sparkles],
   ['agents', 'Agents', Bot],
   ['harnesses', 'Harnesses', Server],
@@ -92,6 +96,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
+      {tab === 'labs' && <Labs />}
       {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}
       {tab === 'harnesses' && <Harnesses />}
@@ -113,9 +118,12 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
 export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
-  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3).
+  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3); Meetings not for the Linux shell's own daemon;
+  // Labs only while `decision.enabled` (57 §7.1).
   const hasNodes = useHasNodes()
-  const tabs = hasNodes ? TABS : TABS.filter(([id]) => id !== 'nodes')
+  const hasMeetings = useHasMeetings()
+  const hasLabs = useLabsVisible()
+  const tabs = TABS.filter(([id]) => (id !== 'nodes' || hasNodes) && (id !== 'meetings' || hasMeetings) && (id !== 'labs' || hasLabs))
   const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
 
   if (mobile) {

@@ -33,6 +33,7 @@ THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser just run   # dev run with
 just install               # release `t` + `theuth-app-parser-<hash>` into ~/.cargo/bin; older helpers stay for any still-running t
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
+just package-linux         # .deb/.rpm/.AppImage with the `t` sidecar, on a Linux host; no meetings recorder there (53: macOS only)
 just package-ios           # signed IPA for TestFlight (Apple Distribution)
 just testflight            # upload last IPA to App Store Connect
 just install-macos         # copy the packaged app to /Applications
@@ -76,7 +77,7 @@ output; holds the provider, web and Slack keys too —
 real cookies so the agent acts as the signed-in user; `browser_show` opens a
 live view of the session's browser in the desktop app); one
 isolate per session, screenshots come back as images in the
-tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map_site`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers; `crawl` stays under the seed's directory, honours `robots.txt` and seeds from the site's sitemaps, `map_site` lists a site's URLs from sitemap + links without page bodies — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `computer`
+tool result — [`docs/design/23-browser.md`](docs/design/23-browser.md)), `scrape` (`scrape_url`, `crawl`, `map_site`: a crawler built on the vendored `firecrawl-native` crate, with `web`'s fetcher and obscura as its two engine tiers; `crawl` stays under the seed's directory, honours `robots.txt` and seeds from the site's sitemaps, `map_site` lists a site's URLs from sitemap + links without page bodies — [`docs/design/38-scrape-vendored-crawler.md`](docs/design/38-scrape-vendored-crawler.md)), `codeindex` (plugin: tree-sitter tags → sqlite symbol/reference index per repo root, workspace-aware import resolution, aider-style ranked map, `code_*` runtime tools — [`docs/design/60-codeindex.md`](docs/design/60-codeindex.md)), `computer`
 (eight `computer_*` tools: `computer_screenshot`, `_move`, `_click`, `_drag`,
 `_scroll`, `_type`, `_key`, `_open` — one composite screenshot of every
 display as an image, then native mouse and keyboard on the user's own desktop —
@@ -156,7 +157,7 @@ model access, then send the request again.
 Config (`~/.theuth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice` and `slack` sections with their defaults:
 
   ```yaml
   agent:
@@ -208,6 +209,12 @@ Config (`~/.theuth/`, created on first run; details in
     run_timeout_ms: 60000
     robots: true
     delay_ms: 100                 # per-host gap between requests; a larger robots Crawl-delay wins
+  codeindex:                      # design doc 60; code_find / code_outline / code_refs / code_map / code_symbol / code_impact over a tree-sitter index in <data_dir>/codeindex/<slug>-<hash>.sqlite
+    enabled: true
+    sync_limit: 64                # changed files re-indexed before answering; more → answer stale, finish in background
+    max_file_bytes: 1048576       # larger files are listed, not parsed
+    cochange_commits: 300         # first-parent commits walked for co-change; 0 disables
+    languages: [rust, typescript, javascript, python, go]
   search_providers:               # optional external engines registered with `web`; the built-ins above need none of these
     firecrawl: { base_url: https://api.firecrawl.dev }   # present by default; inert until a `firecrawl` secret is in the vault
     # searxng: { base_url: http://127.0.0.1:8080 }     # a SearXNG instance you run

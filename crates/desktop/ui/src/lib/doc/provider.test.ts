@@ -63,7 +63,7 @@ class Client {
     cb(this.#state)
     return () => this.#listeners.delete(cb)
   }
-  async subscribeTo() {
+  async stream() {
     this.subscribed++
     return async () => {}
   }

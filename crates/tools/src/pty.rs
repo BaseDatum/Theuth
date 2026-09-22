@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,7 @@ use regex::Regex;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
 use crate::activity::{self, Activity, Kind, Tracked};
 use crate::jobs::{
@@ -33,10 +33,16 @@ use crate::jobs::{
 };
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
-/// Screen height (22 §1.9).
+/// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
 const ROWS: u16 = 40;
-/// Screen width (22 §1.9).
+/// Screen width at `start` (22 §1.9).
 const COLS: u16 = 120;
+/// `pty_resize` bounds: a phone is ~40 columns, a wide monitor ~300.
+const ROWS_MAX: u16 = 200;
+const COLS_MAX: u16 = 400;
+/// Output chunks a slow `subscribe_pty` client may fall behind before it is
+/// resynced from a fresh snapshot.
+const STREAM_CHUNKS: usize = 256;
 /// `send` replies once no bytes arrived for this long (22 §4.5)…
 const SETTLE_QUIET: Duration = Duration::from_millis(300);
 /// …or after this long regardless.
@@ -48,6 +54,10 @@ const WAIT_DEFAULT: u64 = 30;
 const WAIT_MAX: u64 = 120;
 /// `ready.timeout` maximum seconds (22 §4.7).
 const READY_MAX: u64 = 300;
+/// `start.idle_secs` below this is raised to it (61 §1.6); `0` stays "never".
+const IDLE_MIN: u64 = 10;
+/// Longest backoff between consecutive unanswered `<job_idle>` nudges (61 §1.4).
+const IDLE_BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// TCP connect poll spacing for `ready.port`.
 const PORT_POLL: Duration = Duration::from_millis(250);
 /// Longest terminal query the responder carries across chunks (22 §4.4).
@@ -245,6 +255,10 @@ pub struct StartArgs {
     pub env: Option<BTreeMap<String, String>>,
     /// Block until the job is ready before replying (22 §1.7).
     pub ready: Option<Ready>,
+    /// Seconds of unchanged screen before `<job_idle>` wakes the model
+    /// (61 §2.1); default `tools.pty_idle_secs` (60), values 1–9 become 10,
+    /// `0` = never.
+    pub idle_secs: Option<u64>,
 }
 
 /// `start`'s readiness condition: every field given must pass.
@@ -450,6 +464,12 @@ pub(crate) struct PtyHandle {
     /// (51 §7.3): equal revisions mean an identical retained buffer.
     revision: AtomicU64,
     output: Notify,
+    /// Raw output as it arrived, for `subscribe_pty` viewers running their
+    /// own emulator; sent under `parser`'s lock so a subscriber that took its
+    /// snapshot under the same lock sees every byte after it exactly once.
+    stream: broadcast::Sender<PtyOut>,
+    /// The master side, kept for `resize`; the job task takes it at exit.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     /// `== pgid`: the child is a session leader.
     pid: u32,
     /// Set by the job task just before it finishes; `send`/`wait` loops read it.
@@ -457,6 +477,24 @@ pub(crate) struct PtyHandle {
     /// When a human last typed into this terminal (`pty_input`, 55 §2.3);
     /// tool replies say so for [`USER_ATTACHED`] after.
     user_input: Mutex<Option<Instant>>,
+    /// Last `send` / `pty_input` / `screen` reply / `wait` return: restarts
+    /// the idle timer (61 §1.3). `idle_wake` tells the job task to re-read it.
+    touched: Mutex<Instant>,
+    idle_wake: Notify,
+    /// Outstanding `wait`s: while any, a quiet screen does not fire (61 §1.5).
+    waiting: AtomicUsize,
+    /// The model touched the job (`send`/`screen`/`wait`) since the last
+    /// nudge fired: the next stretch runs at the base interval (61 §1.4).
+    interacted: AtomicBool,
+}
+
+/// One item of [`PtyHandle::stream`].
+#[derive(Clone, Debug)]
+pub enum PtyOut {
+    /// Bytes the program wrote, verbatim.
+    Data(Arc<[u8]>),
+    /// The job ended; nothing follows.
+    Exit(JobExit),
 }
 
 /// The screen cloned under the lock, with what else a page reports.
@@ -473,6 +511,8 @@ pub(crate) struct PtySnapshot {
     viewport: PtyViewport,
     origin: u32,
     retained: u32,
+    rows: u16,
+    cols: u16,
     alternate: bool,
     cursor_pos: (u16, u16),
     cursor_hidden: bool,
@@ -523,6 +563,81 @@ impl PtyHandle {
     fn exit(&self) -> Option<JobExit> {
         lock(&self.exit).clone()
     }
+
+    /// Current `(rows, cols)`.
+    pub(crate) fn size(&self) -> (u16, u16) {
+        lock(&self.parser).screen().size()
+    }
+
+    /// Resize the grid and tell the program (SIGWINCH). The parser learns
+    /// the size first so the redraw it triggers is parsed at the new width.
+    pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        if !(2..=ROWS_MAX).contains(&rows) || !(10..=COLS_MAX).contains(&cols) {
+            return Err(format!("size {cols}x{rows} out of range (10..={COLS_MAX} x 2..={ROWS_MAX})"));
+        }
+        let master = lock(&self.master);
+        let Some(master) = master.as_ref() else {
+            return Err("job finished".into());
+        };
+        {
+            let mut p = lock(&self.parser);
+            if p.screen().size() == (rows, cols) {
+                return Ok(());
+            }
+            p.screen_mut().set_size(rows, cols);
+            self.revision.fetch_add(1, SeqCst);
+        }
+        master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("resize pty: {e:#}"))
+    }
+
+    /// Subscribe and snapshot under one lock: the replay plus every byte
+    /// after it is the whole terminal. The replay is formatted off the lock.
+    pub(crate) fn attach(&self) -> (Vec<u8>, (u16, u16), broadcast::Receiver<PtyOut>, Option<JobExit>) {
+        let (screen, rx) = {
+            let p = lock(&self.parser);
+            (p.screen().clone(), self.stream.subscribe())
+        };
+        let size = screen.size();
+        (replay(screen), size, rx, self.exit())
+    }
+
+    /// Someone touched the job (61 §1.3): the idle timer restarts. `model`
+    /// (a `send`/`screen`/`wait`, not a human's `pty_input`) also resets the
+    /// backoff (61 §1.4).
+    fn touch(&self, model: bool) {
+        *lock(&self.touched) = Instant::now();
+        if model {
+            self.interacted.store(true, SeqCst);
+        }
+        self.idle_wake.notify_one();
+    }
+}
+
+/// Escape sequences that rebuild a terminal from the retained buffer: every
+/// scrollback row on its own line, pushed off the top so the viewer's own
+/// scrollback holds it, then the live screen with its cursor and input modes.
+fn replay(mut screen: vt100::Screen) -> Vec<u8> {
+    let (rows, cols) = screen.size();
+    let mut out = Vec::new();
+    if !screen.alternate_screen() {
+        screen.set_scrollback(usize::MAX);
+        let retained = screen.scrollback();
+        for off in (1..=retained).rev() {
+            screen.set_scrollback(off);
+            if let Some(row) = screen.rows_formatted(0, cols).next() {
+                out.extend_from_slice(&row);
+            }
+            out.extend_from_slice(b"\x1b[m\r\n");
+        }
+        screen.set_scrollback(0);
+        for _ in 0..rows {
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+    out.extend_from_slice(&screen.state_formatted());
+    out
 }
 
 impl PtySnapshot {
@@ -561,8 +676,8 @@ impl PtySnapshot {
             viewport: self.viewport,
             origin: self.origin,
             retained: self.retained,
-            rows: ROWS,
-            cols: COLS,
+            rows: self.rows,
+            cols: self.cols,
             alternate: self.alternate,
             cursor,
             wrapped: self.wrapped,
@@ -638,7 +753,8 @@ fn render(
     } = cap;
     screen.set_scrollback(usize::MAX);
     let retained = screen.scrollback();
-    let live = usize::from(ROWS);
+    let (rows, cols) = screen.size();
+    let live = usize::from(rows);
     let (start, end, viewport) = match viewport {
         PtyViewport::Live => (retained, retained + live, viewport),
         PtyViewport::History { offset, height } => {
@@ -666,8 +782,8 @@ fn render(
         if in_page && i == start {
             page_at = text.len();
         }
-        let mut row = in_page.then(|| Vec::with_capacity(usize::from(COLS)));
-        for c in 0..COLS {
+        let mut row = in_page.then(|| Vec::with_capacity(usize::from(cols)));
+        for c in 0..cols {
             let at = text.len();
             let cell = screen.cell(r, c);
             let continuation = cell.is_some_and(vt100::Cell::is_wide_continuation);
@@ -747,6 +863,8 @@ fn render(
         viewport,
         origin: start as u32,
         retained: retained as u32,
+        rows,
+        cols,
         alternate: screen.alternate_screen(),
         cursor_pos: screen.cursor_position(),
         cursor_hidden: screen.hide_cursor(),
@@ -770,6 +888,8 @@ pub struct StartPty {
     pub cwd: PathBuf,
     /// `ready` deadline when `args.ready.timeout` is absent.
     pub ready_timeout: Duration,
+    /// Screen-quiet interval before `<job_idle>` (61); `None` = never.
+    pub idle_after: Option<Duration>,
     /// The session's [`crate::SessionResources::root`] (51 §4.5): the log
     /// is `<root>/jobs/<session>/<id>.log`.
     pub root: PathBuf,
@@ -841,6 +961,63 @@ pub struct PtyInput {
     pub text: Option<String>,
     /// Keys after `text`.
     pub keys: Vec<Key>,
+}
+
+/// `ask` → `Result<PtyAttached, String>`: a viewer with its own terminal
+/// emulator attaches to a PTY job: the retained buffer as escape sequences,
+/// then every byte the program writes, on a broadcast receiver. `size`
+/// resizes the pty first (a running job only). `Err` = no such job / not a
+/// PTY job / a bad size.
+pub struct PtyAttach {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job (exact id).
+    pub id: JobId,
+    /// `(rows, cols)` the viewer shows.
+    pub size: Option<(u16, u16)>,
+}
+
+/// Reply to [`PtyAttach`].
+#[derive(kameo::Reply)]
+#[allow(missing_docs)]
+pub struct PtyAttached {
+    /// Rebuilds the retained buffer and live screen in a fresh terminal.
+    pub replay: Vec<u8>,
+    /// Grid size the replay assumes.
+    pub rows: u16,
+    pub cols: u16,
+    /// Everything after `replay`, in order; `Lagged` means re-attach.
+    pub rx: broadcast::Receiver<PtyOut>,
+    /// Set when the job already ended: `rx` yields nothing more.
+    pub exit: Option<JobExit>,
+}
+
+/// `ask` → `Result<(), String>`: resize a running PTY job's grid; the
+/// program gets SIGWINCH. `Err` names the job's exit, a non-PTY job, or a
+/// size out of range.
+#[allow(missing_docs)]
+pub struct PtyResize {
+    /// Owning session.
+    pub session: SessionId,
+    /// Job (exact id).
+    pub id: JobId,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// One `subscribe_pty` item.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(missing_docs)]
+pub enum PtyChunk {
+    /// Start over: reset the terminal to `rows`×`cols` and write `data`
+    /// (base64). First item, and again after the client fell behind.
+    Reset { data: String, rows: u16, cols: u16 },
+    /// Program output (base64), in order.
+    Data { data: String },
+    /// The job ended; the subscription closes.
+    Exit { exit: JobExit },
 }
 
 /// A resolved PTY job as the tool paths see it, detached from the actor.
@@ -1067,9 +1244,15 @@ impl Message<Launch<StartPty>> for Jobs {
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
+            stream: broadcast::channel(STREAM_CHUNKS).0,
+            master: Mutex::new(Some(s.master)),
             pid: s.pid,
             exit: Mutex::new(None),
             user_input: Mutex::new(None),
+            touched: Mutex::new(Instant::now()),
+            idle_wake: Notify::new(),
+            waiting: AtomicUsize::new(0),
+            interacted: AtomicBool::new(false),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Notify::new());
@@ -1095,12 +1278,12 @@ impl Message<Launch<StartPty>> for Jobs {
             log_path: log_path.clone(),
             log: log.clone(),
             pty: Arc::clone(&pty),
-            master: s.master,
             child: s.child,
             rx,
             cancel: cancel.clone(),
             claimable: claimable.clone(),
             started,
+            idle_after: m.idle_after,
             done: done_tx,
             activity,
         }))
@@ -1193,16 +1376,19 @@ impl Message<ListTerminals> for Jobs {
             .filter_map(|s| self.sessions.get(s).map(|sj| (*s, sj)))
             .flat_map(|(session, sj)| {
                 sj.jobs.iter().filter_map(move |j| {
-                    j.pty.as_ref().map(|p| TerminalSummary {
-                        session,
-                        id: j.id.clone(),
-                        name: j.name.clone(),
-                        command: j.command.clone(),
-                        state: j.state(),
-                        rows: ROWS,
-                        cols: COLS,
-                        revision: p.revision(),
-                        epoch: None,
+                    j.pty.as_ref().map(|p| {
+                        let (rows, cols) = p.size();
+                        TerminalSummary {
+                            session,
+                            id: j.id.clone(),
+                            name: j.name.clone(),
+                            command: j.command.clone(),
+                            state: j.state(),
+                            rows,
+                            cols,
+                            revision: p.revision(),
+                            epoch: None,
+                        }
                     })
                 })
             })
@@ -1254,23 +1440,29 @@ impl Message<PtyScreen> for Jobs {
     }
 }
 
+impl Jobs {
+    /// The handle of a PTY job by exact id; `running` also refuses a finished one.
+    fn pty_handle(&self, session: SessionId, id: &JobId, running: bool) -> Result<Arc<PtyHandle>, String> {
+        let job = self
+            .sessions
+            .get(&session)
+            .and_then(|s| s.jobs.iter().find(|j| j.id == *id));
+        match job {
+            None => Err("no such job".to_owned()),
+            Some(Job { exit: Some(e), .. }) if running => Err(format!("{id} {e}")),
+            Some(Job { pty: None, .. }) => Err(format!("{id} is not a PTY job")),
+            Some(Job { pty: Some(p), .. }) => Ok(Arc::clone(p)),
+        }
+    }
+}
+
 impl Message<PtyInput> for Jobs {
     type Reply = DelegatedReply<Result<(), String>>;
 
     async fn handle(&mut self, m: PtyInput, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let job = self
-            .sessions
-            .get(&m.session)
-            .and_then(|s| s.jobs.iter().find(|j| j.id == m.id));
-        let pty = match job {
-            None => Err("no such job".to_owned()),
-            Some(Job { exit: Some(e), .. }) => Err(format!("{} {e}", m.id)),
-            Some(Job { pty: None, .. }) => Err(format!("{} is not a PTY job", m.id)),
-            Some(Job { pty: Some(p), .. }) => Ok(Arc::clone(p)),
-        };
-        match pty {
+        match self.pty_handle(m.session, &m.id, true) {
             Err(e) => tx.send(Err(e)),
             Ok(pty) => {
                 tokio::spawn(async move { tx.send(write(&pty, m.text.as_deref(), &m.keys, true).await) });
@@ -1280,8 +1472,47 @@ impl Message<PtyInput> for Jobs {
     }
 }
 
+impl Message<PtyAttach> for Jobs {
+    type Reply = DelegatedReply<Result<PtyAttached, String>>;
+
+    async fn handle(&mut self, m: PtyAttach, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let pty = match self.pty_handle(m.session, &m.id, false) {
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+            Ok(p) => p,
+        };
+        // A finished job keeps its last size; the viewer adopts it.
+        if let Some((rows, cols)) = m.size
+            && pty.exit().is_none()
+            && let Err(e) = pty.resize(rows, cols)
+        {
+            tx.send(Err(e));
+            return reply;
+        }
+        // The replay of up to 552 rows is formatted off the mailbox.
+        tokio::task::spawn_blocking(move || {
+            let (replay, (rows, cols), rx, exit) = pty.attach();
+            tx.send(Ok(PtyAttached { replay, rows, cols, rx, exit }));
+        });
+        reply
+    }
+}
+
+impl Message<PtyResize> for Jobs {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: PtyResize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.pty_handle(m.session, &m.id, true)?.resize(m.rows, m.cols)
+    }
+}
+
 /// Encode and write to the master off the runtime (a full kernel buffer
-/// blocks). `human` stamps [`PtyHandle::user_input`].
+/// blocks). `human` stamps [`PtyHandle::user_input`] and restarts the idle
+/// timer without counting as the model's interaction (61 §1.3).
 async fn write(pty: &Arc<PtyHandle>, text: Option<&str>, keys: &[Key], human: bool) -> Result<(), String> {
     let data = encode(pty, text, keys)?;
     if data.is_empty() {
@@ -1289,6 +1520,7 @@ async fn write(pty: &Arc<PtyHandle>, text: Option<&str>, keys: &[Key], human: bo
     }
     if human {
         *lock(&pty.user_input) = Some(Instant::now());
+        pty.touch(false);
     }
     let pty = Arc::clone(pty);
     tokio::task::spawn_blocking(move || {
@@ -1382,12 +1614,13 @@ struct Run {
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
     pty: Arc<PtyHandle>,
-    master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: mpsc::Receiver<Vec<u8>>,
     cancel: Arc<Notify>,
     claimable: Arc<AtomicBool>,
     started: Instant,
+    /// Screen-quiet interval before `<job_idle>` (61 §3.4); `None` = off.
+    idle_after: Option<Duration>,
     done: oneshot::Sender<ToolOutput>,
     /// The job's admitted lifetime (`Kind::Pty`); the actor holds the other
     /// clone in [`Jobs::live`]. Dropped when this task returns.
@@ -1447,9 +1680,78 @@ fn exit_of(
     }
 }
 
-/// The job task (22 §4.2): ingest chunks, coalesce `Screen` events, detect
-/// exit (reaper or EOF, whichever first), then the 14 finish path with the
-/// final screen as `output`.
+/// The idle detector (61 §3.4): a timer restarted by any screen change or
+/// touch, disarmed by firing, whose interval doubles while nobody acts.
+struct Idle {
+    base: Duration,
+    last_change: Instant,
+    last_rows: Vec<String>,
+    last_fire: Option<Instant>,
+    nudges: u32,
+    backoff: Duration,
+}
+
+impl Idle {
+    fn new(base: Duration, started: Instant) -> Self {
+        Self {
+            base,
+            last_change: started,
+            last_rows: Vec::new(),
+            last_fire: None,
+            nudges: 0,
+            backoff: base,
+        }
+    }
+
+    /// A rendered screen: the timer restarts when the rows differ (61 §1.2;
+    /// the cursor is not compared).
+    fn saw(&mut self, rows: &[String]) {
+        if *rows != self.last_rows {
+            self.last_rows = rows.to_vec();
+            self.last_change = Instant::now();
+        }
+    }
+
+    /// When the next nudge is due; `None` while disarmed (fired, and neither
+    /// the screen nor anyone has touched the job since, 61 §1.3).
+    fn deadline(&self, pty: &PtyHandle) -> Option<tokio::time::Instant> {
+        let touched = *lock(&pty.touched);
+        let armed = self
+            .last_fire
+            .is_none_or(|f| self.last_change > f || touched > f);
+        armed.then(|| {
+            let interval = if pty.interacted.load(SeqCst) {
+                self.base
+            } else {
+                self.backoff
+            };
+            tokio::time::Instant::from_std(self.last_change.max(touched) + interval)
+        })
+    }
+
+    /// The deadline passed: `(nudge, quiet_secs)` to send, or `None` while a
+    /// `wait` is watching (61 §1.5; its return re-arms). Either way the
+    /// detector is disarmed until the next change or touch.
+    fn fire(&mut self, pty: &PtyHandle) -> Option<(u32, u64)> {
+        let now = Instant::now();
+        self.last_fire = Some(now);
+        if pty.waiting.load(SeqCst) > 0 {
+            return None;
+        }
+        // 61 §1.4: a run of unanswered nudges doubles; any model touch resets.
+        if pty.interacted.swap(false, SeqCst) {
+            self.nudges = 0;
+            self.backoff = self.base;
+        }
+        self.nudges += 1;
+        self.backoff = (self.backoff * 2).min(IDLE_BACKOFF_MAX);
+        Some((self.nudges, now.duration_since(self.last_change).as_secs()))
+    }
+}
+
+/// The job task (22 §4.2): ingest chunks, coalesce `Screen` events, wake the
+/// model when the screen goes quiet (61), detect exit (reaper or EOF,
+/// whichever first), then the 14 finish path with the final screen as `output`.
 async fn run(mut j: Run) {
     j.rt.publish(JobEvent::Started {
         session: j.session,
@@ -1457,7 +1759,7 @@ async fn run(mut j: Run) {
         command: j.command.clone(),
         call_id: j.call_id,
         log: j.log_path,
-        name: j.name,
+        name: j.name.clone(),
         pty: true,
     })
     .await;
@@ -1468,7 +1770,9 @@ async fn run(mut j: Run) {
     let mut carry = Vec::new();
     let mut dirty = false;
     let mut tick = tokio::time::interval(jobs::OUTPUT_EVERY);
+    let mut idle = j.idle_after.map(|base| Idle::new(base, j.started));
     let (exit, killed) = loop {
+        let due = idle.as_ref().and_then(|i| i.deadline(&j.pty));
         tokio::select! {
             biased;
             () = j.cancel.notified() => {
@@ -1494,10 +1798,36 @@ async fn run(mut j: Run) {
                     }
                 },
             },
+            // A touch moved the idle deadline: loop to recompute `due`.
+            () = j.pty.idle_wake.notified(), if idle.is_some() => {}
             _ = tick.tick(), if dirty => {
                 let (rows, cursor) = j.pty.screen();
+                if let Some(i) = &mut idle {
+                    i.saw(&rows);
+                }
                 j.rt.publish(JobEvent::Screen { session: j.session, id: j.id.clone(), rows, cursor }).await;
                 dirty = false;
+            }
+            () = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
+                if let Some(i) = &mut idle
+                    && let Some((nudge, quiet_secs)) = i.fire(&j.pty)
+                {
+                    let (rows, cursor) = j.pty.screen();
+                    let event = JobEvent::Idle {
+                        session: j.session,
+                        id: j.id.clone(),
+                        command: j.command.clone(),
+                        name: j.name.clone(),
+                        quiet_secs,
+                        secs: j.started.elapsed().as_secs(),
+                        nudge,
+                        user_typed_secs: attached_for(*lock(&j.pty.user_input)).map(|d| d.as_secs()),
+                        output: screen_body(&rows, cursor),
+                    };
+                    // The wake rides the guard (61 §1.8); the bus copy is for UIs.
+                    j.activity.notify(event.clone());
+                    j.rt.publish(event).await;
+                }
             }
         }
     };
@@ -1510,7 +1840,9 @@ async fn run(mut j: Run) {
             Err(_) => break false,
         }
     };
-    drop(j.master); // closes the slave: anything that escaped the group gets SIGHUP
+    // Closes the slave: anything that escaped the group gets SIGHUP. Taken
+    // from the handle so a late `resize` sees "job finished".
+    drop(lock(&j.pty.master).take());
     // Ownership is the process group, not the tty: the leader is reaped, but
     // a `&` child of it lives on in the same group whether or not it still
     // holds the slave. The result waits `SETTLE` (`KILL_WAIT` after a kill)
@@ -1547,7 +1879,11 @@ async fn run(mut j: Run) {
         }
     };
     *lock(&j.pty.exit) = Some(exit.clone());
-    j.pty.revision.fetch_add(1, SeqCst);
+    {
+        let _p = lock(&j.pty.parser);
+        j.pty.revision.fetch_add(1, SeqCst);
+        let _ = j.pty.stream.send(PtyOut::Exit(exit.clone()));
+    }
     j.pty.output.notify_waiters();
     j.rt.publish(JobEvent::Screen {
         session: j.session,
@@ -1587,6 +1923,7 @@ fn ingest(pty: &PtyHandle, log: &Mutex<Log>, carry: &mut Vec<u8>, chunk: &[u8]) 
         let mut p = lock(&pty.parser);
         p.process(chunk);
         pty.revision.fetch_add(1, SeqCst);
+        let _ = pty.stream.send(PtyOut::Data(Arc::from(chunk)));
         p.screen().cursor_position()
     };
     respond(pty, carry, chunk, cursor);
@@ -1823,12 +2160,15 @@ async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
     let secs = args.timeout.unwrap_or(WAIT_DEFAULT).min(WAIT_MAX);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     let from = log_len(&live.log_path);
-    let (note, matched) =
-        match await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await {
-            Outcome::Ready(m) => (m.as_deref().map(|m| format!("matched: {m:?}")), m),
-            Outcome::TimedOut(_) => (Some(format!("timed out after {secs}s")), None),
-            Outcome::Exited => (None, None),
-        };
+    // 61 §1.5: the model is watching; the reply, not a nudge, is the wake.
+    live.pty.waiting.fetch_add(1, SeqCst);
+    let outcome = await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await;
+    live.pty.waiting.fetch_sub(1, SeqCst);
+    let (note, matched) = match outcome {
+        Outcome::Ready(m) => (m.as_deref().map(|m| format!("matched: {m:?}")), m),
+        Outcome::TimedOut(_) => (Some(format!("timed out after {secs}s")), None),
+        Outcome::Exited => (None, None),
+    };
     Ok(reply(live, note.as_deref(), matched.as_deref()))
 }
 
@@ -1839,19 +2179,24 @@ fn label(id: &JobId, name: Option<&str>) -> String {
     }
 }
 
-fn screen_block(rows: &[String], cursor: (u16, u16)) -> String {
-    let mut s = String::from("screen:\n");
-    for r in rows {
-        s.push_str(r);
+/// Rows then the `cursor:` line (22 §2.2): the `<job_idle>` body (61 §2.2).
+fn screen_body(rows: &[String], cursor: (u16, u16)) -> String {
+    let mut s = rows.join("\n");
+    if !rows.is_empty() {
         s.push('\n');
     }
     let _ = write!(s, "cursor: row {} col {}", cursor.0 + 1, cursor.1 + 1);
     s
 }
 
+fn screen_block(rows: &[String], cursor: (u16, u16)) -> String {
+    format!("screen:\n{}", screen_body(rows, cursor))
+}
+
 /// The `send` / `screen` / `wait` reply (22 §2.2): state line, optional note,
-/// screen; `structured` mirrors it.
+/// screen; `structured` mirrors it. The reply is the model's touch (61 §1.3).
 fn reply(live: &Live, note: Option<&str>, matched: Option<&str>) -> ToolOutput {
+    live.pty.touch(true);
     let (rows, cursor) = live.pty.screen();
     let state = live
         .pty
@@ -1905,20 +2250,36 @@ pub struct StartTool {
     jobs: ActorRef<Jobs>,
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
     ready_timeout: Duration,
+    /// `tools.pty_idle_secs`, shared with the registry's `SetPtyIdle`.
+    idle_default: Arc<AtomicU64>,
 }
 
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
-    /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`.
+    /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
+    /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never.
     pub fn new(
         jobs: ActorRef<Jobs>,
         shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
         ready_timeout: Duration,
+        idle_default: Arc<AtomicU64>,
     ) -> Self {
         Self {
             jobs,
             shells,
             ready_timeout,
+            idle_default,
+        }
+    }
+
+    /// 61 §1.6: `0` is never, 1–9 become [`IDLE_MIN`], absent is the config.
+    fn idle_after(&self, secs: Option<u64>) -> Option<Duration> {
+        match secs {
+            Some(0) => None,
+            Some(s) => Some(Duration::from_secs(s.max(IDLE_MIN))),
+            None => {
+                Some(Duration::from_secs(self.idle_default.load(SeqCst))).filter(|d| !d.is_zero())
+            }
         }
     }
 }
@@ -1930,7 +2291,7 @@ impl Tool for StartTool {
     type Args = StartArgs;
 
     fn description(&self) -> String {
-        "Run a command on a pseudo-terminal as a named job you can type into (REPLs, servers, TUIs, prompts). Returns the job id and the screen; with `ready`, waits for a log regex and/or a TCP port first. cwd defaults to the shell's; variables and functions do not carry over. Use `shell` for anything that just runs and exits.".into()
+        "Run a command on a pseudo-terminal as a named job you can type into (REPLs, servers, TUIs, prompts). Returns the job id and the screen; with `ready`, waits for a log regex and/or a TCP port first. cwd defaults to the shell's; variables and functions do not carry over. Use `shell` for anything that just runs and exits. A job whose screen stops changing for `idle_secs` (default 60) wakes you with `<job_idle>` and the screen; `0` for a server you only need running.".into()
     }
 
     async fn call(&self, args: StartArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1941,6 +2302,7 @@ impl Tool for StartTool {
                 None => std::env::current_dir()?,
             },
         };
+        let idle_after = self.idle_after(args.idle_secs);
         self.jobs
             .ask(StartPty {
                 session: cx.session,
@@ -1948,6 +2310,7 @@ impl Tool for StartTool {
                 args,
                 cwd,
                 ready_timeout: self.ready_timeout,
+                idle_after,
                 root: cx.resources.root.clone(),
                 activity: activity::current(),
             })
@@ -1966,7 +2329,7 @@ impl Tool for SendTool {
     type Args = SendArgs;
 
     fn description(&self) -> String {
-        "Type into a PTY job: `text` (+ Enter unless `enter: false`), then `keys`, or deliver a `signal`. Returns the screen once output settles.".into()
+        "Type into a PTY job: `text` (+ Enter unless `enter: false`), then `keys`, or deliver a `signal`. Returns the screen once output settles. After a `<job_idle>`, this is how you answer what the program is waiting for.".into()
     }
 
     async fn call(&self, args: SendArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -2017,7 +2380,7 @@ impl Tool for WaitTool {
     type Args = WaitArgs;
 
     fn description(&self) -> String {
-        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
+        "Block until a PTY job (started with `start`) prints something matching `pattern`, or exits; at most `timeout` seconds (default 30). Returns the match and the screen. Use it for prompts and readiness, not to babysit a build — end the turn and the `<job_result>` wakes you, or `<job_idle>` does once the screen stops changing. Not for `shell` jobs: those cannot be waited on and report as `<job_result>` on their own.".into()
     }
 
     async fn call(&self, args: WaitArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -2310,12 +2673,134 @@ mod tests {
         assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e.starts_with("j1 ")), "{err}");
     }
 
+    /// A viewer's own emulator fed `replay` then the stream shows what the
+    /// daemon's does; `resize` changes the grid every reader reports; the
+    /// stream ends with the exit; a finished job attaches but never resizes.
+    #[tokio::test]
+    async fn attach_replays_streams_and_resizes() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx)).await.unwrap();
+        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let type_ = |text: &str| {
+            fx.jobs.ask(PtyInput {
+                session: fx.session,
+                id: JobId("j1".into()),
+                text: Some(text.into()),
+                keys: vec![Key::Enter],
+            })
+        };
+        type_("before").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let attached = fx
+            .jobs
+            .ask(PtyAttach {
+                session: fx.session,
+                id: JobId("j1".into()),
+                size: Some((24, 80)),
+            })
+            .await
+            .unwrap();
+        assert_eq!((attached.rows, attached.cols), (24, 80));
+        assert!(attached.exit.is_none());
+        let mut viewer = vt100::Parser::new(24, 80, 1000);
+        viewer.process(&attached.replay);
+        assert!(viewer.screen().contents().contains("before"), "{}", viewer.screen().contents());
+        let terms = fx
+            .jobs
+            .ask(ListTerminals {
+                sessions: vec![fx.session],
+            })
+            .await
+            .unwrap();
+        assert_eq!((terms[0].rows, terms[0].cols), (24, 80));
+
+        // Bytes after the snapshot arrive in order; the program saw SIGWINCH.
+        let mut rx = attached.rx;
+        fx.jobs
+            .ask(PtyResize {
+                session: fx.session,
+                id: JobId("j1".into()),
+                rows: 30,
+                cols: 100,
+            })
+            .await
+            .unwrap();
+        type_("after").await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let out = tokio::time::timeout_at(deadline, rx.recv()).await.unwrap().unwrap();
+            let PtyOut::Data(bytes) = out else { panic!("exit before echo") };
+            viewer.process(&bytes);
+            if viewer.screen().contents().matches("after").count() == 2 {
+                break;
+            }
+        }
+        let daemon = fx
+            .jobs
+            .ask(PtyScreen {
+                session: fx.session,
+                id: JobId("j1".into()),
+                viewport: PtyViewport::Live,
+                if_revision: None,
+            })
+            .await
+            .unwrap();
+        let PtyScreenReply::Updated(page) = daemon else { panic!("expected a page") };
+        assert_eq!((page.rows, page.cols, page.lines.len()), (30, 100, 30));
+        assert!(matches!(
+            fx.jobs
+                .ask(PtyResize { session: fx.session, id: JobId("j1".into()), rows: 1, cols: 5 })
+                .await
+                .unwrap_err(),
+            kameo::error::SendError::HandlerError(e) if e.contains("out of range")
+        ));
+
+        cancel(&fx, "j1").await;
+        let exit = loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                PtyOut::Data(_) => {}
+                PtyOut::Exit(e) => break e,
+            }
+        };
+        assert_eq!(exit, JobExit::Killed);
+        finished(&fx).await;
+        // A finished job still attaches (last screen, exit set); a resize does not.
+        let again = fx
+            .jobs
+            .ask(PtyAttach {
+                session: fx.session,
+                id: JobId("j1".into()),
+                size: Some((24, 80)),
+            })
+            .await
+            .unwrap();
+        assert_eq!((again.rows, again.cols, again.exit), (30, 100, Some(JobExit::Killed)));
+        assert!(fx
+            .jobs
+            .ask(PtyResize { session: fx.session, id: JobId("j1".into()), rows: 24, cols: 80 })
+            .await
+            .is_err());
+    }
+
     fn tools(fx: &Fx) -> (StartTool, SendTool, ScreenTool, WaitTool) {
         (
-            StartTool::new(fx.jobs.clone(), Arc::default(), Duration::from_secs(30)),
+            start_idle(fx, Duration::ZERO),
             SendTool(fx.jobs.clone()),
             ScreenTool(fx.jobs.clone()),
             WaitTool(fx.jobs.clone()),
+        )
+    }
+
+    /// A `start` whose default `idle_secs` is `idle` (61; the tool clamps
+    /// only the argument, so tests run at any interval).
+    fn start_idle(fx: &Fx, idle: Duration) -> StartTool {
+        StartTool::new(
+            fx.jobs.clone(),
+            Arc::default(),
+            Duration::from_secs(30),
+            Arc::new(AtomicU64::new(idle.as_secs())),
         )
     }
 
@@ -2326,6 +2811,45 @@ mod tests {
             cwd: None,
             env: None,
             ready: None,
+            idle_secs: None,
+        }
+    }
+
+    /// `(nudge, quiet_secs, user_typed_secs, output)` of every `Idle` on the bus.
+    fn idles(fx: &Fx) -> Vec<(u32, u64, Option<u64>, String)> {
+        lock(&fx.events)
+            .iter()
+            .filter_map(|e| match e {
+                JobEvent::Idle {
+                    nudge,
+                    quiet_secs,
+                    user_typed_secs,
+                    output,
+                    ..
+                } => Some((*nudge, *quiet_secs, *user_typed_secs, output.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Poll until `n` idle events are on the bus, or fail at `within`.
+    async fn idles_within(
+        fx: &Fx,
+        n: usize,
+        within: Duration,
+    ) -> Vec<(u32, u64, Option<u64>, String)> {
+        let deadline = Instant::now() + within;
+        loop {
+            let v = idles(fx);
+            if v.len() >= n {
+                return v;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {} idle event(s): {v:?}",
+                v.len()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -2701,5 +3225,172 @@ mod tests {
         assert!(matches!(query(b"\x1b[6n", (1, 4)), Scan::Reply(4, r) if &*r == b"\x1b[2;5R"));
         assert!(matches!(query(b"\x1b]11;", (0, 0)), Scan::Partial));
         assert!(matches!(query(b"\x1b[31m", (0, 0)), Scan::None));
+    }
+
+    const IDLE: Duration = Duration::from_secs(1);
+
+    async fn start_quiet(fx: &Fx, command: &str) -> ToolOutput {
+        let out = Tool::call(&start_idle(fx, IDLE), start_args(command), cx(fx))
+            .await
+            .unwrap();
+        assert!(out.content.contains("· running ·"), "{}", out.content);
+        out
+    }
+
+    /// 61 §5.1: one nudge per quiet stretch, none after; a human's typing is
+    /// reported on it and is not the model's interaction.
+    #[tokio::test]
+    async fn pty_idle_fires_once_after_quiet() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(&fx, r"printf 'hi\n'; sleep 30").await;
+        fx.jobs
+            .ask(PtyInput {
+                session: fx.session,
+                id: JobId("j1".into()),
+                text: Some("x".into()),
+                keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let v = idles_within(&fx, 1, Duration::from_secs(3)).await;
+        let (nudge, quiet, typed, output) = &v[0];
+        assert_eq!(*nudge, 1);
+        assert!(*quiet <= 2, "{quiet}");
+        assert!(typed.is_some(), "{v:?}");
+        assert!(
+            output.contains("hi") && output.contains("\ncursor: row "),
+            "{output:?}"
+        );
+        tokio::time::sleep(2 * IDLE + Duration::from_millis(500)).await;
+        assert_eq!(idles(&fx).len(), 1, "{:?}", idles(&fx));
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.2: a screen change re-arms; the second nudge's `quiet` counts
+    /// from that change.
+    #[tokio::test]
+    async fn pty_idle_rearms_on_screen_change() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(&fx, "echo a; sleep 2; echo b; sleep 30").await;
+        let v = idles_within(&fx, 2, Duration::from_secs(8)).await;
+        assert_eq!((v[0].0, v[1].0), (1, 2), "{v:?}");
+        assert!(!v[0].3.contains('b') && v[1].3.contains('b'), "{v:?}");
+        assert!((2..=3).contains(&v[1].1), "{v:?}");
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.3: a `send` after a nudge restarts the timer at the base
+    /// interval and the next nudge is again the first of its run.
+    #[tokio::test]
+    async fn pty_idle_send_resets_and_resets_backoff() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (_, send, ..) = tools(&fx);
+        start_quiet(&fx, "cat").await;
+        idles_within(&fx, 1, Duration::from_secs(3)).await;
+        let mut args = send_args("j1");
+        args.text = Some("x".into());
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        let v = idles_within(&fx, 2, Duration::from_secs(4)).await;
+        assert_eq!(v.len(), 2, "{v:?}");
+        // Base interval, not the doubled one: quiet is ≈ 1, and nudge restarts.
+        assert_eq!(v[1].0, 1, "{v:?}");
+        assert!(v[1].1 <= 1, "{v:?}");
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.4 (negative control): a screen that keeps changing faster than
+    /// the interval is never idle.
+    #[tokio::test]
+    async fn pty_idle_changing_screen_never_fires() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(&fx, "i=0; while :; do i=$((i+1)); echo $i; sleep 0.4; done").await;
+        tokio::time::sleep(3 * IDLE).await;
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.4: consecutive unanswered nudges double the quiet interval.
+    #[tokio::test]
+    async fn pty_idle_backoff_doubles_without_interaction() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(&fx, "for i in 1 2 3; do echo $i; sleep 3; done; sleep 60").await;
+        let v = idles_within(&fx, 3, Duration::from_secs(14)).await;
+        let nudges: Vec<u32> = v.iter().map(|i| i.0).collect();
+        let quiet: Vec<u64> = v.iter().map(|i| i.1).collect();
+        assert_eq!(nudges, [1, 2, 3], "{v:?}");
+        assert!(
+            (1..=2).contains(&quiet[0])
+                && (2..=3).contains(&quiet[1])
+                && (4..=5).contains(&quiet[2]),
+            "{quiet:?}"
+        );
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.5: an outstanding `wait` suppresses the nudge; its return re-arms.
+    #[tokio::test]
+    async fn pty_idle_suppressed_while_waiting() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(&fx, "sleep 30").await;
+        let waiting = tokio::spawn({
+            let jobs = fx.jobs.clone();
+            let session = fx.session;
+            async move {
+                jobs.ask(Wait {
+                    session,
+                    args: WaitArgs {
+                        id: "j1".into(),
+                        pattern: Some("never".into()),
+                        timeout: Some(3),
+                    },
+                    activity: None,
+                })
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+        let out = waiting.await.unwrap().unwrap();
+        assert!(
+            out.content.contains("timed out after 3s"),
+            "{}",
+            out.content
+        );
+        let v = idles_within(&fx, 1, Duration::from_secs(3)).await;
+        assert_eq!(v[0].0, 1, "{v:?}");
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.6: `idle_secs: 0` is never; and the tool's clamp (61 §1.6).
+    #[tokio::test]
+    async fn pty_idle_off() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let start = start_idle(&fx, IDLE);
+        assert_eq!(start.idle_after(Some(0)), None);
+        assert_eq!(start.idle_after(Some(3)), Some(Duration::from_secs(10)));
+        assert_eq!(start.idle_after(Some(45)), Some(Duration::from_secs(45)));
+        assert_eq!(start.idle_after(None), Some(IDLE));
+        assert_eq!(start_idle(&fx, Duration::ZERO).idle_after(None), None);
+
+        let mut args = start_args("echo hi; sleep 30");
+        args.idle_secs = Some(0);
+        Tool::call(&start, args, cx(&fx)).await.unwrap();
+        tokio::time::sleep(3 * IDLE + Duration::from_millis(500)).await;
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+        cancel(&fx, "j1").await;
+    }
+
+    /// 61 §5.7: the same rows redrawn with a moving cursor are still quiet.
+    #[tokio::test]
+    async fn pty_idle_ignores_cursor_only_redraws() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        start_quiet(
+            &fx,
+            r"while :; do printf '\rsame'; sleep 0.1; printf '\r'; sleep 0.1; done",
+        )
+        .await;
+        let v = idles_within(&fx, 1, Duration::from_secs(3)).await;
+        assert!(v[0].3.starts_with("same\n"), "{v:?}");
+        cancel(&fx, "j1").await;
     }
 }

@@ -237,7 +237,12 @@ pub async fn escalate(
         calibrated: false,
     };
     if let Ok(Some(engine)) = ActorRef::<Engine>::lookup(DECISION_ACTOR) {
-        let _ = engine.tell(Record(d.clone())).await;
+        let _ = engine
+            .tell(Record {
+                decision: d.clone(),
+                note: None,
+            })
+            .await;
     }
     tracing::debug!(
         family = %d.family,

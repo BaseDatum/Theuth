@@ -26,31 +26,21 @@ export function batchStamps(line: MeetingLine): string[] {
 }
 
 /**
- * One line per oracle-handled batch (57 §3.4): `⚡ topic 0.12 · skip · 78 ms`, `⚡ brief SRE-2386 0.91 · published · 81 ms`,
- * `⚡ escalate · low margin 0.55 / 0.31 · tier 2 → model`; shadow appends `✓ agreed` / `✗ model published HR-12`.
+ * One line per oracle-handled batch (57 §3.5): the stages in order, empty ones omitted —
+ * `⚡ kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms`,
+ * `⚡ kind: small talk 0.79 → skip · 78 ms`, `⚡ kind: subject 0.88 · brief: SRE-2386 0.91 → published · 81 ms`;
+ * shadow appends `✓ agreed` / `✗ model published HR-12`.
  */
 export function oracleRow(d: OracleDecision): string {
-  const topic = d.top.find(([l]) => l === 'topic')?.[1]
-  const briefs = d.top.filter(([l]) => l !== 'topic').sort((a, b) => b[1] - a[1])
-  const tier2 = d.tier === 2 ? ' · tier 2' : ''
-  let s: string
+  const parts: string[] = []
+  const [kind, ...rest] = d.stages
+  if (kind) parts.push(`${kind[0]} ${kind[1].toFixed(2)}`)
+  if (d.mentions.length > 0) parts.push(`mentions: ${d.mentions.join(', ')}`)
+  for (const [label, p] of rest) parts.push(`${label} ${p.toFixed(2)}`)
+  if (d.tier2 !== null) parts.push(`tier 2: ${d.tier2}`)
   const disp = d.disposition
-  switch (disp.kind) {
-    case 'skip':
-      s = `⚡ topic ${topic === undefined ? '?' : topic.toFixed(2)} · skip${tier2} · ${d.latency_ms} ms`
-      break
-    case 'brief': {
-      const pick = briefs.find(([l]) => l === disp.title)
-      s = `⚡ brief ${disp.title}${pick ? ` ${pick[1].toFixed(2)}` : ''} · published${tier2} · ${d.latency_ms} ms`
-      break
-    }
-    case 'model': {
-      const probs =
-        briefs.length > 0 ? briefs.slice(0, 2).map(([, q]) => q.toFixed(2)).join(' / ') : topic === undefined ? '' : topic.toFixed(2)
-      s = `⚡ escalate · ${disp.reason}${probs ? ` ${probs}` : ''} · tier ${d.tier} → model`
-      break
-    }
-  }
+  const went = disp.kind === 'skip' ? 'skip' : disp.kind === 'brief' ? `published ${disp.title}` : 'model'
+  let s = `⚡ ${parts.join(' · ')} → ${went} · ${d.latency_ms} ms`
   if (d.outcome) s += d.outcome.agreed ? ' · ✓ agreed' : d.outcome.published ? ` · ✗ model published ${d.outcome.published}` : ' · ✗ model did nothing'
   return s
 }

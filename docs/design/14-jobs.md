@@ -71,7 +71,7 @@ ends") has its delivery half built and its execution half missing.
    injected as a harness input `<job_result>` through the existing
    `Agents::inject` path: idle session → a new turn starts; turn in flight
    → queued and injected after the current tool batch. No new lifecycle,
-   no polling tool.
+   no polling tool. A quiet PTY job wakes it the same way with `<job_idle>` (61).
 4. **Jobs live in one `Jobs` actor in `tools`, addressed by the bus.** It
    owns every running process group in the harness, publishes
    `JobStarted` / `JobOutput` / `JobFinished`, and kills everything on
@@ -410,3 +410,19 @@ after 1.
 Size: ~300 lines `jobs.rs`, shell.rs net −40, agent ~50, tui ~80, rpc
 ~40, signal ~30. Two people: A does 1→2, B does 3→4 once 1's event
 types land.
+
+## 12. As-built 2026-09-22: per-call `shell` arguments
+
+`ShellArgs` gained `cwd`, `timeout_secs` and `env`, each for one call only.
+`cwd` (relative → session cwd; must be a directory) and `env` (exported)
+are applied to the job's clone of the session shell, and that clone is
+not `put_back`, so neither the overrides nor a `cd` inside the command
+persist; `command`-only calls are unchanged. `timeout_secs` travels as
+`Start::timeout` and becomes the job's own deadline, clamped to
+`1..=job_timeout_secs`; the result reads `timed out after 30s
+(timeout_secs=30)` (or `… capped to N`) and the row state is `timeout`.
+`build_shell` still skips profile/rc files but seeds `PATH` once per
+process from `$SHELL -l -i -c 'printf %s "$PATH"'` (3 s budget, stdin
+`/dev/null`, stderr dropped; inherited `PATH` kept and warned once on
+failure), off with `tools.login_path: false` or `THEUTH_NO_LOGIN_PATH=1`.
+PTY `start` already runs `$SHELL -lc`, so it needed nothing.

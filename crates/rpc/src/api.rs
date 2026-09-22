@@ -37,6 +37,7 @@ use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseAp
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
+use codeindex::{CODEINDEX_ACTOR, CodeindexActor, IndexStats};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -67,13 +68,13 @@ use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob, Decision,
-    Gate, GetApprovals, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp,
-    McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo, Resolve,
-    SetApprovals, SetGate, SetHidden, SyncMcp, ToolRegistry, ToolSpec,
+    Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs, ListJobs, ListServers,
+    ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress, RemoveServer, RepoInfo,
+    Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
-    Key, ListTerminals, PtyInput, PtyScreen, PtyScreenReply, PtyViewport, Retention,
-    TerminalSummary,
+    Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
+    PtyScreenReply, PtyViewport, Retention, TerminalSummary,
 };
 use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
@@ -114,6 +115,8 @@ pub struct Info {
     pub stream_idle_secs: u64,
     /// `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
     pub max_salvages: u32,
+    /// `tools.pty_idle_secs`: quiet-screen seconds before a PTY job wakes the model with `<job_idle>` (61); `0` = never.
+    pub pty_idle_secs: u64,
     /// Harness display name (`link.name`, else the hostname): what a linked
     /// device shows in its harness switcher (31 §6.4).
     pub name: String,
@@ -204,6 +207,23 @@ pub trait Api {
         text: Option<String>,
         keys: Option<Vec<Key>>,
     ) -> RpcResult<()>;
+    /// Resize a running PTY job's grid (the program gets SIGWINCH). Rows
+    /// 2–200, columns 10–400. Errors when the job is unknown or finished.
+    #[method(name = "pty_resize", with_extensions)]
+    async fn pty_resize(&self, session: SessionId, job: JobId, rows: u16, cols: u16) -> RpcResult<()>;
+    /// Attach a terminal emulator to a PTY job: first a `reset` item with
+    /// the retained buffer as escape sequences (base64), then every byte the
+    /// program writes as `data` items, in order, and `exit` once it ends.
+    /// `rows`/`cols` resize the pty before the snapshot. A client that falls
+    /// behind gets a fresh `reset` instead of a gap.
+    #[subscription(name = "subscribe_pty", unsubscribe = "unsubscribe_pty", item = PtyChunk, with_extensions)]
+    async fn subscribe_pty(
+        &self,
+        session: SessionId,
+        job: JobId,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> SubscriptionResult;
     /// Current page of `session`'s embedded browser as a base64 PNG for a live
     /// view (23 §3.2); `None` when the session has no live isolate or no open
     /// page. Polling never spawns an isolate.
@@ -284,6 +304,9 @@ pub trait Api {
     /// Persist `agent.max_salvages`; new sessions use it.
     #[method(name = "set_max_salvages")]
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()>;
+    /// Persist `tools.pty_idle_secs` (61 §1.6); `start` calls without `idle_secs` use it from then on. `0` = never.
+    #[method(name = "set_pty_idle")]
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -719,6 +742,11 @@ pub trait Api {
     /// A member renames themself (59 §8.5; editors only — `viewer_readonly` otherwise).
     #[method(name = "doc_set_name", with_extensions)]
     async fn doc_set_name(&self, doc: document::DocId, name: String) -> RpcResult<()>;
+    /// Row counts and freshness of the code index for `root` (default: the
+    /// git top-level of the process cwd; design doc 60 §10). Opens the
+    /// index without reconciling it.
+    #[method(name = "codeindex_stats")]
+    async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -1014,19 +1042,49 @@ pub trait Api {
     /// `summary.md`.
     #[method(name = "meeting_summary")]
     async fn meeting_summary(&self, id: meeting::MeetingId) -> RpcResult<String>;
-    /// 57 §3.4: the meeting families' decision-oracle switch — `mode` as configured,
-    /// `effective` (`off` with `reason` when the plugin is disabled or the checkpoint is
-    /// missing), and the tier budgets.
+    /// 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`,
+    /// `browser`) — `mode` as configured, `effective` (`off` with `reason` when the plugin is
+    /// disabled or the checkpoint is missing), `enabled`, `installed`, and the tier budgets.
+    #[method(name = "decision_mode")]
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo>;
+    /// Persist `decision.families.<prefix>: { mode, train, share }` (`off` | `shadow` |
+    /// `active`) and apply it live; effective from the next ask. A failed config write changes
+    /// nothing. `browser` off ↔ on also changes whether `browser_run` is registered — that
+    /// part takes a restart.
+    #[method(name = "set_decision_mode")]
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
+    /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
-    /// Persist `decision.families.meeting: { mode }` (`off` | `shadow` | `active`) and apply
-    /// it live; effective from the next batch. A failed config write changes nothing.
+    /// `set_decision_mode("meeting", mode)`.
     #[method(name = "set_meeting_oracle_mode")]
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
     /// 57 §7: today's decision log folded per family — mode, asks, accepts, escalations by
     /// reason, tier-2 rows, p50/p95, shadow agreement.
     #[method(name = "decision_stats")]
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>>;
+    /// 57 §2.1 item 4: the decision checkpoints resident right now — `[]` at idle. `rss_mb`
+    /// is the whole daemon's footprint, repeated on every entry.
+    #[method(name = "decision_loaded")]
+    async fn decision_loaded(&self) -> RpcResult<Vec<decision::LoadedInfo>>;
+    /// 57 §11.4 / §7.1: whether the families under `prefix` (`meeting`, `browser`) capture
+    /// training examples locally (`enabled`), consent to upload them (`share`), and how much is
+    /// on disk (`<data_dir>/decisions/training/<prefix>/`).
+    #[method(name = "decision_training")]
+    async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
+    /// Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective
+    /// from the next batch. Turning capture off also clears `share`. A failed config write
+    /// changes nothing.
+    #[method(name = "set_decision_training")]
+    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: consent to upload the prefix's captured rows, persisted the same way. Refused
+    /// (`-32000`) when capture is off. No uploader reads it in this version.
+    #[method(name = "set_decision_share")]
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    /// 57 §7.1: remove `<data_dir>/decisions/training/<prefix>/`; the switches stay as set.
+    /// Answers the new counts.
+    #[method(name = "delete_decision_training")]
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
     async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
@@ -1404,6 +1462,14 @@ fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
     })
 }
 
+/// The codeindex actor; `codeindex.enabled: false` means it was never spawned (60 §10).
+fn codeindex() -> RpcResult<ActorRef<CodeindexActor>> {
+    lookup::<CodeindexActor>(CODEINDEX_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "codeindex is disabled", None::<()>),
+        _ => e,
+    })
+}
+
 /// The A2A actor, or `None` for the one silent case: `a2a.enabled: false`
 /// (or no `a2a` section) and nothing registered. A malformed section, or
 /// `enabled: true` without a registered actor (plugin missing, crashed), is
@@ -1503,6 +1569,17 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     Ok(bytes)
 }
 
+/// `PtyAttach` as an RPC result; `size` resizes a running job first.
+async fn attach_pty(session: SessionId, job: &JobId, size: Option<(u16, u16)>) -> RpcResult<tools::PtyAttached> {
+    lookup::<Jobs>(JOBS_ACTOR)?
+        .ask(PtyAttach { session, id: job.clone(), size })
+        .await
+        .map_err(|e| match e {
+            SendError::HandlerError(msg) => failed(msg),
+            other => failed(other.to_string()),
+        })
+}
+
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
@@ -1519,6 +1596,7 @@ impl ApiServer for Server {
         let max_tool_rounds = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxToolRounds).await?;
         let stream_idle_secs = ask::<Agents, _>(agent::AGENT_ACTOR, GetStreamIdle).await?;
         let max_salvages = ask::<Agents, _>(agent::AGENT_ACTOR, GetMaxSalvages).await?;
+        let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => HOSTNAME.clone(),
@@ -1536,6 +1614,7 @@ impl ApiServer for Server {
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
+            pty_idle_secs,
             name,
             communication,
             app_enabled: apps().is_ok(),
@@ -1687,6 +1766,85 @@ impl ApiServer for Server {
             })
     }
 
+    async fn pty_resize(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        rows: u16,
+        cols: u16,
+    ) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        lookup::<Jobs>(JOBS_ACTOR)?
+            .ask(PtyResize { session, id: job, rows, cols })
+            .await
+            .map_err(|e| match e {
+                SendError::HandlerError(msg) => failed(msg),
+                other => failed(other.to_string()),
+            })
+    }
+
+    async fn subscribe_pty(
+        &self,
+        pending: PendingSubscriptionSink,
+        ext: &Extensions,
+        session: SessionId,
+        job: JobId,
+        rows: Option<u16>,
+        cols: Option<u16>,
+    ) -> SubscriptionResult {
+        let admit = async {
+            self.authorize(ext, session).await?;
+            attach_pty(session, &job, rows.zip(cols)).await
+        };
+        let mut at = match admit.await {
+            Ok(a) => a,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        let sink = pending.accept().await?;
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let item = |c: &PtyChunk| SubscriptionMessage::from(serde_json::value::to_raw_value(c).expect("PtyChunk serializes"));
+        tokio::spawn(async move {
+            loop {
+                let reset = PtyChunk::Reset { data: b64(&at.replay), rows: at.rows, cols: at.cols };
+                if sink.send(item(&reset)).await.is_err() {
+                    return;
+                }
+                if let Some(exit) = at.exit {
+                    let _ = sink.send(item(&PtyChunk::Exit { exit })).await;
+                    return;
+                }
+                loop {
+                    let out = tokio::select! {
+                        _ = sink.closed() => return,
+                        r = at.rx.recv() => r,
+                    };
+                    let chunk = match out {
+                        Ok(PtyOut::Data(bytes)) => PtyChunk::Data { data: b64(&bytes) },
+                        Ok(PtyOut::Exit(exit)) => {
+                            let _ = sink.send(item(&PtyChunk::Exit { exit })).await;
+                            return;
+                        }
+                        // Behind by more than the ring: start over from a snapshot.
+                        Err(broadcast::error::RecvError::Lagged(_)) => break,
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    };
+                    if sink.send(item(&chunk)).await.is_err() {
+                        return;
+                    }
+                }
+                at = match attach_pty(session, &job, None).await {
+                    Ok(a) => a,
+                    Err(_) => return,
+                };
+            }
+        });
+        Ok(())
+    }
+
     async fn browser_screenshot(
         &self,
         ext: &Extensions,
@@ -1830,6 +1988,10 @@ impl ApiServer for Server {
 
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxSalvages { count }).await
+    }
+
+    async fn set_pty_idle(&self, seconds: u64) -> RpcResult<()> {
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetPtyIdle { seconds }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -2616,6 +2778,10 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
     }
 
+    async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats> {
+        send(&codeindex()?, codeindex::Stats { root: root.map(PathBuf::from) }).await
+    }
+
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {
         ask::<Mcp, _>(tools::MCP_ACTOR, AddServer { name, entry }).await
     }
@@ -3009,29 +3175,44 @@ impl ApiServer for Server {
         send(&meeting()?, meeting::ListSpeakers).await
     }
 
+    async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
+    }
+
+    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode }).await
+    }
+
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::GetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-            },
-        )
-        .await
+        self.decision_mode(meeting::oracle::PREFIX.to_owned()).await
     }
 
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(
-            decision::DECISION_ACTOR,
-            decision::SetMode {
-                prefix: meeting::oracle::PREFIX.to_owned(),
-                mode,
-            },
-        )
-        .await
+        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode).await
     }
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::AllStats).await
+    }
+
+    async fn decision_loaded(&self) -> RpcResult<Vec<decision::LoadedInfo>> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::LoadedNow).await
+    }
+
+    async fn decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetTrain { prefix }).await
+    }
+
+    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on }).await
+    }
+
+    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetShare { prefix, on }).await
+    }
+
+    async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::DeleteTraining { prefix }).await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {

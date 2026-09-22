@@ -6,8 +6,8 @@ import { METHODS } from './api'
 // Written by `cargo test -p rpc --features ts export_bindings` (25 §7).
 const METHODS_JSON = fileURLToPath(new URL('../../../../../bindings/methods.json', import.meta.url))
 
-// The stream pairs are `RpcClient.subscribe` / `subscribeTo`, not `Api` methods.
-const STREAM = ['subscribe_events', 'unsubscribe_events', 'doc_subscribe', 'doc_unsubscribe']
+// Stream pairs are `RpcClient.subscribe` / `RpcClient.stream`, not `Api` methods.
+const STREAM = ['subscribe_events', 'unsubscribe_events', 'subscribe_pty', 'unsubscribe_pty', 'doc_subscribe', 'doc_unsubscribe']
 
 test.skipIf(!existsSync(METHODS_JSON))('METHODS equals the server method list', () => {
   const server = (JSON.parse(readFileSync(METHODS_JSON, 'utf8')) as string[]).filter(

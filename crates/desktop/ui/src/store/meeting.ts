@@ -76,30 +76,32 @@ const EMPTY: MeetingSlice = {
   deciding: null,
 }
 
-/** 57 §3.4 counters: `⚡ 14 skipped · 3 briefs · 2 escalated · agreed 92 %`. */
-export function oracleCounters(oracle: OracleDecision[]): { skipped: number; briefs: number; escalated: number; agreed: number | null } {
+/** 57 §3.4 / §3.5 counters: `⚡ 14 skipped · 3 briefs · 2 escalated · 5 tier 2 calls · agreed 92 %`. */
+export function oracleCounters(oracle: OracleDecision[]): { skipped: number; briefs: number; escalated: number; tier2: number; agreed: number | null } {
   let skipped = 0
   let briefs = 0
   let escalated = 0
+  let tier2 = 0
   let judged = 0
   let agreed = 0
   for (const d of oracle) {
     if (d.disposition.kind === 'skip') skipped++
     else if (d.disposition.kind === 'brief') briefs++
     else escalated++
+    if (d.tier2 !== null) tier2++
     if (d.outcome) {
       judged++
       if (d.outcome.agreed) agreed++
     }
   }
-  return { skipped, briefs, escalated, agreed: judged > 0 ? Math.round((100 * agreed) / judged) : null }
+  return { skipped, briefs, escalated, tier2, agreed: judged > 0 ? Math.round((100 * agreed) / judged) : null }
 }
 
 /** The counters as one line; `null` when nothing ran yet. */
 export function oracleSummary(oracle: OracleDecision[]): string | null {
   if (oracle.length === 0) return null
   const c = oracleCounters(oracle)
-  const parts = [`${c.skipped} skipped`, `${c.briefs} brief${c.briefs === 1 ? '' : 's'}`, `${c.escalated} escalated`]
+  const parts = [`${c.skipped} skipped`, `${c.briefs} brief${c.briefs === 1 ? '' : 's'}`, `${c.escalated} escalated`, `${c.tier2} tier 2 call${c.tier2 === 1 ? '' : 's'}`]
   if (c.agreed !== null) parts.push(`agreed ${c.agreed} %`)
   return `⚡ ${parts.join(' · ')}`
 }

@@ -3,6 +3,7 @@ import { BookOpen, FolderOpen, Mic, PanelLeft, Settings, SquarePen, StickyNote }
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
+import { useHasMeetings } from '@/components/meeting/MeetingList'
 import { Button } from '@/components/ui/button'
 import {
   Sidebar,
@@ -42,6 +43,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
+  const hasMeetings = useHasMeetings()
 
   return (
     <Sidebar collapsible="offcanvas" className="border-r-0">
@@ -101,13 +103,15 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/meetings">
-                <Mic /> Meetings
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+          {hasMeetings && (
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+                <Link to="/meetings">
+                  <Mic /> Meetings
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} active={session} />
       </SidebarContent>

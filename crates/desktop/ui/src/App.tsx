@@ -15,7 +15,7 @@ import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
-import { container } from '@/lib/platform'
+import { container, isDesktop } from '@/lib/platform'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
@@ -249,12 +249,12 @@ function useTauri(): void {
   useGlobalShortcuts()
 }
 
-/** ⌥Space (show/hide) and ⌥Esc (cancel all) as the user bound them (Settings › Shortcuts); macOS main window only. */
+/** ⌥Space (show/hide) and ⌥Esc (cancel all) as the user bound them (Settings › Shortcuts); desktop main window only. */
 function useGlobalShortcuts(): void {
   const toggle = useShortcuts((s) => s.chords['toggle-window'])
   const cancel = useShortcuts((s) => s.chords['cancel-all'])
   useEffect(() => {
-    if (ISLAND || container() !== 'macos') return
+    if (ISLAND || !isDesktop()) return
     void register(toggle, async (e) => {
       if (e.state !== 'Pressed') return
       const win = getCurrentWindow()
@@ -309,7 +309,7 @@ function useEventSideEffects(st: Stores): void {
         if (to) router.history.push(`/c/${to}`)
       }),
       st.approvals.subscribe((s, prev) => {
-        if (container() !== 'macos' || s.pending.length === prev.pending.length) return
+        if (!isDesktop() || s.pending.length === prev.pending.length) return
         void TrayIcon.getById('main').then((t) =>
           t?.setTitle(s.pending.length ? `●${s.pending.length}` : null),
         )

@@ -1,0 +1,9 @@
+[package]
+name = "fixture-b"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+fixture-a = { path = "../a" }
+alias-a = { path = "../a", package = "fixture-a" }
+serde = "1"

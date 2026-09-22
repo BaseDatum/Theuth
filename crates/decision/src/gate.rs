@@ -55,7 +55,7 @@ impl std::str::FromStr for Mode {
 }
 
 /// One family's gate (57 §2 YAML).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FamilyGate {
     /// Shadow / active / off.
     pub mode: Mode,
@@ -71,6 +71,30 @@ pub struct FamilyGate {
     #[serde(default = "default_escalate_budget", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub escalate_budget: Duration,
+    /// Capture training examples for this family (57 §11): off by default, every family.
+    #[serde(default)]
+    pub train: bool,
+    /// Consent to upload this family's captured rows to theuth (57 §7.1); off by default,
+    /// meaningless without `train` — clearing `train` clears it. Read by the step-11 uploader.
+    #[serde(default)]
+    pub share: bool,
+    /// Which `decision.checkpoints` entry answers (57 §4.1 item 6); `None` = `default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+    /// Append the `none` control to a `Choice` (57 §0.4). `false` for a head fine-tuned on a
+    /// closed option set — cklxx/laya-browser learned jev's exact option list, and a `none`
+    /// slot it never saw would take mass unpredictably.
+    #[serde(default = "yes")]
+    pub none: bool,
+    /// A right-truncated state is not a hard error. `false` (57 §0.5) for transcript
+    /// families, where a cut may hide the decisive line; `true` for the browser head, which
+    /// was trained on states cut exactly like this (the head budget dominates the sequence).
+    #[serde(default)]
+    pub cut_ok: bool,
+}
+
+const fn yes() -> bool {
+    true
 }
 
 const fn default_budget() -> Duration {
@@ -97,7 +121,7 @@ mod humantime_serde {
 }
 
 impl FamilyGate {
-    /// A conservative shadow gate with the default budgets.
+    /// A conservative shadow gate with the default budgets on the default checkpoint.
     pub const fn shadow(tau_top: f32, tau_margin: f32) -> Self {
         FamilyGate {
             mode: Mode::Shadow,
@@ -105,7 +129,31 @@ impl FamilyGate {
             tau_margin,
             budget: default_budget(),
             escalate_budget: default_escalate_budget(),
+            train: false,
+            share: false,
+            checkpoint: None,
+            none: true,
+            cut_ok: false,
         }
+    }
+
+    /// A shadow gate for the jev-shaped browser questions (57 §4.1 item 4): the `browser`
+    /// checkpoint, no `none` control, state cut allowed, 2 s tier-1 budget (three questions
+    /// over ~45 candidates in one forward on Metal), no margin — argmax executes as jev does.
+    pub fn browser(tau_top: f32) -> Self {
+        FamilyGate {
+            tau_margin: 0.0,
+            budget: Duration::from_secs(2),
+            checkpoint: Some(crate::BROWSER_CHECKPOINT.to_owned()),
+            none: false,
+            cut_ok: true,
+            ..FamilyGate::shadow(tau_top, 0.0)
+        }
+    }
+
+    /// The checkpoint name this family runs on (`default` when unset).
+    pub fn checkpoint(&self) -> &str {
+        self.checkpoint.as_deref().unwrap_or(crate::DEFAULT_CHECKPOINT)
     }
 
     /// The threshold verdict, mode-independent: a hard error wins, then `tau_top`, then
@@ -179,6 +227,11 @@ mod tests {
         tau_margin: 0.4,
         budget: Duration::from_millis(400),
         escalate_budget: Duration::from_secs(3),
+        train: false,
+        share: false,
+        checkpoint: None,
+        none: true,
+        cut_ok: false,
     };
 
     #[test]

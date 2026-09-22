@@ -912,7 +912,13 @@ impl Session {
         let rest: Vec<Queued> = inputs.collect();
         if !self.titled {
             self.titled = true;
-            let title: String = texts[0].trim().chars().take(60).collect();
+            // A skill injection titles by the user's words (or the skill's name), never the `<skill>` body.
+            let seed = match skills::injected(&texts[0]) {
+                Some((name, _, "")) => name,
+                Some((_, _, words)) => words,
+                None => texts[0].trim(),
+            };
+            let title: String = seed.chars().take(60).collect();
             match self.shared.store.set_title(self.shared.id, &title).await {
                 Ok(()) => {
                     self.shared

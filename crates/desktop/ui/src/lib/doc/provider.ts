@@ -310,7 +310,7 @@ export class HarnessProvider {
     if (this.#destroyed || !this.#connected) return
     try {
       if (!this.#unsub) {
-        this.#unsub = await this.#client.subscribeTo<DocEvent>('doc_subscribe', 'doc_unsubscribe', [this.id], this.#item)
+        this.#unsub = await this.#client.stream<DocEvent>('doc_subscribe', [this.id], 'doc_unsubscribe', this.#item)
       }
       const sv = b64(Y.encodeStateVector(this.doc))
       const opened = await this.#api.doc_open(this.id, sv)

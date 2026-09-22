@@ -85,6 +85,7 @@ struct StartArgs {
     cwd: Option<PathBuf>,            // default: the session shell's cwd
     env: Option<BTreeMap<String, String>>,
     ready: Option<Ready>,            // block until ready (§1.7)
+    idle_secs: Option<u64>,          // quiet-screen seconds before `<job_idle>` (61); default 60, 0 = never
 }
 struct Ready { log: Option<String>, port: Option<u16>, host: Option<String>, timeout: Option<u64> }
 
@@ -389,7 +390,9 @@ Each step leaves `theuth` green.
   `wait` on a pattern cover both halves.
 - **Stripped-bytes view for the model** (omp). The whole point of the pty
   is programs that redraw; a screen is the only faithful reading.
-- **`resize`.** 120×40 until a transcript shows a program that needs more.
+- ~~`resize`~~ — reversed by 55 §11: `pty_resize` (RPC, not a tool) follows
+  the desktop viewer's grid; 120×40 at `start` and restored when the viewer
+  closes. The model still has no `resize`.
 - ~~Input from a human~~ — reversed by 55: `pty_input` (RPC, not a tool)
   types into a PTY job from the TUI/desktop viewer; `Key` grew
   `ctrl`/`alt`/`f`/`shift_tab`/`insert`/`paste`; arrows follow the
@@ -397,7 +400,8 @@ Each step leaves `theuth` green.
   (`send` gets the same, a fix). A `send`/`screen`/`wait` reply ends with
   `user attached · typed Ns ago` for 30 s after a human typed.
 - **Streaming `Screen` events into the model mid-turn.** Same as 14 §9:
-  cache-busting; `screen`/`wait` are explicit.
+  cache-busting; `screen`/`wait` are explicit. (A *quiet* screen is one
+  event per stretch, 61.)
 - **brush on the pty.** brush has no way to hand a child a controlling
   terminal, and a job that inherits the session's `Shell` clone would
   block the pipes design's last-finished-wins on a process that never
@@ -427,6 +431,8 @@ wrapper `pty="true"`; TUI live block from `Screen` rows and ` · pty` card
 title; `tools.pty_ready_timeout_secs`. Deps `portable-pty 0.9`, `vt100
 0.16`, `regex` in `tools`. Tests: 22 §7 items 1–6 (`cargo test -p tools`
 33), agent wrapper, TUI `screen_event_replaces_tail`.
+
+2026-09-21: `start.idle_secs` and the `<job_idle>` wake are 61.
 
 Deviations from the sections above (the code wins):
 

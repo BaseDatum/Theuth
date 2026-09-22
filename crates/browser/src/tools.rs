@@ -22,7 +22,7 @@ use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput, Tracked};
 use crate::{BrowserConfig, BrowserEvent, Browsers, Call};
 
 /// What every tool holds: the actor, the config and the runtime (screenshot
-/// dir, event bus).
+/// dir, event bus), plus the System-1 loop's shadow ledger.
 pub struct Ctx {
     /// Per-session isolates (23 §3.2).
     pub actor: ActorRef<Browsers>,
@@ -30,6 +30,9 @@ pub struct Ctx {
     pub cfg: BrowserConfig,
     /// `browser_show` publishes on `rt`'s bus.
     pub rt: Runtime,
+    /// 57 §4.1 item 5: a shadow `browser_run` decided but did not act; the session's next
+    /// acting `browser_*` call is the label and settles it ([`Ctx::settle`]).
+    pub pending: parking_lot::Mutex<std::collections::HashMap<SessionId, crate::systemone::Pending>>,
 }
 
 impl Ctx {
@@ -60,13 +63,15 @@ impl Ctx {
     }
 
     /// [`Self::raw`] flattened to a [`ToolOutput`]: text blocks joined with
-    /// newlines, `isError` → [`ToolOutput::err`].
-    async fn call(
+    /// newlines, `isError` → [`ToolOutput::err`]. An acting call also settles the
+    /// session's shadow decision, when one is pending.
+    pub async fn call(
         &self,
         session: SessionId,
         name: &str,
         args: Value,
     ) -> anyhow::Result<ToolOutput> {
+        self.settle(session, name, &args);
         Ok(match self.raw(session, name, args).await? {
             Ok(v) => {
                 let (text, is_error) = text_of(&v);
@@ -99,6 +104,21 @@ impl Ctx {
         out.content.push_str("\n\n");
         out.content.push_str(&tidy(&snap.content, max));
         Ok(out)
+    }
+
+    /// 57 §4.1 item 5: the first acting `browser_*` call after a shadow `browser_run` is the
+    /// model's answer to the question the loop shadowed. Reads (`browser_snapshot`,
+    /// `browser_interactive_elements`, `browser_evaluate`, screenshots) settle nothing; the
+    /// loop's own observe calls therefore never label themselves. `Report`ed to the decision
+    /// engine as `Confirmed` / `Corrected { actual }` per shadowed question, off this call.
+    fn settle(&self, session: SessionId, name: &str, args: &Value) {
+        let Some(actual) = crate::systemone::actual_action(name, args) else {
+            return;
+        };
+        let Some(p) = self.pending.lock().remove(&session) else {
+            return;
+        };
+        tokio::spawn(p.report(actual));
     }
 }
 
@@ -643,10 +663,14 @@ browser_tool!(
 );
 
 browser_tool!(
-    /// `browser_close` → `browser_close`.
+    /// `browser_close` → `browser_close`; also ends this session's claim on the browser
+    /// decision checkpoint (57 §2.1).
     CloseTool, "browser_close", NoArgs,
     "Close every tab of this session's browser and forget its page state (cookies stay until the session ends). The next `browser_open` starts on a blank page.",
-    |ctx, _a, cx| ctx.call(cx.session, "browser_close", json!({})).await
+    |ctx, _a, cx| {
+        let _ = ctx.actor.tell(crate::SystemOne { session: cx.session, active: false }).await;
+        ctx.call(cx.session, "browser_close", json!({})).await
+    }
 );
 
 browser_tool!(
@@ -861,10 +885,17 @@ impl Tool for ProfilesTool {
 
 /// The `browser_*` tools of 23 §4, ready for the registry. When
 /// `browser.import_cookies` is on, `browser_list_profiles` and
-/// `browser_import_cookies` are added (23 §7).
+/// `browser_import_cookies` are added (23 §7). `browser_run` (57 §4.1) is added unless
+/// `decision.families.browser.mode` is `off` at start — off hides the tool.
 #[must_use]
 pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, rt: Runtime) -> Vec<DynTool> {
-    let ctx = Arc::new(Ctx { actor, cfg, rt });
+    let systemone = crate::systemone::configured_mode(&rt) != decision::Mode::Off;
+    let ctx = Arc::new(Ctx {
+        actor,
+        cfg,
+        rt,
+        pending: parking_lot::Mutex::default(),
+    });
     let mut all: Vec<DynTool> = vec![
         Arc::new(OpenTool(Arc::clone(&ctx))),
         Arc::new(ReadTool(Arc::clone(&ctx))),
@@ -886,6 +917,9 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, rt: Runtime) -> Vec<Dy
     if ctx.cfg.import_cookies {
         all.push(Arc::new(ProfilesTool));
         all.push(Arc::new(ImportCookiesTool(Arc::clone(&ctx))));
+    }
+    if systemone {
+        all.push(Arc::new(crate::systemone::RunTool(Arc::clone(&ctx))));
     }
     all
 }

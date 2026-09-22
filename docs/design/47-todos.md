@@ -216,7 +216,9 @@ means **unknown: suppress the nudge**, not `unwrap_or(false)`.
 PTY services can therefore suppress nudges indefinitely. This is deliberate:
 the requested policy says no running job. Do not quietly weaken it to “no job
 whose result seems useful”. The card still exposes unfinished tasks, and the
-user can send input at any time.
+user can send input at any time. A quiet PTY job wakes the model on its own
+through `<job_idle>` (61), a job-owned delivery like a result; this does not
+weaken the rule.
 
 ### 3.3 Natural yield is positive evidence
 

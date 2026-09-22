@@ -79,7 +79,8 @@ impl std::fmt::Display for JobId {
 pub enum JobExit {
     /// The command returned this code (a shell error is `1`).
     Exited(u8),
-    /// `tools.job_timeout_secs` elapsed; the process group was killed.
+    /// The job's deadline (`tools.job_timeout_secs`, or the call's shorter
+    /// `timeout_secs`) elapsed; the process group was killed.
     Timeout,
     /// [`CancelJob`] killed the process group.
     Killed,
@@ -98,9 +99,10 @@ impl std::fmt::Display for JobExit {
 
 /// Bus events. `Output` is coalesced to one per [`OUTPUT_EVERY`] per job and
 /// lossy under a flood; the log file is the truth. PTY jobs (22 §4.8) publish
-/// `Screen` (coalesced the same way) instead of `Output`. Wire tags are
-/// `JobStarted` | `JobOutput` | `JobScreen` | `JobFinished` so they read
-/// unambiguously on the shared RPC event stream.
+/// `Screen` (coalesced the same way) instead of `Output`, and `Idle` when the
+/// screen has stopped changing (61). Wire tags are `JobStarted` | `JobOutput`
+/// | `JobScreen` | `JobIdle` | `JobFinished` so they read unambiguously on
+/// the shared RPC event stream.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
@@ -147,6 +149,30 @@ pub enum JobEvent {
         rows: Vec<String>,
         /// `(row, col)`, zero-based.
         cursor: (u16, u16),
+    },
+    /// A running PTY job's screen has not changed for `quiet_secs` (61 §1).
+    /// Observation only on the bus: the model is woken through the activity
+    /// guard (`Notice::JobIdle`), never from here.
+    #[serde(rename = "JobIdle")]
+    Idle {
+        /// Owning session.
+        session: SessionId,
+        /// Job.
+        id: JobId,
+        /// Command line.
+        command: String,
+        /// `start`'s label.
+        name: Option<String>,
+        /// Seconds since the screen last changed.
+        quiet_secs: u64,
+        /// Job age in seconds.
+        secs: u64,
+        /// 1 for the first nudge of a backoff run, then 2, 3… (61 §1.4).
+        nudge: u32,
+        /// Seconds since a human typed into the job, within the 55 §2.3 window.
+        user_typed_secs: Option<u64>,
+        /// The screen text with its `cursor:` line: the `<job_idle>` body.
+        output: String,
     },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     #[serde(rename = "JobFinished")]
@@ -227,6 +253,10 @@ pub struct Start {
     /// the supervisor installed on the actor instead, so no job spawns
     /// untracked once one exists.
     pub activity: Option<Activity>,
+    /// Per-call kill deadline (`shell.timeout_secs`); `None` = the actor's
+    /// configured job timeout, which also caps any value given here. Values
+    /// under one second become one second.
+    pub timeout: Option<Duration>,
 }
 
 /// Reply to [`Start`].
@@ -695,7 +725,10 @@ impl Message<Launch<Start>> for Jobs {
             cancel: cancel.clone(),
             claimable: claimable.clone(),
             quiet,
-            timeout: self.timeout,
+            timeout: m.timeout.map_or(self.timeout, |t| {
+                t.clamp(Duration::from_secs(1), self.timeout)
+            }),
+            requested: m.timeout,
             started,
             done: done_tx,
             activity,
@@ -989,7 +1022,10 @@ struct Run {
     claimable: Arc<AtomicBool>,
     /// [`Start::quiet`]: publish nothing, take no row.
     quiet: bool,
+    /// Deadline actually applied.
     timeout: Duration,
+    /// [`Start::timeout`] as given, for the timeout message.
+    requested: Option<Duration>,
     started: Instant,
     done: oneshot::Sender<ToolOutput>,
     /// The job's admitted lifetime (`Kind::Job`); the actor holds the other
@@ -1201,10 +1237,15 @@ async fn run(mut j: Run) {
         }
         (JobExit::Timeout, None) => {
             let body = truncate(body);
+            let applied = j.timeout.as_secs();
+            let limit = match j.requested {
+                Some(r) if r.as_secs() == applied => format!(" (timeout_secs={applied})"),
+                Some(r) => format!(" (timeout_secs={} capped to {applied})", r.as_secs()),
+                None => String::new(),
+            };
             let out = ToolOutput::err(format!(
-                "{body}{}timed out after {}s; process group killed",
-                sep(&body),
-                j.timeout.as_secs()
+                "{body}{}timed out after {applied}s{limit}; process group killed",
+                sep(&body)
             ));
             (body, out)
         }
@@ -1462,10 +1503,11 @@ pub(crate) mod tests {
                 command: command.into(),
                 call_id: String::new(),
                 quiet,
-                shell: ShellTool::build_shell().await.unwrap(),
+                shell: ShellTool::build_shell(false).await.unwrap(),
                 put_back: Arc::new(|_| {}),
                 root: fx.dir.clone(),
                 activity: None,
+                timeout: None,
             })
             .await
             .unwrap()
@@ -1875,7 +1917,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn state_last_finished_wins() {
         let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
-        let tool = ShellTool::new(fx.jobs.clone());
+        let tool = ShellTool::new(fx.jobs.clone(), false);
         let cx = ToolCx {
             session: fx.session,
             call_id: String::new(),
@@ -1886,6 +1928,9 @@ pub(crate) mod tests {
             &tool,
             crate::shell::ShellArgs {
                 command: "cd /tmp".into(),
+                cwd: None,
+                timeout_secs: None,
+                env: None,
             },
             cx.clone(),
         )
@@ -1896,6 +1941,9 @@ pub(crate) mod tests {
             &tool,
             crate::shell::ShellArgs {
                 command: "pwd".into(),
+                cwd: None,
+                timeout_secs: None,
+                env: None,
             },
             cx,
         )
@@ -1907,13 +1955,20 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn close_sessions_kills_reaps_and_removes_logs() {
         let fx = fixture(Duration::from_millis(200), Duration::from_secs(60)).await;
-        let StartReply::Running { log, .. } = spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
+        let StartReply::Running { log, .. } =
+            spawn_job(&fx, "sh -c 'echo $$; exec sleep 30'").await
         else {
             panic!("expected Running");
         };
         let pid: i32 = list(&fx).await[0].tail.trim().parse().unwrap();
         assert!(nix::sys::signal::kill(Pid::from_raw(pid), None).is_ok());
-        assert_eq!(log, fx.dir.join("jobs").join(fx.session.to_string()).join("j1.log"));
+        assert_eq!(
+            log,
+            fx.dir
+                .join("jobs")
+                .join(fx.session.to_string())
+                .join("j1.log")
+        );
         assert!(log.is_file());
 
         let ack = fx

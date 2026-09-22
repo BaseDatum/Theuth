@@ -17,6 +17,7 @@ knowledge = { workspace = true }
 web = { workspace = true }
 browser = { workspace = true }
 scrape = { workspace = true }
+codeindex = { workspace = true }
 routes = { workspace = true }
 computer = { workspace = true }
 search-providers = { workspace = true }
@@ -33,6 +34,7 @@ app = { workspace = true }
 voice = { workspace = true }
 meeting = { workspace = true }
 decision = { workspace = true }
+chrono = { workspace = true }  # --decision-export --since
 secrets = { workspace = true }
 rpassword = { workspace = true }
 jsonrpsee = { workspace = true, features = ["ws-client"] }

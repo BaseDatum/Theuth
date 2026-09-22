@@ -192,6 +192,76 @@ fn main() -> anyhow::Result<()> {
     }
     println!("rss peak: {peak:.0} MiB  ({})", over(peak));
 
+    // (b2) 57 §4.1 item 1: one browser step = three jev-shaped questions (6 operations, ~45
+    // click targets, ~10 typeable ones) over a ~1.5k-char state in one `AskMany` forward. On the
+    // browser checkpoint (`head_max_len` 768, `max_len` 1024) the state is right-cut by design.
+    let page = state_of(&m.tokenizer, 400);
+    let page: String = page.chars().take(1500).collect();
+    let element = |i: usize, role: &str| Candidate {
+        id: i.to_string(),
+        text: format!("[{i}] element number {i} on the page ({role})"),
+    };
+    let step = [
+        Question::Choice {
+            instructions: r#"{"goal": "open the article about the Python language", "rules": "Advance the user's entire goal from the CURRENT page using one operation."}"#.into(),
+            candidates: ["CLICK", "TYPE_TEXT", "SCROLL_DOWN", "WAIT", "DONE", "BLOCKED"]
+                .into_iter()
+                .map(|id| Candidate { id: id.into(), text: format!("{id} …") })
+                .collect(),
+            state: page.clone(),
+        },
+        Question::Choice {
+            instructions: r#"{"goal": "open the article about the Python language", "operation": "CLICK", "rules": ["…", "…"]}"#.into(),
+            candidates: (1..=45).map(|i| element(i, "link")).collect(),
+            state: page.clone(),
+        },
+        Question::Choice {
+            instructions: r#"{"goal": "open the article about the Python language", "operation": "TYPE_TEXT", "rules": ["…", "…"]}"#.into(),
+            candidates: (1..=10).map(|i| element(i, "textbox")).collect(),
+            state: page.clone(),
+        },
+    ];
+    let rows: Vec<Sequence> = step
+        .iter()
+        .map(|q| m.build(q).map_err(anyhow::Error::msg))
+        .collect::<anyhow::Result<_>>()?;
+    m.run(&rows)?;
+    let mut times = Vec::with_capacity(20);
+    for _ in 0..20 {
+        let t = Instant::now();
+        m.run(&rows)?;
+        times.push(t.elapsed());
+    }
+    times.sort();
+    println!(
+        "browser step (3 questions × 6/45/10 candidates, one forward, S {} / K {}, state cut {}): p50 {:.1} ms  p95 {:.1} ms  ({} the §4.1 ≤ 300 ms target)",
+        rows.iter().map(|r| r.input_ids.len()).max().unwrap_or(0),
+        rows.iter().map(|r| r.marker_pos.len()).max().unwrap_or(0),
+        rows.iter().any(|r| r.state_cut),
+        pct(&times, 0.5).as_secs_f64() * 1e3,
+        pct(&times, 0.95).as_secs_f64() * 1e3,
+        if pct(&times, 0.95) <= Duration::from_millis(300) { "within" } else { "OVER" }
+    );
+    // (b3) The same step as three single-row forwards, each padded only to its own length:
+    // the batch pads every row to the longest (S 1024) and our candle/Metal forward is close to
+    // linear in padded tokens, so the batch may lose to the sum of the parts.
+    let mut times = Vec::with_capacity(20);
+    for _ in 0..20 {
+        let t = Instant::now();
+        for r in &rows {
+            m.run(std::slice::from_ref(r))?;
+        }
+        times.push(t.elapsed());
+    }
+    times.sort();
+    println!(
+        "browser step (same 3 questions, three sequential single-row forwards, S {}): p50 {:.1} ms  p95 {:.1} ms  ({} the §4.1 ≤ 300 ms target)",
+        rows.iter().map(|r| r.input_ids.len().to_string()).collect::<Vec<_>>().join("/"),
+        pct(&times, 0.5).as_secs_f64() * 1e3,
+        pct(&times, 0.95).as_secs_f64() * 1e3,
+        if pct(&times, 0.95) <= Duration::from_millis(300) { "within" } else { "OVER" }
+    );
+
     // (c) The README / model-card worked example (NandhaKishorM/laya README "Quickstart",
     // convaiinnovations/laya card "Single-Model Mode"): one state, four questions, one pass.
     // Published: department → billing (confidence 0.94); urgency score → 1.84 / 2.0;

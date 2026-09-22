@@ -115,6 +115,17 @@ Threshold fitting is a procedure, not code in v0: export the family's log rows w
 
 `<data_dir>/decisions/YYYY-MM-DD.jsonl`, one row per `Ask`: ts, family, gate_version, model sha, mode, question hash (sha256 of the rendered sequence — not the text), K, raw logits (f32), temperature, calibrated probs, act_p, disposition, reason, latency_ms, then `outcome` patched by `Report` (append a second row keyed by log_id; readers fold). Text is never stored in this log — transcript and page text belong to their owners (53, 28); the opt-in training capture in §11 is a separate store with its own consent switch. `Stats` folds the current file; older files are for offline fitting.
 
+### 2.1 Checkpoint lifecycle — nothing resident at idle (Sky, 2026-09-21 night)
+
+Sky's rule: a decision checkpoint (~0.9 GB on Metal each) is in memory **only while the feature that needs it is in use** — the meeting checkpoint from `Recording` to stop, the browser checkpoint from the first `browser_run` step to the end of the browser session — never "just sitting there". Small STT/TTS/dictation models may stay resident; these may not.
+
+Today (as built through step 5): lazy load (RSS ≈ 100 MiB at daemon start, no checkpoint read until the first question); meeting warms at `Recording`; browser loads on the first `browser_run` step; each checkpoint is its own engine actor; the only release is the idle watchdog (`decision.idle_unload`, default 10 min after the last question). Two gaps: the release is timer-only (a finished meeting keeps 0.9 GB for ten minutes), and the reclaim was asserted, never measured.
+
+1. **Explicit release** — engine message `Release { checkpoint }` (drops the session; in-flight blocking runs finish on their own `Arc` and then the memory goes). Senders: `meeting` on leaving `Recording` (post-processing never asks the oracle); `browser` when the session closes / `browser_close`, and when a model turn ends without a further `browser_*` call after a `browser_run` (if the turn boundary is not observable from the browser plugin, the idle override below is the fallback and the as-built says so).
+2. **Idle as a safety net, shorter and per checkpoint** — default `idle_unload` **3m**; `checkpoints.<name>.idle_unload` override, browser default **2m** (loop steps are sub-second; a run never trips it). `Warm` never happens at daemon start or on config load; only the meeting `Recording` warm-up and a real question load a checkpoint.
+3. **Measured reclaim** — for both checkpoints, RSS before load / after first inference / after `Release` (Metal f16 and CPU f32); "after release" must be within ~50 MB of "before". If Metal keeps buffers alive, the session owns its `Device` and drops it; a fresh device per load. The numbers go in the as-built; a model-gated test asserts the bound.
+4. **Visible** — `decision_stats` gains `loaded: [{ checkpoint, since, rss_mb }]`; Labs shows *"Loaded now: none"* / *"meeting checkpoint · 903 MB · 4 min"*; `t --headless` smoke: start → nothing loaded; meeting `Recording` → default loaded; stop → nothing loaded within one watchdog tick. *(As built — step 6: a separate `decision_loaded` RPC, `rss_mb` = process footprint; the line is the first section of Settings → Labs after the step-10 merge.)*
+
 ## §3 First integration: meeting (53)
 
 Today (`meeting/src/lib.rs:1150-1215`, `tools.rs:24-50`): each flushed batch is steered into the meeting session; the reasoning model decides among nothing / `brief_search` / `meeting_topic` / research; cached alias hits (`cache.rs:395-434`) already bypass the model and stay as they are.
@@ -149,6 +160,28 @@ It is the `decision.families.meeting.*.mode` setting (§2) for both meeting fami
 
 **Data path**: the meeting plugin emits `OracleDecision { batch_id, family, mode, disposition, top: [(label, p)], latency_ms, tier, outcome: Option<Outcome> }` on the meeting event stream the island already subscribes to (topics, level, state), `ts_rs`-exported like `MeetingState`; `store/meeting.ts` keeps the last N per meeting and the counters; `Island.tsx` and the session batch rows render from the store. The row and the chip are the only new UI; no new window, no new RPC beyond the config write.
 
+### 3.5 Revision after the first shadow session (Sky, 2026-09-21 evening): the topic question is broken; tier 2 becomes the workhorse
+
+**Evidence** (`~/.theuth/decisions/2026-09-21.jsonl`, 12 batches in shadow): `meeting.topic` answered **`false` on every batch**, with logits 12–21 against ≈0 (P(true) ≤ 0.001) — including the Kuiper-belt / Planet Nine narrative and four batches for which the model *did* publish a brief (`corrected: actual true` ×4). `meeting.brief` over 8–9 cached HV/MV titles gave a flat 0.05–0.24 spread every time (`low_top1`), `none` correctly on the astronomy batch. Two first-batch asks timed out at 401 ms while the model cold-loaded (5.1 s), so the first batch of a meeting always went to the model. Conclusion: the yes/no question as phrased is not "uncertain", it is *confidently wrong* — the gate cannot rescue it. Causes (§12.4's `laya-grounded` findings apply): the statement is about the *listener* ("…the listener may need to look up") — an abstract third-party judgement the model was never trained on; its vocabulary ("ticket, system, project, number") primes an IT context; `noul` grounding is the base checkpoint's weakest skill while routing `Choice` is its strongest; 9-way choices over long, near-identical titles flatten.
+
+**Sky's requirements**: identify the topic really well; match an existing brief when one exists; escalate when not; **never ask the classifier about the user** (it knows nothing about them); several decision steps are fine; **1–2 s per batch is fine**.
+
+**Redesign** — the classifier does what it is good at (recognise, route, match short labels); a cheap LLM (tier 2, `agent.escalate_model`) does what needs reading comprehension (name the subject); the reasoning model (tier 3) does what needs tools (research):
+
+0. **Mentions (deterministic, 0 ms).** From the batch text: capitalised n-grams not at sentence start, ticket ids (`[A-Z]{2,}-\d+`), acronyms, numbers with units, quoted terms, proper names → `mentions: Vec<String>` (`Kuiper belt`, `Mike`, `Constantin`, `Planet Nine`). Also the FTS query for cached briefs is now built from mentions ∪ batch text, and candidates are cut to the **top 4** by FTS rank + `none`.
+1. **Tier 1a — conversation kind (`Choice`, family `meeting.kind`)**: *"What is this stretch of conversation mostly about?"* → `small talk, greetings or scheduling` · `a specific named subject (a person, place, object, ticket, system, event or technical term)` · `general discussion without one specific subject`. The exact phrasing is chosen by the phrasing bench below, not by hand.
+2. **Tier 1b — cached brief (`Choice`, family `meeting.brief`)**: unchanged question, ≤ 4 candidates + `none`, labels = titles only.
+3. **Gate (asymmetric — a missed brief costs more than a wrong cached one):**
+   - **Skip** only if 1a = small-talk with P ≥ τ **and** `mentions` is empty. Either condition alone → not a skip.
+   - **Publish** if 1b picks a brief with P ≥ τ_brief (start 0.6) and margin ≥ 0.3 over the runner-up.
+   - **Everything else → tier 2**, always (shadow included — Sky accepts the cost; shadow must evaluate the whole pipeline).
+4. **Tier 2 — subject extraction (`decision::escalate`, budget 3 s)**: one JSON answer `{ "subject": string|null, "cached": <brief id>|null, "lookup": bool }` from the batch text + `mentions` + the ≤ 4 cached candidates (id, title, aliases) + tier 1's numbers as a data line. `cached` → publish that brief (same dedupe). `subject` with `lookup: true` → **tier 3 with the subject as the lead**: the evidence line becomes `oracle: subject "Planet Nine / Kuiper belt" — no cached brief; kind: named subject 0.91` so the research turn starts from the answer, not the transcript. `subject: null` → skip (carried). Invalid/timeout → tier 3 as today.
+5. **Warm-up**: when a meeting reaches `Recording`, the plugin sends a warm `Ask` so batch 1 never times out on the cold load.
+
+**Phrasing bench** (before wiring): `decision` example `phrasing` replays fixture batches (built from today's recorded meetings' transcripts in the meeting store, labelled by what the model published per `briefs.jsonl`/outcomes, plus a handful of hand-written small-talk and narrative batches) against candidate phrasings/label sets for 1a and 1b, printing per-phrasing confusion, mean P on the right label, and how many skips would have hidden a published brief. The winner goes into `oracle.rs` constants with the bench's table in the as-built.
+
+**UI**: the ⚡ row shows the stages: `⚡ kind: named subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine / Kuiper belt" → no cached brief → model`. Counters gain `tier 2 calls`.
+
 ## §4 Second integration: browser (23)
 
 Today the model lists elements (`browser_elements` / `browser_read`), reads `ref=e3 button "Sign in"` lines, then acts — two turns per action, the second one containing the whole element list. `browser_do(intent, operation?)` (Mutating, like `browser_click`):
@@ -160,6 +193,27 @@ Today the model lists elements (`browser_elements` / `browser_read`), reads `ref
 5. `browser_wait` condition selection is a second, low-risk family (`browser.wait`) inside the same tool: `Choice` over `{text: "<visible heading>", selector: …}` candidates derived from the intent.
 
 Not changed: refs stale after navigation still fail closed; `site_learn`/routes stay heuristic (`routes/src/classify.rs`) — they are already local and deterministic.
+
+### 4.1 Revision (Sky, 2026-09-21 night): the browser System-1 loop — the jev-ultrafast demo, in-process
+
+Sky's aim is the `cklxx/laya-browser` demo: laya drives a real browser end to end, **one encoder pass per step, no LLM in the loop** (their demo: 6 tasks, 12 decisions, median 22 ms/decision on an RTX 4070 through `browser-use/jev-ultrafast`). The §4 sketch above (a single `browser_do` inside a model turn) is superseded by a loop tool.
+
+**Facts relied on** (`cklxx/laya-browser` README + `code/sample_request.json`, read 2026-09-21):
+- Checkpoint **v10** = ModernBERT-large 421M, English, `model.safetensors` 842,609,220 B + `encoder/config.json` + `rl_agent_config.json` + `tokenizer/` — the exact layout `decision` loads; `head_max_len` 768. v10s/v11s are mmBERT-base 322M (multilingual, 17–23 ms on the 4070) — a different backbone the vendored port does not implement; later.
+- Numbers: element top-1 on held-out pages 0.10 (base) → **0.66** (v10) over ~45 candidates; operation accuracy 0.54 → 0.88; 16 real tasks × 3 runs: v10 50 %, v10s 62 %, bimodal (10 pass 3/3, 6 fail 3/3 — login impossible because the DOM reader hides password fields; collapsed menus unseen). **Confidence-gated escalation to Qwen3-8B made it worse (58 → 42 %)** — no tier 2 in this loop.
+- Request shape (jev `/v1/systemone`, = laya's `predict` request): `state = { page: { url, title, text ≤ ~1.5k chars }, recent_actions: [] }`; questions `operation` (Choice; criteria **verbatim**: `CLICK`, `TYPE_TEXT` ("…A small LLM will supply the value from the goal."), `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`; instructions `{ goal, rules }` — a fixed ~12-line rule text), `click_target` (Choice over every interactive element as `"[i] label (role)"`, instructions `{ goal, operation: "CLICK", rules: [rules, target-rules] }`), `type_text_target` (same over editable elements). Elements live **only in the option list**; the fine-tune learned this rendering — drift here is the fastest way to lose the 0.66.
+
+**Design**
+1. **Tool `browser_run(goal, max_steps = 25)`** (Mutating; the description says it may perform up to `max_steps` clicks/keystrokes in the session's headless browser under one approval): the loop runs inside the tool call. Per step: `observe()` → one **`AskMany`** (the three questions in one collate + one forward; new engine message — today `Ask` is one question and the meeting oracle pays two round trips) → gate → execute → append to `recent_actions` → repeat. Returns a trace (`step 3: CLICK [7] "Search (button)" 0.91 · 180 ms`), the final url/title and why it stopped.
+2. **`browser::systemone::observe(session) -> Observation`**: url, title, visible text in DOM order cut to 1.5k chars, interactive elements in DOM order `{ index, ref, label, role, value?, editable }` (links, buttons, inputs, selects, textareas, `[role=…]`, `[onclick]`; `label` = accessible name → text → placeholder → aria-label; role in jev's words `link/button/searchbox/textbox/checkbox/combobox/…`; **password fields excluded**, as jev), `recent_actions` (last 6: `op`, target label, ok/err). Built on `session.rs`'s existing element snapshot (`ref=e3 …`) — the `[i]` index maps back to the `ref`.
+3. **TYPE_TEXT value**: deterministic first (a quoted string in the goal, or the goal's object after "for/into/as"); otherwise one `SideCall{ role: Escalate }` with goal + field label + page title → ≤ 80 chars. That is the only LLM call the loop can make, and only when typing.
+4. **Gate and stop rules** (`browser.operation`, `browser.target`, `browser.type_target` families; modes off/shadow/active): execute when `operation` top-1 P ≥ 0.5 and the target's P ≥ 0.25 (cklxx shipped their suite ungated and at 0.7 — both thresholds are config, the bench decides); `DONE` ends the loop; `BLOCKED`, step cap, 60 s wall clock, or **three identical consecutive actions** (the README's failure signature) hand back to **tier 3**: the tool returns the observation + trace and today's `browser_*` tools continue in the same model turn. **No tier 2 for op/target** (their finding).
+5. **Shadow** = `browser_run` observes and asks but does not execute; the tool result is the trace prefixed to what `browser_elements` returns, so the model's actual next `browser_*` call is the label; agreement is logged like the meeting outcome. **Active** executes. Off = tool hidden.
+6. **Checkpoint per family**: `decision.checkpoints: { default: models/decision, browser: models/decision-browser }`, `families.browser.*.checkpoint: browser`; one engine actor per checkpoint, both may be resident (~0.9 GB each on Metal; idle unload as today). `models/decision-browser/` = cklxx v10 files; fetched by `release-models`/the desktop downloader once published — until then a `scripts/fetch-laya-browser.sh` from Hugging Face.
+7. **Capture** (§11.4 shape, family `browser`): per step the observation, the three questions with candidates, probabilities, the executed action, and the loop's end state; the model's tier-3 correction, when it takes over, is the gold label (DAgger, which is exactly what cklxx used for their last 177 examples).
+8. **Bench** = cklxx's 16-task suite (`results/suite_*.json` on the hub has the task list) × 3 runs, pass/fail + steps + per-step latency, run against public sites from `examples/browser_suite.rs`; the gate thresholds and the "match jev's reader" claim are judged by it. Target on the M3 Max: ≤ 300 ms per step at ~45 candidates; success ≥ their v10 50 % on the same tasks.
+
+Not in scope: mmBERT (v10s), computer use (needs an AX-tree reader — §4.2 later), the Settings pane (browser mode is a config key until step 10 groups the switches).
 
 ## §5 Third integration: readability routing (52)
 
@@ -186,6 +240,20 @@ Before 52's two-call vision fallback (`agent/src/loop_.rs:4354-4578`), the agent
 - Desktop Settings → "Decision training data": per-family opt-in switches (§11.1.2), off by default.
 - TUI `/decision` (or `Stats` via RPC `decision_stats`): per family — mode, coverage, escalations by reason, p95, shadow agreement. That is how Sky decides to flip `active`.
 - Config comments in `theuth/src/main.rs` generated config: model dir, that the desktop app fetches the checkpoint from the release bucket (54 §9), the shadow→active procedure in two lines.
+
+### 7.1 Settings → Labs (Sky, 2026-09-21 night) — replaces step 10's "Decision training data" section
+
+Everything experimental about the decision oracle lives in **one Settings pane, "Labs"**, so a user finds the switch, the consequence and the consent in the same place. Three cards, each with a one-paragraph plain-English description (what it is, what it does on this machine, what it costs) and a "design notes" link (this doc):
+
+1. **Meeting oracle** — Off · Shadow · Active (`decision.families.meeting.mode`; the control moves here from Settings → Meetings, which keeps a one-line pointer "Local decision oracle: Shadow — change in Labs"). Below it the live counters (`decision_stats`): batches · skipped · briefs · tier-2 calls · agreed %. Disabled with the reason when `effective = off` (model missing, decision disabled).
+2. **Browser System-1** — Off · Shadow · Active (`decision.families.browser.mode`). Text states that Active lets `browser_run` perform up to `max_steps` actions in the headless browser under one approval, the suite pass rate (56 %) and the step latency, and that Shadow only annotates. Disabled with the reason when the `decision-browser` checkpoint is missing, with a **Download (0.8 GB)** action wired to the model downloader once the checkpoint is published (until then the reason names `scripts/fetch-laya-browser.sh`).
+3. **Training data** — per family (meeting, browser), two switches, deliberately separate:
+   - **Capture locally** (`families.<p>.train`): exactly what one row contains, in the family's own words (meeting: "the last transcript batch — other people's speech — the classifier's numbers, what the assistant did next, and whether you tapped or dismissed the brief"; browser: "the page's element list and visible text, the goal, and the action taken"); examples today / total, bytes, **Open folder**, **Delete local data** (removes `decisions/training/<p>/`, keeps the switch as set).
+   - **Share with theuth** (`families.<p>.share`, new key, default false): consent text — the uploaded rows are byte-identical to the local ones; no session, meeting or account identifiers; per-harness daily cap; revocable (stops uploads, cannot recall what was sent); link to the privacy note. Requires Capture on (turning Capture off turns Share off). **Until step 11's relay endpoint ships the switch is shown, persisted and greyed "upload not available in this version"** — consent recorded now is honoured by the uploader later, and the uploader must re-read the key on every batch.
+
+Rules: every control is a live config write through the existing RPC pattern (`set_meeting_oracle_mode`, generalised to `set_decision_mode(prefix, mode)`; `set_decision_training(prefix, on)`; new `set_decision_share(prefix, on)`), no restart; each mode control shows its *effective* state; nothing in Labs defaults on except meeting Shadow (already the default). The pane is hidden entirely when `decision.enabled: false`.
+
+**As built** (`6cc533f`, `749d18e`): see *As built — step 10 (Labs)* at the end — `ModeInfo` gained `enabled` / `installed` instead of a separate `decision_enabled()`; the browser Download action is not wired (the release bucket does not list `decision-browser/` yet, so the card names `scripts/fetch-laya-browser.sh`); browser Off ↔ on changes tool registration only at the next daemon start and the card says so.
 
 ## §8 Security boundary (28)
 
@@ -246,6 +314,18 @@ Sky's spec (2026-09-21): the escalations and shadow decisions the reasoning mode
 ### 11.3 Amendments to 00 (add to §10)
 
 - `relay` gains an optional S3 write dependency (`training/*` prefix only) and a `/train/{family}` route; §9 data dir gains `decisions/training/<family>/`; config `decision.families.<name>.train`, `decision.train_model`, `decision.train_keep_local`.
+
+### 11.4 Revision for steps 8–9 after §3.5 (Sky, 2026-09-21 night): local capture first, labels are free, no composer call
+
+The pipeline of §3.5 changes what capture needs. Every non-skipped batch already gets a **tier-2 answer** (`subject`, `cached`, `lookup`) in shadow and in active, and every tier-3 delivery already produces an **outcome** (what the model published, or nothing); the user's **tap / dismiss** on a topic arrives later on the same brief. Those three are the labels — the §11.1(4) composer side call is unnecessary for the meeting family and is **dropped from v1** (kept in the design as an option for a family with no tier-2 pass). Fine-tuning targets are the two tier-1 questions the bench showed weak (`meeting.kind`, `meeting.brief`) plus, later, a `meeting.subject_present` Bool the fixture can already label.
+
+1. **What one example is** — one per batch that entered the oracle (mode ≠ off) while `decision.families.meeting.train: true`: the batch text as the oracle saw it (`them:`/`me:` lines, ≤ 512-token truncation as applied), `mentions`, the rendered tier-1 questions (instructions, candidate ids *and titles*, `none`), tier-1 probabilities and dispositions, tier-2 `{subject, cached, lookup}` (or the failure), tier-3 outcome (`published: <brief id, title> | none`), and — appended later — `user: tapped | dismissed | ignored`. Labels are derived offline: `kind = small_talk` ⇐ tier 2 `subject: null` and nothing published; `named_subject` ⇐ a subject or a publication; `brief = <id>` ⇐ cached pick confirmed by publication (or tapped), `none` otherwise. **Tier-1 `Accept` rows are captured too** (a skipped small-talk batch is a negative example) — §11.1(3)'s "never capture Accept" was written for a world where the oracle's answer was the only label; now the label source is recorded (`label.source ∈ {tier2, tier3, user, oracle_only}`) and the trainer chooses.
+2. **Where** — `<data_dir>/decisions/training/<family>/<YYYY-MM-DD>.jsonl`, one JSONL row per event: `example` (written when the batch settles) and `amend` (outcome, user reaction — keyed by the example `id`, never rewriting the file). Secrets scrubbed with the `secrets` crate's placeholder scrubber before writing. No session id, no meeting title, no participant names beyond what the speech contains.
+3. **Opt-in** — `decision.families.<prefix>.train: bool` (default false; prefix patch as for `mode`), engine `GetTrain`/`SetTrain` messages, RPC `decision_training(prefix) -> { enabled, examples_today, examples_total, bytes, dir }` and `set_decision_training(prefix, bool)`; Settings section is step 10 — until then Sky flips it in `config.yaml` or over RPC.
+4. **Export** — `t decision export --family meeting [--since DATE] --out FILE`: folds `example` + `amend` rows into the **same fixture shape the phrasing bench reads** (`crates/decision/tests/fixtures/meeting-batches.json`: `text`, `kind`, `published`, `mentions`, plus `subject`, `cached`, `user`) and, with `--format laya`, into laya's `typed-decisions` training JSON. The bench thereby becomes the evaluation harness for captured data: `cargo run --example phrasing -- --fixture exported.json`.
+5. **Upload** (step 11, unchanged design) stays off until the relay endpoint exists; `train_keep_local` defaults true.
+
+**As built** (`52e6e7b`, `87de365`, `2795f84`): see *As built — steps 8–9* at the end — the export flag is `t --decision-export meeting` (no subcommand tree in `t`), the example carries a `verdict`, ids are uuid v7, and a tier-1 skip without tier 2 labels `small_talk` too.
 
 ## §12 Model-tree survey (2026-09-21, after step 2's numbers) — what the fast deployments actually do
 
@@ -814,3 +894,418 @@ Brief: `/tmp/laya-design/omp-step4.md`. Commits on main: `48e5cbe` (side-call ty
 - `Ask` batching: the two questions are two mailbox round trips. An `AskMany` on the engine (one `collate` + one forward) halves the tier-1 latency; do it when the log shows the second ask timing out.
 - The session's ⚡ rows live in the desktop store only; if Sky wants them on a past meeting's session, the verdicts need a `briefs.jsonl` record (the `Record` enum is the place).
 - TUI `/decision` was not added (out of the brief's crates); `decision_stats` is the RPC it would read.
+
+## As built — step 4b (2026-09-21): phrasing bench, mentions, `meeting.kind` Bool, asymmetric gate, tier-2 subject extraction, warm-up, staged ⚡ rows
+
+Brief: `~/.theuth/omp-step4b.md` (§3.5 as the build order). Commits on main: `3217e3f` (phrasing bench + fixture), `09ee2d7` (mentions, `meeting.kind`, asymmetric gate, ≤ 4 candidates, warm-up), `9b07272` (tier-2 subject extraction, subject-led evidence, shadow runs the full pipeline), `55437f2` (wip checkpoint: `meeting-line.ts`/test + `store/meeting.ts` — the desktop half, finished by) `5e45674` (`store/meeting.test.ts`, tier-2 counter), this note. Toolchain: `export PATH="$(just toolchain):$PATH"`.
+
+### Phrasing bench (`3217e3f`) — `crates/decision/examples/phrasing.rs`
+
+Fixture `crates/decision/tests/fixtures/meeting-batches.json`: **112 batches** — today's recorded meetings ("Sre-standup-9-21-26" 15:00, "icdportal.com migration" 16:04) re-split offline with `batch.rs`'s flush rule as `them:`/`me:` lines, labelled from `briefs.jsonl`/outcomes, plus hand-written batches (small talk / scheduling, the Kuiper-belt narrative, technical talk without ticket vocabulary). Labels: 20 `small_talk`, 67 `named_subject`, 25 `general`; 19 carry a `published` brief, 11 of those have the brief among the FTS candidates. Three `published` labels on icd scheduling batches (Tony/Sky/cutover) are model noise and were left as labelled. Run: `cargo run --release -p decision --example phrasing` (model-gated on `~/.theuth/models/decision`), M3 Max, Metal f16, load average ~20–34 throughout (another agent's builds).
+
+**1a — conversation kind.** `skips@τ` = small talk skipped / other batches skipped / skips that hid a published brief.
+
+| # | variant | acc | mean P(correct) | confusion | skips@0.6 | skips@0.8 | p50/p95 ms |
+|---|---|---|---|---|---|---|---|
+| 1–4 | 3-way `Choice`, label set A (§3.5 text), 4 instructions | 25–27/112 | 0.265–0.285 | everything → general | 0–1 / 0 / 0 | 0 | ~50/70 |
+| 5–8 | 3-way, label set B (short) | 24–27/112 | 0.265–0.268 | mostly general | 2–3 / 4–7 / 1–2 | 0 | ~55/75 |
+| 9–12 | 3-way, label set C (concrete) | 28–33/112 | 0.296–0.311 | mostly general | 2 / 0 / 0 | 0 | ~53/66 |
+| 13 | 2-way `Is this small talk or a conversation about something?` | 82/112 | 0.578 | `[[18,2],[28,64]]` | 13 / 7 / 2 | 0 | 53/64 |
+| 14 | 2-way `Which describes the transcript?` | 48/112 | 0.500 | `[[20,0],[64,28]]` | 18 / 38 / 5 | 3 / 1 / 1 | 43/58 |
+| 15 | 2-way `What kind of conversation is this?` | 44/112 | 0.481 | `[[20,0],[68,24]]` | 19 / 45 / 7 | 10 / 3 / 2 | 41/54 |
+| **16** | **Bool `The speakers are only greeting, scheduling or saying goodbye`** | **101/112** | **0.799** | `[[90,2],[9,11]]` | **8 / 0 / 0** | 1 / 0 / 0 | 43/60 |
+| 17 | Bool `This is small talk with nothing to look up` | 92/112 | 0.741 | `[[91,1],[19,1]]` | 0 / 0 / 0 | 0 | 44/60 |
+| 18 | Bool `Nothing of substance is discussed: only greetings, thanks, scheduling or goodbyes` | 100/112 | 0.741 | `[[89,3],[9,11]]` | 8 / 1 / 0 | 2 / 0 / 0 | 48/63 |
+| 19 | Bool `The speakers only exchange pleasantries, thanks, scheduling or goodbyes; no subject is discussed` | 100/112 | 0.756 | `[[92,0],[12,8]]` | 6 / 0 / 0 | 1 / 0 / 0 | 50/63 |
+| 20 | Bool `The speakers discuss a specific named subject: …` (true = subject) | 21/112 | 0.281 | `[[20,0],[91,1]]` | 20 / 89 / 18 | 18 / 70 / 12 | 50/73 |
+| 21 | Bool `The conversation has a subject someone could look up` | 22/112 | 0.293 | `[[20,0],[90,2]]` | 20 / 87 / 17 | 19 / 73 / 14 | 43/58 |
+
+Reading: every 3-way `Choice` is near-uniform (mean P(correct) 0.27–0.31; everything lands on `general`) — the classifier cannot *name* the kind. The `Bool` head is biased to `false`, which makes it a usable **small-talk detector** (variant 16: 101/112, 8 of 20 small-talk batches skipped at τ 0.6, 0 false skips, 0 hidden briefs) and a useless **subject detector** (variants 20–21: P(true) low on everything, 18 hidden briefs at 0.6). τ_kind = **0.6** (the §3.5 default 0.8 skips 1 batch). Full per-variant rows (all 4 × 3 3-way variants) come out of the bench run.
+
+**1b — cached brief.** Query = mentions ∪ batch text; K candidates by FTS rank + `none`.
+
+| K | ids | acc | mean P(correct) | mean P(correct \| brief truth) | publish@0.6/0.3 right / wrong | none-accepted right / wrong | p50/p95 ms |
+|---|---|---|---|---|---|---|---|
+| 4 | uuid | 100/111 | 0.458 | 0.237 (n=11) | 0 / 0 | 15 / 0 | 89/107 |
+| **4** | **b1..b4** | 76/111 | 0.421 | **0.481** | 3 / 6 | 24 / 0 | 59/76 |
+| 8 | uuid | 80/111 | 0.243 | 0.130 | 0 / 0 | 1 / 0 | 102/121 |
+| 8 | b1..b8 | 61/111 | 0.330 | 0.493 | 4 / 18 | 15 / 0 | 80/97 |
+
+Reading: UUID ids never pick a brief (the 192-token head budget goes to the ids); short ids `b1..b4` double P(correct | a brief is the truth) and keep `none` clean; K8 publishes 18 wrong briefs. Most of the K4 "wrong" publishes are label leakage — the icd meeting's briefs were created *in* that meeting after the batch (icd-00:12:53 → SSL cert timeline 0.73, icd-00:09:32 → Domain redirect 0.75, icd-00:19:13 → Certificate & TLS 0.71 are right in substance); genuinely wrong at 0.6/0.3: sre-00:09:18 → Certificate & TLS 0.63 (Outlook/2FA talk), icd-00:18:54 → DR cutover 0.61 (ICD cutover window).
+
+### Chosen phrasings and constants (`crates/meeting/src/oracle.rs`, `crates/decision/src/lib.rs::default_families`)
+
+- `meeting.kind` = **`Bool("The speakers are only greeting, scheduling or saying goodbye")`** (`KIND_STATEMENT`), `true` = small talk; gate **`FamilyGate::shadow(0.60, 0.20)`**. Skip ⇔ P(true) ≥ 0.6 accepted **and** `mentions` empty.
+- `meeting.brief` = **`Choice("which cached brief is the subject being discussed")`** (`BRIEF_INSTRUCTIONS`, unchanged) over the top-**4** FTS rows (`CANDIDATES`; query = `mentions.join(" ") + text`, `Cache::search(query, 12)` minus the rows shown/dismissed this meeting), candidate ids **`b1..b4`** (`candidate_id`), text = **title only**, + `none`; gate **`shadow(0.60, 0.30)`**. Publish ⇔ a brief accepted (P ≥ 0.6, margin ≥ 0.3).
+- `meeting.subject` = the tier-2 family (`decision::subject::FAMILY`; rows only, never asked of the oracle), gate row `shadow(0.50, 0.0)` so `decision_stats` and the `meeting` prefix switch cover it.
+- `meeting.topic` is **removed** from the default table (not disabled): the bench showed it confidently wrong, not uncertain. Sky's `config.yaml` `meeting: { mode: shadow }` prefix patch applies to the three new families unchanged (tested in `lib.rs`).
+- `mentions(text)`: capitalised n-grams not at sentence start, ticket ids `[A-Z]{2,}-\d+`, acronyms (≥ 2 capitals), numbers with units, quoted terms; de-duplicated, occurrence order, ≤ 12 (`MAX_MENTIONS`). Kuiper batch → `["Mike", "Kuiper", "Neptune", "Earth", "Planet Nine"]`; small talk → empty.
+- Tier 2 = `decision::subject` (`SYSTEM` prompt, `render`, `parse`, `extract`): the request is `Mentions:`, `Cached briefs:` as `- b1 — title (aliases)`, tier 1's numbers as one data line, then the transcript; the answer is `{ "subject": string|null, "cached": <offered id>|null, "lookup": bool }`, parsed strictly (`cached` must be an offered id or `none`/`null`; `lookup` missing = `subject` is set; subject cut at 80 chars). Dispositions in `oracle::run`: `cached` → Publish (same dedupe; tier2 text `cached: <title>`); `subject` + `lookup` → tier 3 with evidence **`oracle: subject "Planet Nine" — no cached brief; kind subject 1.00`** first in the batch delivery (`subject_evidence`); `subject` + `!lookup` or `subject: null` → Skip (`"…" → nothing to look up` / `nothing to look up`); invalid / timeout / provider error → tier 3 with today's evidence line and reason `<reason>; tier 2: <error>`. Budget = the family's `escalate_budget` (3 s).
+- Warm-up: `MeetingState::Recording` (`lib.rs` at `Started`) spawns `oracle::warm_up()` → engine message `decision::Warm { budget: 30 s }`: load + one unlogged forward on a fixed `Bool("warm-up")`, logs `decision: warm-up done in N ms`.
+
+### Deviations from §3.5 / the brief
+
+- **`meeting.kind` is a `Bool`, not a 3-way `Choice`.** Every 3-way variant is near-uniform (table above); the Bool small-talk statement is the only phrasing with a usable skip side. Consequence: the oracle never says "named subject" — the ⚡ row's first stage reads `kind: small talk P` or `kind: subject P` (P of the winner), and "subject" there means "not only small talk".
+- **τ_kind = 0.6**, not the brief's default 0.8 (0.8 skips one batch in 112).
+- **Warm-up is an engine `Warm` message** (load + one unlogged forward), not a logged `Ask` on `meeting.kind` — a throwaway ask would land in the decision log and `decision_stats` as a real question.
+- **Tier-2 rows carry the subject in `AskRow.note`** (new field, serde-default) under family `meeting.subject`, `choice` = the cached id / `lookup` / `skip`; `outcome` compares `SUBJECT` rows against the model's publication (cached row id, else `lookup` iff anything was published).
+- **The evidence line moved to right after the batch header for every case**, not only the subject-led one (`session::batch_line_with`), so the research turn always reads the oracle's verdict before the transcript.
+- **Shadow spends tier 2** (revert of step 4's "shadow never spends a tier-2 call"): Sky wants the whole pipeline evaluated; the shadow outcome is still the model's independent answer, judged per family at `TurnFinished`.
+- `OracleDecision` on the wire: `stages: Vec<(String, f32)>` (`kind: small talk 0.79`, `brief: none 0.57`), `mentions`, `subject: Option<String>`, `tier2: Option<String>` (`"Planet Nine" → no cached brief` / `nothing to look up` / `timed out`), `top` = the brief candidates (titles) + `none` only (the topic entry is gone); `latency_ms` includes tier 2. `OracleDisposition::Brief.brief` is the cache row id, not `b1`; `Expected` rows likewise carry the row id so `outcome` compares against what the model publishes.
+- Cached briefs on this machine are the SRE/ICD sets; the HV/MV cache from the first shadow session is gone (`01a0bfb*` ids are not in `briefs.sqlite`), so the fixture's brief candidates are the SRE/ICD titles.
+- Desktop: the brief's `feat(desktop)` commit is split across `55437f2` (wip: `lib/meeting-line.ts::oracleRow` + test, `store/meeting.ts` counters) and `5e45674` (`store/meeting.test.ts`). Row text: `⚡ kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms`, `⚡ kind: small talk 0.79 → skip · 78 ms`, `⚡ kind: subject 0.88 · brief: SRE-2386 0.91 → published SRE-2386 · 81 ms`; empty stages omitted; shadow appends `✓ agreed` / `✗ model published HR-12`. Counters/summary: `⚡ 1 skipped · 1 brief · 1 escalated · 0 tier 2 calls · agreed 50 %` (`tier2` = rows with `tier2 !== null`). Island chip text unchanged.
+
+### Checks
+
+- `cargo test -p decision -p meeting` (this note's run): `decision` **52 unit** (49 → 52: subject render/parse incl. cached-id validation and `subject: null`, `extract` contract with a fake `SideCaller`, default table without `meeting.topic`) + `tests/model.rs` 2 model-gated; `meeting` **38 unit** (37 → 38: `mentions` on the Kuiper batch and on small talk, the asymmetric `settle` table — small talk with mentions → tier 2, brief 0.65 / margin 0.2 → tier 2, kind timeout → tier 2, brief accepted wins; `stages`/`evidence`/`top`; `outcome` per family) + **`tests/oracle.rs` 1** model-gated, passing. `cargo clippy -p decision -p meeting --no-deps --all-targets` clean and `cargo check --workspace --all-targets` clean at `9b07272`; nothing in Rust changed since.
+- Model-gated `tests/oracle.rs` (fake side caller answers `{"subject": "Planet Nine", "cached": null, "lookup": true}` for the Kuiper batch, `{"subject": null, "lookup": false}` for small talk), as printed this run (load average high, another build running): shadow Kuiper → **`Model { reason: "subject \"Planet Nine\", no cached brief" } tier 3 in 3259 ms, stages [("kind: subject", 0.99996185)], mentions ["Mike", "Kuiper", "Neptune", "Earth", "Planet Nine"], tier2 Some("\"Planet Nine\" → no cached brief")`** — not skipped at tier 1 (mentions non-empty and P(small talk) ≈ 0), reached tier 2 in shadow; active Kuiper evidence line **`oracle: subject "Planet Nine" — no cached brief; kind subject 1.00`** first in the delivery; active small talk (`yeah, sounds good / ok, thanks, talk later`) → **`Skip tier 2 in 159 ms, stages [("kind: subject", 0.64434844)], tier2 Some("nothing to look up")`**. A quieter earlier run of the same test: 1442 ms / 54 ms.
+- Desktop: `just ts-desktop` regenerated `OracleDecision` (`stages`, `mentions`, `subject`, `tier2`); `cd crates/desktop/ui && bun run check` green (the pre-existing `packages/apps/src/renderer.tsx` error was a stale `packages/apps/node_modules` — the `@openuidev/react-lang` patch had not been re-applied since the rename; `bun install` there fixed it), `bun run test` **187 passed / 34 files** (`meeting-line.test.ts` covers the staged row incl. omitted stages, `store/meeting.test.ts` the tier-2 counter and summary).
+- Not run: the headless smoke (plugin start logging the kind family; one `decision: warm-up done` at `Recording`) — the plugin-start line is unchanged code from step 4 and `warm_up` is exercised only by construction; the desktop app itself (`cargo tauri dev` unavailable here).
+
+### Open
+
+- **The small-talk sample is not skipped at tier 1.** `yeah, sounds good / ok, thanks, talk later` scores P(small talk) **0.36** (< τ 0.6) — the bench's 8/20 at 0.6 says the Bool head catches only the most obvious greeting/scheduling batches; the rest ride a 3 s tier-2 call to a Skip. Shadow data will show the actual skip rate; if it stays under ~40 %, variant 18/19 (`Nothing of substance…`, 100/112) with τ 0.5 is the next thing to bench, not another rewrite.
+- The `b1..b4` publishes at 0.6/0.3 include two genuinely wrong ones in 112 (table above). The asymmetric gate accepts that cost by design; if shadow shows more, raise `tau_margin` on `meeting.brief` before touching the phrasing.
+- `stages` names the Bool's winner `subject` when it means "not only small talk"; a reader of the ⚡ row may read it as a positive subject detection. Rename to `kind: talk` / `kind: small talk` if it confuses.
+- Fixture labels: three icd scheduling batches carry model-noise `published` titles and the icd briefs leak forward (created in-meeting after the batch); a `created_at` on the fixture's briefs would let the bench exclude them instead of the hand note above.
+
+## As built — steps 8–9 (2026-09-21): local training capture for the meeting oracle, `train` switch + RPC, export to the bench fixture
+
+Brief: `/tmp/laya-design/omp-step89.md` (§11.4 as the spec; §11.1 items 1, 2, 5, 6 still hold). Commits on main: `52e6e7b` (`decision::training` schema + per-day writer + scrub, `FamilyGate.train`, `GetTrain`/`SetTrain`/`Capture`, RPC), `87de365` (meeting capture: every oracle-handled batch, `amend` with outcome and tap/dismiss), `2795f84` (export: fold → fixture / laya shapes, `t --decision-export`, `phrasing --fixture`), this note. Toolchain: `export PATH="$(just toolchain):$PATH"`.
+
+### What one example looks like (`crates/decision/src/training.rs`)
+
+One JSONL row per event under `<data_dir>/decisions/training/<prefix>/<YYYY-MM-DD>.jsonl`. The row below is the Kuiper batch from the model-gated test (`crates/meeting/tests/oracle.rs`), shadow, with a two-row cache; `text` shortened and probabilities rounded here, nothing else changed:
+
+```json
+{"row":"example","schema":"theuth.decision.v1","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:45:55.801400Z",
+ "family":"meeting","harness":"1.9.2","model_sha":"891102d37268…","gate_version":3337696867,"mode":"shadow",
+ "text":"them: So Mike was telling me about this at lunch. They were looking at the orbits of a few distant objects in the Kuiper belt, way out past Neptune, […]\nme: Has anyone actually seen it?\nthem: No, that's the thing. […]",
+ "mentions":["Mike","Kuiper","Neptune","Earth","Planet Nine"],
+ "questions":[
+  {"family":"meeting.kind","type":"bool","instructions":"The speakers are only greeting, scheduling or saying goodbye","candidates":[],
+   "probabilities":{"false":1.0,"true":0.0},"disposition":"shadow","gate_version":3337696867,"tier":1,"latency_ms":55},
+  {"family":"meeting.brief","type":"choice","instructions":"which cached brief is the subject being discussed",
+   "candidates":[{"id":"b1","text":"Mike's onboarding checklist"},{"id":"b2","text":"Earth observation satellite budget"}],
+   "probabilities":{"b1":0.112,"b2":0.1184,"none":0.7695},"disposition":"shadow","gate_version":205688663,"tier":1,"latency_ms":46}],
+ "tier2":{"subject":"Planet Nine","cached":null,"lookup":true},
+ "verdict":{"action":"model","reason":"subject \"Planet Nine\", no cached brief"}}
+{"row":"amend","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:45:56Z","outcome":{"published":{"id":null,"title":"Planet Nine"}}}
+{"row":"amend","id":"01a0c549-fdd9-7970-b852-1e71bddc410c","ts":"2026-09-21T18:47:00Z","user":"tapped"}
+```
+
+- `Example`: `schema`, `id` (uuid v7 — time-ordered like a ulid, no new dependency), `ts`, `family` = the prefix, `harness` (`CARGO_PKG_VERSION`), `model_sha` (filled by the engine from the loaded checkpoint; `size:<bytes>` before the background sha lands, like the log), `gate_version` of the first question, `mode`, `text` (the `them:`/`me:` state exactly as passed to the engine — truncation is a hard error there, so whenever a question ran this is what the model read), `mentions`, `questions: [Asked]` (family, `type` choice|bool|score, instructions/statement, candidates **with titles**, probabilities as a map, disposition, reason through the shadow wrapper, gate_version, tier, latency), `tier2: {subject, cached, lookup} | {error}` when it ran, and **`verdict: skip | publish {id, title} | model {reason}`** — added beyond the brief's list so the export never re-derives `settle`.
+- `Amend`: `id`, `ts`, then one of `outcome: { published: {id: <cache row | null for a researched brief>, title} | null }` or `user: tapped | dismissed`. `ignored` exists in the enum but is never written; the export shows it for the absence.
+- Every row goes through `tools::secrets::redact_value` (new one-liner over the vault's `Secrets::redact_value`) before it is written: known vault values become `{{secret:NAME}}` placeholders. The store is append-only, one file per local day, created on the first row (`train: false` → no directory).
+- `Store::info` counts example rows by parsing only the `row` tag per line (the scrubber round-trips through `serde_json::Value`, so key order on disk is not guaranteed).
+
+### Switch and RPC
+
+- `FamilyGate.train: bool` (serde default false) on every family; the YAML patch accepts `train` like `mode` — `decision.families.meeting: { train: true }` flips the three `meeting.*` families (tested in `lib.rs`).
+- Engine: `GetTrain { prefix } → TrainingInfo { enabled, examples_today, examples_total, bytes, dir }`, `SetTrain { prefix, on } → Result<TrainingInfo, String>`, and `tell Capture { prefix, row }`, which drops the row unless a `<prefix>.*` family has `train` **now** (flipping it off stops writes mid-meeting). **`SetMode` and `SetTrain` both write the whole flow mapping `{ mode: …, train: … }`** — `write_nested_config_value` replaces the value, so `SetMode` alone would have erased `train` (and vice versa). Engine test `train_switch_writes_a_merged_prefix_patch_and_gates_capture`.
+- RPC: `decision_training(prefix)` and `set_decision_training(prefix, on)` (both → `TrainingInfo`, exported in the TS bindings for step 10). To turn capture on today: `set_decision_training("meeting", true)` over the socket, or `decision:\n  families:\n    meeting: { mode: shadow, train: true }` in `config.yaml` (live on the next batch via the engine; the config line needs a restart).
+- Headless smoke (this run, `t --headless --data-dir /tmp/tdata`, bun WebSocket client with the bearer token): `decision_training(["meeting"])` → `{enabled: false, examples_today: 1, examples_total: 1, bytes: 2114, dir: "/tmp/tdata/decisions/training/meeting"}`; `set_decision_training(["meeting", true])` → `enabled: true` and `config.yaml` reads `meeting: { mode: shadow, train: true }`; `…false` → `{ mode: shadow, train: false }`; `set_decision_training(["nobody", true])` → `-32000 no `nobody.*` decision family is configured`.
+
+### Capture in `meeting::oracle` (`87de365`)
+
+- `run` asks `GetTrain("meeting")` right after the mode check (one actor hop; nothing is cloned when off). When on, the two questions are kept as asked, and at verdict time — Skip, Publish and Model alike, shadow and active — the `Example` is built and `tell`-ed to the engine from the spawned oracle task; `Verdict.example: Option<ExampleId>` carries the id back to the actor.
+- `Live.pending` carries the example id with each `(event, expected)`; `settle_pending` writes `amend { outcome }` per captured example with the turn's first publication (`(cache row | null, title)` — the same approximation `outcome()` already makes when several batches share one turn) and remembers the published topics (`Live.published_topics`, pushed beside `published` in `meeting_topic`) against those example ids in `Live.captured`. An oracle publish (`Action::Publish`) records `(topic, example)` directly. `TapTopic` / `DismissTopic` call `Live::react`, which writes `amend { user }` for every captured example behind that topic and forgets the topic; `oracle::amend` is a spawned `tell`, so neither handler waits on the engine.
+- Model-gated `tests/oracle.rs` (this run): default config → `Verdict.example` is `None` and `decisions/training` does not exist; after `SetTrain(meeting, true)`, the shadow Kuiper batch with a two-row cache writes the row above (mentions, both questions with title candidates `b1`/`b2`, tier-2 `subject: "Planet Nine"`, verdict `model`), then two `amend` rows (`outcome.published: Planet Nine`, `user: tapped`) land on the same id; `GetTrain` counts 1/1. The first cache I tried (`Kuiper belt survey`) was published at tier 1 (P 0.77, margin 0.62) and the batch never reached tier 2 — correct pipeline behaviour, so the test's cache rows only share a mention (`Mike`, `Earth`) with the batch.
+
+### Export (`2795f84`)
+
+`t` has no subcommand tree (flat flags: `--secret-set`, `--link`, …), so the export is **`t --decision-export <prefix> [--since YYYY-MM-DD] [--out FILE] [--format fixture|laya]`**, implemented in `decision::training::{fold, label, fixture, laya, export}` (the binary only parses flags). `fold` keys `amend` rows to their example (last outcome / last reaction wins; an amend without its example is dropped).
+
+Label derivation as implemented (`training::label`, table-tested in `label_derivation_table`):
+
+| input | `kind` | `expected_brief` | `source` |
+|---|---|---|---|
+| `published` = the outcome amend when a turn ran, else a `publish` verdict, else none | — | — | — |
+| tier 2 `subject: null`, nothing published | `small_talk` | none | `tier3` if an outcome row exists, else `tier2` |
+| tier-1 skip, no tier 2, nothing published | `small_talk` | none | `oracle_only` |
+| a tier-2 subject, or anything published | `named_subject` | the published **cached** brief's candidate id (`b1..`, matched by title among the brief question's candidates); a researched brief or an unlisted title → none | `tier3` / `tier2` / `oracle_only` |
+| tier 2 failed (or nothing heard) and nothing published | `general` | none | `tier3` / `oracle_only` |
+| user `tapped` | as above | as above (confirmed) | `user` |
+| user `dismissed` | as above | **none** | `user` |
+
+- `--format fixture` (default) = `{ _doc, batches: [{ id, source, kind, state, published: [{title, cached}] | null, expected_brief, candidates: [{id, title, aliases: []}], mentions, subject, cached, user }] }` — the field names `examples/phrasing.rs` reads (`state`, not `text`; `published` as the fixture's list), plus §11.4's `subject`, `cached`, `user`, and `source` = the label's origin (the hand-built fixture used `source` for the meeting name; the bench never reads it). `phrasing --fixture FILE` replaces the built-in fixture; run this session on the exported test row: `1b` K4 `b1..bK` → `1/1`, `none` accepted right, p50 36 ms.
+- `--format laya` = the `LocalLLaMA/typed-decisions` row columns (checked against the dataset card): `id`, `workflow`, `state`, `questions` (`kind` as `noul` with the statement, `brief` as `choice` with `criteria` = candidate id → title + `none`), `gold` (`{label, probability_true}` / `{label, probabilities}`, one-hot on the derived label — we have no soft labels), `kind__label`, `brief__label`, plus `label_source`. §11.1(5)'s single-question `question/oracle/label` envelope was not used: the fine-tune notebook consumes the dataset shape, and one batch is one multi-question case there.
+- Smoke: `t --data-dir /tmp/tdata --decision-export meeting --out /tmp/exported.json` → `wrote 1 examples …`; the batch reads `kind: named_subject, source: user, user: tapped, published: [{title: "Planet Nine", cached: null}], expected_brief: null, subject: "Planet Nine"`; `--format laya` → `kind__label: false, brief__label: "none"`; `--since 2026-09-22` → 0 batches; `--format csv` → `unknown format "csv": fixture | laya`, exit 1.
+
+### Deviations from §11.4 / the brief
+
+- **`verdict` is in the example** (not in the brief's field list): the export needs the oracle's own act for `oracle_only` rows and for `published` when no turn ran; recomputing `settle` offline would drift.
+- **`text` is the state as passed, not "after truncation"**: the engine treats truncation as a hard error (`Reason::Truncated`), so a truncated batch never has model numbers; the row's `reason` says so.
+- **Ids are uuid v7**, not ulid — same ordering property, no new crate; `ExampleId` follows `LogId`.
+- **`published.id` is nullable**: a brief the turn researched has no cache row at publish time (its own row is not a cached pick, as `outcome()` already treats it); the fixture's `published[].cached: null` is the same convention.
+- **`Brief.id` for the oracle's own publish is the cache row id** (not `b1`); the export maps it back to the candidate id by title.
+- **`small_talk` also for a tier-1 skip without tier 2** — the brief's rule (`tier-2 subject: null ∧ nothing published`) would have made every skipped small-talk batch `general`; §11.4(1) calls those the negative examples.
+- **`source` on the fixture batch** carries the label origin as the brief asks; the hand-built fixture's meeting-name `source` is unread by the bench.
+- No `ignored` row is ever written (derived at export), as specified. The Settings section (step 10) and the uploader/relay (step 11) are untouched; `train_keep_local` is not read yet — nothing deletes.
+
+### Checks
+
+- `cargo check --workspace --all-targets` clean (the `block v0.1.6` future-incompat note is pre-existing). `cargo test -p decision -p meeting -p rpc`: `decision` **58 unit** (52 → 58: schema round trip incl. amend shapes and tier-2 error, per-day append-only store with a fake vault proving `hunter22hunter22` → `{{secret:PASS}}`, label table, fold, export shapes; engine `train_switch_…`; lib `train` prefix patch) + `tests/model.rs` 2; `meeting` **38 unit** + `tests/oracle.rs` 1 model-gated (extended as above); `rpc` **17**. `cargo clippy -p decision -p meeting -p theuth --no-deps --all-targets` clean; `cargo clippy -p tools` fails on three **pre-existing** lints in `pty.rs`/`registry.rs` (`obfuscated_if_else`, `type_complexity`, `too_many_arguments`) untouched here — `secrets.rs` gained one function.
+- Headless RPC smoke and the export smoke as recorded above; `phrasing --fixture /tmp/exported.json --only 1b` ran against the checkpoint.
+- Not run: a real meeting with `train: true` (no meeting was recorded during this build); the desktop app.
+
+### Open
+
+- Several pending batches in one turn all receive the turn's first publication as `outcome.published` — the same approximation `outcome()` makes for the decision log. If it skews the `brief` labels, attach publications to the batch whose `[meeting hh:mm:ss]` line the model answered (the `batch_id` is in the event already).
+- `captured` topics that expire untouched stay in `Live.captured` until the meeting ends (bounded by topics per meeting). Fine for v1; drop them in `topics_gone` if a meeting ever grows thousands of topics.
+- `harness` reads `1.9.2` from the workspace at build time; the training rows and the decision log will disagree on version only across a release boundary.
+
+## As built — step 5 (2026-09-21): `browser_run` — the System-1 loop on `cklxx/laya-browser` v10
+
+Brief: `/tmp/laya-design/omp-step5.md` (§4.1 as the spec). Worktree branch `feat/browser-systemone` off main `07a685a`. Commits: `258aa07` (decision: checkpoints per family, `AskMany`, `head_max_len` from `rl_agent_config.json`), `113dc38` (`scripts/fetch-laya-browser.sh`, `decision-browser/` in `release-models.sh` REQUIRED — run: `~/.theuth/models/decision-browser/{model.safetensors 842,609,220 B, encoder/config.json, rl_agent_config.json, tokenizer/tokenizer.json, tokenizer/tokenizer_config.json}`), `cd80ef8` (`browser::systemone` observe/render + parity test), `f90e335` (`browser_run`: loop, gate/stop rules, shadow/active, tier-3 hand-back, `tests/live.rs`), `a1156e2` (`decision.batch_forward`, default `false` — see latency), `653cc69` (`examples/systemone_suite.rs`), this note. `crates/meeting` untouched; no merge, no push.
+
+### Checkpoint per family and `AskMany` (`258aa07`, `crates/decision`)
+
+- `decision.checkpoints: { default: <dir>, browser: <dir> }` (`DecisionConfig::checkpoint_dirs`; `default` = the old `model_dir`, which still works; `browser` defaults to `<data_dir>/models/decision-browser`). `FamilyGate.checkpoint: Option<String>` (`checkpoint()` → `default`), `FamilyGate::browser(tau)`. The plugin spawns **one `Engine` per checkpoint dir**: `default` stays `DECISION_ACTOR`, the others `decision/<name>` (`actor_name`); `Engine::with_checkpoint(name, dir)`. An `Ask`/`AskMany` sent to any engine is **routed** (`route()`: the first ask's family → its gate's checkpoint → sibling actor, `DelegatedReply` forwarding) so callers keep using `DECISION_ACTOR`; a batch whose families sit on different checkpoints answers the strays `HardError("family … is on checkpoint …")` — fail closed, named. `SetMode`/`SetTrain` relay to siblings; each engine loads lazily and idle-unloads as before (~0.9 GB each on Metal when both are resident).
+- `AskMany { asks } -> Vec<Decision>` (order kept, disabled/off families escalated in place): `run_batch` does gate lookup per question, one session, one `build` per question, the forward, then one `decide` + one `AskRow` per question; the budget is the largest asked and a timeout escalates every question (late rows still logged). `Ask` is the one-element case of the same core.
+- `head_max_len` is read from the checkpoint's `rl_agent_config.json` (v10: `max_len` 1024, `head_max_len` 768, temperatures `[5.03, 1, 1]`) and `build_sequence` honours it; on v10 the state is right-cut by design on a full page.
+- Two per-family gate facts the browser families need: **no `none` control** (`FamilyGate.none = false` — the option set is closed, jev never offers "none of these"; the classic families keep `none`), and a **right-cut state is not a hard error** (`cut_ok = true`; `decide()` uses `seq.markers_lost || (seq.state_cut && !gate.cut_ok)`). Defaults (`default_families`): `browser.operation` τ 0.5, `browser.target` / `browser.type_target` τ 0.25, margin 0, budget 2 s, checkpoint `browser`, **mode shadow**.
+
+### `browser::systemone` (`cd80ef8`) — jev's request shape, verbatim
+
+- **Request = jev-ultrafast `model.choose()` after cklxx's format-v2 transform** (`v10`'s `laya_fmt`). State = Python `json.dumps(state, ensure_ascii=False)` of `{"page": {"url", "title", "text"[:1500]}, "recent_actions": [...]}` (`", "`/`": "` separators, C0 controls `\n\r\t\b\f` else `\u00xx`, non-ASCII raw); instructions = `json.dumps(dict)` with `ensure_ascii=True` (`\uxxxx`, surrogate pairs above the BMP): `{"goal": G, "rules": RULES}` for `operation`, `{"goal": G, "operation": "CLICK"|"TYPE_TEXT", "rules": [RULES, TARGET_RULES]}` for the targets. `py_json_str` / `py_repr` implement Python's escaping (unit-tested). `RULES` = jev `questions.NEXT_ACTION`, `TARGET_RULES` = jev `questions.TARGET`, `TEXT_VALUE` = jev's text-helper system prompt, all verbatim.
+- Operation criteria in jev's order, texts verbatim from jev `model.py` + `snapshot.js`: CLICK (if any element), TYPE_TEXT (if any editable), SCROLL_DOWN (if more below), SCROLL_UP (if scrolled), WAIT, DONE, BLOCKED. **No SELECT**.
+- Option text (cklxx `compact()`): `"[i] label (role)"` + `" = 'value'"` (Python repr, value cut at 30) when the value is non-empty + `" checked=…"`/`" selected=…"`/`" expanded=…"` when present; candidate id = `i` (1-based in the window) so laya renders `"i: [i] label (role)"` = upstream `render_options`. The click list names an editable `"[i] Open <label> (role)"` (jev's second, click-kind action for every editable); the type list uses the plain label. History `action` for a click on an editable = `"Open <label>"`.
+- `recent_actions` entries jev-shaped `{action, kind: click|fill|scroll|wait, text: typed value|null, page_changed}` — **last 6** (jev sends 10; brief said 6). `page_changed` = the `(url, title, text)` fingerprint differs at the next observe.
+- **Reader (`OBSERVE_JS`)** = jev's `snapshot.js` over obscura's stamped refs: every `[data-obscura-ref]` element (`browser_interactive_elements` stamps them in DOM order) minus password/file/hidden inputs, `<select>`, hidden (attribute, inline style, `aria-hidden`/`inert` ancestors — obscura has no layout), disabled; must have one of jev's 14 roles (`role()` port: BUTTON/SUMMARY→button, A→link, TEXTAREA/contenteditable→textbox, INPUT by type incl. search→searchbox, number→spinbutton). Label = jev `name()` (aria-labelledby → aria-label → labels → button value → alt → text content (not INPUT) → title → placeholder), whitespace-collapsed, else the role. `editable` = not readonly ∧ (textbox|searchbox|spinbutton ∨ combobox INPUT/TEXTAREA). Text = visible text nodes in DOM order joined by `\n`, capped at 6000 chars in JS, then the 1500-char **text window**.
+- **Logical viewport.** obscura lays out nothing and `window.scrollY` never moves, so `Scroll { elements, text }` emulates one: a step offers a window of **60 elements** (`WINDOW`) renumbered 1..n; `SCROLL_DOWN` advances 40 elements / 1200 chars and also sends `browser_scroll down` (fires scroll events); `SCROLL_UP` reverses. `more_below` / `scrolled` gate the two scroll criteria.
+- **Parity test** (`tests/systemone.rs::renders_cklxx_sample_request_byte_for_byte`): the Wikipedia observation reconstructed from `code/sample_request.json` renders to the **byte-for-byte** instructions, option lines (`id: text`, in order, 6 / 58 / 12), state and `choice question: …` head of `tests/fixtures/laya-browser-sample_request.rendered.json`, produced with laya's `common.py` `serialize_state` / `render_options` + `json.dumps(instructions)` (v2 transform = `text[:1500]`). **Pass.**
+- **Model-gated** (`v10_answers_type_text_into_the_search_box`, release): `browser.operation → TYPE_TEXT 0.984` (CLICK 0.014), `browser.target → [2] 0.596` over 58 candidates (no `none`), `browser.type_target → [2] 1.000` — the file's `expected`. First step 11.9 s (cold load + Metal shader compile), warm step **402 ms** as one `AskMany` (load average 26).
+
+### The loop and `browser_run` (`f90e335`) — `crates/browser/src/systemone.rs`, `tools.rs`
+
+- **`Ctx::run(session, goal, max_steps)`**: observe (`browser_interactive_elements` — also the hand-back listing — then `browser_evaluate(OBSERVE_JS)`) → `render` → one `AskMany` (budget from `GetMode{browser}.budget_ms`) → operation accepted? target accepted? → execute through the existing session tools: CLICK `browser_click{ref}`; TYPE_TEXT value = `quoted_value(goal)` (`'…'`, `"…"`, `“…”`) else one `SideCall{Escalate, TEXT_VALUE, 3 s}` on `agent::Agents` → `browser_fill{ref, value}` (≤ 80 chars); SCROLL_* `browser_scroll` + window move; WAIT = idle 2 s → push `RecentAction` → repeat. **Stop**: `DONE`, `BLOCKED`, step cap (default and hard cap 25), 60 s wall clock, **three identical consecutive decisions** (checked before executing the third), below gate (operation or target), error. Result `Run::render()`: `browser_run (active): N step(s) in T ms`, one line per step (`step 2: CLICK 0.99 [6] "Search" (button) 0.35 · 1246 ms + 6582 ms`), `stopped: …`, `page: url — title`, `Continue with the browser_* tools` unless DONE, then the element listing (tier 3 continues in the same model turn).
+- **Shadow**: decide one step, do not act; `Ctx.pending: Mutex<HashMap<SessionId, Pending{operation log_id, target log_id, expected (op, ref)}>>`; the tool result is the trace + listing. `Ctx::call` (every browser tool goes through it) calls `settle()` on the session's next **acting** obscura call — `browser_click/fill/type/scroll/wait_for*/navigate/back/press_key/select_option` (`actual_action`); reads settle nothing, so the loop's own observe never labels itself — and `Pending::report` `tell`s `Report{Confirmed | Corrected{actual}}` for both rows (target row: op and ref must both match). A new `browser_run` supersedes an unlabelled pending decision. No `agent` change was needed: the pending map lives in the browser plugin, as the brief hoped.
+- **Modes**: `decision.families.browser.mode` (prefix patch; default shadow). Off → `tools::all` skips `RunTool` (`configured_mode` reads `rt.section("decision")` at plugin start) and a call that reaches `run` with effective off answers `Stop::Error`. `browser_run` is `Risk::Mutating`; the description says it may perform up to `max_steps` actions / 60 s in the session's headless browser under one approval.
+- `TODO(capture)` at the call site in `RunTool::call`. Main's capture writer (`decision::training`, `52e6e7b`) is in this tree but its `Example` is meeting-shaped; the browser `Example` to write, per §4.1 item 7 / §11.4 (family `browser`, one per step): `{ log_ids: [operation, target?], goal, observation: Observation (url, title, text window, elements [{index, ref, label, role, value, editable}], recent_actions, scroll), asks: the three Question::Choice as sent (instructions, candidates, state), probabilities: per family, decision: {op, target index, value?}, executed: bool, outcome: Confirmed | Corrected{op, ref} (shadow: the model's next call; active: the tier-3 correction after a hand-back, else DONE = confirmed), stop: Stop, step_ms }` — the DAgger label is the correction.
+- `tests/live.rs::drives_fixture_page` (scripted oracle standing in for the head, fixture page on a local port): **active** types the quoted value, submits, sees the echo, DONE in 3 steps (744 ms); **shadow** decides one TYPE_TEXT step, does not act (`browser_read` shows no echo), the hand-back carries `ref=e1`; a read (`browser_elements`) settles nothing, the model's `browser_click e2` labels both rows `corrected` (`Stats` agreement 0.0). Pass, both halves.
+- Cargo: `browser` gains `decision`, `agent` (the `SideCall` lookup — the edge `meeting` already has; `agent` does not depend on `browser`), `parking_lot`; dev-deps `tempfile`, `tracing-subscriber`. `decision`: no new deps.
+
+### Latency: the `AskMany` padding finding (`a1156e2`)
+
+`examples/bench.rs` (b2)/(b3), M3 Max, Metal f16, browser checkpoint, 20 warm runs, load average 19–23 (`/tmp/laya-design/bench-step5-browser-batch-vs-seq.txt`): the browser step = 3 rows of **S 476 / 1024 / 583** tokens (6 / 45 / 10 candidates, ~1.5k-char state, state cut on the 45-candidate row).
+
+| forward | padded tokens | p50 | p95 |
+|---|---|---|---|
+| one batch, 3 rows padded to S 1024 (`batch_forward: true`) | 3072 | **1034 ms** | 1116 ms |
+| three single-row forwards, each at its own S (`batch_forward: false`, **default**) | 2083 | **569 ms** | 577 ms |
+
+The forward is close to linear in padded tokens on our candle/Metal path, so padding two rows to the third's length costs more than the batch saves. `decision.batch_forward` (default `false`) keeps the one-batch path selectable; no deeper optimisation (unpadded packing, fused kernels — follow-up (3)) done here. Single rows for reference: K2 S339 73 ms, K10 S729 182 ms. **Still over the §4.1 ≤ 300 ms target**: the 45-candidate row alone is a ~1024-token forward.
+
+### Suite (`653cc69`, `examples/systemone_suite.rs`) — cklxx's 16 tasks × 3 runs, active mode
+
+Task names, start URLs, goals and outcome checks are copied from their `code/apps/browser_suite.py` (hub, 2026-09-21); the two state checks (dropdown value, checkbox checked) read the DOM. Run 2026-09-21, Metal f16, `batch_forward: false`, **load average 17 → 65** from other sessions' builds during the run (`/tmp/laya-design/suite-step5-16x3.txt`, runs only: `…-runs.txt`); the suite's step cap is 20, then 1.5 s settle before judging.
+
+| task | runs | steps | p50 decide ms | below gate | stop / why |
+|---|---|---|---|---|---|
+| wiki-einstein | ✗✗✗ 0/3 | 1/1/1 | 901 | 0 | DONE 0.60 after clicking the searchbox |
+| wiki-search | ✗✗✗ 0/3 | 4/4/4 | 907 | 0 | repeated: typed the query, then "Open Search Wikipedia" ×3 (no autocomplete without layout; never chose the Search button) |
+| hn-new | ✓✓✓ 3/3 | 1/1/1 | 627 | 0 | DONE |
+| hn-login-page | ✓✓✓ 3/3 | 1/1/1 | 625 | 0 | DONE |
+| gh-issues | ✗✗✗ 0/3 | 1/1/1 | 607 | 3 | below gate: CLICK target P 0.03 on [25] "Solutions" (flat over the offered window) |
+| py-downloads | ✓✓✓ 3/3 | 1/1/1 | 1179 | 0 | DONE |
+| books-travel | ✓✓✓ 3/3 | 1/1/1 | 754 | 0 | DONE |
+| books-open-book | ✓✓✓ 3/3 | 1/1/1 | 737 | 0 | DONE |
+| internet-dropdown | ✗✗✗ 0/3 | 2/2/2 | 388 | 3 | below gate; no SELECT operation, `<select>` not offered — it clicked the site's link away |
+| internet-checkbox | ✓✓✓ 3/3 | 1/1/1 | 374 | 0 | DONE |
+| books-page2 | ✗✗✗ 0/3 | 1/1/1 | 854 | 3 | below gate: "next" is element 61+, past the 60-element window; it did not SCROLL_DOWN |
+| quotes-tag-love | ✓✓✓ 3/3 | 1/1/1 | 785 | 0 | DONE |
+| hn-past | ✓✓✓ 3/3 | 3/3/3 | 890 | 0 | repeated: goal reached on step 1, kept clicking "past" on `/front` |
+| ddg-search | ✓✓✓ 3/3 | 3/3/3 | 1191 | 0 | DONE (type, Search, Search, DONE) |
+| arxiv-search | ✗✗✗ 0/3 | 1/1/1 | 570 | 3 | below gate: CLICK target P 0.03 |
+| flights | ✗✗✗ 0/3 | 1/1/1 | 1222 | 3 | below gate on Google's consent interstitial |
+
+**Tasks passing every run 9/16 = 56 %** (runs 27/48 = 56 %) against **their v10 50 %**, and bimodal exactly like theirs: 9 pass 3/3, 7 fail 3/3, no mixed task. Every fail is deterministic (same decision, same P, three times) — the head is deterministic given the rendering, so the gate and the reader, not luck, decide a task. Below-gate hand-backs (15 of 48 runs) are what tier 3 would pick up in the daemon; in the suite they count as fails. **Step latency over 99 decisions: p50 828 ms, p95 1246 ms, max 1557 ms** — over ≤ 300 ms, and inflated by a load average of 47–65 during the second half (the bench's 569 ms at load 20 is the clean number for the same shape). Histogram: 200–300 ms 4, 300–500 10, 500–800 33, 800–1200 43, 1200–2000 9. Suite wall 379 s.
+
+### Deviations from §4.1 / the brief
+
+- **No SELECT operation**, `<select>` elements not offered (jev has one; this loop's session tools have `browser_select_option` but the head's criteria set was kept to what cklxx trained on without a value channel). Costs `internet-dropdown`.
+- **`recent_actions` = last 6** (brief), jev sends 10.
+- **No `none` control** on the browser families (closed option set, as trained); `cut_ok` — a right-cut state is normal on v10.
+- **Logical viewport** (60 elements / 1500 chars, SCROLL_* moves it) instead of jev's real viewport: obscura has no layout. Costs `books-page2` and hides autocomplete flows (`wiki-search`).
+- **WAIT = idle 2 s** (`tokio::sleep`), not a settle primitive — obscura has none; the isolate pumps timers/fetches between commands.
+- **TYPE_TEXT value**: quoted string in the goal, else the side call; the brief's "the goal's object after for/into/as" heuristic was not added — the side call covers it, and every suite goal that reached TYPE_TEXT quotes its value (the suite runs without an agent, so the side call would have failed the step).
+- Model-gated latency in `tests/systemone.rs` is printed, not asserted (the bench's job).
+- Headless smoke (`t --headless`, `list_tools` with `browser` mode active vs off): see Checks.
+
+### Engine merge notes for main (`crates/decision/src/engine.rs`)
+
+Main's training-capture work (`52e6e7b`+) touches the same file. What this branch changed: `Engine` gains `checkpoint`, `default_dir`, `with_checkpoint(name, dir)`, `route()`/`siblings()`; the `Ask` handler became `run_batch(Vec<Ask>)` + thin `Ask`/`AskMany` handlers returning `DelegatedReply` (forwarding to the sibling engine when routed); `decide()` uses `seq.markers_lost || (seq.state_cut && !gate.cut_ok)`; `escalated()` helper; `merge()` (in-place escalations + ran rows); `SetMode`/`SetTrain` relay `tell` to siblings; `FamilyGate` lost `Copy` (`.copied()` → `.cloned()`); `run_batch`'s forward is `batch_forward ? o.run(&seqs) : one o.run per row`. Tests: `FamilyGate` literals need `checkpoint: None, none: true, cut_ok: false`; `Sequence` literals need `state_cut`, `markers_lost`; the `browser.wait` family in one test became `browser.target`; `ask_many_is_one_forward…` sets `batch_forward: true`. `lib.rs`: `checkpoints` config, `DEFAULT_CHECKPOINT`/`BROWSER_CHECKPOINT`/`actor_name`, `checkpoint_dirs`/`checkpoint_dir`, `batch_forward`, `mode_for` resolves the prefix's checkpoint dir (signature unchanged for meeting); the plugin spawns one engine per checkpoint. `gate.rs`: `FamilyGate::browser(tau)`, `checkpoint()`, `none`, `cut_ok`. `Cargo.lock` gains the `browser` edges only.
+
+### Checks
+
+- `cargo check --workspace --all-targets`: green except the pre-existing `nodes` lib-test error (`include_str!("../../../bindings/methods.json")`, gitignored, written by `cargo test -p rpc`; noted in the follow-ups (1)+(2) as-built).
+- `cargo test --release -p decision -p browser`: `decision` **58 unit** (52 → 58: checkpoint dirs / `actor_name`, `AskMany` one forward + per-question rows + closed sets, routing to a sibling checkpoint / fail-closed, `head_max_len` from config, `collate` floor) + `tests/model.rs` 2 model-gated; `browser` **19 unit** (9 → 19, `systemone::tests`: Python `json.dumps`/`repr` escaping, state = `serialize_state`, instructions = `json.dumps` of jev's dicts, option text per `compact()`, op ids round trip, `quoted_value`, reader JSON parse, last-6 `recent_actions`, window renumbering + operation criteria) + `tests/systemone.rs` 2 (parity byte-for-byte, v10 model-gated) + `tests/live.rs` 1 (active + shadow on the fixture, scripted oracle). All pass. The scripted oracle originally counted steps per forward and broke when `batch_forward` went to `false` (three forwards per step); it now counts per operation question — folded into `a1156e2`.
+- `cargo clippy -p decision -p browser --no-deps --all-targets`: clean.
+- **Headless smoke** (`target/debug/t --data-dir /tmp/theuth-hl-step5-<mode> --headless`, `config.yaml` with `decision: { enabled: true, families: { browser: { mode: <mode> } } }`, `list_tools` over the JSON-RPC HTTP endpoint with the data dir's bearer token): `active` → **91 tools, `browser_run` present**; `off` → **90 tools, `browser_run` absent**; the 16 other `browser_*` tools identical in both.
+
+### Open
+
+- **Latency is 2–3× the §4.1 target** even in the faster mode (569 ms clean, 828 ms p50 under load): the 45–60-candidate target row is a ~1024-token forward on its own. Levers, in order: cut `head_max_len`/`max_len` padding (the state is already right-cut; K-dependent S), a smaller `WINDOW` (fewer candidates → shorter row; costs recall like `books-page2`), follow-up (3)'s fused kernels, unpadded packing. None started.
+- **The 7 failing tasks are deterministic** and split into reader ceilings (`internet-dropdown` no SELECT, `books-page2` window, `wiki-search` no autocomplete/layout, `flights` consent wall) and head ceilings (`gh-issues`/`arxiv-search` flat target P 0.03 → below gate; `wiki-einstein` DONE 0.60 after one click). In the daemon the below-gate ones hand back to tier 3 — the shadow log will show how often the model then succeeds; only then is a `SELECT` operation or a larger window worth the drift from cklxx's training distribution.
+- **Gate thresholds** (0.5 / 0.25) were not tuned by the suite: every accepted target had P ≥ 0.35 and every refused one P ≤ 0.11, so nothing between 0.11 and 0.35 was observed — the bench cannot separate 0.25 from 0.15 or 0.3 yet.
+- **Capture** for family `browser` waits on main's writer with the `Example` above; `TODO(capture)` in `RunTool::call`.
+- ~~Settings pane for the browser mode: step 10 (config key until then).~~ Step 10 (`749d18e`): Settings → Labs → Browser System-1. mmBERT (v10s, 62 %) needs a second backbone in `candle/model.rs`.
+
+## As built — step 10 (2026-09-21): Settings → Labs — oracle mode switches (meeting, browser), training Capture / Share consent, generalised decision RPCs
+
+Brief: `/tmp/laya-design/omp-step10.md` (§7.1 as the spec). Worktree branch `feat/settings-labs` off main `5748216`. Commits: `6cc533f` (decision + rpc: `share`, `SetShare` / `DeleteTraining`, `decision_mode` / `set_decision_mode` / `set_decision_share` / `delete_decision_training`, `ModeInfo.enabled` / `installed`, config comment), `749d18e` (desktop: `Labs.tsx`, nav entry, `lib/labs.ts` + test, Meetings pointer, shared query keys), this note. Toolchain: `export PATH="$(just toolchain):$PATH"`; desktop `bun install` was needed in the fresh worktree.
+
+### Config and engine (`6cc533f`, `crates/decision`)
+
+- **`FamilyGate.share: bool`** (serde default false) beside `train`; `FamilyPatch.share` patches it like `mode` / `train` (exact key, then prefix key). **The patch clears `share` whenever the family ends with `train: false`** — explicit (`agent.readable: { train: false, share: true }`) or by default (`browser: { share: true }` alone) — so a hand edit cannot record consent for rows that are never captured. Tested in `lib.rs::prefix_entry_sets_every_family_under_it_and_wins`.
+- **`write_prefix` writes `{ mode: …, train: …, share: … }`** every time (the config writer replaces the whole value; the step 8–9 line was `{ mode, train }`). Old lines without `share` still parse (default false).
+- Engine messages: `SetShare { prefix, on } → Result<TrainingInfo, String>` — `Err("capture is off for `<prefix>.*`: turn Capture on before Share")` when turning on with `train` off, otherwise config first, then live; **`SetTrain { on: false }` clears `share`** in the same write; `DeleteTraining { prefix } → Result<TrainingInfo, String>` — `Store::delete` (`remove_dir_all` of `decisions/training/<prefix>/`, `NotFound` is not an error), switches untouched, answers the new (zero) counts. `GetTrain` / `TrainingInfo` carry `share`. Small refactor: `Engine::{train, share}` share `any_under`, the three switch handlers share `patch_under`, `training_info(prefix)` fills both flags.
+- **Sibling relays are `ask`, not `tell`.** kameo stops an actor whose `tell` handler answers `Err`; the routing test (`family_on_another_checkpoint_…`) and the switch test run in parallel, and a relayed `SetShare("meeting")` reaching the `decision/browser` engine before its `SetTrain` relay killed that engine (`ActorNotRunning`, seen once under load 160). The same hazard existed for `SetMode` / `SetTrain` with a prefix a sibling does not know; all three relays are `let _ = s.ask(m.clone()).await` now (comment at the `SetMode` handler).
+- **`ModeInfo`** gains `enabled: bool` (`decision.enabled` — the brief's `decision_enabled()` folded in, as offered) and `installed: bool` (the prefix's checkpoint files are on disk). The reason for a **non-default checkpoint** now names it: `checkpoint missing: decision-browser — model.safetensors, … not in <dir>`; the default checkpoint's `model missing: …` text is unchanged (step 4's test asserts on it).
+
+### RPC (`6cc533f`, `crates/rpc/src/api.rs`)
+
+`decision_mode(prefix) → ModeInfo`, `set_decision_mode(prefix, mode) → ModeInfo`, `set_decision_share(prefix, on) → TrainingInfo`, `delete_decision_training(prefix) → TrainingInfo`; `meeting_oracle_mode` / `set_meeting_oracle_mode` are one-line aliases over the general pair (`meeting::oracle::PREFIX`). `decision_training` / `set_decision_training` unchanged in shape, `share` added to the answer. `rpc` 21 tests (bindings export incl. the new fields; `bindings/methods.json` lists the four new methods).
+
+### Desktop (`749d18e`, `crates/desktop/ui`)
+
+- **`components/settings/Labs.tsx`**, nav entry **Labs** (`FlaskConical`) after Meetings, **hidden while `decision_mode('meeting').enabled` is false** (`useLabsVisible`, the same query the card uses). Three `Section`s, each a `Blurb` (one paragraph + "design notes" → this doc on GitHub) and the existing `Row` / `ToggleGroup` / `Switch` / `Button` — no new dependency.
+  1. **Meeting oracle** — `ModeRow prefix="meeting"`: Off · Shadow · Active on `decision_mode` / `set_decision_mode`, help line per position (`MODE_HELP.meeting`, step 4's texts), `Off until this is fixed: <reason>` and the control disabled when `effective` is forced off, counters line under it from `decision_stats` (30 s refetch): `14 batches · 9 skipped · 3 briefs · 3 tier-2 calls · agreed 92 %` = `meeting.kind.asks` · `meeting.kind.accepted` · `meeting.brief.accepted` · Σ `tier2` · Σ confirmed / (confirmed + corrected) over the prefix; `no decisions today` / `no outcomes yet` when empty.
+  2. **Browser System-1** — same control on `browser`; blurb states what Active does (up to 25 actions / 60 s in the headless browser under one approval, no model turn per step), that Shadow only decides and hands back, the suite pass rate (9/16 every run, 56 %) and step latency (~0.6 s clean, 0.8 s under load), and **that Off ↔ on takes effect at the next daemon start while Shadow ↔ Active applies live** (see *Deviations*). While Active a `text-danger` line repeats the approval consequence. Counters: `7 steps · 6 acted · 4 targets · 0 tier-2 calls · agreed 50 %` (`browser.operation.asks` / `.accepted`, `browser.target.accepted`). When the checkpoint is missing the reason reads: *the decision-browser checkpoint is not installed. Run scripts/fetch-laya-browser.sh (0.8 GB into ~/.theuth/models/decision-browser); once it is on the release bucket the app downloads it at start.* — **no Download button** (see *Deviations*).
+  3. **Training data** — blurb: *Two separate choices per family. Capture writes rows to this machine only, under decisions/training in the data directory, secrets replaced by placeholders — nothing is uploaded. Share is consent to upload those same rows to theuth for fine-tuning; it needs Capture, and turning Capture off turns Share off. Both are off by default.* Then per family (`TrainingRows`, meeting and browser) on `decision_training(prefix)`:
+     - **`<Family> — capture locally`**: the row text — meeting: *One row per transcript batch the oracle handled: the last transcript batch — other people's speech — the classifier's numbers, what the assistant did next, and whether you tapped or dismissed the brief.*; browser: *One row per browser_run step: the page's element list and visible text, the goal, and the action taken. This version's browser_run does not write rows yet; the switch is saved for the one that does.* — then `3 today · 41 total · 84 KB`; **Open folder** (`openPath(dir)`, only on a local harness, disabled while the directory is empty); **Delete local data** → inline confirm **`Delete 41 examples (84 KB) from disk`** (destructive) + **Keep** — no dialog; `Switch` on `set_decision_training`.
+     - **`<Family> — share with theuth`** (label dimmed): the consent text shipped verbatim — ***Uploads are byte-identical to the rows on this disk: no session, meeting or account identifiers, secrets already replaced by placeholders. At most one batch per harness per day. Turning this off stops uploads but cannot recall what was already sent.*** — a **privacy note** link (this doc, §11), then the greyed line ***Upload not available in this version — your choice is saved and honoured by the uploader once it ships.*** (+ *Turn on Capture first.* while capture is off). The `Switch` (`opacity-60`) is **disabled while Capture is off** and otherwise persists through `set_decision_share`; `shareState` never shows it on without capture.
+- **`lib/labs.ts`** (pure, tested in `labs.test.ts`, 4 tests): `MODE_HELP`, `SHARE_CONSENT`, `SHARE_UNAVAILABLE`, `CAPTURE_ROW`, `blockedReason(info, prefix, error?)` (nothing when `effective == mode` or the switch is off; the fetch instructions for an uninstalled browser checkpoint; the daemon's reason otherwise), `countersLine(stats, prefix)`, `captureLine(t)`, `shareState(t)`. ts-rs types `u64` as `bigint` while the wire carries numbers — the helpers go through `Number()`, the fixtures are cast.
+- **Settings → Meetings** loses `OracleSwitch` and `ORACLE_MODE_HELP`; the "Local decision oracle" section is one `Row` — label `Local decision oracle: <effective>` (`…` while loading, the error text on failure), description *Off · Shadow · Active, counters and training-data consent are in Labs.*, button **Change in Labs** (`<Link to="/settings/$tab" params={{ tab: 'labs' }}>`).
+- **Query keys**: `queryKeys.decisionMode(prefix)`, `decisionTraining(prefix)`, `decisionStats`; `meetingOracleMode` is gone — the Meetings pointer, the island's `OracleChip` (now `decision_mode('meeting')`) and the Labs switch share `decisionMode('meeting')`, so a flip in Labs updates all three. `set_decision_mode` also invalidates `decisionStats` (its `mode` column). `api.ts`: six new methods; `METHODS` equals `bindings/methods.json` (`api.test.ts`).
+
+### Deviations from §7.1 / the brief
+
+- **No Download action.** `https://s3.rwx.dev/theuth/releases/models/models.json` (read this session) lists `decision/*` but no `decision-browser/*`; `crates/desktop/src/models.rs` fetches *whatever the manifest lists* at app start and exposes no per-file command, so once `release-models.sh` publishes the checkpoint the app fetches it with no UI change. The card therefore shows the reason text naming `scripts/fetch-laya-browser.sh`, as the brief's fallback says. When the bucket lists it, the remaining work is a "Download now" command in `models.rs` (today: restart the app) — not done.
+- **Browser tool visibility is not live.** `browser::tools::all` reads `configured_mode` once at plugin start (`crates/browser/src/tools.rs:888`, `systemone::configured_mode`). The registry does have `UnregisterTool` (the MCP plugin uses it), but `RunTool` is built around the browser plugin's `Ctx`, which the decision engine cannot reach — a live flip needs the browser plugin to subscribe to a mode-change event and register/unregister itself, and `systemone.rs` is off-limits for this branch. Chosen: **document the restart requirement in the pane** (the browser blurb and `MODE_HELP.browser.off`), the RPC doc, and the config comment — Shadow ↔ Active applies live because `RunTool::call` reads `GetMode` per call. The cheaper alternative — always register `RunTool` and have it answer `Stop::Error` when off (already the behaviour for a call that reaches `run`) — makes the model see a tool it cannot use; left for when someone flips Off from Labs and minds.
+- **`decision_enabled()` folded into `ModeInfo.enabled`** (the brief offered either); `installed` added beside it so the UI does not parse the reason string.
+- **Non-default checkpoint reason** reads `checkpoint missing: decision-browser — <files> not in <dir>` (the brief's `checkpoint missing: decision-browser` plus the file list, one format for both).
+- **Counters** are folded client-side from `decision_stats` (no new RPC); "batches" is `meeting.kind.asks` (one `kind` ask per batch that entered the oracle) and "skipped" is `meeting.kind.accepted` — an accept on the small-talk Bool is a skip in active mode and would have been in shadow.
+- **Browser capture row** says the loop does not write rows yet (`TODO(capture)` in `RunTool::call`, step 5's open item) rather than pretending; the switch persists so the writer finds it set.
+- The Share row's "greyed" is the dimmed label + `opacity-60` switch + the unavailable line; the switch itself stays operable while Capture is on, so the consent is genuinely recorded (`config.yaml` `share: true`).
+
+### Checks
+
+- `cargo test -p decision --lib` **61 unit** (three extended: `lib` share patch + train→share clearing + browser reason + `enabled`/`installed`; `training` `Store::delete` + `share` in `info`; `engine` `train_switch_…`: `SetShare` refused before capture, persisted `{ mode, train, share }` through `SetMode`, `SetTrain(false)` clears `share`, `DeleteTraining` zeroes counts and keeps the switches, unknown prefix errors) — run 5× after the relay change, green each time. `cargo test -p rpc --features ts` **21** (bindings regenerated: `ModeInfo.enabled/installed`, `TrainingInfo.share`). `cargo clippy -p decision -p rpc --no-deps --all-targets` clean. `cargo check -p decision -p rpc -p theuth -p browser -p meeting --all-targets` green.
+- Desktop: `bun run test` **179 pass** in 34 files (4 new in `lib/labs.test.ts`; `api.test.ts` confirms `METHODS` = server list) + **1 pre-existing failing suite** `components/apps/lifecycle.test.ts` (`@openuidev/lang-core` not installed in this worktree). `bun run check`: **no errors outside `packages/apps` / `components/apps`** (the pre-existing `@openuidev/*` module errors, cf. step 4's note).
+- **Headless smoke** (`target/debug/t --data-dir /tmp/theuth-step10 --headless`, `config.yaml` = `decision: { enabled: true }`, JSON-RPC over HTTP with the data dir's bearer token; note `THEUTH_RPC__LISTEN` is inherited from the desktop app's shell and must be overridden): `decision_mode(["meeting"])` → `{ mode: shadow, effective: off, reason: "model missing: …/models/decision", enabled: true, installed: false, budget_ms: 400, escalate_budget_ms: 3000 }`; `decision_mode(["browser"])` → `reason: "checkpoint missing: decision-browser — model.safetensors, … not in /tmp/theuth-step10/models/decision-browser"`, `budget_ms: 2000`; `meeting_oracle_mode` ≡ the meeting answer. **`set_decision_mode(["browser","active"])` → `mode: active`** and `config.yaml` gains `decision:\n  families:\n    browser: { mode: active, train: false, share: false }`; `decision_mode(["browser"])` reflects it; `"loud"` → `-32602 Invalid params`; `"nobody"` → `-32000 no `nobody.*` decision family is configured`. `decision_training(["meeting"])` (one hand-placed example row) → `{ enabled: false, share: false, examples_today: 1, examples_total: 1, bytes: 55, dir }`; **`set_decision_share(["meeting", true])` → `-32000 capture is off for `meeting.*`: turn Capture on before Share`**; after `set_decision_training(["meeting", true])` the same call → `share: true` and the line reads `meeting: { mode: shadow, train: true, share: true }`; `set_decision_training(["meeting", false])` → `share: false`, line `{ mode: shadow, train: false, share: false }`; `delete_decision_training(["meeting"])` → `examples_total: 0, bytes: 0`, `enabled` unchanged, directory gone; `["nobody"]` → `-32000`. `decision_stats` → the seven families with their live modes.
+- Not run: the desktop app itself (`cargo tauri dev` not available here) — the pane is typechecked and its helpers unit-tested, not seen; `openPath` on the training directory; a real `browser_run` or meeting against the pane's switches.
+
+### Open
+
+- A "Download now" for `decision-browser` once the bucket lists it (`models.rs` command + `installed: false` → button); today the app fetches at start.
+- Live browser tool visibility (a mode-change event the browser plugin subscribes to, or always register `RunTool` and refuse when off) if the restart note in the pane turns out to annoy.
+- The uploader (step 11) must read `families.<p>.share` on every batch and honour `train_keep_local`; the switch and the consent text are in place, nothing reads them yet.
+- Counters are today's log only (`decision_stats` folds the current day file); a longer window needs the fold to take a `since`.
+
+## As built — step 6 (2026-09-21): checkpoint lifecycle — nothing resident at idle
+
+Brief: `/tmp/laya-design/omp-step6.md` (§2.1 as the spec). Worktree branch `feat/decision-lifecycle` off main `9a22f64`. Commits: `aca517a` (engine: `Release`, per-checkpoint `idle_unload`, `loaded_since`, `LoadedNow`, no load at start), `6507047` (meeting + browser senders), `983fb12` (measured reclaim: `examples/lifecycle.rs`, `process_memory`, model-gated bound), `1e8698d` (`decision_loaded` RPC + the Settings line), this note. Labs (sibling branch) owns `engine.rs`/`gate.rs`/`lib.rs`/`training.rs`/`api.rs` too — merge notes at the end. Toolchain `export PATH="$(just toolchain):$PATH"`; load average 20–146 throughout from other sessions' builds (recorded per table).
+
+### What releases when
+
+| event | sender | message | effect |
+|---|---|---|---|
+| `StopMeeting` (Recording \| Paused → Stopping), after the last unfiltered batch is delivered and the toolset cleared | `meeting::oracle::release()` (`lib.rs` `StopMeeting`) | `Release { checkpoint: None, reason: "recording stopped" }` → `DECISION_ACTOR` | default checkpoint dropped now; log `decision: default released (recording stopped) after 5.49s resident` |
+| model turn ends in a session that ran `browser_run` | `Browsers` (`AgentEvent::TurnFinished`; the actor now subscribes to `AgentEvent` on the unbounded subscriber mailbox) | `Release { checkpoint: Some("browser"), reason: "turn finished" }` → `DECISION_ACTOR`, forwarded to `decision/browser` | browser checkpoint dropped when **no** other session with a `browser_run` in flight remains |
+| `browser_close` tool | `CloseTool` → `Browsers` `SystemOne { active: false }` | same, reason `browser_close` | same |
+| isolate dropped: `Close`, idle `Sweep`, `CloseAll` (shutdown), `CloseTree` | `Browsers::drop_session` | same, reason `browser session closed` | same |
+| nothing asked for `idle_unload` | the engine's own watchdog (`Unload(epoch)`) | — | `decision: default released (idle 20.00s) after 20.05s resident` |
+| `browser_run` starts | `RunTool` → `Browsers` `SystemOne { active: true }` | — | the session holds the browser checkpoint until one of the three releases above |
+
+- **Turn boundary is observable**: the browser plugin already depends on `agent` (the text-helper `SideCall`), so `Browsers` subscribes to `AgentEvent` like `Meeting` does and releases on `TurnFinished` of a claiming session. Deviation from §2.1's wording "ends without a further `browser_*` call after a `browser_run`": the release fires at every turn end of a session that ran `browser_run`, whether or not other `browser_*` calls followed — the next turn's `browser_run` reloads (Metal: 160–350 ms warm-cache, 1.7–6 s first time on a busy machine). Simpler, and the 2 m idle stays the fallback for a session that never ends its turn.
+- **Loads**: only a question (`Ask`/`AskMany`) or an explicit `Warm` (meeting `Begun` → `Recording`) loads; the plugin's `start` spawns the engines and nothing else; there is no config-reload path in the decision plugin. Tested: `engine::tests::release_drops_now_and_nothing_loads_at_start` (spawn + 50 ms → `LoadedNow` empty, loader never called; ask → one entry; `Release` → empty; `Release { checkpoint: Some(other) }` leaves it alone).
+- **In flight**: a blocking run holds its own `Arc<Mutex<Box<dyn Oracle>>>` and finishes; `Release` takes the engine's `Arc` and the `loading` `JoinHandle` (a cold load still in flight lands into a dropped handle and is freed on completion) and disarms the watchdog. The watchdog tick carries the arming epoch (`Unload(u64)`); a tick from before a `Release` is ignored, so a release followed by a new question never leaves two watchdog chains running. A meeting `oracle::run` still in flight at stop (tier 1 is ~100–300 ms; the stop handler joins STT and delivers the last batch first, so this is rare) would reload on its second ask and the 3 m idle frees it — accepted.
+
+### Defaults and config
+
+- `decision.idle_unload` **3m** (`IDLE_UNLOAD`, was 10m); `decision.checkpoints.<name>` is now a bare path **or** `{ dir, idle_unload }` (`Checkpoint`; `~` keeps the convention dir); `DecisionConfig::idle_unload_for(name)` = the entry's `idle_unload` → else **2m for `browser`** (`BROWSER_IDLE_UNLOAD`, in `lib.rs` beside the checkpoint constants, not in `default_families`: it is a checkpoint property, not a family one) → else `idle_unload`. `Engine.idle` is fixed at construction (`with_checkpoint` recomputes it). Callers that built `checkpoints` maps (`browser/tests/systemone.rs`, `examples/systemone_suite.rs`) insert `dir.into()`. Generated config comment updated (`theuth/src/main.rs`).
+- `Engine.loaded_since: Option<Instant>`; `LoadedNow → Vec<LoadedInfo { checkpoint, since_secs, rss_mb }>` — the default engine appends its siblings' answers off its mailbox (2 s timeout each; a sibling mid-load holds its mailbox for up to its budget).
+
+### Measured reclaim (`examples/lifecycle.rs`, M3 Max, release, `--repeat 3 --settle 5000`, `/tmp/laya-design/lifecycle-step6-{metal-f16,cpu-f32}.txt`)
+
+Two numbers per sample, **footprint / rss** in MB: macOS `phys_footprint` (`proc_pid_rusage` — Activity Monitor's *Memory*, what the OS charges the process) and `resident_size`. RSS is the wrong metric here: it keeps counting pages `free` returned with `MADV_FREE_REUSABLE` until the kernel reclaims them, and it undercounts Metal buffers (loaded 944 rss vs 1094 footprint). `decision::process_memory()` returns both; `LoadedInfo.rss_mb` is the **footprint**, labelled in the type's doc.
+
+**Metal f16** (load average 23–56; `decision` = meeting checkpoint, `decision-browser` = browser):
+
+| checkpoint | run | before | loaded (after 1st inference) | released (immediately) | released + 5 s | settled − before | load | infer |
+|---|---|---|---|---|---|---|---|---|
+| decision | 1 | 2 / 7 | 1094 / 944 | 835 / 879 | 115 / 162 | +113 | 270 ms | 53 ms |
+| decision | 2 | 115 / 162 | 1098 / 948 | 903 / 942 | 176 / 222 | +60 | 160 ms | 34 ms |
+| decision | 3 | 176 / 222 | 1098 / 948 | 933 / 947 | 139 / 185 | −37 | 181 ms | 30 ms |
+| decision-browser | 1 | 139 / 185 | 1098 / 948 | 894 / 938 | 141 / 188 | +2 | 169 ms | 31 ms |
+| decision-browser | 2 | 141 / 188 | 1098 / 948 | 907 / 946 | 47 / 95 | −94 | 178 ms | 30 ms |
+| decision-browser | 3 | 47 / 95 | 1098 / 948 | 910 / 947 | 47 / 95 | **+0** | 165 ms | 29 ms |
+
+- The **Metal driver returns the buffers asynchronously**: immediately after the drop the footprint is still 835–933 MB; it reaches its floor within a few seconds (the +5 s column of runs 2–3 caught it mid-drain at 176/139; the next row's `before` shows where it ended). The floor is **~47 MB** = the Metal stack itself (framework, compiled kernel library, command queue) — a one-off baseline paid by the first Metal load in the process, not model memory; it does not grow with cycles. Steady state after that: **+0 to +2 MB** per load/release cycle → within the 50 MB bound. The session already owned its `Device` (`Device::new_metal(0)` per `Loaded::open`, dropped with it) — nothing to change there. `candle`'s `MetalDevice` buffer pool and residency set go with the device.
+
+**CPU f32** (Accelerate; load average 22–54; `--settle 3000`):
+
+| checkpoint | run | before | loaded | released | released + 3 s | settled − before | load | infer |
+|---|---|---|---|---|---|---|---|---|
+| decision | 1 | 2 / 7 | 1836 / 1862 | 788 / 816 | 788 / 816 | **+786** | 1499 ms | 85 ms |
+| decision | 2 | 788 / 816 | 1856 / 1883 | 813 / 841 | 813 / 841 | +24 | 291 ms | 92 ms |
+| decision-browser | 1 | 813 / 841 | 1876 / 1904 | 813 / 842 | 813 / 842 | +0 | 1433 ms | 104 ms |
+| decision-browser | 2 | 813 / 842 | 1877 / 1905 | 814 / 842 | 814 / 842 | +1 | 313 ms | 91 ms |
+| decision, `MallocLargeCache=0` | 1 | 2 / 7 | 1698 / 1744 | 6 / 56 | 6 / 56 | **+4** | 593 ms | 189 ms |
+| decision, `MallocLargeCache=0` | 2 | 6 / 56 | 1695 / 1744 | 5 / 56 | −1 | 518 ms | 193 ms |
+
+- **What holds it**: `vmmap --summary` on the settled process shows `MALLOC_LARGE (empty) 724.2M dirty, 64 regions` — libmalloc's *large cache* ("death row", 64 entries ≤ 125 MB each): the f32 layer tensors `free`d by the drop sit there, resident, for reuse by the next large `malloc` — which is exactly what the next load does (291 ms vs 1499 ms cold, and the plateau never grows: +24 / +0 / +1). The 206 MB embedding table exceeds the per-entry limit and is returned. `malloc_zone_pressure_relief(NULL, 0)` returns **0 bytes** for it (tried as a `Drop` on the session — removed again); churning 64 large allocations through the cache evicts nothing (they are served from it). Only `MallocLargeCache=0` in the process environment — read once when libmalloc initialises, before `main` — removes it (+4 MB). Not done: it would change the allocator for the whole daemon (audio/V8 churn) for the one configuration that is not the Mac engine. **The bound fails on macOS CPU f32 by design of the platform allocator**, with a documented lever; Metal f16 is the Mac path and CPU f32 the Linux/Windows one (glibc unmaps large frees — unmeasured here, no Linux box).
+
+**Model-gated test** `tests/model.rs::release_reclaims_the_checkpoint` (`cargo test --release -p decision --test model -- --test-threads=1 --nocapture`, `Device::Auto` = Metal f16, load 146): through the actor, `LoadedNow` empty at spawn → ask → one entry (`rss_mb` = footprint ± 2 MB) → `Release` → empty; the footprint after release is polled (≤ 15 s) until within 50 MB of before; asserted on the **second** cycle:
+
+```
+cycle 1: footprint before 627 MB, loaded 1099 MB, released 235 MB after 251.67ms
+cycle 2: footprint before 235 MB, loaded 1099 MB, released 148 MB after 252.44ms
+test result: ok. 3 passed
+```
+
+(The 627 MB `before` is the previous test's model still draining in the same process — single-threaded run, so the two other model-gated tests precede it.)
+
+### Visible
+
+- `decision_loaded() → Vec<LoadedInfo>` — a **new RPC**, not a field on `decision_stats`: that call returns `Vec<FamilyStats>` (per family), the wrong shape for one process-wide fact; adding a wrapper object would have broken its one consumer for no gain. `rss_mb` is the whole daemon's footprint, repeated on every entry (doc on the field; TS `number` via `ts(type)` like the other u64s the UI reads).
+- Desktop: `DecisionLoaded` in `components/settings/Meetings.tsx` under the oracle switch (the Labs pane does not exist on this branch): *Decision models loaded now* — `none` / `meeting · 903 MB · 4 min` (`default` shown as `meeting`; `/`-joined when both are resident), `useQuery` on `queryKeys.decisionLoaded` with `refetchInterval: 10_000`. One exported component + `loadedText`, so the Labs merge moves two symbols. `api.ts`/`rpc.ts` gained the method and key; `just ts-desktop` regenerated `LoadedInfo.ts`. `bun run check`: only the pre-existing `@openuidev/*` / `AppHost.tsx` errors, nothing in the touched files. Not seen in the app (`cargo tauri dev` not available here).
+
+### Headless smoke (`target/debug/t --data-dir /tmp/theuth-hl-step6 --headless`, `THEUTH_RPC__LISTEN=127.0.0.1:7791`, JSON-RPC over HTTP with the data dir's bearer token)
+
+`config.yaml`: `decision: { enabled: true, model_dir: ~/.theuth/models/decision, idle_unload: 20s, checkpoints: { browser: { idle_unload: 10s } } }`. `meeting_start` works headless with `consent: true` (system-audio tap, no session model needed for this), so the real `Recording` → `Warm` → stop → `Release` path ran:
+
+```
+start                                   → decision_loaded: []          (no `model loaded` line; rss 287 MB debug build)
+meeting_start {consent: true}           → Recording
+  log: decision: model loaded in 5.52s from ~/.theuth/models/decision (size:842609210)
+       decision: warm-up done in 10480 ms · meeting: decision oracle warm in 10480 ms
++8 s                                    → decision_loaded: [{checkpoint: "default", since_secs: 4, rss_mb: 1169}]
+meeting_stop                            → log: decision: default released (recording stopped) after 5.49s resident
++1 s                                    → decision_loaded: []
++15 s                                   → footprint 116 MB (phys_footprint_peak 1115 MB)
+cycle 2: meeting_start → +4 s loaded [{default, 3 s, 988 MB}] (model loaded in 345 ms) → meeting_stop → +1 s [] → footprint 132 MB
+idle path: meeting_start, no questions for 25 s → decision_loaded: [] ; log: decision: default released (idle 20.00s) after 20.05s resident
+```
+
+The browser release path is not reachable headless without a model session; it is covered by construction (`Browsers::systemone_done` from the four drop sites + `TurnFinished` + `browser_close`) and the browser crate's tests still pass (19 unit + `tests/live.rs` + `tests/systemone.rs` model-gated).
+
+### Checks
+
+- `cargo check -p decision -p meeting -p browser --all-targets` green after each commit; `cargo test -p decision --lib` **62 unit** (61 → 62); `-p meeting` 38 unit + `tests/oracle.rs` 1 model-gated; `-p browser` 19 unit + `tests/live.rs` 1 + `tests/systemone.rs` 2 (model-gated); `cargo test --release -p decision --test model` 3 model-gated (the new reclaim bound included). `cargo test -p rpc export_bindings` 4 (bindings regenerated). `cargo clippy -p decision -p meeting -p browser -p rpc --no-deps --all-targets`: no findings. `cargo check --workspace --all-targets`: green (only the pre-existing `block v0.1.6` future-incompat note).
+- Not run: the desktop app; a real browser session through an agent turn (the `TurnFinished` release).
+
+### Merge notes for the Labs branch (`engine.rs`, `lib.rs`, `api.rs`)
+
+- `engine.rs`: new messages `Release { checkpoint: Option<String>, reason: &'static str }`, `LoadedNow`, reply type `LoadedInfo` (serde + ts + `kameo::Reply`); `Unload` became `Unload(u64)` (epoch); `Engine` gained `idle: Duration`, `loaded_since: Option<Instant>`, `epochs: u64`, and `watchdog: bool` became `watchdog: Option<u64>`; `touch()` arms through `arm(me, after, epoch)`; new `release(reason)` and `loaded_info()`; `session()` sets `loaded_since`; `with_checkpoint` sets `idle`; the `Unload` handler compares epochs and calls `release`. New `use serde::{Deserialize, Serialize}`. Test module: `release_drops_now_and_nothing_loads_at_start` (filters `LoadedNow` to `checkpoint == "default"` because other tests register `decision/browser` engines in the same process registry).
+- `lib.rs`: `checkpoints: BTreeMap<String, Checkpoint>` (was `PathBuf`; `Checkpoint { dir, idle_unload }`, `From<PathBuf>`, untagged `CheckpointEntry`); `IDLE_UNLOAD`, `BROWSER_IDLE_UNLOAD`, `idle_unload_for`; `ProcessMemory` + `process_memory()` (libc is now a real dependency); `checkpoint_dirs` handles dir-less entries; re-exports `LoadedInfo, LoadedNow, Release`. `candle/mod.rs`: only doc/comment changes (the reclaim finding).
+- `api.rs`: one method pair `decision_loaded` after `decision_stats`; `export.rs` lists `decision::LoadedInfo`.
+- `browser/src/lib.rs`: `Browsers` gained `systemone: HashSet<SessionId>`, `SystemOne` message, `Message<agent::AgentEvent>`, `drop_session`/`systemone_done`; `Sweep`/`CloseAll`/`CloseTree`/`Close` go through `drop_session`; spawned with `spawn_with_mailbox(.., runtime::subscriber_mailbox())` + `rt.subscribe::<Browsers, agent::AgentEvent>`.
+
+### Open
+
+- The macOS CPU f32 plateau (~790 MB in libmalloc's large cache). If a Mac ever has to run CPU f32 for real, the desktop launcher can export `MallocLargeCache=0` for the daemon — measure the meeting encoder and V8 first.
+- `LoadedInfo` has no "loading" state: a checkpoint mid-cold-load (up to 30 s on a busy machine) shows as nothing until the session is installed; the footprint already includes it.
+- ~~The Settings line sits under Meetings until the Labs pane lands.~~ Merged with step 10: `DecisionLoaded` is the first section of `Labs.tsx` ("Loaded now"), `loadedText` lives in `lib/labs.ts` (tested in `labs.test.ts`); Meetings keeps only step 10's pointer row.

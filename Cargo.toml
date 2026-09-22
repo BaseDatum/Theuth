@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.8.4"
+version = "1.10.0"
 edition = "2024"
 publish = false
 
@@ -46,6 +46,23 @@ update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)
 meeting = { path = "crates/meeting" }  # meeting recorder: process tap + VPIO mic, three Opus tracks (53)
 decision = { path = "crates/decision" }  # local typed-probability oracle + selective gate (57)
+codeindex = { path = "crates/codeindex" }  # tree-sitter tags → sqlite symbol/reference index per repo root (60)
+# Code index (design doc 60 §2.B): tree-sitter core + tags runner and the four grammar crates (each depends
+# only on `tree-sitter-language`); TS/TSX tags = the JS query + the TS supplement concatenated.
+tree-sitter = "0.27"  # 60
+tree-sitter-tags = "0.27"  # 60
+tree-sitter-rust = "0.24"  # 60
+tree-sitter-typescript = "0.23"  # 60
+tree-sitter-javascript = "0.25"  # 60
+tree-sitter-python = "0.25"  # 60
+tree-sitter-go = "0.25"  # 60
+# 60 §6.1 import resolution: `cargo_toml` = manifests (members are raw globs → `globset`), `oxc_resolver` =
+# TS/JS (tsconfig paths, package.json exports), `toml` = pyproject package dirs.
+cargo_toml = "1"  # 60
+globset = "0.4"  # 60
+similar = "3"  # 12 §10 edit/write_file unified diffs
+oxc_resolver = "11"  # 60
+toml = "1"  # 60
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;
 # `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.13 is
 # what `cpal` already pins — 0.12 would duplicate `objc2-audio-toolbox`); `objc2-core-audio` =

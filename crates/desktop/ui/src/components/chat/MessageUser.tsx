@@ -8,6 +8,7 @@ import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useSessionField } from '@/store/sessions'
 import { Attachments } from './Attachments'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
+import { SkillCard } from './SkillCard'
 
 /** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so `text` seeds it once. */
 function EditBubble({
@@ -51,7 +52,7 @@ function EditBubble({
   )
 }
 
-/** Right-aligned bubble; a `◇ skill` chip above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
+/** Right-aligned bubble; a full-width `SkillCard` above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
  * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive.
  * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls. */
 export const MessageUser = memo(function MessageUser({
@@ -79,11 +80,7 @@ export const MessageUser = memo(function MessageUser({
   const note = parseNote(text)
   return (
     <div className="group flex flex-col items-end gap-2 py-2">
-      {skill && (
-        <span className="rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
-          ◇ {skill}
-        </span>
-      )}
+      {skill && <SkillCard name={skill} />}
       <Attachments files={files} occurrences={context?.attachments} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">

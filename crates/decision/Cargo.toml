@@ -27,6 +27,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
+libc = { workspace = true }  # `process_memory`: proc_pid_rusage on macOS
 ts-rs = { workspace = true, optional = true }
 # laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
@@ -43,7 +44,6 @@ candle-nn = { workspace = true, features = ["metal", "accelerate"] }
 [dev-dependencies]
 tempfile = "3"
 serde_yaml = { workspace = true }
-libc = { workspace = true }  # bench: ru_maxrss
 tracing-subscriber = { workspace = true }  # tests/model.rs: show the engine's info lines under --nocapture
 
 [lints]

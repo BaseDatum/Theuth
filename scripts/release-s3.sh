@@ -167,6 +167,7 @@ if "${AWS[@]}" s3 ls "$S3_VER/" >/dev/null 2>&1; then
 fi
 
 gate 6 "staging/$VERSION/ holds every Linux tarball"
+LINUX_DESKTOP=()
 if [[ "$LINUX" == "skip" ]]; then
   echo "    THEUTH_RELEASE_LINUX=skip: manifest and formula without Linux"
 else
@@ -175,6 +176,15 @@ else
     echo "    pull $f"
     "${AWS[@]}" s3 cp "$S3_STAGING/$f" "$DIST/$f" >/dev/null
   done
+  # Desktop bundles (just package-linux on a Linux host) are optional: published as downloads
+  # with SHA256SUMS, not updater payloads (the Linux app does not self-update yet).
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    echo "    pull $f"
+    "${AWS[@]}" s3 cp "$S3_STAGING/$f" "$DIST/$f" >/dev/null
+    LINUX_DESKTOP+=("$f")
+  done < <("${AWS[@]}" s3 ls "$S3_STAGING/" | awk '{print $4}' | grep -E "^theuth_${VERSION}_linux-(x86_64|aarch64)\.(deb|rpm|AppImage)$" || true)
+  echo "    desktop bundles: ${#LINUX_DESKTOP[@]}"
 fi
 
 gate 7 "each Linux tarball runs in a clean ubuntu:22.04 of its arch"
@@ -213,7 +223,7 @@ s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   local ct
   case "$2" in
     *.json) ct=application/json ;; *.dmg) ct=application/x-apple-diskimage ;;
-    *.tar.gz) ct=application/gzip ;; *.sig) ct=application/octet-stream ;; *) ct=text/plain ;;
+    *.tar.gz) ct=application/gzip ;; *.sig | *.deb | *.rpm | *.AppImage) ct=application/octet-stream ;; *) ct=text/plain ;;
   esac
   if [[ "$DRY_RUN" == "1" ]]; then echo "    DRY_RUN: aws s3 cp $1 $2"; return 0; fi
   "${AWS[@]}" s3 cp "$1" "$2" --content-type "$ct" >/dev/null
@@ -236,10 +246,10 @@ else
   done
 
   echo "==> SHA256SUMS"
-  (cd "$DIST" && shasum -a 256 "${TARBALLS[@]}" "$DMG" >SHA256SUMS && cat SHA256SUMS)
+  (cd "$DIST" && shasum -a 256 "${TARBALLS[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} >SHA256SUMS && cat SHA256SUMS)
 
   echo "==> upload → $S3_VER/"
-  UPLOADS=("${TARBALLS[@]}" "$DMG" SHA256SUMS)
+  UPLOADS=("${TARBALLS[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
   for f in "${TARBALLS[@]}"; do UPLOADS+=("$f.sig"); done
   for f in "${UPLOADS[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
 fi

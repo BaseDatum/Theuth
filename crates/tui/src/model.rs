@@ -1099,10 +1099,10 @@ pub fn paste_token(i: usize, p: &Paste) -> String {
 /// Split a harness-injected input into `(kind, title, body)` per wrapper.
 /// Inputs queued during a turn arrive as one text: `<subagent_result
 /// name="…">` / `<message from="…">` / `<job_result id="…" command="…"
-/// exit="…" secs="…">` blocks joined by newlines. Harness notes
-/// (`<context_summary>`, `<todo>`, `<context_pressure>`, `<runtime>`,
-/// `<knowledge>`; design docs 07 §8.7, 10 §4) are wrappers too but yield no
-/// card. `None` for human text
+/// exit="…" secs="…">` / `<job_idle id="…" quiet="…">` (61) blocks joined by
+/// newlines. Harness notes (`<context_summary>`, `<todo>`,
+/// `<context_pressure>`, `<runtime>`, `<knowledge>`; design docs 07 §8.7,
+/// 10 §4) are wrappers too but yield no card. `None` for human text
 /// (or anything not entirely made of wrappers).
 pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
     let mut out = Vec::new();
@@ -1114,6 +1114,7 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "subagent_result" => (Some("name=\""), "</subagent_result>"),
             "message" => (Some("from=\""), "</message>"),
             "job_result" => (Some("id=\""), "</job_result>"),
+            "job_idle" => (Some("id=\""), "</job_idle>"),
             "schedule" => (Some("name=\""), "</schedule>"),
             "context_summary" => (None, "</context_summary>"),
             "todo" => (None, "</todo>"),
@@ -1126,12 +1127,7 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
         if let Some(key) = key {
             let from = attr(open, key)?;
             let (kind, title) = if name == "job_result" {
-                let command = attr(open, "command=\"")
-                    .unwrap_or_default()
-                    .replace("&quot;", "\"")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace("&amp;", "&");
+                let command = unescape(attr(open, "command=\"").unwrap_or_default());
                 let exit = attr(open, "exit=\"").unwrap_or_default();
                 let secs = attr(open, "secs=\"").unwrap_or_default();
                 // 22 §5: a PTY job's card says so.
@@ -1144,6 +1140,13 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     CardKind::Job,
                     format!("{from} · {command} · exit {exit} · {secs}s{pty}"),
                 )
+            } else if name == "job_idle" {
+                // 61 §2.3: `j4 idle 63s · omp1` (name only when the job has one).
+                let quiet = attr(open, "quiet=\"").unwrap_or_default();
+                let name = attr(open, "name=\"")
+                    .map(|n| format!(" · {}", unescape(n)))
+                    .unwrap_or_default();
+                (CardKind::Job, format!("{from} idle {quiet}s{name}"))
             } else if name == "schedule" {
                 let at = attr(open, "at=\"").unwrap_or_default();
                 let at = chrono::DateTime::parse_from_rfc3339(at).map_or_else(
@@ -1160,6 +1163,14 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
         rest = tail.trim_start();
     }
     Some(out)
+}
+
+/// Undo the wrappers' XML attribute escape.
+fn unescape(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// Value of `key` (`name="`) in an open tag, up to the closing quote.
@@ -11732,6 +11743,31 @@ mod tests {
         assert_eq!(injected("<b>\nnot a wrapper\n</b>"), None);
         assert_eq!(injected("hello"), None);
         assert_eq!(injected("<todo>unterminated"), None);
+    }
+
+    /// 61 §2.3: a quiet PTY job cards as `j4 idle 63s · name`; body is the screen.
+    #[test]
+    fn injected_parses_job_idle() {
+        assert_eq!(
+            injected(
+                "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"63\" secs=\"912\" nudge=\"1\" user_typed=\"12\">\n>>> \ncursor: row 1 col 5\n</job_idle>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "j4 idle 63s · omp<1>".to_owned(),
+                ">>> \ncursor: row 1 col 5".to_owned(),
+            )])
+        );
+        assert_eq!(
+            injected(
+                "<job_idle id=\"j1\" command=\"python3 -q\" quiet=\"120\" secs=\"200\" nudge=\"2\">\n</job_idle>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "j1 idle 120s".to_owned(),
+                String::new()
+            )])
+        );
     }
 
     #[test]

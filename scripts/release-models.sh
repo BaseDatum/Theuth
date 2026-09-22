@@ -56,15 +56,19 @@ REQUIRED=(
   decision/encoder/config.json                     # convaiinnovations/laya root layout, loaded by candle/mod.rs Loaded::open
   decision/tokenizer/tokenizer.json
   decision/rl_agent_config.json
+  decision-browser/model.safetensors               # decision.checkpoints.browser (57 §4.1 item 6): cklxx/laya-browser v10, same layout;
+  decision-browser/encoder/config.json             # fetched into ~/.theuth/models/decision-browser by scripts/fetch-laya-browser.sh
+  decision-browser/tokenizer/tokenizer.json
+  decision-browser/rl_agent_config.json
 )
 
 # Runtime platforms: Microsoft's archive name → rust target triple, archive member, on-disk name,
-# and the sha256 variable in ort-version.env. Design 58 adds linux-x64 / win-x64 rows.
-PLATFORMS=(osx-arm64)
-triple_of()  { case "$1" in osx-arm64) echo aarch64-apple-darwin ;; linux-x64) echo x86_64-unknown-linux-gnu ;; win-x64) echo x86_64-pc-windows-msvc ;; *) echo "error: unknown platform $1" >&2; exit 1 ;; esac; }
+# and the sha256 variable in ort-version.env. Design 58 adds the win-x64 row.
+PLATFORMS=(osx-arm64 linux-x64 linux-aarch64)
+triple_of()  { case "$1" in osx-arm64) echo aarch64-apple-darwin ;; linux-x64) echo x86_64-unknown-linux-gnu ;; linux-aarch64) echo aarch64-unknown-linux-gnu ;; win-x64) echo x86_64-pc-windows-msvc ;; *) echo "error: unknown platform $1" >&2; exit 1 ;; esac; }
 lib_of()     { case "$1" in osx-*) echo libonnxruntime.dylib ;; linux-*) echo libonnxruntime.so ;; win-*) echo onnxruntime.dll ;; esac; }
 member_of()  { case "$1" in osx-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" ;; linux-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" ;; win-*) echo "onnxruntime-$1-${ORT_VERSION}/lib/onnxruntime.dll" ;; esac; }
-sha_of()     { case "$1" in osx-arm64) echo "$ORT_SHA256_OSX_ARM64" ;; linux-x64) echo "${ORT_SHA256_LINUX_X64:-}" ;; win-x64) echo "${ORT_SHA256_WIN_X64:-}" ;; esac; }
+sha_of()     { case "$1" in osx-arm64) echo "$ORT_SHA256_OSX_ARM64" ;; linux-x64) echo "$ORT_SHA256_LINUX_X64" ;; linux-aarch64) echo "$ORT_SHA256_LINUX_AARCH64" ;; win-x64) echo "${ORT_SHA256_WIN_X64:-}" ;; esac; }
 
 MODELS_DIR="${THEUTH_MODELS_DIR:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models}"
 ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"

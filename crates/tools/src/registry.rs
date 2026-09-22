@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,7 +27,8 @@ use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, fs, jobs, pty, schema, shell,
+    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, schema,
+    shell,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -100,6 +102,9 @@ pub struct ToolRegistry {
     shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
     /// How long [`CloseTreeAll`] waits on one participant.
     close_timeout: Duration,
+    /// `tools.pty_idle_secs`, shared with the `start` tool (61 §1.6); the
+    /// persistent knob is [`SetPtyIdle`].
+    pty_idle: Arc<AtomicU64>,
 }
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
@@ -365,6 +370,18 @@ pub struct GetApprovals {
     pub session: Option<SessionId>,
 }
 
+/// `ask` → `()`: persist `tools.pty_idle_secs` (61 §1.6) and use it for
+/// every later `start` without `idle_secs`; `0` = never.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetPtyIdle {
+    /// Quiet-screen seconds before `<job_idle>`.
+    pub seconds: u64,
+}
+
+/// `ask` → `u64`: the live `tools.pty_idle_secs`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPtyIdle;
+
 /// `tell`: record that `session` is a subagent of `parent`, so it inherits
 /// the parent's approval switch.
 #[derive(Clone, Copy, Debug)]
@@ -517,7 +534,11 @@ impl Message<OpenTree> for ToolRegistry {
 impl Message<CloseTreeAll> for ToolRegistry {
     type Reply = DelegatedReply<Vec<CloseAck>>;
 
-    async fn handle(&mut self, m: CloseTreeAll, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CloseTreeAll,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let tree = m.0;
@@ -630,6 +651,30 @@ impl Message<GetApprovals> for ToolRegistry {
         _: &mut Context<Self, Self::Reply>,
     ) -> ApprovalsState {
         self.approvals_state(m.session)
+    }
+}
+
+impl Message<SetPtyIdle> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetPtyIdle, _: &mut Context<Self, Self::Reply>) {
+        self.pty_idle.store(m.seconds, Ordering::SeqCst);
+        if let Err(e) = runtime::write_config_value(
+            &self.config_path,
+            "tools",
+            "pty_idle_secs",
+            &m.seconds.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+    }
+}
+
+impl Message<GetPtyIdle> for ToolRegistry {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: GetPtyIdle, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.pty_idle.load(Ordering::SeqCst)
     }
 }
 
@@ -1388,14 +1433,16 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Duration::from_secs(cfg.job_timeout_secs),
     )?;
 
-    let shell = shell::ShellTool::new(jobs.clone());
+    let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
     let shells = shell.shells();
-    let builtins: [DynTool; 13] = [
+    let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
+    let builtins: [DynTool; 14] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
             Arc::clone(&shells),
             Duration::from_secs(cfg.pty_ready_timeout_secs),
+            Arc::clone(&pty_idle),
         )),
         Arc::new(pty::SendTool(jobs.clone())),
         Arc::new(pty::ScreenTool(jobs.clone())),
@@ -1406,7 +1453,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(fs::WriteFile),
         Arc::new(fs::ListDir),
         Arc::new(fs::Grep),
-        Arc::new(fs::Edit),
+        Arc::new(glob::Glob),
+        Arc::new(edit::Edit),
         Arc::new(AskUserTool(ask)),
     ];
     let registry = ToolRegistry::spawn_with_mailbox(
@@ -1431,6 +1479,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             expected: Vec::new(),
             shells,
             close_timeout: CLOSE_TIMEOUT,
+            pty_idle,
         },
         runtime::subscriber_mailbox(),
     );
@@ -1493,6 +1542,7 @@ mod tests {
             expected: Vec::new(),
             shells: Arc::default(),
             close_timeout: Duration::from_millis(100),
+            pty_idle: Arc::default(),
         }
     }
 
@@ -2341,8 +2391,7 @@ mod tests {
     async fn lifecycle_barrier_waits_for_expected_and_collects_acks() {
         let reg = registry(vec![Arc::new(Root)], None);
         reg.ask(ExpectParticipants(vec!["x", "y"])).await.unwrap();
-        let Err(kameo::error::SendError::HandlerError(missing)) =
-            reg.ask(ParticipantsReady).await
+        let Err(kameo::error::SendError::HandlerError(missing)) = reg.ask(ParticipantsReady).await
         else {
             panic!("ready before anyone registered");
         };
@@ -2418,7 +2467,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        let by = |o: &str| acks.iter().find(|a| a.owner == o).unwrap_or_else(|| panic!("{o}"));
+        let by = |o: &str| {
+            acks.iter()
+                .find(|a| a.owner == o)
+                .unwrap_or_else(|| panic!("{o}"))
+        };
         assert!(by("x").ok);
         assert!(!by("y").ok);
         assert_eq!(by("y").detail.as_deref(), Some("timeout"));

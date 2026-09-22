@@ -26,7 +26,7 @@ type Sub = {
   method: string
   unsubscribe: string
   params: unknown[]
-  onItem: (item: unknown) => void
+  onItem: (item: never) => void
   id: unknown
 }
 type Frame = {
@@ -114,20 +114,20 @@ export class RpcClient {
     descendants: boolean | null,
     onEvent: (e: WireEvent) => void,
   ): Promise<() => Promise<void>> {
-    return this.subscribeTo('subscribe_events', 'unsubscribe_events', [session, descendants], onEvent)
+    return this.stream('subscribe_events', [session, descendants], 'unsubscribe_events', onEvent)
   }
 
   /**
-   * Any jsonrpsee subscription pair (`doc_subscribe`/`doc_unsubscribe`, 59 §6.1): items arrive as
-   * `method` notifications keyed by `params.subscription`. Re-issued on reconnect like `subscribe`.
+   * Any jsonrpsee subscription pair: items arrive at `onItem`; the returned function unsubscribes.
+   * Re-issued on every reconnect (the server starts the stream over), so `onItem` sees its first item again.
    */
-  async subscribeTo<T>(
+  async stream<T>(
     method: string,
-    unsubscribe: string,
     params: unknown[],
+    unsubscribe: string,
     onItem: (item: T) => void,
   ): Promise<() => Promise<void>> {
-    const sub: Sub = { method, unsubscribe, params, onItem: onItem as (item: unknown) => void, id: null }
+    const sub: Sub = { method, params, unsubscribe, onItem: onItem as (item: never) => void, id: null }
     this.#subs.add(sub)
     if (this.#state === 'open') await this.#issue(sub)
     return async () => {
@@ -203,8 +203,8 @@ export class RpcClient {
   }
 
   #receive(f: Frame): void {
-    if (f.method !== undefined && f.params) {
-      this.#bySubId.get(f.params.subscription)?.onItem(f.params.result)
+    if (f.params && 'subscription' in f.params) {
+      this.#bySubId.get(f.params.subscription)?.onItem(f.params.result as never)
       return
     }
     if (f.id === undefined) return

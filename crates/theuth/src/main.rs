@@ -109,6 +109,20 @@ struct Cli {
     /// against it. Before config, logging or any plugin.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     app_parser_hash: bool,
+    /// 57 §11.4: fold the captured training rows of a decision family prefix (`meeting`) into
+    /// the phrasing-bench fixture shape (or laya's typed-decisions rows with --format laya),
+    /// print (or --out) and exit. Reads <data_dir>/decisions/training/<prefix>/*.jsonl.
+    #[arg(long, value_name = "PREFIX", conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
+    decision_export: Option<String>,
+    /// --decision-export: only day files from this date on (YYYY-MM-DD).
+    #[arg(long, requires = "decision_export", value_name = "YYYY-MM-DD")]
+    since: Option<chrono::NaiveDate>,
+    /// --decision-export: write here instead of stdout.
+    #[arg(long, requires = "decision_export", value_name = "FILE")]
+    out: Option<PathBuf>,
+    /// --decision-export: `fixture` (default) | `laya`.
+    #[arg(long, requires = "decision_export", default_value = "fixture")]
+    format: String,
 }
 
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
@@ -176,6 +190,13 @@ agent:
 #   run_timeout_ms: 60000
 #   robots: true
 #   delay_ms: 100            # per-host gap between requests; a larger robots Crawl-delay wins
+
+# codeindex:                 # design doc 60; indexes live in <data_dir>/codeindex/<slug>-<hash>.sqlite
+#   enabled: true            # false: no plugin, no code_* functions, nothing on disk
+#   sync_limit: 64           # changed files re-indexed synchronously before answering; more → answer stale, finish in background
+#   max_file_bytes: 1048576  # larger files are listed, not parsed
+#   cochange_commits: 300    # first-parent commits walked for co-change; 0 disables the git walk
+#   languages: [rust, typescript, javascript, python, go]   # subset to parse; others are files only
 
 # search_providers:          # optional external engines registered with `web` (design doc 16 §3); the
 #                            # built-in keyless engines above need none of these
@@ -254,21 +275,38 @@ agent:
 #                            # accepts or escalates to today's model turn. Every family starts in shadow (runs, logs, changes nothing).
 #   enabled: true            # false: the actor answers every ask with escalate(disabled); nothing loads
 #   device: auto             # auto (Metal f16 on an Apple-silicon Mac, else CPU f32) | cpu | metal (warns and falls back to CPU)
-#   model_dir: ~             # checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
+#   model_dir: ~             # the `default` checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
 #                            # tokenizer/tokenizer.json, rl_agent_config.json — the Hugging Face convaiinnovations/laya layout.
 #                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
 #                            # scripts/release-models.sh); the daemon re-checks on every ask, so no restart once it lands.
-#   idle_unload: 10m         # drop the model after this long unused (~1 GiB back)
+#   checkpoints:             # one engine per checkpoint (57 §4.1 item 6). A checkpoint is resident only while in use (57 §2.1):
+#                            # loaded by the first question (the meeting warms it at Recording), released when the meeting stops /
+#                            # the browser session closes, and by idle_unload as the safety net. Nothing loads at daemon start.
+#     default: ~             # = model_dir; a bare path, or { dir: <path>, idle_unload: 3m }
+#     browser: ~             # cklxx/laya-browser v10, same layout; default <data_dir>/models/decision-browser
+#                            # (scripts/fetch-laya-browser.sh until release-models publishes it). A family's `checkpoint: <name>` picks one.
+#                            # Its idle_unload defaults to 2m (loop steps are sub-second; a run never trips it).
+#   idle_unload: 3m          # drop a checkpoint after this long unused (~0.9 GB back); checkpoints.<name>.idle_unload overrides per checkpoint
 #   log_text: false          # true: store the question text in <data_dir>/decisions/*.jsonl, not only its hash
 #   families:                # gate per decision family: mode shadow | active | off; accept iff top1 ≥ tau_top and top1 − top2 ≥ tau_margin;
 #                            # budget (tier 1, default 400ms) and escalate_budget (tier 2 cheap-model call, default 3s) per family.
 #                            # Entries patch this table (any subset of fields); a prefix key sets every family under it:
-#                            # `meeting: { mode: active }` is what Settings → Meetings → Local decision oracle writes (57 §3.4).
+#                            # `meeting: { mode: active }` is what Settings → Labs (57 §7.1) writes — mode, train and share together.
 #                            # Flip a family to active only after its shadow log shows acceptable agreement (57 §2; `decision_stats`).
-#     meeting.topic:  { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
-#     meeting.brief:  { mode: shadow, tau_top: 0.80, tau_margin: 0.35 }
-#     browser.target: { mode: shadow, tau_top: 0.90, tau_margin: 0.50 }
-#     browser.wait:   { mode: shadow, tau_top: 0.80, tau_margin: 0.30 }
+#                            # train: true (57 §11, default false) captures every batch the family's oracle handled — text, mentions,
+#                            # questions, tier-2 answer, outcome, tap/dismiss — to <data_dir>/decisions/training/<prefix>/<day>.jsonl,
+#                            # secret-scrubbed, local only; `t --decision-export meeting` folds it into the phrasing-bench fixture shape.
+#                            # share: true (57 §7.1, default false) is consent to upload those rows to theuth; needs train (train: false
+#                            # clears it); recorded now, honoured by the uploader once the relay endpoint ships (step 11).
+#     meeting.kind:    { mode: shadow, tau_top: 0.60, tau_margin: 0.20 }  # small-talk Bool: skip at P ≥ 0.6 with no mentions (57 §3.5)
+#     meeting.brief:   { mode: shadow, tau_top: 0.60, tau_margin: 0.30 }  # ≤ 4 cached briefs: publish at P ≥ 0.6, margin ≥ 0.3
+#     meeting.subject: { mode: shadow, tau_top: 0.50, tau_margin: 0.00 }  # tier-2 subject extraction rows (cheap model, never the oracle)
+#     browser.operation:   { mode: shadow, tau_top: 0.50, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#     browser.target:      { mode: shadow, tau_top: 0.25, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#     browser.type_target: { mode: shadow, tau_top: 0.25, tau_margin: 0.00, checkpoint: browser, none: false, cut_ok: true, budget: 2s }
+#                            # ^ the browser System-1 loop's three jev-shaped questions (57 §4.1): `browser: { mode: active }` lets
+#                            # `browser_run` act; shadow decides and hands back; off hides the tool. none/cut_ok: the fine-tune
+#                            # learned a closed option list and right-cut states, so no `none` control and a cut state is not an error.
 #     agent.readable: { mode: shadow, tau_top: 0.85, tau_margin: 0.40 }
 
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
@@ -403,6 +441,24 @@ async fn run() -> anyhow::Result<()> {
         let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
         return update_cli(&cfg, &data_dir).await;
     }
+    if let Some(prefix) = cli.decision_export {
+        let format: decision::training::Format = cli.format.parse().map_err(anyhow::Error::msg)?;
+        let store = decision::training::Store::new(data_dir.join("decisions").join("training"));
+        let v = decision::training::export(&store, &prefix, cli.since, format)?;
+        let n = match &v {
+            serde_json::Value::Array(a) => a.len(),
+            other => other["batches"].as_array().map_or(0, Vec::len),
+        };
+        let text = serde_json::to_string_pretty(&v)?;
+        match cli.out {
+            Some(path) => {
+                std::fs::write(&path, text)?;
+                eprintln!("wrote {n} examples from {} to {}", store.family_dir(&prefix).display(), path.display());
+            }
+            None => println!("{text}"),
+        }
+        return Ok(());
+    }
     if let Some(name) = cli.secret_set {
         let op = secret_cli::Op::Set {
             name,
@@ -489,6 +545,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(scrape::ScrapePlugin),
+            Box::new(codeindex::CodeindexPlugin),
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),
@@ -513,6 +570,7 @@ async fn run() -> anyhow::Result<()> {
             Box::new(web::WebPlugin),
             Box::new(browser::BrowserPlugin),
             Box::new(scrape::ScrapePlugin),
+            Box::new(codeindex::CodeindexPlugin),
             Box::new(routes::RoutesPlugin),
             Box::new(computer::ComputerPlugin),
             Box::new(artifact::ArtifactPlugin),

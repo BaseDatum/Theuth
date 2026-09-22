@@ -19,6 +19,7 @@ import {
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
 import { useSessionField } from '@/store/sessions'
+import { draftSkill } from '@/components/chat/slash'
 
 export function Skills({ session }: { session: string | null }) {
   const api = useApi()
@@ -42,9 +43,8 @@ export function Skills({ session }: { session: string | null }) {
     keys: [queryKeys.skills],
     onSuccess: toastSync,
   })
-  const run = useAction((name: string) => api.use_skill(session, name, ''), {
-    onSuccess: (id) => void navigate({ to: '/c/$session', params: { session: id } }),
-  })
+  // Park the skill on the chat's composer (a new chat when none is open); the user's next send hands it over.
+  const run = useAction((name: string) => draftSkill(api, navigate, session, name))
   // A repo dir first (only removed when it holds `.git`), else a local skill, as the TUI.
   const remove = useAction(
     (s: SkillMeta) => api.remove_skill_repo(s.repo ?? s.name).catch(() => api.remove_skill(s.name)),
@@ -142,7 +142,9 @@ export function Skills({ session }: { session: string | null }) {
   )
 }
 
-function SkillBody({ name }: { name: string }) {
+/** A skill's markdown, rendered; shared with the transcript's skill card. Leading YAML front matter (name/description,
+ * shown in the header already) is dropped. */
+export function SkillBody({ name }: { name: string }) {
   const api = useApi()
   const body = useQuery({
     queryKey: queryKeys.skill(name),
@@ -153,7 +155,7 @@ function SkillBody({ name }: { name: string }) {
       {body.isError && <p className="text-danger">{errorText(body.error)}</p>}
       {body.data && (
         <>
-          <Streamdown mode="static">{body.data.body}</Streamdown>
+          <Streamdown mode="static">{body.data.body.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')}</Streamdown>
           {body.data.files.length > 0 && (
             <p className="mt-4 text-[13px] text-fg-tertiary">Files: {body.data.files.join(', ')}</p>
           )}

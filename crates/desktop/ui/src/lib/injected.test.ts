@@ -10,6 +10,10 @@ test('skill injection: chip plus the words after it', () => {
   expect(classify('<skill name="caveman">\nbody\n</skill>\n\nbe brief')).toEqual([
     { kind: 'skill', name: 'caveman', words: 'be brief' },
   ])
+  // The body may contain `">` (HTML in a skill's prose); it must not truncate the parse.
+  expect(classify('<skill name="ponytail">\n`<input type="date">` over a picker\n</skill>')).toEqual([
+    { kind: 'skill', name: 'ponytail', words: '' },
+  ])
 })
 
 test('context summaries and runtime wrappers do not duplicate existing surfaces', () => {
@@ -55,6 +59,17 @@ test('job result carries id, unescaped command, exit, secs, pty', () => {
   expect(
     classify('<job_result id="j3" command="echo &quot;a&quot; &amp;&amp; ls" exit="0" secs="4" pty="true">\nout\n</job_result>'),
   ).toEqual([{ kind: 'job', id: 'j3', command: 'echo "a" && ls', exit: '0', secs: '4', pty: true, text: 'out' }])
+})
+
+test('job idle carries id, command, optional name, quiet, secs, nudge, user_typed and the screen', () => {
+  expect(
+    classify('<job_idle id="j4" command="omp" name="omp&lt;1&gt;" quiet="63" secs="912" nudge="1" user_typed="12">\n>>> \ncursor: row 1 col 5\n</job_idle>'),
+  ).toEqual([
+    { kind: 'job_idle', id: 'j4', command: 'omp', name: 'omp<1>', quiet: '63', secs: '912', nudge: '1', userTyped: '12', text: '>>> \ncursor: row 1 col 5' },
+  ])
+  expect(classify('<job_idle id="j1" command="python3 -q" quiet="120" secs="200" nudge="2">\n</job_idle>')).toEqual([
+    { kind: 'job_idle', id: 'j1', command: 'python3 -q', quiet: '120', secs: '200', nudge: '2', text: '' },
+  ])
 })
 
 test('schedule fire carries name, at, quiet and the prompt body', () => {

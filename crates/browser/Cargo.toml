@@ -10,6 +10,9 @@ obscura-mcp = { workspace = true }
 obscura-js = { workspace = true }
 runtime = { workspace = true }
 tools = { workspace = true }
+decision = { workspace = true }
+agent = { workspace = true }
+parking_lot = { workspace = true }
 web = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
@@ -37,3 +40,5 @@ workspace = true
 
 [dev-dependencies]
 figment = { workspace = true }
+tempfile = "3"
+tracing-subscriber = { workspace = true }

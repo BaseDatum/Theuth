@@ -116,6 +116,7 @@ Unknown `ctrl` chars or `f > 12` are schema/`Err`, never silently dropped.
 `reply()` (`pty.rs`, the screen block shared by `send`/`screen`/`wait`) adds
 one final line when `now - user_input < 30_000`: `user attached · typed 3s
 ago`. `structured` gains `"user_attached_ms": Option<u64>`. Tested in §6.
+The same window appears as `user_typed="3"` on `<job_idle>` (61 §2.2).
 
 ### 2.4 RPC
 
@@ -339,3 +340,45 @@ unknown job → `no such job`. The model's following `screen` result ended with
 close the overlay. Ctrl-] detach is covered by the unit test only (the
 process harness could not inject 0x1d). Desktop typing was not exercised in
 a browser; `tsc` and vitest are the evidence. Spike 2 (relay latency) not run.
+
+## 11. Amendment (2026-09-21): the desktop runs a real terminal
+
+Asked for: the desktop/mobile viewer should be a real terminal — native
+scrollback, resize, selection — and the human should type the moment it
+opens, no toggle. The owner accepted the redaction cost: **`subscribe_pty`
+is not redacted.** Everything §7 rejected for that reason is now built for
+the desktop; the TUI, the model's `screen`/`send`/`wait` and `pty_screen`
+are unchanged (still redacted, still the 51 §7 snapshot).
+
+- **Stream.** `PtyHandle.stream: broadcast<PtyOut>` (256 chunks). `ingest`
+  sends every chunk under the parser lock; `run` sends `Exit`. `PtyAttach`
+  subscribes and clones the screen under that same lock, so replay + stream
+  is lossless; the replay (`pty.rs replay()`) is vt100's `rows_formatted`
+  per scrollback row, `rows` newlines to push them off, then
+  `state_formatted()` (screen, cursor, input modes). A lagged subscriber gets
+  a fresh `Reset` instead of a gap; a finished job attaches to its last
+  screen and gets `Exit` at once.
+- **RPC.** `subscribe_pty(session, job, rows?, cols?)` → `PtyChunk`
+  (`reset {data,rows,cols}` | `data {data}` | `exit {exit}`, base64 bytes);
+  `pty_resize(session, job, rows, cols)`. Same session gate as `pty_input`.
+- **Resize** (reverses 22 §9 / §7 here). The `MasterPty` lives on
+  `PtyHandle` (`Mutex<Option<_>>`, taken by the job task at exit);
+  `resize` = `parser.set_size` then `master.resize` (2–200 × 10–400).
+  `render`, `TerminalSummary` and `PtyPage` report the live size, so the
+  model's `screen` follows the human's viewport while a viewer is open. The
+  viewer restores 120×40 on close. Policy: last resize wins; two viewers open
+  at once see each other's width (tmux without aggressive-resize). Hook if it
+  matters: a `resize` item on the stream.
+- **Desktop** (`TerminalViewer.tsx`): `@xterm/xterm` 6 + `addon-fit`;
+  `RpcClient.stream()` generalises `subscribe()` to any jsonrpsee pair
+  (re-issued on reconnect → a fresh `reset`). `term.onData` → `pty_input`
+  text, one call in flight; `term.onResize` → `pty_resize`; focus on open,
+  Escape goes to the program (xterm stops propagation, the dialog stays).
+  Mobile keeps the `Esc Tab ↑↓←→ ^C` strip over `Key`s. Deleted:
+  `lib/terminal.ts` (reducer, `keyToInput`, palette), its tests, the
+  `<pre>` painter, `queryKeys.ptyScreen`.
+
+Check: `pty::tests::attach_replays_streams_and_resizes` — a second vt100
+fed replay+stream matches the daemon's; `ListTerminals`/`PtyScreen` report
+the resized grid; out-of-range refused; `Exit` closes the stream; a finished
+job attaches but does not resize.

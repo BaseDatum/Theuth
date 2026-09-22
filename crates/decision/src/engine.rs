@@ -2,14 +2,18 @@
 //! first `Ask`, inference in `spawn_blocking`, `Ask.budget` honoured (a late result is
 //! still logged, never acted on), idle unload, every answer logged. A missing checkpoint
 //! escalates `ModelMissing` and is re-checked on every `Ask` (the desktop app may download
-//! it while the daemon runs).
+//! it while the daemon runs). One engine per checkpoint (57 §4.1 item 6): an `Ask` whose
+//! family names another checkpoint is forwarded to that engine's actor ([`crate::actor_name`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
 use crate::DecisionConfig;
@@ -20,6 +24,7 @@ use crate::log::{AskRow, FamilyStats, Log, Row};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
+use crate::training::{self, Store, TrainingInfo};
 
 /// The checkpoint files [`Engine`] needs in `model_dir` — the Hugging Face
 /// `convaiinnovations/laya` layout, `release-models.sh` REQUIRED.
@@ -55,6 +60,17 @@ pub type Loader =
     Arc<dyn Fn(&Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
+
+/// `ask` → `Vec<Decision>`, one per ask in order (57 §4.1 item 1): every question rendered,
+/// **one** collate and **one** forward pass, then the per-question gate and log row exactly as
+/// for a single [`Ask`]. All asks must name the same checkpoint (the first one's is used; any
+/// other escalates `HardError`); the budget is the largest one asked. `browser_run` asks its
+/// three questions this way; the meeting oracle's two asks are two round trips today.
+#[derive(Clone, Debug)]
+pub struct AskMany {
+    /// The questions, answered in this order.
+    pub asks: Vec<Ask>,
+}
 
 /// `tell`: what happened after a decision, appended to the log against `log_id`.
 #[derive(Clone, Debug)]
@@ -95,29 +111,143 @@ pub struct SetMode {
 }
 
 /// `tell`: a decision made outside the engine — `escalate`'s tier-2 answer — appended to the
-/// log as an ask row (`tier: 2`, no logits, the mode of its gate).
+/// log as an ask row (`tier: 2`, no logits, the mode of its gate). `note` is the one place the
+/// log carries text by design: a short subject string from tier-2 subject extraction (57 §3.5).
 #[derive(Clone, Debug)]
-pub struct Record(pub Decision);
+pub struct Record {
+    /// The decision.
+    pub decision: Decision,
+    /// A short annotation (`AskRow::note`), e.g. the extracted subject.
+    pub note: Option<String>,
+}
 
-/// `tell` from the idle watchdog: drop the session if nothing asked since.
+/// `ask` → [`TrainingInfo`]: whether the families under `prefix` capture training examples
+/// (57 §11.4 item 3), and how much is on disk.
+#[derive(Clone, Debug)]
+pub struct GetTrain {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: set `train` on every family under `prefix`, written
+/// to `config.yaml` (`decision.families.<prefix>: { mode: …, train: …, share: … }`) first, then
+/// live. `on: false` also clears `share` (57 §7.1). A failed write changes nothing.
+#[derive(Clone, Debug)]
+pub struct SetTrain {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+    /// Capture on or off.
+    pub on: bool,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: set `share` (57 §7.1 consent to upload) on every
+/// family under `prefix`, persisted like [`SetTrain`]. `Err` when turning it on while `train`
+/// is off — consent covers what capture writes.
+#[derive(Clone, Debug)]
+pub struct SetShare {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+    /// Share on or off.
+    pub on: bool,
+}
+
+/// `ask` → `Result<TrainingInfo, String>`: remove `decisions/training/<prefix>/` (57 §7.1
+/// "Delete local data"); the switches stay as set. Answers the new (zero) counts.
+#[derive(Clone, Debug)]
+pub struct DeleteTraining {
+    /// See [`GetMode::prefix`].
+    pub prefix: String,
+}
+
+/// `tell`: one training row for `prefix` (57 §11.4). Dropped unless a family under `prefix`
+/// has `train: true` *now* — flipping it off stops writes at once. Example rows get the
+/// engine's `model_sha`; every row is secret-scrubbed by the store.
+#[derive(Clone, Debug)]
+pub struct Capture {
+    /// The family prefix (`meeting`).
+    pub prefix: String,
+    /// The row.
+    pub row: training::Row,
+}
+
+/// `ask` → `Result<u64, String>`: load the session (checkpoint present, plugin enabled) and run
+/// one throwaway forward so a meeting's first real `Ask` pays neither the cold load nor the
+/// first-inference cost (57 §3.5 item 5). Nothing is logged; the reply is the wall clock in ms.
 #[derive(Clone, Copy, Debug)]
-struct Unload;
+pub struct Warm {
+    /// How long to wait for the load.
+    pub budget: Duration,
+}
 
-/// The `decision` actor.
+/// `tell`: drop the warm session now (57 §2.1 item 1) — the meeting sends it when recording
+/// stops, the browser when a session that ran `browser_run` closes. In-flight blocking runs
+/// keep their `Arc` and finish; a cold load still in flight is dropped on landing; the idle
+/// watchdog is disarmed. `checkpoint: None` = this engine's own; `Some(name)` is forwarded to
+/// that checkpoint's engine. Nothing loaded → nothing happens.
+#[derive(Clone, Debug)]
+pub struct Release {
+    /// Which checkpoint; `None` = the engine addressed.
+    pub checkpoint: Option<String>,
+    /// For the log line: `decision: <name> released (<reason>)`.
+    pub reason: &'static str,
+}
+
+/// `ask` → `Vec<LoadedInfo>`: the checkpoints resident right now (57 §2.1 item 4). The
+/// `default` engine answers for every checkpoint (it asks its siblings); another engine only
+/// for itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoadedNow;
+
+/// One resident checkpoint, for `decision_loaded` and the Settings line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LoadedInfo {
+    /// Checkpoint name (`default`, `browser`).
+    pub checkpoint: String,
+    /// Seconds since the session was installed.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub since_secs: u64,
+    /// The **whole daemon's** memory in MB, not this checkpoint's share: one number, the same
+    /// on every entry (57 §2.1 item 4). macOS `phys_footprint` (Activity Monitor's Memory);
+    /// resident set on Linux — see [`crate::ProcessMemory`].
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rss_mb: u64,
+}
+
+/// `tell` from the idle watchdog: drop the session if nothing asked since. The epoch names
+/// the arming [`Engine::touch`]; a tick from an earlier arming (before a `Release`) is stale.
+#[derive(Clone, Copy, Debug)]
+struct Unload(u64);
+
+/// The `decision` actor — one per checkpoint.
 #[derive(kameo::Actor)]
 pub struct Engine {
     cfg: DecisionConfig,
+    /// This engine's checkpoint name (`default` unless [`Engine::with_checkpoint`]).
+    checkpoint: String,
+    /// This engine's checkpoint directory.
     model_dir: PathBuf,
+    /// The `default` checkpoint directory, which `mode_for` resolves the others from.
+    default_dir: PathBuf,
+    /// This checkpoint's idle unload ([`DecisionConfig::idle_unload_for`]).
+    idle: Duration,
     log: Log,
+    /// `<data_dir>/decisions/training`, beside the log.
+    training: Store,
     loader: Loader,
-    /// `config.yaml`, for `SetMode`; `None` = live only (tests).
+    /// `config.yaml`, for `SetMode`; `None` = live only (tests, non-default checkpoints).
     config_path: Option<PathBuf>,
     /// Warm session, shared with in-flight blocking runs.
     loaded: Option<Shared>,
+    /// When `loaded` was installed.
+    loaded_since: Option<Instant>,
     /// A cold load that outran the asking budget; polled by the next `Ask`.
     loading: Option<JoinHandle<anyhow::Result<Box<dyn Oracle>>>>,
     last_used: Instant,
-    watchdog: bool,
+    /// The armed watchdog's epoch; `None` = not armed.
+    watchdog: Option<u64>,
+    /// Armings so far; each tick carries the epoch that armed it.
+    epochs: u64,
     /// `ModelMissing` is logged once, not per `Ask`.
     missing_logged: bool,
     /// Cold-load time, written into the next logged row.
@@ -127,7 +257,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine over `cfg` with the real [`Loaded`]; nothing loads until the first `Ask`.
+    /// The `default` engine over `cfg` with the real [`Loaded`]; nothing loads until the
+    /// first `Ask`.
     pub fn new(cfg: DecisionConfig, model_dir: PathBuf, log: Log) -> Self {
         Self::with_loader(cfg, model_dir, log, Arc::new(open))
     }
@@ -135,19 +266,34 @@ impl Engine {
     /// An engine whose checkpoint comes from `loader` (tests).
     pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
         Engine {
+            idle: cfg.idle_unload_for(crate::DEFAULT_CHECKPOINT),
             cfg,
+            checkpoint: crate::DEFAULT_CHECKPOINT.to_owned(),
+            default_dir: model_dir.clone(),
             model_dir,
+            training: Store::new(log.dir().join("training")),
             log,
             loader,
             config_path: None,
             loaded: None,
+            loaded_since: None,
             loading: None,
             last_used: Instant::now(),
-            watchdog: false,
+            watchdog: None,
+            epochs: 0,
             missing_logged: false,
             pending_load_ms: None,
             model_sha: Arc::default(),
         }
+    }
+
+    /// Make this the engine of checkpoint `name` living in `dir` (57 §4.1 item 6); `new`'s
+    /// `model_dir` stays the `default` one for `mode_for`. The idle unload becomes `name`'s.
+    pub fn with_checkpoint(mut self, name: &str, dir: PathBuf) -> Self {
+        self.checkpoint = name.to_owned();
+        self.model_dir = dir;
+        self.idle = self.cfg.idle_unload_for(name);
+        self
     }
 
     /// Where `SetMode` persists (`<data_dir>/config.yaml`).
@@ -156,9 +302,87 @@ impl Engine {
         self
     }
 
+    /// Whether any family under `prefix` captures training examples.
+    pub fn train(&self, prefix: &str) -> bool {
+        self.any_under(prefix, |g| g.train)
+    }
+
+    /// Whether any family under `prefix` consents to upload (57 §7.1).
+    pub fn share(&self, prefix: &str) -> bool {
+        self.any_under(prefix, |g| g.share)
+    }
+
+    fn any_under(&self, prefix: &str, f: impl Fn(&FamilyGate) -> bool) -> bool {
+        let dot = format!("{prefix}.");
+        self.cfg
+            .families
+            .iter()
+            .any(|(k, g)| k.starts_with(&dot) && f(g))
+    }
+
+    /// Apply `f` to every family under `prefix` (live table).
+    fn patch_under(&mut self, prefix: &str, f: impl Fn(&mut FamilyGate)) {
+        let dot = format!("{prefix}.");
+        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
+            f(g);
+        }
+    }
+
+    /// `GetTrain`'s answer for `prefix`.
+    fn training_info(&self, prefix: &str) -> TrainingInfo {
+        self.training.info(prefix, self.train(prefix), self.share(prefix))
+    }
+
+    /// `Err` unless some `<prefix>.*` family is configured.
+    fn check_prefix(&self, prefix: &str) -> Result<(), String> {
+        let dot = format!("{prefix}.");
+        if self.cfg.families.keys().any(|k| k.starts_with(&dot)) {
+            Ok(())
+        } else {
+            Err(format!("no `{prefix}.*` decision family is configured"))
+        }
+    }
+
+    /// Persist the prefix's switch positions as one flow mapping — every field every time, so
+    /// `SetMode` does not drop `train` and `SetTrain` does not drop `mode` (the config writer
+    /// replaces the whole value).
+    fn write_prefix(&self, prefix: &str, mode: Mode, train: bool, share: bool) -> Result<(), String> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        runtime::write_nested_config_value(
+            path,
+            "decision",
+            "families",
+            prefix,
+            &format!("{{ mode: {mode}, train: {train}, share: {share} }}"),
+        )
+        .map_err(|e| format!("config.yaml: {e}"))
+    }
+
     /// See [`crate::mode_for`].
     pub fn mode(&self, prefix: &str) -> crate::ModeInfo {
-        crate::mode_for(&self.cfg, &self.model_dir, prefix)
+        crate::mode_for(&self.cfg, &self.default_dir, prefix)
+    }
+
+    /// The engine that answers `family`: `None` when it is this one, else the sibling's
+    /// registry name (57 §4.1 item 6). Unknown families stay here and fail closed.
+    fn route(&self, family: &Family) -> Option<String> {
+        let name = self.cfg.families.get(&family.0)?.checkpoint();
+        (name != self.checkpoint).then(|| crate::actor_name(name))
+    }
+
+    /// The other checkpoints' engines, for relaying `SetMode` / `SetTrain` (default only).
+    fn siblings(&self) -> Vec<ActorRef<Engine>> {
+        if self.checkpoint != crate::DEFAULT_CHECKPOINT {
+            return Vec::new();
+        }
+        self.cfg
+            .checkpoint_dirs(&self.default_dir)
+            .keys()
+            .filter(|n| *n != crate::DEFAULT_CHECKPOINT)
+            .filter_map(|n| ActorRef::<Engine>::lookup(crate::actor_name(n).as_str()).ok().flatten())
+            .collect()
     }
 
     /// The files that are not in the model dir, checked fresh each time.
@@ -253,6 +477,7 @@ impl Engine {
                 );
                 let shared: Shared = Arc::new(Mutex::new(oracle));
                 self.loaded = Some(shared.clone());
+                self.loaded_since = Some(Instant::now());
                 self.pending_load_ms = Some(load.as_millis() as u64);
                 Ok(shared)
             }
@@ -269,18 +494,49 @@ impl Engine {
         }
     }
 
-    fn touch(&mut self, ctx: &Context<Self, Decision>) {
+    fn touch(&mut self, me: ActorRef<Self>) {
         self.last_used = Instant::now();
-        if self.watchdog || self.cfg.idle_unload.is_zero() {
+        if self.watchdog.is_some() || self.idle.is_zero() {
             return;
         }
-        self.watchdog = true;
-        let me = ctx.actor_ref().clone();
-        let idle = self.cfg.idle_unload;
+        self.epochs += 1;
+        self.watchdog = Some(self.epochs);
+        self.arm(me, self.idle, self.epochs);
+    }
+
+    /// One watchdog tick after `after`.
+    fn arm(&self, me: ActorRef<Self>, after: Duration, epoch: u64) {
         tokio::spawn(async move {
-            tokio::time::sleep(idle).await;
-            let _ = me.tell(Unload).await;
+            tokio::time::sleep(after).await;
+            let _ = me.tell(Unload(epoch)).await;
         });
+    }
+
+    /// Drop the session (57 §2.1 item 1): in-flight runs keep their `Arc`; a cold load still in
+    /// flight is detached so its result is dropped on landing; the watchdog is disarmed.
+    fn release(&mut self, reason: &str) {
+        self.watchdog = None;
+        self.loading = None;
+        let was = self.loaded.take().is_some();
+        if let Some(since) = self.loaded_since.take() {
+            tracing::info!(
+                "decision: {} released ({reason}) after {:?} resident",
+                self.checkpoint,
+                since.elapsed()
+            );
+        } else if was {
+            tracing::info!("decision: {} released ({reason})", self.checkpoint);
+        }
+    }
+
+    /// This engine's [`LoadedInfo`], if a session is resident.
+    fn loaded_info(&self) -> Option<LoadedInfo> {
+        let since = self.loaded_since.filter(|_| self.loaded.is_some())?;
+        Some(LoadedInfo {
+            checkpoint: self.checkpoint.clone(),
+            since_secs: since.elapsed().as_secs(),
+            rss_mb: crate::process_memory().footprint / 1_000_000,
+        })
     }
 }
 
@@ -320,7 +576,8 @@ pub fn with_none(q: Question) -> Question {
 }
 
 /// One run's result folded into a [`Decision`]: labels zipped with probabilities, argmax
-/// choice, the gate's verdict (truncation is a hard error), then the family's mode.
+/// choice, the gate's verdict (a lost option marker is always a hard error, a cut state one
+/// unless the family says `cut_ok`), then the family's mode.
 fn decide(
     gate: &FamilyGate,
     family: &Family,
@@ -338,7 +595,8 @@ fn decide(
         .iter()
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or_else(|| NONE_ID.to_owned(), |(l, _)| l.clone());
-    let hard = seq.truncated.then_some(Reason::Truncated);
+    let hard =
+        (seq.markers_lost || (seq.state_cut && !gate.cut_ok)).then_some(Reason::Truncated);
     let d = Decision {
         family: family.clone(),
         choice,
@@ -355,148 +613,381 @@ fn decide(
     gate.finish(d)
 }
 
-impl Message<Ask> for Engine {
-    type Reply = Decision;
+/// A decision that never ran: no probabilities, `choice = none`. The engine's `escalate`
+/// logs one; the late-row task and the forwarder build theirs here.
+fn escalated(
+    family: Family,
+    gate: &FamilyGate,
+    reason: Reason,
+    latency: Duration,
+    sha: &str,
+) -> Decision {
+    Decision {
+        family,
+        choice: NONE_ID.to_owned(),
+        probabilities: Vec::new(),
+        confidence: 0.0,
+        act_probability: 0.0,
+        disposition: Disposition::Escalate(reason),
+        latency,
+        gate_version: gate.version(sha),
+        log_id: LogId::new(),
+        tier: 1,
+        calibrated: true,
+    }
+}
 
-    async fn handle(&mut self, ask: Ask, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+/// One question of a batch: its ask, its gate and the question as rendered (`none` applied).
+struct Item {
+    ask: Ask,
+    gate: FamilyGate,
+    q: Question,
+}
+
+impl Engine {
+    /// The batch core behind [`Ask`] and [`AskMany`]: gate lookup per question, one session,
+    /// one `build` per question, **one** forward, one decision + log row per question. The
+    /// budget is the largest asked; over it every question answers `Escalate(Timeout)` now
+    /// and the late rows are still logged (57 §2).
+    async fn run_batch(&mut self, asks: Vec<Ask>, me: ActorRef<Self>) -> Vec<Decision> {
         let t = Instant::now();
         if !self.cfg.enabled {
-            return self.escalate(&ask, None, Reason::Disabled, t);
+            return asks
+                .iter()
+                .map(|a| self.escalate(a, None, Reason::Disabled, t))
+                .collect();
         }
-        // Unknown families fail closed: only configured gates run (57 §0.5).
-        let gate = self.cfg.families.get(&ask.family.0).copied();
-        let Some(gate) = gate.filter(|g| g.mode != Mode::Off) else {
-            return self.escalate(&ask, gate.as_ref(), Reason::Disabled, t);
-        };
-        let shared = match self.session(ask.budget).await {
-            Ok(s) => s,
-            Err(reason) => return self.escalate(&ask, Some(&gate), reason, t),
-        };
-        self.touch(ctx);
-
-        let q = with_none(ask.question.clone());
-        let mut run = {
-            let (shared, q) = (shared.clone(), q.clone());
-            tokio::task::spawn_blocking(move || -> Result<(Sequence, RowOut, String), Reason> {
-                let mut o = shared.lock();
-                let seq = o.build(&q).map_err(Reason::HardError)?;
-                let out = o
-                    .run(std::slice::from_ref(&seq))
-                    .map_err(|e| Reason::HardError(format!("{e:#}")))?;
-                let out = out
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| Reason::HardError("no row".into()))?;
-                Ok((seq, out, o.model_sha().lock().clone()))
-            })
-        };
-        let text = self.cfg.log_text.then(|| ask.question.clone());
-        let elapsed = ask.budget.saturating_sub(t.elapsed());
-        match tokio::time::timeout(elapsed, &mut run).await {
-            Ok(Ok(Ok((seq, out, sha)))) => {
-                let d = decide(&gate, &ask.family, &q, &seq, &out, t.elapsed(), &sha);
-                let mut row = AskRow::new(
-                    &d,
-                    gate.mode,
-                    &sha,
-                    &seq.input_ids,
-                    out.logits.clone(),
-                    out.temperature,
-                    text,
-                );
-                row.load_ms = self.pending_load_ms.take();
-                self.append(Row::Ask(Box::new(row)));
-                d
+        // Unknown families fail closed: only configured gates run (57 §0.5). A family on
+        // another checkpoint is a routing mistake upstream, named as such.
+        let mut items = Vec::with_capacity(asks.len());
+        let mut out: Vec<Option<Decision>> = Vec::with_capacity(asks.len());
+        for ask in asks {
+            match self.cfg.families.get(&ask.family.0).cloned() {
+                Some(g) if g.checkpoint() != self.checkpoint => {
+                    let reason = Reason::HardError(format!(
+                        "family {} is on checkpoint `{}`, this engine is `{}`",
+                        ask.family,
+                        g.checkpoint(),
+                        self.checkpoint
+                    ));
+                    out.push(Some(self.escalate(&ask, Some(&g), reason, t)));
+                }
+                Some(g) if g.mode != Mode::Off => {
+                    let q = if g.none {
+                        with_none(ask.question.clone())
+                    } else {
+                        ask.question.clone()
+                    };
+                    items.push(Item { ask, gate: g, q });
+                    out.push(None);
+                }
+                g => out.push(Some(self.escalate(&ask, g.as_ref(), Reason::Disabled, t))),
             }
-            Ok(Ok(Err(reason))) => self.escalate(&ask, Some(&gate), reason, t),
-            Ok(Err(e)) => self.escalate(
-                &ask,
-                Some(&gate),
-                Reason::HardError(format!("run panicked: {e}")),
-                t,
-            ),
+        }
+        if items.is_empty() {
+            return out.into_iter().flatten().collect();
+        }
+        let budget = items.iter().map(|i| i.ask.budget).max().unwrap_or_default();
+        let shared = match self.session(budget).await {
+            Ok(s) => s,
+            Err(reason) => {
+                let ds: Vec<Decision> = items
+                    .iter()
+                    .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                    .collect();
+                return merge(out, ds);
+            }
+        };
+        self.touch(me);
+
+        let qs: Vec<Question> = items.iter().map(|i| i.q.clone()).collect();
+        let batch_forward = self.cfg.batch_forward;
+        let mut run = tokio::task::spawn_blocking(
+            move || -> Result<(Vec<(Sequence, RowOut)>, String), Reason> {
+                let mut o = shared.lock();
+                let seqs = qs
+                    .iter()
+                    .map(|q| o.build(q))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Reason::HardError)?;
+                // One padded batch, or one forward per row (each padded to its own length;
+                // `examples/bench.rs` (b2)/(b3) measures which wins on this device).
+                let outs = if batch_forward || seqs.len() == 1 {
+                    o.run(&seqs)
+                } else {
+                    seqs.iter()
+                        .map(|s| o.run(std::slice::from_ref(s)))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                        .map(|v| v.into_iter().flatten().collect())
+                }
+                .map_err(|e| Reason::HardError(format!("{e:#}")))?;
+                if outs.len() != seqs.len() {
+                    return Err(Reason::HardError(format!(
+                        "{} rows for {} questions",
+                        outs.len(),
+                        seqs.len()
+                    )));
+                }
+                Ok((seqs.into_iter().zip(outs).collect(), o.model_sha().lock().clone()))
+            },
+        );
+        let texts: Vec<Option<Question>> = items
+            .iter()
+            .map(|i| self.cfg.log_text.then(|| i.ask.question.clone()))
+            .collect();
+        let elapsed = budget.saturating_sub(t.elapsed());
+        let ds: Vec<Decision> = match tokio::time::timeout(elapsed, &mut run).await {
+            Ok(Ok(Ok((rows, sha)))) => {
+                let load_ms = self.pending_load_ms.take();
+                items
+                    .iter()
+                    .zip(rows)
+                    .zip(texts)
+                    .map(|((i, (seq, row)), text)| {
+                        let d =
+                            decide(&i.gate, &i.ask.family, &i.q, &seq, &row, t.elapsed(), &sha);
+                        let mut r = AskRow::new(
+                            &d,
+                            i.gate.mode,
+                            &sha,
+                            &seq.input_ids,
+                            row.logits.clone(),
+                            row.temperature,
+                            text,
+                        );
+                        r.load_ms = load_ms;
+                        self.append(Row::Ask(Box::new(r)));
+                        d
+                    })
+                    .collect()
+            }
+            Ok(Ok(Err(reason))) => items
+                .iter()
+                .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                .collect(),
+            Ok(Err(e)) => {
+                let reason = Reason::HardError(format!("run panicked: {e}"));
+                items
+                    .iter()
+                    .map(|i| self.escalate(&i.ask, Some(&i.gate), reason.clone(), t))
+                    .collect()
+            }
             Err(_) => {
-                // Over budget: answer now, log the late result when it lands (57 §2). The
-                // late row keeps the real probabilities under `timeout`, so fitting sees them.
-                let (log, family, mode, sha) = (
-                    self.log.clone(),
-                    ask.family.clone(),
-                    gate.mode,
-                    self.model_sha(),
-                );
+                // Over budget: answer now, log the late rows when they land (57 §2). The late
+                // rows keep the real probabilities under `timeout`, so fitting sees them.
+                let (log, sha) = (self.log.clone(), self.model_sha());
+                let now: Vec<Decision> = items
+                    .iter()
+                    .map(|i| {
+                        escalated(i.ask.family.clone(), &i.gate, Reason::Timeout, t.elapsed(), &sha)
+                    })
+                    .collect();
                 tokio::spawn(async move {
-                    let row = match run.await {
-                        Ok(Ok((seq, out, sha))) => {
-                            let mut d = decide(&gate, &family, &q, &seq, &out, t.elapsed(), &sha);
-                            d.disposition = Disposition::Escalate(Reason::Timeout);
-                            AskRow::new(
-                                &d,
-                                mode,
-                                &sha,
-                                &seq.input_ids,
-                                out.logits,
-                                out.temperature,
-                                text,
-                            )
-                        }
-                        Ok(Err(reason)) => {
-                            let d = Decision {
-                                family,
-                                choice: NONE_ID.to_owned(),
-                                probabilities: Vec::new(),
-                                confidence: 0.0,
-                                act_probability: 0.0,
-                                disposition: Disposition::Escalate(reason),
-                                latency: t.elapsed(),
-                                gate_version: gate.version(&sha),
-                                log_id: LogId::new(),
-                                tier: 1,
-                                calibrated: true,
-                            };
-                            AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, text)
-                        }
+                    let rows: Vec<Row> = match run.await {
+                        Ok(Ok((rows, sha))) => items
+                            .iter()
+                            .zip(rows)
+                            .zip(texts)
+                            .map(|((i, (seq, row)), text)| {
+                                let mut d = decide(
+                                    &i.gate,
+                                    &i.ask.family,
+                                    &i.q,
+                                    &seq,
+                                    &row,
+                                    t.elapsed(),
+                                    &sha,
+                                );
+                                d.disposition = Disposition::Escalate(Reason::Timeout);
+                                Row::Ask(Box::new(AskRow::new(
+                                    &d,
+                                    i.gate.mode,
+                                    &sha,
+                                    &seq.input_ids,
+                                    row.logits,
+                                    row.temperature,
+                                    text,
+                                )))
+                            })
+                            .collect(),
+                        Ok(Err(reason)) => items
+                            .iter()
+                            .zip(texts)
+                            .map(|(i, text)| {
+                                let d = escalated(
+                                    i.ask.family.clone(),
+                                    &i.gate,
+                                    reason.clone(),
+                                    t.elapsed(),
+                                    &sha,
+                                );
+                                Row::Ask(Box::new(AskRow::new(
+                                    &d,
+                                    i.gate.mode,
+                                    &sha,
+                                    &[],
+                                    Vec::new(),
+                                    0.0,
+                                    text,
+                                )))
+                            })
+                            .collect(),
                         Err(_) => return,
                     };
-                    if let Err(e) = log.append(&Row::Ask(Box::new(row))) {
-                        tracing::warn!("decision log: {e}");
+                    for row in rows {
+                        if let Err(e) = log.append(&row) {
+                            tracing::warn!("decision log: {e}");
+                        }
                     }
                 });
-                Decision {
-                    family: ask.family.clone(),
-                    choice: NONE_ID.to_owned(),
-                    probabilities: Vec::new(),
-                    confidence: 0.0,
-                    act_probability: 0.0,
-                    disposition: Disposition::Escalate(Reason::Timeout),
-                    latency: t.elapsed(),
-                    gate_version: gate.version(&self.model_sha()),
-                    log_id: LogId::new(),
-                    tier: 1,
-                    calibrated: true,
-                }
+                now
             }
-        }
+        };
+        merge(out, ds)
+    }
+
+    /// What forwarded asks answer when the sibling engine `to` is not running: `HardError`
+    /// per ask, nothing logged (the sibling owns those rows).
+    fn unreachable(&self, to: &str, asks: &[Ask]) -> Vec<Decision> {
+        let sha = self.model_sha();
+        asks.iter()
+            .map(|a| {
+                let gate = self
+                    .cfg
+                    .families
+                    .get(&a.family.0)
+                    .cloned()
+                    .unwrap_or_else(|| FamilyGate::shadow(1.0, 1.0));
+                let reason = Reason::HardError(format!("checkpoint engine `{to}` is not running"));
+                escalated(a.family.clone(), &gate, reason, Duration::ZERO, &sha)
+            })
+            .collect()
+    }
+}
+
+/// The sibling engine registered as `to`, if it is running.
+fn sibling(to: &str) -> Option<ActorRef<Engine>> {
+    ActorRef::<Engine>::lookup(to).ok().flatten()
+}
+
+/// Fill the `None` slots of `out` (the questions that ran) with `ds`, in order.
+fn merge(out: Vec<Option<Decision>>, ds: Vec<Decision>) -> Vec<Decision> {
+    let mut ds = ds.into_iter();
+    out.into_iter()
+        .map(|d| d.unwrap_or_else(|| ds.next().expect("one decision per ran question")))
+        .collect()
+}
+
+impl Message<Ask> for Engine {
+    type Reply = DelegatedReply<Decision>;
+
+    async fn handle(&mut self, ask: Ask, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(to) = self.route(&ask.family) else {
+            let me = ctx.actor_ref().clone();
+            let d = self.run_batch(vec![ask], me).await.remove(0);
+            return ctx.reply(d);
+        };
+        // Another checkpoint's family: forward off this mailbox (57 §4.1 item 6).
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let fallback = self.unreachable(&to, std::slice::from_ref(&ask)).remove(0);
+        tokio::spawn(async move {
+            let d = match sibling(&to) {
+                Some(s) => s.ask(ask).await.unwrap_or_else(|e| {
+                    tracing::warn!("decision: forward to {to}: {e}");
+                    fallback
+                }),
+                None => fallback,
+            };
+            tx.send(d);
+        });
+        reply
+    }
+}
+
+impl Message<AskMany> for Engine {
+    type Reply = DelegatedReply<Vec<Decision>>;
+
+    async fn handle(&mut self, m: AskMany, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(to) = m.asks.first().and_then(|a| self.route(&a.family)) else {
+            let me = ctx.actor_ref().clone();
+            let ds = self.run_batch(m.asks, me).await;
+            return ctx.reply(ds);
+        };
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let fallback = self.unreachable(&to, &m.asks);
+        tokio::spawn(async move {
+            let ds = match sibling(&to) {
+                Some(s) => s.ask(m).await.unwrap_or_else(|e| {
+                    tracing::warn!("decision: forward to {to}: {e}");
+                    fallback
+                }),
+                None => fallback,
+            };
+            tx.send(ds);
+        });
+        reply
     }
 }
 
 impl Message<Unload> for Engine {
     type Reply = ();
 
-    async fn handle(&mut self, _: Unload, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let idle = self.cfg.idle_unload;
-        let since = self.last_used.elapsed();
-        if since >= idle {
-            self.watchdog = false;
-            if self.loaded.take().is_some() {
-                tracing::info!("decision: session unloaded after {since:?} idle");
-            }
-        } else {
-            let me = ctx.actor_ref().clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(idle - since).await;
-                let _ = me.tell(Unload).await;
-            });
+    async fn handle(&mut self, Unload(epoch): Unload, ctx: &mut Context<Self, Self::Reply>) {
+        if self.watchdog != Some(epoch) {
+            return; // disarmed by a `Release` (or superseded) since this tick was armed
         }
+        let since = self.last_used.elapsed();
+        if since >= self.idle {
+            self.release(&format!("idle {since:?}"));
+        } else {
+            self.arm(ctx.actor_ref().clone(), self.idle - since, epoch);
+        }
+    }
+}
+
+impl Message<Release> for Engine {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Release, _: &mut Context<Self, Self::Reply>) {
+        match m.checkpoint.as_deref().filter(|c| *c != self.checkpoint) {
+            None => self.release(m.reason),
+            Some(to) => {
+                let to = crate::actor_name(to);
+                tokio::spawn(async move {
+                    if let Some(s) = sibling(&to) {
+                        let _ = s.tell(Release { checkpoint: None, ..m }).await;
+                    }
+                });
+            }
+        }
+    }
+}
+
+impl Message<LoadedNow> for Engine {
+    type Reply = DelegatedReply<Vec<LoadedInfo>>;
+
+    async fn handle(&mut self, _: LoadedNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mut own: Vec<LoadedInfo> = self.loaded_info().into_iter().collect();
+        let siblings = self.siblings();
+        if siblings.is_empty() {
+            return ctx.reply(own);
+        }
+        // Off the mailbox: a sibling mid-load holds its own mailbox for up to its budget.
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        tokio::spawn(async move {
+            for s in siblings {
+                if let Ok(Ok(more)) =
+                    tokio::time::timeout(Duration::from_secs(2), s.ask(LoadedNow)).await
+                {
+                    own.extend(more);
+                }
+            }
+            tx.send(own);
+        });
+        reply
     }
 }
 
@@ -558,35 +1049,142 @@ impl Message<SetMode> for Engine {
     type Reply = Result<crate::ModeInfo, String>;
 
     async fn handle(&mut self, m: SetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let dot = format!("{}.", m.prefix);
-        if !self.cfg.families.keys().any(|k| k.starts_with(&dot)) {
-            return Err(format!("no `{}.*` decision family is configured", m.prefix));
-        }
-        if let Some(path) = &self.config_path {
-            runtime::write_nested_config_value(
-                path,
-                "decision",
-                "families",
-                &m.prefix,
-                &format!("{{ mode: {} }}", m.mode),
-            )
-            .map_err(|e| format!("config.yaml: {e}"))?;
-        }
-        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
-            g.mode = m.mode;
-        }
+        self.check_prefix(&m.prefix)?;
+        self.write_prefix(&m.prefix, m.mode, self.train(&m.prefix), self.share(&m.prefix))?;
+        self.patch_under(&m.prefix, |g| g.mode = m.mode);
         tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
+        // The siblings have no `config_path`, so the relay is live-only there. `ask`, not `tell`:
+        // kameo stops an actor whose `tell` handler answers `Err`, and a sibling may refuse
+        // (unknown prefix, share before train) without that being fatal.
+        for s in self.siblings() {
+            let _ = s.ask(m.clone()).await;
+        }
         Ok(self.mode(&m.prefix))
+    }
+}
+
+impl Message<GetTrain> for Engine {
+    type Reply = TrainingInfo;
+
+    async fn handle(&mut self, m: GetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.training_info(&m.prefix)
+    }
+}
+
+impl Message<SetTrain> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: SetTrain, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        let share = m.on && self.share(&m.prefix);
+        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, m.on, share)?;
+        self.patch_under(&m.prefix, |g| {
+            g.train = m.on;
+            g.share = share;
+        });
+        tracing::info!("decision: {}.* train → {}", m.prefix, m.on);
+        for s in self.siblings() {
+            let _ = s.ask(m.clone()).await;
+        }
+        Ok(self.training_info(&m.prefix))
+    }
+}
+
+impl Message<SetShare> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: SetShare, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        if m.on && !self.train(&m.prefix) {
+            return Err(format!(
+                "capture is off for `{}.*`: turn Capture on before Share",
+                m.prefix
+            ));
+        }
+        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, self.train(&m.prefix), m.on)?;
+        self.patch_under(&m.prefix, |g| g.share = m.on);
+        tracing::info!("decision: {}.* share → {}", m.prefix, m.on);
+        for s in self.siblings() {
+            let _ = s.ask(m.clone()).await;
+        }
+        Ok(self.training_info(&m.prefix))
+    }
+}
+
+impl Message<DeleteTraining> for Engine {
+    type Reply = Result<TrainingInfo, String>;
+
+    async fn handle(&mut self, m: DeleteTraining, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.check_prefix(&m.prefix)?;
+        self.training
+            .delete(&m.prefix)
+            .map_err(|e| format!("delete {}: {e}", self.training.family_dir(&m.prefix).display()))?;
+        tracing::info!("decision: {}.* training data deleted", m.prefix);
+        Ok(self.training_info(&m.prefix))
+    }
+}
+
+impl Message<Capture> for Engine {
+    type Reply = ();
+
+    async fn handle(&mut self, mut c: Capture, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.train(&c.prefix) {
+            return;
+        }
+        if let training::Row::Example(e) = &mut c.row
+            && e.model_sha.is_empty()
+        {
+            e.model_sha = self.model_sha();
+        }
+        if let Err(e) = self.training.append(&c.prefix, &c.row) {
+            tracing::warn!("decision training: {e}");
+        }
     }
 }
 
 impl Message<Record> for Engine {
     type Reply = ();
 
-    async fn handle(&mut self, Record(d): Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, r: Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let d = &r.decision;
         let mode = self.cfg.families.get(&d.family.0).map_or(Mode::Off, |g| g.mode);
         let sha = self.model_sha();
-        self.append(Row::Ask(Box::new(AskRow::new(&d, mode, &sha, &[], Vec::new(), 0.0, None))));
+        let mut row = AskRow::new(d, mode, &sha, &[], Vec::new(), 0.0, None);
+        row.note = r.note;
+        self.append(Row::Ask(Box::new(row)));
+    }
+}
+
+impl Message<Warm> for Engine {
+    type Reply = Result<u64, String>;
+
+    async fn handle(&mut self, w: Warm, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let t = Instant::now();
+        if !self.cfg.enabled {
+            return Err("disabled".into());
+        }
+        let shared = self.session(w.budget).await.map_err(|r| format!("{r:?}"))?;
+        self.touch(ctx.actor_ref().clone());
+        let run = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut o = shared.lock();
+            let q = Question::Bool {
+                statement: "warm-up".into(),
+                state: "warm-up".into(),
+            };
+            let seq = o.build(&q)?;
+            o.run(std::slice::from_ref(&seq)).map_err(|e| format!("{e:#}"))?;
+            Ok(())
+        });
+        match tokio::time::timeout(w.budget.saturating_sub(t.elapsed()), run).await {
+            Ok(Ok(Ok(()))) => {
+                let ms = t.elapsed().as_millis() as u64;
+                tracing::info!("decision: warm-up done in {ms} ms");
+                Ok(ms)
+            }
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(e)) => Err(format!("warm-up panicked: {e}")),
+            Err(_) => Err("warm-up timed out".into()),
+        }
     }
 }
 
@@ -642,6 +1240,8 @@ mod tests {
                 marker_pos: markers,
                 qtype: 2,
                 truncated: false,
+                state_cut: false,
+                markers_lost: false,
             })
         }
         fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
@@ -793,6 +1393,169 @@ mod tests {
         assert_eq!(candidates.len(), 3);
     }
 
+    /// Counts `run` calls and the rows per call; answers like [`Fake`].
+    struct Counting {
+        calls: Arc<Mutex<Vec<usize>>>,
+        cut: bool,
+    }
+
+    impl Oracle for Counting {
+        fn model_sha(&self) -> ModelSha {
+            Arc::new(Mutex::new("fake".into()))
+        }
+        fn build(&self, q: &Question) -> Result<Sequence, String> {
+            let mut s = Fake {
+                delay: Duration::ZERO,
+            }
+            .build(q)?;
+            s.state_cut = self.cut;
+            s.truncated = self.cut;
+            Ok(s)
+        }
+        fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
+            self.calls.lock().push(rows.len());
+            Fake {
+                delay: Duration::ZERO,
+            }
+            .run(rows)
+        }
+        fn load_time(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    fn jev_question(n: usize) -> Question {
+        Question::Choice {
+            instructions: "op".into(),
+            candidates: (1..=n)
+                .map(|i| Candidate {
+                    id: i.to_string(),
+                    text: format!("[{i}] link"),
+                })
+                .collect(),
+            state: "page".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_many_is_one_forward_with_per_question_rows_and_closed_option_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(dir.path());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let loader: Loader = {
+            let calls = calls.clone();
+            Arc::new(move |_, _| {
+                Ok(Box::new(Counting {
+                    calls: calls.clone(),
+                    cut: true,
+                }) as Box<dyn Oracle>)
+            })
+        };
+        // Both families on this (default) engine: one jev-shaped (no `none`, cut ok), one classic.
+        let mut jev = FamilyGate::browser(0.5);
+        jev.checkpoint = None;
+        jev.mode = Mode::Active;
+        let cfg = DecisionConfig {
+            families: [
+                ("browser.operation".to_owned(), jev),
+                ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
+                ("meeting.off".to_owned(), FamilyGate { mode: Mode::Off, ..FamilyGate::shadow(0.5, 0.1) }),
+            ]
+            .into(),
+            batch_forward: true,
+            ..DecisionConfig::default()
+        };
+        let log = Log::new(dir.path().join("d"));
+        let engine = Engine::spawn(Engine::with_loader(cfg, dir.path().into(), log, loader));
+        let ds = engine
+            .ask(AskMany {
+                asks: vec![
+                    Ask::new("browser.operation", jev_question(3)),
+                    Ask::new("meeting.off", jev_question(2)),
+                    Ask::new("meeting.brief", jev_question(2)),
+                ],
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock(), vec![2], "one forward for the two questions that ran");
+        assert_eq!(ds.len(), 3);
+        // Order kept, the off family escalated in place.
+        assert_eq!(ds[0].family.0, "browser.operation");
+        assert_eq!(ds[1].disposition, Disposition::Escalate(Reason::Disabled));
+        assert_eq!(ds[2].family.0, "meeting.brief");
+        // No `none` on the closed set; the cut state was not a hard error; argmax accepted.
+        let labels: Vec<&str> = ds[0].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3"]);
+        assert_eq!((ds[0].choice.as_str(), &ds[0].disposition), ("3", &Disposition::Accept));
+        // The classic family got `none` and the cut state is its hard error (57 §0.5).
+        let labels: Vec<&str> = ds[2].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "none"]);
+        assert_eq!(ds[2].disposition.reason(), Some(&Reason::Truncated));
+        // Two log rows, one per question that ran, plus the disabled one.
+        let s = engine.ask(AllStats).await.unwrap();
+        assert_eq!(s.iter().map(|f| f.asks).sum::<u64>(), 3);
+    }
+
+    #[tokio::test]
+    async fn family_on_another_checkpoint_is_forwarded_or_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(&dir.path().join("decision"));
+        touch_files(&dir.path().join("decision-browser"));
+        let cfg = DecisionConfig {
+            families: [
+                ("browser.operation".to_owned(), FamilyGate { mode: Mode::Active, ..FamilyGate::browser(0.5) }),
+                ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
+            ]
+            .into(),
+            ..DecisionConfig::default()
+        };
+        let log = Log::new(dir.path().join("d"));
+        let default_dir = dir.path().join("decision");
+        let main = Engine::spawn(Engine::with_loader(
+            cfg.clone(),
+            default_dir.clone(),
+            log.clone(),
+            fake_loader(Duration::ZERO),
+        ));
+        // No sibling registered yet: fail closed, named.
+        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert!(
+            matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("decision/browser")),
+            "{d:?}"
+        );
+        // With the sibling up, the default engine forwards and the sibling answers (no `none`).
+        let browser = Engine::spawn(
+            Engine::with_loader(cfg, default_dir.clone(), log, fake_loader(Duration::ZERO))
+                .with_checkpoint("browser", dir.path().join("decision-browser")),
+        );
+        browser.register(crate::actor_name("browser")).unwrap();
+        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert_eq!((d.choice.as_str(), &d.disposition), ("2", &Disposition::Accept));
+        assert_eq!(d.probabilities.len(), 2);
+        let ds = main
+            .ask(AskMany {
+                asks: vec![Ask::new("browser.operation", jev_question(2)); 3],
+            })
+            .await
+            .unwrap();
+        assert_eq!(ds.len(), 3);
+        assert!(ds.iter().all(|d| d.disposition == Disposition::Accept));
+        // A default-checkpoint family sent to the sibling is forwarded the other way; with no
+        // `decision` actor registered in this test it fails closed, naming it.
+        let d = browser.ask(Ask::new("meeting.brief", jev_question(2))).await.unwrap();
+        assert!(matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("`decision`")), "{d:?}");
+        // `mode_for` at the default engine checks the browser checkpoint's files for `browser`.
+        std::fs::remove_file(dir.path().join("decision-browser/model.safetensors")).unwrap();
+        let m = main.ask(GetMode { prefix: "browser".into() }).await.unwrap();
+        assert!(m.reason.as_deref().unwrap().contains("decision-browser"), "{m:?}");
+        assert_eq!(main.ask(GetMode { prefix: "meeting".into() }).await.unwrap().reason, None);
+        // SetMode on the default relays live to the sibling.
+        main.ask(SetMode { prefix: "browser".into(), mode: Mode::Off }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let d = browser.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        assert_eq!(d.disposition, Disposition::Escalate(Reason::Disabled));
+    }
+
     #[tokio::test]
     async fn over_budget_escalates_timeout_and_logs_late() {
         let dir = tempfile::tempdir().unwrap();
@@ -877,6 +1640,65 @@ mod tests {
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
+    /// 57 §2.1: spawning loads nothing; a question loads; `Release` drops it now (no idle
+    /// wait) and disarms the watchdog; the next question loads again; the browser engine
+    /// gets its own, shorter idle.
+    #[tokio::test]
+    async fn release_drops_now_and_nothing_loads_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(dir.path());
+        let cfg = DecisionConfig {
+            idle_unload: Duration::from_secs(3600),
+            families: [("meeting.topic".to_owned(), FamilyGate::shadow(0.85, 0.4))].into(),
+            ..DecisionConfig::default()
+        };
+        assert_eq!(cfg.idle_unload_for("default"), Duration::from_secs(3600));
+        assert_eq!(cfg.idle_unload_for("browser"), crate::BROWSER_IDLE_UNLOAD);
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = loads.clone();
+        let loader: Loader = Arc::new(move |_, _| {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(Fake {
+                delay: Duration::ZERO,
+            }) as Box<dyn Oracle>)
+        });
+        let engine = Engine::spawn(Engine::with_loader(
+            cfg,
+            dir.path().into(),
+            Log::new(dir.path().join("d")),
+            loader,
+        ));
+        // Other tests register `decision/browser` engines in the same process registry; the
+        // default engine's answer includes them, so count only its own entry.
+        let mine = |infos: Vec<LoadedInfo>| infos.into_iter().filter(|i| i.checkpoint == "default").count();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 0);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        engine.ask(ask("meeting.topic")).await.unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 1);
+        engine
+            .tell(Release {
+                checkpoint: None,
+                reason: "test",
+            })
+            .await
+            .unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 0);
+        // A `Release` naming another checkpoint leaves this one alone (and is a no-op when
+        // that checkpoint has no engine).
+        engine.ask(ask("meeting.topic")).await.unwrap();
+        engine
+            .tell(Release {
+                checkpoint: Some("nobody".into()),
+                reason: "test",
+            })
+            .await
+            .unwrap();
+        assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 1);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn disabled_plugin_escalates_disabled() {
         let dir = tempfile::tempdir().unwrap();
@@ -891,5 +1713,167 @@ mod tests {
         ));
         let d = engine.ask(ask("meeting.topic")).await.unwrap();
         assert_eq!(d.disposition, Disposition::Escalate(Reason::Disabled));
+    }
+
+    #[tokio::test]
+    async fn train_switch_writes_a_merged_prefix_patch_and_gates_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            "decision:\n  families:\n    meeting: { mode: shadow }\n",
+        )
+        .unwrap();
+        let log = Log::new(dir.path().join("decisions"));
+        let e = Engine::with_loader(
+            DecisionConfig::default(),
+            dir.path().join("m"),
+            log,
+            fake_loader(Duration::ZERO),
+        )
+        .with_config_path(config.clone());
+        let engine = Engine::spawn(e);
+        let get = |prefix: &str| GetTrain {
+            prefix: prefix.to_owned(),
+        };
+        let info = engine.ask(get("meeting")).await.unwrap();
+        assert!(
+            !info.enabled
+                && info.examples_total == 0
+                && info.dir.ends_with("decisions/training/meeting")
+        );
+
+        // Off: a captured row is dropped and no directory appears.
+        let example = || {
+            training::Example::new(
+                "meeting",
+                Mode::Shadow,
+                "them: hi".into(),
+                vec![],
+                vec![],
+                None,
+                training::Verdict::Skip,
+            )
+        };
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(engine.ask(get("meeting")).await.unwrap().examples_total, 0);
+        assert!(!dir.path().join("decisions/training").exists());
+
+        // On: the config line keeps `mode`, the families flip live, the row lands with the model sha.
+        let info = engine
+            .ask(SetTrain {
+                prefix: "meeting".into(),
+                on: true,
+            })
+            .await
+            .unwrap();
+        assert!(info.enabled && !info.share);
+        let yaml = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            yaml.contains("    meeting: { mode: shadow, train: true, share: false }"),
+            "{yaml}"
+        );
+        let whole: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let cfg: DecisionConfig = serde_yaml::from_value(whole["decision"].clone()).unwrap();
+        assert!(
+            cfg.families["meeting.kind"].train
+                && cfg.families["meeting.brief"].train
+                && !cfg.families["browser.target"].train
+        );
+        assert_eq!(cfg.families["meeting.kind"].mode, Mode::Shadow);
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        let info = engine.ask(get("meeting")).await.unwrap();
+        assert_eq!((info.examples_today, info.examples_total), (1, 1));
+        assert!(info.bytes > 0);
+        // Another prefix is untouched; an unknown one is an error.
+        assert!(!engine.ask(get("browser")).await.unwrap().enabled);
+        assert!(
+            engine
+                .ask(SetTrain {
+                    prefix: "nobody".into(),
+                    on: true
+                })
+                .await
+                .is_err()
+        );
+
+        // `SetShare` needs capture on; then `SetMode` keeps `train` and `share` in the line.
+        let share = |prefix: &str, on: bool| SetShare {
+            prefix: prefix.to_owned(),
+            on,
+        };
+        let refused = engine.ask(share("browser", true)).await.unwrap_err();
+        assert!(refused.to_string().contains("capture is off for `browser.*`"), "{refused}");
+        let info = engine.ask(share("meeting", true)).await.unwrap();
+        assert!(info.share);
+        let cfg: DecisionConfig = serde_yaml::from_value(
+            serde_yaml::from_str::<serde_yaml::Value>(&std::fs::read_to_string(&config).unwrap()).unwrap()["decision"].clone(),
+        )
+        .unwrap();
+        assert!(cfg.families["meeting.kind"].share && !cfg.families["browser.target"].share);
+        engine
+            .ask(SetMode {
+                prefix: "meeting".into(),
+                mode: Mode::Active,
+            })
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&config)
+                .unwrap()
+                .contains("meeting: { mode: active, train: true, share: true }")
+        );
+        // Turning capture off clears share (57 §7.1), keeps the mode, and stops writes.
+        let info = engine
+            .ask(SetTrain {
+                prefix: "meeting".into(),
+                on: false,
+            })
+            .await
+            .unwrap();
+        assert!(!info.enabled && !info.share);
+        assert!(
+            std::fs::read_to_string(&config)
+                .unwrap()
+                .contains("meeting: { mode: active, train: false, share: false }")
+        );
+        engine.ask(share("meeting", false)).await.unwrap();
+        engine
+            .tell(Capture {
+                prefix: "meeting".into(),
+                row: training::Row::Example(Box::new(example())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(engine.ask(get("meeting")).await.unwrap().examples_total, 1);
+        // Delete removes the files, not the switches.
+        let info = engine
+            .ask(DeleteTraining {
+                prefix: "meeting".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!((info.examples_total, info.bytes, info.enabled), (0, 0, false));
+        assert!(!dir.path().join("decisions/training/meeting").exists());
+        assert!(
+            engine
+                .ask(DeleteTraining {
+                    prefix: "nobody".into()
+                })
+                .await
+                .is_err()
+        );
     }
 }

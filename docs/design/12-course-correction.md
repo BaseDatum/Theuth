@@ -238,6 +238,10 @@ Check: `grep pattern="lookup_when" glob="*.rs"` returns the three call sites; `e
 As-built 2026-09-21: a `read_file` cut at 64 KiB is marked at both ends — a `[read_file: …]` header with exact byte/line counts of the selection and the `[truncated …]` tail (`fs::TRUNCATED_HEAD_PREFIX`/`TRUNCATED_TAIL`) — after a 74 KB doc was read, sliced in Python and written back minus its tail.
 `write_file` and `edit` (`new`) refuse content carrying either marker; nothing is written. No `structured` flag: the Python runtime returns `structured` *instead of* the text (`agent/src/repl.rs::tool_result`), so a flag there would hide the content.
 
+As-built 2026-09-22 (tier-0 tools): `glob` (`glob.rs`, ReadOnly) joins the file tools — `globset` with `literal_separator`, a pattern without `/` matched against the file name (ripgrep's `-g` rule), with `/` against the path relative to `path`; same `ignore` walker as `grep`; paths relative to `path`, newest mtime first; walk stops at `limit + 1`; `structured = {files, truncated}`.
+`edit` moved to `edit.rs` and grew a matching ladder over whole lines — exact → line-trimmed (trailing whitespace ignored, one uniform indentation offset re-applied to `new`) → whitespace-normalised (`new` re-indented to the first matched line) — never falling through past an ambiguous tier; a miss names the closest window (word-level `similar` ratio, 2 s budget) with its line numbers and an `old` → candidate diff. `edits: [{old,new,all?}]` applies in order, all-or-nothing, errors prefixed `edit i of n`. CRLF files are matched as LF and written back as CRLF; BOM and final-newline presence are kept. Results carry a unified diff (`similar`, 3 lines of context, capped at 200 lines) and `structured = {path, replacements, added, removed, tier, diff, truncated}`.
+`write_file` is atomic (`<path>.tmp-<uuid>` + rename, permissions kept, tmp removed on error) and returns the same diff when it replaces a UTF-8 file; identical content skips the write.
+
 ## 11. Not doing
 
 - Splitting `agent` further. It is the loop plus what the loop must own; 00 §10 now says so (step 1).

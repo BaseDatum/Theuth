@@ -96,10 +96,14 @@ test('PostProgress moves the state into Post with its pct; ReviewReady lands on 
 
 const verdict = (batch_id: string, kind: 'skip' | 'brief' | 'model', outcome: OracleDecision['outcome'] = null): OracleDecision => ({
   batch_id,
-  family: 'meeting.topic',
+  family: 'meeting.kind',
   mode: 'shadow',
   disposition: kind === 'skip' ? { kind } : kind === 'brief' ? { kind, brief: 'b1', title: 'SRE-2386' } : { kind, reason: 'low margin' },
-  top: [['topic', 0.12]],
+  stages: [['kind: small talk', 0.79]],
+  mentions: [],
+  subject: null,
+  tier2: null,
+  top: [],
   latency_ms: 78n,
   tier: 1,
   outcome,
@@ -118,8 +122,8 @@ test('57 §3.4: OracleDeciding lights the chip; a verdict replaces it and an out
   expect(s.oracle.map((d) => d.batch_id)).toEqual(['00:14:32', '00:15:01', '00:15:30'])
   expect(s.oracle[1]?.outcome?.published).toBe('HR-12')
   s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:14:32', 'skip', { agreed: true, published: null }) })
-  expect(oracleCounters(s.oracle)).toEqual({ skipped: 1, briefs: 1, escalated: 1, agreed: 50 })
-  expect(oracleSummary(s.oracle)).toBe('⚡ 1 skipped · 1 brief · 1 escalated · agreed 50 %')
+  expect(oracleCounters(s.oracle)).toEqual({ skipped: 1, briefs: 1, escalated: 1, tier2: 0, agreed: 50 })
+  expect(oracleSummary(s.oracle)).toBe('⚡ 1 skipped · 1 brief · 1 escalated · 0 tier 2 calls · agreed 50 %')
   // Another meeting's verdicts are ignored; the ring keeps the last ORACLE_KEEP.
   s = reduce(s, { type: 'OracleDecision', meeting: 'other', decision: verdict('00:16:00', 'skip') })
   expect(s.oracle.length).toBe(3)
