@@ -21,7 +21,7 @@ use monty_pool::{
 };
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, ObjectRef, OsPolicy,
-    ResourceLimits, SandboxTimeZone,
+    ResourceLimits, SandboxTimeZone, SleepMode,
     unstable::{self, MontyNode},
 };
 use regex::Regex;
@@ -44,6 +44,14 @@ pub const MAX_MEMORY: usize = 512 << 20;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Host calls the pool services per checkout (08 §4.5).
 const MAX_SUSPENSIONS: usize = 100_000;
+/// Longest single `time.sleep`/`asyncio.sleep`; the worker clamps longer delays
+/// (`SleepMode::System`), the host waits. No runtime config section exists to
+/// slot this into, so a constant like the limits above.
+const MAX_SLEEP: Duration = Duration::from_secs(300);
+/// Cumulative sleep per checkout (one turn, like `MAX_SUSPENSIONS`); the pool
+/// rejects the sleep that would exceed it with an uncatchable `TimeoutError`,
+/// so a sleeping loop cannot hang a session (`ResourceLimits::max_total_sleep`).
+const MAX_TOTAL_SLEEP: Duration = Duration::from_secs(600);
 /// Head / tail kept when output exceeds [`RUN_OUTPUT_CHARS`].
 const HEAD_CHARS: usize = 6_000;
 const TAIL_CHARS: usize = 2_000;
@@ -650,6 +658,7 @@ impl Repl {
             limits: Some(ResourceLimits {
                 max_memory: Some(MAX_MEMORY),
                 max_suspensions: MAX_SUSPENSIONS,
+                max_total_sleep: Some(MAX_TOTAL_SLEEP),
                 ..ResourceLimits::default()
             }),
             type_check: true,
@@ -665,6 +674,7 @@ impl Repl {
                     offset_seconds: chrono::Local::now().offset().local_minus_utc(),
                     name: None,
                 },
+                sleep: SleepMode::System(MAX_SLEEP),
                 ..OsPolicy::default()
             },
             ..ReplConfig::default()
@@ -1165,6 +1175,24 @@ impl Repl {
                         }
                     }
                     checkout.resume_futures(results, &mut *on_print).await?
+                }
+                // `time.sleep`/`asyncio.sleep`: the worker clamps the delay to
+                // `MAX_SLEEP`, the pool charges `MAX_TOTAL_SLEEP`, and the host
+                // waits here — the wait is suspended computation like a tool
+                // call, not interpreter execution, so the permit is released.
+                // ponytail: the async form is answered settled after the wait,
+                // so `gather(sleep(n), tool())` waits n first; register the
+                // sleep as a `pending` future if overlap matters.
+                TurnEvent::OsCall {
+                    system_sleep: Some(delay),
+                    ..
+                } => {
+                    drop(running.take());
+                    tokio::time::sleep(delay).await;
+                    running = hold(cx.permit.as_ref()).await?;
+                    checkout
+                        .resume(ResumeValue::Return(MontyObject::none()), &mut *on_print)
+                        .await?
                 }
                 TurnEvent::OsCall {
                     function_name,
@@ -1753,5 +1781,30 @@ mod tests {
         let d = std::env::temp_dir().join(format!("theuth-repl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// `time.sleep`/`asyncio.sleep` reach the host as `system_sleep` and are
+    /// waited out (beta.2 raised `RuntimeError: 'system.sleep' is not
+    /// supported` while `drive` answered `NotHandled`); skipped without `monty`.
+    #[test]
+    fn sleeps_are_waited_host_side() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            let start = std::time::Instant::now();
+            let out = repl
+                .run(
+                    "c1",
+                    "import time, asyncio\nt = time.time()\ntime.sleep(0.2)\nawait asyncio.sleep(0.2)\ntime.time() - t >= 0.4",
+                )
+                .await;
+            assert!(out.content.starts_with("→ True"), "{}", out.content);
+            assert!(start.elapsed() >= Duration::from_millis(400));
+            repl.close().await;
+        });
     }
 }
