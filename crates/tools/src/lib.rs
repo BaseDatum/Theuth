@@ -27,17 +27,19 @@ pub mod approval;
 pub mod ask;
 pub mod communication;
 pub mod doc;
+pub mod edit;
 pub mod fs;
 pub mod git;
+pub mod glob;
 pub mod images;
 pub mod jobs;
 pub mod mcp;
 pub mod pty;
 pub mod registry;
+pub mod resources;
 mod schema;
 pub mod secrets;
 pub mod shell;
-pub mod resources;
 
 pub use activity::{
     Activity, ActivitySink, Admission, Admit, Kind, Notice, Operation, OperationId, Rejected,
@@ -48,16 +50,17 @@ pub use ask::{
     Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
 };
 pub use communication::{CommunicationAccess, Disabled};
+pub use jobs::CloseSessions;
 pub use jobs::{
     CancelJob, InstallActivity, JOBS_ACTOR, JobEvent, JobExit, JobId, JobView, Jobs, ListJobs,
-};
-pub use pty::{
-    Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
-    PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
+};
+pub use pty::{
+    Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
+    PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
@@ -66,13 +69,12 @@ pub use registry::{
     SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
-pub use registry::{InstallResources, RemoveResources};
-pub use resources::{Retention, SessionResources};
-pub use jobs::CloseSessions;
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
+pub use registry::{InstallResources, RemoveResources};
 pub use resources::{CloseAck, CloseTree, TreeOpened};
+pub use resources::{Retention, SessionResources};
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
@@ -423,6 +425,10 @@ pub struct ToolsConfig {
     /// Seconds a PTY job's screen must stay unchanged before the model is
     /// woken with `<job_idle>` (61 §1.6); `start.idle_secs` overrides per job.
     pub pty_idle_secs: u64,
+    /// Seed each session shell's `PATH` from the user's login shell (so
+    /// tools installed by rc files are found); `THEUTH_NO_LOGIN_PATH=1` also
+    /// turns it off.
+    pub login_path: bool,
 }
 
 impl Default for ToolsConfig {
@@ -436,6 +442,7 @@ impl Default for ToolsConfig {
             job_timeout_secs: 1800,
             pty_ready_timeout_secs: 30,
             pty_idle_secs: 60,
+            login_path: true,
         }
     }
 }
