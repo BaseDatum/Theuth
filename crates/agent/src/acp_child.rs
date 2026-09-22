@@ -236,6 +236,7 @@ impl AcpChild {
                     self.publish(AgentEvent::TitleChanged {
                         session: self.id,
                         title,
+                        tags: Vec::new(),
                     })
                     .await;
                 }

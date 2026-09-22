@@ -952,6 +952,7 @@ impl Session {
                         .publish(AgentEvent::TitleChanged {
                             session: self.shared.id,
                             title,
+                            tags: Vec::new(),
                         })
                         .await;
                 }
@@ -3083,8 +3084,8 @@ impl Turn {
         let session = self.shared.id;
         let store = self.shared.store.clone();
         let rt = self.shared.rt.clone();
-        let old = match store.session(session).await {
-            Ok(Some(s)) => s.title,
+        let (old, old_tags) = match store.session(session).await {
+            Ok(Some(s)) => (s.title, s.tags),
             Ok(None) => return,
             Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
         };
@@ -3094,7 +3095,7 @@ impl Turn {
             Ok(r) => r,
             Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
         };
-        let digest = title::digest(&old, self.state.head.as_ref(), &self.state.history);
+        let digest = title::digest(&old, &old_tags, self.state.head.as_ref(), &self.state.history);
         if let Some(prev) = self.state.title_task.take() {
             prev.abort();
             let _ = prev.await;
@@ -3115,21 +3116,27 @@ impl Turn {
             let Some(new) = title::clean(&reply) else {
                 return tracing::info!(session = %session, chars = ?chars(&reply), "title: unusable reply");
             };
-            if new == old {
+            // A reply without a usable `tags:` line keeps the stored set.
+            let mut tags = title::tags(&reply);
+            if tags.is_empty() {
+                tags = old_tags.clone();
+            }
+            if new == old && tags == old_tags {
                 return;
             }
             if closed.is_cancelled() {
                 return tracing::info!(session = %session, generation, "title: session closed before the write; discarded");
             }
-            match store.set_title_at_revision(session, &new, &revision).await {
+            match store.set_title_at_revision(session, &new, &tags, &revision).await {
                 Ok(true) => {
                     if closed.is_cancelled() {
                         return tracing::info!(session = %session, generation, "title: session closed after the write; not announced");
                     }
-                    tracing::info!(session = %session, generation, chars = ?chars(&new), "title");
+                    tracing::info!(session = %session, generation, chars = ?chars(&new), tags = tags.len(), "title");
                     rt.publish(AgentEvent::TitleChanged {
                         session,
                         title: new,
+                        tags,
                     })
                     .await;
                 }

@@ -14587,6 +14587,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             title: String::new(),
+            tags: Vec::new(),
             model: "m".into(),
             parent,
             name: parent.map(|_| "child".to_owned()),

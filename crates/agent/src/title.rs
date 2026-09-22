@@ -5,9 +5,15 @@
 //! chars). Later refreshes are rate-limited by [`due`]: every [`EVERY`] turns or
 //! after a compaction, and only when the user has typed enough since the last
 //! title to have possibly changed subject. The titler sees a [`digest`] — the
-//! current title, the epoch's summary head, the user's asks oldest → newest, and
-//! the latest reply — and is told to return the current title verbatim when it
-//! still fits, so the list stays stable instead of flickering per turn.
+//! current title and tags, the epoch's summary head, the user's asks oldest →
+//! newest, and the latest reply — and is told to return the current title
+//! verbatim when it still fits, so the list stays stable instead of flickering
+//! per turn.
+//!
+//! The same call assigns [`tags`]: one to [`MAX_TAGS`] lowercase keywords on a
+//! `tags:` line after the title, so `discover_peers` (50 §5.1 as-built) can
+//! show what each of many sessions is about in a few words. A reply without
+//! the line leaves the tags empty; a reply without a usable title changes nothing.
 
 use genai::chat::{ChatMessage, ChatRole};
 
@@ -20,6 +26,10 @@ pub const EVERY: u32 = 4;
 pub const MIN_CHARS: usize = 16;
 /// Longest stored title.
 pub const MAX_CHARS: usize = 60;
+/// Most tags kept per session.
+pub const MAX_TAGS: usize = 4;
+/// Longest tag, in chars.
+pub const TAG_CHARS: usize = 24;
 /// Per-message cap in the digest.
 const MSG_CHARS: usize = 240;
 /// Head-summary cap in the digest.
@@ -32,16 +42,22 @@ const KEEP_TAIL: usize = 8;
 
 /// System prompt for the title call.
 pub const SYSTEM: &str = "\
-You write titles for a list of past sessions between a developer and a coding agent. Reply with the title only.
+You write titles and tags for a list of past sessions between a developer and a coding agent. \
+Reply with exactly two lines: the title, then `tags: a, b, c`.
 
-Rules:
+Title rules:
 - 3 to 7 words, sentence case, under 60 characters. No quotes, no trailing period, no markdown.
 - Name the concrete subject: the feature, bug, file, system, or question. Never the activity \
 (\"discussing\", \"helping with\", \"working on\") and never the words \"session\", \"chat\", \"conversation\", \"user\", \"assistant\".
 - The title says what the session is about now. When the work has moved to a new task, the new task is the title; \
 keep the earlier subject only when it is still the theme (e.g. \"Gateway model limits, then session titles\").
 - If the current title is still accurate, return it unchanged, character for character, so the list stays stable.
-- Greetings or small talk only: say so plainly (e.g. \"Greeting\").";
+- Greetings or small talk only: say so plainly (e.g. \"Greeting\").
+
+Tag rules:
+- 1 to 4 tags, comma-separated, lowercase, letters/digits/hyphens only, one or two words each (e.g. `rust`, `desktop-ui`, `meeting`, `research`, `merge`).
+- Name the project, language, area and kind of work, so someone scanning forty sessions can tell which are related to theirs.
+- Keep the current tags that still apply; change them only when the subject moved.";
 
 /// Whether a title call is worth making after a finished turn.
 /// `first`: no model-written title yet (placeholder only) — any user text earns one.
@@ -62,7 +78,12 @@ pub fn user_chars<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
 }
 
 /// What the titler sees. `history` is the current epoch; `head` its summary.
-pub fn digest(current: &str, head: Option<&ChatMessage>, history: &[(i64, ChatMessage)]) -> String {
+pub fn digest(
+    current: &str,
+    tags: &[String],
+    head: Option<&ChatMessage>,
+    history: &[(i64, ChatMessage)],
+) -> String {
     let mut out = String::new();
     out.push_str("Current title: ");
     out.push_str(if current.is_empty() {
@@ -70,6 +91,12 @@ pub fn digest(current: &str, head: Option<&ChatMessage>, history: &[(i64, ChatMe
     } else {
         current
     });
+    out.push_str("\nCurrent tags: ");
+    if tags.is_empty() {
+        out.push_str("(none)");
+    } else {
+        out.push_str(&tags.join(", "));
+    }
     out.push('\n');
     if let Some(h) = head {
         out.push_str("\nSummary of earlier work in this session:\n");
@@ -109,11 +136,23 @@ pub fn digest(current: &str, head: Option<&ChatMessage>, history: &[(i64, ChatMe
     out
 }
 
-/// The title in a model reply: first non-empty line, label/quotes/markdown
-/// stripped, whitespace collapsed, at most [`MAX_CHARS`]. `None` when nothing
-/// usable is left (the caller keeps the old title).
+/// A `tags:` line (either case), the rest after the label.
+fn tags_line(line: &str) -> Option<&str> {
+    let rest = line.trim_start_matches(['*', '_', '`', '#', ' ']);
+    rest.strip_prefix("tags:")
+        .or_else(|| rest.strip_prefix("Tags:"))
+        .or_else(|| rest.strip_prefix("TAGS:"))
+}
+
+/// The title in a model reply: first non-empty line that is not the `tags:`
+/// line, label/quotes/markdown stripped, whitespace collapsed, at most
+/// [`MAX_CHARS`]. `None` when nothing usable is left (the caller keeps the
+/// old title).
 pub fn clean(reply: &str) -> Option<String> {
-    let line = reply.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = reply
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && tags_line(l).is_none())?;
     let line = line
         .strip_prefix("Title:")
         .or_else(|| line.strip_prefix("title:"))
@@ -137,6 +176,36 @@ pub fn clean(reply: &str) -> Option<String> {
         out = cut(&out, MAX_CHARS);
     }
     Some(out)
+}
+
+/// The tags in a model reply: the first `tags:` line split on commas, each
+/// lowercased, runs of anything outside `[a-z0-9]` folded to one `-` and
+/// trimmed, cut to [`TAG_CHARS`], deduplicated, at most [`MAX_TAGS`]. Empty
+/// when the line is missing or holds nothing usable.
+pub fn tags(reply: &str) -> Vec<String> {
+    let Some(line) = reply.lines().find_map(tags_line) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for raw in line.split(',') {
+        let mut tag = String::new();
+        for c in raw.trim().trim_matches(['`', '"', '\'', '[', ']', '#']).chars() {
+            match c.to_ascii_lowercase() {
+                c if c.is_ascii_alphanumeric() => tag.push(c),
+                _ if !tag.is_empty() && !tag.ends_with('-') => tag.push('-'),
+                _ => {}
+            }
+        }
+        let tag: String = tag.trim_end_matches('-').chars().take(TAG_CHARS).collect();
+        let tag = tag.trim_end_matches('-').to_owned();
+        if !tag.is_empty() && !out.contains(&tag) {
+            out.push(tag);
+            if out.len() == MAX_TAGS {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Char-boundary prefix with `…` when cut.
@@ -182,14 +251,29 @@ mod tests {
     }
 
     #[test]
+    fn tags_parse_normalise_dedupe_and_cap() {
+        let reply = "Merge design 62\ntags: Theuth, Rust, desktop UI, theuth, C++, meeting, extra\n";
+        assert_eq!(clean(reply).as_deref(), Some("Merge design 62"));
+        assert_eq!(tags(reply), ["theuth", "rust", "desktop-ui", "c"]);
+        assert_eq!(tags("**Tags:** `merge`, \"research\""), ["merge", "research"]);
+        assert_eq!(tags("Just a title"), Vec::<String>::new());
+        assert_eq!(tags("tags: , --, ***"), Vec::<String>::new());
+        let long = tags(&format!("tags: {}", "a".repeat(40)));
+        assert_eq!(long[0].len(), TAG_CHARS);
+        // A reply that is only a tags line has no usable title.
+        assert_eq!(clean("tags: rust"), None);
+        assert_eq!(clean("\ntags: rust\nReal title"), Some("Real title".into()));
+    }
+
+    #[test]
     fn digest_elides_the_middle_and_skips_wrappers() {
         let mut h: Vec<(i64, ChatMessage)> = (0..15)
             .map(|i| (i, ChatMessage::user(format!("ask {i}"))))
             .collect();
         h.push((99, ChatMessage::user("<todo>\n- x\n</todo>")));
         h.push((100, ChatMessage::assistant("Done: shipped it.")));
-        let d = digest("Old title", None, &h);
-        assert!(d.contains("Current title: Old title"));
+        let d = digest("Old title", &["rust".to_owned()], None, &h);
+        assert!(d.contains("Current title: Old title\nCurrent tags: rust\n"), "{d}");
         assert!(
             d.contains("- ask 0\n- ask 1\n(… 5 more …)\n- ask 7\n"),
             "{d}"
