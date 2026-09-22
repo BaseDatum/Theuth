@@ -49,7 +49,10 @@ function toolbarState(editor: DocEditor) {
 export function MobileToolbar({ editor, readonly, onVisible }: { editor: DocEditor; readonly: boolean; onVisible: (v: boolean) => void }) {
   const inset = useKeyboardInset()
   const [focus, setFocus] = useState<Visibility>(() => (editor.isFocused() ? 'shown' : 'hidden'))
+  // `sheet` is which sheet is mounted — it stays through the close animation, so the bar does not blink; `open`
+  // drives Radix. Focus goes back to the editor only in `onCloseAutoFocus`: earlier, the dialog's trap pulls it back.
   const [sheet, setSheet] = useState<SheetKind>(null)
+  const [open, setOpen] = useState(false)
   const timer = useRef(0)
   useEffect(() => {
     // `focusin`/`focusout` on `document`: the ProseMirror root may not exist yet, and the frontmatter's inputs
@@ -88,7 +91,13 @@ export function MobileToolbar({ editor, readonly, onVisible }: { editor: DocEdit
   const s = useEditorState({ editor, selector: ({ editor }) => toolbarState(editor as DocEditor) })
   if (!visible) return null
 
-  const close = () => {
+  const show = (k: SheetKind) => {
+    setSheet(k)
+    setOpen(true)
+  }
+  const close = () => setOpen(false)
+  const closed = (e: Event) => {
+    e.preventDefault()
     setSheet(null)
     editor.focus()
   }
@@ -108,38 +117,42 @@ export function MobileToolbar({ editor, readonly, onVisible }: { editor: DocEdit
         role="toolbar"
         aria-label="Formatting"
         data-mobile-toolbar
-        className="fixed inset-x-0 z-40 flex items-center gap-0.5 overflow-x-auto border-t border-border-subtle bg-background px-1 py-1 [scrollbar-width:none]"
+        className="fixed inset-x-0 z-40 flex items-center border-t border-border-subtle bg-background py-1"
         style={{ bottom: 'var(--kb-inset)', '--kb-inset': `calc(${inset}px + var(--safe-bottom))` } as CSSProperties}
         onPointerDown={keepFocus}
       >
-        <Tool label={current ? current.label : 'Block type'} pressed={sheet === 'type'} disabled={!s.text} onClick={() => setSheet('type')}>
-          <span className="text-[15px] font-semibold">Aa</span>
-        </Tool>
+        {/* Twelve 44 px targets do not fit a 390 px phone: the groups scroll, keyboard-down stays pinned. */}
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-1 [scrollbar-width:none]">
+          <Tool label={current ? current.label : 'Block type'} pressed={open && sheet === 'type'} disabled={!s.text} onClick={() => show('type')}>
+            <span className="text-[15px] font-semibold">Aa</span>
+          </Tool>
+          <Sep />
+          <Tool label="Bold" icon={Bold} pressed={s.bold} disabled={!s.text} onClick={() => editor.toggleStyles({ bold: true })} />
+          <Tool label="Italic" icon={Italic} pressed={s.italic} disabled={!s.text} onClick={() => editor.toggleStyles({ italic: true })} />
+          <Tool label="Strikethrough" icon={Strikethrough} pressed={s.strike} disabled={!s.text} onClick={() => editor.toggleStyles({ strike: true })} />
+          <Tool label="Code" icon={Code} pressed={s.code} disabled={!s.text} onClick={() => editor.toggleStyles({ code: true })} />
+          <Sep />
+          <Tool label="Outdent" icon={IndentDecrease} disabled={!s.canUnnest} onClick={() => editor.unnestBlock()} />
+          <Tool label="Indent" icon={IndentIncrease} disabled={!s.canNest} onClick={() => editor.nestBlock()} />
+          <Sep />
+          <Tool label="Link" icon={Link2} pressed={s.link !== null} disabled={!s.text} onClick={() => show('link')} />
+          <Sep />
+          <Tool label="Undo" icon={Undo2} onClick={() => editor.undo()} />
+          <Tool label="Redo" icon={Redo2} onClick={() => editor.redo()} />
+        </div>
         <Sep />
-        <Tool label="Bold" icon={Bold} pressed={s.bold} disabled={!s.text} onClick={() => editor.toggleStyles({ bold: true })} />
-        <Tool label="Italic" icon={Italic} pressed={s.italic} disabled={!s.text} onClick={() => editor.toggleStyles({ italic: true })} />
-        <Tool label="Strikethrough" icon={Strikethrough} pressed={s.strike} disabled={!s.text} onClick={() => editor.toggleStyles({ strike: true })} />
-        <Tool label="Code" icon={Code} pressed={s.code} disabled={!s.text} onClick={() => editor.toggleStyles({ code: true })} />
-        <Sep />
-        <Tool label="Outdent" icon={IndentDecrease} disabled={!s.canUnnest} onClick={() => editor.unnestBlock()} />
-        <Tool label="Indent" icon={IndentIncrease} disabled={!s.canNest} onClick={() => editor.nestBlock()} />
-        <Sep />
-        <Tool label="Link" icon={Link2} pressed={s.link !== null} disabled={!s.text} onClick={() => setSheet('link')} />
-        <Sep />
-        <Tool label="Undo" icon={Undo2} onClick={() => editor.undo()} />
-        <Tool label="Redo" icon={Redo2} onClick={() => editor.redo()} />
         <Tool
           label="Hide keyboard"
           icon={KeyboardOff}
-          className="ml-auto"
+          className="mr-1"
           onClick={() => {
             editor.domElement?.blur()
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
           }}
         />
       </div>
-      <Sheet open={sheet === 'type'} onOpenChange={(o) => !o && close()}>
-        <SheetContent side="bottom" showCloseButton={false} className="gap-1 p-2" onCloseAutoFocus={(e) => e.preventDefault()}>
+      <Sheet open={open && sheet === 'type'} onOpenChange={(o) => !o && close()}>
+        <SheetContent side="bottom" showCloseButton={false} className="gap-1 p-2" onCloseAutoFocus={closed}>
           <SheetTitle className="px-2 pt-1 text-xs font-medium text-fg-tertiary">Block type</SheetTitle>
           {BLOCK_TYPES.map((t) => (
             <Button
@@ -156,8 +169,8 @@ export function MobileToolbar({ editor, readonly, onVisible }: { editor: DocEdit
           ))}
         </SheetContent>
       </Sheet>
-      <Sheet open={sheet === 'link'} onOpenChange={(o) => !o && close()}>
-        <SheetContent side="bottom" showCloseButton={false} className="p-3" onCloseAutoFocus={(e) => e.preventDefault()}>
+      <Sheet open={open && sheet === 'link'} onOpenChange={(o) => !o && close()}>
+        <SheetContent side="bottom" showCloseButton={false} className="p-3" onCloseAutoFocus={closed}>
           <SheetTitle className="text-xs font-medium text-fg-tertiary">Link</SheetTitle>
           <LinkForm
             initial={s.link ?? ''}
