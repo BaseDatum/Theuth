@@ -1489,7 +1489,7 @@ here depends on them:
 The title model's call (07 §15, `crates/agent/src/title.rs`) returns a second
 line `tags: a, b, c`; the tags are normalised (lowercase, `[a-z0-9-]`, ≤ 4,
 ≤ 24 chars, deduplicated), stored comma-joined in `sessions.tags`
-(migration `0016_session_tags.sql`), written with the title by
+(migration `0017_session_tags.sql`), written with the title by
 `Store::set_title_at_revision` under the same 48 §4.3 revision guard, and
 announced on `AgentEvent::TitleChanged.tags`. A reply without a usable
 `tags:` line keeps the stored set; a rename keeps it too.
