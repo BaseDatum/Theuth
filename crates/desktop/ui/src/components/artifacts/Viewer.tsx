@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ChevronLeft, Copy, Download, History as HistoryIcon, MessageSquare, MessageSquarePlus, PanelRight, RefreshCw } from 'lucide-react'
+import { ChevronLeft, Copy, Download, MessageSquare, PanelRight, RefreshCw } from 'lucide-react'
 import { type MouseEvent, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
@@ -10,10 +10,6 @@ import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
-import { Live } from '@/components/editor/DocumentPage'
-import { useDocument } from '@/components/editor/useDocument'
-import { ChatPicker } from '@/components/notes/ChatPicker'
-import { Snapshots } from '@/components/notes/NotePage'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -31,7 +27,6 @@ import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import { useHarnesses } from '@/link/harnesses'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
-import type { Binding } from '@/rpc/bindings/Binding'
 import type { Artifact } from '@/rpc/extra'
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 
@@ -338,17 +333,10 @@ function Body({ a }: { a: Artifact }) {
 
 const route = getRouteApi('/artifacts/$callId')
 
-/** The bound document of a markdown artifact in BlockNote (59 §7.2): every settled edit is the lineage's next version. */
-function ArtifactDoc({ doc }: { doc: string }) {
-  const target = useMemo(() => ({ doc }), [doc])
-  const live = useDocument(target)
-  return <Live {...live} />
-}
-
 /**
  * `/artifacts/$callId`: the exact record by `call_id` (49 §7); a version `Select` walks the same-name artifacts of
- * its session from the list. A markdown lineage bound to a document (59 §7.2) renders the editor instead of the
- * static view, with Snapshots and "Attach to chat…" beside the usual actions.
+ * its session from the list, newest first. Markdown renders read-only through `Markdown` like every other kind
+ * (59 §7.2 as built: the bound document is storage, not the view).
  */
 export function Viewer() {
   const { callId } = route.useParams()
@@ -359,8 +347,6 @@ export function Viewer() {
   const mobile = useIsMobile()
   const origin = useSearchOrigin()
   const [railOpen, setRailOpen] = useState(true)
-  const [attaching, setAttaching] = useState(false)
-  const [snapshots, setSnapshots] = useState(false)
 
   // Under `md` the viewer is the only pane; `Esc` is the back chevron.
   useEffect(() => {
@@ -378,15 +364,6 @@ export function Viewer() {
     () => (hit && list.data ? list.data.filter((x) => x.session === hit.session && x.name === hit.name).sort((x, y) => y.version - x.version) : []),
     [list.data, hit],
   )
-  // 59 §7.2: a markdown lineage shown since documents exist is bound to one; older ones are not (static view).
-  const binding: Binding | null = hit?.kind === 'markdown' ? { artifact: { session: hit.session, name: hit.name } } : null
-  const bound = useQuery({
-    queryKey: ['doc', binding],
-    queryFn: () => api.doc_resolve(binding as Binding),
-    enabled: binding !== null,
-    staleTime: Number.POSITIVE_INFINITY,
-  })
-  const doc = bound.data ?? null
   const matched = isSearchDestination(origin, { category: 'artifacts', callId }) ? origin : null
   // The activation lands on the title once the exact record rendered (49 §7); a refetch or a later ordinary visit leaves focus alone.
   const heading = useSearchFocus<HTMLHeadingElement>(matched, record.isSuccess)
@@ -442,12 +419,6 @@ export function Viewer() {
               </SelectContent>
             </Select>
           )}
-          {doc && (
-            <>
-              <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} />
-              <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} />
-            </>
-          )}
           <RevealButton artifact={a} />
           <Action label="Open chat" icon={MessageSquare} onClick={() => void navigate({ to: '/c/$session', params: { session: a.session } })} />
           <ArtifactMenu artifact={a} explorer />
@@ -463,11 +434,7 @@ export function Viewer() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col overflow-auto">
           {matched && <Matched a={a} query={matched.query} />}
-          {doc ? (
-            <ArtifactDoc doc={doc} />
-          ) : (
-            <ArtifactView artifact={a} className={textual ? 'mx-auto w-full max-w-[768px]' : 'min-h-0 flex-1'} />
-          )}
+          <ArtifactView artifact={a} className={textual ? 'mx-auto w-full max-w-[768px]' : 'min-h-0 flex-1'} />
           {/* Under `lg` the details have no room beside the body; they follow it instead, toggled by the same action. */}
           {railOpen && (
             <section className="border-t border-border-subtle lg:hidden">
@@ -481,12 +448,6 @@ export function Viewer() {
           </aside>
         )}
       </div>
-      {doc && (
-        <>
-          <ChatPicker open={attaching} onOpenChange={setAttaching} doc={{ ref: doc, title: a.title }} />
-          <Snapshots id={doc} open={snapshots} onOpenChange={setSnapshots} />
-        </>
-      )}
     </Frame>
   )
 }
