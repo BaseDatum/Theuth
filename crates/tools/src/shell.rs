@@ -3,6 +3,7 @@
 //! output if it exits within the grace window, else a stub naming the job.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -55,8 +56,13 @@ pub struct ShellTool {
 
 impl ShellTool {
     /// Construct with the actor that runs the jobs; `login_path` is
-    /// `tools.login_path`.
+    /// `tools.login_path`. With it on, the login-shell `PATH` probe starts
+    /// now (on the current Tokio runtime) so it is usually done before the
+    /// first `shell` call has to wait for it.
     pub fn new(jobs: ActorRef<Jobs>, login_path: bool) -> Self {
+        if login_path {
+            tokio::spawn(self::login_path());
+        }
         Self {
             jobs,
             sessions: Arc::default(),
@@ -86,7 +92,7 @@ impl ShellTool {
             .build()
             .await?;
         if login_path && let Some(path) = self::login_path().await {
-            export(&mut shell, "PATH", path)?;
+            export(&mut shell, "PATH", &path)?;
         }
         Ok(shell)
     }
@@ -114,35 +120,83 @@ fn export(shell: &mut Shell, name: &str, value: &str) -> anyhow::Result<()> {
 
 /// Env var that turns [`login_path`] off (tests, CI).
 pub const NO_LOGIN_PATH: &str = "THEUTH_NO_LOGIN_PATH";
-/// How long the login shell may take to print its `PATH`.
-const LOGIN_PATH_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the login shell may take to print its `PATH`: rc files on a
+/// loaded machine have been measured at 7 s.
+const LOGIN_PATH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Failed probes per process before [`login_path`] gives up.
+const LOGIN_PATH_ATTEMPTS: u32 = 3;
 
-/// `PATH` as the user's login shell sets it, computed once per process:
-/// `$SHELL -l -i -c 'printf %s "$PATH"'` (fallback `/bin/zsh` on macOS,
-/// `/bin/bash` elsewhere) with a [`LOGIN_PATH_TIMEOUT`], stdin from
-/// `/dev/null`, stderr discarded. `None` (keep the inherited `PATH`) when
-/// [`NO_LOGIN_PATH`] is `1`, or the probe fails, times out, or prints
-/// nothing — warned once.
-pub async fn login_path() -> Option<&'static str> {
-    static PATH: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
-    PATH.get_or_init(|| {
-        resolve_login_path(std::env::var_os(NO_LOGIN_PATH).is_some_and(|v| v == "1"))
-    })
-    .await
-    .as_deref()
+/// Process-wide probe state behind [`login_path`].
+static PROBE: Mutex<Probe> = Mutex::new(Probe::Idle { attempts: 0 });
+
+enum Probe {
+    /// No probe running; `attempts` have failed so far.
+    Idle { attempts: u32 },
+    /// One probe in flight; every caller awaits the same cell.
+    Pending {
+        attempts: u32,
+        cell: Arc<tokio::sync::OnceCell<Option<String>>>,
+    },
+    /// A successful probe: cached for the rest of the process.
+    Ready(String),
+    /// [`LOGIN_PATH_ATTEMPTS`] failures: the inherited `PATH` stays.
+    GaveUp,
 }
 
-/// [`login_path`] before caching: `None` when `skip`, else the probe.
-async fn resolve_login_path(skip: bool) -> Option<String> {
-    if skip {
+/// Observable form of the probe state (tests, diagnostics).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginPathState {
+    /// Never probed.
+    Idle,
+    /// A probe is running.
+    Pending,
+    /// The login shell's `PATH`.
+    Ready(String),
+    /// This many probes failed; `attempts == 3` means no more will run.
+    Failed {
+        /// Failed probes so far.
+        attempts: u32,
+    },
+}
+
+/// Current state of the process-wide probe.
+pub fn login_path_state() -> LoginPathState {
+    state_of(&PROBE)
+}
+
+fn state_of(probe: &Mutex<Probe>) -> LoginPathState {
+    match &*lock(probe) {
+        Probe::Idle { attempts: 0 } => LoginPathState::Idle,
+        Probe::Idle { attempts } => LoginPathState::Failed {
+            attempts: *attempts,
+        },
+        Probe::Pending { .. } => LoginPathState::Pending,
+        Probe::Ready(p) => LoginPathState::Ready(p.clone()),
+        Probe::GaveUp => LoginPathState::Failed {
+            attempts: LOGIN_PATH_ATTEMPTS,
+        },
+    }
+}
+
+/// `PATH` as the user's login shell sets it: `$SHELL -l -i -c 'printf %s
+/// "$PATH"'` (fallback `/bin/zsh` on macOS, `/bin/bash` elsewhere) with a
+/// [`LOGIN_PATH_TIMEOUT`], stdin from `/dev/null`, stderr discarded. `-i`
+/// stays on because macOS users set `PATH` in `.zshrc`, which only an
+/// interactive shell reads. A success is cached for the process; a failure
+/// or timeout is retried by the next caller, up to [`LOGIN_PATH_ATTEMPTS`],
+/// then the inherited `PATH` is kept for good (one warning, debug before).
+/// Concurrent callers share one in-flight probe. `None` = keep the
+/// inherited `PATH`; immediate when [`NO_LOGIN_PATH`] is `1`.
+pub async fn login_path() -> Option<String> {
+    if std::env::var_os(NO_LOGIN_PATH).is_some_and(|v| v == "1") {
         return None;
     }
-    probe_login_path().await
+    login_path_with(&PROBE, &login_shell(), LOGIN_PATH_TIMEOUT).await
 }
 
-/// Spawn the login shell and read its `PATH`.
-async fn probe_login_path() -> Option<String> {
-    let shell = std::env::var_os("SHELL")
+/// The user's login shell.
+fn login_shell() -> OsString {
+    std::env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             if cfg!(target_os = "macos") {
@@ -150,36 +204,78 @@ async fn probe_login_path() -> Option<String> {
             } else {
                 "/bin/bash".into()
             }
-        });
-    let run = tokio::process::Command::new(&shell)
+        })
+}
+
+/// [`login_path`] over an explicit state, shell and timeout.
+async fn login_path_with(probe: &Mutex<Probe>, shell: &OsStr, timeout: Duration) -> Option<String> {
+    let (cell, attempt) = {
+        let mut p = lock(probe);
+        match &*p {
+            Probe::Ready(path) => return Some(path.clone()),
+            Probe::GaveUp => return None,
+            Probe::Pending { cell, attempts } => (Arc::clone(cell), *attempts),
+            Probe::Idle { attempts } => {
+                let attempts = attempts + 1;
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                *p = Probe::Pending {
+                    attempts,
+                    cell: Arc::clone(&cell),
+                };
+                (cell, attempts)
+            }
+        }
+    };
+    // `get_or_init` runs the probe once; late joiners wait on the same cell.
+    let result = cell
+        .get_or_init(|| async {
+            match probe_with(shell, timeout).await {
+                Ok(path) => Some(path),
+                Err(why) if attempt >= LOGIN_PATH_ATTEMPTS => {
+                    tracing::warn!(shell = %shell.display(), attempt, %why, "login shell PATH probe failed; keeping the inherited PATH");
+                    None
+                }
+                Err(why) => {
+                    tracing::debug!(shell = %shell.display(), attempt, %why, "login shell PATH probe failed; will retry");
+                    None
+                }
+            }
+        })
+        .await
+        .clone();
+    let mut p = lock(probe);
+    // Only this attempt's own `Pending` advances; a later attempt's does not.
+    if matches!(&*p, Probe::Pending { cell: c, .. } if Arc::ptr_eq(c, &cell)) {
+        *p = match &result {
+            Some(path) => Probe::Ready(path.clone()),
+            None if attempt >= LOGIN_PATH_ATTEMPTS => Probe::GaveUp,
+            None => Probe::Idle { attempts: attempt },
+        };
+    }
+    result
+}
+
+/// Run `shell -l -i -c 'printf %s "$PATH"'` once; `Err` says why it gave no
+/// usable `PATH`.
+async fn probe_with(shell: &OsStr, timeout: Duration) -> Result<String, String> {
+    let run = tokio::process::Command::new(shell)
         .args(["-l", "-i", "-c", r#"printf %s "$PATH""#])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
-    let shell = shell.to_string_lossy();
-    match tokio::time::timeout(LOGIN_PATH_TIMEOUT, run).await {
+    match tokio::time::timeout(timeout, run).await {
         Ok(Ok(out)) if out.status.success() => {
             let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
             if path.is_empty() {
-                tracing::warn!(%shell, "login shell printed an empty PATH; keeping the inherited PATH");
-                return None;
+                return Err("printed an empty PATH".into());
             }
-            Some(path)
+            Ok(path)
         }
-        Ok(Ok(out)) => {
-            tracing::warn!(%shell, status = %out.status, "login shell failed; keeping the inherited PATH");
-            None
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(%shell, error = %e, "login shell could not start; keeping the inherited PATH");
-            None
-        }
-        Err(_) => {
-            tracing::warn!(%shell, timeout = ?LOGIN_PATH_TIMEOUT, "login shell timed out; keeping the inherited PATH");
-            None
-        }
+        Ok(Ok(out)) => Err(format!("exited with {}", out.status)),
+        Ok(Err(e)) => Err(format!("could not start: {e}")),
+        Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
     }
 }
 
@@ -387,9 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_path_off_keeps_the_inherited_path() {
-        // `THEUTH_NO_LOGIN_PATH=1` short-circuits before the probe: nothing
-        // to seed, so a new shell keeps the inherited `PATH`.
-        assert_eq!(resolve_login_path(true).await, None);
+        // With seeding off, a new shell keeps the inherited `PATH`.
         let shell = ShellTool::build_shell(false).await.unwrap();
         assert_eq!(
             shell.env_str("PATH").unwrap(),
@@ -397,17 +491,112 @@ mod tests {
         );
     }
 
+    /// An executable script standing in for the login shell.
+    fn fake_shell(body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = std::env::temp_dir().join(format!("theuth-shell-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    fn probe_state() -> Mutex<Probe> {
+        Mutex::new(Probe::Idle { attempts: 0 })
+    }
+
     #[tokio::test]
-    async fn login_shell_path_contains_bin() {
-        let Some(shell) = std::env::var_os("SHELL").filter(|s| !s.is_empty()) else {
-            return;
-        };
-        if !std::path::Path::new(&shell).exists() {
+    async fn failed_probe_is_retried_then_gives_up() {
+        let state = probe_state();
+        let never = OsStr::new("/usr/bin/false");
+        let long = Duration::from_secs(5);
+        for attempts in 1..=LOGIN_PATH_ATTEMPTS {
+            assert_eq!(login_path_with(&state, never, long).await, None);
+            assert_eq!(state_of(&state), LoginPathState::Failed { attempts });
+        }
+        // Given up: a shell that would now succeed is never run.
+        let good = fake_shell("printf %s /late/bin");
+        assert_eq!(login_path_with(&state, good.as_os_str(), long).await, None);
+        assert_eq!(
+            state_of(&state),
+            LoginPathState::Failed {
+                attempts: LOGIN_PATH_ATTEMPTS
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_probe_counts_as_a_failure_and_success_is_cached() {
+        let state = probe_state();
+        let hang = fake_shell("sleep 30");
+        let started = Instant::now();
+        assert_eq!(
+            login_path_with(&state, hang.as_os_str(), Duration::from_millis(200)).await,
+            None
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(state_of(&state), LoginPathState::Failed { attempts: 1 });
+        // Retry succeeds and is cached: a later failing shell is not consulted.
+        let good = fake_shell("printf %s /fake/bin:/bin");
+        let path = login_path_with(&state, good.as_os_str(), Duration::from_secs(5)).await;
+        assert_eq!(path.as_deref(), Some("/fake/bin:/bin"));
+        assert_eq!(
+            state_of(&state),
+            LoginPathState::Ready("/fake/bin:/bin".into())
+        );
+        let path =
+            login_path_with(&state, OsStr::new("/usr/bin/false"), Duration::from_secs(5)).await;
+        assert_eq!(path.as_deref(), Some("/fake/bin:/bin"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_callers_share_one_probe() {
+        let state = probe_state();
+        let counted = fake_shell("printf %s /once >> \"$0.calls\"; printf %s /once/bin");
+        let long = Duration::from_secs(5);
+        let (a, b) = tokio::join!(
+            login_path_with(&state, counted.as_os_str(), long),
+            login_path_with(&state, counted.as_os_str(), long)
+        );
+        assert_eq!(
+            (a.as_deref(), b.as_deref()),
+            (Some("/once/bin"), Some("/once/bin"))
+        );
+        let calls = std::fs::read_to_string(format!("{}.calls", counted.display())).unwrap();
+        assert_eq!(calls, "/once");
+    }
+
+    #[tokio::test]
+    async fn new_with_login_path_starts_the_probe_eagerly() {
+        if std::env::var_os(NO_LOGIN_PATH).is_some_and(|v| v == "1") {
             return;
         }
-        // The probe may exceed its 3 s budget on a loaded machine; then it
-        // reports `None` by design and there is nothing to check.
-        if let Some(path) = probe_login_path().await {
+        let fx = fixture(Duration::from_secs(3), Duration::from_secs(60)).await;
+        let _tool = ShellTool::new(fx.jobs.clone(), true);
+        // Let the spawned task take the lock; no shell call has happened.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            matches!(
+                login_path_state(),
+                LoginPathState::Pending | LoginPathState::Ready(_)
+            ),
+            "{:?}",
+            login_path_state()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_shell_path_contains_bin() {
+        let shell = login_shell();
+        if std::env::var_os("SHELL").is_none_or(|s| s.is_empty())
+            || !std::path::Path::new(&shell).exists()
+        {
+            return;
+        }
+        // The probe may exceed its budget on a loaded machine; then it
+        // reports `Err` by design and there is nothing to check.
+        if let Ok(path) = probe_with(&shell, LOGIN_PATH_TIMEOUT).await {
             assert!(
                 path.split(':').any(|p| p == "/bin" || p == "/usr/bin"),
                 "{path}"
