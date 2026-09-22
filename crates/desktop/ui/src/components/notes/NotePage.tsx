@@ -72,8 +72,9 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
   useEffect(() => {
     document.title = title
   }, [title])
-  // A just-created note (`?new`, from New note): the title is selected for typing over, once the input is enabled; the flag is dropped from the URL.
-  const ready = live.provider !== null
+  // A just-created note (`?new`, from New note): the title is selected for typing over once the document is live
+  // (`meta`, and so the title, lands with `doc_open` just before); the flag is dropped from the URL.
+  const ready = live.status.kind === 'live'
   useEffect(() => {
     if (!isNew || !ready) return
     titleInput.current?.select()
