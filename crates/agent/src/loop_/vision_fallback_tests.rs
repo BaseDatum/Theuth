@@ -397,6 +397,7 @@ impl Harness {
             ticket: None,
             scope: None,
             peer: None,
+            defer: false,
         }
     }
 

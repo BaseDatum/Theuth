@@ -14,6 +14,7 @@ import { active } from '@/store/harness-scope'
 import { useSessions } from '@/store/sessions'
 import { drafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
+import { openBroadcastDialog } from './BroadcastDialog'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -110,6 +111,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'model-to-model messaging; `always` persists the harness-wide switch',
   },
   { name: '/peers', hint: '', desc: 'peers this session may message (picker) and pending requests' },
+  { name: '/broadcast', hint: '[running|roots] [text]', desc: 'send one message to many sessions' },
   { name: '/a2a', hint: '[reload]', desc: 'network A2A status; `reload` re-reads peers/exports' },
   { name: '/cancel', hint: '', desc: 'abort the in-flight turn' },
   {
@@ -361,6 +363,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/peers':
       need(session)
       return settings(navigate, 'communication', session)
+    // Mirror of the TUI entry (62 §5.1): a leading selector word presets the ticks, the rest prefills the message.
+    case '/broadcast':
+      if (sub === 'running' || sub === 'roots') return openBroadcastDialog({ preset: sub, text: rest })
+      return openBroadcastDialog({ text: arg })
     case '/a2a': {
       if (!arg) return settings(navigate, 'communication', session)
       if (sub !== 'reload') throw new Error('usage: /a2a [reload]')

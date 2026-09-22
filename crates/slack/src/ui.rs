@@ -71,7 +71,7 @@ pub fn help() -> Reply {
         (
             "session",
             &[
-                "sessions", "resume", "cancel", "compact", "model", "agents", "prompt",
+                "sessions", "resume", "cancel", "compact", "model", "agents", "prompt", "broadcast",
             ],
         ),
         (
@@ -716,6 +716,7 @@ mod tests {
             last: "looking".into(),
             project: None,
             retention: agent::Retention::Durable,
+            activity: Default::default(),
         }];
         let models_rows = vec![
             ModelInfo {

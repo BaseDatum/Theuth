@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useEffect, useState } from 'react'
+import { counts } from '@/components/chat/broadcast'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -9,7 +10,7 @@ import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField, useSessions } from '@/store/sessions'
 
-const GLYPH: Record<AgentState['state'], string> = {
+export const GLYPH: Record<AgentState['state'], string> = {
   running: '●',
   idle: '○',
   awaiting: '⏳',
@@ -68,7 +69,12 @@ const Row = memo(function Row({
           {costShort(cost)}
         </span>
       )}
-      <span className="tabular-nums text-fg-tertiary">{ago(row.started_at ?? row.finished_at, now)}</span>
+      {row.activity && (row.activity.jobs > 0 || row.activity.ptys > 0) && (
+        <span className="tabular-nums text-fg-tertiary" title="running jobs · PTYs">
+          {counts(row.activity)}
+        </span>
+      )}
+      <span className="tabular-nums text-fg-tertiary">{ago(row.activity?.last_active ?? row.started_at ?? row.finished_at, now)}</span>
     </Link>
   )
 })

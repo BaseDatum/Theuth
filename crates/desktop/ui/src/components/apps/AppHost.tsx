@@ -453,7 +453,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
       const st = useSessions.getState();
       if (st.sessions[session]?.running) {
         const id = crypto.randomUUID();
-        st.applyEvents([{ type: "InputQueued", session, id, text }]);
+        st.applyEvents([{ type: "InputQueued", session, id, text, defer: false }]);
         api.steer(session, text, id, []).catch(fail);
       } else {
         st.markSent(session, text);

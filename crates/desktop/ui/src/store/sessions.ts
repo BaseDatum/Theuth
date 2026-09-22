@@ -165,7 +165,8 @@ export type SessionSlice = {
   historyGeneration: number;
   /** Bumped by turn/edit activity (deltas, tool calls, interjections, context changes); a settled snapshot requested under an older value is discarded. */
   live: number;
-  queued: QueuedInput[];
+  /** `defer` (62 §3.1): lands at the next turn, not after this tool batch; unknown after a reload (`list_queued` lacks it). */
+  queued: (QueuedInput & { defer?: boolean })[];
   skills: string[];
   name?: string | null;
   parent?: string | null;
