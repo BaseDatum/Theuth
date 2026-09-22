@@ -193,8 +193,9 @@ export function Composer({
   }, [focused])
 
   // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
-  // relay-linked harness this browser's mic streams to it instead (§4.5).
-  const canDictate = voice && !priv && !(running && session)
+  // relay-linked harness this browser's mic streams to it instead (§4.5). Both voice buttons stay while a turn
+  // runs — a note or dictated text queues as a steer through `submit()`, exactly like a typed one.
+  const canDictate = voice && !priv
   const dictate = () => {
     if (!canDictate) return
     if (dictating) {
@@ -683,7 +684,7 @@ export function Composer({
                   )}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Voice note</TooltipContent>
+              <TooltipContent>{running ? 'Voice note (steers the running turn)' : 'Voice note'}</TooltipContent>
             </Tooltip>
           )}
           {canDictate &&
