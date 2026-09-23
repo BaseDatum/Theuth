@@ -146,6 +146,23 @@ table = Table([
 ])
 ```
 
+Step-through diagram (design 65 §3.5): a `Graph` whose `highlight` follows `$step`; pressing a node runs
+`onSelect` with `$value` bound to the node id (only `@Set` reads it at press time — `@ToAssistant` and
+`@OpenUrl` arguments are evaluated when the props are, so send the selection through a `$state`):
+
+```openui
+root = Stack([title, graph, narrative, nav])
+$step = 0
+$selected = ""
+title = TextContent("## One request")
+steps = [{ids: ["client"], text: "The client sends the request."}, {ids: ["client", "api"], text: "The API authenticates it."}, {ids: ["api", "db"], text: "The API reads the record."}]
+nodes = [{id: "client", label: "Client", kind: "actor"}, {id: "api", label: "API", kind: "rounded"}, {id: "db", label: "Postgres", kind: "cylinder"}]
+edges = [{from: "client", to: "api", label: "HTTPS"}, {from: "api", to: "db", label: "reads"}]
+graph = Graph(nodes, edges, null, "LR", steps[$step].ids, Action([@Set($selected, $value), @ToAssistant("Explain the selected node", $selected)]))
+narrative = TextContent(steps[$step].text + ($selected == "" ? "" : " Selected: " + $selected))
+nav = Buttons([Button("Back", Action([@Set($step, $step > 0 ? $step - 1 : 0)]), "secondary"), Button("Next", Action([@Set($step, $step < 2 ? $step + 1 : 2)]))])
+```
+
 ## Catalog
 
 {{catalog}}

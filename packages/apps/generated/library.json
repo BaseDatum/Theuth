@@ -1,5 +1,5 @@
 {
-  "hash": "8dc9c11b7273e72b9e7feabddc5b976fb2714c2afaed2e907b6db838e2cc46c4",
+  "hash": "8b1fac40c6fe65b8a674d92f4b066f8e8c13b50833ac5b633ed2d8bb62b3ae5f",
   "pins": {
     "@openuidev/lang-core": "0.3.0",
     "@openuidev/react-headless": "0.16.1",
@@ -7,8 +7,8 @@
     "@openuidev/react-ui": "0.16.1"
   },
   "patches": {
-    "@openuidev%2Flang-core@0.3.0.patch": "648ad78577984c96d634329e5805ae7b9ddb5fa4479025e6d2479b8cf5bbb5c0",
-    "@openuidev%2Freact-lang@0.3.0.patch": "2a4b02ba042871c43c0882f8866e6869db6e741e9fa83e335bae461a25ae62ea"
+    "@openuidev%2Flang-core@0.3.0.patch": "d402cd736d7adba67d7f3c00a52563897565679cc17c9e1a8cb6650222096298",
+    "@openuidev%2Freact-lang@0.3.0.patch": "5c4031fd43a781407898e35cec5e9a8c6f8c88ea9a66d73cf8ac01370f777e32"
   },
   "limits": {
     "sourceBytes": 131072,
@@ -41,7 +41,8 @@
     "SwitchGroup",
     "SwitchItem",
     "Button",
-    "Buttons"
+    "Buttons",
+    "Graph"
   ],
   "componentGroups": [
     {
@@ -142,7 +143,7 @@
       "description": "Flex container. direction: \"row\"|\"column\" (default \"column\"). gap: \"none\"|\"xs\"|\"s\"|\"m\"|\"l\"|\"xl\"|\"2xl\" (default \"m\"). align: \"start\"|\"center\"|\"end\"|\"stretch\"|\"baseline\". justify: \"start\"|\"center\"|\"end\"|\"between\"|\"around\"|\"evenly\"."
     },
     "Card": {
-      "signature": "Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
+      "signature": "Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack | Graph)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
       "description": "Styled container. variant: \"card\" (default, elevated) | \"sunk\" (recessed) | \"clear\" (transparent). Always full width. Accepts all Stack flex params (default: direction \"column\"). Cards flex to share space in row/wrap layouts."
     },
     "CardHeader": {
@@ -220,6 +221,10 @@
     "Buttons": {
       "signature": "Buttons(buttons: Button[], direction?: \"row\" | \"column\")",
       "description": "Group of Button components. direction: \"row\" (default) | \"column\"."
+    },
+    "Graph": {
+      "signature": "Graph(nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\"}[], groups?: {id: string, label: string}[], direction?: \"LR\" | \"TB\", highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
     }
   },
   "reactive": {
@@ -234,6 +239,9 @@
     ],
     "SwitchGroup": [
       "value"
+    ],
+    "Graph": [
+      "highlight"
     ]
   },
   "schema": {
@@ -302,6 +310,9 @@
       },
       "Buttons": {
         "$ref": "#/$defs/Buttons"
+      },
+      "Graph": {
+        "$ref": "#/$defs/Graph"
       }
     },
     "required": [
@@ -325,7 +336,8 @@
       "SwitchGroup",
       "SwitchItem",
       "Button",
-      "Buttons"
+      "Buttons",
+      "Graph"
     ],
     "additionalProperties": false,
     "$defs": {
@@ -425,6 +437,9 @@
                 },
                 {
                   "$ref": "#/$defs/Stack"
+                },
+                {
+                  "$ref": "#/$defs/Graph"
                 }
               ]
             }
@@ -886,6 +901,177 @@
         ],
         "additionalProperties": false,
         "description": "Clickable button"
+      },
+      "Graph": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "box",
+                    "rounded",
+                    "pill",
+                    "diamond",
+                    "cylinder",
+                    "actor"
+                  ]
+                },
+                "group": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "solid",
+                    "dashed"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "LR",
+              "TB"
+            ]
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "additionalProperties": false,
+        "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
       },
       "Input": {
         "type": "object",

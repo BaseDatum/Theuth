@@ -268,6 +268,14 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
   const stateIds = new Set(
     statements.filter((s) => s.kind === "state").map((s) => s.id),
   );
+  // `$value` is the pressed node id inside a Graph's `onSelect` action (65 §3.5; upstream's binding-scope name).
+  const valueScoped = new Set<ASTNode>();
+  for (const s of statements)
+    visit(s.expr, null, (n) => {
+      if (n.k !== "Comp" || n.name !== "Graph") return;
+      const onSelect = n.mappedProps?.onSelect ?? n.args[5];
+      if (onSelect) visit(onSelect, null, (m) => void valueScoped.add(m));
+    });
   const callable = new Map<string, "query" | "mutation">();
   for (const s of statements)
     if (s.kind === "query" || s.kind === "mutation") callable.set(s.id, s.kind);
@@ -275,7 +283,11 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
   const stepNames = new Set(Object.keys(ACTION_STEPS));
   for (const s of statements) {
     visit(s.expr, null, (n, parent) => {
-      if (n.k === "StateRef" && !stateIds.has(n.n))
+      if (
+        n.k === "StateRef" &&
+        !stateIds.has(n.n) &&
+        !(n.n === "$value" && valueScoped.has(n))
+      )
         push(
           "state-undeclared",
           `"${n.n}" is used but never declared; add ${n.n} = <default> as a statement`,

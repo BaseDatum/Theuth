@@ -1,4 +1,4 @@
-# theuth apps component catalog (library 8dc9c11b7273) — root statement: root = Stack([...])
+# theuth apps component catalog (library 8b1fac40c6fe) — root statement: root = Stack([...])
 Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.
 
 ## Layout
@@ -10,7 +10,7 @@ Separator(orientation?: "horizontal" | "vertical", decorative?: boolean) — Vis
 - Show/hide sections: $editId != "" ? Card([editForm]) : null
 
 ## Content
-Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
+Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack | Graph)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
 CardHeader(title?: string, subtitle?: string) — Header with optional title and subtitle
 TextContent(text: string, size?: "small" | "default" | "large" | "small-heavy" | "large-heavy") — Text block. Supports markdown. Optional size: "small" | "default" | "large" | "small-heavy" | "large-heavy".
 Image(alt: string, src?: string) — Image with alt text and optional URL
@@ -56,6 +56,9 @@ SwitchItem(label?: string, description?: string, name: string, defaultChecked?: 
 Button(label: string, action?: ActionExpression, variant?: "primary" | "secondary" | "tertiary", type?: "normal" | "destructive", size?: "extra-small" | "small" | "medium" | "large") — Clickable button
 Buttons(buttons: Button[], direction?: "row" | "column") — Group of Button components. direction: "row" (default) | "column".
 - Toggle in @Each: @Each(rows, "t", Button(t.status == "open" ? "Close" : "Reopen", Action([...])))
+
+## Other
+Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor", group?: string, state?: "default" | "active" | "done" | "muted" | "danger"}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed"}[], groups?: {id: string, label: string}[], direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression) — Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`).
 
 ## Data and actions
 $name = literal — reactive state; Query("tool", {args}, defaults, refreshSeconds?) — read; Mutation("tool", {args}) — runs only from an action; results expose .status/.data/.error

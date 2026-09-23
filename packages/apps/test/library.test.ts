@@ -46,6 +46,7 @@ describe("curated library", () => {
       TextArea: ["value"],
       Select: ["value"],
       SwitchGroup: ["value"],
+      Graph: ["highlight"],
     });
   });
 
