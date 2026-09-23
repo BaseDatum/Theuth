@@ -2089,7 +2089,7 @@ dependencies = [
 [[package]]
 name = "btls-sys"
 version = "0.5.6"
-source = "git+https://github.com/skymoore/btls?branch=fix%2Fprefix-windows-coff#6abed5983a7c9b4e1d65bcba0c59bd1438fdff92"
+source = "git+https://github.com/skymoore/btls?branch=main#f26e840833ffb865996c5c4efe762bbd88e3d6e7"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
