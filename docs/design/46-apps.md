@@ -20,6 +20,23 @@ a separate, unimplemented taint design, not a safety property this app claims.
    app RPC, invocation lifecycle and its prompt. `Kind::App` is a versioned
    `.openui` file. Static `json-render`/Mermaid fences remain pictures in a
    reply; apps are reopenable interactive screens. No second artifact DB.
+   *As built 2026-09-23 (`feature/surfaces-agent`):* a reply may also carry a
+   static ```` ```openui ```` fence (30 §6.2, §9) — the same statements as the
+   `app` tool; `$state`, `@Set`/`@Reset`/`@OpenUrl` and form controls work in
+   place, `Query`/`Mutation`/`@ToAssistant` are rejected by the fence checker
+   ("use the `app` tool") and inert client-side. The desktop turns a fence into
+   an app through `publish_app(session, name, source)` (RPC): `tool::commit_source`
+   with `Origin::Ui` and a synthetic `ui-<uuid v7>` call id — same validation,
+   same `Kind::App` commit, `ArtifactShown` as usual, no transcript entry, no
+   model turn. The curated library grew from 22 to 53 components (Tabs,
+   Accordion, Steps, Callout, TextCallout, MetricIndicatorInline, ListBlock,
+   Tag/TagBlock/Icon, Chips, CodeBlock, MarkDownRenderer (react-markdown, no
+   raw HTML), Carousel, ImageGallery, Label, RadioGroup, CheckBoxGroup, Slider,
+   RadarChart, ScatterChart, HorizontalBarChart, SingleStackedBarChart); the
+   library hash moved to `6b730a55…`, so pre-existing apps render as readable
+   source under §8.3's equality gate until republished. The prompt block keeps
+   the ~20 most useful signatures (`tool::PROMPT_COMPONENTS`) and ends with a
+   pointer to the `apps` skill, which carries the full generated catalog.
 2. **Use OpenUI's current TypeScript implementation on both sides.** No Rust
    grammar, no Rust evaluator, no resurrection of the old WASM parser.
    The frontend runs the upstream streaming parser/renderer locally. A small,
