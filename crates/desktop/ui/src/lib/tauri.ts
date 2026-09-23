@@ -90,3 +90,14 @@ export const islandPlace = (positions: Record<string, [number, number]>): Promis
 export const onCaptureHidden = (cb: (hidden: boolean) => void) => on<boolean>('capture-hidden', cb)
 /** `NSApplicationDidChangeScreenParametersNotification`: re-place the island. */
 export const onScreensChanged = (cb: () => void) => on<null>('screens-changed', cb)
+/** 58 §6.2 / §3.3: what this OS's island can do. Off Tauri: everything, so the fixture shows the full UI. */
+export type IslandCapabilities = {
+  hide_from_share: boolean
+  always_on_top: boolean
+  non_activating: boolean
+  placement: 'notch' | 'top-centre' | 'user'
+}
+export const islandCapabilities = (): Promise<IslandCapabilities> =>
+  isTauri()
+    ? invoke<IslandCapabilities>('island_capabilities')
+    : Promise.resolve({ hide_from_share: true, always_on_top: true, non_activating: true, placement: 'notch' })

@@ -65,6 +65,12 @@ block2 = "0.6"
 objc2-app-kit = { workspace = true }
 objc2-foundation = { workspace = true }
 
+# Windows only: the island's Win32 styles on the `HWND` `raw_window_handle` yields (58 §6.2). Same
+# `windows-sys` line as `crates/platform`.
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
 # backgrounding for the grace period iOS grants (31 §8). Same objc2 line tauri uses.
 [target.'cfg(target_os = "ios")'.dependencies]

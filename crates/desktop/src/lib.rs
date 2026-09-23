@@ -9,7 +9,7 @@
 //! and the generated iOS bridge both enter at [`run`].
 
 mod commands;
-#[cfg(target_os = "macos")]
+#[cfg(desktop)]
 mod island;
 #[cfg(desktop)]
 mod launch;
@@ -149,9 +149,7 @@ mod desktop {
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
     use tauri_plugin_positioner::{Position, WindowExt};
 
-    #[cfg(target_os = "macos")]
-    use crate::island;
-    use crate::{commands, launch, models, update};
+    use crate::{commands, island, launch, models, update};
 
     /// The webview acknowledges `quit-requested` with `quit_ack` (after RPC
     /// `shutdown` when it owns the daemon); this is the fallback.
@@ -185,25 +183,9 @@ mod desktop {
             .manage(launch::Launch::default())
             .manage(update::Pending::default())
             .manage(Flags::default());
-        // 53 decision 8: the island panel and its commands exist on macOS only.
+        // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
         #[cfg(target_os = "macos")]
-        let builder =
-            builder
-                .plugin(tauri_nspanel::init())
-                .invoke_handler(tauri::generate_handler![
-                    commands::connection,
-                    commands::launch_log,
-                    commands::relaunch,
-                    commands::quit_ack,
-                    update::check_update,
-                    update::install_update,
-                    island::set_hidden_from_capture,
-                    island::island_show,
-                    island::island_hide,
-                    island::island_place,
-                    island::island_resign_key,
-                ]);
-        #[cfg(not(target_os = "macos"))]
+        let builder = builder.plugin(tauri_nspanel::init());
         let builder = builder.invoke_handler(tauri::generate_handler![
             commands::connection,
             commands::launch_log,
@@ -211,6 +193,12 @@ mod desktop {
             commands::quit_ack,
             update::check_update,
             update::install_update,
+            island::set_hidden_from_capture,
+            island::island_show,
+            island::island_hide,
+            island::island_place,
+            island::island_resign_key,
+            island::island_capabilities,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V under Accessory policy); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
@@ -227,7 +215,6 @@ mod desktop {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 setup(app.handle())?;
-                #[cfg(target_os = "macos")]
                 island::init(app.handle())?;
                 Ok(())
             })
