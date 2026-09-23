@@ -323,6 +323,7 @@ tools:
     mutating: ask
     destructive: ask
   # approvals: false   # never prompt; `/approvals off always` writes this
+  # pty_shell: ~        # program for `start` PTY jobs; default $SHELL, on Windows pwsh.exe else powershell.exe (58 §0.3)
 
 # secrets:                   # design doc 37; `/secrets`, Settings › Secrets, `t --secret-set`
 #   key_store: auto          # auto | keychain | file — where the vault key lives; auto = keychain when one answers, else <data_dir>/secrets.key (0600) with a warning
