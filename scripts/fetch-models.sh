@@ -71,7 +71,7 @@ PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/
 PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
 PUB_MODELS="${PUBLIC_BASE}/models"
 
-size_of() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
+size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; } # GNU first: BSD `-f %z` is a valid *filesystem* query on GNU and returns garbage
 
 # Download $2 to $1.part (headers to $1.headers), extra curl args after. Prints one line and
 # returns 1 on any HTTP/transport failure, leaving nothing behind.

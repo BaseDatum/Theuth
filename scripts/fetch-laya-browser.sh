@@ -24,7 +24,7 @@ FILES=(
 )
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
-size_of() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
+size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; } # GNU first: BSD `-f %z` is a valid *filesystem* query on GNU and returns garbage
 
 mkdir -p "$DEST"
 for entry in "${FILES[@]}"; do
