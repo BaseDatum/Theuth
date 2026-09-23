@@ -423,8 +423,11 @@ pub struct SessionState {
     /// Skills whose body is in the frame this epoch (04 §2.4): user
     /// injections and successful `load_skill` calls; cleared by compaction.
     pub skills: BTreeSet<String>,
-    /// The one `<surface_error>` round of this turn ran (design doc 30 §5).
-    pub surface_corrected: bool,
+    /// `<surface_error>` rounds this turn (30 §5 as-built): `correct_rounds + 1` once
+    /// the final move-on note went out, after which the reply is not checked again.
+    pub surface_rounds: u8,
+    /// A fence checker was unavailable once this session: logged, not repeated.
+    pub fence_warned: bool,
     /// Paths passed to `write_file` this epoch, for the compaction head (36 §6.3); cleared by compaction.
     pub files_written: BTreeSet<String>,
     /// Upper bound on the window learnt from an overflow when the catalog has none (36 §6.6); 0 = unknown.
@@ -463,7 +466,8 @@ impl SessionState {
             title_turns: 0,
             title_chars: 0,
             title_epoch: epoch,
-            surface_corrected: false,
+            surface_rounds: 0,
+            fence_warned: false,
             files_written: BTreeSet::new(),
             window_hint: 0,
             title_task: None,
@@ -2156,22 +2160,122 @@ fn est_reply(end: &StreamEnd) -> u32 {
         .saturating_add(reasoning)
 }
 
-/// Design doc 30 §5: whether a reply that ended with `text` gets the one
-/// `<surface_error>` round — `(failing fences, message)` when `json-render`
-/// blocks would not render, correction is on, and this turn has not had its round.
-fn needs_correction(
-    cfg: &SurfaceConfig,
-    state: &SessionState,
+/// Fences per reply the registered checkers are asked about (30 §5 as-built); the rest
+/// count as valid. `json-render` is checked natively and not counted.
+const MAX_CHECKED_FENCES: usize = 8;
+/// Largest fence body sent to a checker; larger ones count as valid.
+const MAX_CHECKED_FENCE_BYTES: usize = 32 * 1024;
+/// Fence languages validated through [`tools::CheckFence`].
+const CHECKED_LANGS: [&str; 2] = ["mermaid", "openui"];
+
+/// Design doc 30 §5 as-built: every reply fence that would not render — `json-render`
+/// natively, `mermaid` and `openui` through the registry's fence checkers. A missing or
+/// failing checker means the fence counts as valid (fail-open; `warned` makes that one
+/// `warn` per session). Mermaid errors with a `line:N` path quote the offending line.
+async fn check_fences(
+    registry: Option<&ActorRef<ToolRegistry>>,
     text: &str,
-) -> Option<(usize, String)> {
-    if !cfg.enabled || !cfg.correct || state.surface_corrected {
+    warned: &mut bool,
+) -> Vec<surface::FailedFence> {
+    let mut out: Vec<surface::FailedFence> = surface::check(text)
+        .into_iter()
+        .map(|(ordinal, errors)| surface::FailedFence {
+            lang: "json-render".into(),
+            ordinal,
+            errors,
+        })
+        .collect();
+    let mut checked = 0usize;
+    for lang in CHECKED_LANGS {
+        for (ordinal, body) in surface::fences_of(text, lang) {
+            let Some(body) = body else {
+                out.push(surface::FailedFence {
+                    lang: lang.into(),
+                    ordinal,
+                    errors: vec![surface::SpecError {
+                        path: String::new(),
+                        message: "fence not closed".into(),
+                    }],
+                });
+                continue;
+            };
+            if checked >= MAX_CHECKED_FENCES || body.len() > MAX_CHECKED_FENCE_BYTES {
+                continue;
+            }
+            checked += 1;
+            let Some(registry) = registry else { continue };
+            let result = registry
+                .ask(tools::CheckFence {
+                    lang: lang.into(),
+                    body: body.to_owned(),
+                })
+                .await;
+            let errs = match result {
+                Ok(Some(Ok(errs))) => errs,
+                Ok(None) => continue,
+                Ok(Some(Err(why))) => {
+                    if !*warned {
+                        *warned = true;
+                        tracing::warn!(target: "surface", lang, "fence checker unavailable, fences count as valid: {why}");
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    if !*warned {
+                        *warned = true;
+                        tracing::warn!(target: "surface", lang, "fence checker unreachable, fences count as valid: {e}");
+                    }
+                    continue;
+                }
+            };
+            if errs.is_empty() {
+                continue;
+            }
+            let errors = errs
+                .into_iter()
+                .map(|e| surface::SpecError {
+                    message: match surface::quote_line(body, &e.path) {
+                        Some(quoted) if lang == "mermaid" => format!("{}\n  {quoted}", e.message),
+                        _ => e.message,
+                    },
+                    path: e.path,
+                })
+                .collect();
+            out.push(surface::FailedFence {
+                lang: lang.into(),
+                ordinal,
+                errors,
+            });
+        }
+    }
+    out
+}
+
+/// Whether this reply's fences are checked at all: correction on and this turn has not
+/// passed its final note (`surface_rounds` runs to `correct_rounds + 1`).
+fn correction_wanted(cfg: &SurfaceConfig, state: &SessionState) -> bool {
+    cfg.enabled && cfg.correct && state.surface_rounds <= cfg.correct_rounds
+}
+
+/// The user-role message a round with `failing` fences persists, advancing `rounds`:
+/// a `<surface_error>` naming them while rounds remain, the final move-on note when the
+/// last one is spent (after which [`correction_wanted`] is false for the turn), `None`
+/// when nothing fails.
+fn correction_message(
+    cfg: &SurfaceConfig,
+    rounds: &mut u8,
+    failing: &[surface::FailedFence],
+) -> Option<String> {
+    if failing.is_empty() {
         return None;
     }
-    let errs = surface::check(text);
-    if errs.is_empty() {
-        return None;
-    }
-    Some((errs.len(), surface::surface_error(&errs)))
+    let last = *rounds >= cfg.correct_rounds;
+    *rounds = rounds.saturating_add(1);
+    Some(if last {
+        surface::surface_error_final(cfg.correct_rounds)
+    } else {
+        surface::surface_error(failing)
+    })
 }
 
 /// The direct `app` tool (46 §5): its arguments carry UI source the frontend
@@ -2944,7 +3048,7 @@ impl Turn {
                 self.repair_dangling().await;
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
-                self.state.surface_corrected = false;
+                self.state.surface_rounds = 0;
                 let mut rounds = 0u32;
                 self.landing = false;
                 loop {
@@ -3457,16 +3561,34 @@ impl Turn {
             .unwrap_or_default();
         if calls.is_empty() {
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
-                // Design doc 30 §5: one `<surface_error>` round per turn when a
-                // `json-render` block would not render; the frontends already saw the text.
-                let correction =
-                    needs_correction(&self.shared.cfg.surface, &self.state, &text_of(&content));
+                // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
+                // rounds per turn while a fence would not render, then one final
+                // move-on note; the frontends already saw the text.
+                let failing = if correction_wanted(&self.shared.cfg.surface, &self.state) {
+                    check_fences(
+                        Some(registry),
+                        &text_of(&content),
+                        &mut self.state.fence_warned,
+                    )
+                    .await
+                } else {
+                    Vec::new()
+                };
                 // An unrecorded reply cannot be continued from: the store, not
                 // this process's memory, is what a continuation resumes.
                 natural &= self.persist(ChatMessage::assistant(content)).await;
-                if let Some((fences, msg)) = correction {
-                    self.state.surface_corrected = true;
-                    tracing::info!(target: "surface", session = %self.shared.id, fences, "correction round");
+                if let Some(msg) = correction_message(
+                    &self.shared.cfg.surface,
+                    &mut self.state.surface_rounds,
+                    &failing,
+                ) {
+                    tracing::info!(
+                        target: "surface",
+                        session = %self.shared.id,
+                        fences = failing.len(),
+                        round = self.state.surface_rounds,
+                        "correction round"
+                    );
                     self.persist(ChatMessage::user(msg)).await;
                     return Round::Tools;
                 }
@@ -5391,36 +5513,56 @@ mod tests {
 
     const BROKEN_FENCE: &str = "Here:\n```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"DataTable\", \"props\": {}}}}\n```\n";
 
-    #[test]
-    fn correction_round_only_once_when_on_and_broken() {
-        let state = SessionState::resume(0, None, Vec::new());
+    #[tokio::test]
+    async fn correction_rounds_count_to_the_limit_then_send_the_final_note() {
+        let mut state = SessionState::resume(0, None, Vec::new());
         let on = SurfaceConfig::default();
-        assert!(needs_correction(&on, &state, "plain prose, no fence").is_none());
+        let mut warned = false;
+        assert!(check_fences(None, "plain prose, no fence", &mut warned).await.is_empty());
         let valid = "```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"Separator\", \"props\": {}}}}\n```";
-        assert!(needs_correction(&on, &state, valid).is_none());
+        assert!(check_fences(None, valid, &mut warned).await.is_empty());
+        // No registry: mermaid/openui count as valid, an unclosed one still fails.
+        assert!(check_fences(None, "```mermaid\ngraph TD\nA-->B[\n```\n", &mut warned).await.is_empty());
+        let unclosed = check_fences(None, "```openui\nroot = Stack([])\n", &mut warned).await;
+        assert_eq!(unclosed.len(), 1);
+        assert_eq!((unclosed[0].lang.as_str(), unclosed[0].ordinal), ("openui", 1));
+        assert_eq!(unclosed[0].errors[0].message, "fence not closed");
+        assert!(!warned, "nothing to warn about without a registry");
 
-        let (fences, msg) = needs_correction(&on, &state, BROKEN_FENCE).expect("broken fence");
-        assert_eq!(fences, 1);
-        assert!(msg.starts_with("<surface_error>\n"), "{msg}");
-        assert!(
-            msg.contains("Block 1 (json-render), errors:\n- /elements/r/type: "),
-            "{msg}"
-        );
+        let failing = check_fences(None, BROKEN_FENCE, &mut warned).await;
+        assert_eq!(failing.len(), 1);
+        assert_eq!(failing[0].lang, "json-render");
+        assert!(correction_message(&on, &mut state.surface_rounds, &[]).is_none());
+        assert_eq!(state.surface_rounds, 0);
 
-        let mut corrected = SessionState::resume(0, None, Vec::new());
-        corrected.surface_corrected = true;
-        assert!(needs_correction(&on, &corrected, BROKEN_FENCE).is_none());
+        // Rounds 1..=3 name the block; the 4th failure is the final note; then no more checks.
+        for round in 1..=3u8 {
+            assert!(correction_wanted(&on, &state));
+            let msg = correction_message(&on, &mut state.surface_rounds, &failing).expect("round");
+            assert_eq!(state.surface_rounds, round);
+            assert!(msg.starts_with("<surface_error>\n"), "{msg}");
+            assert!(
+                msg.contains("Block 1 (json-render), errors:\n- /elements/r/type: "),
+                "{msg}"
+            );
+        }
+        assert!(correction_wanted(&on, &state));
+        let last = correction_message(&on, &mut state.surface_rounds, &failing).expect("final");
+        assert_eq!(state.surface_rounds, 4);
+        assert!(last.starts_with("<surface_error final=\"true\">\n"), "{last}");
+        assert!(last.contains("after 3 attempts"), "{last}");
+        assert!(!correction_wanted(&on, &state), "the final reply is not checked");
 
         let off = SurfaceConfig {
-            enabled: true,
             correct: false,
+            ..SurfaceConfig::default()
         };
-        assert!(needs_correction(&off, &state, BROKEN_FENCE).is_none());
+        assert!(!correction_wanted(&off, &SessionState::resume(0, None, Vec::new())));
         let disabled = SurfaceConfig {
             enabled: false,
-            correct: true,
+            ..SurfaceConfig::default()
         };
-        assert!(needs_correction(&disabled, &state, BROKEN_FENCE).is_none());
+        assert!(!correction_wanted(&disabled, &SessionState::resume(0, None, Vec::new())));
     }
 
     #[test]
