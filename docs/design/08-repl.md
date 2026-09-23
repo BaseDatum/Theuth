@@ -231,7 +231,9 @@ Description (static bytes):
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
 itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
-names starting with `_`, which do not carry across cells.
+names starting with `_`, which do not carry across cells. Imports and variables persist
+across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
+nothing is lost.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path="x.rs")`)
@@ -501,7 +503,8 @@ lacks — the failure the codemcp pre-flight tried to hand-build, delivered
 by the interpreter's own checker with no false positives from dead
 branches (it is a type check, not an execution guess). The diagnostic
 comes back as `PoolError::Typing(String)` and is returned to the model as
-the cell result `type check failed:\n<diag>` (`is_error`); `await nope(1)`
+the cell result `type check failed (nothing ran; your variables are intact
+— resend the cell with the fix):\n<diag>` (`is_error`); `await nope(1)`
 never reaches a tool.
 
 The stubs are session configuration, not prompt text: regenerating them
@@ -514,11 +517,30 @@ byte-identical. A server that connected mid-turn is therefore callable and
 type-checkable in the next cell, not the next turn. `**extra: Any` keeps
 pass-through kwargs (§4.2) legal.
 
+**As built, 2026-09-23 — names the heap has but the checker does not.**
+The worker commits every checked snippet to a `repl_type_stubs.pyi` and
+prepends `from repl_type_stubs import *` to the next cell. Two harness-side
+fixes for what that loses: (1) *import prelude* — stubs do not re-export
+plain imports, so `Repl::imports` keeps each run cell's column-0
+`import`/`from` line by bound name (persisted in `.names.json` as `import`,
+optional) and prepends the ones a cell uses but does not bind; diagnostics
+are re-based to the model's lines (`rebase_lines`), and a prelude that
+itself fails to check is dropped for that cell. (2) *redeclare retry* —
+when a diagnostic is an `invalid-assignment` rebinding a persisted name
+(the stub declared it with its old type; follow-on errors from that type
+ride along), the cell is refed once behind `from typing import Any as
+_Any` + `name: _Any` (a no-op at runtime; `del` is not in the monty subset
+and ty keeps the declaration anyway); a second failure returns the
+original diagnostic. (3) *skip retry* — when every
+diagnostic is an `unresolved-reference` to a name in the inventory (an
+`outN`, a name bound by a cell that then raised), the cell is fed once
+with `skip_type_check` (logged at `info`, target `runtime`).
+
 ## 5. Persistence
 
 ```
 <data_dir>/runtime/<session>.monty        Checkout::dump() bytes, written atomically (tmp + rename)
-<data_dir>/runtime/<session>.names.json   the tracked inventory (§6): [{name, kind, len}]
+<data_dir>/runtime/<session>.names.json   the tracked inventory (§6): [{name, kind, len, import?}]
 ```
 
 - **After every completed cell**: `dump()` → write both files. A dump is a

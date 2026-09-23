@@ -72,7 +72,9 @@ const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
 itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
-names starting with `_`, which do not carry across cells. `shell()` returns the output when
+names starting with `_`, which do not carry across cells. Imports and variables persist
+across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
+nothing is lost. `shell()` returns the output when
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
 result arrives later as <job_result>. A PTY job whose screen stops changing for a minute
 wakes you with <job_idle> and the screen: the program is likely waiting on you.
@@ -1033,7 +1035,10 @@ impl Repl {
             }
             Err(PoolError::Typing(diag)) => {
                 return self.finish_output(
-                    format!("type check failed:\n{}", rebase_lines(&diag, offset)),
+                    format!(
+                        "type check failed (nothing ran; your variables are intact — resend the cell with the fix):\n{}",
+                        rebase_lines(&diag, offset)
+                    ),
                     true,
                     files,
                 );
@@ -1821,7 +1826,10 @@ mod tests {
         assert_eq!(out.content, "→ 30000", "{}", out.content);
         let out = repl.run("c3", "await nope(1)").await;
         assert!(
-            out.is_error && out.content.starts_with("type check failed:"),
+            out.is_error
+                && out.content.starts_with(
+                    "type check failed (nothing ran; your variables are intact — resend the cell with the fix):\n"
+                ),
             "{}",
             out.content
         );
