@@ -75,10 +75,11 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 
 fn session(path: &Path, data_dir: &Path) -> anyhow::Result<Session> {
     models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
-    Session::builder()
+    let builder = Session::builder()
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(ort_err)?
+        .map_err(ort_err)?;
+    models::onnx::configure(builder)
         .commit_from_file(path)
         .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))
 }

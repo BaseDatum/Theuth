@@ -173,22 +173,45 @@ pub fn actor_name(checkpoint: &str) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Device {
-    /// Metal on an Apple-silicon Mac, CPU elsewhere.
+    /// Metal on an Apple-silicon Mac; elsewhere whatever `models.accelerator` resolves to
+    /// (CUDA when this binary was built with `decision/cuda`, else CPU).
     #[default]
     Auto,
     /// CPU, f32.
     Cpu,
     /// Metal, f16; falls back to CPU with a warning when the GPU is unavailable.
     Metal,
+    /// CUDA device 0, f32; needs the `cuda` build and a device, else CPU with a warning.
+    Cuda,
 }
 
 impl Device {
     /// Whether this resolves to Metal on the running machine.
     pub fn metal(self) -> bool {
+        self.gpu() == candle::Gpu::Metal
+    }
+
+    /// The GPU this asks for on the running machine, `Auto` read through `models.accelerator`
+    /// (`directml` is ORT-only and means `auto` here).
+    pub fn gpu(self) -> candle::Gpu {
+        use models::accelerator::Accelerator;
         match self {
-            Device::Auto => cfg!(all(target_os = "macos", target_arch = "aarch64")),
-            Device::Cpu => false,
-            Device::Metal => true,
+            Device::Cpu => candle::Gpu::None,
+            Device::Metal => candle::Gpu::Metal,
+            Device::Cuda => candle::Gpu::Cuda,
+            Device::Auto => match models::accelerator::get() {
+                Accelerator::Cpu => candle::Gpu::None,
+                Accelerator::Cuda => candle::Gpu::Cuda,
+                Accelerator::Auto | Accelerator::Directml => {
+                    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                        candle::Gpu::Metal
+                    } else if cfg!(feature = "cuda") {
+                        candle::Gpu::Cuda
+                    } else {
+                        candle::Gpu::None
+                    }
+                }
+            },
         }
     }
 }

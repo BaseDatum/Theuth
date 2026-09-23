@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use candle_core::DType;
-use decision::candle::Loaded;
+use decision::candle::{Gpu, Loaded};
 use decision::engine::MODEL_FILES;
 use decision::log::Log;
 use decision::{
@@ -91,7 +91,7 @@ fn readme_questions_match_the_reference() {
         serde_json::from_str(include_str!("fixtures/probs-cpu-fp32.json")).unwrap();
     let metal = Device::Auto.metal();
     let dtype = if metal { DType::F16 } else { DType::F32 };
-    let m = Loaded::open(&dir, metal, dtype).expect("open");
+    let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype).expect("open");
     let at_load = m.model_sha.lock().clone();
     eprintln!(
         "{:?} {:?}: load {:?}, model id at load {at_load}",

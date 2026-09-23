@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use candle_core::DType;
-use decision::candle::Loaded;
+use decision::candle::{Gpu, Loaded};
 use decision::laya::RowOut;
 use decision::{Candidate, Question};
 use serde::Deserialize;
@@ -261,7 +261,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let t = Instant::now();
-    let m = Loaded::open(&dir, metal, if metal { DType::F16 } else { DType::F32 })?;
+    let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, if metal { DType::F16 } else { DType::F32 })?;
     println!("model: {} loaded in {} ms on {:?}\n", dir.display(), t.elapsed().as_millis(), m.device.location());
     // Warm-up run so the first row's shader compile does not land in a p50.
     let warm = m

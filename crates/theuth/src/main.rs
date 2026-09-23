@@ -1,6 +1,7 @@
 //! `theuth`: build the runtime, start the plugin list, wait for shutdown.
 //! Also the Python runtime worker: `t subprocess` (design doc 08 §9, [`worker`]).
 
+mod bench_models;
 mod link_cli;
 mod secret_cli;
 mod service;
@@ -123,6 +124,14 @@ struct Cli {
     /// --decision-export: `fixture` (default) | `laya`.
     #[arg(long, requires = "decision_export", default_value = "fixture")]
     format: String,
+    /// 58 step 12: load ONNX Runtime and print the execution provider sessions get, run the
+    /// STT encoder once on 5 s of silence, open the decision checkpoint and run one question,
+    /// each with its ms and device; exit 2 naming what is missing. `$ORT_DYLIB_PATH` honoured.
+    #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update", "decision_export"])]
+    bench_models: bool,
+    /// --bench-models: override `models.accelerator` (`auto` | `cpu` | `directml` | `cuda`).
+    #[arg(long, requires = "bench_models", value_name = "ACCEL")]
+    accelerator: Option<models::accelerator::Accelerator>,
 }
 
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
@@ -272,11 +281,18 @@ agent:
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
+# models:                    # where the local models run (design doc 58 step 12). Check with `t --bench-models [--accelerator X]`.
+#   accelerator: auto        # auto | cpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle), DirectML on Windows when
+#                            # DirectML.dll sits beside onnxruntime.dll under <data_dir>/models/onnxruntime/ (ONNX sessions: STT, dictation,
+#                            # diarisation), CUDA for the decision model when this binary was built with `decision/cuda`, else CPU.
+#                            # directml only affects ONNX sessions; cuda only affects candle (the ORT CUDA EP needs cuDNN, not shipped).
+#                            # A GPU that fails to initialise logs one WARN and that engine runs on the CPU.
+
 # decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya in candle
 #                            # answers typed questions (choice / bool / score) with a probability per option; a per-family gate
 #                            # accepts or escalates to today's model turn. Every family starts in shadow (runs, logs, changes nothing).
 #   enabled: true            # false: the actor answers every ask with escalate(disabled); nothing loads
-#   device: auto             # auto (Metal f16 on an Apple-silicon Mac, else CPU f32) | cpu | metal (warns and falls back to CPU)
+#   device: auto             # auto (Metal f16 on an Apple-silicon Mac, else models.accelerator: cuda f32 or CPU f32) | cpu | metal | cuda (warn + CPU when unavailable)
 #   model_dir: ~             # the `default` checkpoint dir; default <data_dir>/models/decision: model.safetensors, encoder/config.json,
 #                            # tokenizer/tokenizer.json, rl_agent_config.json — the Hugging Face convaiinnovations/laya layout.
 #                            # The desktop app fetches it from the release bucket at start like the speech models (54 §9,
@@ -443,6 +459,24 @@ async fn run() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("THEUTH_").split("__"));
+    // 58 step 12: one process-wide knob every model loader reads; set before any plugin starts.
+    let models_cfg: models::accelerator::ModelsConfig =
+        config.extract_inner("models").unwrap_or_default();
+    models::accelerator::set(models_cfg.accelerator);
+    if cli.bench_models {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+        let decision_cfg: decision::DecisionConfig =
+            config.extract_inner("decision").unwrap_or_default();
+        let accel = cli.accelerator.unwrap_or(models_cfg.accelerator);
+        let code = tokio::task::spawn_blocking(move || {
+            bench_models::run(&data_dir, &decision_cfg, accel)
+        })
+        .await?;
+        std::process::exit(code);
+    }
     if cli.update {
         let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
         return update_cli(&cfg, &data_dir).await;

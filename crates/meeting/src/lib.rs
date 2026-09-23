@@ -641,6 +641,10 @@ pub struct Status {
     pub approval_waiting: bool,
     /// What this host can do (58 §3.3); `None` when no loopback backend opens.
     pub supported: Support,
+    /// The ONNX Runtime execution provider diarisation sessions run on
+    /// (`models::onnx::ep`: `DmlExecutionProvider` | `CPUExecutionProvider`).
+    #[serde(default)]
+    pub accelerator: String,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
@@ -2015,6 +2019,7 @@ impl Message<MeetingStatus> for Meeting {
             topics: live.map(|l| l.topics.live()).unwrap_or_default(),
             approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
             supported,
+            accelerator: models::onnx::ep().to_owned(),
         }
     }
 }

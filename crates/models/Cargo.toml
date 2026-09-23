@@ -12,5 +12,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 ort = { workspace = true }  # the process-wide ONNX Runtime initialiser (`onnx::ort_lib`, 57 §6 step 1)
 
+# The DirectML EP option builder (`onnx::configure`, 58 step 12): any DX12 GPU with the driver
+# alone; `load-dynamic` stays, the runtime must be Microsoft's DirectML build of onnxruntime.dll.
+[target.'cfg(windows)'.dependencies]
+ort = { workspace = true, features = ["directml"] }
+
 [lints]
 workspace = true
