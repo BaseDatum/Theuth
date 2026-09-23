@@ -57,8 +57,13 @@ pub const ICONS: &[&str] = &[
     "House",
 ];
 
-/// Palette keys a project colour may use (`project-style.ts` `COLORS`).
+/// Palette keys a project colour may use (`project-style.ts` `COLORS` + `LEGACY_COLORS`). The first ten are
+/// the mineral palette the desktop offers; the rest are the pre-palette Tailwind keys, still accepted on write so
+/// old clients keep working. The desktop renders them as: red→carnelian, orange→ochre, amber→sand,
+/// green→malachite, teal→faience, blue→lapis, indigo→slate, violet→plum, pink→plum, gray→umber.
 pub const COLORS: &[&str] = &[
+    "ochre", "carnelian", "malachite", "faience", "lapis", "nile", "umber", "slate", "sand", "plum",
+    // legacy
     "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink", "gray",
 ];
 
