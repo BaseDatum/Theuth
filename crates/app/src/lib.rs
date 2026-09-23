@@ -81,7 +81,7 @@ pub fn helper_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default();
-    dir.join(format!("theuth-app-parser-{}", hash()))
+    dir.join(format!("theuth-app-parser-{}{}", hash(), std::env::consts::EXE_SUFFIX))
 }
 
 /// How a client reached a bound tool (46 §6.2).
@@ -367,6 +367,17 @@ mod tests {
         assert!(s.contains(h));
         assert!(s.contains("Stack("), "catalog filled in");
         assert!(!s.contains("{{catalog}}") && !s.contains("{{hash}}"));
+    }
+
+    /// 58 step 14: the helper beside the binary is `theuth-app-parser-<hash>.exe` on Windows;
+    /// `is_file` on the suffix-less name reported it missing there.
+    #[test]
+    fn default_helper_path_carries_exe_suffix() {
+        if std::env::var_os("THEUTH_APP_PARSER").is_some_and(|p| !p.is_empty()) {
+            return; // override in effect (app-parser-env.sh); the default path is not built
+        }
+        let name = helper_path().file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name, format!("theuth-app-parser-{}{}", hash(), std::env::consts::EXE_SUFFIX));
     }
 
     #[test]

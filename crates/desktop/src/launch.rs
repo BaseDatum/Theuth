@@ -5,6 +5,11 @@
 //! pty, so the daemon inherits exactly the environment a terminal tab would give
 //! it (18 §2). The pty transcript is drained into a 64 KiB ring and streamed to
 //! the webview as `launch-log` events; readiness is the port, never the log.
+//!
+//! Windows has no login-shell environment (58 §0.3), and a ConPTY child drags a
+//! console window along and hangs in conhost's handshake on real installs, so
+//! there `t.exe --headless …` is a plain hidden child (`CREATE_NO_WINDOW`) with
+//! stdout/stderr piped into the same ring.
 
 use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -13,7 +18,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+#[cfg(unix)]
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -37,10 +43,29 @@ pub struct Connection {
     pub owned: bool,
 }
 
-/// The daemon we started: the pty master and the shell-turned-daemon child.
+/// The daemon we started: on Unix the pty master and the shell-turned-daemon
+/// child; on Windows the plain `t.exe` child.
 struct Daemon {
+    #[cfg(unix)]
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    child: Child,
+}
+
+#[cfg(unix)]
+type Child = Box<dyn portable_pty::Child + Send + Sync>;
+#[cfg(windows)]
+type Child = std::process::Child;
+
+/// `Some(exit code)` once the daemon has exited.
+#[cfg(unix)]
+fn exited(child: &mut Child) -> std::io::Result<Option<u32>> {
+    Ok(child.try_wait()?.map(|s| s.exit_code()))
+}
+
+/// `Some(exit code)` once the daemon has exited (no signals on Windows: always a code).
+#[cfg(windows)]
+fn exited(child: &mut Child) -> std::io::Result<Option<u32>> {
+    Ok(child.try_wait()?.map(|s| s.code().unwrap_or_default() as u32))
 }
 
 #[derive(Default)]
@@ -100,13 +125,15 @@ impl Launch {
 
         let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let (mut daemon, reader) = spawn(&data_dir, port, &self.log)?;
-        std::thread::spawn({
-            let log = Arc::clone(&self.log);
-            let app = app.clone();
-            move || drain(reader, &log, &app)
-        });
-        let ready = wait_ready(addr, daemon.child.as_mut());
+        let (mut daemon, readers) = spawn(&data_dir, port, &self.log)?;
+        for reader in readers {
+            std::thread::spawn({
+                let log = Arc::clone(&self.log);
+                let app = app.clone();
+                move || drain(reader, &log, &app)
+            });
+        }
+        let ready = wait_ready(addr, &mut daemon.child, &self.log);
         // Kept either way: on timeout the transcript stays inspectable until relaunch.
         inner.daemon = Some(daemon);
         ready?;
@@ -178,13 +205,13 @@ fn ws_url(listen: &str, token: &str) -> String {
     format!("ws://{listen}/?token={token}")
 }
 
+/// Readers the drain threads pull the transcript from.
+type Readers = Vec<Box<dyn Read + Send>>;
+
 /// Open the pty and start the shell; the returned reader is the master's dup for
 /// the drain thread.
-fn spawn(
-    data_dir: &Path,
-    port: u16,
-    log: &Mutex<Vec<u8>>,
-) -> anyhow::Result<(Daemon, Box<dyn Read + Send>)> {
+#[cfg(unix)]
+fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Daemon, Readers)> {
     let pair = native_pty_system().openpty(PtySize {
         rows: 40,
         cols: 120,
@@ -203,8 +230,38 @@ fn spawn(
             master: pair.master,
             child,
         },
-        reader,
+        vec![reader],
     ))
+}
+
+/// Start `t.exe` as a hidden plain child: no pty (a ConPTY shows a console
+/// window and its conhost handshake never got the daemon listening on a real
+/// install), stdin null, stdout and stderr piped into the ring.
+#[cfg(windows)]
+fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Daemon, Readers)> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    /// `CREATE_NO_WINDOW`: no console for a subsystem:console child.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let (program, args) = daemon_command(data_dir, log);
+    let mut cmd = Command::new(&program);
+    cmd.args(&args)
+        .envs(env(port))
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(home) = dirs::home_dir() {
+        cmd.current_dir(home);
+    }
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawn {}", program.display()))?;
+    let readers: Readers = vec![
+        Box::new(child.stdout.take().context("stdout not piped")?),
+        Box::new(child.stderr.take().context("stderr not piped")?),
+    ];
+    Ok((Daemon { child }, readers))
 }
 
 /// The daemon's command line (18 §2 step 2): on Unix the user's login,
@@ -225,15 +282,24 @@ fn daemon_command(data_dir: &Path, log: &Mutex<Vec<u8>>) -> (PathBuf, Vec<String
     (shell(log), ["-l", "-i", "-c", &script].map(str::to_owned).to_vec())
 }
 
-/// `program args` on the pty with the app's environment plus `TERM`, the
-/// `THEUTH_LAUNCH=1` guard (18 §4) and the port override (01 §1). cwd is
-/// `$HOME`, as for a new terminal tab.
+/// The app's environment plus `TERM`, the `THEUTH_LAUNCH=1` guard (18 §4) and
+/// the port override (01 §1).
+fn env(port: u16) -> [(&'static str, String); 3] {
+    [
+        ("TERM", "xterm-256color".to_owned()),
+        ("THEUTH_LAUNCH", "1".to_owned()),
+        ("THEUTH_RPC__LISTEN", format!("127.0.0.1:{port}")),
+    ]
+}
+
+/// `program args` on the pty with [`env`]; cwd is `$HOME`, as for a new terminal tab.
+#[cfg(unix)]
 fn command(program: &Path, args: &[String], port: u16) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(program);
     cmd.args(args);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("THEUTH_LAUNCH", "1");
-    cmd.env("THEUTH_RPC__LISTEN", format!("127.0.0.1:{port}"));
+    for (k, v) in env(port) {
+        cmd.env(k, v);
+    }
     if let Some(home) = dirs::home_dir() {
         cmd.cwd(home);
     }
@@ -301,39 +367,123 @@ fn append(log: &Mutex<Vec<u8>>, chunk: &[u8]) {
 }
 
 /// 18 §2 step 5 / §4: poll the port every 200 ms for 15 s; an early child exit
-/// (shell error, missing binary) fails fast, a timeout names the likely cause.
-fn wait_ready(addr: SocketAddr, child: &mut dyn Child) -> anyhow::Result<()> {
+/// (shell error, missing binary) fails fast, a timeout names the likely cause
+/// (Unix: a shell startup stuck on a prompt) and quotes the transcript's tail.
+fn wait_ready(addr: SocketAddr, child: &mut Child, log: &Mutex<Vec<u8>>) -> anyhow::Result<()> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if TcpStream::connect_timeout(&addr, POLL).is_ok() {
             return Ok(());
         }
-        if let Some(status) = child.try_wait()? {
-            bail!(
-                "daemon exited before listening (exit code {})",
-                status.exit_code()
-            );
+        if let Some(code) = exited(child)? {
+            bail!("daemon exited before listening (exit code {code})");
         }
         if Instant::now() >= deadline {
-            bail!(
-                "no daemon on {addr} after {} s: your shell startup is waiting for input",
-                READY_TIMEOUT.as_secs()
-            );
+            let text = strip_controls(&lock(log));
+            let mut msg = format!("no daemon on {addr} after {} s", READY_TIMEOUT.as_secs());
+            if cfg!(unix) && waiting_for_input(&text) {
+                msg.push_str(": your shell startup is waiting for input");
+            }
+            let tail = last_lines(&text, 5);
+            if !tail.is_empty() {
+                msg.push('\n');
+                msg.push_str(&tail);
+            }
+            bail!(msg);
         }
         std::thread::sleep(POLL);
     }
 }
 
-/// Drop the master (SIGHUP once every fd is closed), give the daemon 2 s to
-/// exit on its own (the webview called RPC `shutdown` first), then kill.
+/// The transcript without terminal control sequences (CSI, OSC/DCS/PM/APC and
+/// two-byte escapes) and stray C0 bytes: conhost's pseudo-console handshake
+/// (`\x1b[?9001h`, `\x1b]0;…\x07`, `\x1b[6n`) is not something a shell said.
+fn strip_controls(bytes: &[u8]) -> String {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        i += 1;
+        if b != 0x1b {
+            if b >= 0x20 || matches!(b, b'\n' | b'\r' | b'\t') {
+                out.push(b);
+            }
+            continue;
+        }
+        match bytes.get(i) {
+            // CSI: parameters/intermediates 0x20..=0x3f, final byte 0x40..=0x7e.
+            Some(b'[') => {
+                i += 1;
+                while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            // OSC/DCS/PM/APC: string until BEL or ST (`ESC \`).
+            Some(b']' | b'P' | b'^' | b'_') => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            // `ESC <intermediates> <final>` (e.g. `ESC ( B`, `ESC =`).
+            Some(_) => {
+                while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A prompt left hanging: the stripped transcript ends in a partial line
+/// (`Password: `, `Continue? (y/n) `) — a daemon or shell that finished its
+/// output ended it with a newline.
+fn waiting_for_input(text: &str) -> bool {
+    !text.rsplit(['\n', '\r']).next().unwrap_or("").trim().is_empty()
+}
+
+/// The last `n` non-blank lines, newline-joined.
+fn last_lines(text: &str, n: usize) -> String {
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(n)
+        .collect();
+    lines.reverse();
+    lines.join("\n")
+}
+
+/// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
+/// no line to hang up — stdin is already null), give the daemon 2 s to exit on
+/// its own (the webview called RPC `shutdown` first), then kill.
 fn stop(daemon: Option<Daemon>) {
-    let Some(Daemon { master, mut child }) = daemon else {
+    let Some(Daemon {
+        #[cfg(unix)]
+        master,
+        mut child,
+    }) = daemon
+    else {
         return;
     };
+    #[cfg(unix)]
     drop(master);
     let deadline = Instant::now() + EXIT_GRACE;
     while Instant::now() < deadline {
-        if !matches!(child.try_wait(), Ok(None)) {
+        if !matches!(exited(&mut child), Ok(None)) {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -396,5 +546,31 @@ mod tests {
         let log = lock(&log);
         assert_eq!(log.len(), LOG_CAP);
         assert!(log.ends_with(b"tail"));
+    }
+
+    /// The Windows 11 box, 2026-09-23: conhost's pseudo-console handshake on the
+    /// pty read as "waiting for input". Nothing in it is a prompt.
+    const CONHOST: &[u8] = b"\x1b[?9001h\x1b[?1004h\x1b[?25h\x1b]0;C:\\Users\\user\\AppData\\Local\\theuth\\t.exe\x07\x1b[6n";
+
+    #[test]
+    fn conhost_handshake_is_not_a_prompt() {
+        assert_eq!(strip_controls(CONHOST), "");
+        assert!(!waiting_for_input(&strip_controls(CONHOST)));
+        // An OSC the stream never terminated swallows the rest: still no prompt.
+        assert!(!waiting_for_input(&strip_controls(b"\x1b]0;C:\\t.exe \x1b[6n")));
+        assert!(!waiting_for_input(&strip_controls(b"loaded 3 skills\r\n")));
+        assert!(!waiting_for_input(""));
+    }
+
+    #[test]
+    fn real_prompts_are() {
+        assert!(waiting_for_input(&strip_controls(b"Last login: Tue\r\nPassword: ")));
+        assert!(waiting_for_input(&strip_controls(b"\x1b[1mUpdate zsh plugins? (y/n) \x1b[0m")));
+    }
+
+    #[test]
+    fn strip_keeps_text_between_sequences() {
+        assert_eq!(strip_controls(b"\x1b(Ba\x1b[31mb\x1b[0m\x07c\x1bP..\x1b\\d"), "abcd");
+        assert_eq!(last_lines("a\r\n\r\nb\nc\n", 2), "b\nc");
     }
 }
