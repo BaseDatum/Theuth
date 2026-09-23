@@ -2,3 +2,10 @@
 # cmake 4's minimum; this lets cmake ≥ 4 configure it. Drop when audiopus_sys updates.
 [env]
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+# gemm-common 0.19 (candle → decision model) writes `.8h` half-precision NEON asm in functions without
+# `#[target_feature(enable = "fp16")]`; rustc ≥ 1.98 rejects that unless the target enables fp16
+# ("instruction requires: fullfp16"). Every aarch64 Linux we ship to (Graviton2+, Ampere, Pi 5, Apple VMs)
+# has it. Drop when gemm-common carries the attribute.
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+fp16"]
