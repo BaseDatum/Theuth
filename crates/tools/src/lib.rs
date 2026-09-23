@@ -66,11 +66,12 @@ pub use pty::{
     PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use registry::{
-    ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, DescribeTools, ExternalApproval,
-    GetApprovals, GetPtyIdle, HiddenTools, InspectTool, InstallCommunicationAccess, Invoke,
-    ListPrompts, ListTools, RegisterActivity, RegisterPrompt, RegisterTool, SetApprovals,
-    SetCap, SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
-    UnregisterTool, UserActivation,
+    ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, CheckFence, DescribeTools,
+    ExternalApproval, FenceChecker, FenceError, GetApprovals, GetPtyIdle, HiddenTools,
+    InspectTool, InstallCommunicationAccess, Invoke, ListPrompts, ListTools, RegisterActivity,
+    RegisterFenceChecker, RegisterPrompt, RegisterTool, SetApprovals, SetCap, SetHidden,
+    SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt, UnregisterTool,
+    UserActivation,
 };
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,

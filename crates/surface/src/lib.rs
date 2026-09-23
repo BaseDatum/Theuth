@@ -144,6 +144,37 @@ pub fn check(text: &str) -> Vec<(usize, Vec<SpecError>)> {
     out
 }
 
+/// One reply fence that would not render (30 §5): what a correction round names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedFence {
+    /// Fence info string: `json-render`, `mermaid`, `openui`.
+    pub lang: String,
+    /// 1-based over the fences of that language in the reply.
+    pub ordinal: usize,
+    /// Located errors; for `mermaid` `path` is `line:N` or `""`.
+    pub errors: Vec<SpecError>,
+}
+
+/// Every `lang` fence of `text` as `(ordinal, body)`, ordinal 1-based over that language;
+/// `body` is `None` for an unclosed fence. What the loop hands to the registered checkers
+/// for languages this crate cannot validate itself.
+pub fn fences_of<'a>(text: &'a str, lang: &str) -> Vec<(usize, Option<&'a str>)> {
+    fences::fences(text)
+        .filter(|f| f.lang == lang)
+        .enumerate()
+        .map(|(i, f)| (i + 1, f.closed.then_some(f.body)))
+        .collect()
+}
+
+/// `line 4: A --> B[` for a `line:4` path into `body`; the last line when the parser counts
+/// past the end (mermaid does). `None` for any other path.
+pub fn quote_line(body: &str, path: &str) -> Option<String> {
+    let n: usize = path.strip_prefix("line:")?.parse().ok()?;
+    let lines: Vec<&str> = body.lines().collect();
+    let line = lines.get(n.checked_sub(1)?).or(lines.last())?;
+    Some(format!("line {n}: {}", line.trim()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -306,5 +337,22 @@ mod tests {
             errs[0].message.starts_with("invalid JSON after repair: "),
             "{errs:#?}"
         );
+    }
+
+    #[test]
+    fn fences_of_hands_out_closed_bodies_by_language_and_quote_line_locates() {
+        let text = "```mermaid\ngraph TD\n  A --> B[\n```\n\n```openui\nroot = Stack([])\n```\n\n```mermaid\nsequenceDiagram\n";
+        assert_eq!(
+            fences_of(text, "mermaid"),
+            vec![(1, Some("graph TD\n  A --> B[\n")), (2, None)]
+        );
+        assert_eq!(fences_of(text, "openui"), vec![(1, Some("root = Stack([])\n"))]);
+        assert!(fences_of(text, "json-render").is_empty());
+        let body = "graph TD\n  A --> B[\n";
+        assert_eq!(quote_line(body, "line:2").as_deref(), Some("line 2: A --> B["));
+        // mermaid counts one past the end for a trailing newline: the last line is quoted.
+        assert_eq!(quote_line(body, "line:3").as_deref(), Some("line 3: A --> B["));
+        assert_eq!(quote_line(body, "line:0"), None);
+        assert_eq!(quote_line(body, "/root"), None);
     }
 }

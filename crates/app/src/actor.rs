@@ -271,6 +271,20 @@ pub struct GetApp {
     pub record_call_id: String,
 }
 
+/// `ask` → `Result<AppDoc, String>`: the desktop publishes a reply fence's source as an
+/// app artifact (30 §9, `publish_app`), validated and committed exactly like the `app`
+/// tool with `edit: false` under a synthetic `ui-<uuid v7>` call id. No model turn, no
+/// transcript entry; the artifact list and [`artifact::ArtifactShown`] see it as usual.
+#[derive(Clone, Debug)]
+pub struct PublishFromUi {
+    /// Owning session.
+    pub session: runtime::SessionId,
+    /// App name (`argo-health` → `argo-health.openui`).
+    pub name: String,
+    /// Complete OpenUI source.
+    pub source: String,
+}
+
 /// `ask` → `Result<AppToolResult, String>`: run one bound Query/Mutation
 /// (46 §6.3). `Err` is protocol misuse (unbound statement, foreign instance,
 /// bad shape); refusals and outcomes are statuses.
@@ -870,6 +884,34 @@ impl Message<GetApp> for Apps {
         });
         reply
     }
+}
+
+impl Message<PublishFromUi> for Apps {
+    type Reply = DelegatedReply<Result<AppDoc, String>>;
+
+    async fn handle(&mut self, m: PublishFromUi, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let core = self.core.clone();
+        tokio::spawn(async move {
+            tx.send(publish_from_ui(&core, m).await);
+        });
+        reply
+    }
+}
+
+/// [`crate::tool::commit_source`] under a fresh `ui-` call id, then the committed doc.
+pub(crate) async fn publish_from_ui(core: &Core, m: PublishFromUi) -> Result<AppDoc, String> {
+    let args = crate::AppArgs {
+        name: m.name,
+        source: m.source,
+        ..crate::AppArgs::default()
+    };
+    let call_id = format!("ui-{}", uuid::Uuid::now_v7());
+    let (loaded, _) =
+        crate::tool::commit_source(core, args, m.session, call_id, crate::tool::Origin::Ui)
+            .await?;
+    core.doc(&loaded.artifact.call_id).await
 }
 
 impl Message<CallTool> for Apps {

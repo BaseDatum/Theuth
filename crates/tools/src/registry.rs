@@ -48,6 +48,8 @@ pub struct ToolRegistry {
     /// Plugin system-prompt blocks by plugin name (07 §4 part 7): sorted, so
     /// the rendered prompt is stable across restarts.
     prompts: BTreeMap<&'static str, String>,
+    /// Fence checkers by language from [`RegisterFenceChecker`].
+    fence_checkers: HashMap<String, Arc<dyn FenceChecker>>,
     policy: Policy,
     /// `tools.approvals`: false turns every `Ask` into `Allow`.
     approvals: bool,
@@ -354,6 +356,44 @@ pub struct UnregisterPrompt(pub &'static str);
 /// `ask` → every registered `(plugin, block)`, sorted by plugin name.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListPrompts;
+
+/// One located error from a [`FenceChecker`]: `path` is the checker's
+/// locator (`root`, `$stage`, `line:4`, …) or `""` when it has none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FenceError {
+    /// Where: the checker's locator, or `""` for the whole block.
+    pub path: String,
+    /// What, in the parser's words; shown to the model verbatim.
+    pub message: String,
+}
+
+/// Validates the body of one reply fence (30 §5): a plugin registers one per
+/// language it can parse (`mermaid`, `openui`). `Err` = the checker is
+/// unavailable (helper missing, crashed, timed out); the loop treats such a
+/// fence as valid rather than blaming the model.
+#[async_trait::async_trait]
+pub trait FenceChecker: Send + Sync {
+    /// Located errors for `body`; empty means it renders.
+    async fn check(&self, body: &str) -> Result<Vec<FenceError>, String>;
+}
+
+/// `ask` → `()`. Installs the checker for one fence language; replaces a
+/// previous one for the same language.
+pub struct RegisterFenceChecker {
+    /// Fence info string (`mermaid`, `openui`).
+    pub lang: String,
+    /// The checker.
+    pub checker: Arc<dyn FenceChecker>,
+}
+
+/// `ask` → `None` when no checker is registered for `lang`, else the
+/// checker's result.
+pub struct CheckFence {
+    /// Fence info string.
+    pub lang: String,
+    /// Fence body without the fence lines.
+    pub body: String,
+}
 
 /// `ask` → [`ApprovalsState`]. Turn approval prompts on or off: for one
 /// session (in memory) or, with `session: None`, for everyone, persisted to
@@ -1273,6 +1313,34 @@ impl Message<RegisterPrompt> for ToolRegistry {
     }
 }
 
+impl Message<RegisterFenceChecker> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterFenceChecker, _: &mut Context<Self, Self::Reply>) {
+        tracing::info!(lang = %m.lang, "registered fence checker");
+        self.fence_checkers.insert(m.lang, m.checker);
+    }
+}
+
+/// Runs off the actor: a checker may spend seconds in a helper process and
+/// the registry must keep serving tool calls meanwhile.
+impl Message<CheckFence> for ToolRegistry {
+    type Reply = DelegatedReply<Option<Result<Vec<FenceError>, String>>>;
+
+    async fn handle(&mut self, m: CheckFence, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let Some(checker) = self.fence_checkers.get(&m.lang).cloned() else {
+            tx.send(None);
+            return reply;
+        };
+        tokio::spawn(async move {
+            tx.send(Some(checker.check(&m.body).await));
+        });
+        reply
+    }
+}
+
 impl Message<UnregisterPrompt> for ToolRegistry {
     type Reply = ();
 
@@ -1551,6 +1619,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             tools: builtins.into_iter().map(|t| (t.spec().name, t)).collect(),
             validators: HashMap::new(),
             prompts: BTreeMap::new(),
+            fence_checkers: HashMap::new(),
             policy: cfg.policy,
             approvals: cfg.approvals,
             bypass: HashSet::new(),
@@ -1615,6 +1684,7 @@ mod tests {
             tools: tools.into_iter().map(|t| (t.spec().name, t)).collect(),
             validators: HashMap::new(),
             prompts: BTreeMap::new(),
+            fence_checkers: HashMap::new(),
             policy: Policy::default(),
             approvals: true,
             bypass: HashSet::new(),
@@ -2676,5 +2746,43 @@ mod tests {
         assert_eq!(acks.len(), 3);
         assert_eq!(root_of(root).await, "/tmp");
         assert_eq!(root_of(child).await, "/tmp");
+    }
+
+    struct Nag;
+
+    #[async_trait::async_trait]
+    impl FenceChecker for Nag {
+        async fn check(&self, body: &str) -> Result<Vec<FenceError>, String> {
+            Ok(if body.contains("bad") {
+                vec![FenceError {
+                    path: "line:1".into(),
+                    message: "bad".into(),
+                }]
+            } else {
+                vec![]
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fence_checker_is_looked_up_by_language() {
+        let reg = registry(vec![], None);
+        let check = |lang: &str, body: &str| {
+            reg.ask(CheckFence {
+                lang: lang.into(),
+                body: body.into(),
+            })
+        };
+        assert!(check("mermaid", "bad").await.unwrap().is_none());
+        reg.ask(RegisterFenceChecker {
+            lang: "mermaid".into(),
+            checker: Arc::new(Nag),
+        })
+        .await
+        .unwrap();
+        assert_eq!(check("mermaid", "good").await.unwrap(), Some(Ok(vec![])));
+        let errs = check("mermaid", "bad").await.unwrap().unwrap().unwrap();
+        assert_eq!(errs[0].path, "line:1");
+        assert!(check("openui", "bad").await.unwrap().is_none());
     }
 }

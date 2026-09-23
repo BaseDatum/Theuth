@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { libraryHash } from "../src/check.ts";
-import type { ParserErrorResponse, ParserResponse } from "../src/protocol.ts";
+import type {
+  MermaidResponse,
+  ParserErrorResponse,
+  ParserResponse,
+} from "../src/protocol.ts";
 
 const entry = join(import.meta.dir, "..", "src", "helper.ts");
 const env = {
@@ -107,7 +111,7 @@ describe("theuth-app-parser protocol", () => {
     expect(r.code).toBe(0);
     expect(r.lines).toEqual([
       { id: null, error: expect.stringContaining("invalid JSON") },
-      { id: "x", error: 'op must be "check" or "merge_check"' },
+      { id: "x", error: 'op must be "check", "merge_check" or "check_mermaid"' },
       { id: "y", error: "merge_check requires string field base" },
       expect.objectContaining({ id: "z", diagnostics: [] }),
     ]);
@@ -130,4 +134,30 @@ describe("theuth-app-parser protocol", () => {
     });
     expect(r.lines[1]).toEqual(expect.objectContaining({ id: "after" }));
   });
+
+  test("check_mermaid parses a diagram and locates a syntax error by line", async () => {
+    const r = await run(
+      [
+        JSON.stringify({
+          id: "ok",
+          op: "check_mermaid",
+          source: "graph TD\n  A[Start] --> B{Choice}\n  B -->|yes| C",
+        }),
+        JSON.stringify({
+          id: "bad",
+          op: "check_mermaid",
+          source:
+            "sequenceDiagram\n  Alice->>Bob: hi\n  note over Alice: has; a semicolon\n",
+        }),
+      ].join("\n"),
+    );
+    expect(r.code).toBe(0);
+    const [ok, bad] = r.lines as unknown as [MermaidResponse, MermaidResponse];
+    expect(ok).toEqual({ id: "ok", ok: true });
+    if (bad.ok) throw new Error("expected a parse error");
+    const first = bad.errors[0]!;
+    expect(first.line).toBe(3);
+    expect(first.message).toContain("Expecting");
+    expect(first.message.length).toBeLessThanOrEqual(401);
+  }, 120_000);
 });

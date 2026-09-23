@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use crate::SpecError;
+use crate::FailedFence;
 use crate::catalog::{catalog, catalog_compact};
 use crate::validate::CONTAINERS;
 
@@ -88,34 +88,48 @@ const EXAMPLES: [(&str, &str); 18] = [
 pub fn prompt_block() -> String {
     format!(
         "## Show, don't tell\n\
-Your reply can draw. Two fenced blocks render as pictures in the terminal and the desktop app, and read as text everywhere else:\n\
+Your reply can draw. Three fenced blocks render as pictures in the terminal and the desktop app, and read as text everywhere else:\n\
 - ```mermaid — flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram. Use it when the answer is a shape: how things connect, what calls what, what happens in what order, which states lead where.\n\
 - ```json-render — one JSON object {{root, elements:{{id:{{type, props, children}}}}}}. Use it when the answer is structured data: a comparison, a status board, before/after, metrics, a plan with states, a timeline. Catalog: {catalog}\n\
+- ```openui — OpenUI Lang, the same statements as the `app` tool, for a richer static card in the reply: Tabs, Steps, Callout, MetricIndicatorInline, Card, Table, charts. `$state`, `@Set`, `@OpenUrl` and inputs work in place; do not use Query, Mutation or @ToAssistant in a fence (the user can open it as an app). Use it for a multi-step explanation (Steps), options with trade-offs (Tabs), a status update (MetricIndicatorInline + Callout), instead of paragraphs.\n\
 Draw when a reader would sketch it on a whiteboard to explain it; that is most architecture, flow, dependency, sequence, state and comparison answers. One picture per idea, ≤ 12 nodes or ≤ 8 rows; labels ≤ 4 words; put the takeaway in one sentence before the block and do not repeat in prose what the picture already shows. Do not draw a one-line answer, a list of two, code, or anything the user asked to copy or paste. Prose is still right for reasoning, caveats and instructions.\n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> message with the exact path of each error: answer with the corrected block only.",
         catalog = catalog_compact()
     )
 }
 
-/// The `<surface_error>` message (doc §5) for the fences [`crate::check`] rejected.
-pub fn surface_error(fences: &[(usize, Vec<SpecError>)]) -> String {
+/// The `<surface_error>` message (doc §5) for the fences that still fail this round. Each
+/// block is named by kind and ordinal with its located errors; the json-render catalog line
+/// is appended only when a json-render block is among them (openui failures carry their own
+/// signatures from the checker; mermaid needs neither).
+pub fn surface_error(fences: &[FailedFence]) -> String {
     let mut out = format!(
-        "<surface_error>\nYour reply contains {n} `json-render`/`mermaid` block(s) that cannot be rendered. \
-The user saw the raw source instead. Reply with the corrected block(s) only — no apology, no explanation \
+        "<surface_error>\nYour reply contains {n} `json-render`/`mermaid`/`openui` block(s) that cannot be rendered. \
+The user was shown nothing in its place. Reply with the corrected block(s) only — no apology, no explanation \
 of the fix, keep any prose that was already correct out of this reply.\n",
         n = fences.len()
     );
-    for (ordinal, errs) in fences {
-        out.push_str(&format!("\nBlock {ordinal} (json-render), errors:\n"));
-        for e in errs {
+    for f in fences {
+        out.push_str(&format!("\nBlock {} ({}), errors:\n", f.ordinal, f.lang));
+        for e in &f.errors {
             out.push_str(&format!("- {}: {}\n", e.path, e.message));
         }
     }
-    out.push_str(&format!(
-        "\nCatalog: {}\n</surface_error>",
-        catalog_compact()
-    ));
+    if fences.iter().any(|f| f.lang == "json-render") {
+        out.push_str(&format!("\nCatalog: {}\n", catalog_compact()));
+    }
+    out.push_str("</surface_error>");
     out
+}
+
+/// The note after the last correction round (doc §5 as-built): the model moves on in prose
+/// and is not checked again for this reply.
+pub fn surface_error_final(attempts: u8) -> String {
+    format!(
+        "<surface_error final=\"true\">\nThe block still does not render after {attempts} attempts. \
+Do not try again in this reply and do not mention the failure; continue with prose. \
+You may attempt a diagram again later in the conversation.\n</surface_error>"
+    )
 }
 
 /// The `visualize` skill: `visualize.md` with its `## Catalog` section generated from the
@@ -215,7 +229,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{check, parse};
+    use crate::{SpecError, check, parse};
 
     #[test]
     fn prompt_block_names_every_component() {
@@ -225,38 +239,43 @@ mod tests {
             assert!(block.contains(&format!("{}(", e.name)), "{}", e.name);
         }
         assert!(block.contains("<surface_error>"));
+        assert!(block.contains("\n- ```openui — OpenUI Lang, the same statements as the `app` tool"));
+        assert!(block.contains("do not use Query, Mutation or @ToAssistant in a fence"));
     }
 
     #[test]
     fn surface_error_lists_every_fence_and_path() {
+        let e = |path: &str, message: &str| SpecError {
+            path: path.into(),
+            message: message.into(),
+        };
         let fences = vec![
-            (
-                1,
-                vec![
-                    SpecError {
-                        path: "/elements/t/type".into(),
-                        message: "unknown component \"DataTable\"".into(),
-                    },
-                    SpecError {
-                        path: "/root".into(),
-                        message: "\"main\" is not an element id".into(),
-                    },
+            FailedFence {
+                lang: "json-render".into(),
+                ordinal: 1,
+                errors: vec![
+                    e("/elements/t/type", "unknown component \"DataTable\""),
+                    e("/root", "\"main\" is not an element id"),
                 ],
-            ),
-            (
-                3,
-                vec![SpecError {
-                    path: "/elements/r/children/1".into(),
-                    message: "\"m2\" is not an element id".into(),
-                }],
-            ),
+            },
+            FailedFence {
+                lang: "mermaid".into(),
+                ordinal: 1,
+                errors: vec![e("line:2", "Parse error on line 2\nline 2: A --> B[")],
+            },
         ];
         let msg = surface_error(&fences);
         assert!(msg.starts_with("<surface_error>\nYour reply contains 2 `json-render`"));
         assert!(msg.ends_with("</surface_error>"));
         assert!(msg.contains("\nBlock 1 (json-render), errors:\n- /elements/t/type: unknown component \"DataTable\"\n- /root: \"main\" is not an element id\n"));
-        assert!(msg.contains("\nBlock 3 (json-render), errors:\n- /elements/r/children/1: \"m2\" is not an element id\n"));
+        assert!(msg.contains("\nBlock 1 (mermaid), errors:\n- line:2: Parse error on line 2\nline 2: A --> B[\n"));
         assert!(msg.contains(&format!("\nCatalog: {}\n", catalog_compact())));
+        // No json-render among the failures: no json-render catalog.
+        let msg = surface_error(&fences[1..]);
+        assert!(!msg.contains("Catalog:"), "{msg}");
+        let last = surface_error_final(3);
+        assert!(last.starts_with("<surface_error final=\"true\">\n"));
+        assert!(last.contains("after 3 attempts") && last.ends_with("</surface_error>"));
     }
 
     #[test]

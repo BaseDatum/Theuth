@@ -1931,6 +1931,8 @@ pub struct SurfaceConfig {
     pub enabled: bool,
     /// `false`: no `<surface_error>` round; frontends still render what parses.
     pub correct: bool,
+    /// Correction rounds per turn before the model is told to move on (30 §5 as-built).
+    pub correct_rounds: u8,
 }
 
 impl Default for SurfaceConfig {
@@ -1938,6 +1940,7 @@ impl Default for SurfaceConfig {
         Self {
             enabled: true,
             correct: true,
+            correct_rounds: 3,
         }
     }
 }
