@@ -180,6 +180,23 @@ impl TryFrom<SessionRow> for SessionSummary {
     }
 }
 
+/// One `reminders` row (14 as-built 2026-09-23); times are unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReminderRow {
+    /// `r<n>`, per session.
+    pub id: String,
+    /// Owning session.
+    pub session: SessionId,
+    /// What comes back as `<reminder>`.
+    pub message: String,
+    /// When it was set.
+    pub set_at: i64,
+    /// When it fires.
+    pub fires_at: i64,
+    /// Requested delay.
+    pub seconds: u64,
+}
+
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations.
     pub async fn open(path: &Path) -> anyhow::Result<Self> {
@@ -1421,6 +1438,54 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Record a pending reminder (14 as-built 2026-09-23).
+    pub async fn insert_reminder(&self, r: &ReminderRow) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO reminders (id, session, message, set_at, fires_at, seconds) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&r.id)
+        .bind(r.session.to_string())
+        .bind(&r.message)
+        .bind(r.set_at)
+        .bind(r.fires_at)
+        .bind(i64::try_from(r.seconds).unwrap_or(i64::MAX))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Forget a reminder that fired or was cancelled.
+    pub async fn delete_reminder(&self, session: SessionId, id: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM reminders WHERE session = ? AND id = ?")
+            .bind(session.to_string())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Every stored reminder, for re-arming after a restart.
+    pub async fn reminders(&self) -> anyhow::Result<Vec<ReminderRow>> {
+        Ok(sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
+            "SELECT id, session, message, set_at, fires_at, seconds FROM reminders ORDER BY fires_at",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .filter_map(|(id, session, message, set_at, fires_at, seconds)| {
+            Some(ReminderRow {
+                id,
+                session: session.parse().ok()?,
+                message,
+                set_at,
+                fires_at,
+                seconds: u64::try_from(seconds).unwrap_or(0),
+            })
+        })
+        .collect())
     }
 }
 
@@ -3424,6 +3489,30 @@ mod tests {
             icon: None,
             color: Some("red".into()),
         }));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 14 as-built: rows round-trip, ids are per session (`r1` twice), and
+    /// a fired/cancelled row goes by `(session, id)`.
+    #[tokio::test]
+    async fn reminders_round_trip_per_session() {
+        let (store, _, dir) = fresh().await;
+        let row = |session: SessionId, fires_at: i64| ReminderRow {
+            id: "r1".into(),
+            session,
+            message: "check <the> build".into(),
+            set_at: fires_at - 600,
+            fires_at,
+            seconds: 600,
+        };
+        let (a, b) = (SessionId::new(), SessionId::new());
+        store.insert_reminder(&row(a, 2_000_000_000)).await.unwrap();
+        store.insert_reminder(&row(b, 1_000_000_000)).await.unwrap();
+        // Ordered by `fires_at`: the overdue one first.
+        assert_eq!(store.reminders().await.unwrap(), [row(b, 1_000_000_000), row(a, 2_000_000_000)]);
+        store.delete_reminder(b, "r1").await.unwrap();
+        assert_eq!(store.reminders().await.unwrap(), [row(a, 2_000_000_000)]);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
