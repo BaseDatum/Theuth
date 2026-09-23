@@ -308,16 +308,6 @@ impl Message<DropGuest> for LinkActor {
     }
 }
 
-/// This machine's hostname; `"theuth"` when `hostname` fails.
-fn hostname() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "theuth".to_owned())
-}
-
 #[async_trait::async_trait]
 impl runtime::Plugin for LinkPlugin {
     fn name(&self) -> &'static str {
@@ -344,7 +334,7 @@ impl runtime::Plugin for LinkPlugin {
         let enabled = cfg.enabled && identity.is_some();
         let state = State {
             cfg,
-            hostname: hostname(),
+            hostname: platform::process::hostname().to_owned(),
             identity,
             devices: Devices::load(&dir),
             pairing: None,

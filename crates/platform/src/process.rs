@@ -81,6 +81,34 @@ pub fn own_session(cmd: &mut tokio::process::Command) {
     imp::own_session(cmd);
 }
 
+/// Give a console-subsystem child no console. Windows allocates a fresh, visible
+/// console for a console child whose parent has none — `t.exe --headless` under
+/// the desktop app is such a parent, so a plain `Command::new` there put a blank
+/// window on the desktop for every helper (`theuth-documents-*.exe`, git, tar,
+/// hostname) and kept it there for as long as the helper lived. `CREATE_NO_WINDOW`
+/// (0x08000000) skips the allocation; pipes still work. A no-op elsewhere. Not for
+/// PTY children (ConPTY brings its own console) or a child meant to show a window.
+/// std's `creation_flags` replaces rather than ORs, so call this last if the
+/// command sets flags of its own. tokio: `hide_console(cmd.as_std_mut())`.
+pub fn hide_console(cmd: &mut std::process::Command) {
+    imp::hide_console(cmd);
+}
+
+/// This machine's hostname, read once (`hostname`, a hidden console child);
+/// `"theuth"` when that fails or prints nothing.
+pub fn hostname() -> &'static str {
+    static HOSTNAME: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let mut cmd = std::process::Command::new("hostname");
+        hide_console(&mut cmd);
+        cmd.output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "theuth".to_owned())
+    });
+    &HOSTNAME
+}
+
 #[cfg(unix)]
 mod imp {
     use std::io;
@@ -151,6 +179,8 @@ mod imp {
             });
         }
     }
+
+    pub fn hide_console(_: &mut std::process::Command) {}
 }
 
 // ponytail: unverified on Windows — step 2's check: `shell("timeout 30")`
@@ -171,8 +201,8 @@ mod imp {
         QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-        PROCESS_TERMINATE,
+        CREATE_NO_WINDOW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     };
 
     use super::Signal;
@@ -291,6 +321,11 @@ mod imp {
     }
 
     pub fn own_session(_: &mut tokio::process::Command) {}
+
+    pub fn hide_console(cmd: &mut std::process::Command) {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 #[cfg(test)]
@@ -320,5 +355,30 @@ mod tests {
         child.wait().unwrap();
         assert!(!tree.alive());
         assert!(!pid_alive(child.id()));
+    }
+
+    #[test]
+    fn hide_console_is_callable_everywhere() {
+        let mut cmd = std::process::Command::new("true");
+        hide_console(&mut cmd);
+        let mut tokio_cmd = tokio::process::Command::new("true");
+        hide_console(tokio_cmd.as_std_mut());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hide_console_spawns_a_console_child_without_a_window() {
+        // `Command` has no flags getter, so the contract is observed from the child:
+        // under `CREATE_NO_WINDOW` a console process has no console window to report.
+        let mut ps = std::process::Command::new("powershell");
+        ps.args([
+            "-NoProfile",
+            "-Command",
+            "Add-Type -Name W -Namespace K -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow();'; [K.W]::GetConsoleWindow()",
+        ]);
+        hide_console(&mut ps);
+        let out = ps.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0", "child reports a console window");
     }
 }

@@ -292,6 +292,7 @@ fn command(path: &std::path::Path) -> Command {
     cmd.env("OPENUI_TELEMETRY_DISABLED", "1")
         .env("DO_NOT_TRACK", "1")
         .kill_on_drop(true);
+    platform::process::hide_console(cmd.as_std_mut());
     cmd
 }
 
