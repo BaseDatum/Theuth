@@ -156,12 +156,8 @@ fn recorded_listen(data_dir: &Path) -> Option<String> {
     }
     let bytes = std::fs::read(data_dir.join("engine.json")).ok()?;
     let r: Record = serde_json::from_slice(&bytes).ok()?;
-    let pid = nix::unistd::Pid::from_raw(i32::try_from(r.pid).ok()?);
-    // Signal 0: exists (EPERM = exists, not ours).
-    match nix::sys::signal::kill(pid, None) {
-        Ok(()) | Err(nix::errno::Errno::EPERM) => r.listen,
-        Err(_) => None,
-    }
+    // A dead engine leaves a stale record (63 §2.1); `platform` answers per OS.
+    platform::process::pid_alive(r.pid).then_some(r.listen).flatten()
 }
 
 fn configured_listen(data_dir: &Path) -> String {
