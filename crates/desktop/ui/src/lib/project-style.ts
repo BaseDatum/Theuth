@@ -60,25 +60,31 @@ export const ICONS: Record<string, LucideIcon> = {
   House,
 }
 
-/** Palette key → Tailwind text colour, one step lighter in the dark theme so it reads on soot. */
-export const COLORS: Record<string, string> = {
-  red: 'text-red-600 dark:text-red-400',
-  orange: 'text-orange-600 dark:text-orange-400',
-  amber: 'text-amber-600 dark:text-amber-400',
-  green: 'text-green-600 dark:text-green-400',
-  teal: 'text-teal-600 dark:text-teal-400',
-  blue: 'text-blue-600 dark:text-blue-400',
-  indigo: 'text-indigo-600 dark:text-indigo-400',
-  violet: 'text-violet-600 dark:text-violet-400',
-  pink: 'text-pink-600 dark:text-pink-400',
-  gray: 'text-gray-500 dark:text-gray-400',
+/** Palette key → `text-project-<key>` (25 §2.4 as-built); the `--project-*` variable switches with the theme. */
+export const COLORS: Record<string, string> = Object.fromEntries(
+  ['ochre', 'carnelian', 'malachite', 'faience', 'lapis', 'nile', 'umber', 'slate', 'sand', 'plum'].map((k) => [k, `text-project-${k}`]),
+)
+
+/** Pre-palette Tailwind keys still stored on old rows → their mineral replacement. The server accepts both. */
+export const LEGACY_COLORS: Record<string, string> = {
+  red: 'carnelian',
+  orange: 'ochre',
+  amber: 'sand',
+  green: 'malachite',
+  teal: 'faience',
+  blue: 'lapis',
+  indigo: 'slate',
+  violet: 'plum',
+  pink: 'plum',
+  gray: 'umber',
 }
 
 /** The icon for `name`; unknown or unset falls back to the neutral `Folder`, so every row keeps its glyph slot. */
 export const iconFor = (name: string | null | undefined): LucideIcon => (name && ICONS[name]) || Folder
 
-/** The colour class for `key`; unknown or unset is the tertiary foreground. */
-export const colorFor = (key: string | null | undefined): string => (key && COLORS[key]) || 'text-fg-tertiary'
+/** The colour class for `key` (legacy keys map first); unknown or unset is the tertiary foreground. */
+export const colorFor = (key: string | null | undefined): string =>
+  (key && COLORS[LEGACY_COLORS[key] ?? key]) || 'text-fg-tertiary'
 
 const byName = (rows: ProjectStyle[]): Record<string, ProjectStyle> =>
   Object.fromEntries(rows.map((r) => [r.name, r]))
