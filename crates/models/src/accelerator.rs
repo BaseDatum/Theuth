@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::Deserialize;
 
-/// `models.accelerator`. `Auto` = Metal on an Apple-silicon Mac (candle), DirectML on Windows
-/// when `DirectML.dll` sits beside `onnxruntime.dll` (ORT), CUDA when the binary was built
-/// with `decision/cuda` and a device answers (candle), else CPU.
+/// `models.accelerator`. `Auto` = Metal on an Apple-silicon Mac (candle), WebGPU when the
+/// ONNX Runtime WebGPU plugin sits under `<data_dir>/models/onnxruntime/plugins/` (ORT), CUDA
+/// when the binary was built with `decision/cuda` and a device answers (candle), else CPU.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]
@@ -21,11 +21,15 @@ pub enum Accelerator {
     Auto = 0,
     /// No GPU anywhere: candle CPU, ORT CPU EP.
     Cpu = 1,
-    /// ONNX Runtime's DirectML execution provider (any DX12 GPU, Windows only).
+    /// ONNX Runtime's DirectML execution provider (Windows only). Explicit opt-in only: the
+    /// DirectML build of ORT ended at 1.24.4, below what `ort` accepts (58 step 13).
     Directml = 2,
     /// candle on CUDA (needs the `decision/cuda` build); ONNX sessions stay on the CPU —
     /// the CUDA EP also needs cuDNN, which we do not ship.
     Cuda = 3,
+    /// ONNX Runtime's WebGPU plugin execution provider: Dawn on D3D12 (Windows), Vulkan
+    /// (Linux) or Metal (macOS), any vendor, nothing to install beyond the plugin library.
+    Webgpu = 4,
 }
 
 impl Accelerator {
@@ -36,6 +40,7 @@ impl Accelerator {
             Accelerator::Cpu => "cpu",
             Accelerator::Directml => "directml",
             Accelerator::Cuda => "cuda",
+            Accelerator::Webgpu => "webgpu",
         }
     }
 }
@@ -49,7 +54,8 @@ impl std::str::FromStr for Accelerator {
             "cpu" => Ok(Accelerator::Cpu),
             "directml" => Ok(Accelerator::Directml),
             "cuda" => Ok(Accelerator::Cuda),
-            _ => Err(format!("accelerator: {s:?} is not auto | cpu | directml | cuda")),
+            "webgpu" => Ok(Accelerator::Webgpu),
+            _ => Err(format!("accelerator: {s:?} is not auto | cpu | directml | cuda | webgpu")),
         }
     }
 }
@@ -58,7 +64,7 @@ impl std::str::FromStr for Accelerator {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
-    /// `auto` | `cpu` | `directml` | `cuda`.
+    /// `auto` | `cpu` | `directml` | `cuda` | `webgpu`.
     pub accelerator: Accelerator,
 }
 
@@ -75,6 +81,7 @@ pub fn get() -> Accelerator {
         1 => Accelerator::Cpu,
         2 => Accelerator::Directml,
         3 => Accelerator::Cuda,
+        4 => Accelerator::Webgpu,
         _ => Accelerator::Auto,
     }
 }
@@ -85,7 +92,7 @@ mod tests {
 
     #[test]
     fn round_trips_every_spelling() {
-        for a in [Accelerator::Auto, Accelerator::Cpu, Accelerator::Directml, Accelerator::Cuda] {
+        for a in [Accelerator::Auto, Accelerator::Cpu, Accelerator::Directml, Accelerator::Cuda, Accelerator::Webgpu] {
             assert_eq!(a.name().parse::<Accelerator>(), Ok(a));
             set(a);
             assert_eq!(get(), a);

@@ -202,7 +202,8 @@ impl Device {
             Device::Auto => match models::accelerator::get() {
                 Accelerator::Cpu => candle::Gpu::None,
                 Accelerator::Cuda => candle::Gpu::Cuda,
-                Accelerator::Auto | Accelerator::Directml => {
+                // WebGPU and DirectML are ONNX-session providers; candle resolves as `auto`.
+                Accelerator::Auto | Accelerator::Directml | Accelerator::Webgpu => {
                     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
                         candle::Gpu::Metal
                     } else if cfg!(feature = "cuda") {

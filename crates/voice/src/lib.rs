@@ -34,7 +34,7 @@ pub use dictation::{
 };
 use kameo::reply::ReplySender;
 use speak::{Progress, Report};
-pub use stt::{Engine, PIECE, Piece, Transcriber, Word, decode, resample};
+pub use stt::{Engine, PIECE, Piece, Transcriber, Word, decode, resample, speech_sample};
 
 /// Actor name the RPC layer looks up for live dictation (54 §4.3).
 pub const DICTATION_ACTOR: &str = "dictation";

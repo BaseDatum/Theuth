@@ -121,6 +121,23 @@ pub fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<f32>> {
     Ok(out)
 }
 
+/// `text` spoken by the Pocket TTS checkpoint at `tts_dir` (`<data_dir>/models/pocket-tts`) with
+/// `voice`, as 16 kHz mono PCM for [`Engine::transcribe`]: a real utterance for `t --bench-models`,
+/// where silence transcribing to `""` proves nothing about the execution provider (58 step 13).
+/// Blocking; loads the TTS model (seconds) — not for a request path.
+pub fn speech_sample(tts_dir: &Path, voice: &str, text: &str) -> anyhow::Result<Vec<f32>> {
+    use ptts::synth::SpeechOptions;
+    let synth = crate::model::load(&crate::model::locate(tts_dir)?)?;
+    let mut pcm: Vec<f32> = Vec::new();
+    for chunk in synth
+        .stream_with(text, &SpeechOptions::default().voice(voice))
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
+        pcm.extend_from_slice(&chunk.map_err(|e| anyhow::anyhow!("{e}"))?);
+    }
+    resample(pcm, crate::speak::SAMPLE_RATE, MODEL_RATE)
+}
+
 /// One word with its times, from [`Engine::transcribe`] with `words: true`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Word {

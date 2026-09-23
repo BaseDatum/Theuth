@@ -129,7 +129,7 @@ struct Cli {
     /// each with its ms and device; exit 2 naming what is missing. `$ORT_DYLIB_PATH` honoured.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update", "decision_export"])]
     bench_models: bool,
-    /// --bench-models: override `models.accelerator` (`auto` | `cpu` | `directml` | `cuda`).
+    /// --bench-models: override `models.accelerator` (`auto` | `cpu` | `webgpu` | `directml` | `cuda`).
     #[arg(long, requires = "bench_models", value_name = "ACCEL")]
     accelerator: Option<models::accelerator::Accelerator>,
 }
@@ -281,11 +281,13 @@ agent:
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
-# models:                    # where the local models run (design doc 58 step 12). Check with `t --bench-models [--accelerator X]`.
-#   accelerator: auto        # auto | cpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle), DirectML on Windows when
-#                            # DirectML.dll sits beside onnxruntime.dll under <data_dir>/models/onnxruntime/ (ONNX sessions: STT, dictation,
-#                            # diarisation), CUDA for the decision model when this binary was built with `decision/cuda`, else CPU.
-#                            # directml only affects ONNX sessions; cuda only affects candle (the ORT CUDA EP needs cuDNN, not shipped).
+# models:                    # where the local models run (design doc 58 steps 12–13). Check with `t --bench-models [--accelerator X]`.
+#   accelerator: auto        # auto | cpu | webgpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle); for the ONNX sessions
+#                            # (STT, dictation, diarisation) the WebGPU plugin EP — Dawn on D3D12 / Vulkan / Metal, any GPU — when
+#                            # <data_dir>/models/onnxruntime/plugins/{onnxruntime_providers_webgpu.dll | lib….so | lib….dylib} exists
+#                            # (Windows: dxcompiler.dll + dxil.dll beside it); CUDA for the decision model when this binary was built
+#                            # with `decision/cuda`; else CPU. webgpu forces the plugin (WARN + CPU when it is missing or finds no GPU);
+#                            # directml is explicit-only (Microsoft's DirectML ORT build ended at 1.24.4); cuda only affects candle.
 #                            # A GPU that fails to initialise logs one WARN and that engine runs on the CPU.
 
 # decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya in candle

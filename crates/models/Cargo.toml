@@ -12,8 +12,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 ort = { workspace = true }  # the process-wide ONNX Runtime initialiser (`onnx::ort_lib`, 57 §6 step 1)
 
-# The DirectML EP option builder (`onnx::configure`, 58 step 12): any DX12 GPU with the driver
-# alone; `load-dynamic` stays, the runtime must be Microsoft's DirectML build of onnxruntime.dll.
+# The DirectML EP option builder (`onnx::configure`, 58 step 12), explicit `accelerator: directml`
+# only since step 13 (Microsoft's DirectML ORT build ended at 1.24.4). `ort-sys/directml` is empty
+# under `load-dynamic`, nothing links. WebGPU (step 13) needs no feature beyond the workspace `api-22`.
 [target.'cfg(windows)'.dependencies]
 ort = { workspace = true, features = ["directml"] }
 

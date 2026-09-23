@@ -15,6 +15,9 @@ use models::accelerator::Accelerator;
 /// Exit code for "a model or the runtime is missing".
 pub const MISSING: i32 = 2;
 
+/// The utterance the third STT run must bring back (about 5 s spoken).
+const SPEECH: &str = "The quick brown fox jumps over the lazy dog while the meeting notes are being transcribed.";
+
 pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelerator) -> i32 {
     models::accelerator::set(accelerator);
     println!(
@@ -33,6 +36,15 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
         Ok(lib) => {
             println!("onnxruntime: {}", lib.display());
             println!("onnxruntime ep: {}", models::onnx::ep());
+            let plugin = models::onnx::webgpu_plugin_path(data_dir);
+            println!(
+                "onnxruntime webgpu plugin: {} ({})",
+                plugin.display(),
+                if plugin.is_file() { "present" } else { "absent" }
+            );
+            for d in models::onnx::devices() {
+                println!("onnxruntime device: {d}");
+            }
             let dir = data_dir.join("models").join(voice::TDT_MODEL_SUBDIR);
             if !dir.is_dir() {
                 missing = true;
@@ -44,15 +56,38 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                     Ok(engine) => {
                         println!("stt load: {} ms ({})", t.elapsed().as_millis(), dir.display());
                         let silence = vec![0.0f32; 16_000 * 5];
+                        let mut first = 0u128;
                         for pass in ["first", "second"] {
                             let t = Instant::now();
                             match engine.transcribe(&silence, false) {
-                                Ok(p) => println!(
-                                    "stt {pass} run, 5 s silence: {} ms (text {:?})",
-                                    t.elapsed().as_millis(),
-                                    p.text
-                                ),
+                                Ok(p) => {
+                                    let ms = t.elapsed().as_millis();
+                                    if pass == "first" {
+                                        first = ms;
+                                    } else {
+                                        println!("stt first-run overhead (shader/graph compile): {} ms", first.saturating_sub(ms));
+                                    }
+                                    println!("stt {pass} run, 5 s silence: {ms} ms (text {:?})", p.text);
+                                }
                                 Err(e) => println!("stt {pass} run: failed: {e:#}"),
+                            }
+                        }
+                        // A real utterance: silence transcribing to "" proves nothing about the EP.
+                        let tts = data_dir.join("models/pocket-tts");
+                        let t = Instant::now();
+                        match voice::speech_sample(&tts, "peter_yearsley", SPEECH) {
+                            Err(e) => println!("stt speech clip: none — {e:#} (pocket-tts at {})", tts.display()),
+                            Ok(pcm) => {
+                                println!(
+                                    "stt speech clip: {:.1} s synthesized in {} ms (expect {SPEECH:?})",
+                                    pcm.len() as f32 / 16_000.0,
+                                    t.elapsed().as_millis()
+                                );
+                                let t = Instant::now();
+                                match engine.transcribe(&pcm, false) {
+                                    Ok(p) => println!("stt third run, speech: {} ms (text {:?})", t.elapsed().as_millis(), p.text),
+                                    Err(e) => println!("stt third run: failed: {e:#}"),
+                                }
                             }
                         }
                     }
