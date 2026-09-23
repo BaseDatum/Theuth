@@ -9383,15 +9383,29 @@ fn md_cell(s: &str) -> String {
 /// `.openui` source read-only in a fence under where it runs (46 §8.2),
 /// anything else one line. Text bodies cap at [`INLINE_LINES`].
 fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::Text {
-    use artifact::Kind;
-    let bytes = match a.kind {
-        Kind::Markdown | Kind::Text | Kind::Html | Kind::Csv | Kind::App => {
-            std::fs::read(&a.path).map_err(|e| e.to_string())
-        }
-        _ => Ok(Vec::new()),
-    };
-    artifact_text(a, bytes.as_deref().map_err(String::as_str), opts)
+    let bytes = artifact_read_path(a).map(|p| std::fs::read(p).map_err(|e| e.to_string()));
+    artifact_text(
+        a,
+        bytes.as_ref().map_or(Ok(&[][..]), |b| b.as_deref().map_err(String::as_str)),
+        opts,
+    )
 }
+
+/// The file an expanded card reads (35 §6.1): the blob for text-like kinds,
+/// the listing sidecar for an archive, nothing for pictures and downloads.
+pub(crate) fn artifact_read_path(a: &artifact::Artifact) -> Option<std::path::PathBuf> {
+    use artifact::Kind;
+    match a.kind {
+        Kind::Markdown | Kind::Text | Kind::Html | Kind::Csv | Kind::App | Kind::Mermaid => {
+            Some(a.path.clone())
+        }
+        Kind::Archive => Some(artifact::archive::sidecar(&a.path)),
+        Kind::Image | Kind::Svg | Kind::Pdf | Kind::File => None,
+    }
+}
+
+/// Rows of an expanded archive card.
+const ARCHIVE_ROWS: usize = 50;
 
 /// [`artifact_body`] over bytes already read (the search preview reads them
 /// off the UI thread); `Err` is why the file could not be read.
@@ -9446,6 +9460,33 @@ pub(crate) fn artifact_text(
                 }
                 if total > rows.len() {
                     out.push_str(&format!("\n\n… (+{} rows)", total - rows.len()));
+                }
+                out
+            }
+        },
+        // A `mermaid` fence: the assistant's fence hook draws it through
+        // `surface::mermaid_lines`, the plain code block when that declines.
+        Kind::Mermaid => match bytes {
+            Err(e) => unreadable(&e),
+            Ok(b) => fenced("mermaid", String::from_utf8_lossy(b).trim_end()),
+        },
+        Kind::Archive => match bytes
+            .map_err(str::to_owned)
+            .and_then(|b| serde_json::from_slice::<artifact::archive::ArchiveListing>(b).map_err(|e| e.to_string()))
+        {
+            Err(_) => format!("{} · no listing (archive unreadable) · {path}", bytes_label(a.bytes)),
+            Ok(l) => {
+                let mut out = format!(
+                    "{} files · {} unpacked · {} · {path}\n",
+                    l.total_entries,
+                    bytes_label(l.total_size),
+                    bytes_label(a.bytes)
+                );
+                for e in l.entries.iter().take(ARCHIVE_ROWS) {
+                    out.push_str(&format!("\n    {:>9}  {}", if e.is_dir { String::new() } else { bytes_label(e.size) }, e.path));
+                }
+                if l.total_entries > ARCHIVE_ROWS as u64 {
+                    out.push_str(&format!("\n\n… (+{} entries, o opens)", l.total_entries - ARCHIVE_ROWS as u64));
                 }
                 out
             }

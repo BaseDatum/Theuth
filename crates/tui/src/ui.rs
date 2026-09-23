@@ -1722,6 +1722,15 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             if a.version > 1 {
                 header.push_str(&format!(" · v{}", a.version));
             }
+            // `name · N files · size` for an archive (35 §3.2): the count rides in
+            // the receipt (`shown a.zip (v1 · 42 files · 3 MB)`), so the header
+            // still touches no file.
+            if a.kind == artifact::Kind::Archive
+                && let Some((output, false)) = result
+                && let Some(files) = output.split(" · ").map(|p| p.trim_end_matches(')')).find(|p| p.ends_with(" files"))
+            {
+                header.push_str(&format!(" · {files}"));
+            }
             header.push_str(&format!(" · {}", artifact_size(a)));
             if a.kind == artifact::Kind::App {
                 header.push_str(&format!(" · {APP_WHERE}"));
