@@ -717,6 +717,7 @@ async fn run() -> anyhow::Result<()> {
     tokio::select! {
         _ = rt.shutdown.cancelled() => {}
         _ = tokio::signal::ctrl_c() => rt.shutdown.cancel(),
+        _ = parent_gone() => rt.shutdown.cancel(),
     }
     // Give actors a moment to flush (sqlite writes, terminal restore), then
     // leave without waiting for the runtime: a `spawn_blocking` pipe drain
@@ -725,6 +726,26 @@ async fn run() -> anyhow::Result<()> {
     drop(_guard);
     rpc::engine::release();
     std::process::exit(0)
+}
+
+/// Resolves once the process named by `THEUTH_PARENT_PID` is gone; never when
+/// it is unset. The Windows desktop app sets it on its daemon (58 §0.4): the
+/// app's Job Object kills us when it exits, this is the belt to that braces
+/// (a job the app failed to close, a pid_alive-visible crash). Polled, 5 s.
+async fn parent_gone() {
+    let Some(pid) = std::env::var("THEUTH_PARENT_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    else {
+        return std::future::pending().await;
+    };
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        if !platform::process::pid_alive(pid) {
+            tracing::info!(parent = pid, "desktop app gone; shutting down");
+            return;
+        }
+    }
 }
 
 /// The engine's plugin list (every mode but `--acp` and `--link-signal`):

@@ -44,10 +44,16 @@ pub struct Connection {
 }
 
 /// The daemon we started: on Unix the pty master and the shell-turned-daemon
-/// child; on Windows the plain `t.exe` child.
+/// child; on Windows the plain `t.exe` child and the Job Object it lives in.
 struct Daemon {
     #[cfg(unix)]
     master: Box<dyn MasterPty + Send>,
+    /// `KILL_ON_JOB_CLOSE`, no breakaway: when this handle closes — `stop()`,
+    /// or the kernel closing our handles because the app died by any route —
+    /// the daemon, its `t subprocess` and the helper grandchildren go with it.
+    /// The pty's SIGHUP on Unix has no Windows equivalent (58 §0.4).
+    #[cfg(windows)]
+    tree: platform::process::ProcessTree,
     child: Child,
 }
 
@@ -236,7 +242,9 @@ fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Da
 
 /// Start `t.exe` as a hidden plain child: no pty (a ConPTY shows a console
 /// window and its conhost handshake never got the daemon listening on a real
-/// install), stdin null, stdout and stderr piped into the ring.
+/// install), stdin null, stdout and stderr piped into the ring. The child is
+/// put in a kill-on-close Job Object and told our pid (`THEUTH_PARENT_PID`) so
+/// it can also notice on its own that we are gone.
 #[cfg(windows)]
 fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Daemon, Readers)> {
     use std::os::windows::process::CommandExt;
@@ -247,6 +255,7 @@ fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Da
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .envs(env(port))
+        .env("THEUTH_PARENT_PID", std::process::id().to_string())
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -257,11 +266,20 @@ fn spawn(data_dir: &Path, port: u16, log: &Mutex<Vec<u8>>) -> anyhow::Result<(Da
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawn {}", program.display()))?;
+    // A daemon we cannot tie to our lifetime is the leak this exists to stop:
+    // refuse it rather than leave it behind.
+    let tree = match platform::process::ProcessTree::adopt(child.id()) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(e).context("job object for the daemon");
+        }
+    };
     let readers: Readers = vec![
         Box::new(child.stdout.take().context("stdout not piped")?),
         Box::new(child.stderr.take().context("stderr not piped")?),
     ];
-    Ok((Daemon { child }, readers))
+    Ok((Daemon { tree, child }, readers))
 }
 
 /// The daemon's command line (18 §2 step 2): on Unix the user's login,
@@ -469,11 +487,15 @@ fn last_lines(text: &str, n: usize) -> String {
 
 /// Hang up (Unix: drop the master, SIGHUP once every fd is closed; Windows has
 /// no line to hang up — stdin is already null), give the daemon 2 s to exit on
-/// its own (the webview called RPC `shutdown` first), then kill.
+/// its own (the webview called RPC `shutdown` first), then kill. On Windows the
+/// kill is the whole Job Object, and dropping its handle afterwards kills
+/// whatever a clean daemon exit left behind.
 fn stop(daemon: Option<Daemon>) {
     let Some(Daemon {
         #[cfg(unix)]
         master,
+        #[cfg(windows)]
+        tree,
         mut child,
     }) = daemon
     else {
@@ -488,6 +510,9 @@ fn stop(daemon: Option<Daemon>) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    #[cfg(windows)]
+    tree.kill();
+    #[cfg(unix)]
     if let Err(e) = child.kill() {
         tracing::warn!(error = %e, "kill daemon");
     }

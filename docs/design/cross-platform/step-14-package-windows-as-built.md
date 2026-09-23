@@ -150,6 +150,83 @@ ConPTY's own console; macOS-only spawns (`say`, `open`, `brew`, `screencapture`)
 Windows test `hide_console_spawns_a_console_child_without_a_window` asks a hidden `powershell`
 child for `GetConsoleWindow()` and expects `0`.
 
+## Daemon lifetime on Windows (`crates/desktop/src/launch.rs`, branch `fix/windows-lifecycle`, 2026-09-23)
+
+Observed on the installed 1.13.4: closing the app left `t.exe`, its `t subprocess` and
+`theuth-documents-<ver>.exe` running and `engine.json` pointing at them. On macOS the pty master's
+close HUPs the daemon whatever kills the app; the Windows plain child had nothing tying it to us.
+
+Two mechanisms, kernel first:
+
+1. **Job Object (fires first, on any app exit).** Right after `spawn`, the daemon pid is put in
+   `platform::process::ProcessTree::adopt(child.id())` — the Job Object the platform crate already
+   builds for tool trees: `CreateJobObjectW` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, no breakaway, so the
+   `t subprocess` worker and the helpers the daemon spawns are members too. The handle lives in
+   `Daemon.tree`. `stop()` (tray Quit → `RunEvent::Exit` → `Launch::shutdown`) waits the 2 s grace then
+   `TerminateJobObject`s the whole tree instead of `child.kill()`; dropping the handle afterwards kills
+   anything a clean daemon exit left behind. A crash, `taskkill /F`, or an exit path that skips
+   `RunEvent::Exit` closes our handles in the kernel → same kill. If `adopt` fails the daemon is killed
+   and the launch errors: an untethered daemon is exactly the leak. Judgement call: the brief asked for
+   `windows-sys` Job Object calls in desktop; `platform::process` already has them verbatim, so desktop
+   gained no `windows-sys` features.
+   Race: a child the daemon spawned between `CreateProcess` and `AssignProcessToJobObject` (microseconds,
+   before `t.exe` has loaded) would escape; not worth `CREATE_SUSPENDED`.
+2. **Parent watch (belt).** The Windows `spawn` sets `THEUTH_PARENT_PID=<app pid>`; `t --headless`
+   (`main.rs::parent_gone`, `platform::process::pid_alive` every 5 s) cancels `rt.shutdown` when it is
+   gone: the normal clean exit (flush, `engine::release()`, exit 0). Set only on Windows, so macOS is
+   unchanged; unset → the future never resolves. Design 63 had no parent watch before this. Ceiling: pid
+   reuse within 5 s would keep the daemon alive one more poll — the job kills it anyway.
+
+Verify on the box: start the app, `Get-Process t,theuth-documents*`; `Stop-Process -Name theuth-desktop
+-Force` (skips Exit) → within a second `Get-Process t` is empty and `%USERPROFILE%\.theuth\engine.json`
+is gone or stale-and-refused on the next `t`. Tray Quit → same plus the RPC `shutdown` first (log line
+`desktop app gone; shutting down` appears only if the job somehow did not fire — it should not).
+
+## Close vs Quit
+
+Sky's model on every OS: the window `CloseRequested` handler `prevent_close`s and hides
+(`lib.rs`); the app lives in the tray. Tray left-click toggles the window (`showMenuOnLeftClick: false`);
+right-click opens the menu; **Quit** → `quit-requested` → webview `quit_ack` (after RPC `shutdown`) →
+exit → `Launch::shutdown()` stops the daemon (Job Object above). Nothing in that path is macOS-only.
+
+The macOS tray icon is a 22 px black-on-transparent template (`icons/tray.png`, `iconAsTemplate` in
+`tauri.macos.conf.json`). Windows does not recolour templates: on the dark taskbar that glyph is
+black on black. `tauri.windows.conf.json` now overrides `app.trayIcon.iconPath` with
+`icons/tray-windows.png` (full-colour 32×32, `sips -z 32 32 icons/icon.png`), `iconAsTemplate: false`;
+id and click behaviour are inherited from `tauri.conf.json` by Tauri's platform-config merge.
+`lib.rs` is untouched.
+
+Verify: icon visible in the notification area (may be under the overflow chevron on a fresh profile —
+Windows hides new tray icons by default), left-click toggles the window, X hides it, right-click → Quit
+exits and `Get-Process t` is empty.
+
+## Vault key on Windows (`crates/secrets/src/key.rs`)
+
+Observed: `WARN secrets::key: no keychain available (Couldn't access platform secure storage: Windows
+ERROR_NO_SUCH_LOGON_SESSION); vault key in C:\Users\user\.theuth\secrets.key`. keyring 3.6.3
+(`src/windows.rs` `save_credential`) hard-codes `CRED_PERSIST_ENTERPRISE` and has no persistence setter
+(that arrived with keyring 4 / `windows-native-keyring-store`, a different API and a workspace-wide
+migration that would touch the macOS path). Judgement call: on Windows `key.rs` talks to the
+Credential Manager directly (`mod cred`: `CredReadW`/`CredWriteW` via `windows-sys`
+`Win32_Security_Credentials`) with `CRED_PERSIST_LOCAL_MACHINE`; macOS/Linux keep the keyring crate.
+Same target name (`secrets:<abs data_dir>.theuth`) and UTF-16LE blob keyring would write, so an item
+either side wrote reads on the other. Errors are mapped exactly as keyring maps them (`ERROR_NOT_FOUND` →
+`NoEntry`, `ERROR_NO_SUCH_LOGON_SESSION` → `NoStorageAccess`, else `PlatformFailure`) into
+`keyring::Error`, so `Auto`'s fallback classification (`fallback_reason`, unit-tested) is one code path.
+
+The WARN now names the backend and the raw OS error, once:
+`no keychain available: Windows Credential Manager (CredReadW/CredWriteW, CRED_PERSIST_LOCAL_MACHINE):
+Couldn't access platform secure storage: <message> (os error 1312); vault key in … (mode 0600)`.
+
+Over SSH the Credential Manager is still unavailable — a network logon has no credential set, and no
+persistence flag changes that — so an engine started from an SSH session falls back to the file and
+says so. Verify from a **desktop** session: start the app (or `t --headless`), expect no `no keychain
+available` WARN, and `cmdkey /list | findstr theuth` shows `secrets:C:\Users\<user>\.theuth.theuth`
+(Control Panel → Credential Manager → Windows Credentials → Generic, persistence "Local computer").
+A `secrets.key` file written by the earlier fallback stays in use only if `secrets.key_store: file` —
+with `Auto` the keychain wins once it works, so a vault encrypted under the file key will fail to open:
+delete `secrets.vault`/`secrets.key` on the test box (or set `key_store: file`) before checking.
+
 ## Verifying on the Windows host
 
 From the repo root in pwsh 7 (rustup MSVC toolchain, `cargo install tauri-cli`, bun, NSIS is fetched
