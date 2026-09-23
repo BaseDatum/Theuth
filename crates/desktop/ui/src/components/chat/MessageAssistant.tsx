@@ -2,7 +2,7 @@ import { code } from '@streamdown/code'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
-import { memo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { type PluginConfig, Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
@@ -15,17 +15,19 @@ import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
-import { JsonRenderFence } from './surface/JsonRenderFence'
+import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
+import { OpenUIFence } from './surface/OpenUIFence'
 
 // Module scope: a new object per render would re-initialise the highlighter.
-// `json-render` and `mermaid` fences use streamdown's `plugins.renderers` (matched by language before the built-in
-// code block), so no `components.code` override is needed and every other language keeps the `@streamdown/code`
+// `json-render`, `mermaid` and `openui` fences use streamdown's `plugins.renderers` (matched by language before the
+// built-in code block), so no `components.code` override is needed and every other language keeps the `@streamdown/code`
 // renderer. Mermaid itself is configured in `Mermaid.tsx` (30 §11) and rendered there, not by streamdown.
 export const plugins: PluginConfig = {
   code,
   renderers: [
     { language: 'json-render', component: JsonRenderFence },
     { language: 'mermaid', component: MermaidFence },
+    { language: 'openui', component: OpenUIFence },
   ],
 }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
@@ -187,7 +189,22 @@ export const MessageAssistant = memo(function MessageAssistant({
   readOnly?: boolean
 }) {
   const api = useApi()
-  const running = useSessionField(session, 'running')
+  const running = useSessionField(session, 'running') ?? false
+  // 30 §8: a later reply before the next human message carries the fix for any fence broken here.
+  // ponytail: a forward scan per mounted reply per store change; index entries by id if transcripts grow past thousands.
+  const hasLaterAssistant = useSessions((s) => {
+    const entries = s.sessions[session]?.entries ?? []
+    for (let i = entries.findIndex((e) => e.id === id) + 1; i > 0 && i < entries.length; i++) {
+      const kind = entries[i]?.kind
+      if (kind === 'assistant') return true
+      if (kind === 'user') return false
+    }
+    return false
+  })
+  const fence = useMemo<FenceContext>(
+    () => ({ running, hasLaterAssistant, session: readOnly ? undefined : session }),
+    [running, hasLaterAssistant, readOnly, session],
+  )
   const fork = useFork(session)
   const voice = speech.useVoice()
   const speaking = speech.useSpeaking()
@@ -204,15 +221,17 @@ export const MessageAssistant = memo(function MessageAssistant({
   }
   return (
     <div className="py-2">
-      <Streamdown
-        mode={open ? undefined : 'static'}
-        isAnimating={open}
-        plugins={plugins}
-        shikiTheme={shikiTheme}
-        className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table_th]:font-semibold"
-      >
-        {text}
-      </Streamdown>
+      <FenceContext value={fence}>
+        <Streamdown
+          mode={open ? undefined : 'static'}
+          isAnimating={open}
+          plugins={plugins}
+          shikiTheme={shikiTheme}
+          className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table_th]:font-semibold"
+        >
+          {text}
+        </Streamdown>
+      </FenceContext>
       {!open && (
         <div className="-ml-2 flex">
           {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}

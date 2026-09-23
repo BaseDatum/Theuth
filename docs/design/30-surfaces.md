@@ -638,6 +638,20 @@ extra buttons, so the block was replaced rather than patched.
   last good svg and, once the fence is closed, shows the §8 error card
   (`Diagram unavailable · <mermaid parse error> · source`).
 
+**As-built 2026-09-23 — quiet failure, the `openui` fence.** `ErrorCard`
+(`surface/JsonRenderFence.tsx`) is `FenceFallback`, same export name for
+`Mermaid.tsx`: a closed mermaid/json-render/openui fence that fails never shows
+a red card. From `FenceContext` (set by `MessageAssistant`: `running`,
+`hasLaterAssistant`, `session`): a later reply before the next human message
+carries the fix → nothing; turn running → `animate-pulse` skeleton (`aria-busy`);
+the turn's last reply → `◌ diagram omitted · show source` (source in `<details>`,
+parser message as tooltip). `<surface_error …>` notes are `HIDDEN` in `lib/injected.ts`.
+```` ```openui ```` fences render inline via `surface/OpenUIFence.tsx`: `AppRenderer`
+(streaming while open) over a provider that rejects every call (`Open as app to run
+queries and actions`; `@ToAssistant` toasts the same); closed fences are `check`ed
+client-side. **Open as app** → `publish_app(session, name, source)`, `name` from the
+first `TextContent("## …")` else `reply-<id>`, then the record opens in the panel.
+
 ## 9. Text channels: Slack, Signal, `message_user`
 
 `surface::flatten(text, 60)` runs where each channel turns the assistant's

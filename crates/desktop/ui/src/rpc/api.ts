@@ -260,6 +260,8 @@ export interface Api {
   escalate_model(): Promise<EscalateModel>
   /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
   get_app(record_call_id: string): Promise<AppDoc>
+  /** Commit `source` as a new `app` artifact named `name` without a model turn (30 §8, the transcript's Open as app); the result is what `get_app` returns for its `record_call_id`. Located helper errors arrive as the RPC error message. */
+  publish_app(session: SessionId, name: string, source: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
@@ -715,6 +717,7 @@ export const METHODS = [
   'pty_input',
   'pty_resize',
   'pty_screen',
+  'publish_app',
   'put_attachment',
   'put_session_attachment',
   'redo',

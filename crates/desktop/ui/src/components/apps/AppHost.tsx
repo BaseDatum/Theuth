@@ -37,6 +37,7 @@ import {
   createProvider,
   previewPatch,
 } from "./lifecycle";
+import { useDark } from "./theme";
 
 type ActionEvent = Parameters<NonNullable<AppRendererProps["onAction"]>>[0];
 type RenderError = Parameters<
@@ -64,21 +65,6 @@ function useVisible(): boolean {
       return () => document.removeEventListener("visibilitychange", cb);
     },
     () => document.visibilityState === "visible",
-  );
-}
-
-/** Follows the `dark` class `lib/theme.ts` toggles on `<html>`. */
-function useDark(): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      const o = new MutationObserver(cb);
-      o.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-      return () => o.disconnect();
-    },
-    () => document.documentElement.classList.contains("dark"),
   );
 }
 

@@ -20,6 +20,12 @@ test('context summaries and runtime wrappers do not duplicate existing surfaces'
   expect(classify('<context_summary>\nfolded\n</context_summary>\n<runtime>x</runtime>')).toEqual([])
 })
 
+test('surface_error notes are hidden, with or without attributes, and still compose with visible notices', () => {
+  expect(classify('<surface_error>\nfix the diagram\n</surface_error>')).toEqual([])
+  expect(classify('<surface_error final="true">\ngave up\n</surface_error>\n<todo>x</todo>')).toEqual([{ kind: 'harness', notice: 'todo', text: 'x' }])
+  expect(classify('Explain <surface_error final="true">x</surface_error>')).toBeNull()
+})
+
 test('todo nudges compose with harness blocks but never swallow surrounding human text', () => {
   expect(classify('<todo>x</todo>\n<todo_continue>\nContinue working\n</todo_continue>')).toEqual([
     { kind: 'harness', notice: 'todo', text: 'x' },
@@ -31,7 +37,7 @@ test('todo nudges compose with harness blocks but never swallow surrounding huma
 })
 
 test('harness notices compose without losing their type or literal body', () => {
-  const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'surface_error', 'todo', 'knowledge']
+  const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'todo', 'knowledge']
   const body = 'Check <button> &lt;literal&gt; &amp; text.'
   expect(classify(notices.map((notice) => `<${notice}>\n${body}\n</${notice}>`).join('\n'))).toEqual(
     notices.map((notice) => ({ kind: 'harness', notice, text: body })),
