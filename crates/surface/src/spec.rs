@@ -30,7 +30,7 @@ pub struct Element {
     pub children: Vec<String>,
 }
 
-/// Catalog v0: eighteen components, adjacently tagged as `{"type": Name, "props": {...}}`.
+/// Catalog v0: nineteen components, adjacently tagged as `{"type": Name, "props": {...}}`.
 ///
 /// Declaration order is the catalog order shown to the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -73,6 +73,8 @@ pub enum Component {
     Tabs(TabsProps),
     /// Titled sections; `children[i]` is the body of `titles[i]`.
     Accordion(AccordionProps),
+    /// Typed boxes and arrows: nodes, edges, optional groups (design doc 65).
+    Graph(GraphProps),
 }
 
 /// `Card` props.
@@ -412,4 +414,119 @@ pub struct TabsProps {
 pub struct AccordionProps {
     /// One title per child.
     pub titles: Vec<String>,
+}
+
+/// `Graph` props (design doc 65 §3.1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphProps {
+    /// Nodes, in authored order.
+    pub nodes: Vec<GraphNode>,
+    /// Directed edges between node ids.
+    pub edges: Vec<GraphEdge>,
+    /// Groups a node may belong to; drawn as a labelled box.
+    pub groups: Option<Vec<GraphGroup>>,
+    /// Flow direction; default LR.
+    pub direction: Option<GraphDirection>,
+}
+
+/// One `Graph` node.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphNode {
+    /// Unique within the graph; referenced by edges.
+    pub id: String,
+    /// Text inside the shape; ≤ 80 characters.
+    pub label: String,
+    /// Shape hint; default box.
+    pub kind: Option<GraphKind>,
+    /// Id of the group this node sits in.
+    pub group: Option<String>,
+    /// Semantic state; default default.
+    pub state: Option<GraphState>,
+}
+
+/// `GraphNode.kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum GraphKind {
+    /// Rectangle.
+    Box,
+    /// Rounded rectangle.
+    Rounded,
+    /// Stadium.
+    Pill,
+    /// Decision.
+    Diamond,
+    /// Database.
+    Cylinder,
+    /// Person or external party.
+    Actor,
+}
+
+/// `GraphNode.state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum GraphState {
+    /// Plain.
+    Default,
+    /// Highlighted.
+    Active,
+    /// Finished.
+    Done,
+    /// De-emphasised.
+    Muted,
+    /// Failing or risky.
+    Danger,
+}
+
+/// One `Graph` edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphEdge {
+    /// Source node id.
+    pub from: String,
+    /// Target node id; may equal `from`.
+    pub to: String,
+    /// Text on the arrow; ≤ 80 characters.
+    pub label: Option<String>,
+    /// Line style; default solid.
+    pub style: Option<GraphEdgeStyle>,
+}
+
+/// `GraphEdge.style`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum GraphEdgeStyle {
+    /// Continuous line.
+    Solid,
+    /// Dashed line.
+    Dashed,
+}
+
+/// One `Graph` group.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct GraphGroup {
+    /// Unique within the graph; referenced by `GraphNode.group`.
+    pub id: String,
+    /// Title of the box; ≤ 80 characters.
+    pub label: String,
+}
+
+/// `Graph.direction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub enum GraphDirection {
+    /// Left to right.
+    LR,
+    /// Top to bottom.
+    TB,
 }

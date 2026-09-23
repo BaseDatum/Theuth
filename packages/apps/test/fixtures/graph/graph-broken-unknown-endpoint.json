@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {
+      "id": "api",
+      "label": "API"
+    },
+    {
+      "id": "db",
+      "label": "Postgres",
+      "kind": "cylinder"
+    }
+  ],
+  "edges": [
+    {
+      "from": "api",
+      "to": "db"
+    },
+    {
+      "from": "api",
+      "to": "db2",
+      "label": "replica"
+    }
+  ]
+}

@@ -11,8 +11,24 @@ const metric = z.strictObject({
   trend: z.enum(['up', 'down', 'flat']).optional(),
   delta: str.optional(),
 })
+const graphLabel = str
+/** `Graph` props (65 §3.1); the id/endpoint/cap rules live in `parse.ts` like the Rust `validate.rs` ones. */
+export const graphProps = z.strictObject({
+  nodes: z.array(
+    z.strictObject({
+      id: str,
+      label: graphLabel,
+      kind: z.enum(['box', 'rounded', 'pill', 'diamond', 'cylinder', 'actor']).optional(),
+      group: str.optional(),
+      state: z.enum(['default', 'active', 'done', 'muted', 'danger']).optional(),
+    }),
+  ),
+  edges: z.array(z.strictObject({ from: str, to: str, label: graphLabel.optional(), style: z.enum(['solid', 'dashed']).optional() })),
+  groups: z.array(z.strictObject({ id: str, label: graphLabel })).optional(),
+  direction: z.enum(['LR', 'TB']).optional(),
+})
 
-/** The 18 v0 components with their zod prop schemas; containers declare `slots: ['default']`. */
+/** The 19 v0 components with their zod prop schemas; containers declare `slots: ['default']`. */
 export const catalog = defineCatalog(schema, {
   components: {
     Card: { props: z.strictObject({ title: str.optional(), description: str.optional() }), slots: ['default'] },
@@ -63,6 +79,7 @@ export const catalog = defineCatalog(schema, {
     Checklist: { props: z.strictObject({ items: z.array(z.strictObject({ text: str, done: z.boolean() })) }) },
     Tabs: { props: z.strictObject({ labels: z.array(str) }), slots: ['default'] },
     Accordion: { props: z.strictObject({ titles: z.array(str) }), slots: ['default'] },
+    Graph: { props: graphProps },
   },
   actions: {},
 })
@@ -72,7 +89,7 @@ export const COMPONENTS: Record<string, z.ZodType> = Object.fromEntries(
   Object.entries(catalog.data.components).map(([name, def]) => [name, def.props]),
 )
 
-/** The 18 component names, catalog order. */
+/** The 19 component names, catalog order. */
 export const COMPONENT_NAMES = Object.keys(COMPONENTS)
 
 /** True for the five containers (the ones declaring a default slot); only they may have `children`. */

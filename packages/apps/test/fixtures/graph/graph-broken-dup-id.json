@@ -1,0 +1,30 @@
+{
+  "groups": [
+    {
+      "id": "core",
+      "label": "Core"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "api",
+      "label": "API",
+      "group": "core"
+    },
+    {
+      "id": "db",
+      "label": "Postgres"
+    },
+    {
+      "id": "api",
+      "label": "API v2",
+      "group": "edge"
+    }
+  ],
+  "edges": [
+    {
+      "from": "api",
+      "to": "db"
+    }
+  ]
+}

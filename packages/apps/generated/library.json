@@ -1,5 +1,5 @@
 {
-  "hash": "6b730a558c6ca81994d6e06a56bf3cd0332a9775c44884c33b440490b9700d4a",
+  "hash": "e8231c352d6a578d1638151649bb0aad63c5243d51d3eb982e2f5607cf717d72",
   "pins": {
     "@openuidev/lang-core": "0.3.0",
     "@openuidev/react-headless": "0.16.1",
@@ -73,7 +73,8 @@
     "ChipItem",
     "Slider",
     "Button",
-    "Buttons"
+    "Buttons",
+    "Graph"
   ],
   "componentGroups": [
     {
@@ -236,7 +237,7 @@
       "description": "Flex container. direction: \"row\"|\"column\" (default \"column\"). gap: \"none\"|\"xs\"|\"s\"|\"m\"|\"l\"|\"xl\"|\"2xl\" (default \"m\"). align: \"start\"|\"center\"|\"end\"|\"stretch\"|\"baseline\". justify: \"start\"|\"center\"|\"end\"|\"between\"|\"around\"|\"evenly\"."
     },
     "Card": {
-      "signature": "Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
+      "signature": "Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack | Graph)[], variant?: \"card\" | \"sunk\" | \"clear\", direction?: \"row\" | \"column\", gap?: \"none\" | \"xs\" | \"s\" | \"m\" | \"l\" | \"xl\" | \"2xl\", align?: \"start\" | \"center\" | \"end\" | \"stretch\" | \"baseline\", justify?: \"start\" | \"center\" | \"end\" | \"between\" | \"around\" | \"evenly\", wrap?: boolean)",
       "description": "Styled container. variant: \"card\" (default, elevated) | \"sunk\" (recessed) | \"clear\" (transparent). Always full width. Accepts all Stack flex params (default: direction \"column\"). Cards flex to share space in row/wrap layouts."
     },
     "CardHeader": {
@@ -252,7 +253,7 @@
       "description": "Tabbed container"
     },
     "TabItem": {
-      "signature": "TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps)[])",
+      "signature": "TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[])",
       "description": "value is unique id, trigger is tab label, content is array of components"
     },
     "Accordion": {
@@ -260,11 +261,11 @@
       "description": "Collapsible sections"
     },
     "AccordionItem": {
-      "signature": "AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps)[])",
+      "signature": "AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[])",
       "description": "value is unique id, trigger is section title"
     },
     "Carousel": {
-      "signature": "Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps)[][], variant?: \"card\" | \"sunk\")",
+      "signature": "Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[][], variant?: \"card\" | \"sunk\")",
       "description": "Horizontal scrollable carousel"
     },
     "TextContent": {
@@ -442,6 +443,10 @@
     "Buttons": {
       "signature": "Buttons(buttons: Button[], direction?: \"row\" | \"column\")",
       "description": "Group of Button components. direction: \"row\" (default) | \"column\"."
+    },
+    "Graph": {
+      "signature": "Graph(nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\"}[], groups?: {id: string, label: string}[], direction?: \"LR\" | \"TB\", highlight?: $binding<string[]>, onSelect?: ActionExpression)",
+      "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
     }
   },
   "reactive": {
@@ -468,6 +473,9 @@
     ],
     "Slider": [
       "value"
+    ],
+    "Graph": [
+      "highlight"
     ]
   },
   "schema": {
@@ -632,6 +640,9 @@
       },
       "Buttons": {
         "$ref": "#/$defs/Buttons"
+      },
+      "Graph": {
+        "$ref": "#/$defs/Graph"
       }
     },
     "required": [
@@ -687,7 +698,8 @@
       "ChipItem",
       "Slider",
       "Button",
-      "Buttons"
+      "Buttons",
+      "Graph"
     ],
     "additionalProperties": false,
     "$defs": {
@@ -826,6 +838,9 @@
                 },
                 {
                   "$ref": "#/$defs/Stack"
+                },
+                {
+                  "$ref": "#/$defs/Graph"
                 }
               ]
             }
@@ -1703,6 +1718,9 @@
                 },
                 {
                   "$ref": "#/$defs/Steps"
+                },
+                {
+                  "$ref": "#/$defs/Graph"
                 }
               ]
             }
@@ -1715,6 +1733,177 @@
         ],
         "additionalProperties": false,
         "description": "value is unique id, trigger is tab label, content is array of components"
+      },
+      "Graph": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "box",
+                    "rounded",
+                    "pill",
+                    "diamond",
+                    "cylinder",
+                    "actor"
+                  ]
+                },
+                "group": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "active",
+                    "done",
+                    "muted",
+                    "danger"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "solid",
+                    "dashed"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "LR",
+              "TB"
+            ]
+          },
+          "highlight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onSelect": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "open_url"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "continue_conversation"
+                  },
+                  "context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "additionalProperties": false,
+        "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
       },
       "Carousel": {
         "type": "object",
@@ -1787,6 +1976,9 @@
                   },
                   {
                     "$ref": "#/$defs/Steps"
+                  },
+                  {
+                    "$ref": "#/$defs/Graph"
                   }
                 ]
               }
@@ -1897,6 +2089,9 @@
                 },
                 {
                   "$ref": "#/$defs/Steps"
+                },
+                {
+                  "$ref": "#/$defs/Graph"
                 }
               ]
             }

@@ -1,9 +1,8 @@
 import { createCodeBlockSpec, plainContentToString } from '@blocknote/core'
 import { type ReactCustomBlockRenderProps, createReactBlockSpec, useEditorState } from '@blocknote/react'
 import { PencilLine } from 'lucide-react'
-import mermaid from 'mermaid'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { MermaidFence } from '@/components/chat/Mermaid'
+import { loadMermaid, MermaidFence } from '@/components/chat/Mermaid'
 import { JsonRenderFence } from '@/components/chat/surface/JsonRenderFence'
 import { parseSpec } from '@/components/chat/surface/parse'
 import { CODE_BLOCK_OPTIONS, type Diagram, diagramOf } from '@/components/editor/codeLanguages'
@@ -42,10 +41,13 @@ function useParses(kind: Diagram | null, source: string): boolean | null {
     }
     let live = true
     setOk(null)
-    mermaid.parse(source, { suppressErrors: true }).then(
-      (r) => live && setOk(r !== false),
-      () => live && setOk(false),
-    )
+    // Through the lazy loader (65 §4): a static `mermaid` import here would put the core back in the entry chunk.
+    loadMermaid()
+      .then((m) => m.parse(source, { suppressErrors: true }))
+      .then(
+        (r) => live && setOk(r !== false),
+        () => live && setOk(false),
+      )
     return () => {
       live = false
     }

@@ -1,0 +1,25 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Graph",
+      "props": {
+        "direction": "TB",
+        "nodes": [
+          {"id": "fetch", "label": "Fetch fence", "state": "done"},
+          {"id": "parse", "label": "Parse + repair", "state": "active"},
+          {"id": "validate", "label": "Validate", "kind": "diamond"},
+          {"id": "render", "label": "Render"},
+          {"id": "fix", "label": "surface_error round", "kind": "rounded"}
+        ],
+        "edges": [
+          {"from": "fetch", "to": "parse"},
+          {"from": "parse", "to": "validate"},
+          {"from": "validate", "to": "render", "label": "ok"},
+          {"from": "validate", "to": "fix", "label": "errors"},
+          {"from": "fix", "to": "parse", "style": "dashed"}
+        ]
+      }
+    }
+  }
+}

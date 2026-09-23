@@ -1,4 +1,4 @@
-// Design 30 §8.3: a rendered mermaid diagram as an image. Mermaid's svg carries its own
+// Design 30 §8.3, 65 §3.4: a rendered diagram (mermaid or Graph svg) as an image. Mermaid's svg carries its own
 // `<style>` block (and `htmlLabels: false` keeps labels as `<text>`), so it is self-contained
 // once it has a pixel size and an opaque background; nothing from the page is inlined.
 

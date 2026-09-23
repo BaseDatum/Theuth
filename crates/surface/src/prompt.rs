@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 18] = [
+const EXAMPLES: [(&str, &str); 19] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -82,6 +82,10 @@ const EXAMPLES: [(&str, &str); 18] = [
         "Accordion",
         r#"{"type": "Accordion", "props": {"titles": ["Why", "How"]}, "children": ["a", "b"]}"#,
     ),
+    (
+        "Graph",
+        r#"{"type": "Graph", "props": {"direction": "LR", "groups": [{"id": "edge", "label": "Edge"}], "nodes": [{"id": "web", "label": "Browser", "kind": "actor", "group": "edge"}, {"id": "api", "label": "API", "kind": "rounded", "state": "active"}, {"id": "db", "label": "Postgres", "kind": "cylinder"}], "edges": [{"from": "web", "to": "api", "label": "HTTPS"}, {"from": "api", "to": "db", "style": "dashed"}]}}"#,
+    ),
 ];
 
 /// The `## Show, don't tell` prompt block (doc §6.2) with the compact catalog filled in.
@@ -89,8 +93,8 @@ pub fn prompt_block() -> String {
     format!(
         "## Show, don't tell\n\
 Your reply can draw. Three fenced blocks render as pictures in the terminal and the desktop app, and read as text everywhere else:\n\
-- ```mermaid — flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram. Use it when the answer is a shape: how things connect, what calls what, what happens in what order, which states lead where.\n\
-- ```json-render — one JSON object {{root, elements:{{id:{{type, props, children}}}}}}. Use it when the answer is structured data: a comparison, a status board, before/after, metrics, a plan with states, a timeline. Catalog: {catalog}\n\
+- ```mermaid — sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram (and flowchart when you need mermaid's own syntax). Use it when the answer is an order of messages, which states lead where, or a class or data model.\n\
+- ```json-render — one JSON object {{root, elements:{{id:{{type, props, children}}}}}}. Use it when the answer is structured data: a comparison, a status board, before/after, metrics, a plan with states, a timeline — and for boxes and arrows: architecture, dependencies, data flow, a pipeline are a `Graph` (nodes, edges, groups, a state per node); it draws on every surface and an app can highlight it. Catalog: {catalog}\n\
 - ```openui — OpenUI Lang, the same statements as the `app` tool, for a richer static card in the reply: Tabs, Steps, Callout, MetricIndicatorInline, Card, Table, charts. `$state`, `@Set`, `@OpenUrl` and inputs work in place; do not use Query, Mutation or @ToAssistant in a fence (the user can open it as an app). Use it for a multi-step explanation (Steps), options with trade-offs (Tabs), a status update (MetricIndicatorInline + Callout), instead of paragraphs.\n\
 Draw when a reader would sketch it on a whiteboard to explain it; that is most architecture, flow, dependency, sequence, state and comparison answers. One picture per idea, ≤ 12 nodes or ≤ 8 rows; labels ≤ 4 words; put the takeaway in one sentence before the block and do not repeat in prose what the picture already shows. Do not draw a one-line answer, a list of two, code, or anything the user asked to copy or paste. Prose is still right for reasoning, caveats and instructions.\n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> message with the exact path of each error: answer with the corrected block only.",

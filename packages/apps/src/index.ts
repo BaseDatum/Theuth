@@ -9,9 +9,13 @@ export {
   CURATED_COMPONENTS,
   LIBRARY_ROOT,
   buildCuratedLibrary,
+  graphProps,
+  graphText,
   library,
   reactiveProps,
+  setGraphRenderer,
 } from "./library.ts";
+export type { GraphHostProps, GraphValue } from "./library.ts";
 export { check, generatedLibrary, libraryHash, mergeCheck } from "./check.ts";
 export type { GeneratedLibrary } from "./generated-types.ts";
 export type {

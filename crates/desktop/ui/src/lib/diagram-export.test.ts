@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { standalone, viewBox } from './mermaid-export'
+import { standalone, viewBox } from './diagram-export'
 
 const MERMAID =
   '<svg aria-roledescription="flowchart-v2" role="graphics-document document" viewBox="0 0 314.5 87.2" style="max-width: 314.5px;" class="flowchart" xmlns="http://www.w3.org/2000/svg" width="100%" id="mermaid-1"><style>#mermaid-1{font-family:monospace}</style><g/></svg>'

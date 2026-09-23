@@ -1,0 +1,33 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {"type": "Card", "props": {"title": "Crate dependencies"}, "children": ["g"]},
+    "g": {
+      "type": "Graph",
+      "props": {
+        "nodes": [
+          {"id": "theuth", "label": "theuth"},
+          {"id": "tui", "label": "tui"},
+          {"id": "desktop", "label": "desktop"},
+          {"id": "rpc", "label": "rpc"},
+          {"id": "app", "label": "app"},
+          {"id": "surface", "label": "surface"},
+          {"id": "markdown", "label": "markdown"},
+          {"id": "merman", "label": "merman", "kind": "pill", "state": "muted"}
+        ],
+        "edges": [
+          {"from": "theuth", "to": "tui"},
+          {"from": "theuth", "to": "rpc"},
+          {"from": "theuth", "to": "app"},
+          {"from": "tui", "to": "surface"},
+          {"from": "tui", "to": "markdown"},
+          {"from": "desktop", "to": "rpc"},
+          {"from": "rpc", "to": "surface", "label": "ts bindings", "style": "dashed"},
+          {"from": "app", "to": "surface", "style": "dashed"},
+          {"from": "surface", "to": "markdown"},
+          {"from": "surface", "to": "merman"}
+        ]
+      }
+    }
+  }
+}

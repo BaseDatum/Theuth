@@ -51,6 +51,7 @@ describe("curated library", () => {
       RadioGroup: ["value"],
       CheckBoxGroup: ["value"],
       Slider: ["value"],
+      Graph: ["highlight"],
     });
   });
 

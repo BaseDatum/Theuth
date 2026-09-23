@@ -86,7 +86,7 @@ export default defineConfig({
   // plugin); scanning every module up front avoids the mid-session full reload.
   optimizeDeps: { entries: ['index.html', 'src/**/*.{ts,tsx}'] },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
-  build: { target: 'safari15' },
+  build: { target: 'safari17' },
   // The apps package's OpenUI deps go through Vite (not node's resolver) so `dedupe` gives them our React in tests too.
   test: { include: ['src/**/*.test.ts'], server: { deps: { inline: [/packages\/apps\/node_modules/] } } },
 })

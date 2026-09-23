@@ -6,7 +6,7 @@
 import "@openuidev/react-ui/layered/styles/index.css";
 import { ThemeProvider } from "@openuidev/react-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { library, libraryHash } from "@theuth/apps";
+import { library, libraryHash, setGraphRenderer } from "@theuth/apps";
 import { AppRenderer, type AppRendererProps } from "@theuth/apps/renderer";
 import { Loader2 } from "lucide-react";
 import {
@@ -20,6 +20,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useText } from "@/components/chat/ArtifactCard";
+import { GraphView } from "@/components/chat/surface/Graph";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,9 @@ import {
   previewPatch,
 } from "./lifecycle";
 import { useDark } from "./theme";
+
+// 65 §3.5: the apps `Graph` draws with the chat's renderer — one renderer, two registrations.
+setGraphRenderer(GraphView);
 
 type ActionEvent = Parameters<NonNullable<AppRendererProps["onAction"]>>[0];
 type RenderError = Parameters<
