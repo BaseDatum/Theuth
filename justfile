@@ -115,9 +115,16 @@ package-linux:
 release-s3:
     ./scripts/release-s3.sh
 
-# Speech model files (pocket-tts, parakeet-tdt, nemotron-streaming-en, pyannote) from
-# ${THEUTH_DATA_DIR:-~/.theuth}/models → s3://theuth/releases/models/ + models.json; the
-# desktop app downloads what a Mac lacks at start. Needs AWS_* in .env.signing.
+# Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, pyannote,
+# laya decision checkpoints) that is missing under ${THEUTH_DATA_DIR:-~/.theuth}/models, fetched from
+# its documented origin (HF_TOKEN for gated repos). No AWS creds. DRY_RUN=1 lists instead.
+fetch-models:
+    ./scripts/fetch-models.sh
+
+# fetch-models, then those files + ONNX Runtime and its WebGPU plugin EP for every platform
+# (osx-arm64, linux-x64, linux-aarch64, win-x64) → s3://theuth/releases/models/ + models.json, from
+# one machine; the desktop app downloads what it lacks at start. Needs AWS_* in .env.signing.
+# DRY_RUN=1 prints every fetch and every aws s3 cp.
 release-models:
     ./scripts/release-models.sh
 
