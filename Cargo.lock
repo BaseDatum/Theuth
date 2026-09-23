@@ -10258,6 +10258,7 @@ dependencies = [
  "opus",
  "ort",
  "parking_lot",
+ "pipewire",
  "rtrb",
  "rubato 0.16.2",
  "runtime",
@@ -10272,6 +10273,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "voice",
+ "windows 0.54.0",
 ]
 
 [[package]]

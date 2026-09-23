@@ -49,7 +49,8 @@ impl Feed {
     }
 }
 
-fn rings(paused: &Arc<AtomicBool>) -> (Feed, Consumer<Sample>, Consumer<Sample>) {
+/// One source's feed and its two consumers `(encoder, stt)`; `pub` for `examples/capture_probe`.
+pub fn rings(paused: &Arc<AtomicBool>) -> (Feed, Consumer<Sample>, Consumer<Sample>) {
     let (enc_p, enc_c) = RingBuffer::new(RING);
     let (stt_p, stt_c) = RingBuffer::new(RING);
     (
@@ -85,7 +86,6 @@ impl Capture {
     /// Open the files, the tap on `pid` and the mic; blocking (TCC prompts
     /// included). Returns what degraded on the way (`MicNoAec`). On `Err` the
     /// files that were opened are finalized and left in `dir`.
-    #[cfg(target_os = "macos")]
     pub fn start(pid: u32, dir: &Path, title: &str) -> anyhow::Result<(Capture, Vec<Degradation>)> {
         let stop = Arc::new(AtomicBool::new(false));
         // Paused until every device is open: the file timeline then starts
@@ -136,16 +136,6 @@ impl Capture {
         cap.devices.get_mut().expect("unshared").mic = Some(mic);
         cap.resume();
         Ok((cap, degraded))
-    }
-
-    /// Not macOS: no taps, no VPIO.
-    #[cfg(not(target_os = "macos"))]
-    pub fn start(
-        _pid: u32,
-        _dir: &Path,
-        _title: &str,
-    ) -> anyhow::Result<(Capture, Vec<Degradation>)> {
-        anyhow::bail!("meetings need macOS 15")
     }
 
     /// Producers stop pushing, the encoder stops draining; devices stay open.

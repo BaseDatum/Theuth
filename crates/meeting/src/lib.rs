@@ -2,8 +2,10 @@
 //! the meeting app's audio through a Core Audio process tap and the microphone
 //! through Apple's VoiceProcessingIO unit (hardware-clocked AEC), encoded live
 //! as three Opus tracks under `<data_dir>/meetings/<id>/`, with a manifest, an
-//! index and the meeting's own agent session. macOS 15 only; elsewhere the
-//! plugin starts nothing.
+//! index and the meeting's own agent session. Capture backends per OS (58 §6.1):
+//! Core Audio taps + VoiceProcessingIO on macOS, WASAPI loopback on Windows,
+//! PipeWire on Linux; the mic off macOS has no echo cancellation
+//! (`Degradation::MicNoAec`, "headphones recommended").
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`MEETING_ACTOR`] actor ([`Meeting`]): [`ListProcesses`],
@@ -175,7 +177,8 @@ pub enum PostStage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Degradation {
-    /// The VoiceProcessingIO unit could not be opened; the plain mic is used, no echo cancellation.
+    /// No echo cancellation on the mic: the VoiceProcessingIO unit could not be opened (macOS), or
+    /// the OS has none (Windows/Linux — 58 §6.1's normal case). Headphones recommended (53 §0.4).
     MicNoAec,
     /// Live transcription of one track stopped (phase 2).
     SttDown(Track),
@@ -189,6 +192,19 @@ pub enum Degradation {
     PermissionDenied(Permission),
     /// Documents run but refused the meeting's note (59 §7.4; the documents helper missing): no note, no summary note.
     NoNote,
+}
+
+/// 58 §3.3: what this host can do for meetings, stated to the UI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", content = "reason")]
+pub enum Support {
+    /// Per-app tap and echo-cancelled mic (macOS).
+    Full,
+    /// Records, with the stated limitation (Windows/Linux: no echo cancellation).
+    Partial(String),
+    /// Cannot record here; why (no PipeWire, no render device).
+    None(String),
 }
 
 /// The two TCC services a meeting needs.
@@ -623,6 +639,8 @@ pub struct Status {
     /// The session is waiting on a tool approval; phase 2.
     #[serde(default)]
     pub approval_waiting: bool,
+    /// What this host can do (58 §3.3); `None` when no loopback backend opens.
+    pub supported: Support,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
@@ -1984,6 +2002,9 @@ impl Message<MeetingStatus> for Meeting {
             .map(|r| (&r.manifest, r.clock.now_ms()))
             .or_else(|| self.starting.as_ref().map(|m| (m, 0)));
         let live = self.current.as_ref().map(|r| &r.live);
+        let supported = tokio::task::spawn_blocking(capture::system::supported)
+            .await
+            .unwrap_or_else(|e| Support::None(format!("probe: {e}")));
         Status {
             state: self.state(),
             meeting: m.map(|(m, _)| m.id),
@@ -1993,6 +2014,7 @@ impl Message<MeetingStatus> for Meeting {
             cursor: live.and_then(|l| l.cursor),
             topics: live.map(|l| l.topics.live()).unwrap_or_default(),
             approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
+            supported,
         }
     }
 }
@@ -2860,10 +2882,6 @@ impl runtime::Plugin for MeetingPlugin {
         });
         if !cfg.enabled {
             tracing::info!("meeting disabled by config");
-            return Ok(());
-        }
-        if !cfg!(target_os = "macos") {
-            tracing::info!("meetings need macOS 15 (Core Audio taps); not starting");
             return Ok(());
         }
         let store = match Store::open(&rt.data_dir).await {

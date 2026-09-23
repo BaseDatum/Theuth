@@ -54,10 +54,7 @@ monty-alloc = { workspace = true }
 monty-types = { workspace = true }
 tracing-appender = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
-
-# 58 §3.2: platform-bound plugins. `meeting` is Core Audio + NSPanel (53) until §6's capture backends.
-[target.'cfg(target_os = "macos")'.dependencies]
-meeting = { workspace = true }
+meeting = { workspace = true }  # 58 §6.1: capture backends per OS
 
 [lints]
 workspace = true

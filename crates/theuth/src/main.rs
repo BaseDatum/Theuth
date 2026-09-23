@@ -722,11 +722,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(voice::VoicePlugin),
         Box::new(decision::DecisionPlugin),
     ];
-    // 58 §3.2: Core Audio and the NSPanel island exist on macOS only; elsewhere
-    // `meeting_*` is absent until §6 lands its capture backends.
-    // ponytail: no `supported()` (58 §3.3) in the meeting status RPC yet — the
-    // crate's internals are out of this step's scope; add it with §6.
-    #[cfg(target_os = "macos")]
+    // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
     plugins.push(Box::new(meeting::MeetingPlugin));
     plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve }));
     plugins
