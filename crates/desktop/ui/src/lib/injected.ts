@@ -21,6 +21,8 @@ export type Injected =
   /** A quiet PTY job (61 §2.3): `text` is the screen. `name` is the job's label, if any. */
   | { kind: 'job_idle'; id: string; command: string; name?: string; quiet: string; secs: string; nudge: string; userTyped?: string; text: string }
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
+  /** A fired `remind_me_in` timer (14 as-built): `after` is the requested seconds, `late` when re-armed past due after a restart. */
+  | { kind: 'reminder'; id: string; after: string; late: boolean; text: string }
   | { kind: 'harness'; notice: keyof typeof HARNESS_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
@@ -32,6 +34,18 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
 
 /** Undo the wrappers' XML attribute escape. */
 const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+
+/** `<reminder id="r3" after="600" set_at="…" late="false">` (14 as-built); the id names the sender. */
+CARD.reminder = 'id="'
+
+/** `45 s`, `10 min`, `1 h 30 min` for a reminder's requested delay. */
+export function humanSecs(secs: string | number): string {
+  const s = Number(secs)
+  if (!Number.isFinite(s)) return String(secs)
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
+  if (h > 0) return m > 0 ? `${h} h ${m} min` : `${h} h`
+  return m > 0 ? `${m} min` : `${s} s`
+}
 
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
@@ -99,6 +113,8 @@ export function classify(text: string): Injected[] | null {
         })
       } else if (name === 'schedule') {
         out.push({ kind: 'schedule', name: from, at: attr(open, 'at="') ?? '', quiet: attr(open, 'quiet="') === 'true', text: body })
+      } else if (name === 'reminder') {
+        out.push({ kind: 'reminder', id: from, after: attr(open, 'after="') ?? '', late: attr(open, 'late="') === 'true', text: body })
       } else if (name === 'message') {
         out.push({ kind: 'peer', from, text: body })
       } else {

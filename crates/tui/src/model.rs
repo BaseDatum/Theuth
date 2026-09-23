@@ -1128,6 +1128,7 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "message" => (Some("from=\""), "</message>"),
             "job_result" => (Some("id=\""), "</job_result>"),
             "job_idle" => (Some("id=\""), "</job_idle>"),
+            "reminder" => (Some("id=\""), "</reminder>"),
             "schedule" => (Some("name=\""), "</schedule>"),
             "context_summary" => (None, "</context_summary>"),
             "todo" => (None, "</todo>"),
@@ -1160,6 +1161,17 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     .map(|n| format!(" · {}", unescape(n)))
                     .unwrap_or_default();
                 (CardKind::Job, format!("{from} idle {quiet}s{name}"))
+            } else if name == "reminder" {
+                // 14 as-built: `r3 reminder · after 10m` (` · late` when re-armed past due).
+                let after = attr(open, "after=\"")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map_or_else(String::new, |s| format!(" · after {}", human_secs(s)));
+                let late = if attr(open, "late=\"") == Some("true") {
+                    " · late"
+                } else {
+                    ""
+                };
+                (CardKind::Job, format!("{from} reminder{after}{late}"))
             } else if name == "schedule" {
                 let at = attr(open, "at=\"").unwrap_or_default();
                 let at = chrono::DateTime::parse_from_rfc3339(at).map_or_else(
@@ -1176,6 +1188,16 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
         rest = tail.trim_start();
     }
     Some(out)
+}
+
+/// `45s`, `10m`, `1h30m`.
+fn human_secs(s: u64) -> String {
+    match (s / 3600, (s % 3600) / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, _) => format!("{m}m"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h{m}m"),
+    }
 }
 
 /// Undo the wrappers' XML attribute escape.
@@ -12064,6 +12086,19 @@ mod tests {
                 "j1 idle 120s".to_owned(),
                 String::new()
             )])
+        );
+    }
+
+    /// 14 as-built: a fired reminder cards as `r3 reminder · after 10m` (` · late` when re-armed past due).
+    #[test]
+    fn injected_parses_reminder() {
+        assert_eq!(
+            injected("<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck the deploy\n</reminder>"),
+            Some(vec![(CardKind::Job, "r3 reminder · after 10m".to_owned(), "check the deploy".to_owned())])
+        );
+        assert_eq!(
+            injected("<reminder id=\"r1\" after=\"5400\" set_at=\"x\" late=\"true\">\n\n</reminder>"),
+            Some(vec![(CardKind::Job, "r1 reminder · after 1h30m · late".to_owned(), String::new())])
         );
     }
 

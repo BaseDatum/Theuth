@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react'
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { codeDetails, describe, resultLine } from '@/lib/describe'
 import { type DiffLine, diffLines } from '@/lib/diff'
@@ -77,6 +77,47 @@ function Diff({ old, new: next }: { old: string; new: string }) {
   )
 }
 
+/** `mm:ss` under an hour, `h:mm` from there. */
+function countdown(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}` : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`
+}
+
+/** `remind_me_in` (14 as-built): the message and a countdown to `fires_at` (parsed from the result line), ticking each
+ * second; `fired` at zero, `delivered` once the `<reminder>` card with the same id is in the transcript. */
+function ReminderCard({ tool, session }: { tool: Tool; session: string }) {
+  const message = typeof tool.args === 'object' && tool.args !== null ? String((tool.args as Record<string, unknown>).message ?? '') : ''
+  const output = tool.result?.output ?? ''
+  const id = /^(r\d+) set/.exec(output)?.[1]
+  const firesAt = useMemo(() => {
+    const t = /fires at (\S+)/.exec(output)?.[1]
+    const ms = t === undefined ? Number.NaN : new Date(t).getTime()
+    return Number.isNaN(ms) ? undefined : ms
+  }, [output])
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (firesAt === undefined || firesAt <= now) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [firesAt, now])
+  const delivered = useSessions((s) => id !== undefined && !!s.sessions[session]?.entries.some((e) => e.kind === 'peer' && e.from.startsWith(`⏲ Reminder ${id} `)))
+  const failed = tool.result?.isError
+  const state = failed ? undefined : delivered ? 'delivered' : firesAt === undefined ? undefined : firesAt > now ? countdown(firesAt - now) : 'fired'
+  return (
+    <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
+      <div className="flex items-center gap-2 font-medium">
+        <span className="shrink-0 text-fg-secondary">⏲</span>
+        <span className="wrap-anywhere">Reminder{id ? ` ${id}` : ''}</span>
+        {(tool.pending || !tool.result) && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+        {state && <span className={cn('ml-auto shrink-0 font-mono text-xs tabular-nums', state === 'delivered' ? 'text-success' : 'text-fg-tertiary')}>{state}</span>}
+      </div>
+      {message && <div className="mt-1 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{message}</div>}
+      {failed && <div className="mt-1 truncate font-mono text-xs text-danger">✗ {resultLine(output)}</div>}
+    </div>
+  )
+}
+
 /** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` or `app` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first).
  * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact.
  * `readOnly` (an inspection page) shows the occurrences without removal controls. */
@@ -89,6 +130,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <ArtifactCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
+    ) : tool.name === 'remind_me_in' ? (
+      <ReminderCard tool={tool} session={session} />
     ) : null
   if (!card) return <PlainTool tool={tool} session={session} readOnly={readOnly} />
   return (
