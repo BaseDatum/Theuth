@@ -416,9 +416,23 @@ html .bn-block-content[data-content-type="codeBlock"] {
   border-radius: 0.375rem;
 }
 html .bn-block-content[data-content-type="codeBlock"] > pre {
-  padding: 0.75rem;
+  /* Top band for the language select (hover-revealed, BlockNote's `top: 8px`). */
+  padding: 1.75rem 0.75rem 0.75rem;
   font-size: 14px;
   line-height: 20px;
+}
+/* CodeBlock.tsx: language select in our colours; diagram, source and parse note stack; a rendered diagram drops the code well. */
+html .bn-block-content[data-content-type="codeBlock"] {
+  flex-direction: column;
+}
+html .bn-block-content[data-content-type="codeBlock"] > div > select {
+  color: inherit;
+  left: 0.75rem;
+  font-size: 11px;
+}
+html .bn-block-content[data-content-type="codeBlock"]:has(> [data-diagram]) {
+  color: inherit;
+  background: transparent;
 }
 html .bn-editor [data-content-type="quote"] blockquote {
   color: var(--muted-foreground);

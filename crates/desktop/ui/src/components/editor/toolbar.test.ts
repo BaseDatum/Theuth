@@ -33,13 +33,14 @@ test('toolbar visibility: focus shows, blur waits out the grace, readonly hides,
   expect(toolbarVisible('hidden', false, true)).toBe(true)
 })
 
-test('block-type mapping: the §10 rows in order; headings by level; other blocks map to nothing', () => {
-  expect(BLOCK_TYPES.map((t) => t.key)).toEqual(['paragraph', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'check', 'quote', 'code'])
+test('block-type mapping: the §10 rows in order; headings by level; mermaid code is Diagram; other blocks map to nothing', () => {
+  expect(BLOCK_TYPES.map((t) => t.key)).toEqual(['paragraph', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'check', 'quote', 'code', 'diagram'])
   expect(blockTypeKey({ type: 'paragraph' })).toBe('paragraph')
   expect(blockTypeKey({ type: 'heading', props: { level: 2 } })).toBe('h2')
   expect(blockTypeKey({ type: 'heading', props: { level: 4 } })).toBeNull()
   expect(blockTypeKey({ type: 'bulletListItem' })).toBe('bullet')
   expect(blockTypeKey({ type: 'checkListItem', props: { checked: true } })).toBe('check')
   expect(blockTypeKey({ type: 'codeBlock', props: { language: 'ts' } })).toBe('code')
+  expect(blockTypeKey({ type: 'codeBlock', props: { language: 'mermaid' } })).toBe('diagram')
   for (const type of ['table', 'divider', 'frontmatter', 'toggleListItem']) expect(blockTypeKey({ type })).toBeNull()
 })

@@ -1,6 +1,6 @@
 import type { BlockNoteEditor } from '@blocknote/core'
 import { useEditorState } from '@blocknote/react'
-import type { DocumentSchema } from '@theuth/documents/schema'
+import type { DocumentSchema, PartialDocBlock } from '@theuth/documents/schema'
 import { Bold, Code, IndentDecrease, IndentIncrease, Italic, KeyboardOff, Link2, Redo2, Strikethrough, Undo2 } from 'lucide-react'
 import { type CSSProperties, type ComponentType, type ReactNode, type SyntheticEvent, useEffect, useRef, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
@@ -124,7 +124,9 @@ export function MobileToolbar({ editor, readonly, onVisible }: { editor: DocEdit
     let last: string | undefined
     for (const b of blocks) {
       if (b.type === 'frontmatter') continue
-      editor.updateBlock(b, 'props' in t ? { type: t.type, props: t.props } : { type: t.type })
+      // The chip table is `as const`; TS cannot correlate `type` with `props` across the union, the rows are valid by construction.
+      const update = ('props' in t ? { type: t.type, props: t.props } : { type: t.type }) as PartialDocBlock
+      editor.updateBlock(b, update)
       last = b.id
     }
     // A collapsed cursor continues at the end of the new block (ids survive `updateBlock`); a selection is kept as is.

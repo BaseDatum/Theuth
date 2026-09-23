@@ -919,6 +919,19 @@ exports as a bullet). Disabled: `image`, `video`, `audio`, `file`
 underline/strike/code. Markdown mapping is BlockNote's; the lossy set
 (text/background colour, alignment, toggle state) lives only in the Y.Doc.
 
+**As built 2026-09-23 — diagram code blocks (branch `feature/blocknote`).**
+The `codeBlock` node is unchanged; only its options and UI render are. Languages: `@blocknote/code-block`'s
+table (shiki-highlighted, `mermaid`/`mmd` included) plus `json-render`/`jsonrender`, default `text`
+(`crates/desktop/ui/src/components/editor/codeLanguages.ts`); the helper keeps the fence's info string
+verbatim, so ```` ```mermaid ```` round-trips (test in `convert.test.ts`). The UI passes its own spec through
+`createDocumentSchema(frontmatter, codeBlock)`: `createReactBlockSpec` over the default spec's config, parser,
+meta and keyboard extension (`CodeBlock.tsx`) — same ProseMirror node, same Yjs fragment, helper and other
+clients untouched. Its render shows `mermaid` / `json-render` blocks as the chat's `MermaidFence` /
+`JsonRenderFence` with an "Edit source" button; the source shows while the block holds the caret or a
+selection, or does not parse (one-line note, no error card). No new block type: one would fork the shared
+schema (§4.5 split) and every collaborator's editor. Slash menu gains "Diagram" (a second `codeBlock` entry,
+`language: mermaid`, starter `flowchart LR`); `SLASH_MENU_BLOCKS` unchanged.
+
 ### 9.3 Slash menu and side menu
 
 Curated to the schema above plus "Ask theuth…" which focuses the note's
