@@ -25,7 +25,9 @@ export type Injected =
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="' }
-const HIDDEN: Record<string, true> = { context_summary: true, runtime: true }
+// `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
+// `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
+const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true }
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -63,6 +65,11 @@ export function classify(text: string): Injected[] | null {
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
+    // Hidden wrappers win over a same-named notice, whatever attributes the open tag carries.
+    if (HIDDEN[name]) {
+      rest = rest.slice(end + close.length).trimStart()
+      continue
+    }
     if (notice !== undefined) {
       let body = rest.slice(gt + 1, end).trim()
       // Only todo continuations escape their body at emission; other notes are already literal text.
