@@ -516,6 +516,74 @@ pub fn candidates(code: &str) -> BTreeSet<String> {
     out
 }
 
+/// Top-level import statements of a cell: bound name → the full line, so
+/// a later cell that uses the name gets it re-imported in front of the
+/// checked source (imports are idempotent; the heap does not change).
+fn import_lines(code: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    code.lines()
+        .filter(|l| l.starts_with("import ") || l.starts_with("from "))
+        .flat_map(|l| candidates(l).into_iter().map(move |n| (n, l.to_owned())))
+}
+
+static IDENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[A-Za-z_]\w*\b").expect("ident re"));
+
+/// The stored import statements a cell needs: those whose bound name the
+/// cell uses as an identifier and does not bind itself. One line each,
+/// deduplicated (a `from` line binding two names appears once).
+fn prelude(imports: &BTreeMap<String, String>, code: &str, cell_names: &BTreeSet<String>) -> String {
+    let idents: BTreeSet<&str> = IDENT_RE.find_iter(code).map(|m| m.as_str()).collect();
+    let lines: BTreeSet<&str> = imports
+        .iter()
+        .filter(|(n, _)| idents.contains(n.as_str()) && !cell_names.contains(*n))
+        .map(|(_, l)| l.as_str())
+        .collect();
+    lines.into_iter().collect::<Vec<_>>().join("\n")
+}
+
+static DIAG_RES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+    [
+        Regex::new(r"main\.py:(\d+):").expect("loc re"),
+        Regex::new(r"(?m)^(\s*)(\d+) \|").expect("gutter re"),
+    ]
+});
+
+/// Shift every `main.py:LINE:` and, in the snippets under a `main.py`
+/// location, every ` N | ` gutter number down by `offset` (the prelude
+/// lines the model did not write); gutter lines inside the prelude are
+/// dropped. Snippets from other files (`stdlib/re.pyi`) are left alone.
+fn rebase_lines(diag: &str, offset: usize) -> String {
+    if offset == 0 {
+        return diag.to_owned();
+    }
+    let [loc, gutter] = &*DIAG_RES;
+    let mut out = String::with_capacity(diag.len());
+    let mut in_main = false;
+    for line in diag.lines() {
+        if let Some(arrow) = line.find("--> ") {
+            in_main = loc.is_match(&line[arrow..]);
+            out.push_str(&loc.replace_all(line, |c: &regex::Captures| {
+                format!("main.py:{}:", c[1].parse::<usize>().unwrap_or(0).saturating_sub(offset))
+            }));
+        } else if in_main && let Some(c) = gutter.captures(line) {
+            let n: usize = c[2].parse().unwrap_or(0);
+            if n <= offset {
+                continue;
+            }
+            let width = c[1].len() + c[2].len();
+            out.push_str(&format!("{:>width$} |", n - offset));
+            out.push_str(&line[c.get(0).expect("m").end()..]);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !diag.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 /// One tracked global.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Slot {
@@ -523,12 +591,15 @@ struct Slot {
     len: Option<usize>,
 }
 
-/// `.names.json` row.
+/// `.names.json` row; `import` is the statement that bound the name, when
+/// it was an import (absent in files written before it was tracked).
 #[derive(Serialize, Deserialize)]
 struct Entry {
     name: String,
     kind: String,
     len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import: Option<String>,
 }
 
 fn render_slots<'a>(it: impl Iterator<Item = (&'a String, &'a Slot)>) -> Option<String> {
@@ -541,32 +612,35 @@ fn render_slots<'a>(it: impl Iterator<Item = (&'a String, &'a Slot)>) -> Option<
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// The tracked inventory from `.names.json` (empty when absent or unreadable).
-fn read_names(path: &Path) -> BTreeMap<String, Slot> {
-    std::fs::read(path)
+/// The tracked inventory and its import statements from `.names.json`
+/// (empty when absent or unreadable).
+fn read_names(path: &Path) -> (BTreeMap<String, Slot>, BTreeMap<String, String>) {
+    let rows = std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Vec<Entry>>(&b).ok())
-        .map(|rows| {
-            rows.into_iter()
-                .map(|e| {
-                    (
-                        e.name,
-                        Slot {
-                            kind: e.kind,
-                            len: e.len,
-                        },
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut names = BTreeMap::new();
+    let mut imports = BTreeMap::new();
+    for e in rows {
+        if let Some(line) = e.import {
+            imports.insert(e.name.clone(), line);
+        }
+        names.insert(
+            e.name,
+            Slot {
+                kind: e.kind,
+                len: e.len,
+            },
+        );
+    }
+    (names, imports)
 }
 
 /// The last persisted inventory of `session`, rendered like
 /// [`Repl::render_inventory`]: for the compaction head when no [`Repl`] is
 /// open in the turn (`/compact` between turns). `None` when nothing is tracked.
 pub fn saved_inventory(data_dir: &Path, session: SessionId) -> Option<String> {
-    let names = read_names(
+    let (names, _) = read_names(
         &data_dir
             .join("runtime")
             .join(format!("{session}.names.json")),
@@ -639,6 +713,9 @@ pub struct Repl {
     last_dump: Option<Vec<u8>>,
     names: BTreeMap<String, Slot>,
     candidates: BTreeSet<String>,
+    /// Bound name → the `import`/`from` line of a run cell that bound it;
+    /// prepended to a later cell that uses the name so the checker knows it.
+    imports: BTreeMap<String, String>,
     out_seq: u32,
     /// `<runtime>` line prepended to the next cell result.
     lost: Option<String>,
@@ -685,7 +762,7 @@ impl Repl {
         }
         let dump_path = dir.join(format!("{session}.monty"));
         let names_path = dir.join(format!("{session}.names.json"));
-        let names = read_names(&names_path);
+        let (names, imports) = read_names(&names_path);
         let candidates = names.keys().cloned().collect();
         let mut mounts = Vec::with_capacity(2);
         let spill = cx.spill_dir.join(session.to_string());
@@ -722,6 +799,7 @@ impl Repl {
             names_path,
             names,
             candidates,
+            imports,
             out_seq: 0,
             lost: None,
         };
@@ -754,6 +832,7 @@ impl Repl {
                 self.last_dump = None;
                 self.names.clear();
                 self.candidates.clear();
+                self.imports.clear();
                 drop(c);
                 c = self.pool.checkout(&self.cfg).await?;
             }
@@ -804,6 +883,14 @@ impl Repl {
         }
         let cell_names = candidates(code);
         self.candidates.extend(cell_names.iter().cloned());
+        // Imports from earlier cells that this cell uses go in front of the
+        // checked source (08 §4.6): the checker only knows what it checked.
+        let prelude = prelude(&self.imports, code, &cell_names);
+        let (mut src, mut offset) = if prelude.is_empty() {
+            (code.to_owned(), 0)
+        } else {
+            (format!("{prelude}\n{code}"), prelude.lines().count())
+        };
 
         let mut stdout = String::new();
         // 52 §7.1: every inner image this cell produced, in call/file order,
@@ -811,18 +898,42 @@ impl Repl {
         // dropped (cancelled) cell drops it and nothing reaches the next cell.
         let mut files = Vec::new();
         let mut on_print = on_print_sync(|_, t| stdout.push_str(t));
-        let outcome = self
-            .drive(code, Vec::new(), false, call_id, &mut files, &mut on_print)
+        let mut outcome = self
+            .drive(&src, Vec::new(), false, call_id, &mut files, &mut on_print)
             .await;
+        if offset > 0
+            && let Err(PoolError::Typing(diag)) = &outcome
+            && DIAG_RES[0]
+                .captures_iter(diag)
+                .any(|c| c[1].parse::<usize>().is_ok_and(|l| l <= offset))
+        {
+            // The prelude itself fails (a module no longer available): the
+            // cell as written, its own diagnostics.
+            src = code.to_owned();
+            offset = 0;
+            outcome = self
+                .drive(&src, Vec::new(), false, call_id, &mut files, &mut on_print)
+                .await;
+        }
         drop(on_print);
 
+        if outcome.is_ok() {
+            for n in &cell_names {
+                self.imports.remove(n);
+            }
+            self.imports.extend(import_lines(code));
+        }
         let (mut body, is_error) = match outcome {
             Ok(v) => (render_value(&stdout, &v), false),
             Err(PoolError::Runtime(exc)) if exc.exc_type() != ExcType::MemoryError => {
                 (join_out(&stdout, &exc.to_string()), true)
             }
             Err(PoolError::Typing(diag)) => {
-                return self.finish_output(format!("type check failed:\n{diag}"), true, files);
+                return self.finish_output(
+                    format!("type check failed:\n{}", rebase_lines(&diag, offset)),
+                    true,
+                    files,
+                );
             }
             Err(e) => {
                 // Worker gone (crash, memory limit, timeout, protocol): the heap
@@ -870,6 +981,7 @@ impl Repl {
         }
         if !self.candidates.is_empty() || !inputs.is_empty() {
             self.probe(inputs).await;
+            self.imports.retain(|n, _| self.names.contains_key(n));
         }
         if let Some(bound) =
             render_slots(self.names.iter().filter(|(n, _)| cell_names.contains(*n)))
@@ -973,6 +1085,7 @@ impl Repl {
                 name: n.clone(),
                 kind: s.kind.clone(),
                 len: s.len,
+                import: self.imports.get(n).cloned(),
             })
             .collect();
         if let Ok(json) = serde_json::to_vec(&rows)
@@ -1441,6 +1554,46 @@ mod tests {
     }
 
     #[test]
+    fn prelude_picks_used_unbound_imports() {
+        let imports: BTreeMap<String, String> = import_lines(
+            "import re\nimport collections as col\nfrom os import path, sep\nx = 1\nif x:\n    import json\n",
+        )
+        .collect();
+        assert_eq!(
+            imports.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["col", "path", "re", "sep"]
+        );
+        assert_eq!(imports["sep"], "from os import path, sep");
+        let code = "col.Counter(re.findall('a', s))\nsep = '/'\npath";
+        assert_eq!(
+            prelude(&imports, code, &candidates(code)),
+            "from os import path, sep\nimport collections as col\nimport re"
+        );
+        assert_eq!(prelude(&imports, "json.loads(x)", &candidates("json.loads(x)")), "");
+    }
+
+    /// Captured from `import re` (prelude) + `x = 1\nre.compile(x)`: the
+    /// model's lines shift, the prelude line vanishes, the stdlib snippet
+    /// under `stdlib/re.pyi` keeps its numbers.
+    #[test]
+    fn rebase_lines_shifts_locations_and_gutters() {
+        let diag = "error[no-matching-overload]: No overload of function `compile` matches arguments\n \
+                    --> main.py:3:1\n  |\n1 | import re\n2 | x = 1\n3 | re.compile(x)\n  | ^^^^^^^^^^^^^\n\
+                    info: First overload defined here\n   --> stdlib/re.pyi:261:1\n    |\n\
+                    261 | / @overload\n262 | | def compile(pattern: AnyStr, flags: _FlagsType = 0) -> Pattern[AnyStr]: ...\n    |\n\
+                    info: Possible overloads for function `compile`:\n";
+        assert_eq!(
+            rebase_lines(diag, 1),
+            "error[no-matching-overload]: No overload of function `compile` matches arguments\n \
+             --> main.py:2:1\n  |\n1 | x = 1\n2 | re.compile(x)\n  | ^^^^^^^^^^^^^\n\
+             info: First overload defined here\n   --> stdlib/re.pyi:261:1\n    |\n\
+             261 | / @overload\n262 | | def compile(pattern: AnyStr, flags: _FlagsType = 0) -> Pattern[AnyStr]: ...\n    |\n\
+             info: Possible overloads for function `compile`:\n"
+        );
+        assert_eq!(rebase_lines(diag, 0), diag);
+    }
+
+    #[test]
     fn json_round_trip() {
         let v = serde_json::json!({"a": [1, 2.5, null, true, "s"], "b": {"c": {}}});
         assert_eq!(from_monty(to_monty(&v).as_ref()), v);
@@ -1781,6 +1934,39 @@ mod tests {
         let d = std::env::temp_dir().join(format!("theuth-repl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A module imported in one cell is known to the checker in the next
+    /// (the prelude), also after close/reopen; skipped without `monty`.
+    #[test]
+    fn imports_carry_across_cells() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            let out = repl.run("c1", "import re\nre.compile('a').pattern").await;
+            assert_eq!(out.content, "→ 'a'\nbindings (reuse, do not re-read): re (module)");
+            let out = repl.run("c2", "re.compile('b').pattern").await;
+            assert_eq!(out.content, "→ 'b'", "{}", out.content);
+            // a diagnostic in the model's own line numbers, not the prelude's
+            let out = repl.run("c3", "x = 1\nre.compile(x)").await;
+            assert!(
+                out.is_error
+                    && out.content.contains("main.py:2:1\n")
+                    && out.content.contains("\n1 | x = 1\n")
+                    && out.content.contains("\n262 | | def compile("),
+                "{}",
+                out.content
+            );
+            repl.close().await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            let out = repl.run("c4", "re.compile('c').pattern").await;
+            assert_eq!(out.content, "→ 'c'", "{}", out.content);
+            repl.close().await;
+        });
     }
 
     /// `time.sleep`/`asyncio.sleep` reach the host as `system_sleep` and are
