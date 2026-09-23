@@ -56,6 +56,16 @@ Files: `packages/apps/src/library.ts:92-296` (`graphProps` with `superRefine`, `
 
 Deviations: the id reaches the action as **`$value`**, not `id`. A bare `id` is a `Ref`; upstream's materialiser lists it in `meta.unresolved` and the Renderer reports it, so the doc's `@Set($selected, id)` cannot publish without changing the parser. `$value` is upstream's own name for a component's produced value in binding expressions (`resolveStateField` evaluates the bound expression with `extraScope: { $value }`); the component substitutes it into every deferred step expression (`bindValue`) before `triggerAction`. Only `@Set` defers its value; upstream evaluates `@ToAssistant`/`@OpenUrl` arguments when the props are, so the skill example routes the selection through `$selected`. `reactive()` is applied inside `.describe()` (describe clones and would lose the WeakSet marker). The host renderer is injected (`setGraphRenderer`) because `packages/apps` cannot import `crates/desktop/ui`; without a host the component renders the adjacency text in a `<pre data-graph>`, which is what the headless helper and the tests see. The `superRefine` carries the structural rules for the parity test; the runtime never zod-parses props, so streaming partial graphs is unaffected.
 
+## Merge with main e453ef6 (`e56e31f`)
+
+Seven conflicts. `Mermaid.tsx`: ours kept whole (mermaid 12 lazy, render queue, `DiagramFrame`); their `fill` re-added as a `fill?: boolean` on `DiagramFrame` (card `flex h-full flex-col` instead of `my-4`, surface slot `min-h-0 flex-1`, `Surface` already sized the svg to the surface under `fill`) and threaded from `MermaidFence` for their `MermaidView.tsx`. `vite.config.ts`: their `under()`/`dedupe`/vitest `inline` plus our `safari17`. `prompt.rs`: "Three fenced blocks", our mermaid and json-render (`Graph`) bullets, their `openui` bullet third. `library.test.ts`: `reactiveProps` expects theirs (RadioGroup, CheckBoxGroup, Slider) plus `Graph: ["highlight"]`. `library.ts` auto-merged with `Graph` still last (after `MetricIndicatorInline`); `generated/*` taken from theirs and regenerated: 54 components, hash `8b1fac40…` (ours) / `6b730a55…` (theirs) → `e8231c352d6a578d1638151649bb0aad63c5243d51d3eb982e2f5607cf717d72`.
+
+One non-conflicted file changed: their `editor/CodeBlock.tsx` did `import mermaid from 'mermaid'` for `mermaid.parse`, which put the mermaid core back in the entry chunk (`mermaidAPI`/`flowchart-v2` grep 1/1). `loadMermaid()` is now exported from `Mermaid.tsx` and the parse goes through it: 0/0/0 (`org.eclipse.elk` was already 0), entry `index-*.js` 2,425.79 → 2,287.87 kB.
+
+- `cargo test -p surface` 34 passed; `cargo test -p app` 35 + 1 passed (`HASH` is `include_str!`, no literal to update); `cargo check --workspace --all-targets` clean (1m16s).
+- Desktop: `just ts-desktop`, `tsc -b` clean, vitest 281 passed (54 files) — `pairing.test.ts` timed out once in the full run (5001 ms) and passed 5/5 in isolation, the same flake recorded under step 1. `bun run build` as above.
+- `packages/apps`: `bun test` 89 passed (7 files); `build:helper` built `theuth-app-parser-e8231c35…`. `git diff --check` clean.
+
 ## Unverified
 
 - iOS 17.4 simulator, Windows (WebView2) and the Linux WebKitGTK ≥ 2.44 host: no rendering was attempted; the floors are set (`safari17`, `17.4`) but not exercised.
