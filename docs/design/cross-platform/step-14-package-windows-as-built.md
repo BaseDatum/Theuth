@@ -6,7 +6,10 @@ justfile recipe, this note. `crates/models/src/onnx.rs` is unchanged (see "ORT s
 Written on the Mac without a Windows box: the script parses and passes PSScriptAnalyzer, its pure
 PowerShell pieces (version/hash/env parsing, config rendering, zip member check, `Exec` exit-code
 propagation, ORT zip fetch + sha256 + member extraction) ran under pwsh 7.6 on macOS; the cargo, bun
-and Tauri steps run for the first time on the Windows host.
+and Tauri steps run for the first time on the Windows host. `cargo check -p desktop --target
+x86_64-pc-windows-msvc` from the Mac (with Homebrew's `llvm-rc` on PATH for tauri-winres) gets
+tauri-build past the merged config and the `.ico` resource; it stops at `ring` / `aws-lc-sys` C
+build scripts, as expected.
 
 ## Artifacts (`target/release/dist/`, the contract both packaging omps build to)
 
