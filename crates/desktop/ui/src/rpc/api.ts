@@ -84,6 +84,7 @@ import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
+import type { ArchiveListing } from '@/rpc/bindings/ArchiveListing'
 import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
@@ -247,6 +248,8 @@ export interface Api {
   export_artifact(id: string, dest: string): Promise<string>
   /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. */
   get_artifact(call_id: string): Promise<Artifact>
+  /** The member listing of an `archive` record (35 §3.2): header data only, at most 5,000 entries (`truncated`); rejects when there is no listing. */
+  get_artifact_listing(call_id: string): Promise<ArchiveListing>
   /** Up to 2,000 chars of the artifact's indexed text around `query`'s match, with ranges and coverage (49 §7); failed extraction rejects. */
   artifact_search_match(call_id: string, query: string): Promise<ArtifactMatchContext>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
@@ -257,6 +260,8 @@ export interface Api {
   escalate_model(): Promise<EscalateModel>
   /** A committed app record: artifact, source, compatibility hash, pinned bindings, diagnostics (46 §6.3). `-32001` when apps are disabled — show the artifact's source instead. */
   get_app(record_call_id: string): Promise<AppDoc>
+  /** Commit `source` as a new `app` artifact named `name` without a model turn (30 §8, the transcript's Open as app); the result is what `get_app` returns for its `record_call_id`. Located helper errors arrive as the RPC error message. */
+  publish_app(session: SessionId, name: string, source: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
@@ -622,6 +627,7 @@ export const METHODS = [
   'fork_session',
   'get_app',
   'get_artifact',
+  'get_artifact_listing',
   'get_attachment',
   'get_communication',
   'get_prompt',
@@ -711,6 +717,7 @@ export const METHODS = [
   'pty_input',
   'pty_resize',
   'pty_screen',
+  'publish_app',
   'put_attachment',
   'put_session_attachment',
   'redo',

@@ -27,6 +27,10 @@ mime_guess = { workspace = true }
 chrono = { workspace = true }
 csv = { workspace = true }
 gray_matter = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+bzip2 = { workspace = true }
 typst-as-lib = { workspace = true }
 typst = { workspace = true }
 typst-layout = { workspace = true }

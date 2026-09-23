@@ -20,6 +20,12 @@ test('context summaries and runtime wrappers do not duplicate existing surfaces'
   expect(classify('<context_summary>\nfolded\n</context_summary>\n<runtime>x</runtime>')).toEqual([])
 })
 
+test('surface_error notes are hidden, with or without attributes, and still compose with visible notices', () => {
+  expect(classify('<surface_error>\nfix the diagram\n</surface_error>')).toEqual([])
+  expect(classify('<surface_error final="true">\ngave up\n</surface_error>\n<todo>x</todo>')).toEqual([{ kind: 'harness', notice: 'todo', text: 'x' }])
+  expect(classify('Explain <surface_error final="true">x</surface_error>')).toBeNull()
+})
+
 test('todo nudges compose with harness blocks but never swallow surrounding human text', () => {
   expect(classify('<todo>x</todo>\n<todo_continue>\nContinue working\n</todo_continue>')).toEqual([
     { kind: 'harness', notice: 'todo', text: 'x' },
@@ -31,7 +37,7 @@ test('todo nudges compose with harness blocks but never swallow surrounding huma
 })
 
 test('harness notices compose without losing their type or literal body', () => {
-  const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'surface_error', 'todo', 'knowledge']
+  const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'todo', 'knowledge']
   const body = 'Check <button> &lt;literal&gt; &amp; text.'
   expect(classify(notices.map((notice) => `<${notice}>\n${body}\n</${notice}>`).join('\n'))).toEqual(
     notices.map((notice) => ({ kind: 'harness', notice, text: body })),
@@ -75,5 +81,14 @@ test('job idle carries id, command, optional name, quiet, secs, nudge, user_type
 test('schedule fire carries name, at, quiet and the prompt body', () => {
   expect(classify('<schedule name="morning-brief" at="2026-09-16T09:00:00-07:00" quiet="false">\nbrief me\n</schedule>')).toEqual([
     { kind: 'schedule', name: 'morning-brief', at: '2026-09-16T09:00:00-07:00', quiet: false, text: 'brief me' },
+  ])
+})
+
+test('reminder carries id, after, late and the message', () => {
+  expect(classify('<reminder id="r3" after="600" set_at="2026-09-23T10:00:00+02:00" late="false">\ncheck the deploy\n</reminder>')).toEqual([
+    { kind: 'reminder', id: 'r3', after: '600', late: false, text: 'check the deploy' },
+  ])
+  expect(classify('<reminder id="r1" after="5" set_at="x" late="true">\n\n</reminder>')).toEqual([
+    { kind: 'reminder', id: 'r1', after: '5', late: true, text: '' },
   ])
 })

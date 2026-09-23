@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { COLORS, ICONS, colorFor, iconFor, useProjectStyles } from '@/lib/project-style'
+import { COLORS, ICONS, LEGACY_COLORS, colorFor, iconFor, useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { ProjectStyle } from '@/rpc/bindings/ProjectStyle'
@@ -73,20 +73,25 @@ export function ProjectStyleDialog({ project, open, onOpenChange }: { project: s
           ))}
         </div>
         <div role="radiogroup" aria-label="Colour" className="flex flex-wrap gap-0.5">
-          {Object.entries(COLORS).map(([key, cls]) => (
-            <button
-              key={key}
-              type="button"
-              role="radio"
-              aria-checked={current?.color === key}
-              aria-label={key}
-              disabled={busy}
-              className={cn('flex size-11 items-center justify-center rounded-md hover:bg-accent', cls)}
-              onClick={() => void apply(current?.icon ?? null, key)}
-            >
-              <span className={cn('size-5 rounded-full bg-current', current?.color === key && 'ring-2 ring-ring ring-offset-2 ring-offset-background')} />
-            </button>
-          ))}
+          {Object.keys(COLORS).map((key) => {
+            const selected = current?.color != null && (LEGACY_COLORS[current.color] ?? current.color) === key
+            const label = key[0]!.toUpperCase() + key.slice(1)
+            return (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={label}
+                title={label}
+                disabled={busy}
+                className="flex size-11 items-center justify-center rounded-md hover:bg-accent"
+                onClick={() => void apply(current?.icon ?? null, key)}
+              >
+                <span className={cn('size-5 rounded-full', `bg-project-${key}`, selected && 'ring-2 ring-ring ring-offset-2 ring-offset-background')} />
+              </button>
+            )
+          })}
         </div>
         <Button variant="ghost" size="sm" className="self-start" disabled={busy || !current} onClick={() => void apply(null, null)}>
           Clear

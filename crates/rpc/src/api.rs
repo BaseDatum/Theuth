@@ -37,7 +37,9 @@ use agent::{
     ListProjectStyles, ProjectStyle, SetProjectStyle,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use app::{AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp};
+use app::{
+    AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
+};
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
@@ -1182,6 +1184,12 @@ pub trait Api {
     /// the artifact's readable source.
     #[method(name = "get_app")]
     async fn get_app(&self, record_call_id: String) -> RpcResult<AppDoc>;
+    /// Publish a reply fence's OpenUI source as an app artifact of `session` without a
+    /// model turn (30 §9): validated and committed exactly like the `app` tool with
+    /// `edit: false`, under a synthetic `ui-<uuid v7>` call id, no transcript entry. The
+    /// error message is the tool's located diagnostics text.
+    #[method(name = "publish_app")]
+    async fn publish_app(&self, session: SessionId, name: String, source: String) -> RpcResult<AppDoc>;
     /// Run one pinned Query/Mutation binding of an open app view on behalf of
     /// the calling connection (46 §6). A `press` trigger is the approval; the
     /// tool name comes from the binding, never the client. `-32002` when no
@@ -1199,6 +1207,12 @@ pub trait Api {
     /// without listing everything; vanished record is an error (49 §4.2).
     #[method(name = "get_artifact")]
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact>;
+    /// The member listing of a `Kind::Archive` record (35 §3.2): paths,
+    /// sizes and dates from the archive's headers, at most 5,000 entries
+    /// (`truncated` past that). Rejects when the record vanished or the
+    /// archive was unreadable at show time (no listing sidecar).
+    #[method(name = "get_artifact_listing")]
+    async fn get_artifact_listing(&self, call_id: String) -> RpcResult<artifact::archive::ArchiveListing>;
     /// Up to 2,000 characters of the artifact's indexed text around the
     /// occurrence `query` matches, with highlight ranges and content coverage;
     /// unavailable extraction is an error, never the live `origin` (49 §7).
@@ -1563,16 +1577,6 @@ fn link() -> RpcResult<ActorRef<LinkActor>> {
     })
 }
 
-/// This machine's hostname, read once; `"theuth"` when `hostname` fails.
-static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "theuth".to_owned())
-});
-
 /// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
 /// file is not rewritten. Shared by `put_attachment` and the ACP prompt path;
 /// the naming rule lives in `agent::context` (48 §3.3).
@@ -1643,7 +1647,7 @@ impl ApiServer for Server {
         let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
-            _ => HOSTNAME.clone(),
+            _ => platform::process::hostname().to_owned(),
         };
         let communication =
             ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session: None }).await?;
@@ -3459,6 +3463,18 @@ impl ApiServer for Server {
         send(&apps()?, GetApp { record_call_id }).await
     }
 
+    async fn publish_app(&self, session: SessionId, name: String, source: String) -> RpcResult<AppDoc> {
+        send(
+            &apps()?,
+            PublishFromUi {
+                session,
+                name,
+                source,
+            },
+        )
+        .await
+    }
+
     async fn app_call_tool(&self, ext: &Extensions, args: CallArgs) -> RpcResult<AppToolResult> {
         let peer = peer(ext)?;
         send(&apps()?, CallTool { peer, args }).await
@@ -3480,6 +3496,23 @@ impl ApiServer for Server {
 
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
         send(&artifact()?, artifact::search::Get { call_id }).await
+    }
+
+    async fn get_artifact_listing(
+        &self,
+        call_id: String,
+    ) -> RpcResult<artifact::archive::ArchiveListing> {
+        let a = send(&artifact()?, artifact::search::Get { call_id }).await?;
+        if a.kind != artifact::Kind::Archive {
+            return Err(ErrorObjectOwned::owned(
+                ASK_FAILED,
+                format!("{}: not an archive", a.name),
+                None::<()>,
+            ));
+        }
+        artifact::archive::read_listing(&a.path)
+            .await
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e, None::<()>))
     }
 
     async fn artifact_search_match(

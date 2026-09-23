@@ -35,10 +35,10 @@ fn lines(spec: &Spec, width: usize, text_only: bool) -> Option<Vec<Line>> {
 
 /// The `markdown` fence hook: `mermaid` and `json-render` fences become their rendering;
 /// a fence that cannot fit `width` or a Mermaid type the renderer does not draw returns
-/// `None` (the plain code block); a fence with a syntax or validation error returns the
-/// code block with a dim `✗ <first error>` line under the `╭ lang` header, so the user sees
-/// why. Other languages return `None`. Logs `fence{kind, ok, repaired, ms}` on target
-/// `surface` for every fence it handles.
+/// `None` (the plain code block); a fence with a syntax or validation error returns one dim
+/// `◌ diagram omitted` line (30 §7 as-built: the correction rounds are the model's business,
+/// the user is not shown a red card). Other languages return `None`. Logs
+/// `fence{kind, ok, repaired, ms}` on target `surface` for every fence it handles.
 pub fn fence(lang: &str, body: &str, width: usize) -> Option<Vec<Line>> {
     let start = Instant::now();
     let (lines, ok, repaired) = match lang {
@@ -47,11 +47,8 @@ pub fn fence(lang: &str, body: &str, width: usize) -> Option<Vec<Line>> {
             Ok(None) => (None, false, false),
             Err(msg) => {
                 let first = msg.lines().next().unwrap_or_default();
-                (
-                    Some(failed(lang, &format!("mermaid: {first}"), body)),
-                    false,
-                    false,
-                )
+                tracing::debug!(target: "surface", kind = lang, "omitted: {first}");
+                (Some(omitted()), false, false)
             }
         },
         "json-render" => match parse(body) {
@@ -61,8 +58,8 @@ pub fn fence(lang: &str, body: &str, width: usize) -> Option<Vec<Line>> {
             }
             Err(errs) => {
                 let first = errs.first().map(ToString::to_string).unwrap_or_default();
-                let msg = format!("invalid json-render: {first}");
-                (Some(failed(lang, &msg, body)), false, false)
+                tracing::debug!(target: "surface", kind = lang, "omitted: {first}");
+                (Some(omitted()), false, false)
             }
         },
         _ => return None,
@@ -72,21 +69,10 @@ pub fn fence(lang: &str, body: &str, width: usize) -> Option<Vec<Line>> {
     lines
 }
 
-/// The default code block plus the `✗` line: `╭ lang` / `✗ msg` (dim) then the body in
-/// code style.
-fn failed(lang: &str, msg: &str, body: &str) -> Vec<Line> {
-    let mut out = vec![
-        vec![span(format!("╭ {lang}"), DIM)],
-        vec![span(format!("✗ {msg}"), DIM)],
-    ];
-    out.extend(body.split('\n').map(|l| {
-        if l.is_empty() {
-            Line::new()
-        } else {
-            vec![span(l, CODE)]
-        }
-    }));
-    out
+/// What stands in for a block that would not render: one dim line, nothing else. The source
+/// stays in the transcript's raw view.
+fn omitted() -> Vec<Line> {
+    vec![vec![span("◌ diagram omitted", DIM)]]
 }
 
 /// Span texts concatenated per line, lines joined by `\n`; no styling.
@@ -669,21 +655,16 @@ mod tests {
     }
 
     #[test]
-    fn fence_hook_renders_marks_failures_and_ignores_other_langs() {
+    fn fence_hook_omits_failures_quietly_and_ignores_other_langs() {
         assert_eq!(fence("rust", "let x = 1;", 80), None);
         let lines = fence("json-render", BROKEN, 80).expect("failed block is shown");
-        assert_eq!(plain_text(&lines[..1]), "╭ json-render");
-        assert!(
-            plain_text(&lines[1..2]).starts_with("✗ invalid json-render: /elements/"),
-            "{}",
-            plain_text(&lines)
-        );
-        assert!(lines[1][0].style.dim && lines[2][0].style.code);
-        assert_eq!(plain_text(&lines[2..]), BROKEN);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(plain_text(&lines), "◌ diagram omitted");
+        assert!(lines[0][0].style.dim);
         let ok = fence("json-render", READINESS, 100).expect("renders");
         assert!(plain_text(&ok).starts_with("╭─ Release readiness "));
         let err = fence("mermaid", "flowchart LR\n  A[f(x)] --> B\n", 80).expect("shown");
-        assert!(plain_text(&err[1..2]).starts_with("✗ mermaid: "));
+        assert_eq!(plain_text(&err), "◌ diagram omitted");
         assert_eq!(fence("mermaid", "stateDiagram-v2\n  [*] --> A\n", 80), None);
     }
 

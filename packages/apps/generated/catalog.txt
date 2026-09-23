@@ -1,24 +1,42 @@
-# theuth apps component catalog (library 8b1fac40c6fe) — root statement: root = Stack([...])
+# theuth apps component catalog (library e8231c352d6a) — root statement: root = Stack([...])
 Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.
 
 ## Layout
 Stack(children: any[], direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Flex container. direction: "row"|"column" (default "column"). gap: "none"|"xs"|"s"|"m"|"l"|"xl"|"2xl" (default "m"). align: "start"|"center"|"end"|"stretch"|"baseline". justify: "start"|"center"|"end"|"between"|"around"|"evenly".
+Tabs(items: TabItem[]) — Tabbed container
+TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[]) — value is unique id, trigger is tab label, content is array of components
+Accordion(items: AccordionItem[]) — Collapsible sections
+AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[]) — value is unique id, trigger is section title
+Steps(items: StepsItem[]) — Step-by-step guide
+StepsItem(title: string, details: string) — title and details text for one step
+Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph)[][], variant?: "card" | "sunk") — Horizontal scrollable carousel
 Separator(orientation?: "horizontal" | "vertical", decorative?: boolean) — Visual divider between content sections
 - For grid-like layouts, use Stack with direction "row" and wrap set to true.
 - Prefer justify "start" (or omit justify) with wrap=true for stable columns instead of uneven gutters.
 - Use nested Stacks when you need explicit rows/sections.
 - Show/hide sections: $editId != "" ? Card([editForm]) : null
+- Use Tabs for alternative views (chart types, data sections) — no $variable needed
+- Shared filter across Tabs: same $days binding in Query args works across all TabItems
 
 ## Content
-Card(children: (TextContent | CardHeader | Image | Separator | PieChart | AreaChart | BarChart | LineChart | Table | Buttons | Stack | Graph)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
+Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack | Graph)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
 CardHeader(title?: string, subtitle?: string) — Header with optional title and subtitle
 TextContent(text: string, size?: "small" | "default" | "large" | "small-heavy" | "large-heavy") — Text block. Supports markdown. Optional size: "small" | "default" | "large" | "small-heavy" | "large-heavy".
+MarkDownRenderer(textMarkdown: string, variant?: "clear" | "card" | "sunk") — Renders markdown text with optional container variant
+Callout(variant: "info" | "warning" | "error" | "success" | "neutral", title: string, description: string, visible?: $binding<boolean>) — Callout banner. Optional visible is a reactive $boolean — auto-dismisses after 3s by setting $visible to false.
+TextCallout(variant?: "neutral" | "info" | "warning" | "success" | "danger", title?: string, description?: string) — Text callout with variant, title, and description
 Image(alt: string, src?: string) — Image with alt text and optional URL
+ImageGallery(images: {src: string, alt?: string, details?: string}[]) — Gallery grid of images with modal preview
+CodeBlock(language: string, codeString: string) — Syntax-highlighted code block
 - Use Cards to group related KPIs or sections. Stack with direction "row" for side-by-side layouts.
+- Success toast: Callout("success", "Saved", "Done.", $showSuccess) — use @Set($showSuccess, true) in save action, auto-dismisses after 3s. For errors: result.status == "error" ? Callout("error", "Failed", result.error) : null
+- KPI card: Card([TextContent("Label", "small"), TextContent("" + @Count(@Filter(data.rows, "field", "==", "value")), "large-heavy")])
 
 ## Tables
 Table(columns: Col[]) — Data table — column-oriented. Each Col holds its own data array.
 Col(label: string, data: any, type?: "string" | "number" | "action") — Column definition — holds label + data array
+- Table is COLUMN-oriented: Table([Col("Label", dataArray), Col("Count", countArray, "number")]). Use array pluck for data: data.rows.fieldName
+- Col data can be component arrays for styled cells: Col("Status", @Each(data.rows, "item", Tag(item.status, null, "sm", item.status == "open" ? "success" : "danger")))
 - Row actions: Col("Actions", @Each(data.rows, "t", Button("Edit", Action([@Set($showEdit, true), @Set($editId, t.id)]))))
 - Sortable: sorted = @Sort(data.rows, $sortField, "desc"). Bind $sortField to Select. Use sorted.fieldName for Col data
 - Searchable: filtered = @Filter(data.rows, "title", "contains", $search). Bind $search to Input
@@ -29,24 +47,42 @@ Col(label: string, data: any, type?: "string" | "number" | "action") — Column 
 BarChart(labels: string[], series: Series[], variant?: "grouped" | "stacked", xLabel?: string, yLabel?: string, height?: number) — Vertical bars; use for comparing values across categories with one or more series
 LineChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Lines over categories; use for trends and continuous data over time
 AreaChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Filled area under lines; use for cumulative totals or volume trends over time
+RadarChart(labels: string[], series: Series[]) — Spider/web chart; use for comparing multiple variables across one or more entities
+HorizontalBarChart(labels: string[], series: Series[], variant?: "grouped" | "stacked", xLabel?: string, yLabel?: string) — Horizontal bars; prefer when category labels are long or for ranked lists
 Series(category: string, values: number[]) — One data series
 - Charts accept column arrays: LineChart(labels, [Series("Name", values)]). Use array pluck: LineChart(data.rows.day, [Series("Views", data.rows.views)])
 - Use Cards to wrap charts with CardHeader for titled sections
 - Chart + Table from same source: use @Sort or @Filter result for both LineChart and Table Col data
+- Multiple chart views: use Tabs — Tabs([TabItem("line", "Line", [LineChart(...)]), TabItem("bar", "Bar", [BarChart(...)])])
 
 ## Charts (1D)
 PieChart(labels: string[], values: number[], variant?: "pie" | "donut", appearance?: "circular" | "semiCircular") — Circular slices; use plucked arrays: PieChart(data.categories, data.values)
+SingleStackedBarChart(labels: string[], values: number[]) — Single horizontal stacked bar; use plucked arrays: SingleStackedBarChart(data.categories, data.values)
 - PieChart and BarChart need NUMBERS, not objects. For list data, use @Count(@Filter(...)) to aggregate:
 - PieChart from list: `PieChart(["Low", "Med", "High"], [@Count(@Filter(data.rows, "priority", "==", "low")), @Count(@Filter(data.rows, "priority", "==", "medium")), @Count(@Filter(data.rows, "priority", "==", "high"))], "donut")`
 - KPI from count: `TextContent("" + @Count(@Filter(data.rows, "status", "==", "open")), "large-heavy")`
 
+## Charts (Scatter)
+ScatterChart(datasets: ScatterSeries[], xLabel?: string, yLabel?: string) — X/Y scatter plot; use for correlations, distributions, and clustering
+ScatterSeries(name: string, points: Point[]) — Named dataset
+Point(x: number, y: number, z?: number) — Data point with numeric coordinates
+
 ## Forms
+Label(text: string) — Text label
 Input(name: string, placeholder?: string, type?: "text" | "email" | "password" | "number" | "url", rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
 TextArea(name: string, placeholder?: string, rows?: number, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
 Select(name: string, items: SelectItem[], placeholder?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>, size?: "small" | "medium" | "large")
 SelectItem(value: string, label: string) — Option for Select
+Slider(name: string, variant: "continuous" | "discrete", min: number, max: number, step?: number, defaultValue?: number[], label?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<number[]>) — Numeric slider input; supports continuous and discrete (stepped) variants
+CheckBoxGroup(name: string, items: CheckBoxItem[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<Record<string, boolean>>)
+CheckBoxItem(label: string, description: string, name: string, defaultChecked?: boolean)
+RadioGroup(name: string, items: RadioItem[], defaultValue?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
+RadioItem(label: string, description: string, value: string)
 SwitchGroup(name: string, items: SwitchItem[], variant?: "clear" | "card" | "sunk", value?: $binding<Record<string, boolean>>) — Group of switch toggles
 SwitchItem(label?: string, description?: string, name: string, defaultChecked?: boolean) — Individual switch toggle
+Chips(name: string, type?: "single" | "multiple", items?: ChipItem[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, defaultValue?: string | string[]) — A form field of compact selectable chips for choosing one or many short options; the selection is stored under `name`.
+ChipItem(value: string, label: string, icon?: Icon, disabled?: boolean) — A single selectable chip inside a Chips group, with a value, label and optional icon.
+- Chips: compact single/multiple selection pills. Use ChipItem references for each option.
 - rules is an optional object: {required: true, email: true, minLength: 8, maxLength: 100}
 - Available rules: required, email, min, max, minLength, maxLength, pattern, url, numeric
 - The renderer shows error messages automatically — do NOT generate error text in the UI
@@ -56,6 +92,19 @@ SwitchItem(label?: string, description?: string, name: string, defaultChecked?: 
 Button(label: string, action?: ActionExpression, variant?: "primary" | "secondary" | "tertiary", type?: "normal" | "destructive", size?: "extra-small" | "small" | "medium" | "large") — Clickable button
 Buttons(buttons: Button[], direction?: "row" | "column") — Group of Button components. direction: "row" (default) | "column".
 - Toggle in @Each: @Each(rows, "t", Button(t.status == "open" ? "Close" : "Reopen", Action([...])))
+
+## Data Display
+TagBlock(tags: string[], size?: "sm" | "md" | "lg") — tags is an array of strings; optional size sm | md | lg
+Tag(text: string, icon?: Icon, size?: "sm" | "md" | "lg", variant?: "neutral" | "info" | "success" | "warning" | "danger") — Styled tag/badge with optional Icon and variant
+Icon(name: string, category?: string) — A lucide icon by kebab-case name (e.g. 'circle-check'). Optional category picks a topical fallback when the name doesn't resolve.
+ListBlock(items: ListItem[], variant?: "number" | "image", size?: "default" | "small") — A list of items with number or image indicators. Each item can optionally have an action. size small renders a compact list.
+ListItem(title: string, subtitle?: string, image?: {src: string, alt: string}, actionLabel?: string, action?: ActionExpression) — Item in a ListBlock — displays a title with an optional subtitle and image. When action is provided, the item becomes clickable.
+- Color-mapped Tag: Tag(value, null, "sm", value == "high" ? "danger" : value == "medium" ? "warning" : "neutral")
+- ListBlock is a numbered or image list of ListItem references. An action on ListItem is optional.
+
+## Cards
+MetricIndicatorInline(value: string, subtext?: string, trend?: {direction: "up" | "down", value: number}) — Headline metric value with an optional +/- percentage trend and subtext, all on one line.
+- Card blocks lay out 2+ items in a responsive grid (or carousel where supported). Every item in a block must have the same structure.
 
 ## Other
 Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor", group?: string, state?: "default" | "active" | "done" | "muted" | "danger"}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed"}[], groups?: {id: string, label: string}[], direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression) — Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`).

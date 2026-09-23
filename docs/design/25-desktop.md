@@ -167,6 +167,12 @@ use the dark set): warm ink on bone, mineral accents, never pure `#000`/`#FFF`.
 
 Status `-bg` tokens are the status colour at 12–15% alpha; `-border` is the colour itself.
 
+As built 2026-09-23 (`feature/icons`): the project icon palette is ten `--project-<key>` tokens under
+`:root`/`.dark` with `--color-project-<key>` in `@theme inline` (`text-project-*`, `bg-project-*`). Keys
+ochre/carnelian/malachite/faience reuse the accent hexes above; lapis `#3C5A86`/`#6F8FC0`, nile
+`#6B7A24`/`#98A145`, umber `#7A4A2A`/`#B07A55`, slate `#566472`/`#8A9AAA`, sand `#8A6F42`/`#B89A63`,
+plum `#7D3F5C`/`#B0708F` (light/dark). Every hex is ≥ 3.98:1 on `--sidebar` in its theme (WCAG).
+
 Shell geometry was measured from chatgpt.com (unauthenticated shell, Chromium 1280×860,
 2026-09-14) with computed styles; dumps in `assets/25-chatgpt-tokens.md` (its colours are
 superseded by the palette above) and `assets/25-chatgpt-geometry.json`. The authenticated

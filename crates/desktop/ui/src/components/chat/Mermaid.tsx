@@ -52,7 +52,7 @@ const subscribeEpoch = (cb: () => void) => {
 }
 
 /** The one mermaid instance: fetched and initialised on first use, after the fonts so ELK measures the real font. */
-function loadMermaid(): Promise<Mermaid> {
+export function loadMermaid(): Promise<Mermaid> {
   return (loading ??= Promise.all([import('mermaid'), document.fonts.ready]).then(([m]) => {
     m.default.initialize(config())
     subscribeDark(() => {
@@ -97,9 +97,10 @@ function useRender(chart: string, incomplete: boolean): { svg: string | null; er
  * Streamdown custom renderer for ```` ```mermaid ```` fences (design 30 §8.3): mermaid 12 in the shared
  * `DiagramFrame` (pan/zoom, export, fullscreen). Replaces streamdown's built-in block, whose fullscreen is a bare
  * body portal and whose toolbar and pan/zoom cannot be extended.
+ * `fill` (the `.mmd` artifact view, 35 §3.2) sizes the block and the diagram to the parent instead of inline height.
  */
-export function MermaidFence({ code, isIncomplete }: CustomRendererProps) {
+export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps & { fill?: boolean }) {
   const { svg, error } = useRender(code, isIncomplete)
   if (error && !svg) return <ErrorCard title="Diagram unavailable" error={error} source={code} />
-  return <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} />
+  return <DiagramFrame svg={svg} name={diagramName(code)} label="mermaid" kind="mermaid-block" title={error ?? undefined} fill={fill} />
 }

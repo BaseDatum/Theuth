@@ -1,6 +1,6 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
-import { classify, type Injected } from "@/lib/injected";
+import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
@@ -271,6 +271,15 @@ function userEntries(
           id: nextId(),
           kind: "peer",
           from: `${c.name} · ${hhmm(c.at)}`,
+          text: c.text,
+          context,
+        };
+      // 14 as-built: `⏲ Reminder r3 · after 10 min`, the model's message as the body.
+      case "reminder":
+        return {
+          id: nextId(),
+          kind: "peer",
+          from: `⏲ Reminder ${c.id} · after ${humanSecs(c.after)}${c.late ? " · late" : ""}`,
           text: c.text,
           context,
         };

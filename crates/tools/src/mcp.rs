@@ -1351,6 +1351,7 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
             if let Some(cwd) = cwd {
                 cmd.current_dir(cwd);
             }
+            platform::process::hide_console(cmd.as_std_mut());
             // The child must not touch our terminal: an inherited tty on stderr
             // leaks its banners into the TUI and node resets termios when it dies.
             let (transport, stderr) = TokioChildProcess::builder(cmd)

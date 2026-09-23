@@ -147,6 +147,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "platform",
  "reqwest 0.13.5",
  "schemars 1.2.2",
  "serde",
@@ -503,6 +504,7 @@ dependencies = [
  "kameo",
  "link",
  "parking_lot",
+ "platform",
  "runtime",
  "schemars 1.2.2",
  "serde",
@@ -514,6 +516,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -619,10 +622,12 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
+ "bzip2",
  "chrono",
  "csv",
  "document",
  "figment",
+ "flate2",
  "gray_matter",
  "kameo",
  "markdown",
@@ -636,6 +641,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx 0.9.0",
+ "tar",
  "tempfile",
  "tokio",
  "tools",
@@ -646,6 +652,7 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "typst-render",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -4361,6 +4368,7 @@ dependencies = [
  "hmac 0.12.1",
  "kameo",
  "notify",
+ "platform",
  "rand 0.9.5",
  "runtime",
  "schemars 1.2.2",
@@ -10847,6 +10855,7 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "link",
+ "platform",
  "rand 0.9.5",
  "runtime",
  "schemars 1.2.2",
@@ -18625,6 +18634,7 @@ dependencies = [
  "base64 0.22.1",
  "brush-builtins",
  "brush-core",
+ "chrono",
  "figment",
  "futures",
  "globset",

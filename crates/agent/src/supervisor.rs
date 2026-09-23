@@ -29,9 +29,9 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JobEvent, JobExit, JobId, ListPrompts, ListTools, Notice,
-    REGISTRY_ACTOR, RegisterActivity, RegisterPrompt, RegisterTool, Risk, SetCap, SetParent,
-    Settle, ToolRegistry,
+    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, Jobs, ListPrompts,
+    ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
+    RegisterTool, ReminderEvent, Risk, SetCap, SetParent, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1644,6 +1644,79 @@ impl Message<ActivityRegistered> for Agents {
 
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
+        self.rearm_reminders().await;
+    }
+}
+
+impl Agents {
+    /// Restore stored reminders after a restart (14 as-built 2026-09-23):
+    /// rows of sessions that no longer exist go; the rest are re-armed by
+    /// the jobs actor, which fires overdue ones at once as `late`. A `tell`:
+    /// the actor admits them off its mailbox by asking back into us.
+    async fn rearm_reminders(&mut self) {
+        let rows = match self.store.reminders().await {
+            Ok(rows) => rows,
+            Err(e) => return tracing::error!("stored reminders unreadable: {e:#}"),
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) else {
+            return tracing::error!("jobs actor not running: stored reminders not re-armed");
+        };
+        for r in rows {
+            if !matches!(self.store.session(r.session).await, Ok(Some(_))) {
+                let _ = self.store.delete_reminder(r.session, &r.id).await;
+                continue;
+            }
+            let _ = jobs
+                .tell(RearmReminder {
+                    session: r.session,
+                    id: r.id,
+                    message: r.message,
+                    set_at: r.set_at,
+                    fires_at: r.fires_at,
+                    seconds: r.seconds,
+                })
+                .await;
+        }
+    }
+}
+
+/// Store mirror of the jobs actor's reminder state (14 as-built): rows are
+/// inserted when set and deleted when cancelled; a fired one is deleted by
+/// its `Settle::Reminder`.
+impl Message<ReminderEvent> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ReminderEvent, _: &mut Context<Self, Self::Reply>) {
+        let r = match m {
+            ReminderEvent::Set {
+                session,
+                id,
+                message,
+                set_at,
+                fires_at,
+                seconds,
+            } => {
+                self.store_for(session)
+                    .insert_reminder(&store::ReminderRow {
+                        id,
+                        session,
+                        message,
+                        set_at,
+                        fires_at,
+                        seconds,
+                    })
+                    .await
+            }
+            ReminderEvent::Cancelled { session, id } => {
+                self.store_for(session).delete_reminder(session, &id).await
+            }
+        };
+        if let Err(e) = r {
+            tracing::warn!("reminder row not written: {e:#}");
+        }
     }
 }
 
@@ -1724,6 +1797,35 @@ impl Agents {
                 // injecting it too would hand the model the same output twice.
                 self.ledger.retire_op(op);
             }
+            Settle::Reminder {
+                op,
+                id,
+                message,
+                set_at,
+                seconds,
+                late,
+            } => {
+                // The owner is the ledger's, as `notice`: a reminder for a
+                // retired op (its session closed) is owed to nobody.
+                if let Some(session) = self.ledger.op_owner(op) {
+                    let wrapped = reminder(
+                        &id,
+                        seconds,
+                        &tools::reminder::local_rfc3339(set_at),
+                        late,
+                        &message,
+                    );
+                    let scope = self.network_operation_scope(op);
+                    self.inject(session, &format!("reminder {id}"), message, wrapped, scope)
+                        .await;
+                    if let Err(e) = self.store_for(session).delete_reminder(session, &id).await {
+                        tracing::warn!(session = %session, "reminder {id} row not deleted: {e:#}");
+                    }
+                } else {
+                    tracing::info!(%op, "reminder {id} for a retired op dropped");
+                }
+                self.ledger.retire_op(op);
+            }
             Settle::Unknown { op, owner, failure } => {
                 tracing::warn!(%op, %owner, "activity outcome unknown: {failure}");
                 self.place(owner).await;
@@ -1740,7 +1842,9 @@ impl Message<Settle> for Agents {
 
     async fn handle(&mut self, m: Settle, _: &mut Context<Self, Self::Reply>) {
         let (op, owner, unknown) = match &m {
-            Settle::Finished { op } | Settle::FinishedWithResult { op, .. } => (*op, None, None),
+            Settle::Finished { op }
+            | Settle::FinishedWithResult { op, .. }
+            | Settle::Reminder { op, .. } => (*op, None, None),
             Settle::Unknown { op, owner, failure } => (*op, Some(*owner), Some(failure.clone())),
         };
         let owner = owner.or_else(|| self.ledger.op_owner(op));
@@ -1950,6 +2054,17 @@ pub(crate) fn job_idle(
     format!(
         "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{typed}>\n{text}\n</job_idle>",
         attr(&cmd)
+    )
+}
+
+/// The `<reminder>` wrapper (14 as-built 2026-09-23): `after` is the
+/// requested delay in seconds, `set_at` RFC 3339 local, `late` true when it
+/// was re-armed past due after a restart; `text` is the model's message.
+pub(crate) fn reminder(id: &str, after: u64, set_at: &str, late: bool, text: &str) -> String {
+    format!(
+        "<reminder id=\"{}\" after=\"{after}\" set_at=\"{}\" late=\"{late}\">\n{text}\n</reminder>",
+        attr(id),
+        attr(set_at)
     )
 }
 
@@ -6135,6 +6250,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     // (47 §4.1), never a second time through the public `JobEvent`.
     rt.subscribe::<Agents, ApprovalRequested>(&agents).await;
     rt.subscribe::<Agents, ApprovalResolved>(&agents).await;
+    // Reminder rows mirror the jobs actor (14 as-built): set → insert, cancel → delete.
+    rt.subscribe::<Agents, ReminderEvent>(&agents).await;
 
     // First use of the registry (00 §4, 12 §2).
     let data_dir = rt.data_dir.clone();
@@ -7340,6 +7457,20 @@ pub(crate) mod tests {
         let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", false);
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
+    }
+
+    #[test]
+    fn reminder_wrapper_escapes_attributes_and_names_late() {
+        let w = reminder("r3", 600, "2026-09-23T10:00:00+02:00", false, "check \"a\" <b>");
+        assert_eq!(
+            w,
+            "<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck \"a\" <b>\n</reminder>"
+        );
+        let w = reminder("r<1>", 5, "\"t\"", true, "");
+        assert_eq!(
+            w,
+            "<reminder id=\"r&lt;1&gt;\" after=\"5\" set_at=\"&quot;t&quot;\" late=\"true\">\n\n</reminder>"
+        );
     }
 
     #[test]

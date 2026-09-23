@@ -1,5 +1,6 @@
+import { syntaxHighlighter } from '@blocknote/code-block'
 import { withCollaboration } from '@blocknote/core/yjs'
-import { SideMenuExtension, filterSuggestionItems } from '@blocknote/core/extensions'
+import { SideMenuExtension, filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
 import {
   SideMenu,
   SideMenuController,
@@ -12,8 +13,9 @@ import {
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, Workflow } from 'lucide-react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
@@ -23,8 +25,14 @@ import { deviceName } from '@/lib/platform'
 import { subscribeDark } from '@/lib/theme'
 import { cn } from 'cn'
 
-/** The schema of 59 §9.2 with the React frontmatter block; identical ProseMirror shape to the helper's. */
-const schema = createDocumentSchema(frontmatterBlock)
+/**
+ * The schema of 59 §9.2 with the React frontmatter block and the UI's code block (languages table, diagram render);
+ * identical ProseMirror shape to the helper's.
+ */
+const schema = createDocumentSchema(frontmatterBlock, codeBlock)
+
+/** Starter chart of the "Diagram" slash item: a second entry for `codeBlock`, `language: mermaid`. */
+const DIAGRAM_STARTER = 'flowchart LR\n  A --> B'
 
 /** The slash menu of 59 §9.3: the schema's blocks, headings 1–3 only, no toggle headings, no emoji picker. */
 const SLASH_KEYS: Record<string, true> = {
@@ -95,7 +103,7 @@ export function Editor({
         user: { name: deviceName(), color: CURSOR_COLORS[provider.doc.clientID % CURSOR_COLORS.length] as string },
         showCursorLabels: coarse ? 'always' : 'activity',
       },
-      extensions: [revealExtension(provider, agentColor)],
+      extensions: [revealExtension(provider, agentColor), syntaxHighlighter],
     }),
     [provider, agentColor, coarse],
   )
@@ -112,9 +120,18 @@ export function Editor({
     [provider],
   )
   const agent = useAgentPresence(provider)
-  const askItem = useMemo(
-    () =>
-      onAsk
+  const extraItems = useMemo(
+    () => [
+      {
+        key: 'diagram',
+        title: 'Diagram',
+        subtext: 'Mermaid chart, rendered in place',
+        group: editor.dictionary.slash_menu.code_block.group,
+        aliases: ['diagram', 'mermaid', 'chart', 'flowchart', 'graph'],
+        icon: <Workflow className="size-4" />,
+        onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: 'codeBlock', props: { language: 'mermaid' }, content: DIAGRAM_STARTER }),
+      },
+      ...(onAsk
         ? [
             {
               key: 'ask_theuth',
@@ -126,7 +143,8 @@ export function Editor({
               onItemClick: () => onAsk(editor.getTextCursorPosition().block.id),
             },
           ]
-        : [],
+        : []),
+    ],
     [onAsk, editor],
   )
   return (
@@ -150,7 +168,7 @@ export function Editor({
               triggerCharacter="/"
               getItems={async (query) =>
                 filterSuggestionItems(
-                  [...getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']), ...askItem],
+                  [...getDefaultReactSlashMenuItems(editor).filter((item) => SLASH_KEYS[(item as { key?: string }).key ?? '']), ...extraItems],
                   query,
                 )
               }

@@ -134,6 +134,22 @@ As built:
 Not verified on Windows from the Mac; `cargo check -p desktop --target x86_64-pc-windows-msvc` stops at
 the C build scripts before the desktop crate. The `cfg(windows)` code was reviewed by eye.
 
+## Child processes (`crates/platform/src/process.rs::hide_console`, branch `fix/windows-child-console`, 2026-09-23)
+
+Observed with 1.13.4 + the launch fix: a console window still appeared at app start and sat there.
+`t.exe --headless` has no console, and Windows gives a console-subsystem child of a console-less
+parent a fresh visible one — the documents helper (`theuth-documents-*.exe`, a Bun console binary,
+idle on stdin for the daemon's life) owned the window. `platform::process::hide_console(&mut
+std::process::Command)` sets `CREATE_NO_WINDOW` (a no-op off Windows; tokio callers pass
+`cmd.as_std_mut()`). std's `creation_flags` *replaces*, so it is the last builder call. Applied at
+every non-PTY engine spawn that can be a console process: documents helper (probe + server), app
+parser helper, MCP stdio servers, ACP `unzip`/`tar`, the updater's `t.new --app-parser-hash` probe,
+`tools::git`, and `hostname` — the latter's four copies (rpc, theuth, link, nodes) collapsed into
+`platform::process::hostname()`, read once. PTY jobs (`tools/pty.rs`, desktop's Unix launch) keep
+ConPTY's own console; macOS-only spawns (`say`, `open`, `brew`, `screencapture`) untouched.
+Windows test `hide_console_spawns_a_console_child_without_a_window` asks a hidden `powershell`
+child for `GetConsoleWindow()` and expects `0`.
+
 ## Verifying on the Windows host
 
 From the repo root in pwsh 7 (rustup MSVC toolchain, `cargo install tauri-cli`, bun, NSIS is fetched

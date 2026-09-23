@@ -182,7 +182,8 @@ agent:
 
 # surface:                   # Mermaid / json-render blocks in replies (design doc 30)
 #   enabled: true            # false: no prompt block, no rendering; fences stay code blocks
-#   correct: true            # one <surface_error> fix-up round when a json-render block is invalid
+#   correct: true            # <surface_error> fix-up rounds when a json-render/mermaid/openui block is invalid
+#   correct_rounds: 3        # rounds per turn before the model is told to move on
 
 # web:                       # search_web / read_url (design doc 16)
 #   enabled: true

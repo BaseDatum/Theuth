@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use artifact::{Commit, CommitError, Kind};
+use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use tools::{Risk, Tool, ToolCx, ToolInspection, ToolOutput};
 
@@ -47,30 +48,62 @@ begin = Button(\"Begin drill\", Action([@Set($stage, \"cutover\")]))\n\
 reset = Button(\"Reset\", Action([@Reset($stage)]), \"secondary\")\n\
 docs = Button(\"Runbook\", Action([@OpenUrl(\"https://example.com/runbook\")]))";
 
+/// Components whose compact signature the prompt block carries (46 §9 as-built): the
+/// ones a first attempt reaches for; the rest live in the `apps` skill's full catalog.
+const PROMPT_COMPONENTS: [&str; 23] = [
+    "Stack",
+    "Card",
+    "CardHeader",
+    "TextContent",
+    "Image",
+    "Table",
+    "Col",
+    "BarChart",
+    "LineChart",
+    "Series",
+    "Tabs",
+    "TabItem",
+    "Steps",
+    "StepsItem",
+    "Callout",
+    "MetricIndicatorInline",
+    "ListBlock",
+    "ListItem",
+    "Button",
+    "Buttons",
+    "Input",
+    "Select",
+    "SelectItem",
+];
+
 /// Prompt block registered as `RegisterPrompt { plugin: "app" }` (46 §9):
 /// a function of the generated catalog only, so it never busts the system
 /// cache. Front-loads what a first attempt gets wrong without the skill —
 /// the exact component names and their positional arguments — as compact
-/// named signatures, plus one complete example.
+/// named signatures for [`PROMPT_COMPONENTS`], plus one complete example;
+/// the full catalog is the `apps` skill's.
 pub fn prompt() -> String {
     let mut out = String::with_capacity(4096);
     out.push_str("## Interactive screens: `app`\n\
-Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for a static picture, `show` for files. OpenUI Lang: one `name = expression` per line; `root` is required; components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only the component names below exist (no Heading/Text/State/OpenURL). A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_request` or a normal MCP integration; Python is working memory, not an app backend. Iterate with `edit: true` and the receipt's `record_call_id` as `base_call_id`; errors name what to fix. Full signatures, types and examples: the `apps` skill.\n\
+Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for a static picture, `show` for files. OpenUI Lang: one `name = expression` per line; `root` is required; components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only the component names below exist (no Heading/Text/State/OpenURL). A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_get`/`http_post` for public HTTP APIs. Every statement must be complete on its own line; the receipt's `record_call_id` is what you pass back with `edit: true` to change the app instead of republishing it. Once the app is published, the user has it: do not describe it back.\n\
 Example:\n```openui\n");
     out.push_str(EXAMPLE);
     out.push_str("\n```\nComponents (positional args, `?` optional): ");
-    out.push_str(&compact_signatures().join("; "));
+    out.push_str(&compact_signatures(&PROMPT_COMPONENTS).join("; "));
     out.push_str(
         "\nActions: @Run(queryOrMutation), @Set($var, value), @Reset($var), @OpenUrl(url), @ToAssistant(message, context?). \
          Builtins: @Each(array, item, template), @Count, @Sum, @Avg, @Min, @Max, @Sort(array, field, dir?), @Filter(array, field, op, value), @Round, @Abs, @Floor, @Ceil. \
-         Results: query value is the tool's structured result; mutation exposes .status/.data/.error.",
+         Results: query value is the tool's structured result; mutation exposes .status/.data/.error. \
+         Full catalog (charts, Accordion, Tag, Carousel, forms…): the `apps` skill.",
     );
     out
 }
 
-/// `Stack(children, direction?, gap?, …)` for every component in the catalog,
-/// in catalog order: names and argument names only, no types or prose.
-fn compact_signatures() -> Vec<String> {
+/// `Stack(children, direction?, gap?, …)` for every component of `only` in the
+/// catalog, in catalog order: names and argument names only, no types or prose.
+/// The first line per name wins: the usage notes repeat `Button(label, Action(…))`.
+fn compact_signatures(only: &[&str]) -> Vec<String> {
+    let mut seen: Vec<&str> = Vec::new();
     CATALOG
         .lines()
         .filter_map(|line| {
@@ -79,9 +112,12 @@ fn compact_signatures() -> Vec<String> {
             if name.is_empty()
                 || !name.chars().next()?.is_ascii_uppercase()
                 || !name.chars().all(|c| c.is_ascii_alphanumeric())
+                || !only.contains(&name)
+                || seen.contains(&name)
             {
                 return None;
             }
+            seen.push(name);
             let params = top_level_params(&line[paren + 1..]);
             let names: Vec<&str> = params
                 .iter()
@@ -156,8 +192,25 @@ impl Tool for AppTool {
     }
 }
 
-/// Limits → base (edit) → snapshot → helper → commit → receipt.
-async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, String> {
+/// Who is publishing: the model through the `app` tool (receipt and errors talk to the
+/// model) or the desktop through `publish_app` (30 §9: a reply fence opened as an app).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The `app` tool; `call_id` is the tool call's.
+    Tool,
+    /// The `publish_app` RPC; `call_id` is synthetic (`ui-<uuid>`), no transcript entry.
+    Ui,
+}
+
+/// Limits → base (edit) → snapshot → helper → commit, remembered in the cache. Shared by
+/// the `app` tool and the `publish_app` RPC; only the wording differs by `origin`.
+pub(crate) async fn commit_source(
+    core: &Core,
+    args: AppArgs,
+    session: SessionId,
+    call_id: String,
+    origin: Origin,
+) -> Result<(Arc<Loaded>, CheckResult), String> {
     let name = file_name(&args.name)?;
     if args.source.len() > MAX_SOURCE {
         return Err(format!(
@@ -183,7 +236,7 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
             .load(base_id)
             .await
             .map_err(|e| format!("base {base_id}: {e}"))?;
-        if base.artifact.session != cx.session {
+        if base.artifact.session != session {
             return Err(format!("base {base_id} belongs to another session"));
         }
         if base.artifact.name != name {
@@ -201,7 +254,7 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
     };
 
     let inspections: Vec<ToolInspection> = registry
-        .ask(tools::DescribeTools(Some(cx.session)))
+        .ask(tools::DescribeTools(Some(session)))
         .await
         .map_err(|e| e.to_string())?;
     let snapshot: Vec<ToolSnapshot> = inspections
@@ -225,10 +278,16 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
     let check = match check {
         Ok(c) => c,
         Err(helper::Error::Missing(p)) => {
-            return Err(format!(
-                "apps are unavailable on this harness: parser helper missing at {}. Existing apps stay readable; use `show` for a static file.",
-                p.display()
-            ));
+            return Err(match origin {
+                Origin::Tool => format!(
+                    "apps are unavailable on this harness: parser helper missing at {}. Existing apps stay readable; use `show` for a static file.",
+                    p.display()
+                ),
+                Origin::Ui => format!(
+                    "apps are unavailable on this harness: parser helper missing at {}",
+                    p.display()
+                ),
+            });
         }
         Err(e) => return Err(e.to_string()),
     };
@@ -240,7 +299,7 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
         ));
     }
     if !check.diagnostics.is_empty() {
-        return Err(diagnostics(&check));
+        return Err(diagnostics(&check, origin));
     }
     if check.source.len() > MAX_SOURCE {
         return Err(format!(
@@ -265,8 +324,8 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
         .to_owned();
     let committed = artifacts
         .ask(Commit {
-            session: cx.session,
-            call_id: cx.call_id.clone(),
+            session,
+            call_id,
             name: name.clone(),
             title,
             kind: Kind::App,
@@ -292,11 +351,19 @@ async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, S
     };
 
     let loaded = Arc::new(Loaded {
-        artifact: artifact.clone(),
+        artifact,
         source: check.source.clone(),
         meta,
     });
-    core.remember(loaded);
+    core.remember(loaded.clone());
+    Ok((loaded, check))
+}
+
+/// The `app` tool: [`commit_source`] under the call's id, then the receipt.
+async fn publish(core: &Core, args: AppArgs, cx: ToolCx) -> Result<ToolOutput, String> {
+    let (loaded, check) =
+        commit_source(core, args, cx.session, cx.call_id.clone(), Origin::Tool).await?;
+    let artifact = &loaded.artifact;
 
     let queries = check.bindings.iter().filter(|b| b.kind == "query").count();
     let mutations = check.bindings.len() - queries;
@@ -368,9 +435,12 @@ fn file_name(name: &str) -> Result<String, String> {
 }
 
 /// Located diagnostics plus the catalog signature of any component they name.
-fn diagnostics(check: &CheckResult) -> String {
-    let mut out = String::from("not published; fix and call `app` again:\n");
-    let mut named: Vec<&str> = Vec::new();
+fn diagnostics(check: &CheckResult, origin: Origin) -> String {
+    let mut out = String::from(match origin {
+        Origin::Tool => "not published; fix and call `app` again:\n",
+        Origin::Ui => "not published; the source does not validate:\n",
+    });
+    let mut mentioned = String::new();
     for d in &check.diagnostics {
         let at = if d.at.is_empty() {
             "program"
@@ -378,39 +448,41 @@ fn diagnostics(check: &CheckResult) -> String {
             d.at.as_str()
         };
         out.push_str(&format!("- [{}] {at}: {}\n", d.code, d.message));
-        for line in CATALOG.lines() {
+        mentioned.push_str(&d.message);
+        mentioned.push('\n');
+    }
+    let sigs = signatures_for(&mentioned);
+    if !sigs.is_empty() {
+        out.push_str("signatures:\n");
+        for line in sigs {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str("Signatures and examples: `apps` skill.");
+    out
+}
+
+/// Catalog signature lines of every component whose name occurs in `text`,
+/// in catalog order.
+pub(crate) fn signatures_for(text: &str) -> Vec<&'static str> {
+    CATALOG
+        .lines()
+        .filter(|line| {
             let Some(paren) = line.find('(') else {
-                continue;
+                return false;
             };
             let component = &line[..paren];
-            if !component.is_empty()
+            !component.is_empty()
                 && component.chars().all(|c| c.is_ascii_alphanumeric())
                 && component
                     .chars()
                     .next()
                     .is_some_and(|c| c.is_ascii_uppercase())
-                && d.message.contains(component)
-                && !named.contains(&component)
-            {
-                named.push(component);
-            }
-        }
-    }
-    if !named.is_empty() {
-        out.push_str("signatures:\n");
-        for line in CATALOG.lines() {
-            if named
-                .iter()
-                .any(|n| line.starts_with(n) && line[n.len()..].starts_with('('))
-            {
-                out.push_str("  ");
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-    }
-    out.push_str("Signatures and examples: `apps` skill.");
-    out
+                && text.contains(component)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -420,7 +492,8 @@ mod tests {
 
     #[test]
     fn prompt_front_loads_compact_signatures_and_a_complete_example() {
-        let sigs = compact_signatures();
+        let sigs = compact_signatures(&PROMPT_COMPONENTS);
+        assert_eq!(sigs.len(), PROMPT_COMPONENTS.len(), "every listed component is in the catalog: {sigs:?}");
         assert!(
             sigs.contains(&"Stack(children, direction?, gap?, align?, justify?, wrap?)".to_owned()),
             "{sigs:?}"
@@ -433,6 +506,7 @@ mod tests {
             sigs.contains(&"TextContent(text, size?)".to_owned()),
             "{sigs:?}"
         );
+        assert!(sigs.contains(&"Steps(items)".to_owned()), "{sigs:?}");
         // Nested types with commas/braces do not split a parameter.
         assert!(
             sigs.iter()
@@ -443,9 +517,15 @@ mod tests {
             sigs.iter().all(|s| !s.contains(':') && !s.contains('"')),
             "no types leak: {sigs:?}"
         );
+        // The rest of the catalog is the skill's.
+        assert!(!sigs.iter().any(|s| s.starts_with("Accordion(")), "{sigs:?}");
+        assert!(compact_signatures(&["Accordion"]) == vec!["Accordion(items)".to_owned()]);
         let p = prompt();
         assert!(p.contains("```openui\nroot = Stack(["));
         assert!(p.contains("no Heading/Text/State/OpenURL"));
+        assert!(p.ends_with("Full catalog (charts, Accordion, Tag, Carousel, forms…): the `apps` skill."));
+        assert!(!p.contains("Accordion("));
+        assert!(crate::skill().contains("Accordion(items"));
         assert!(
             p.len() < 6 * 1024,
             "prompt stays compact: {} bytes",
@@ -487,7 +567,7 @@ mod tests {
             ],
             ..CheckResult::default()
         };
-        let text = diagnostics(&check);
+        let text = diagnostics(&check, Origin::Tool);
         assert!(text.contains("[missing-required] title:"));
         assert!(text.contains("[no-root] program:"));
         assert!(text.contains("\n  Card("), "{text}");

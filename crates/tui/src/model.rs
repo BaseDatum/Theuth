@@ -1128,6 +1128,7 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "message" => (Some("from=\""), "</message>"),
             "job_result" => (Some("id=\""), "</job_result>"),
             "job_idle" => (Some("id=\""), "</job_idle>"),
+            "reminder" => (Some("id=\""), "</reminder>"),
             "schedule" => (Some("name=\""), "</schedule>"),
             "context_summary" => (None, "</context_summary>"),
             "todo" => (None, "</todo>"),
@@ -1160,6 +1161,17 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     .map(|n| format!(" · {}", unescape(n)))
                     .unwrap_or_default();
                 (CardKind::Job, format!("{from} idle {quiet}s{name}"))
+            } else if name == "reminder" {
+                // 14 as-built: `r3 reminder · after 10m` (` · late` when re-armed past due).
+                let after = attr(open, "after=\"")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map_or_else(String::new, |s| format!(" · after {}", human_secs(s)));
+                let late = if attr(open, "late=\"") == Some("true") {
+                    " · late"
+                } else {
+                    ""
+                };
+                (CardKind::Job, format!("{from} reminder{after}{late}"))
             } else if name == "schedule" {
                 let at = attr(open, "at=\"").unwrap_or_default();
                 let at = chrono::DateTime::parse_from_rfc3339(at).map_or_else(
@@ -1176,6 +1188,16 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
         rest = tail.trim_start();
     }
     Some(out)
+}
+
+/// `45s`, `10m`, `1h30m`.
+fn human_secs(s: u64) -> String {
+    match (s / 3600, (s % 3600) / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, _) => format!("{m}m"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h{m}m"),
+    }
 }
 
 /// Undo the wrappers' XML attribute escape.
@@ -9383,15 +9405,29 @@ fn md_cell(s: &str) -> String {
 /// `.openui` source read-only in a fence under where it runs (46 §8.2),
 /// anything else one line. Text bodies cap at [`INLINE_LINES`].
 fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::Text {
-    use artifact::Kind;
-    let bytes = match a.kind {
-        Kind::Markdown | Kind::Text | Kind::Html | Kind::Csv | Kind::App => {
-            std::fs::read(&a.path).map_err(|e| e.to_string())
-        }
-        _ => Ok(Vec::new()),
-    };
-    artifact_text(a, bytes.as_deref().map_err(String::as_str), opts)
+    let bytes = artifact_read_path(a).map(|p| std::fs::read(p).map_err(|e| e.to_string()));
+    artifact_text(
+        a,
+        bytes.as_ref().map_or(Ok(&[][..]), |b| b.as_deref().map_err(String::as_str)),
+        opts,
+    )
 }
+
+/// The file an expanded card reads (35 §6.1): the blob for text-like kinds,
+/// the listing sidecar for an archive, nothing for pictures and downloads.
+pub(crate) fn artifact_read_path(a: &artifact::Artifact) -> Option<std::path::PathBuf> {
+    use artifact::Kind;
+    match a.kind {
+        Kind::Markdown | Kind::Text | Kind::Html | Kind::Csv | Kind::App | Kind::Mermaid => {
+            Some(a.path.clone())
+        }
+        Kind::Archive => Some(artifact::archive::sidecar(&a.path)),
+        Kind::Image | Kind::Svg | Kind::Pdf | Kind::File => None,
+    }
+}
+
+/// Rows of an expanded archive card.
+const ARCHIVE_ROWS: usize = 50;
 
 /// [`artifact_body`] over bytes already read (the search preview reads them
 /// off the UI thread); `Err` is why the file could not be read.
@@ -9446,6 +9482,33 @@ pub(crate) fn artifact_text(
                 }
                 if total > rows.len() {
                     out.push_str(&format!("\n\n… (+{} rows)", total - rows.len()));
+                }
+                out
+            }
+        },
+        // A `mermaid` fence: the assistant's fence hook draws it through
+        // `surface::mermaid_lines`, the plain code block when that declines.
+        Kind::Mermaid => match bytes {
+            Err(e) => unreadable(&e),
+            Ok(b) => fenced("mermaid", String::from_utf8_lossy(b).trim_end()),
+        },
+        Kind::Archive => match bytes
+            .map_err(str::to_owned)
+            .and_then(|b| serde_json::from_slice::<artifact::archive::ArchiveListing>(b).map_err(|e| e.to_string()))
+        {
+            Err(_) => format!("{} · no listing (archive unreadable) · {path}", bytes_label(a.bytes)),
+            Ok(l) => {
+                let mut out = format!(
+                    "{} files · {} unpacked · {} · {path}\n",
+                    l.total_entries,
+                    bytes_label(l.total_size),
+                    bytes_label(a.bytes)
+                );
+                for e in l.entries.iter().take(ARCHIVE_ROWS) {
+                    out.push_str(&format!("\n    {:>9}  {}", if e.is_dir { String::new() } else { bytes_label(e.size) }, e.path));
+                }
+                if l.total_entries > ARCHIVE_ROWS as u64 {
+                    out.push_str(&format!("\n\n… (+{} entries, o opens)", l.total_entries - ARCHIVE_ROWS as u64));
                 }
                 out
             }
@@ -12064,6 +12127,19 @@ mod tests {
                 "j1 idle 120s".to_owned(),
                 String::new()
             )])
+        );
+    }
+
+    /// 14 as-built: a fired reminder cards as `r3 reminder · after 10m` (` · late` when re-armed past due).
+    #[test]
+    fn injected_parses_reminder() {
+        assert_eq!(
+            injected("<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck the deploy\n</reminder>"),
+            Some(vec![(CardKind::Job, "r3 reminder · after 10m".to_owned(), "check the deploy".to_owned())])
+        );
+        assert_eq!(
+            injected("<reminder id=\"r1\" after=\"5400\" set_at=\"x\" late=\"true\">\n\n</reminder>"),
+            Some(vec![(CardKind::Job, "r1 reminder · after 1h30m · late".to_owned(), String::new())])
         );
     }
 

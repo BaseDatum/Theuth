@@ -87,5 +87,6 @@ export default defineConfig({
   optimizeDeps: { entries: ['index.html', 'src/**/*.{ts,tsx}'] },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: { target: 'safari17' },
-  test: { include: ['src/**/*.test.ts'] },
+  // The apps package's OpenUI deps go through Vite (not node's resolver) so `dedupe` gives them our React in tests too.
+  test: { include: ['src/**/*.test.ts'], server: { deps: { inline: [/packages\/apps\/node_modules/] } } },
 })

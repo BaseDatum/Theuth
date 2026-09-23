@@ -168,6 +168,13 @@ every tap applies at once. Unstyled projects and Ungrouped render a neutral
 `Folder` in `text-fg-tertiary`, so the glyph slot is constant; colours map to
 Tailwind text classes with a lighter dark-theme step.
 
+As built 2026-09-23 (`feature/icons`): the swatches are the ten mineral keys of 25 §2.4 (`ochre`,
+`carnelian`, `malachite`, `faience`, `lapis`, `nile`, `umber`, `slate`, `sand`, `plum`), rendered as
+`text-project-<key>` / `bg-project-<key>` — one class, the variable switches with the theme. `COLORS` in
+`project.rs` also keeps the ten old Tailwind keys so existing rows and old clients still validate;
+`LEGACY_COLORS` in `project-style.ts` maps them (red→carnelian, orange→ochre, amber→sand, green→malachite,
+teal→faience, blue→lapis, indigo→slate, violet/pink→plum, gray→umber). No migration.
+
 ## 4. Private ownership and access
 
 ### 4.1 Creation and one owner

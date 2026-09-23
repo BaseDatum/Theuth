@@ -32,6 +32,8 @@ describe("markdown round trip per block type", () => {
     ["numbered list", "1. one\n2. two", "1. one\n2. two"],
     ["check list", "- [ ] todo\n- [x] done", /\[ \] todo\n[*-] \[x\] done/],
     ["code block", "```rust\nfn main() {}\n```", "```rust\nfn main() {}\n```"],
+    ["mermaid code block keeps its info string", "```mermaid\nflowchart LR\n  A --> B\n```", "```mermaid\nflowchart LR\n  A --> B\n```"],
+    ["json-render code block keeps its info string", "```json-render\n{\"root\":\"a\"}\n```", "```json-render\n{\"root\":\"a\"}\n```"],
     ["table", "| a | b |\n| --- | --- |\n| 1 | 2 |", /\| a\s+\| b\s+\|\n\| -+ \| -+ \|\n\| 1\s+\| 2\s+\|/],
     ["quote", "> quoted", "> quoted"],
     ["divider", "para\n\n---\n\npara2", /para\n\n(\*\*\*|---)\n\npara2/],
@@ -49,6 +51,13 @@ describe("markdown round trip per block type", () => {
     const o = await doc("# T\n\npara\n\n- a\n\n1. b\n\n- [ ] c\n\n```js\nx\n```\n\n| a |\n| - |\n| 1 |\n\n> q\n\n---\n", false);
     const types = blocks(o).map((b) => b.type);
     expect(types).toEqual(["heading", "paragraph", "bulletListItem", "numberedListItem", "checkListItem", "codeBlock", "table", "quote", "divider"]);
+  });
+
+  test("a ```mermaid fence imports as codeBlock{language: mermaid}, not the default language", async () => {
+    const o = await doc("```mermaid\nflowchart LR\n  A --> B\n```", false);
+    const b = blocks(o)[0];
+    expect(b?.type).toBe("codeBlock");
+    expect(b?.props).toMatchObject({ language: "mermaid" });
   });
 });
 

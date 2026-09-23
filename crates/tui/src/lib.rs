@@ -910,16 +910,11 @@ async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Repl
                 Ok(a) => a,
                 Err(e) => return Reply::Artifact(Err(reason(e))),
             };
-            // Text-like kinds are read here, off the UI thread (49 §6.2).
-            let bytes = match artifact.kind {
-                artifact::Kind::Markdown
-                | artifact::Kind::Text
-                | artifact::Kind::Html
-                | artifact::Kind::Csv
-                | artifact::Kind::App => tokio::fs::read(&artifact.path)
-                    .await
-                    .map_err(|e| e.to_string()),
-                _ => Ok(Vec::new()),
+            // Text-like kinds (and an archive's listing sidecar) are read here,
+            // off the UI thread (49 §6.2).
+            let bytes = match model::artifact_read_path(&artifact) {
+                Some(p) => tokio::fs::read(p).await.map_err(|e| e.to_string()),
+                None => Ok(Vec::new()),
             };
             let matched = match query {
                 Some(q) => Some(api.artifact_search_match(call_id, q).await.map_err(reason)),

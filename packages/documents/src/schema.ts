@@ -52,12 +52,16 @@ const {
   ...keptBlockSpecs
 } = defaultBlockSpecs;
 
-/** Build the schema around a frontmatter spec whose config is {@link frontmatterConfig}. */
+/**
+ * Build the schema around a frontmatter spec whose config is {@link frontmatterConfig}. `codeBlock` may be
+ * substituted the same way (UI: languages table + diagram render), provided its config is the default's.
+ */
 export function createDocumentSchema(
   frontmatter: BlockSpec<"frontmatter", typeof frontmatterConfig.propSchema, "none">,
+  codeBlock: BlockSpec<"codeBlock", { language: { default: string } }, "plain"> = keptBlockSpecs.codeBlock,
 ) {
   return BlockNoteSchema.create({
-    blockSpecs: { ...keptBlockSpecs, frontmatter },
+    blockSpecs: { ...keptBlockSpecs, codeBlock, frontmatter },
     inlineContentSpecs: defaultInlineContentSpecs,
     styleSpecs: defaultStyleSpecs,
   });

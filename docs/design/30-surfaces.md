@@ -357,6 +357,27 @@ the whole point is that the user *sees* the picture.
 The desktop and TUI never wait for the correction: they render what they
 can from the first message immediately.
 
+**As built 2026-09-23 (`feature/surfaces-agent`).** Sky's ruling reverses "a
+visible correction is honest": the user never sees a diagram fail. Up to
+`surface.correct_rounds` (default 3) `<surface_error>` rounds per turn
+(`state.surface_rounds: u8` replaces `surface_corrected`), each naming only the
+fences that still fail — `Block {ordinal} ({json-render|mermaid|openui})` with
+located errors; the json-render catalog line only when a json-render block is
+among them, mermaid errors quote the offending line (`line 4: A --> B[`), openui
+errors carry the compact signatures of the components the block uses. When the
+last round is spent and a fence still fails, one more user-role note
+`<surface_error final="true">` tells the model to continue in prose and not
+mention the failure; that reply is not checked (`surface_rounds` runs to
+`correct_rounds + 1`). `mermaid` and `openui` fences are validated by the real
+parsers through the registry's `FenceChecker` hook (`tools::RegisterFenceChecker`
+/ `CheckFence`), registered by the app plugin: the `theuth-app-parser` helper
+gained a `check_mermaid` op (mermaid + jsdom, lazy, warmed at start, 15 s first
+deadline per child) and `openui` runs `Helper::check` plus a reject of
+`Query`/`Mutation`/`@ToAssistant` (a fence is static, §9). Checker missing,
+crashed or timed out → the fence counts as valid (one `warn` per session); at
+most 8 checker fences per reply, 32 KiB each. TUI (§7): a failing block is one
+dim `◌ diagram omitted` line, never `✗ invalid …` plus the source.
+
 ## 6. Prompting: show, don't tell
 
 ### 6.1 Placement
@@ -616,6 +637,20 @@ extra buttons, so the block was replaced rather than patched.
 - **Streaming**: every source change re-renders; a failed render keeps the
   last good svg and, once the fence is closed, shows the §8 error card
   (`Diagram unavailable · <mermaid parse error> · source`).
+
+**As-built 2026-09-23 — quiet failure, the `openui` fence.** `ErrorCard`
+(`surface/JsonRenderFence.tsx`) is `FenceFallback`, same export name for
+`Mermaid.tsx`: a closed mermaid/json-render/openui fence that fails never shows
+a red card. From `FenceContext` (set by `MessageAssistant`: `running`,
+`hasLaterAssistant`, `session`): a later reply before the next human message
+carries the fix → nothing; turn running → `animate-pulse` skeleton (`aria-busy`);
+the turn's last reply → `◌ diagram omitted · show source` (source in `<details>`,
+parser message as tooltip). `<surface_error …>` notes are `HIDDEN` in `lib/injected.ts`.
+```` ```openui ```` fences render inline via `surface/OpenUIFence.tsx`: `AppRenderer`
+(streaming while open) over a provider that rejects every call (`Open as app to run
+queries and actions`; `@ToAssistant` toasts the same); closed fences are `check`ed
+client-side. **Open as app** → `publish_app(session, name, source)`, `name` from the
+first `TextContent("## …")` else `reply-<id>`, then the record opens in the panel.
 
 ## 9. Text channels: Slack, Signal, `message_user`
 

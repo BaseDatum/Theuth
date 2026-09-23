@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @source "../node_modules/streamdown/dist/*.js";
 @source "../node_modules/@streamdown/code/dist/*.js";
+/* Project palette classes are built from keys at runtime (project-style.ts), so the scanner never sees them. */
+@source inline("{text,bg}-project-{ochre,carnelian,malachite,faience,lapis,nile,umber,slate,sand,plum}");
 
 @custom-variant dark (&:is(.dark *));
 
@@ -35,6 +37,17 @@
   --status-warning-border: #b4531e;
   --status-warning-fg: #8a3e16; /* ochre-dim: the palette has no separate warning hue */
   --sidebar: #f3eadf;
+  /* project icon palette (25 §2.4 as-built): mineral hues at ochre darkness, ≥3:1 on --sidebar */
+  --project-ochre: #b4531e;
+  --project-carnelian: #9b2d1f;
+  --project-malachite: #2f5d4a;
+  --project-faience: #3d6b66;
+  --project-lapis: #3c5a86;
+  --project-nile: #6b7a24;
+  --project-umber: #7a4a2a;
+  --project-slate: #566472;
+  --project-sand: #8a6f42;
+  --project-plum: #7d3f5c;
 }
 
 .dark {
@@ -66,6 +79,16 @@
   --status-warning-border: #c47a2c;
   --status-warning-fg: #c47a2c; /* gold-ochre */
   --sidebar: #1c1915;
+  --project-ochre: #c47a2c;
+  --project-carnelian: #c45a48;
+  --project-malachite: #4a8a6e;
+  --project-faience: #5b8f8a;
+  --project-lapis: #6f8fc0;
+  --project-nile: #98a145;
+  --project-umber: #b07a55;
+  --project-slate: #8a9aaa;
+  --project-sand: #b89a63;
+  --project-plum: #b0708f;
 }
 
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
@@ -147,6 +170,16 @@
   --color-warning: var(--status-warning-fg);
   --color-warning-bg: var(--status-warning-bg);
   --color-warning-border: var(--status-warning-border);
+  --color-project-ochre: var(--project-ochre);
+  --color-project-carnelian: var(--project-carnelian);
+  --color-project-malachite: var(--project-malachite);
+  --color-project-faience: var(--project-faience);
+  --color-project-lapis: var(--project-lapis);
+  --color-project-nile: var(--project-nile);
+  --color-project-umber: var(--project-umber);
+  --color-project-slate: var(--project-slate);
+  --color-project-sand: var(--project-sand);
+  --color-project-plum: var(--project-plum);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -383,9 +416,23 @@ html .bn-block-content[data-content-type="codeBlock"] {
   border-radius: 0.375rem;
 }
 html .bn-block-content[data-content-type="codeBlock"] > pre {
-  padding: 0.75rem;
+  /* Top band for the language select (hover-revealed, BlockNote's `top: 8px`). */
+  padding: 1.75rem 0.75rem 0.75rem;
   font-size: 14px;
   line-height: 20px;
+}
+/* CodeBlock.tsx: language select in our colours; diagram, source and parse note stack; a rendered diagram drops the code well. */
+html .bn-block-content[data-content-type="codeBlock"] {
+  flex-direction: column;
+}
+html .bn-block-content[data-content-type="codeBlock"] > div > select {
+  color: inherit;
+  left: 0.75rem;
+  font-size: 11px;
+}
+html .bn-block-content[data-content-type="codeBlock"]:has(> [data-diagram]) {
+  color: inherit;
+  background: transparent;
 }
 html .bn-editor [data-content-type="quote"] blockquote {
   color: var(--muted-foreground);
