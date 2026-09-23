@@ -95,6 +95,8 @@ pub enum Kind {
     /// A harness-managed command with a completion the model is owed
     /// (browser command, render, readiness wait). Static label only.
     Command(&'static str),
+    /// A reminder timer's lifetime (set → fire or cancel), by its `r<n>` id.
+    Reminder(String),
 }
 
 /// One admitted operation.
@@ -159,6 +161,23 @@ pub enum Settle {
         owner: SessionId,
         /// Names the operation; never carries payloads.
         failure: String,
+    },
+    /// A reminder timer fired: the message is owed to the model as a
+    /// `<reminder>` input (14 as-built 2026-09-23). Retired like
+    /// `FinishedWithResult` once the input is admitted.
+    Reminder {
+        /// The operation.
+        op: OperationId,
+        /// `r<n>`.
+        id: String,
+        /// What the model asked to hear.
+        message: String,
+        /// Unix seconds when it was set.
+        set_at: i64,
+        /// Requested delay.
+        seconds: u64,
+        /// Re-armed after a restart past its due time.
+        late: bool,
     },
 }
 
@@ -279,6 +298,13 @@ pub async fn admit(
 enum Outcome {
     Finished,
     Result(JobEvent),
+    Reminder {
+        id: String,
+        message: String,
+        set_at: i64,
+        seconds: u64,
+        late: bool,
+    },
     Unknown,
 }
 
@@ -302,6 +328,20 @@ impl Drop for Inner {
         match outcome {
             Outcome::Finished => sink.settle(Settle::Finished { op }),
             Outcome::Result(result) => sink.settle(Settle::FinishedWithResult { op, result }),
+            Outcome::Reminder {
+                id,
+                message,
+                set_at,
+                seconds,
+                late,
+            } => sink.settle(Settle::Reminder {
+                op,
+                id,
+                message,
+                set_at,
+                seconds,
+                late,
+            }),
             // Already reported; the blocker stays until its owner reconciles.
             Outcome::Unknown => {}
         }
@@ -408,6 +448,21 @@ impl Activity {
         let mut o = lock(&self.0.outcome);
         if !matches!(*o, Outcome::Unknown) {
             *o = Outcome::Result(result);
+        }
+    }
+
+    /// As [`Self::set_result`], for a fired reminder: the last clone settles
+    /// with [`Settle::Reminder`]. A prior [`Self::unknown`] wins.
+    pub fn set_reminder(&self, id: String, message: String, set_at: i64, seconds: u64, late: bool) {
+        let mut o = lock(&self.0.outcome);
+        if !matches!(*o, Outcome::Unknown) {
+            *o = Outcome::Reminder {
+                id,
+                message,
+                set_at,
+                seconds,
+                late,
+            };
         }
     }
 
@@ -535,6 +590,8 @@ pub(crate) mod test_sink {
         Result(OperationId),
         Unknown(OperationId, String),
         Idle(OperationId),
+        /// `(op, id, message, late)`.
+        Reminder(OperationId, String, String, bool),
     }
 
     #[derive(kameo::Actor)]
@@ -565,6 +622,13 @@ pub(crate) mod test_sink {
                 Settle::Finished { op } => Seen::Finished(op),
                 Settle::FinishedWithResult { op, .. } => Seen::Result(op),
                 Settle::Unknown { op, failure, .. } => Seen::Unknown(op, failure),
+                Settle::Reminder {
+                    op,
+                    id,
+                    message,
+                    late,
+                    ..
+                } => Seen::Reminder(op, id, message, late),
             };
             lock(&self.seen).push(seen);
         }

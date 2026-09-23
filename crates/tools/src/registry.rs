@@ -27,8 +27,8 @@ use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, schema,
-    shell,
+    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, reminder,
+    schema, shell,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -1519,7 +1519,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
     let shell = shell::ShellTool::new(jobs.clone(), cfg.login_path);
     let shells = shell.shells();
     let pty_idle = Arc::new(AtomicU64::new(cfg.pty_idle_secs));
-    let builtins: [DynTool; 14] = [
+    let builtins: [DynTool; 16] = [
         Arc::new(shell),
         Arc::new(pty::StartTool::new(
             jobs.clone(),
@@ -1532,7 +1532,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
         Arc::new(pty::ScreenTool(jobs.clone())),
         Arc::new(pty::WaitTool(jobs.clone())),
         Arc::new(jobs::JobsTool(jobs.clone())),
-        Arc::new(jobs::CancelJobTool(jobs)),
+        Arc::new(jobs::CancelJobTool(jobs.clone())),
+        Arc::new(reminder::RemindMeInTool {
+            jobs: jobs.clone(),
+            max_secs: cfg.reminder_max_secs,
+        }),
+        Arc::new(reminder::CancelReminderTool(jobs)),
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
         Arc::new(fs::ListDir),
