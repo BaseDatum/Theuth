@@ -126,9 +126,12 @@ export async function handle(req: Req): Promise<Res> {
   }
 }
 
-// `import.meta.main` is false inside a Bun-compiled executable on Windows (1.4.x) — the binary then read
-// stdin forever and `--version` printed nothing; a compiled binary is always the entrypoint (argv[1] is /$bunfs/…).
-const isMain = import.meta.main || Bun.main === import.meta.path || (process.argv[1] ?? "").includes("$bunfs");
+// `import.meta.main` is false on Windows in an executable compiled through the `Bun.build()` API (Bun 1.4.2;
+// the CLI `bun build --compile` says true) — the binary then read stdin forever and `--version` printed nothing.
+// A compiled binary is always the entrypoint: Bun.main equals import.meta.path up to slash direction
+// (`B:/~BUN/root/x` vs `B:\\~BUN\\root\\x`), and argv[1] carries the virtual root (`/$bunfs/` or `~BUN`).
+const slashes = (p: string) => p.replaceAll("\\", "/");
+const isMain = import.meta.main || slashes(Bun.main) === slashes(import.meta.path) || /\$bunfs|~BUN/.test(process.argv[1] ?? "");
 if (isMain) {
   const argv = process.argv.slice(2);
   if (argv.includes("--version") || argv.includes("-V")) {
