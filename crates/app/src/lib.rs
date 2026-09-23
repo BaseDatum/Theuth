@@ -13,6 +13,7 @@
 //! - [`skill`] (the bundled `apps` skill), [`HASH`] (library compatibility hash)
 
 pub mod actor;
+pub mod fence;
 pub mod helper;
 pub mod meta;
 pub mod sched;
@@ -25,7 +26,7 @@ use kameo::actor::Spawn;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
-pub use actor::{Apps, CallStatusOf, CallTool, CloseApp, GetApp};
+pub use actor::{Apps, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi};
 pub use tool::{AppArgs, AppTool, EXAMPLE, prompt};
 
 /// Registry name of the [`Apps`] actor.
@@ -333,7 +334,7 @@ impl runtime::Plugin for AppPlugin {
                 .await
             {
                 let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(AppTool { core })))
+                    .ask(tools::RegisterTool(Arc::new(AppTool { core: core.clone() })))
                     .await;
                 let _ = reg
                     .ask(tools::RegisterPrompt {
@@ -341,6 +342,17 @@ impl runtime::Plugin for AppPlugin {
                         text: prompt(),
                     })
                     .await;
+                for (lang, checker) in [
+                    ("mermaid", Arc::new(fence::Mermaid(core.clone())) as Arc<dyn tools::FenceChecker>),
+                    ("openui", Arc::new(fence::OpenUi(core))),
+                ] {
+                    let _ = reg
+                        .ask(tools::RegisterFenceChecker {
+                            lang: lang.into(),
+                            checker,
+                        })
+                        .await;
+                }
                 let _ = reg
                     .tell(tools::RegisterLifecycle {
                         owner: "app",
