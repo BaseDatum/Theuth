@@ -258,6 +258,8 @@ switch on it, never on the extension again.
 | `Svg` | svg | rasterised PNG | `<img>` of the SVG (text/svg is inert as an `<img>`) | as Image | page PNG |
 | `Pdf` | pdf | page-1 PNG when we compiled it; page count | native `<iframe>` viewer | `N pages` + path | page PNG (compiled only) |
 | `Html` | html, htm | none | sandboxed `<iframe sandbox srcdoc>` with a script-less CSP; images may load from the web (§9) | source fence | receipt |
+| `Archive` | zip, tar, tgz, tar.gz, tar.bz2, tbz2 (double suffixes checked first) | glyph | header (entries · unpacked · archive size, `truncated at 5,000`), path filter, folder tree (folders first; size, date), download | `name · N files · size` card; Ctrl+O lists the first 50 entries from the sidecar | receipt `42 files · 3 MB` — never the listing |
+| `Mermaid` | mmd, mermaid | first lines of the source | the ```` ```mermaid ```` fence block (`MermaidFence fill`): pan/zoom, fullscreen, Copy/Save PNG, Save SVG | a `mermaid` fence through `surface::fence` → `mermaid_lines`, the source block when it declines | receipt `mermaid · N lines` |
 | `File` | anything else | none | download / open only | path | receipt + the warning line |
 
 ### 3.3 The record, the actor, the event
@@ -473,7 +475,7 @@ want one.
 
 ```
 ## Hand over files, don't paste them
-`show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.
+`show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it; `.zip`/`.tar.gz` shows the archive with a browsable listing (build it with `tar`/`zip` in `shell` first). A diagram the user should keep or open on its own: `show{content, name: 'x.mmd'}`; a diagram that explains this reply: a ```mermaid fence in your text. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.
 ```
 
 Skill `pdf` (`crates/artifact/pdf.md`, written to `skills/pdf.md` on every
@@ -797,8 +799,10 @@ as the contract.
 - **Terminal graphics** for images in the TUI: 17 §6's decision stands.
 - **Artifact GC by age or size**: none; the user's deliverables. A
   `/artifacts` size line and a `rm` when the directory is noticed.
-- **`show` for directories / archives**: a `File` card with a download;
-  no listing.
+- ~~**`show` for directories / archives**: a `File` card with a download;
+  no listing.~~ As built 2026-09-23: archives are `Kind::Archive` with a
+  header-only listing (§3.2, §14.4); directories still need `tar`/`zip`
+  in `shell` first — no `pack` tool, no "open a member" RPC.
 
 ## 13. Amendments to `00-architecture.md`
 
@@ -979,3 +983,22 @@ the stub API / mock transport), ACP `ResourceLink` against an editor, a
 relay-linked phone, `source: typst`, `.html` artifacts, the 32 MiB cap
 live (unit only), a non-default data dir with the desktop `openPath`
 scope, §11 step 8's steering counts.
+
+### 14.4 Archive and Mermaid kinds (as-built, 2026-09-23)
+
+`Kind::Archive` (`"archive"`) and `Kind::Mermaid` (`"mermaid"`) join §3.2.
+An archive is listed at show time from headers only — `zip` (default
+features off: nothing is ever inflated) walks the central directory,
+`tar` streams entry headers through `flate2`/`bzip2` for `.gz`/`.bz2` —
+into `ArchiveListing { entries ≤ 5,000, total_entries, total_size,
+truncated }`, written as `<blob>.listing.json` beside the blob (same stem,
+so the sweep keeps it; the `Artifact` row stays small). A corrupt archive
+is still an `Archive` record without a sidecar: the viewer says so and
+offers the download. `get_artifact_listing(call_id)` serves the sidecar
+through `search::Get` (same liveness check as `get_artifact`). Search
+indexes the member paths one per line as `content` (a file name inside an
+archive is findable; `metadata_only` when there is no sidecar). `.tar.xz`
+stays `File`: no xz decoder in the lock. A `.mmd` artifact indexes as
+text and renders through the fence block on every surface; bare mermaid
+fences in replies are not promoted to artifacts. Prompt: one clause for
+`.zip`/`.tar.gz`, one telling keep-it diagrams from explain-it fences.
