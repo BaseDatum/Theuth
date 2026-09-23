@@ -43,6 +43,23 @@ pub fn show(win: &WebviewWindow) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The extended style word as the OS holds it, for the probe log.
+pub fn describe(win: &WebviewWindow) -> String {
+    match hwnd(win) {
+        // SAFETY: as in `init`.
+        Ok(h) => {
+            let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) };
+            format!(
+                "hwnd={h:?} ex_style={ex:#x} toolwindow={} noactivate={} topmost={}",
+                ex & WS_EX_TOOLWINDOW as isize != 0,
+                ex & WS_EX_NOACTIVATE as isize != 0,
+                ex & WS_EX_TOPMOST as isize != 0
+            )
+        }
+        Err(e) => format!("{e:#}"),
+    }
+}
+
 fn hwnd(win: &WebviewWindow) -> anyhow::Result<HWND> {
     match win.window_handle().context("island window handle")?.as_raw() {
         RawWindowHandle::Win32(h) => Ok(h.hwnd.get() as *mut c_void),

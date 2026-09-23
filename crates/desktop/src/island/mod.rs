@@ -82,7 +82,39 @@ mod generic {
         if super::island_capabilities().hide_from_share {
             set_hidden(app, true)?;
         }
+        if std::env::var_os("THEUTH_ISLAND_PROBE").is_some() {
+            probe(app);
+        }
         Ok(())
+    }
+
+    /// `THEUTH_ISLAND_PROBE=1`: no meeting recorder exists off macOS yet, so nothing would ever show
+    /// the island; this places and shows the empty strip at startup and logs what the OS gave us,
+    /// so a tester can see topmost / no taskbar entry / no focus steal / black in a screenshot.
+    fn probe(app: &AppHandle) {
+        let caps = super::island_capabilities();
+        tracing::info!(?caps, "island probe");
+        match app.available_monitors() {
+            Ok(ms) => {
+                for m in &ms {
+                    let wa = m.work_area();
+                    tracing::info!(name = ?m.name(), position = ?m.position(), size = ?m.size(),
+                        work_area = ?(wa.position, wa.size), scale = m.scale_factor(), "island probe: monitor");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "island probe: available_monitors"),
+        }
+        tracing::info!(cursor = ?app.cursor_position(), "island probe");
+        match island_place(app.clone(), HashMap::new()) {
+            Ok((x, y, key)) => tracing::info!(x, y, key, "island probe: placed"),
+            Err(e) => tracing::warn!(error = %e, "island probe: island_place"),
+        }
+        if let Err(e) = island_show(app.clone(), WIDTH, MIN_HEIGHT) {
+            tracing::warn!(error = %e, "island probe: island_show");
+        }
+        if let Ok(win) = island(app) {
+            tracing::info!(state = %backend::describe(&win), outer = ?win.outer_position(), "island probe: shown");
+        }
     }
 
     /// Both windows `set_content_protected(hidden)`; a no-op where the OS cannot (Linux). Every
@@ -160,10 +192,10 @@ mod generic {
                 // ponytail: one scale for the whole monitor; mixed-DPI drags across monitors save the
                 // position in the island's own scale, which is what the webview reads back anyway.
                 let px = wa.position.x as f64 + (wa.size.width as f64 - WIDTH * scale) / 2.0;
-                let py = wa.position.y as f64;
+                let py = wa.position.y;
                 win.set_position(PhysicalPosition::new(px.round() as i32, py))
                     .map_err(|e| e.to_string())?;
-                (px / scale, py as f64 / scale)
+                (px / scale, f64::from(py) / scale)
             }
         };
         Ok((x, y, key))

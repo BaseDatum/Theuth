@@ -21,3 +21,22 @@ pub fn init(win: &WebviewWindow) -> anyhow::Result<()> {
 pub fn show(win: &WebviewWindow) -> anyhow::Result<()> {
     win.show().context("island show")
 }
+
+/// Display server and what Tauri reports, for the probe log.
+pub fn describe(win: &WebviewWindow) -> String {
+    let server = if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var("GDK_BACKEND").ok().as_deref() != Some("x11")
+    {
+        "wayland"
+    } else if std::env::var_os("DISPLAY").is_some() {
+        "x11"
+    } else {
+        "none"
+    };
+    format!(
+        "server={server} visible={:?} always_on_top={:?} focused={:?}",
+        win.is_visible(),
+        win.is_always_on_top(),
+        win.is_focused()
+    )
+}
