@@ -171,6 +171,19 @@ one level up. Ubuntu: the `.so` into `~/.theuth/models/onnxruntime/plugins/` plu
 `~/.theuth/models/onnxruntime/plugins/libonnxruntime_providers_webgpu.dylib` (the models dir
 was otherwise not written).
 
+**Publishing** (`feature/release-models-fetch`, after this step): `scripts/release-models.sh` does
+the above for the bucket. `scripts/ort-version.env` pins `WEBGPU_EP_VERSION="0.4.0"` and the nupkg
+sha256 from the first table; the script caches the nupkg in `target/`, `unzip -p`s
+`runtimes/<rid>/native/*` for win-x64 (three DLLs), linux-x64 and linux-arm64 (`.so`), and publishes
+them as `onnxruntime/<triple>/plugins/<file>` with the manifest rows above (`path
+onnxruntime/plugins/<file>`, `platform`). No osx row — the Mac runtime has WebGPU built in (next
+section) — and no win-arm64 row: the nupkg carries it but we ship no `aarch64-pc-windows-msvc`
+build. The win-x64 runtime row is the GitHub `onnxruntime-win-x64-1.27.0.zip` (CPU build,
+`ORT_SHA256_WIN_X64`), member `lib/onnxruntime.dll` — not step 12's 1.24.4 DirectML nupkg. The
+sizes and sha256s the script computes from the downloaded nupkg were checked against both tables
+above (2026-09-23): identical. `DRY_RUN=1 ./scripts/release-models.sh` lists every fetch and `aws
+s3 cp` without doing them.
+
 `otool -L` of the osx-arm64 dylib: Metal, IOSurface, QuartzCore, Cocoa, CFNetwork and the C++
 runtime only — self-contained. Its exports include `onnx::` schema symbols with default visibility
 (and MLAS, sqlite3, zlib, KleidiAI); registering it in the bench process next to `ptts`
