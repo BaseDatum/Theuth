@@ -29,9 +29,11 @@ already; Tauri's updater asks for `<os>-<arch>` → `windows-x86_64`, `linux-x86
 Mac                                   remote host (~/theuth-build/)
 git archive <ref> ──tar──▶ <sha>/          fresh dir; <sha>/target → ../target (symlink | junction)
                           prerequisite check   exit 2 lists what is missing, installs nothing
-                          build               package-linux.sh + stage-linux.sh | package-windows.ps1
-dist/ ◀──scp── target/release/dist/theuth_<ver>_<os>-*
-                          rm <sha>/           (--keep leaves it; target/ always stays)
+                          start DETACHED       nohup setsid bash build.sh | Start-Process pwsh build.ps1
+                                               → build.log (+ build.err), build.pid, build.exit (last)
+poll every 20 s ◀──ssh──  new build.log lines + build.exit   (ssh drop → retry 5,10,20,40,60 s; build unaffected)
+dist/ ◀──scp── target/release/dist/theuth_<ver>_<os>-*       only when build.exit == 0
+                          rm <sha>/           (--keep leaves it; kept on failure; target/ always stays)
 ```
 
 1. **Ship.** `git archive --format=tar <ref>` of the exact commit — nothing is fetched from GitHub on
@@ -51,15 +53,42 @@ dist/ ◀──scp── target/release/dist/theuth_<ver>_<os>-*
    The same check now runs at the top of every `package-linux.sh` build. Windows: `cargo`, `pwsh`,
    `bun`, `tar` on PATH and `cargo tauri --version`; exit 2. `%USERPROFILE%\.cargo\bin` and `.bun\bin`
    are prepended because an sshd session may not carry the user PATH.
-4. **Build.** Linux: `THEUTH_SKIP_UPLOAD=1 scripts/package-linux.sh` (AppImage/deb/rpm), then
-   `THEUTH_LINUX_NATIVE=1 THEUTH_SKIP_UPLOAD=1 scripts/stage-linux.sh` (CLI tarball built on the host:
-   `cargo build --release -p theuth`, `build_helper`, `build_doc_helper`, same `target/linux-out/`
-   layout and tar entries as the Docker path). Windows: `pwsh -NoProfile -File
-   scripts\package-windows.ps1` with `THEUTH_SKIP_UPLOAD=1` in the environment.
-5. **Pull.** `scp 'host:theuth-build/target/release/dist/theuth_<ver>_<os>-*' <dist>/` (sftp-mode
-   glob), then name / size / sha256 of each, and exit 1 naming what is missing: windows
-   `-setup.exe` + `.zip`; linux `.AppImage` + `.deb` + `.rpm` + `.tar.gz`.
-6. **Clean.** Linux `rm -rf ~/theuth-build/<sha>` (the symlink is removed, not followed). Windows:
+4. **Start, detached.** The build never runs in the ssh session's foreground, so a dropped connection
+   (laptop lid, VPN blip, the local script killed) does not kill it. The commands are written to a file
+   in `<sha>/` and started in a new session; the exit code goes to `build.exit` last, after the log.
+   - Linux — `build.sh` = `rm -f target/release/dist/theuth_<ver>_*; THEUTH_SKIP_UPLOAD=1
+     scripts/package-linux.sh; THEUTH_LINUX_NATIVE=1 THEUTH_SKIP_UPLOAD=1 scripts/stage-linux.sh`
+     (CLI tarball built on the host: `cargo build --release -p theuth`, `build_helper`,
+     `build_doc_helper`, same `target/linux-out/` layout and tar entries as the Docker path); started as
+     `nohup setsid bash -c 'echo $$ >build.pid; bash build.sh; echo $? >build.exit' >build.log 2>&1
+     </dev/null &`. `setsid` (util-linux) detaches from the sshd session so its SIGHUP never arrives.
+   - Windows — `build.ps1` = `pwsh -NoProfile -File scripts\package-windows.ps1` with
+     `THEUTH_SKIP_UPLOAD=1`, then `$LASTEXITCODE` (1 if null) `> build.exit`; started with
+     `Start-Process pwsh -ArgumentList '-NoProfile','-File','build.ps1' -WorkingDirectory <sha>
+     -RedirectStandardOutput build.log -RedirectStandardError build.err -WindowStyle Hidden -PassThru`,
+     `.Id > build.pid`. **Not verified from the Mac** (no Windows here): the claim is that a
+     Start-Process child is not in the sshd session's job object and survives the session ending.
+     One-line proof on the real host (from the Mac):
+     `ssh <win> pwsh -NoProfile -Command "(Start-Process pwsh -ArgumentList '-NoProfile','-Command','Start-Sleep 300' -WindowStyle Hidden -PassThru).Id"`
+     → note the pid; the ssh returns immediately; then
+     `ssh <win> pwsh -NoProfile -Command "Get-Process -Id <pid>"` → still listed = survives. If it is
+     not, the fallback is `schtasks /create … /sc once` or `Register-ScheduledJob` in `WIN_START`
+     (task scheduler children are never in the session job).
+5. **Poll.** Every `THEUTH_REMOTE_POLL` s (default 20) one ssh prints the log lines after the ones
+   already shown (line count kept locally: Linux `tail -n +<shown+1> build.log`, Windows
+   `Get-Content build.log | Select-Object -Skip <shown>`) and `__EXIT__=<build.exit or empty>`. Only
+   complete lines are printed and counted, so a half-written line appears whole later instead of cut.
+   An ssh failure (or output without the marker) is retried after 5, 10, 20, 40, 60, 60 … s; the build
+   keeps running. `build.exit != 0` → the last 60 lines of `build.log` (and `build.err` on Windows),
+   exit with that code, remote dir kept.
+   - `--no-wait` stops after the start and prints the attach command.
+   - `--resume` (same host/os/`--ref`) skips ship/check/start and polls `theuth-build/<short sha>` —
+     the dir name is deterministic, so a killed local script just reruns with `--resume`.
+   - `--attach <dir>` is `--resume` for an explicit remote dir (relative to the remote home).
+6. **Pull.** Only after `build.exit == 0`: `scp 'host:theuth-build/target/release/dist/theuth_<ver>_<os>-*'
+   <dist>/` (sftp-mode glob), then name / size / sha256 of each, and exit 1 naming what is missing:
+   windows `-setup.exe` + `.zip`; linux `.AppImage` + `.deb` + `.rpm` + `.tar.gz`.
+7. **Clean.** Linux `rm -rf ~/theuth-build/<sha>` (the symlink is removed, not followed). Windows:
    `cmd /c rmdir <sha>\target` first (a junction removed as a link), then `Remove-Item -Recurse`.
 
 Windows commands are sent as `pwsh -NoProfile -NonInteractive -EncodedCommand <base64 UTF-16LE>`, so
@@ -68,7 +97,12 @@ powershell.exe). `$PSNativeCommandUseErrorActionPreference = $false` and explici
 checks, because that default flipped between PowerShell 7.3 and 7.4.
 
 `THEUTH_REMOTE_DRY_RUN=1` prints every ssh/scp command and the full remote scripts (decoded) and runs
-nothing. `just build-remote <host> <os> [--ref …] [--dist …] [--keep]`.
+nothing. `just build-remote <host> <os> [--ref …] [--dist …] [--keep] [--no-wait] [--resume] [--attach <dir>]`.
+
+The poll loop was exercised on the Mac with `ssh`/`scp`/`setsid` shims that run the "remote" commands
+locally (`/tmp/enh-2026-09-22/polltest.sh`): a detached fake `build.sh` writing lines and a partial
+line, two injected ssh failures (backoff 5 s, 10 s printed), no repeated lines, `build.exit = 0` →
+pull of four fake artifacts; then `build.exit = 3` → last-60-lines dump and exit 3.
 
 ## release-s3.sh changes
 
@@ -114,23 +148,26 @@ driver surfaces its exit code and output verbatim.
 On the Mac (this worktree, `export PATH="$(dirname "$(rustup which cargo)"):$PATH"`):
 
 ```
-THEUTH_REMOTE_DRY_RUN=1 scripts/build-remote.sh <user>@<win-host> windows        # prints the 4 pwsh scripts + scp
-THEUTH_REMOTE_DRY_RUN=1 scripts/build-remote.sh <user>@<linux-host> linux        # prints the tar|ssh pipe + 2 bash scripts
-scripts/build-remote.sh <user>@<linux-host> linux          # real: expect [4/5] to list 4 files, exit 0
-scripts/build-remote.sh <user>@<win-host> windows          # real: expect [4/5] to list 2 files, exit 0
+THEUTH_REMOTE_DRY_RUN=1 scripts/build-remote.sh <user>@<win-host> windows        # prints extract/check/start pwsh scripts, the poll script, scp
+THEUTH_REMOTE_DRY_RUN=1 scripts/build-remote.sh <user>@<linux-host> linux        # prints the tar|ssh pipe, check + start scripts, the poll ssh
+scripts/build-remote.sh <user>@<linux-host> linux          # real: [4/6] streams build.log, [5/6] lists 4 files, exit 0
+scripts/build-remote.sh <user>@<win-host> windows          # real: same, 2 files
+# dropped-connection drill: start with --no-wait, then --resume (or kill the polling script mid-build and rerun with --resume)
+scripts/build-remote.sh <user>@<linux-host> linux --no-wait && scripts/build-remote.sh <user>@<linux-host> linux --resume
 ls -l target/release/dist/theuth_*_{windows,linux}-*
 ```
 
-Expected on first run against a bare host: step `[2/5]` exits 2 and prints the missing packages/tools
+Expected on first run against a bare host: step `[2/6]` exits 2 and prints the missing packages/tools
 (Linux: `error: missing on <host>: …` + `apt install: …`; Windows: `error: missing on <COMPUTERNAME>: …`).
-Nothing is installed by the driver. `--keep` leaves `~/theuth-build/<sha>/` for inspection.
+Nothing is installed by the driver. `--keep` leaves `~/theuth-build/<sha>/` for inspection; a failed
+build always leaves it (`build.log`, `build.sh`/`build.ps1`, `build.exit`).
 
 On the Ubuntu host directly (what the driver runs, for a hands-on repro):
 
 ```
 cd ~/theuth-build/<sha> && scripts/package-linux.sh --check
-THEUTH_SKIP_UPLOAD=1 scripts/package-linux.sh
-THEUTH_LINUX_NATIVE=1 THEUTH_SKIP_UPLOAD=1 scripts/stage-linux.sh
+bash build.sh                                            # what the detached job runs (build.sh is written by the driver)
+cat build.exit; tail build.log                           # after a driver-started build
 ls -l target/release/dist/                               # via the symlink → ~/theuth-build/target/release/dist/
 tar -tzf target/release/dist/theuth_<ver>_linux-x86_64.tar.gz   # t, theuth-app-parser-<hash>, theuth-documents-<ver>
 dpkg-deb -c target/release/dist/theuth_<ver>_linux-x86_64.deb | grep usr/bin/
@@ -152,10 +189,13 @@ THEUTH_S3_DRY_RUN=1 THEUTH_SKIP_LINUX_SMOKE=1 scripts/release-s3.sh   # gates 6/
 
 ## Not done / open
 
-- Real Windows/Linux runs: not possible from the Mac; dry runs and a fake-dist `release-s3.sh` run
-  are in `/tmp/enh-2026-09-22/build-remote-report.md`.
+- Real Windows/Linux runs: not possible from the Mac; dry runs, the shimmed poll-loop run and a
+  fake-dist `release-s3.sh` run are in `/tmp/enh-2026-09-22/build-remote-report.md`.
+- Start-Process survival of the sshd session on Windows: unverified here; proof command in step 4.
 - `scp` in sftp mode is assumed (OpenSSH ≥ 9.0 on the Mac, sftp subsystem on Windows OpenSSH —
-  both defaults). If a host runs a legacy scp-only server, the `[4/5]` glob still works because the
+  both defaults). If a host runs a legacy scp-only server, the `[5/6]` glob still works because the
   legacy protocol expands it remotely.
+- `--resume` without `--ref` derives the dir from the current `HEAD`; after new local commits pass
+  `--ref <sha>` or `--attach theuth-build/<short sha>`.
 - `release-s3.sh` summary still prints `${#UPLOADS[@]}` on the resume path (pre-existing; unset there).
 - The Homebrew tap templates are untouched: Windows/Linux desktop artifacts are not tap objects.

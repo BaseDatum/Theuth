@@ -112,7 +112,9 @@ package-linux:
     ./scripts/package-linux.sh
 
 # Build the Windows or Linux release on a remote ssh host and pull theuth_<ver>_* into target/release/dist
-# (scripts/build-remote.sh; THEUTH_REMOTE_DRY_RUN=1 prints the ssh/scp commands). Release order:
+# (scripts/build-remote.sh). The build runs detached on the host and is polled, so a dropped ssh does not
+# kill it: `--no-wait` starts and returns, `--resume` re-attaches (dir = theuth-build/<short sha>);
+# THEUTH_REMOTE_DRY_RUN=1 prints the ssh/scp commands. Release order:
 #   just build-remote <win-host> windows      → theuth_<ver>_windows-x86_64-setup.exe + theuth_<ver>_windows-x86_64.zip
 #   just build-remote <linux-host> linux      → theuth_<ver>_linux-x86_64.{AppImage,deb,rpm,tar.gz}
 #   just package-macos → just notarize-macos → just package-update-macos → just release
