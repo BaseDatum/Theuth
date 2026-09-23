@@ -13,14 +13,25 @@ use crate::spec::{
     AlertType, BadgeVariant, Component, Direction, Gap, MetricProps, TextVariant, TimelineState,
     Trend,
 };
-use crate::{Spec, mermaid_lines, parse};
+use crate::{Spec, graph, mermaid_lines, parse};
 
 /// Render a spec to lines at `width` columns (0 = unbounded); `None` if any line would be
 /// wider than `width`, so the caller falls back to the source block.
 pub fn spec_lines(spec: &Spec, width: usize) -> Option<Vec<Line>> {
-    let lines = element(spec, &spec.root, width);
+    lines(spec, width, false)
+}
+
+/// [`spec_lines`] for text channels (65 §3.3): a `Graph` is always its adjacency list, never
+/// the ASCII drawing (box drawing survives, a 40-node picture does not fit a phone).
+pub(crate) fn spec_lines_text(spec: &Spec, width: usize) -> Option<Vec<Line>> {
+    lines(spec, width, true)
+}
+
+fn lines(spec: &Spec, width: usize, text_only: bool) -> Option<Vec<Line>> {
+    let lines = element(spec, &spec.root, width, text_only);
     (width == 0 || lines.iter().all(|l| line_width(l) <= width)).then_some(lines)
 }
+
 
 /// The `markdown` fence hook: `mermaid` and `json-render` fences become their rendering;
 /// a fence that cannot fit `width` or a Mermaid type the renderer does not draw returns
@@ -92,7 +103,7 @@ pub(crate) fn plain_text(lines: &[Line]) -> String {
     out
 }
 
-const PLAIN: Style = Style {
+pub(crate) const PLAIN: Style = Style {
     bold: false,
     italic: false,
     strike: false,
@@ -101,8 +112,8 @@ const PLAIN: Style = Style {
     heading: 0,
     link: None,
 };
-const DIM: Style = Style { dim: true, ..PLAIN };
-const BOLD: Style = Style {
+pub(crate) const DIM: Style = Style { dim: true, ..PLAIN };
+pub(crate) const BOLD: Style = Style {
     bold: true,
     ..PLAIN
 };
@@ -111,7 +122,7 @@ const CODE: Style = Style {
     ..PLAIN
 };
 
-fn span(text: impl Into<String>, style: Style) -> Span {
+pub(crate) fn span(text: impl Into<String>, style: Style) -> Span {
     Span {
         text: text.into(),
         style,
@@ -297,13 +308,17 @@ fn metric(p: &MetricProps) -> Vec<Line> {
 /// Bar length when `width` is unbounded.
 const BAR_UNBOUNDED: usize = 20;
 
-/// One element and its subtree at `width`.
-fn element(spec: &Spec, id: &str, width: usize) -> Vec<Line> {
+/// One element and its subtree at `width`; `text_only` picks the text form of a `Graph`.
+fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
     let Some(el) = spec.elements.get(id) else {
         return Vec::new();
     };
-    let kids =
-        |w: usize| -> Vec<Vec<Line>> { el.children.iter().map(|c| element(spec, c, w)).collect() };
+    let kids = |w: usize| -> Vec<Vec<Line>> {
+        el.children
+            .iter()
+            .map(|c| element(spec, c, w, text_only))
+            .collect()
+    };
     match &el.component {
         Component::Card(p) => {
             let inner_w = sub(width, 4);
@@ -548,6 +563,13 @@ fn element(spec: &Spec, id: &str, width: usize) -> Vec<Line> {
         }
         Component::Tabs(p) => sections(&p.labels, kids(sub(width, 2))),
         Component::Accordion(p) => sections(&p.titles, kids(sub(width, 2))),
+        // 65 §3.3: merman's ASCII drawing when it parses and fits; the adjacency list otherwise.
+        Component::Graph(p) => {
+            if !text_only && let Ok(Some(lines)) = mermaid_lines(&graph::to_mermaid(p), width) {
+                return lines;
+            }
+            graph::adjacency_lines(p, width)
+        }
     }
 }
 
@@ -678,6 +700,24 @@ mod tests {
         );
         assert_eq!(flatten(&text, 60), want);
         assert_eq!(flatten("no fences\n", 60), "no fences\n");
+    }
+
+    /// 65 §3.3: the TUI gets merman's drawing at 100 columns and the adjacency list at 40; text
+    /// channels always get the list.
+    #[test]
+    fn graph_draws_wide_lists_narrow_and_flattens_to_the_list() {
+        const GRAPH: &str = include_str!("../fixtures/json-render/graph-architecture.json");
+        let s = spec(GRAPH);
+        let wide = spec_lines(&s, 100).expect("fits 100");
+        assert!(
+            wide.iter().flatten().any(|sp| sp.style.dim && sp.text.contains('─')),
+            "box drawing at 100:\n{}",
+            plain_text(&wide)
+        );
+        let narrow = spec_lines(&s, 40).expect("list fits 40");
+        assert!(plain_text(&narrow).starts_with("Edge\n  • Browser → API (HTTPS), CDN\n"), "{}", plain_text(&narrow));
+        let flat = flatten(&format!("```json-render\n{GRAPH}```\n"), 100);
+        assert!(flat.starts_with("```\nEdge\n  • Browser"), "{flat}");
     }
 
     #[test]

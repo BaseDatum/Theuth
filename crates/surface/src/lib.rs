@@ -13,6 +13,7 @@
 mod catalog;
 mod fences;
 mod flatten;
+mod graph;
 mod mermaid;
 pub mod prompt;
 mod render;
@@ -38,6 +39,14 @@ pub const MAX_ELEMENTS: usize = 256;
 pub const MAX_DEPTH: usize = 32;
 /// Largest Mermaid source the renderer accepts, in bytes.
 pub const MAX_MERMAID_BYTES: usize = 128 * 1024;
+/// Most nodes in one `Graph`.
+pub const MAX_GRAPH_NODES: usize = 120;
+/// Most edges in one `Graph`.
+pub const MAX_GRAPH_EDGES: usize = 240;
+/// Most groups in one `Graph`.
+pub const MAX_GRAPH_GROUPS: usize = 12;
+/// Longest `Graph` node, edge or group label, in characters.
+pub const MAX_GRAPH_LABEL_CHARS: usize = 80;
 
 /// One located validation failure; `path` is a JSON Pointer into the fence body
 /// (`""` = the whole body, `"/"` = the element graph as a whole).
@@ -164,7 +173,7 @@ mod tests {
         };
     }
 
-    const VALID: [(&str, &str); 12] = [
+    const VALID: [(&str, &str); 15] = [
         fixture!("valid-release-readiness"),
         fixture!("valid-status-board"),
         fixture!("valid-stack-text"),
@@ -177,6 +186,9 @@ mod tests {
         fixture!("valid-tabs"),
         fixture!("valid-accordion"),
         fixture!("valid-bare"),
+        fixture!("graph-architecture"),
+        fixture!("graph-dependency-lr"),
+        fixture!("graph-pipeline-tb"),
     ];
 
     const REPAIRABLE: [(&str, &str); 4] = [
@@ -188,13 +200,25 @@ mod tests {
 
     const TRUNCATED: (&str, &str) = fixture!("broken-truncated");
 
-    const LOCATED: [((&str, &str), &str); 4] = [
+    const LOCATED: [((&str, &str), &str); 7] = [
         (fixture!("broken-unknown-type"), "/elements/t/type"),
         (fixture!("broken-missing-child"), "/elements/r/children/1"),
         (fixture!("broken-shared-child"), "/"),
         (
             fixture!("broken-prop-type"),
             "/elements/m/props/items/0/value",
+        ),
+        (
+            fixture!("graph-broken-unknown-endpoint"),
+            "/elements/g/props/edges/1/to",
+        ),
+        (
+            fixture!("graph-broken-dup-id"),
+            "/elements/g/props/nodes/2/id",
+        ),
+        (
+            fixture!("graph-broken-dup-id"),
+            "/elements/g/props/nodes/2/group",
         ),
     ];
 

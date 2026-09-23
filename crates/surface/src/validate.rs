@@ -5,8 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 
 use crate::catalog::catalog;
-use crate::spec::{Component, Element, Spec};
-use crate::{MAX_DEPTH, MAX_ELEMENTS, SpecError};
+use crate::spec::{Component, Element, GraphProps, Spec};
+use crate::{
+    MAX_DEPTH, MAX_ELEMENTS, MAX_GRAPH_EDGES, MAX_GRAPH_GROUPS, MAX_GRAPH_LABEL_CHARS,
+    MAX_GRAPH_NODES, SpecError,
+};
 
 /// Components whose `children` may be non-empty.
 pub(crate) const CONTAINERS: [&str; 5] = ["Card", "Stack", "Grid", "Tabs", "Accordion"];
@@ -186,6 +189,7 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
                     format!("{} titles, {n_children} children", a.titles.len()),
                 ));
             }
+            Component::Graph(g) => graph(g, &format!("{p}/props"), &mut errs),
             _ => {}
         }
         elements.insert(
@@ -229,6 +233,80 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
             elements,
         }),
         _ => Err(errs),
+    }
+}
+
+/// `Graph` checks serde cannot express (65 §3.2): unique node and group ids, edge endpoints and
+/// node groups that exist, the caps and the label length. Self-loops are fine.
+fn graph(g: &GraphProps, p: &str, errs: &mut Vec<SpecError>) {
+    let label = |path: String, text: &str, errs: &mut Vec<SpecError>| {
+        let n = text.chars().count();
+        if n > MAX_GRAPH_LABEL_CHARS {
+            errs.push(err(
+                &path,
+                format!("{n} characters, limit {MAX_GRAPH_LABEL_CHARS}"),
+            ));
+        }
+    };
+    if g.nodes.len() > MAX_GRAPH_NODES {
+        errs.push(err(
+            &format!("{p}/nodes"),
+            format!("{} nodes, limit {MAX_GRAPH_NODES}", g.nodes.len()),
+        ));
+    }
+    if g.edges.len() > MAX_GRAPH_EDGES {
+        errs.push(err(
+            &format!("{p}/edges"),
+            format!("{} edges, limit {MAX_GRAPH_EDGES}", g.edges.len()),
+        ));
+    }
+    let groups = g.groups.as_deref().unwrap_or_default();
+    if groups.len() > MAX_GRAPH_GROUPS {
+        errs.push(err(
+            &format!("{p}/groups"),
+            format!("{} groups, limit {MAX_GRAPH_GROUPS}", groups.len()),
+        ));
+    }
+    let mut group_ids = BTreeSet::new();
+    for (i, grp) in groups.iter().enumerate() {
+        if !group_ids.insert(grp.id.as_str()) {
+            errs.push(err(
+                &format!("{p}/groups/{i}/id"),
+                format!("duplicate group id {:?}", grp.id),
+            ));
+        }
+        label(format!("{p}/groups/{i}/label"), &grp.label, errs);
+    }
+    let mut node_ids = BTreeSet::new();
+    for (i, n) in g.nodes.iter().enumerate() {
+        if !node_ids.insert(n.id.as_str()) {
+            errs.push(err(
+                &format!("{p}/nodes/{i}/id"),
+                format!("duplicate node id {:?}", n.id),
+            ));
+        }
+        if let Some(grp) = &n.group
+            && !group_ids.contains(grp.as_str())
+        {
+            errs.push(err(
+                &format!("{p}/nodes/{i}/group"),
+                format!("unknown group {grp:?}"),
+            ));
+        }
+        label(format!("{p}/nodes/{i}/label"), &n.label, errs);
+    }
+    for (i, e) in g.edges.iter().enumerate() {
+        for (end, id) in [("from", &e.from), ("to", &e.to)] {
+            if !node_ids.contains(id.as_str()) {
+                errs.push(err(
+                    &format!("{p}/edges/{i}/{end}"),
+                    format!("unknown node {id:?}"),
+                ));
+            }
+        }
+        if let Some(l) = &e.label {
+            label(format!("{p}/edges/{i}/label"), l, errs);
+        }
     }
 }
 
@@ -543,5 +621,42 @@ mod tests {
                 .message
                 .contains("byte limit")
         );
+    }
+
+    #[test]
+    fn graph_caps_and_labels() {
+        let nodes: Vec<Value> = (0..=MAX_GRAPH_NODES)
+            .map(|i| json!({ "id": format!("n{i}"), "label": "x" }))
+            .collect();
+        let body = json!({ "root": "g", "elements": { "g": { "type": "Graph", "props": { "nodes": nodes, "edges": [] } } } });
+        let errs = errors(&body.to_string());
+        assert_eq!(
+            errs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [format!(
+                "/elements/g/props/nodes: {} nodes, limit {MAX_GRAPH_NODES}",
+                MAX_GRAPH_NODES + 1
+            )]
+        );
+        let long = "x".repeat(MAX_GRAPH_LABEL_CHARS + 1);
+        let body = json!({ "root": "g", "elements": { "g": { "type": "Graph", "props": {
+            "groups": [{ "id": "a", "label": "A" }, { "id": "a", "label": long }],
+            "nodes": [{ "id": "n", "label": long, "group": "a" }, { "id": "m", "label": "ok" }],
+            "edges": [{ "from": "n", "to": "n", "label": long }, { "from": "zz", "to": "m" }]
+        } } } });
+        let mut got = paths(&body.to_string());
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "/elements/g/props/edges/0/label",
+                "/elements/g/props/edges/1/from",
+                "/elements/g/props/groups/1/id",
+                "/elements/g/props/groups/1/label",
+                "/elements/g/props/nodes/0/label",
+            ]
+        );
+        let errs = errors(&body.to_string());
+        assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/edges/1/from: unknown node \"zz\""), "{errs:?}");
+        assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/nodes/0/label: 81 characters, limit 80"), "{errs:?}");
     }
 }

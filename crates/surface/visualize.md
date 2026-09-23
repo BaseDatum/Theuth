@@ -12,7 +12,7 @@ When the thing you are explaining has a shape, give it the shape.
 
 | The answer is… | Draw | Not |
 |---|---|---|
-| components and what talks to what | `flowchart LR` (TD if it is a hierarchy) | a bullet list of arrows |
+| components and what talks to what; dependencies; data flow; a pipeline | `json-render` `Graph` (`direction: "TB"` for a hierarchy) | a bullet list of arrows, or a mermaid flowchart |
 | a request/response order across parties | `sequenceDiagram` | numbered prose steps |
 | a lifecycle, modes, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
 | data model / relationships | `erDiagram` or `classDiagram` | field lists |
@@ -20,6 +20,10 @@ When the thing you are explaining has a shape, give it the shape.
 | where a job/rollout/checklist stands | `Checklist`, `Timeline`, `Progress` | "we have done A and B; C is pending" |
 | numbers that matter | `MetricGrid` or `Bars` | numbers buried in sentences |
 | a plan with phases | `Timeline` (state per item) | headers + bullets |
+
+Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
+json-render block; it draws on every surface and an app can highlight it. Mermaid stays for
+sequence, state, class and ER diagrams, and for anything that needs mermaid's own syntax.
 
 Do not draw: one fact; two items; code or commands; anything the user will
 copy; a diagram of the diagram you are about to show. Never describe the
@@ -39,6 +43,7 @@ picture in prose — one sentence of takeaway above it, then the block.
 - Only `Card`, `Stack`, `Grid`, `Tabs` and `Accordion` take `children`; `Tabs.labels` and `Accordion.titles` have one entry per child.
 - Strict JSON: double quotes, no trailing commas, no comments, no `True`/`None`.
 - Prefer flat: a `Card` with a `Table` beats nested `Stack`s. ≤ 256 elements.
+- `Graph`: every `edges[].from`/`to` and `nodes[].group` names an existing `nodes[].id` / `groups[].id`; ids unique; ≤ 120 nodes, ≤ 240 edges, ≤ 12 groups; labels ≤ 80 characters. `from == to` is a self-loop.
 
 ## Catalog
 <!-- generated from crates/surface: names, props, one example each -->
@@ -49,12 +54,24 @@ Each entry is one element of `elements`; `?` marks an optional prop.
 ## Worked examples
 ### Architecture answer
 Takeaway sentence, then:
-```mermaid
-flowchart LR
-  TUI -- "UserInput" --> Agent
-  Desktop -- "ws RPC" --> RPC --> Agent
-  Agent --> Tools
-  Agent --> Store[(sessions.sqlite)]
+```json-render
+{ "root": "g", "elements": {
+  "g": {"type":"Graph","props":{
+    "direction":"LR",
+    "groups":[{"id":"clients","label":"Clients"},{"id":"core","label":"Core"}],
+    "nodes":[
+      {"id":"tui","label":"TUI","kind":"actor","group":"clients"},
+      {"id":"desktop","label":"Desktop","kind":"actor","group":"clients"},
+      {"id":"rpc","label":"RPC","kind":"rounded","group":"core"},
+      {"id":"agent","label":"Agent","group":"core","state":"active"},
+      {"id":"tools","label":"Tools","group":"core"},
+      {"id":"store","label":"sessions.sqlite","kind":"cylinder"}],
+    "edges":[
+      {"from":"tui","to":"agent","label":"UserInput"},
+      {"from":"desktop","to":"rpc","label":"ws RPC"},
+      {"from":"rpc","to":"agent"},
+      {"from":"agent","to":"tools"},
+      {"from":"agent","to":"store","style":"dashed"}]}} } }
 ```
 ### Status board
 ```json-render

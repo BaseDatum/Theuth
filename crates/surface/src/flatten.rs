@@ -1,8 +1,8 @@
 //! Text-only channels (design doc 30 §9): rendered fences inside plain code blocks.
 
 use crate::fences::fences;
-use crate::render::plain_text;
-use crate::{parse, spec_lines};
+use crate::parse;
+use crate::render::{plain_text, spec_lines_text};
 
 /// Replace every closed `json-render` fence that parses and fits `width` with its
 /// rendering inside a plain ```` ``` ```` block; everything else — prose, Mermaid fences,
@@ -14,7 +14,7 @@ pub fn flatten(text: &str, width: usize) -> String {
         let Ok(parsed) = parse(f.body) else {
             continue;
         };
-        let Some(lines) = spec_lines(&parsed.spec, width) else {
+        let Some(lines) = spec_lines_text(&parsed.spec, width) else {
             continue;
         };
         out.push_str(&text[pos..f.range.start]);

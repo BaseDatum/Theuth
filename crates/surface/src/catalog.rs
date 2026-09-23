@@ -110,8 +110,8 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's eighteen names, in catalog order.
-    const NAMES: [&str; 18] = [
+    /// The contract's nineteen names, in catalog order.
+    const NAMES: [&str; 19] = [
         "Card",
         "Stack",
         "Grid",
@@ -130,6 +130,7 @@ mod tests {
         "Checklist",
         "Tabs",
         "Accordion",
+        "Graph",
     ];
 
     #[test]
@@ -147,7 +148,7 @@ mod tests {
     fn compact_lists_every_component_with_props() {
         let compact = catalog_compact();
         let parts: Vec<&str> = compact.split(" · ").collect();
-        assert_eq!(parts.len(), 18, "{compact}");
+        assert_eq!(parts.len(), 19, "{compact}");
         assert!(compact.starts_with("Card(description?, title?) · Stack(direction?, gap?) · Grid(columns) · Separator() · Heading(text, level?)"), "{compact}");
         assert!(
             compact.contains("KeyValueList(items[{key, value}])"),
@@ -159,7 +160,7 @@ mod tests {
         );
         assert!(compact.contains("Table(columns, rows)"), "{compact}");
         assert!(
-            compact.ends_with("Tabs(labels) · Accordion(titles)"),
+            compact.ends_with("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?)"),
             "{compact}"
         );
     }
