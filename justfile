@@ -111,6 +111,11 @@ stage-linux:
 package-linux:
     ./scripts/package-linux.sh
 
+# Windows desktop installer (unsigned NSIS, per-user, onnxruntime.dll bundled) + CLI zip → target/release/dist
+# (scripts/package-windows.ps1). Native only: run on the Windows box (pwsh 7, rustup MSVC, cargo-tauri, bun).
+package-windows:
+    pwsh -NoProfile -File scripts/package-windows.ps1
+
 # Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs THEUTH_S3_*/THEUTH_UPDATE_KEY in .env.signing.
 release-s3:
     ./scripts/release-s3.sh
