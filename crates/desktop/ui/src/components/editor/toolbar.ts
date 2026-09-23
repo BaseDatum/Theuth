@@ -24,7 +24,7 @@ export function nextVisibility(v: Visibility, ev: 'focus' | 'blur' | 'elapsed'):
 export const toolbarVisible = (v: Visibility, readonly: boolean, sheetOpen: boolean): boolean =>
   !readonly && (v !== 'hidden' || sheetOpen)
 
-/** The "Aa" picker's chips in §10 order; `props` is what `updateBlock` needs beside `type`. */
+/** The "Aa" picker's chips in §10 order; `props` is what `updateBlock` needs beside `type`. Diagram = `codeBlock` + `language`. */
 export const BLOCK_TYPES = [
   { key: 'paragraph', label: 'Text', type: 'paragraph' },
   { key: 'h1', label: 'Heading 1', type: 'heading', props: { level: 1 } },
@@ -35,15 +35,21 @@ export const BLOCK_TYPES = [
   { key: 'check', label: 'Checklist', type: 'checkListItem' },
   { key: 'quote', label: 'Quote', type: 'quote' },
   { key: 'code', label: 'Code', type: 'codeBlock' },
+  { key: 'diagram', label: 'Diagram', type: 'codeBlock', props: { language: 'mermaid' } },
 ] as const
 
 export type BlockTypeKey = (typeof BLOCK_TYPES)[number]['key']
 
-/** Which chip the cursor's block is on; `null` for blocks the picker does not offer (table, divider, frontmatter…). */
+/**
+ * Which chip the cursor's block is on: the chip whose `props` all match wins over the bare type (a mermaid code
+ * block is `diagram`, any other `code`); `null` for blocks the picker does not offer (table, divider, frontmatter…).
+ */
 export function blockTypeKey(block: { type: string; props?: Record<string, unknown> }): BlockTypeKey | null {
+  let bare: BlockTypeKey | null = null
   for (const t of BLOCK_TYPES) {
     if (t.type !== block.type) continue
-    if (!('props' in t) || t.props.level === block.props?.level) return t.key
+    if (!('props' in t)) bare ??= t.key
+    else if (Object.entries(t.props).every(([k, v]) => block.props?.[k] === v)) return t.key
   }
-  return null
+  return bare
 }
