@@ -65,6 +65,6 @@ export default defineConfig({
   // plugin); scanning every module up front avoids the mid-session full reload.
   optimizeDeps: { entries: ['index.html', 'src/**/*.{ts,tsx}'] },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
-  build: { target: 'safari15' },
+  build: { target: 'safari17' },
   test: { include: ['src/**/*.test.ts'] },
 })

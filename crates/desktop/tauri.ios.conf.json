@@ -7,7 +7,7 @@
   },
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "17.0",
+      "minimumSystemVersion": "17.4",
       "developmentTeam": "8H548FVL95",
       "infoPlist": "./ios/Info.ios.plist"
     }

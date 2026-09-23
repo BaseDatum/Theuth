@@ -2,7 +2,8 @@
 export type Theme = 'light' | 'dark' | 'system'
 
 const KEY = 'theme'
-const scheme = matchMedia('(prefers-color-scheme: dark)')
+/** Evaluated on use, not at import: modules reachable from node-run tests import this file. */
+const scheme = () => matchMedia('(prefers-color-scheme: dark)')
 
 /** The stored choice; `system` when unset. */
 export function currentTheme(): Theme {
@@ -18,12 +19,12 @@ export function setTheme(theme: Theme): void {
 
 function apply(): void {
   const theme = currentTheme()
-  document.documentElement.classList.toggle('dark', theme === 'dark' || (theme === 'system' && scheme.matches))
+  document.documentElement.classList.toggle('dark', theme === 'dark' || (theme === 'system' && scheme().matches))
 }
 
 /** Apply the stored theme now and keep following the OS while it is `system`. */
 export function initTheme(): void {
-  scheme.addEventListener('change', apply)
+  scheme().addEventListener('change', apply)
   apply()
 }
 
