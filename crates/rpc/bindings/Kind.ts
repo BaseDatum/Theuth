@@ -3,4 +3,4 @@
 /**
  * How an artifact renders; derived from the extension at show time (35 §3.2).
  */
-export type Kind = "markdown" | "text" | "csv" | "image" | "svg" | "pdf" | "html" | "app" | "file";
+export type Kind = "markdown" | "text" | "csv" | "image" | "svg" | "pdf" | "html" | "app" | "archive" | "mermaid" | "file";

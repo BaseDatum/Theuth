@@ -224,10 +224,21 @@ async fn extract(
 ) -> Result<Body, String> {
     Ok(match (a.kind, &a.source) {
         (Kind::Image, _) => Body::Metadata("image: metadata only, not OCR'd"),
-        (Kind::Markdown | Kind::Text | Kind::Csv, _) => utf8(&a.path, "content").await,
+        (Kind::Markdown | Kind::Text | Kind::Csv | Kind::Mermaid, _) => {
+            utf8(&a.path, "content").await
+        }
         (Kind::Html | Kind::Svg | Kind::App, _) => utf8(&a.path, "source").await,
         (Kind::Pdf, Some(source)) => utf8(source, "source").await,
         (Kind::Pdf | Kind::File, _) => return convert(a, pending).await,
+        // The member paths, one per line: a file name inside is findable;
+        // member contents are never extracted (35 §3.2).
+        (Kind::Archive, _) => match crate::archive::read_listing(&a.path).await {
+            Ok(l) => {
+                let paths: Vec<&str> = l.entries.iter().map(|e| e.path.as_str()).collect();
+                prepared("content", paths.join("\n")).await
+            }
+            Err(_) => Body::Metadata("archive: no listing (unreadable at show time)"),
+        },
     })
 }
 
