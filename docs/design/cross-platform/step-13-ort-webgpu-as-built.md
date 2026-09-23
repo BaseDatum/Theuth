@@ -149,12 +149,54 @@ was otherwise not written).
 
 `otool -L` of the osx-arm64 dylib: Metal, IOSurface, QuartzCore, Cocoa, CFNetwork and the C++
 runtime only — self-contained. Its exports include `onnx::` schema symbols with default visibility
-(and MLAS, sqlite3, zlib, KleidiAI); they did not collide with `sentencepiece`/`ptts` in the bench
-process (the TTS load and the plugin coexisted, see numbers).
+(and MLAS, sqlite3, zlib, KleidiAI); registering it in the bench process next to `ptts`
+(`sentencepiece`) did not abort — the first bench run below loaded both.
 
-## Numbers
+## Finding: the macOS runtime already has WebGPU built in
 
-_(filled in below as they arrive)_
+Microsoft's `onnxruntime-osx-arm64-1.27.0.tgz` (32 MB) contains the WebGPU EP (`strings`: 703
+`webgpu` hits, Dawn proc-table options); so do 1.24.4 (603) and 1.23.2 (513). The win-x64 zip
+(`onnxruntime.dll` 15 MB) and linux-x64 tgz have 7–8 generic hits and **no** EP: on those two
+platforms the plugin is the only way. Consequences, all in `register_webgpu`:
+
+- `Environment::devices()` on the Mac lists `WebGpuExecutionProvider — GPU Apple` before anything
+  is registered. Registering the plugin as well produced a **second** `WebGpuExecutionProvider`
+  device from another factory, and `with_devices` over both failed with
+  `All OrtEpDevice values in ep_devices must have the same execution provider.` (first bench run,
+  kept in the report). At exit the plugin's `ReleaseEpFactory` logged `Unknown exception` — expect
+  that one ERROR line at process exit on Windows/Linux too; it is teardown, after every session
+  is gone.
+- So: a WebGPU device already present → use it, plugin not loaded (DEBUG line says so); none →
+  register the plugin. `configure` appends exactly one WebGPU device (`.take(1)`).
+- `auto` still gates on the plugin *file* being present (Sky's opt-in by installing it), so a Mac
+  without the file behaves exactly as before: `CPUExecutionProvider`, no WARN, no Dawn — verified
+  by moving `plugins/` aside and running `--accelerator auto`.
+
+## Numbers — Mac (M3 Max, macOS 25.6, ORT 1.27.0 built-in WebGPU over Metal, debug build)
+
+Parakeet-TDT (`voice::Engine`, 4 intra-op threads on the CPU EP as before):
+
+| run | `--accelerator cpu` | `--accelerator webgpu` / `auto` with the plugin file |
+|---|---|---|
+| stt load | 715 ms | 606 ms |
+| first run, 5 s silence | 193 ms | 944 ms (shader compile: **738 ms** overhead over the second run) |
+| second run, 5 s silence | 190 ms | 206 ms |
+| third run, 5.1 s synthesized speech | 199 ms | 420 ms, 275 ms (two runs; new shapes → more compile) |
+| transcript of the third run | exact expected sentence | exact expected sentence |
+
+Both EPs returned `"The quick brown fox jumps over the lazy dog while the meeting notes are being
+transcribed."` verbatim. ORT warned twice `Some nodes were not assigned to the preferred
+execution providers` (shape ops on the CPU; normal). Pocket TTS synthesis of the clip: ~28 s
+(CPU, `ptts`) — unrelated to the EP, it just makes the bench slow.
+
+**Verdict (Mac):** WebGPU is slower than CPU by 8 % warm on silence and 1.4–2.1× on speech, plus
+0.7 s of shader compile on the first run, on an M3 Max — the CPU EP stays the Mac default (and
+`auto` without the plugin file keeps it). The Windows/Linux numbers decide the other two; the
+M2000M has no AMX-class CPU beside it, so the ratio may flip.
+
+## Numbers — Windows (Quadro M2000M, DX12) and Ubuntu LXC
+
+_(orchestrator's runs; to be pasted from the steer messages)_
 
 ## Judgement calls
 
