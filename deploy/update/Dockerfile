@@ -25,7 +25,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # Toolchain: obscura/btls/boringssl/aws-lc need clang+cmake+perl; libspa-sys runs bindgen (libclang).
 # X11/xcb: enigo + xcap.  xdo/xkbcommon: enigo.  dbus: keyring (dbus-secret-service).
 # pipewire/drm/gbm/wayland: xcap's Wayland capture path.  libssl-dev: openssl-probe stragglers.
-# protoc: signal's spqr (prost-build); nasm: aws-lc-sys / boringssl assembly.
+# egl/gl: khronos-egl (wgpu/xcap GPU paths).  protoc: signal's spqr (prost-build); nasm: aws-lc-sys / boringssl assembly.
 # asound/pulse/udev: meeting capture off macOS (flexaudio: cpal/ALSA mic, PipeWire + Pulse loopback; 58 step 10).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip \
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
       libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
       libdbus-1-dev \
-      libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev \
+      libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev libegl1-mesa-dev libgl-dev \
       libasound2-dev libpulse-dev libudev-dev \
       libssl-dev \
  && rm -rf /var/lib/apt/lists/*
