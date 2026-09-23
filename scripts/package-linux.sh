@@ -17,14 +17,15 @@
 # model bucket at start (release-models.sh publishes the linux rows; `t` finds it under
 # ~/.theuth/models/onnxruntime/).
 #
-# Host packages (Debian/Ubuntu): the daemon's from deploy/update/Dockerfile:28-34 plus
-#   libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-# and: rustup (rust-toolchain.toml), cargo-tauri, bun, jq, aws CLI v2.
+# Host packages (Debian/Ubuntu): HOST_PKGS below = the daemon's from deploy/update/Dockerfile:28-34 plus
+# the webkit2gtk/gtk/appindicator/rsvg dev packages and patchelf for the Tauri bundler,
+# and: rustup (rust-toolchain.toml), cargo-tauri, bun, jq, just, aws CLI v2 (upload only).
+# `scripts/package-linux.sh --check` prints what is missing and exits 2 (build-remote.sh runs it first; nothing is installed).
 #
 # Env (defaults for rustfs @ s3.rwx.dev; repo-root .env.signing is loaded):
 #   THEUTH_S3_ENDPOINT / THEUTH_S3_BUCKET   as release-s3.sh
 #   THEUTH_S3_DRY_RUN=1                     print the upload instead of running it
-#   THEUTH_SKIP_UPLOAD=1                    stop after dist/ (local install / smoke test)
+#   THEUTH_SKIP_UPLOAD=1                    stop after dist/ (local install / smoke test; release-s3.sh reads dist/ first)
 #   THEUTH_SKIP_BUN_INSTALL=1               skip `bun install` (desktop UI and packages/apps)
 set -euo pipefail
 
@@ -38,11 +39,43 @@ cd "$ROOT"
 source "$ROOT/scripts/app-parser-env.sh"
 
 [[ "$(uname -s)" == "Linux" ]] || { echo "error: builds Linux bundles on Linux only (got $(uname -s))" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
-need cargo "rustup; rust-toolchain.toml picks the channel"
-need bun "https://bun.sh"
-need jq
-cargo tauri --version >/dev/null 2>&1 || { echo "error: cargo tauri required (cargo install tauri-cli)" >&2; exit 1; }
+
+HOST_PKGS=(
+  curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip
+  libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev
+  libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev
+  libdbus-1-dev
+  libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev
+  libssl-dev
+  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+)
+# check_prereqs: every HOST_PKGS entry installed (dpkg hosts only) and every tool present; exit 2 listing the gaps.
+check_prereqs() {
+  local missing=() p t
+  if command -v dpkg-query >/dev/null 2>&1; then
+    for p in "${HOST_PKGS[@]}"; do
+      # shellcheck disable=SC2016  # ${Status} is dpkg's format string, not shell
+      [[ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" == "install ok installed" ]] || missing+=("$p")
+    done
+  else
+    echo "    (no dpkg-query: host packages not checked; see HOST_PKGS in scripts/package-linux.sh)"
+  fi
+  for t in cargo rustc bun jq just; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+  cargo tauri --version >/dev/null 2>&1 || missing+=("cargo-tauri (cargo install tauri-cli)")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "error: missing on $(hostname): ${missing[*]}" >&2
+    echo "       apt install: ${missing[*]}" >&2
+    return 2
+  fi
+  echo "    prerequisites ok: $(rustc -vV | awk '/^host:/ {print $2}'), $(cargo tauri --version 2>/dev/null), bun $(bun --version), just $(just --version | awk '{print $2}')"
+}
+if [[ "${1:-}" == "--check" ]]; then
+  echo "==> prerequisites"
+  check_prereqs
+  exit 0
+fi
+echo "==> prerequisites"
+check_prereqs
 
 HOST_TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
 ARCH="$(uname -m)"
