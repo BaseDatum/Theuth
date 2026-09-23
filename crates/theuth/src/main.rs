@@ -410,10 +410,13 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("subprocess") {
         std::process::exit(i32::from(worker::run()));
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run());
+    // A failed start (a plugin refused) still unlinks engine.json (63 §2.1).
+    rpc::engine::release();
+    result
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -498,6 +501,54 @@ async fn run() -> anyhow::Result<()> {
         return service::uninstall().await;
     }
 
+    // 63 §0.1: one engine per data dir. The lock decides; a refusal names
+    // the holder. `THEUTH_LAUNCH` marks the desktop app's daemon (18 §4).
+    use rpc::engine::Host;
+    let host = if cli.headless {
+        if std::env::var_os("THEUTH_LAUNCH").is_some() {
+            Host::Desktop
+        } else {
+            Host::Headless
+        }
+    } else if cli.link_signal {
+        Host::Signal
+    } else if cli.acp {
+        Host::Acp
+    } else if cli.prompt.is_some() {
+        Host::Prompt
+    } else {
+        Host::Tui
+    };
+    // Every engine serves (63 §6.4): the configured address, or — for a
+    // TUI/-p/--acp without `--serve` — an ephemeral port recorded once bound.
+    let listen = if cli.serve || cli.headless {
+        Some(link_cli::listen(&config))
+    } else {
+        config.find_value("rpc.listen").ok().and_then(|v| v.into_string())
+    };
+    // `Some` = attached to the running engine (63 §0.3): TUI, `-p`, `--acp`.
+    let attached = match rpc::engine::acquire(&data_dir, host, listen) {
+        Ok(lease) => {
+            rpc::engine::hold(lease);
+            None
+        }
+        Err(rpc::engine::Error::Running(running)) => {
+            let attach = matches!(host, Host::Tui | Host::Prompt | Host::Acp);
+            if !attach || running.url.is_none() {
+                eprintln!("{running}");
+                std::process::exit(3);
+            }
+            match rpc::client::connect(&running).await {
+                Ok(ws) => Some((std::sync::Arc::new(ws), running)),
+                Err(e) => {
+                    eprintln!("{running}\ncould not attach: {e:#}");
+                    std::process::exit(3);
+                }
+            }
+        }
+        Err(e) => return Err(e.into()),
+    };
+
     // The TUI owns the terminal; logs go to a file.
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
@@ -526,10 +577,35 @@ async fn run() -> anyhow::Result<()> {
     browser::warmup(&browser_cfg);
 
     let rt = Runtime::new(config, data_dir);
+    let attached_client = attached.is_some();
 
     // Pairing needs no TUI, agent or tools; the plugin cancels `shutdown`
     // when the phone has scanned (12 §3).
-    let plugins: Vec<Box<dyn Plugin>> = if cli.link_signal {
+    let plugins: Vec<Box<dyn Plugin>> = if let Some((ws, running)) = attached {
+        // A client of the running engine: no engine plugins here (63 §2.3).
+        if cli.acp {
+            vec![Box::new(rpc::AcpPlugin { remote: Some(ws) })]
+        } else {
+            let prompt = match cli.prompt {
+                Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
+                p => p,
+            };
+            // Takeover (63 §2.3): the engine this process would have run —
+            // serving RPC, so the desktop app finds it again (§4.2).
+            let start_engine: tui::StartEngine = Box::new(|rt| {
+                Box::pin(async move { start_plugins(&rt, engine_plugins(false, false)).await })
+            });
+            vec![Box::new(tui::TuiPlugin {
+                resume: cli.resume,
+                prompt,
+                attached: Some(tui::Attached {
+                    client: ws,
+                    running,
+                    start_engine,
+                }),
+            })]
+        }
+    } else if cli.link_signal {
         vec![Box::new(signal::SignalPlugin {
             channel: false,
             link: Some(signal::LinkOpts {
@@ -538,8 +614,8 @@ async fn run() -> anyhow::Result<()> {
             }),
         })]
     } else if cli.acp {
-        // stdout is the protocol channel: no TUI, no line printer, no
-        // WebSocket server; tracing already goes to the file (06 §8.13).
+        // stdout is the protocol channel: no TUI, no line printer; tracing
+        // already goes to the file (06 §8.13).
         vec![
             Box::new(tools::ToolsPlugin),
             Box::new(secrets::SecretsPlugin),
@@ -555,59 +631,19 @@ async fn run() -> anyhow::Result<()> {
             Box::new(app::AppPlugin),
             Box::new(search_providers::SearchProvidersPlugin),
             Box::new(agent::AgentPlugin),
-            // The `search` tool (49 §4.4): registration only, no listener.
+            // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
+            // 63 §6.4: attachable, on a loopback port; stdout untouched.
+            Box::new(rpc::RpcPlugin { implicit: true }),
             Box::new(signal::SignalPlugin {
                 channel: false,
                 link: None,
             }),
             Box::new(slack::SlackPlugin { channel: false }),
-            Box::new(rpc::AcpPlugin),
+            Box::new(rpc::AcpPlugin { remote: None }),
         ]
     } else {
-        let mut plugins: Vec<Box<dyn Plugin>> = vec![
-            Box::new(tools::ToolsPlugin),
-            Box::new(secrets::SecretsPlugin),
-            Box::new(document::DocumentPlugin),
-            Box::new(knowledge::KnowledgePlugin),
-            Box::new(web::WebPlugin),
-            Box::new(browser::BrowserPlugin),
-            Box::new(scrape::ScrapePlugin),
-            Box::new(codeindex::CodeindexPlugin),
-            Box::new(routes::RoutesPlugin),
-            Box::new(computer::ComputerPlugin),
-            Box::new(artifact::ArtifactPlugin),
-            Box::new(app::AppPlugin),
-            Box::new(search_providers::SearchProvidersPlugin),
-            Box::new(agent::AgentPlugin),
-            Box::new(rpc::SearchToolsPlugin),
-            Box::new(signal::SignalPlugin {
-                channel: cli.headless,
-                link: None,
-            }),
-            Box::new(slack::SlackPlugin {
-                channel: cli.headless,
-            }),
-        ];
-        plugins.push(Box::new(link::LinkPlugin));
-        plugins.push(Box::new(nodes::NodesPlugin));
-        plugins.push(Box::new(schedule::SchedulePlugin));
-        // Off unless `a2a.enabled: true`: then it registers its actor and
-        // finishes in the background once `agent` and `secrets` answer, so
-        // its place in this list carries no ordering promise (50 §11 row 3).
-        plugins.push(Box::new(a2a::A2aPlugin));
-        plugins.push(Box::new(update::UpdatePlugin));
-        plugins.push(Box::new(voice::VoicePlugin));
-        // 58 §3.2: Core Audio and the NSPanel island exist on macOS only; elsewhere
-        // `meeting_*` is absent until §6 lands its capture backends.
-        // ponytail: no `supported()` (58 §3.3) in the meeting status RPC yet — the
-        // crate's internals are out of this step's scope; add it with §6.
-        #[cfg(target_os = "macos")]
-        plugins.push(Box::new(meeting::MeetingPlugin));
-        plugins.push(Box::new(decision::DecisionPlugin));
-        if cli.serve || cli.headless {
-            plugins.push(Box::new(rpc::RpcPlugin));
-        }
+        let mut plugins = engine_plugins(cli.headless, cli.serve || cli.headless);
         if !cli.headless {
             let prompt = match cli.prompt {
                 Some(p) if p.is_empty() => Some(std::io::read_to_string(std::io::stdin())?),
@@ -616,43 +652,25 @@ async fn run() -> anyhow::Result<()> {
             plugins.push(Box::new(tui::TuiPlugin {
                 resume: cli.resume,
                 prompt,
+                attached: None,
             }));
         }
         plugins
     };
 
-    // 51 §8.2: the owners the registry must hear from before a private
-    // root may open — every lifecycle participant whose plugin runs here
-    // (each plugin honours its own `<section>.enabled`, default on). Jobs
-    // is registry-internal. The pairing-only run has no registry.
-    if !cli.link_signal {
-        let owners: Vec<&'static str> =
-            ["artifact", "app", "browser", "computer", "voice", "routes"]
-                .into_iter()
-                .filter(|name| {
-                    rt.config
-                        .extract_inner::<bool>(&format!("{name}.enabled"))
-                        .unwrap_or(true)
-                })
-                .collect();
-        let rt = rt.clone();
-        tokio::spawn(async move {
-            if let Some(reg) = rt
-                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+    // The pairing-only run and an attached client have no registry to
+    // expect participants on.
+    if cli.link_signal || attached_client {
+        for plugin in plugins {
+            let name = plugin.name();
+            plugin
+                .start(&rt)
                 .await
-            {
-                let _ = reg.tell(tools::ExpectParticipants(owners)).await;
-            }
-        });
-    }
-
-    for plugin in plugins {
-        let name = plugin.name();
-        plugin
-            .start(&rt)
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
-        tracing::info!(plugin = name, "started");
+                .map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
+            tracing::info!(plugin = name, "started");
+        }
+    } else {
+        start_plugins(&rt, plugins).await?;
     }
 
     tokio::select! {
@@ -664,7 +682,87 @@ async fn run() -> anyhow::Result<()> {
     // whose child never closed its end would otherwise pin the process.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(_guard);
+    rpc::engine::release();
     std::process::exit(0)
+}
+
+/// The engine's plugin list (every mode but `--acp` and `--link-signal`):
+/// channels run in `--headless`; the RPC server always (63 §6.4) — on the
+/// configured address with `serve`, else implicitly (ephemeral fallback).
+fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
+    let mut plugins: Vec<Box<dyn Plugin>> = vec![
+        Box::new(tools::ToolsPlugin),
+        Box::new(secrets::SecretsPlugin),
+        Box::new(document::DocumentPlugin),
+        Box::new(knowledge::KnowledgePlugin),
+        Box::new(web::WebPlugin),
+        Box::new(browser::BrowserPlugin),
+        Box::new(scrape::ScrapePlugin),
+        Box::new(codeindex::CodeindexPlugin),
+        Box::new(routes::RoutesPlugin),
+        Box::new(computer::ComputerPlugin),
+        Box::new(artifact::ArtifactPlugin),
+        Box::new(app::AppPlugin),
+        Box::new(search_providers::SearchProvidersPlugin),
+        Box::new(agent::AgentPlugin),
+        Box::new(rpc::SearchToolsPlugin),
+        Box::new(signal::SignalPlugin {
+            channel: headless,
+            link: None,
+        }),
+        Box::new(slack::SlackPlugin { channel: headless }),
+        Box::new(link::LinkPlugin),
+        Box::new(nodes::NodesPlugin),
+        Box::new(schedule::SchedulePlugin),
+        // Off unless `a2a.enabled: true`: then it registers its actor and
+        // finishes in the background once `agent` and `secrets` answer, so
+        // its place in this list carries no ordering promise (50 §11 row 3).
+        Box::new(a2a::A2aPlugin),
+        Box::new(update::UpdatePlugin),
+        Box::new(voice::VoicePlugin),
+        Box::new(decision::DecisionPlugin),
+    ];
+    // 58 §3.2: Core Audio and the NSPanel island exist on macOS only; elsewhere
+    // `meeting_*` is absent until §6 lands its capture backends.
+    // ponytail: no `supported()` (58 §3.3) in the meeting status RPC yet — the
+    // crate's internals are out of this step's scope; add it with §6.
+    #[cfg(target_os = "macos")]
+    plugins.push(Box::new(meeting::MeetingPlugin));
+    plugins.push(Box::new(rpc::RpcPlugin { implicit: !serve }));
+    plugins
+}
+
+/// Start `plugins` on `rt` in order. First, 51 §8.2: the owners the registry
+/// must hear from before a private root may open — every lifecycle
+/// participant whose plugin runs here (each plugin honours its own
+/// `<section>.enabled`, default on). Jobs is registry-internal.
+async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
+    let owners: Vec<&'static str> = ["artifact", "app", "browser", "computer", "voice", "routes"]
+        .into_iter()
+        .filter(|name| {
+            rt.config
+                .extract_inner::<bool>(&format!("{name}.enabled"))
+                .unwrap_or(true)
+        })
+        .collect();
+    let registry_rt = rt.clone();
+    tokio::spawn(async move {
+        if let Some(reg) = registry_rt
+            .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+            .await
+        {
+            let _ = reg.tell(tools::ExpectParticipants(owners)).await;
+        }
+    });
+    for plugin in plugins {
+        let name = plugin.name();
+        plugin
+            .start(rt)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin {name} failed to start: {e:#}"))?;
+        tracing::info!(plugin = name, "started");
+    }
+    Ok(())
 }
 
 /// `t --update` (39 §3.2): one foreground check, one line on stdout.

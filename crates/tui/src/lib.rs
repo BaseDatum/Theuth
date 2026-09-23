@@ -1,8 +1,10 @@
 //! Terminal UI plugin. Subscribes to `agent::AgentEvent`,
 //! `tools::ApprovalRequested`, `secrets::SecretsEvent` and the rest of the
-//! bus; every command is an in-process call on
-//! [`rpc::api::Server`], the same [`rpc::api::Api`] the socket exposes.
-//! Cancels `rt.shutdown` on quit. See design doc §8.
+//! bus; every command is an [`rpc::api::ApiClient`] call on an
+//! [`rpc::client::Engine`]: in-process (this process is the engine) or over a
+//! WebSocket to a running engine the TUI attached to (63 §2.3), whose events
+//! [`rpc::client::mirror`] republishes on the local bus. Cancels
+//! `rt.shutdown` on quit. See design doc §8.
 //!
 //! Shape: a bridge actor forwards bus events into an mpsc channel; the UI
 //! (fullscreen iocraft, or a line printer when stdout is not a TTY or `-p`
@@ -11,14 +13,19 @@
 //! [`model::UiEvent`]s.
 
 use std::io::{IsTerminal, Write};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use agent::{AgentConfig, AgentEvent, CompactStyle, LoginFinished};
-use jsonrpsee::core::RpcResult;
+use futures::future::BoxFuture;
+use jsonrpsee::core::client::Error as ClientError;
+use jsonrpsee::ws_client::WsClient;
 use kameo::Actor;
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
-use rpc::api::{ApiServer, Server};
+use rpc::api::ApiClient;
+use rpc::client::{Engine, Local};
+use rpc::engine::{Host, Running};
 use runtime::{Runtime, SessionId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -42,6 +49,30 @@ pub struct TuiPlugin {
     pub resume: Option<SessionId>,
     /// `theuth -p <text>`: submit this, print the stream, exit at `TurnFinished`.
     pub prompt: Option<String>,
+    /// Attached to a running engine (63 §0.3); `None` when this process is it.
+    pub attached: Option<Attached>,
+}
+
+/// Starts the engine in this process (the plugin list `main` would have
+/// started) when an attached TUI takes over (63 §2.3).
+pub type StartEngine = Box<dyn FnOnce(Runtime) -> BoxFuture<'static, anyhow::Result<()>> + Send>;
+
+/// The engine a TUI attached to.
+pub struct Attached {
+    /// Its socket.
+    pub client: Arc<WsClient>,
+    /// Its record, for the status line.
+    pub running: Running,
+    /// How to become the engine once it is gone.
+    pub start_engine: StartEngine,
+}
+
+/// The calls' target, swapped on takeover; readers clone the `Arc` out.
+type Api = Arc<RwLock<Arc<Engine>>>;
+
+/// `attached · pid N · desktop` (63 §0.3).
+fn attached_label(r: &Running) -> String {
+    format!("attached · pid {} · {}", r.record.pid, r.record.host)
 }
 
 #[async_trait::async_trait]
@@ -84,18 +115,19 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
         rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
         rt.subscribe::<Bridge, voice::VoiceEvent>(&bridge).await;
-        let api = Arc::new(Server::new(rt.clone()));
-        // The TUI is the one in-process caller; one peer for its lifetime so
-        // `with_extensions` methods see a stable, authenticated connection.
-        let ext = Arc::new({
-            let mut e = jsonrpsee::Extensions::new();
-            e.insert(link::RpcPeer::internal());
-            e
-        });
+        let api: Api = Arc::new(RwLock::new(Arc::new(match &self.attached {
+            Some(a) => Engine::Remote(a.client.clone()),
+            None => Engine::Local(Local::new(rt.clone())),
+        })));
+        if let Some(attached) = self.attached {
+            let _ = events_tx.send(UiEvent::Engine(Some(attached_label(&attached.running))));
+            tokio::spawn(supervise(rt.clone(), api.clone(), events_tx.clone(), attached));
+        }
         // The one startup fact the runtime does not hand out as a config
         // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
-        let app_enabled = api.info().await.is_ok_and(|i| i.app_enabled);
-        tokio::spawn(run_commands(api, ext, commands_rx, events_tx));
+        let engine = api.read().unwrap().clone();
+        let app_enabled = engine.info().await.is_ok_and(|i| i.app_enabled);
+        tokio::spawn(run_commands(api, commands_rx, events_tx));
 
         let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
         let approvals = rt
@@ -185,22 +217,80 @@ forward!(
     voice::VoiceEvent => Voice,
 );
 
+/// Attached mode's supervisor (63 §2.3 Disconnect): when the socket closes,
+/// take the lock and start the engine here, or — another client won — attach
+/// to the winner; three attempts, then a plain error. Every switch tells the
+/// UI (`Engine`), which re-selects its session on the new end.
+async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached: Attached) {
+    // The record's listen until the implicit server binds (63 §6.4).
+    let listen = rpc::configured_listen(&rt);
+    let mut client = attached.client;
+    let mut start_engine = Some(attached.start_engine);
+    for attempt in 1..=3 {
+        if let Err(e) = rpc::client::mirror(&rt, &client).await {
+            tracing::warn!(error = %e, "engine event stream");
+        }
+        let _ = tx.send(UiEvent::Info("engine gone — starting one…".into()));
+        let running = match rpc::engine::acquire(&rt.data_dir, Host::Tui, listen.clone()) {
+            Ok(lease) => {
+                rpc::engine::hold(lease);
+                let Some(start) = start_engine.take() else {
+                    return;
+                };
+                match start(rt.clone()).await {
+                    Ok(()) => {
+                        *api.write().unwrap() = Arc::new(Engine::Local(Local::new(rt.clone())));
+                        let _ = tx.send(UiEvent::Engine(None));
+                    }
+                    Err(e) => {
+                        rpc::engine::release();
+                        let _ = tx.send(UiEvent::Error(format!("engine failed to start: {e:#}")));
+                    }
+                }
+                return;
+            }
+            Err(rpc::engine::Error::Running(r)) => r,
+            Err(e) => {
+                let _ = tx.send(UiEvent::Error(e.to_string()));
+                return;
+            }
+        };
+        // The winner just took the lock; give it the desktop's 15 s to listen.
+        let mut connected = None;
+        for _ in 0..75 {
+            match rpc::client::connect(&running).await {
+                Ok(c) => {
+                    connected = Some(c);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+        let Some(c) = connected else {
+            let _ = tx.send(UiEvent::Error(format!(
+                "engine gone; {running} but it never answered (attempt {attempt}/3)"
+            )));
+            return;
+        };
+        client = Arc::new(c);
+        *api.write().unwrap() = Arc::new(Engine::Remote(client.clone()));
+        let _ = tx.send(UiEvent::Engine(Some(attached_label(&running))));
+    }
+    let _ = tx.send(UiEvent::Error("engine gone; could not attach to its successor after 3 attempts".into()));
+}
+
 /// The one place commands become `rpc::Api` calls. Each command runs in its
 /// own task so a slow call never delays the next one — except keystrokes
 /// (`PtyInput`, 55 §3), which take one serial lane so they reach the
 /// process in the order they were typed.
-async fn run_commands(
-    api: Arc<Server>,
-    ext: Arc<jsonrpsee::Extensions>,
-    mut rx: UnboundedReceiver<Command>,
-    tx: UnboundedSender<UiEvent>,
-) {
+async fn run_commands(api: Api, mut rx: UnboundedReceiver<Command>, tx: UnboundedSender<UiEvent>) {
     let (keys_tx, mut keys_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
     tokio::spawn({
-        let (api, ext, tx) = (api.clone(), ext.clone(), tx.clone());
+        let (api, tx) = (api.clone(), tx.clone());
         async move {
             while let Some(cmd) = keys_rx.recv().await {
-                if let Err(e) = execute(&api, &ext, cmd, &tx).await {
+                let api = api.read().unwrap().clone();
+                if let Err(e) = execute(&api, cmd, &tx).await {
                     let _ = tx.send(UiEvent::Error(format!("{e:#}")));
                 }
             }
@@ -212,22 +302,16 @@ async fn run_commands(
             continue;
         }
         let tx = tx.clone();
-        let api = api.clone();
-        let ext = ext.clone();
+        let api = api.read().unwrap().clone();
         tokio::spawn(async move {
-            if let Err(e) = execute(&api, &ext, cmd, &tx).await {
+            if let Err(e) = execute(&api, cmd, &tx).await {
                 let _ = tx.send(UiEvent::Error(format!("{e:#}")));
             }
         });
     }
 }
 
-async fn execute(
-    api: &Server,
-    ext: &jsonrpsee::Extensions,
-    cmd: Command,
-    tx: &UnboundedSender<UiEvent>,
-) -> anyhow::Result<()> {
+async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> anyhow::Result<()> {
     let reply = match cmd {
         Command::Resolve { id, decision } => {
             if !msg(api.resolve_approval(id, decision).await)? {
@@ -245,7 +329,7 @@ async fn execute(
             session,
             text,
             files,
-        } => UiEvent::SessionCreated(msg(api.send_input(ext, session, text, files, None).await)?),
+        } => UiEvent::SessionCreated(msg(api.send_input(session, text, files, None).await)?),
         Command::Steer {
             session,
             id,
@@ -255,29 +339,29 @@ async fn execute(
         } => {
             // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
             if interject {
-                msg(api.cancel(ext, session).await)?;
+                msg(api.cancel(session).await)?;
             }
-            msg(api.steer(ext, session, text, Some(id), files, None).await)?;
+            msg(api.steer(session, text, Some(id), files, None).await)?;
             return Ok(());
         }
         Command::Withdraw { session, id } => UiEvent::Withdrawn {
             id,
-            text: msg(api.withdraw(ext, session, id).await)?,
+            text: msg(api.withdraw(session, id).await)?,
         },
         // The transcript is reloaded here, not from the UI: commands run
         // concurrently and the notice must land before the new history.
         Command::Undo(session) => {
-            let _ = tx.send(UiEvent::Undone(msg(api.undo(ext, session).await)?));
+            let _ = tx.send(UiEvent::Undone(msg(api.undo(session).await)?));
             UiEvent::History(
                 session,
-                msg(api.load_session(ext, session, None, None, None).await)?,
+                msg(api.load_session(session, None, None, None).await)?,
             )
         }
         Command::Redo(session) => {
-            let _ = tx.send(UiEvent::Redone(msg(api.redo(ext, session).await)?));
+            let _ = tx.send(UiEvent::Redone(msg(api.redo(session).await)?));
             UiEvent::History(
                 session,
-                msg(api.load_session(ext, session, None, None, None).await)?,
+                msg(api.load_session(session, None, None, None).await)?,
             )
         }
         // Same shape as undo: the notice, then the settled transcript (48
@@ -289,36 +373,36 @@ async fn execute(
             targets,
         } => {
             match api
-                .remove_context(ext, session, expected_revision, targets)
+                .remove_context(session, expected_revision, targets)
                 .await
             {
                 Ok(r) => {
                     let _ = tx.send(UiEvent::ContextRemoved(session, r));
                 }
                 Err(e) => {
-                    let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                    let _ = tx.send(UiEvent::Error(reason(e)));
                 }
             }
             UiEvent::Refreshed(
                 session,
-                msg(api.load_session(ext, session, None, None, Some(true)).await)?,
+                msg(api.load_session(session, None, None, Some(true)).await)?,
             )
         }
         Command::ContextItems { session, category } => UiEvent::ContextItems {
             session,
             category,
-            snapshot: msg(api.context_items(ext, session).await)?,
+            snapshot: msg(api.context_items(session).await)?,
         },
         // The UI already truncated its transcript at the turn (29 §3); the
         // new turn streams back through ordinary events. On refusal, the
         // error lands first, then the transcript reloads to undo the cut.
-        Command::Regenerate { session, turn } => match api.regenerate(ext, session, turn).await {
+        Command::Regenerate { session, turn } => match api.regenerate(session, turn).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                let _ = tx.send(UiEvent::Error(reason(e)));
                 UiEvent::History(
                     session,
-                    msg(api.load_session(ext, session, None, None, None).await)?,
+                    msg(api.load_session(session, None, None, None).await)?,
                 )
             }
         },
@@ -326,37 +410,37 @@ async fn execute(
             session,
             turn,
             text,
-        } => match api.edit_turn(ext, session, turn, text, Vec::new()).await {
+        } => match api.edit_turn(session, turn, text, Vec::new()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                let _ = tx.send(UiEvent::Error(e.message().to_owned()));
+                let _ = tx.send(UiEvent::Error(reason(e)));
                 UiEvent::History(
                     session,
-                    msg(api.load_session(ext, session, None, None, None).await)?,
+                    msg(api.load_session(session, None, None, None).await)?,
                 )
             }
         },
         Command::Fork { session, through } => {
-            let id = msg(api.fork_session(ext, session, through, None).await)?;
-            UiEvent::Forked(id, msg(api.load_session(ext, id, None, None, None).await)?)
+            let id = msg(api.fork_session(session, through, None).await)?;
+            UiEvent::Forked(id, msg(api.load_session(id, None, None, None).await)?)
         }
         Command::Cancel(session) => {
-            msg(api.cancel(ext, session).await)?;
+            msg(api.cancel(session).await)?;
             return Ok(());
         }
-        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(ext, session).await)?),
+        Command::ListJobs(session) => UiEvent::Jobs(msg(api.list_jobs(session).await)?),
         Command::SetSessionProject { session, project } => {
-            msg(api.set_session_project(ext, session, project.clone()).await)?;
+            msg(api.set_session_project(session, project.clone()).await)?;
             UiEvent::Info(match project {
                 Some(p) => format!("project: {p}"),
                 None => "project cleared".to_owned(),
             })
         }
         Command::SessionCost(session) => {
-            UiEvent::Cost(session, msg(api.session_cost(ext, session).await)?)
+            UiEvent::Cost(session, msg(api.session_cost(session).await)?)
         }
         Command::ListTerminals(session) => {
-            UiEvent::Terminals(msg(api.list_terminals(ext, session, Some(true)).await)?)
+            UiEvent::Terminals(msg(api.list_terminals(session, Some(true)).await)?)
         }
         // Errors ride inside the reply so the observer knows its ask answered.
         Command::PtyScreen {
@@ -371,9 +455,9 @@ async fn execute(
             viewport,
             epoch,
             reply: api
-                .pty_screen(ext, session, job, viewport, if_revision)
+                .pty_screen(session, job, viewport, if_revision)
                 .await
-                .map_err(|e| e.message().to_owned()),
+                .map_err(reason),
         },
         Command::PtyInput {
             session,
@@ -381,15 +465,15 @@ async fn execute(
             text,
             keys,
         } => {
-            msg(api.pty_input(ext, session, job, text, Some(keys)).await)?;
+            msg(api.pty_input(session, job, text, Some(keys)).await)?;
             return Ok(());
         }
         Command::CreateSession(options) => {
-            UiEvent::SessionOpened(msg(api.create_session(ext, options).await)?)
+            UiEvent::SessionOpened(msg(api.create_session(options).await)?)
         }
         Command::LeaveSession { session, secret } => UiEvent::SessionLeft(
             session,
-            msg(api.leave_session(ext, session, Some(secret)).await)?,
+            msg(api.leave_session(session, Some(secret)).await)?,
         ),
         Command::ListSchedules => UiEvent::Schedules(msg(api.list_schedules().await)?),
         Command::FireSchedule(name) => {
@@ -414,11 +498,11 @@ async fn execute(
         }
         Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
-            msg(api.cancel_job(ext, session, tools::JobId(id.clone())).await)?;
+            msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
             UiEvent::Info(format!("killed {id}"))
         }
         Command::Compact { session, style } => {
-            let epoch = msg(api.compact(ext, session, style).await)?;
+            let epoch = msg(api.compact(session, style).await)?;
             UiEvent::Info(match style {
                 // The `Compacted` event wipes the transcript and announces it.
                 Some(CompactStyle::Clear) => return Ok(()),
@@ -451,17 +535,17 @@ async fn execute(
         // Every search reply carries the view generation that asked, errors
         // included, so a superseded request can never land (49 §6.1).
         Command::Search(search::Request { generation, kind }) => {
-            UiEvent::Search(generation, search_request(api, ext, kind).await)
+            UiEvent::Search(generation, search_request(api, kind).await)
         }
-        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(ext, session).await)?),
-        Command::ListActivity => UiEvent::Activity(msg(api.list_activity(ext).await)?),
+        Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
+        Command::ListActivity => UiEvent::Activity(msg(api.list_activity().await)?),
         // The menu shows the refusal on its error line; not an `Error` entry.
         Command::Broadcast(req) => {
-            UiEvent::Broadcasted(api.broadcast(ext, req).await.map_err(|e| e.message().to_owned()))
+            UiEvent::Broadcasted(api.broadcast(req).await.map_err(reason))
         }
         // A failed read must not leave the card looking current: the plan is
         // marked stale first, then the error line explains why (47 §5.4).
-        Command::GetTodos(session) => match msg(api.get_todos(ext, session).await) {
+        Command::GetTodos(session) => match msg(api.get_todos(session).await) {
             Ok(s) => UiEvent::Todos(session, Some(s)),
             Err(e) => {
                 let _ = tx.send(UiEvent::Todos(session, None));
@@ -473,7 +557,7 @@ async fn execute(
             settled_only,
         } => {
             let loaded = msg(api
-                .load_session(ext, session, None, None, Some(settled_only))
+                .load_session(session, None, None, Some(settled_only))
                 .await)?;
             if settled_only {
                 UiEvent::Refreshed(session, loaded)
@@ -483,13 +567,13 @@ async fn execute(
         }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
-            UiEvent::ModelSet(msg(api.set_model(ext, session, model).await)?)
+            UiEvent::ModelSet(msg(api.set_model(session, model).await)?)
         }
         Command::SetEffort { session, effort } => {
-            msg(api.set_effort(ext, session, effort.clone()).await)?;
+            msg(api.set_effort(session, effort.clone()).await)?;
             UiEvent::EffortSet(effort)
         }
-        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(ext, session).await)?),
+        Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
         Command::SetGate {
             server,
@@ -499,7 +583,7 @@ async fn execute(
         } => {
             msg(api.set_mcp_gate(server, tool, gate).await)?;
             // Re-list here, not from the UI: commands run concurrently.
-            UiEvent::Mcp(msg(api.list_mcp(ext, session).await)?)
+            UiEvent::Mcp(msg(api.list_mcp(session).await)?)
         }
         Command::SetHidden {
             session,
@@ -514,20 +598,20 @@ async fn execute(
                     s
                 }
             };
-            msg(api.set_mcp_hidden(ext, session, tools, hidden).await)?;
-            UiEvent::Mcp(msg(api.list_mcp(ext, Some(session)).await)?)
+            msg(api.set_mcp_hidden(session, tools, hidden).await)?;
+            UiEvent::Mcp(msg(api.list_mcp(Some(session)).await)?)
         }
         Command::SetApprovals { session, enabled } => {
-            UiEvent::Approvals(msg(api.set_approvals(ext, session, enabled).await)?)
+            UiEvent::Approvals(msg(api.set_approvals(session, enabled).await)?)
         }
-        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(ext, session).await)?),
+        Command::ShowPrompt(session) => UiEvent::Prompt(msg(api.get_prompt(session).await)?),
         Command::ListSkills => UiEvent::Skills(msg(api.list_skills().await)?),
         Command::LoadSkill(name) => UiEvent::Skill(msg(api.load_skill(name).await)?),
         Command::UseSkill {
             session,
             name,
             args,
-        } => UiEvent::SessionCreated(msg(api.use_skill(ext, session, name, args).await)?),
+        } => UiEvent::SessionCreated(msg(api.use_skill(session, name, args).await)?),
         Command::AddSkillRepo(url) => {
             UiEvent::SkillsAdded(msg(api.add_skill_repo(url, None).await)?)
         }
@@ -567,7 +651,7 @@ async fn execute(
             UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
         }
         Command::Harvest(session) => {
-            UiEvent::Harvested(msg(api.knowledge_harvest(ext, session).await)?)
+            UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?)
         }
         Command::AddMcp { name, entry } => {
             UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
@@ -599,7 +683,7 @@ async fn execute(
                 })
                 .collect();
             rows.extend(
-                msg(api.list_mcp(ext, None).await)?
+                msg(api.list_mcp(None).await)?
                     .into_iter()
                     .filter(|s| s.auth != McpAuth::None)
                     .map(|s| LoginRow {
@@ -697,7 +781,7 @@ async fn execute(
             pick,
             apps,
         } => {
-            let mut items = msg(api.list_artifacts(ext, Some(session), Some(true)).await)?;
+            let mut items = msg(api.list_artifacts(Some(session), Some(true)).await)?;
             if apps {
                 items.retain(|a| a.kind == artifact::Kind::App);
             }
@@ -744,7 +828,7 @@ async fn execute(
             return Ok(());
         }
         Command::GetCommunication(session) => {
-            UiEvent::Communication(msg(api.get_communication(ext, session).await)?)
+            UiEvent::Communication(msg(api.get_communication(session).await)?)
         }
         // The shown session's view, not the switched one's: a global flip
         // is read back through the session it affects.
@@ -753,46 +837,46 @@ async fn execute(
             enabled,
             view,
         } => {
-            let state = msg(api.set_communication(ext, session, enabled).await)?;
+            let state = msg(api.set_communication(session, enabled).await)?;
             if session == view {
                 UiEvent::Communication(state)
             } else {
-                UiEvent::Communication(msg(api.get_communication(ext, view).await)?)
+                UiEvent::Communication(msg(api.get_communication(view).await)?)
             }
         }
         Command::SetPeerScope { root, scope, alias } => {
-            UiEvent::Communication(msg(api.set_peer_scope(ext, root, scope, alias).await)?)
+            UiEvent::Communication(msg(api.set_peer_scope(root, scope, alias).await)?)
         }
         // Off is a reason, not an empty page: it lands in the menu.
         Command::ListPeers(session) => UiEvent::Peers(
             session,
-            api.list_peers(ext, session, None, None, None)
+            api.list_peers(session, None, None, None)
                 .await
-                .map_err(|e| e.message().to_owned()),
+                .map_err(reason),
         ),
         Command::ListPeerRequests(session) => UiEvent::PeerRequests(
             session,
-            msg(api.list_peer_messages(ext, session, None, None, true).await)?,
+            msg(api.list_peer_messages(session, None, None, true).await)?,
         ),
         Command::AnswerPeerRequest {
             session,
             reply_to,
             text,
         } => UiEvent::PeerAnswered(msg(api
-            .answer_peer_request(ext, session, reply_to, text)
+            .answer_peer_request(session, reply_to, text)
             .await)?),
         Command::A2aStatus => UiEvent::A2a(msg(api.a2a_status().await)?),
         Command::ReloadA2a => UiEvent::A2a(msg(api.reload_a2a().await)?),
         // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
-            state: msg(api.dictation_prewarm(ext).await)?,
+            state: msg(api.dictation_prewarm().await)?,
         }),
-        Command::DictationStart => match api.dictation_start(ext, None).await {
+        Command::DictationStart => match api.dictation_start(None).await {
             Ok(id) => UiEvent::DictationStarting(id),
-            Err(e) => UiEvent::DictationFailed(e.message().to_owned()),
+            Err(e) => UiEvent::DictationFailed(reason(e)),
         },
         Command::DictationStop(id) => {
-            msg(api.dictation_stop(ext, id).await)?;
+            msg(api.dictation_stop(id).await)?;
             return Ok(());
         }
     };
@@ -802,13 +886,8 @@ async fn execute(
 
 /// One `/search` request against the API (49 §6–7). Failures are the reply's
 /// `Err`, never a bare `UiEvent::Error`: the menu needs the identity.
-async fn search_request(
-    api: &Server,
-    ext: &jsonrpsee::Extensions,
-    kind: search::RequestKind,
-) -> search::Reply {
+async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Reply {
     use search::{Reply, RequestKind};
-    let text = |e: jsonrpsee::types::ErrorObjectOwned| e.message().to_owned();
     match kind {
         RequestKind::Results {
             query,
@@ -818,18 +897,18 @@ async fn search_request(
             result: api
                 .search(query, Some(categories.clone()), Some(limit))
                 .await
-                .map_err(text),
+                .map_err(reason),
             categories,
             limit,
         },
-        RequestKind::Recent => Reply::Recent(api.list_sessions().await.map_err(text)),
+        RequestKind::Recent => Reply::Recent(api.list_sessions().await.map_err(reason)),
         RequestKind::Refresh(categories) => {
-            Reply::Refreshed(api.search_refresh(Some(categories)).await.map_err(text))
+            Reply::Refreshed(api.search_refresh(Some(categories)).await.map_err(reason))
         }
         RequestKind::Artifact { call_id, query } => {
             let artifact = match api.get_artifact(call_id.clone()).await {
                 Ok(a) => a,
-                Err(e) => return Reply::Artifact(Err(text(e))),
+                Err(e) => return Reply::Artifact(Err(reason(e))),
             };
             // Text-like kinds are read here, off the UI thread (49 §6.2).
             let bytes = match artifact.kind {
@@ -843,7 +922,7 @@ async fn search_request(
                 _ => Ok(Vec::new()),
             };
             let matched = match query {
-                Some(q) => Some(api.artifact_search_match(call_id, q).await.map_err(text)),
+                Some(q) => Some(api.artifact_search_match(call_id, q).await.map_err(reason)),
                 None => None,
             };
             Reply::Artifact(Ok(search::ArtifactLoad {
@@ -852,37 +931,44 @@ async fn search_request(
                 matched,
             }))
         }
-        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(text)),
+        RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(reason)),
         RequestKind::Historical { id, commit } => {
-            Reply::Historical(api.knowledge_read_revision(id, commit).await.map_err(text))
+            Reply::Historical(api.knowledge_read_revision(id, commit).await.map_err(reason))
         }
         RequestKind::Revision { commit, id } => {
-            Reply::Revision(api.knowledge_revision(commit, Some(id)).await.map_err(text))
+            Reply::Revision(api.knowledge_revision(commit, Some(id)).await.map_err(reason))
         }
         RequestKind::Page { session, seq } => Reply::Page {
             session,
             seq,
             result: api
-                .load_session(
-                    ext,
-                    session,
+                .load_session(session,
                     Some(seq.saturating_add(1)),
                     Some(search::PAGE),
                     Some(false),
                 )
                 .await
-                .map_err(text),
+                .map_err(reason),
         },
     }
 }
 
 /// Keep only the message: the JSON-RPC code is not user-facing.
-fn msg<T>(r: RpcResult<T>) -> anyhow::Result<T> {
-    r.map_err(|e| anyhow::anyhow!("{}", e.message()))
+fn msg<T>(r: Result<T, ClientError>) -> anyhow::Result<T> {
+    r.map_err(|e| anyhow::anyhow!("{}", reason(e)))
+}
+
+/// The user-facing text of a failed call: the harness's message for a
+/// refusal, the transport's for a lost socket.
+fn reason(e: ClientError) -> String {
+    match e {
+        ClientError::Call(e) => e.message().to_owned(),
+        e => e.to_string(),
+    }
 }
 
 /// The node `/nodes <verb> <n>` names (exact name, else a unique id prefix).
-async fn resolve_node(api: &Server, n: &str) -> anyhow::Result<nodes::Node> {
+async fn resolve_node(api: &Engine, n: &str) -> anyhow::Result<nodes::Node> {
     let list = msg(api.list_nodes().await)?;
     model::find_node(&list, n)
         .cloned()
@@ -926,6 +1012,14 @@ async fn line_printer(
                     _ => false,
                 };
                 model.apply(ev);
+                if std::mem::take(&mut model.reselect)
+                    && let Some(session) = model.session
+                {
+                    let _ = commands.send(Command::Load {
+                        session,
+                        settled_only: false,
+                    });
+                }
                 model.search_tick(model::now_ms(), &commands);
                 // `-p "/search …"` ends once every selected group has settled
                 // (an indexing owner is re-asked first, like the menu).
@@ -1548,5 +1642,14 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         // No editor in print mode: nothing to dictate into.
         UiEvent::Voice(_) | UiEvent::DictationStarting(_) => Ok(()),
         UiEvent::DictationFailed(m) => writeln!(out, "dictation: {m}"),
+        // Stderr: `-p` output stays the reply alone.
+        UiEvent::Engine(Some(label)) => {
+            eprintln!("{label}");
+            Ok(())
+        }
+        UiEvent::Engine(None) => {
+            eprintln!("engine started here (pid {})", std::process::id());
+            Ok(())
+        }
     };
 }

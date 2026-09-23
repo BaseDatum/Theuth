@@ -1,8 +1,9 @@
 //! The agent half of the Agent Client Protocol (design doc 06 §4, §8.12-13):
 //! `t --acp` on stdio, and one connection per link mode-1 conn when this
-//! harness is a node (32 §4.3, §5.3). The same "registry lookup + `ask`"
-//! glue as [`crate::api`], with the ACP client (an editor, or a parent
-//! harness) as the only frontend.
+//! harness is a node (32 §4.3, §5.3). Every call is an [`ApiClient`] method
+//! on an [`Engine`] — this process's, or a running one `t --acp` attached to
+//! (63 §2.3) — with the ACP client (an editor, or a parent harness) as the
+//! only frontend.
 //!
 //! One kameo actor per process, [`Relay`] (`"acp.relay"`), is subscribed to
 //! the bus: it turns [`AgentEvent`]s into `session/update` notifications on
@@ -15,14 +16,12 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use agent::cost::{Coverage, NANOS_PER_UNIT, SessionCost};
 use agent::todo::{Status, Todo};
-use agent::{
-    AgentEvent, Agents, Cancel, HistoryEntry, ListSessions, LoadSession, NewSession, PeerDelivered,
-    SendInput, SessionCostQuery,
-};
+use agent::{AgentEvent, CreateSessionOptions, HistoryEntry, PeerDelivered};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Cost,
     EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
@@ -36,22 +35,29 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Error, Lines, Stdio};
 use artifact::ArtifactShown;
 use base64::Engine as _;
-use jsonrpsee::types::ErrorObjectOwned;
+use jsonrpsee::core::client::Error as ClientError;
+use jsonrpsee::ws_client::WsClient;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use tokio::sync::{mpsc, oneshot};
-use tools::{Approval, ApprovalRequested, Decision, Resolve, Risk};
+use tools::{ApprovalRequested, Decision, Risk};
 
-use crate::api;
+use crate::api::{self, ApiClient};
+use crate::client::{Engine, Local};
 
 /// Registry name of the process-wide [`Relay`].
 pub const ACP_RELAY_ACTOR: &str = "acp.relay";
 
 /// The plugin: ACP on stdin/stdout until the client closes stdin, then
 /// `rt.shutdown`. Nothing else may write to stdout in this mode.
-pub struct AcpPlugin;
+pub struct AcpPlugin {
+    /// Attached to a running engine (63 §2.3): its socket; `None` when this
+    /// process is the engine. Events arrive through [`crate::client::mirror`];
+    /// the socket closing ends the process (the editor restarts it).
+    pub remote: Option<Arc<WsClient>>,
+}
 
 #[async_trait::async_trait]
 impl runtime::Plugin for AcpPlugin {
@@ -60,11 +66,25 @@ impl runtime::Plugin for AcpPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
-        let relay = relay(rt).await;
+        let api = Arc::new(match &self.remote {
+            Some(ws) => Engine::Remote(ws.clone()),
+            None => Engine::Local(Local::new(rt.clone())),
+        });
+        let relay = relay(rt, Some(api.clone())).await;
+        if let Some(ws) = self.remote {
+            let (rt, shutdown) = (rt.clone(), rt.shutdown.clone());
+            tokio::spawn(async move {
+                if let Err(e) = crate::client::mirror(&rt, &ws).await {
+                    tracing::warn!(error = %e, "acp: engine event stream");
+                }
+                tracing::info!("acp: engine gone; exiting");
+                shutdown.cancel();
+            });
+        }
         let shutdown = rt.shutdown.clone();
         let data_dir = rt.data_dir.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve(Stdio::new(), relay, data_dir).await {
+            if let Err(e) = serve(Stdio::new(), relay, api, data_dir).await {
                 tracing::error!(error = %e, "acp connection failed");
             }
             shutdown.cancel();
@@ -75,12 +95,22 @@ impl runtime::Plugin for AcpPlugin {
 
 /// The process-wide [`Relay`]: the registered actor, or a fresh one spawned
 /// on [`runtime::subscriber_mailbox`], subscribed to the bus and registered
-/// as [`ACP_RELAY_ACTOR`]. Whichever caller comes first creates it.
-pub async fn relay(rt: &Runtime) -> ActorRef<Relay> {
+/// as [`ACP_RELAY_ACTOR`]. Whichever caller comes first creates it, on `api`
+/// (default: this process's engine).
+pub async fn relay(rt: &Runtime, api: Option<Arc<Engine>>) -> ActorRef<Relay> {
     if let Ok(Some(relay)) = ActorRef::<Relay>::lookup(ACP_RELAY_ACTOR) {
         return relay;
     }
-    let relay = Relay::spawn_with_mailbox(Relay::default(), runtime::subscriber_mailbox());
+    let api = api.unwrap_or_else(|| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    let relay = Relay::spawn_with_mailbox(
+        Relay {
+            api,
+            connections: HashMap::new(),
+            owners: HashMap::new(),
+            waiters: HashMap::new(),
+        },
+        runtime::subscriber_mailbox(),
+    );
     if let Err(e) = relay.register(ACP_RELAY_ACTOR) {
         tracing::warn!(error = %e, "acp.relay already registered; two relays");
     }
@@ -112,8 +142,9 @@ pub async fn serve_records(
                 .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
             Ok::<_, io::Error>(tx)
         });
-    let relay = relay(&rt).await;
-    if let Err(e) = serve(Lines::new(outgoing, incoming), relay, rt.data_dir.clone()).await {
+    let relay = relay(&rt, None).await;
+    let api = relay.ask(Api).await.unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    if let Err(e) = serve(Lines::new(outgoing, incoming), relay, api, rt.data_dir.clone()).await {
         tracing::debug!(error = %e, "acp conn ended with error");
     }
 }
@@ -129,12 +160,15 @@ static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 async fn serve(
     transport: impl ConnectTo<Agent> + 'static,
     relay: ActorRef<Relay>,
+    api: Arc<Engine>,
     data_dir: PathBuf,
 ) -> Result<(), Error> {
     let id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
     let for_new = relay.clone();
     let for_load = relay.clone();
     let for_prompt = relay.clone();
+    let (api_new, api_load, api_list, api_prompt, api_cancel) =
+        (api.clone(), api.clone(), api.clone(), api.clone(), api);
     let result = Agent
         .builder()
         .name("theuth")
@@ -156,10 +190,14 @@ async fn serve(
         )
         .on_receive_request(
             async move |req: NewSessionRequest, responder, cx| {
-                let session =
-                    api::ask::<Agents, _>(agent::AGENT_ACTOR, NewSession { cwd: Some(req.cwd) })
-                        .await
-                        .map_err(rpc_error)?;
+                let session = api_new
+                    .create_session(CreateSessionOptions {
+                        cwd: Some(req.cwd.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(rpc_error)?
+                    .session;
                 let _ = for_new.tell(Bind { session, id, cx }).await;
                 responder.respond(NewSessionResponse::new(session.to_string()))
             },
@@ -168,17 +206,10 @@ async fn serve(
         .on_receive_request(
             async move |req: LoadSessionRequest, responder, cx| {
                 let session = parse_session(&req.session_id)?;
-                let loaded = api::ask::<Agents, _>(
-                    agent::AGENT_ACTOR,
-                    LoadSession {
-                        session,
-                        before: None,
-                        limit: None,
-                        settled_only: false,
-                    },
-                )
-                .await
-                .map_err(rpc_error)?;
+                let loaded = api_load
+                    .load_session(session, None, None, Some(false))
+                    .await
+                    .map_err(rpc_error)?;
                 for (i, entry) in loaded.history.into_iter().enumerate() {
                     cx.send_notification(SessionNotification::new(
                         req.session_id.clone(),
@@ -192,9 +223,7 @@ async fn serve(
         )
         .on_receive_request(
             async move |req: ListSessionsRequest, responder, _cx| {
-                let sessions = api::ask::<Agents, _>(agent::AGENT_ACTOR, ListSessions)
-                    .await
-                    .map_err(rpc_error)?;
+                let sessions = api_list.list_sessions().await.map_err(rpc_error)?;
                 let here = std::env::current_dir().unwrap_or_default();
                 let infos = sessions
                     .into_iter()
@@ -218,17 +247,10 @@ async fn serve(
                 // `TurnFinished` ahead of the waiter (one ordered mailbox).
                 let (tx, rx) = oneshot::channel();
                 let _ = for_prompt.tell(Wait { session, tx }).await;
-                api::ask::<Agents, _>(
-                    agent::AGENT_ACTOR,
-                    SendInput {
-                        session: Some(session),
-                        text,
-                        files,
-                        delivery: agent::Delivery::default(),
-                    },
-                )
-                .await
-                .map_err(rpc_error)?;
+                api_prompt
+                    .send_input(Some(session), text, files, None)
+                    .await
+                    .map_err(rpc_error)?;
                 cx.spawn(async move {
                     // A dropped sender means the connection is going away.
                     let stop = rx.await.unwrap_or_default();
@@ -241,9 +263,7 @@ async fn serve(
         .on_receive_notification(
             async move |n: CancelNotification, _cx| {
                 let session = parse_session(&n.session_id)?;
-                api::ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session })
-                    .await
-                    .map_err(rpc_error)
+                api_cancel.cancel(session).await.map_err(rpc_error)
             },
             agent_client_protocol::on_receive_notification!(),
         )
@@ -256,9 +276,13 @@ async fn serve(
     result
 }
 
-/// A JSON-RPC error from [`crate::api`] as an ACP error (same code and text).
-fn rpc_error(e: ErrorObjectOwned) -> Error {
-    Error::new(e.code(), e.message())
+/// A JSON-RPC error from [`crate::api`] as an ACP error (same code and
+/// text); a transport failure is an internal error with its text.
+fn rpc_error(e: ClientError) -> Error {
+    match e {
+        ClientError::Call(e) => Error::new(e.code(), e.message()),
+        e => Error::new(-32000, e.to_string()),
+    }
 }
 
 /// The theuth session behind an ACP session id.
@@ -405,8 +429,10 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
 
 /// Bus subscriber routing each session's events to the ACP connection that
 /// created or loaded it (32 §5.3), and holding the prompt waiters.
-#[derive(Actor, Default)]
+#[derive(Actor)]
 pub struct Relay {
+    /// Where its calls go (63 §2.3).
+    api: Arc<Engine>,
     /// Live connections by [`serve`] id.
     connections: HashMap<u64, ConnectionTo<Client>>,
     /// The connection that owns each session; events for a session with no
@@ -429,6 +455,16 @@ impl Relay {
         if let Err(e) = cx.send_notification(n) {
             tracing::warn!(error = %e, "acp session/update failed");
         }
+    }
+}
+
+/// `ask` → the relay's [`Engine`], for a later connection ([`serve_records`]).
+struct Api;
+
+impl Message<Api> for Relay {
+    type Reply = Arc<Engine>;
+    async fn handle(&mut self, _: Api, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.api.clone()
     }
 }
 
@@ -533,8 +569,8 @@ impl Message<AgentEvent> for Relay {
                 // `models`); 0 until a client needs the ratio.
                 let mut usage = UsageUpdate::new(u64::from(context), 0);
                 // 51 §8.3: the owner's total, only when one currency says it all.
-                if let Ok(Some(c)) =
-                    api::ask::<Agents, _>(agent::AGENT_ACTOR, SessionCostQuery(session)).await
+                // `Err` = no ledger for this session (51 §8.3): nothing to say.
+                if let Ok(c) = self.api.session_cost(session).await
                     && let Some(cost) = acp_cost(&c)
                 {
                     usage = usage.cost(cost);
@@ -639,9 +675,7 @@ impl Message<ApprovalRequested> for Relay {
         let Some(cx) = self.connection(&a.session).cloned() else {
             return;
         };
-        let Ok(approval) = api::lookup::<Approval>(tools::APPROVAL_ACTOR) else {
-            return;
-        };
+        let api = self.api.clone();
         let tool_call = ToolCallUpdate::new(
             a.id.0.to_string(),
             ToolCallUpdateFields::new()
@@ -673,7 +707,7 @@ impl Message<ApprovalRequested> for Relay {
                     Decision::Deny
                 }
             };
-            let _ = approval.ask(Resolve { id, decision }).await;
+            let _ = api.resolve_approval(id, decision).await;
         });
     }
 }

@@ -8,14 +8,15 @@ use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{HeaderMap, HeaderValue, WsClient, WsClientBuilder};
 
-/// Connect to `rpc.listen` with `<data_dir>/token`, start a pairing, print
-/// it, wait for the scan. Exits 1 with a hint when no daemon answers.
+/// Connect to the running engine (63 §2.1 record; else `rpc.listen`) with
+/// `<data_dir>/token`, start a pairing, print it, wait for the scan. Exits 1
+/// with a hint when no daemon answers.
 pub async fn run(data_dir: &Path, config: &figment::Figment) -> anyhow::Result<()> {
-    let Ok(client) = connect(data_dir, &listen(config)).await else {
-        eprintln!(
-            "no harness on {}; start `t --headless` first",
-            listen(config)
-        );
+    let listen = rpc::engine::discover(data_dir)
+        .and_then(|r| r.record.listen)
+        .unwrap_or_else(|| listen(config));
+    let Ok(client) = connect(data_dir, &listen).await else {
+        eprintln!("no harness on {listen}; start `t --headless` first");
         std::process::exit(1);
     };
     pair(&client, false).await

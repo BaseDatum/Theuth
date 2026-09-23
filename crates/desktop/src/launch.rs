@@ -1,5 +1,6 @@
-//! Design doc 18: reach a `t --headless` daemon. Probe the configured port first
-//! (a terminal `t --serve` or another app instance is reused, 18 §3); otherwise
+//! Design doc 18: reach a `t --headless` daemon. Probe the running engine
+//! first (63: its `engine.json` record, else the configured port — a terminal
+//! `t --serve` or another app instance is reused, 18 §3); otherwise
 //! be a terminal for one command: `$SHELL -l -i -c 'exec t --headless …'` on a
 //! pty, so the daemon inherits exactly the environment a terminal tab would give
 //! it (18 §2). The pty transcript is drained into a 64 KiB ring and streamed to
@@ -129,10 +130,12 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".theuth"))
 }
 
-/// 18 §3: a live daemon on the configured `rpc.listen` is reused, not duplicated.
+/// 18 §3 / 63 §2.4: a live engine is reused, not duplicated. The engine
+/// record (`engine.json`: pid alive, `listen` set) says where it listens; the
+/// configured `rpc.listen` is the fallback for records written by older engines.
 fn probe(data_dir: &Path) -> Option<Connection> {
     let token = token(data_dir)?;
-    let listen = configured_listen(data_dir);
+    let listen = recorded_listen(data_dir).unwrap_or_else(|| configured_listen(data_dir));
     let addr = listen.to_socket_addrs().ok()?.next()?;
     TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).ok()?;
     Some(Connection {
@@ -141,6 +144,24 @@ fn probe(data_dir: &Path) -> Option<Connection> {
         data_dir: data_dir.to_owned(),
         owned: false,
     })
+}
+
+/// `listen` of `<data_dir>/engine.json` when its pid is alive (63 §2.1). The
+/// desktop does not link the harness, so the two fields are read here.
+fn recorded_listen(data_dir: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Record {
+        pid: u32,
+        listen: Option<String>,
+    }
+    let bytes = std::fs::read(data_dir.join("engine.json")).ok()?;
+    let r: Record = serde_json::from_slice(&bytes).ok()?;
+    let pid = nix::unistd::Pid::from_raw(i32::try_from(r.pid).ok()?);
+    // Signal 0: exists (EPERM = exists, not ours).
+    match nix::sys::signal::kill(pid, None) {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => r.listen,
+        Err(_) => None,
+    }
 }
 
 fn configured_listen(data_dir: &Path) -> String {

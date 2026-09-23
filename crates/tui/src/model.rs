@@ -46,6 +46,10 @@ use crate::search;
 pub enum UiEvent {
     /// Agent progress.
     Agent(AgentEvent),
+    /// Where the calls go now (63 §0.3): `Some("attached · pid N · host")`
+    /// while attached to another process's engine, `None` once this process
+    /// is the engine. The shown session is re-selected on the new end.
+    Engine(Option<String>),
     /// A tool call waits on a human.
     Approval(ApprovalRequested),
     /// An approval was answered (by anyone).
@@ -3082,6 +3086,11 @@ pub struct Model {
     /// A context edit or rewind landed (here or in another client): the
     /// event loop re-asks `load_session(settled_only: true)`.
     pub refresh_context: bool,
+    /// Status-line suffix while attached to another process's engine (63 §0.3).
+    pub attached: Option<String>,
+    /// The engine behind the calls changed: the event loop reloads the shown
+    /// session and its subtree from the new one (63 §2.3).
+    pub reselect: bool,
     /// Latest plan of the shown session (`Loaded.todos`, `TodoChanged`,
     /// `get_todos`; 47 §5.1). `None` until a load carried one.
     pub todos: Option<TodoSnapshot>,
@@ -3187,6 +3196,7 @@ impl Model {
             dictation: self.dictation.take(),
             dictation_pending: self.dictation_pending.take(),
             dictation_model: self.dictation_model.clone(),
+            attached: self.attached.take(),
             ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
         };
     }
@@ -4496,6 +4506,23 @@ impl Model {
                 r.added, r.updated
             ))),
             UiEvent::Info(t) => self.entries.push(Entry::Info(t)),
+            // The note rides the reload (like undo's), so it lands after the
+            // transcript the new engine serves — a pushed entry would go with
+            // the old one.
+            UiEvent::Engine(attached) => {
+                let note = match &attached {
+                    Some(label) => label.clone(),
+                    None => format!("engine started here (pid {})", std::process::id()),
+                };
+                self.attached = attached;
+                match self.session {
+                    Some(_) => {
+                        self.notice = Some(note);
+                        self.reselect = true;
+                    }
+                    None => self.entries.push(Entry::Info(note)),
+                }
+            }
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::Schedules(rows) => self.entries.push(Entry::Info(schedules_table(&rows))),
             UiEvent::ScheduleHistory(name, info, rows) => self
@@ -6166,7 +6193,11 @@ impl Model {
         } else {
             ""
         };
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}")
+        let attached = self
+            .attached
+            .as_deref()
+            .map_or_else(String::new, |a| format!("  ·  {a}"));
+        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{attached}")
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
