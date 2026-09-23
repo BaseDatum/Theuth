@@ -661,16 +661,6 @@ impl Message<LinkEvent> for NodesActor {
     }
 }
 
-/// This machine's hostname; `"theuth"` when `hostname` fails.
-fn hostname() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "theuth".to_owned())
-}
-
 #[async_trait::async_trait]
 impl runtime::Plugin for NodesPlugin {
     fn name(&self) -> &'static str {
@@ -696,7 +686,7 @@ impl runtime::Plugin for NodesPlugin {
         // The name a node lists us under (32 §4.1): link's display name or the hostname.
         let link_cfg: link::LinkConfig = rt.section("link").unwrap_or_default();
         let hello_name = if link_cfg.name.is_empty() {
-            hostname()
+            platform::process::hostname().to_owned()
         } else {
             link_cfg.name
         };

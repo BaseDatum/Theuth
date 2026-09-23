@@ -764,12 +764,15 @@ async fn spawn(path: &std::path::Path) -> Result<Proc, Error> {
     if !path.is_file() {
         return Err(Error::Missing(path.to_path_buf()));
     }
-    let out = Command::new(path)
+    let mut probe = Command::new(path);
+    probe
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    platform::process::hide_console(probe.as_std_mut());
+    let out = probe
         .output()
         .await
         .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
@@ -792,11 +795,13 @@ async fn spawn(path: &std::path::Path) -> Result<Proc, Error> {
             found,
         });
     }
-    let mut child = Command::new(path)
-        .stdin(Stdio::piped())
+    let mut cmd = Command::new(path);
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    platform::process::hide_console(cmd.as_std_mut());
+    let mut child = cmd
         .spawn()
         .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
     let stdin = child

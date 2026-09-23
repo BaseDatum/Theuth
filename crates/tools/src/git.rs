@@ -125,6 +125,7 @@ async fn run(cwd: Option<&Path>, args: &[&str], extra: Option<&Path>) -> anyhow:
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
+    platform::process::hide_console(cmd.as_std_mut());
     let out = cmd
         .output()
         .await

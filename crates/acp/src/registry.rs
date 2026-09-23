@@ -240,6 +240,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         c.arg("xf").arg(&archive).arg("-C").arg(&dir);
         c
     };
+    platform::process::hide_console(cmd.as_std_mut());
     let out = cmd
         .output()
         .await

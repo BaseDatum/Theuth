@@ -479,14 +479,12 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
 /// library hash it embeds, which must be the helper in the same payload; a
 /// `theuth` that could never find its helper is not installed.
 async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
-    let out = tokio::time::timeout(
-        PROBE_TIMEOUT,
-        tokio::process::Command::new(new_theuth)
-            .arg("--app-parser-hash")
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
+    let mut cmd = tokio::process::Command::new(new_theuth);
+    cmd.arg("--app-parser-hash")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    platform::process::hide_console(cmd.as_std_mut());
+    let out = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
     .await
     .context("probe `t.new --app-parser-hash`: timed out")?
     .context("probe `t.new --app-parser-hash`")?;
