@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use candle_core::DType;
-use decision::candle::Loaded;
+use decision::candle::{Gpu, Loaded};
 use decision::{Device, ProcessMemory, Question, process_memory};
 
 fn cell(m: ProcessMemory) -> String {
@@ -65,7 +65,7 @@ fn main() {
         for run in 1..=repeat {
             let before = process_memory();
             let t = Instant::now();
-            let m = Loaded::open(&dir, metal, dtype).expect("open");
+            let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype).expect("open");
             let load = t.elapsed();
             let q = Question::Bool {
                 statement: "The speakers are only greeting, scheduling or saying goodbye".into(),

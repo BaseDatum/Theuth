@@ -13,6 +13,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use ort::session::builder::SessionBuilder;
+
+use crate::accelerator::{self, Accelerator};
 
 /// The runtime's home under `<data_dir>/models/`: `libonnxruntime.{dylib,so}` /
 /// `onnxruntime.dll`, unversioned, plus a `VERSION` text file. Nothing else under
@@ -50,6 +55,66 @@ pub fn ort_ready() -> bool {
     ORT.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_some()
+}
+
+/// ORT's name for the CPU provider, what [`ep`] reports when nothing else is registered.
+pub const CPU_EP: &str = "CPUExecutionProvider";
+/// ORT's name for the DirectML provider.
+pub const DML_EP: &str = "DmlExecutionProvider";
+
+/// Set once DirectML registration has failed in this process: every later session goes
+/// straight to the CPU and the WARN is not repeated.
+static DML_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Whether sessions built by [`configure`] ask for DirectML: the configured accelerator
+/// says so, or it is `auto` on Windows and `DirectML.dll` sits beside the loaded runtime
+/// (Microsoft's DirectML build of ORT ships the two together; the CPU build has no DML EP).
+fn directml_wanted() -> bool {
+    if !cfg!(windows) || DML_FAILED.load(Ordering::Relaxed) {
+        return false;
+    }
+    match accelerator::get() {
+        Accelerator::Directml => true,
+        Accelerator::Auto => ORT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            .and_then(Path::parent)
+            .is_some_and(|d| d.join("DirectML.dll").is_file()),
+        Accelerator::Cpu | Accelerator::Cuda => false,
+    }
+}
+
+/// The execution provider sessions built by [`configure`] run on, for status replies:
+/// [`DML_EP`] or [`CPU_EP`]. Call after [`ort_lib`] (before it, `auto` cannot see the runtime).
+pub fn ep() -> &'static str {
+    if directml_wanted() { DML_EP } else { CPU_EP }
+}
+
+/// Register the execution provider [`accelerator::get`] resolves to on `builder`. CPU is
+/// ORT's default and needs nothing; DirectML that fails to register (runtime without the
+/// EP, no DX12 device, stale `DirectML.dll`) logs one WARN and leaves this and every later
+/// session on the CPU. Never fails: the builder comes back untouched in the worst case.
+pub fn configure(builder: SessionBuilder) -> SessionBuilder {
+    if !directml_wanted() {
+        return builder;
+    }
+    #[cfg(windows)]
+    {
+        match builder.with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()]) {
+            Ok(b) => {
+                tracing::debug!("onnxruntime: {DML_EP} registered");
+                b
+            }
+            Err(e) => {
+                DML_FAILED.store(true, Ordering::Relaxed);
+                tracing::warn!("onnxruntime: DirectML unavailable ({e}); ONNX models run on the CPU");
+                e.recover()
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    builder
 }
 
 /// `<data_dir>/models/onnxruntime/<LIB>`, the canonical on-disk location.

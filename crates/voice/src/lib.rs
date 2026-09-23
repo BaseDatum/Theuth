@@ -211,6 +211,10 @@ pub struct Status;
 pub struct VoiceStatus {
     /// Where the model is in its lifecycle.
     pub model: ModelState,
+    /// The ONNX Runtime execution provider STT/dictation sessions run on
+    /// (`models::onnx::ep`: `DmlExecutionProvider` | `CPUExecutionProvider`).
+    #[serde(default)]
+    pub accelerator: String,
     /// The configured voice.
     pub voice: String,
     /// Every voice the checkpoint ships.
@@ -560,6 +564,7 @@ impl Message<Status> for Voice {
     async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         VoiceStatus {
             model: self.model_state.clone(),
+            accelerator: models::onnx::ep().to_owned(),
             voice: self.cfg.voice.clone(),
             voices: self.voices.clone(),
             speaking: self.current.as_ref().map(|c| c.id),

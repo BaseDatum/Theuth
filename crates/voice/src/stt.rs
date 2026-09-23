@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kameo::message::{Context, Message};
-use parakeet_rs::{Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
+use parakeet_rs::{ExecutionConfig, Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
 use parking_lot::Mutex;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, DecoderOptions};
@@ -141,6 +141,12 @@ pub struct Piece {
     pub words: Vec<Word>,
 }
 
+/// parakeet-rs's defaults (4 intra threads, CPU) plus the execution provider
+/// `models.accelerator` resolves to (`models::onnx::configure`: DirectML on Windows).
+fn exec_config() -> ExecutionConfig {
+    ExecutionConfig::default().with_custom_configure(|b| Ok(models::onnx::configure(b)))
+}
+
 /// The offline TDT model (`meetings/02-live.md` §0.1): loaded once from a
 /// checkpoint directory, transcribes 16 kHz mono pieces. Inference takes the
 /// inner lock, so one `Engine` serialises its callers; `Send + Sync`.
@@ -153,7 +159,7 @@ impl Engine {
     pub fn load(dir: &Path, data_dir: &Path) -> anyhow::Result<Engine> {
         let t = Instant::now();
         models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
-        let m = ParakeetTDT::from_pretrained(dir, None)
+        let m = ParakeetTDT::from_pretrained(dir, Some(exec_config()))
             .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
         Ok(Engine(Mutex::new(m)))
@@ -223,7 +229,7 @@ impl Stream {
         }
         models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
         let t = Instant::now();
-        let m = Nemotron::from_pretrained(dir, None)
+        let m = Nemotron::from_pretrained(dir, Some(exec_config()))
             .map_err(|e| anyhow::anyhow!("no streaming STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: streaming STT model loaded in {:?}", t.elapsed());
         Ok(Stream(m))

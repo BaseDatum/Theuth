@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use candle_core::DType;
-use decision::candle::Loaded;
+use decision::candle::{Gpu, Loaded};
 use decision::laya::{self, Sequence};
 use decision::{Candidate, Question};
 use tokenizers::Tokenizer;
@@ -126,7 +126,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let t = Instant::now();
-    let m = Loaded::open(&dir, metal, dtype)?;
+    let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype)?;
     println!(
         "cold load: {} ms ({})  model id at load: {}  rss after load: {:.0} MiB  device: {:?} {:?}",
         t.elapsed().as_millis(),

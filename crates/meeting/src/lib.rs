@@ -623,6 +623,10 @@ pub struct Status {
     /// The session is waiting on a tool approval; phase 2.
     #[serde(default)]
     pub approval_waiting: bool,
+    /// The ONNX Runtime execution provider diarisation sessions run on
+    /// (`models::onnx::ep`: `DmlExecutionProvider` | `CPUExecutionProvider`).
+    #[serde(default)]
+    pub accelerator: String,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
@@ -1993,6 +1997,7 @@ impl Message<MeetingStatus> for Meeting {
             cursor: live.and_then(|l| l.cursor),
             topics: live.map(|l| l.topics.live()).unwrap_or_default(),
             approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
+            accelerator: models::onnx::ep().to_owned(),
         }
     }
 }

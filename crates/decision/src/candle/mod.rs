@@ -131,23 +131,48 @@ pub struct Loaded {
 // the allocator initialises) brings that path to +4 MB. Nothing in-process helps, so nothing
 // is done here; Metal is the Mac engine and CPU f32 the Linux/Windows path.
 
+/// Which GPU [`Loaded::open`] asks candle for ([`crate::Device::gpu`] resolves the config).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gpu {
+    /// CPU (Accelerate on a Mac).
+    None,
+    /// Apple GPU, device 0.
+    Metal,
+    /// Device 0; only reachable when this crate was built with the `cuda` feature.
+    Cuda,
+}
+
+impl Gpu {
+    /// f16 on Metal, f32 on CPU and CUDA (the CUDA target tonight is a Maxwell card, where
+    /// f16 arithmetic is neither native nor faster).
+    pub fn dtype(self) -> DType {
+        match self {
+            Gpu::Metal => DType::F16,
+            Gpu::None | Gpu::Cuda => DType::F32,
+        }
+    }
+}
+
 impl Loaded {
     /// Open a laya checkpoint dir (`crate::engine::MODEL_FILES`, the Hugging Face layout) on
-    /// Metal (`metal`) or CPU at `dtype`. A Metal device that cannot be created falls back to
-    /// CPU f32 with a warning.
-    pub fn open(dir: &Path, metal: bool, dtype: DType) -> anyhow::Result<Loaded> {
+    /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
+    /// without `decision/cuda` — falls back to CPU f32 with a warning.
+    pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
         let t = Instant::now();
-        let (device, dtype) = match metal {
-            false => (Device::Cpu, dtype),
-            true => match Device::new_metal(0) {
-                Ok(d) => (d, dtype),
-                Err(e) => {
-                    tracing::warn!(
-                        "decision: Metal unavailable ({e}); candle runs on the CPU in f32"
-                    );
-                    (Device::Cpu, DType::F32)
-                }
-            },
+        let picked = match gpu {
+            Gpu::None => Ok(Device::Cpu),
+            Gpu::Metal => Device::new_metal(0).map_err(|e| format!("Metal unavailable ({e})")),
+            #[cfg(feature = "cuda")]
+            Gpu::Cuda => Device::new_cuda(0).map_err(|e| format!("CUDA unavailable ({e})")),
+            #[cfg(not(feature = "cuda"))]
+            Gpu::Cuda => Err("this build has no CUDA (needs `--features decision/cuda` and nvcc)".into()),
+        };
+        let (device, dtype) = match picked {
+            Ok(d) => (d, dtype),
+            Err(e) => {
+                tracing::warn!("decision: {e}; candle runs on the CPU in f32");
+                (Device::Cpu, DType::F32)
+            }
         };
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer/tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("tokenizer/tokenizer.json: {e}"))?;

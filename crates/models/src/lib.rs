@@ -4,7 +4,9 @@
 //!
 //! [`onnx`] is the one process-wide ONNX Runtime initialiser (57 §6 step 1); it lives
 //! here because every `ort` user (`voice`, `meeting`, `decision`) already sits above `models`.
+//! [`accelerator`] is the `models.accelerator` knob those users (and the candle engine) read.
 
+pub mod accelerator;
 pub mod onnx;
 
 use std::collections::BTreeMap;

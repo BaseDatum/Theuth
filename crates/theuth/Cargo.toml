@@ -34,6 +34,7 @@ artifact = { workspace = true }
 app = { workspace = true }
 voice = { workspace = true }
 decision = { workspace = true }
+models = { workspace = true }  # `models.accelerator` + `--bench-models` (58 step 12)
 chrono = { workspace = true }  # --decision-export --since
 secrets = { workspace = true }
 rpassword = { workspace = true }

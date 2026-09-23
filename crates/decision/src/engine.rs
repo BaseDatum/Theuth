@@ -542,13 +542,8 @@ impl Engine {
 
 /// The production [`Loader`]: [`Loaded`] on `cfg.device`, f16 on Metal, f32 on CPU.
 fn open(dir: &Path, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
-    let metal = cfg.device.metal();
-    let dtype = if metal {
-        candle_core::DType::F16
-    } else {
-        candle_core::DType::F32
-    };
-    Loaded::open(dir, metal, dtype).map(|l| Box::new(l) as Box<dyn Oracle>)
+    let gpu = cfg.device.gpu();
+    Loaded::open(dir, gpu, gpu.dtype()).map(|l| Box::new(l) as Box<dyn Oracle>)
 }
 
 /// `none` appended once to a `Choice`; other questions unchanged.
