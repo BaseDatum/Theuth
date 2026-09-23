@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # Publish a theuth release to the update bucket and bump the Homebrew tap (39 §5).
 #
-# Pipeline (after package-macos, notarize-macos, package-update-macos; Linux tarballs
-# already staged by `just stage-linux` on each Linux build host):
+# Pipeline (after package-macos, notarize-macos, package-update-macos; Windows and Linux artifacts
+# already in dist/ from `just build-remote <host> windows|linux`, or staged in the bucket by
+# `just stage-linux` / `just package-linux` on a Linux box):
 #   gates 1-8 (§5.2)     version == Info.plist, Developer ID (app + theuth-app-parser helper), notarized,
-#                        pubkeys match, <ver>/ absent (immutability), staging/<ver>/ complete, each Linux
+#                        pubkeys match, <ver>/ absent (immutability), every Linux tarball present, each Linux
 #                        tarball prints VERSION in a clean ubuntu:24.04 of its arch and its helper answers
 #                        `--version` with the library hash, every CLI tarball holds exactly
-#                        `theuth` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` (46 §2.1, 59 §3.2; scripts/app-parser-env.sh)
-#   pull staging/<ver>/  → dist/
-#   sign                 cargo tauri signer sign  dist/theuth_<ver>_*.tar.gz  → .sig
-#   SHA256SUMS           shasum -a 256 over tarballs + DMG
+#                        `t` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` and the Windows CLI zip the
+#                        same three as .exe (46 §2.1, 59 §3.2; scripts/app-parser-env.sh)
+#   dist/ first          Linux/Windows artifacts are read from dist/; staging/<ver>/ in the bucket is pulled
+#                        only for what dist/ lacks (tarballs required; AppImage/deb/rpm/-setup.exe/zip optional)
+#   sign                 cargo tauri signer sign  dist/theuth_<ver>_*.tar.gz, *.AppImage, *-setup.exe, *.zip → .sig
+#   SHA256SUMS           shasum -a 256 over everything published (signed payloads + DMG + deb + rpm)
 #   upload               dist/theuth_<ver>_* + SHA256SUMS → s3://$BUCKET/$PREFIX/<ver>/
-#   verify               re-download every tarball + .sig via the PUBLIC url; minisign -V
+#   verify               re-download every signed payload + .sig via the PUBLIC url; minisign -V
 #                        against crates/update/pubkey.txt (sha256 vs SHA256SUMS when minisign
 #                        is not installed — cargo tauri signer has no verify subcommand)
-#   latest.json          jq; {version, platforms: {darwin-aarch64, cli-macos-aarch64,
-#                        cli-linux-x86_64, cli-linux-aarch64}} — written last
+#   latest.json          jq; {version, platforms: {darwin-aarch64, cli-macos-aarch64, cli-linux-x86_64,
+#                        cli-linux-aarch64, and when the artifact exists: windows-x86_64 (-setup.exe),
+#                        cli-windows-x86_64 (zip), linux-x86_64 (AppImage) — absent → one WARN, key omitted}}
+#                        — written last
 #   tap bump (§5.3)      clone $THEUTH_TAP_REPO, render Formula/theuth.rb + Casks/theuth.rb,
 #                        brew style + brew audit --strict --online by name (path audit is disabled),
 #                        commit "theuth <ver>", push
@@ -33,7 +38,10 @@
 #   THEUTH_UPDATE_KEY           minisign private key: path (~/.tauri/theuth.key) or base64 contents
 #   THEUTH_UPDATE_KEY_PASSWORD  its password (empty for --ci keys)
 #   THEUTH_RELEASE_LINUX        require | skip (default: require). skip = manifest without
-#                            cli-linux-* keys, formula without on_linux (macOS-only hotfix)
+#                            cli-linux-* / linux-* keys, formula without on_linux (macOS-only hotfix)
+#   THEUTH_SKIP_LINUX_SMOKE=1   gate 7 off: no Docker on this Mac (the Ubuntu build host already ran
+#                            `t --version` natively; glibc breakage of the Docker-built aarch64 tarball
+#                            would reach users). Without it, a missing docker fails gate 7.
 #   THEUTH_RELEASE_PRERELEASE=1 ad-hoc/unnotarized allowed; writes latest-prerelease.json only,
 #                            never latest.json, never bumps the tap
 #   THEUTH_TAP_REPO             tap git url (default: git@github.com:basedatum/homebrew-tap)
@@ -168,32 +176,51 @@ if "${AWS[@]}" s3 ls "$S3_VER/" >/dev/null 2>&1; then
   RESUME=1
 fi
 
-gate 6 "staging/$VERSION/ holds every Linux tarball"
-LINUX_DESKTOP=()
+gate 6 "dist/ (primary) or staging/$VERSION/ (fallback) holds every Linux tarball"
+# fetch <name>: 0 when dist/ has it (already, or pulled from staging/); 1 when nowhere.
+fetch() {
+  if [[ -f "$DIST/$1" ]]; then echo "    dist/ $1"; return 0; fi
+  if "${AWS[@]}" s3 ls "$S3_STAGING/$1" >/dev/null 2>&1; then
+    echo "    pull  $1"
+    "${AWS[@]}" s3 cp "$S3_STAGING/$1" "$DIST/$1" >/dev/null
+    return 0
+  fi
+  return 1
+}
+LINUX_DESKTOP=()   # deb + rpm: published as downloads with SHA256SUMS, not updater payloads
+LINUX_APPIMAGE=()  # signed; latest.json linux-<arch> (Tauri's AppImage updater)
+WIN_SETUP=""; WIN_ZIP=""
 if [[ "$LINUX" == "skip" ]]; then
   echo "    THEUTH_RELEASE_LINUX=skip: manifest and formula without Linux"
 else
   for f in "${LINUX_TGZ[@]}"; do
-    "${AWS[@]}" s3 ls "$S3_STAGING/$f" >/dev/null 2>&1 || fail 6 "$S3_STAGING/$f missing (just stage-linux on that arch, or THEUTH_RELEASE_LINUX=skip)"
-    echo "    pull $f"
-    "${AWS[@]}" s3 cp "$S3_STAGING/$f" "$DIST/$f" >/dev/null
+    fetch "$f" || fail 6 "$f neither in $DIST/ nor $S3_STAGING/ (just build-remote <host> linux, just stage-linux on that arch, or THEUTH_RELEASE_LINUX=skip)"
   done
-  # Desktop bundles (just package-linux on a Linux host) are optional: published as downloads
-  # with SHA256SUMS, not updater payloads (the Linux app does not self-update yet).
-  while IFS= read -r f; do
-    [[ -n "$f" ]] || continue
-    echo "    pull $f"
-    "${AWS[@]}" s3 cp "$S3_STAGING/$f" "$DIST/$f" >/dev/null
-    LINUX_DESKTOP+=("$f")
-  done < <("${AWS[@]}" s3 ls "$S3_STAGING/" | awk '{print $4}' | grep -E "^theuth_${VERSION}_linux-(x86_64|aarch64)\.(deb|rpm|AppImage)$" || true)
-  echo "    desktop bundles: ${#LINUX_DESKTOP[@]}"
+  # Desktop bundles (just build-remote <host> linux / just package-linux) are optional.
+  for arch in x86_64 aarch64; do
+    for ext in deb rpm AppImage; do
+      f="theuth_${VERSION}_linux-${arch}.${ext}"
+      if fetch "$f"; then
+        case "$ext" in AppImage) LINUX_APPIMAGE+=("$f") ;; *) LINUX_DESKTOP+=("$f") ;; esac
+      fi
+    done
+  done
+  echo "    desktop bundles: ${#LINUX_DESKTOP[@]} deb/rpm, ${#LINUX_APPIMAGE[@]} AppImage"
+  [[ ${#LINUX_APPIMAGE[@]} -gt 0 ]] || echo "    WARN: no theuth_${VERSION}_linux-*.AppImage — latest.json gets no linux-* key" >&2
 fi
+# Windows (just build-remote <host> windows) is optional: absent → keys omitted, one WARN each.
+f="theuth_${VERSION}_windows-x86_64-setup.exe"
+if fetch "$f"; then WIN_SETUP="$f"; else echo "    WARN: no $f — latest.json gets no windows-x86_64 key" >&2; fi
+f="theuth_${VERSION}_windows-x86_64.zip"
+if fetch "$f"; then WIN_ZIP="$f"; else echo "    WARN: no $f — latest.json gets no cli-windows-x86_64 key" >&2; fi
 
 gate 7 "each Linux tarball runs in a clean ubuntu:24.04 of its arch"
 if [[ "$LINUX" == "skip" ]]; then
   echo "    skipped (no Linux tarballs)"
+elif [[ "${THEUTH_SKIP_LINUX_SMOKE:-0}" == "1" ]]; then
+  echo "    WARNING: THEUTH_SKIP_LINUX_SMOKE=1 — Linux tarballs are NOT smoke-tested (glibc/shared-lib breakage would reach users)" >&2
 elif ! command -v docker >/dev/null 2>&1; then
-  echo "    WARNING: docker not found — Linux tarballs are NOT smoke-tested (glibc/shared-lib breakage would reach users)" >&2
+  fail 7 "docker not found — install Docker Desktop, or THEUTH_SKIP_LINUX_SMOKE=1 to release without the clean-ubuntu smoke test"
 else
   for f in "${LINUX_TGZ[@]}"; do
     case "$f" in *linux-x86_64*) plat=linux/amd64 ;; *) plat=linux/arm64 ;; esac
@@ -209,12 +236,18 @@ fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-gate 8 "every CLI tarball holds exactly t + $HELPER + $DOC_HELPER; the macOS helpers run here"
+gate 8 "every CLI tarball holds exactly t + $HELPER + $DOC_HELPER (the Windows zip: the same three .exe); the macOS helpers run here"
 for f in "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}; do
   listed="$(tar -tzf "$DIST/$f" | sed 's|^\./||' | sort | tr '\n' ' ')"
   [[ "$listed" == "t $HELPER $DOC_HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER $DOC_HELPER' (stale dist/ or staging from another library hash / protocol version)"
   echo "    $f: t $HELPER $DOC_HELPER"
 done
+if [[ -n "$WIN_ZIP" ]]; then
+  need unzip
+  listed="$(unzip -Z1 "$DIST/$WIN_ZIP" | sed 's|^\./||' | sort | tr '\n' ' ')"
+  [[ "$listed" == "t.exe $HELPER.exe $DOC_HELPER.exe " ]] || fail 8 "$WIN_ZIP lists '$listed', expected 't.exe $HELPER.exe $DOC_HELPER.exe' (stale dist/ from another library hash / protocol version)"
+  echo "    $WIN_ZIP: t.exe $HELPER.exe $DOC_HELPER.exe"
+fi
 mkdir -p "$WORK/cli" && tar -xzf "$DIST/$CLI_TGZ" -C "$WORK/cli"
 check_helper "$WORK/cli/$HELPER"
 check_doc_helper "$WORK/cli/$DOC_HELPER"
@@ -222,12 +255,15 @@ check_doc_helper "$WORK/cli/$DOC_HELPER"
 [[ "$("$WORK/cli/t" --app-parser-hash 2>&1)" == "$HELPER_HASH" ]] || fail 8 "$CLI_TGZ: t --app-parser-hash does not name the shipped $HELPER (the updater refuses such a payload)"
 
 # ── sign + sums ──────────────────────────────────────────────────────────────
-TARBALLS=("$APP_TGZ" "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"})
+# Every updater payload gets a minisign .sig: tarballs, AppImages, the NSIS installer, the Windows CLI zip.
+SIGNED=("$APP_TGZ" "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"} ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"})
+[[ -z "$WIN_SETUP" ]] || SIGNED+=("$WIN_SETUP")
+[[ -z "$WIN_ZIP" ]] || SIGNED+=("$WIN_ZIP")
 s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
   local ct
   case "$2" in
-    *.json) ct=application/json ;; *.dmg) ct=application/x-apple-diskimage ;;
-    *.tar.gz) ct=application/gzip ;; *.sig | *.deb | *.rpm | *.AppImage) ct=application/octet-stream ;; *) ct=text/plain ;;
+    *.json) ct=application/json ;; *.dmg) ct=application/x-apple-diskimage ;; *.exe) ct=application/vnd.microsoft.portable-executable ;;
+    *.tar.gz) ct=application/gzip ;; *.zip) ct=application/zip ;; *.sig | *.deb | *.rpm | *.AppImage) ct=application/octet-stream ;; *) ct=text/plain ;;
   esac
   if [[ "$DRY_RUN" == "1" ]]; then echo "    DRY_RUN: aws s3 cp $1 $2"; return 0; fi
   "${AWS[@]}" s3 cp "$1" "$2" --content-type "$ct" >/dev/null
@@ -236,13 +272,13 @@ s3_cp() { # src dest — content type from the destination key; DRY_RUN prints
 
 if [[ "$RESUME" == "1" ]]; then
   echo "==> resume: skip sign/upload (leave $S3_VER/ immutable)"
-  for f in "${TARBALLS[@]}"; do
+  for f in "${SIGNED[@]}"; do
     [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig missing — cannot resume" >&2; exit 1; }
   done
   [[ -s "$DIST/SHA256SUMS" ]] || { echo "error: $DIST/SHA256SUMS missing — cannot resume" >&2; exit 1; }
 else
-  echo "==> signing ${#TARBALLS[@]} tarballs (cargo tauri signer sign)"
-  for f in "${TARBALLS[@]}"; do
+  echo "==> signing ${#SIGNED[@]} payloads (cargo tauri signer sign)"
+  for f in "${SIGNED[@]}"; do
     rm -f "$DIST/$f.sig"
     cargo tauri signer sign "$DIST/$f" >/dev/null
     [[ -s "$DIST/$f.sig" ]] || { echo "error: $DIST/$f.sig not produced" >&2; exit 1; }
@@ -250,11 +286,11 @@ else
   done
 
   echo "==> SHA256SUMS"
-  (cd "$DIST" && shasum -a 256 "${TARBALLS[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} >SHA256SUMS && cat SHA256SUMS)
+  (cd "$DIST" && shasum -a 256 "${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} >SHA256SUMS && cat SHA256SUMS)
 
   echo "==> upload → $S3_VER/"
-  UPLOADS=("${TARBALLS[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
-  for f in "${TARBALLS[@]}"; do UPLOADS+=("$f.sig"); done
+  UPLOADS=("${SIGNED[@]}" "$DMG" ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} SHA256SUMS)
+  for f in "${SIGNED[@]}"; do UPLOADS+=("$f.sig"); done
   for f in "${UPLOADS[@]}"; do s3_cp "$DIST/$f" "$S3_VER/$f"; done
 fi
 sha_of() { awk -v f="$1" '$2 == f {print $1}' "$DIST/SHA256SUMS"; }
@@ -273,7 +309,7 @@ else
   else
     echo "    minisign not installed (brew install minisign): comparing sha256 with SHA256SUMS and .sig bytes with dist/ instead"
   fi
-  for f in "${TARBALLS[@]}"; do
+  for f in "${SIGNED[@]}"; do
     curl -fsSL --retry 3 -o "$TMP/$f" "$PUB_VER/$f"
     curl -fsSL --retry 3 -o "$TMP/$f.sig" "$PUB_VER/$f.sig"
     if [[ -n "${RAW_PUB:-}" ]]; then
@@ -299,6 +335,12 @@ platform cli-macos-aarch64 "$CLI_TGZ"
 for f in ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}; do
   case "$f" in *linux-x86_64*) platform cli-linux-x86_64 "$f" ;; *) platform cli-linux-aarch64 "$f" ;; esac
 done
+# Desktop updaters (Tauri: <os>-<arch>): AppImage per arch, the NSIS installer; the Windows CLI zip for `t --update`.
+for f in ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"}; do
+  case "$f" in *linux-x86_64*) platform linux-x86_64 "$f" ;; *) platform linux-aarch64 "$f" ;; esac
+done
+[[ -z "$WIN_SETUP" ]] || platform windows-x86_64 "$WIN_SETUP"
+[[ -z "$WIN_ZIP" ]] || platform cli-windows-x86_64 "$WIN_ZIP"
 printf '%s\n' "$MANIFEST" >"$DIST/$MANIFEST_NAME"
 jq . "$DIST/$MANIFEST_NAME"
 s3_cp "$DIST/$MANIFEST_NAME" "s3://${BUCKET}/${PREFIX}/${MANIFEST_NAME}"

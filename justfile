@@ -111,7 +111,18 @@ stage-linux:
 package-linux:
     ./scripts/package-linux.sh
 
+# Build the Windows or Linux release on a remote ssh host and pull theuth_<ver>_* into target/release/dist
+# (scripts/build-remote.sh; THEUTH_REMOTE_DRY_RUN=1 prints the ssh/scp commands). Release order:
+#   just build-remote <win-host> windows      → theuth_<ver>_windows-x86_64-setup.exe + theuth_<ver>_windows-x86_64.zip
+#   just build-remote <linux-host> linux      → theuth_<ver>_linux-x86_64.{AppImage,deb,rpm,tar.gz}
+#   just package-macos → just notarize-macos → just package-update-macos → just release
+# (linux-aarch64 CLI tarball: `just stage-linux` on this Mac, Docker; it lands in dist/ too.)
+build-remote host os *ARGS:
+    ./scripts/build-remote.sh {{host}} {{os}} {{ARGS}}
+
 # Gates, sign, upload <ver>/, verify, latest.json, tap bump (39 §5.2-5.4). Needs THEUTH_S3_*/THEUTH_UPDATE_KEY in .env.signing.
+# Windows/Linux artifacts are read from dist/ (just build-remote); staging/<ver>/ in the bucket is the fallback.
+# THEUTH_SKIP_LINUX_SMOKE=1 when Docker is absent (gate 7 fails otherwise).
 release-s3:
     ./scripts/release-s3.sh
 
@@ -137,6 +148,7 @@ bump-version part:
     ./scripts/bump-version.sh {{part}}
 
 # Full macOS release (39 §5.1): package, notarize, update payloads, publish, tag.
+# Run `just build-remote <host> windows|linux` first so their artifacts are in dist/ (see build-remote).
 release:
     just package-macos
     just notarize-macos
