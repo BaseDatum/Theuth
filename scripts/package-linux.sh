@@ -48,6 +48,7 @@ HOST_PKGS=(
   libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev
   libssl-dev
   libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+  xdg-utils file   # AppImage bundler copies xdg-open into the image and linuxdeploy runs file(1)
 )
 # check_prereqs: every HOST_PKGS entry installed (dpkg hosts only) and every tool present; exit 2 listing the gaps.
 check_prereqs() {

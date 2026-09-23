@@ -56,7 +56,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
   libdbus-1-dev \
   libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev \
-  libssl-dev
+  libssl-dev \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils file
 
 # Ubuntu's llvm package ships versioned binaries (llvm-objcopy-14). btls-sys wants the short names.
 mkdir -p "$HOME/.local/bin"
