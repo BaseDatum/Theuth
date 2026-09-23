@@ -30,6 +30,9 @@
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
+# Tauri runs linuxdeploy + its plugins as AppImages, which mount themselves through FUSE 2; Ubuntu ≥ 24.10 and
+# most containers have only fuse3 (or no /dev/fuse). Extract-and-run needs neither and costs a few seconds.
+export APPIMAGE_EXTRACT_AND_RUN=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=load-signing-env.sh
