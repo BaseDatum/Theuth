@@ -3,6 +3,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
 import {
   File,
+  FileArchive,
   FileCode,
   FileText,
   FolderOpen,
@@ -12,6 +13,7 @@ import {
   MoreHorizontal,
   PanelRight,
   Table,
+  Workflow,
 } from "lucide-react";
 import {
   memo,
@@ -58,6 +60,8 @@ export const TEXT_KINDS: Record<Kind, boolean> = {
   pdf: false,
   file: false,
   app: true,
+  archive: false,
+  mermaid: true,
 };
 
 /** One lucide glyph per kind; the card slot, the explorer's thumbs and its kind chips share it. */
@@ -71,6 +75,8 @@ export const GLYPH: Record<Kind, typeof File> = {
   html: FileCode,
   file: File,
   app: LayoutGrid,
+  archive: FileArchive,
+  mermaid: Workflow,
 };
 
 const fail = (e: unknown) =>

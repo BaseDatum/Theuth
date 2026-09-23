@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Explorer } from '@/components/artifacts/Explorer'
 import type { Kind } from '@/rpc/extra'
 
-const KINDS: Record<Kind, true> = { markdown: true, text: true, csv: true, image: true, svg: true, pdf: true, html: true, file: true, app: true }
+const KINDS: Record<Kind, true> = { markdown: true, text: true, csv: true, image: true, svg: true, pdf: true, html: true, file: true, app: true, archive: true, mermaid: true }
 
 /** `?q=`, `?kind=`, `?session=` prefill the rail's filters. */
 export const Route = createFileRoute('/artifacts')({

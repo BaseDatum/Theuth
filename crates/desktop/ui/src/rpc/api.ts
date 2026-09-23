@@ -84,6 +84,7 @@ import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
+import type { ArchiveListing } from '@/rpc/bindings/ArchiveListing'
 import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
@@ -247,6 +248,8 @@ export interface Api {
   export_artifact(id: string, dest: string): Promise<string>
   /** The artifact record of one `show` call (49 §4.2); a vanished record rejects. */
   get_artifact(call_id: string): Promise<Artifact>
+  /** The member listing of an `archive` record (35 §3.2): header data only, at most 5,000 entries (`truncated`); rejects when there is no listing. */
+  get_artifact_listing(call_id: string): Promise<ArchiveListing>
   /** Up to 2,000 chars of the artifact's indexed text around `query`'s match, with ranges and coverage (49 §7); failed extraction rejects. */
   artifact_search_match(call_id: string, query: string): Promise<ArtifactMatchContext>
   /** Fire a schedule now, ignoring `next` (34 §8); rejects with `busy` / `no such schedule` / the parse error. */
@@ -622,6 +625,7 @@ export const METHODS = [
   'fork_session',
   'get_app',
   'get_artifact',
+  'get_artifact_listing',
   'get_attachment',
   'get_communication',
   'get_prompt',

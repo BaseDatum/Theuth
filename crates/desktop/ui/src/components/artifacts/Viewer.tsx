@@ -6,7 +6,9 @@ import { type MouseEvent, type ReactNode, memo, useEffect, useLayoutEffect, useM
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { AppView } from '@/components/apps/AppView'
+import { ArchiveView } from '@/components/artifacts/ArchiveView'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
+import { MermaidView } from '@/components/artifacts/MermaidView'
 import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
@@ -300,6 +302,7 @@ function Body({ a }: { a: Artifact }) {
     )
   }
   if (a.kind === 'pdf') return <Pdf a={a} />
+  if (a.kind === 'archive') return <ArchiveView a={a} />
   if (a.kind === 'file') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-fg-secondary">
@@ -316,6 +319,8 @@ function Body({ a }: { a: Artifact }) {
   switch (a.kind) {
     case 'markdown':
       return <Markdown text={text} />
+    case 'mermaid':
+      return <MermaidView text={text} />
     case 'text':
       return (
         <div className="p-4 [&_pre]:text-xs">
