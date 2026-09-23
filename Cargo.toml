@@ -342,7 +342,7 @@ genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
 # C++ symbols (`bssl::*`), which previously collided with boring-sys at the final link of `t` on
 # Linux (58 §2.2). Branch `fix/prefix-cxx-elf` = 0.5.6 + those commits. Open: Windows/COFF still
 # skips prefixing. Build needs `llvm-nm`/`llvm-objcopy` (brew llvm) on macOS.
-btls-sys = { git = "https://github.com/skymoore/btls", branch = "fix/prefix-cxx-elf" }
+btls-sys = { git = "https://github.com/skymoore/btls", branch = "fix/prefix-windows-coff" }
 # pbjson-types (under a2a-pb, the A2A SDK's ProtoJSON layer): `Timestamp` serializes with
 # `to_rfc3339()`, which emits `+00:00`; the protobuf JSON mapping requires Z-normalized output
 # with 0/3/6/9 fractional digits and the official a2a-tck checks for it (DM-SERIAL003).
