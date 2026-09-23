@@ -70,7 +70,7 @@ pub fn helper_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default()
-        .join(format!("theuth-documents-{}", protocol_version()));
+        .join(format!("theuth-documents-{}{}", protocol_version(), std::env::consts::EXE_SUFFIX));
     #[cfg(debug_assertions)]
     if !beside.is_file() {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -866,6 +866,22 @@ async fn spawn(path: &std::path::Path) -> Result<Proc, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 58 step 14: the helper beside the binary is `theuth-documents-<ver>.exe` on Windows;
+    /// `HelperStatus.found` tested the suffix-less name and read false there.
+    #[test]
+    fn default_helper_path_carries_exe_suffix() {
+        if std::env::var_os("THEUTH_DOCUMENTS_HELPER").is_some_and(|p| !p.is_empty()) {
+            return; // override in effect; the default path is not built
+        }
+        let name = helper_path().file_name().unwrap().to_string_lossy().into_owned();
+        // Debug builds may pick the source-tree dev helper instead (suffix-less, by name).
+        assert!(
+            name == format!("theuth-documents-{}{}", protocol_version(), std::env::consts::EXE_SUFFIX)
+                || name == "theuth-documents",
+            "{name}"
+        );
+    }
 
     /// A `sh` helper: `--version` prints our version; then `body` runs with the request stream on stdin.
     fn script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {

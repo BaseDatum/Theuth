@@ -99,9 +99,40 @@ on stdin EOF. The bundle probe (forbidden-module check) in the TS scripts still 
 the compile, so a bad dependency closure still fails the build (no exe). Follow-up, outside this
 branch: make `build-helper.ts` suffix-aware (`process.platform === "win32" ? ".exe" : ""`, `os.tmpdir()`).
 
-`HelperStatus.found` (`crates/document/src/helper.rs`) tests `is_file()` on the suffix-less path
-and will read `false` on Windows although the spawn works (std `Command` resolves `.exe`); Settings
-will show the documents helper as missing. Not in this step's allow-list — flagged for the desktop omp.
+`HelperStatus.found` (`crates/document/src/helper.rs`) tested `is_file()` on the suffix-less path
+and read `false` on Windows. Fixed on `fix/desktop-launch-windows` (below).
+
+## Launch on Windows (`crates/desktop/src/launch.rs`, branch `fix/desktop-launch-windows`, 2026-09-23)
+
+Observed with the installed 1.13.4: launching the app opened a stray console window and the webview
+showed `no daemon on 127.0.0.1:62961 after 15 s: your shell startup is waiting for input` over a
+transcript that was conhost's pseudo-console handshake (`\x1b[?9001h \x1b[?1004h \x1b[?25h
+\x1b]0;…\t.exe \x1b[6n`), not `t` output. Control: `Start-Process t.exe --headless --data-dir …` with
+`THEUTH_LAUNCH=1 THEUTH_RPC__LISTEN=127.0.0.1:62962` and no pty listened after 528 ms. So the daemon
+was fine and the ConPTY launch (`portable-pty` `openpty` + `spawn_command`) was the failure.
+
+As built:
+
+- **No pty on Windows.** `spawn` is `#[cfg(windows)]`: `std::process::Command` for
+  `t.exe --headless --data-dir <dir>` with `creation_flags(CREATE_NO_WINDOW)` (0x08000000, std's
+  `CommandExt`, no new dependency), stdin null, stdout and stderr piped, cwd `$HOME`, the same env as
+  the pty path (`TERM`, `THEUTH_LAUNCH=1`, `THEUTH_RPC__LISTEN`). Two drain threads (one per pipe)
+  feed the same 64 KiB ring and `launch-log` events, so the transcript UI is unchanged. The pty was
+  only ever there to inherit a login shell's environment (18 §2), which Windows has none of (58 §0.3).
+- **`Daemon`** keeps one struct: `child` is `Box<dyn portable_pty::Child>` on Unix and
+  `std::process::Child` on Windows (`master` is `#[cfg(unix)]`). `shutdown` still waits the 2 s
+  grace after the webview's RPC `shutdown`, then `Child::kill` (TerminateProcess). There is nothing to
+  hang up on Windows; stdin is already null.
+- **Timeout diagnosis.** `wait_ready` now strips CSI/OSC/DCS/PM/APC sequences and C0 bytes from the
+  transcript (`strip_controls`) and only says "your shell startup is waiting for input" on Unix when
+  the stripped text ends in a partial line (`Password: `, `(y/n) `). Every timeout message quotes the
+  last five transcript lines. Unit tests pin the conhost transcript above to *not* trigger it.
+- **Helper presence.** `app::helper_path` and `document::helper::helper_path` append
+  `std::env::consts::EXE_SUFFIX`, so `is_file()` (which gated the spawn as well as
+  `HelperStatus.found`) sees `theuth-app-parser-<hash>.exe` / `theuth-documents-<ver>.exe`.
+
+Not verified on Windows from the Mac; `cargo check -p desktop --target x86_64-pc-windows-msvc` stops at
+the C build scripts before the desktop crate. The `cfg(windows)` code was reviewed by eye.
 
 ## Verifying on the Windows host
 
@@ -139,6 +170,6 @@ C:\tmp\theuth-cli\theuth-documents-<ver>.exe --version
 ## Not done / follow-ups
 
 - Authenticode signing (installer + exes): needs a certificate; `bundle.windows.signCommand`.
-- `build-helper.ts` Windows suffix bug and `HelperStatus.found` (above) — other owners.
+- `build-helper.ts` Windows suffix bug (above) — other owner. `HelperStatus.found` is fixed (Launch on Windows).
 - `latest.json` `windows-x86_64` / `cli-windows-x86_64` rows and `.sig` — `release-s3.sh` (other omp).
 - Identifier `io.theuth.mac` on Windows (app-data folder name) — cosmetic, not touched.
