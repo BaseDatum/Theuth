@@ -55,7 +55,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
   libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
   libdbus-1-dev \
-  libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev \
+  libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev \
+  libasound2-dev libpulse-dev libudev-dev \
   libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils file
 

@@ -25,19 +25,21 @@ ARG DEBIAN_FRONTEND=noninteractive
 # Toolchain: obscura/btls/boringssl/aws-lc need clang+cmake+perl; libspa-sys runs bindgen (libclang).
 # X11/xcb: enigo + xcap.  xdo/xkbcommon: enigo.  dbus: keyring (dbus-secret-service).
 # pipewire/drm/gbm/wayland: xcap's Wayland capture path.  libssl-dev: openssl-probe stragglers.
+# asound/pulse/udev: meeting capture off macOS (flexaudio: cpal/ALSA mic, PipeWire + Pulse loopback; 58 step 10).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip \
       libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
       libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
       libdbus-1-dev \
-      libpipewire-0.3-dev libdrm-dev libgbm-dev libwayland-dev \
+      libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev \
+      libasound2-dev libpulse-dev libudev-dev \
       libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Bun, pinned (SHASUMS256.txt of the GitHub release). Bump both sums with the version.
-ARG BUN_VERSION=1.4.0
-ARG BUN_SHA256_X64=2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452
-ARG BUN_SHA256_AARCH64=4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e
+ARG BUN_VERSION=1.4.2
+ARG BUN_SHA256_X64=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+ARG BUN_SHA256_AARCH64=54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7
 RUN case "$TARGETARCH" in \
       amd64) bun_arch=x64; bun_sha="$BUN_SHA256_X64" ;; \
       arm64) bun_arch=aarch64; bun_sha="$BUN_SHA256_AARCH64" ;; \
