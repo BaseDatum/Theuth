@@ -126,7 +126,10 @@ export async function handle(req: Req): Promise<Res> {
   }
 }
 
-if (import.meta.main) {
+// `import.meta.main` is false inside a Bun-compiled executable on Windows (1.4.x) — the binary then read
+// stdin forever and `--version` printed nothing; a compiled binary is always the entrypoint (argv[1] is /$bunfs/…).
+const isMain = import.meta.main || Bun.main === import.meta.path || (process.argv[1] ?? "").includes("$bunfs");
+if (isMain) {
   const argv = process.argv.slice(2);
   if (argv.includes("--version") || argv.includes("-V")) {
     process.stdout.write(`theuth-documents ${PROTOCOL_VERSION}\n`);

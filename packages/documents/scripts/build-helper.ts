@@ -23,7 +23,8 @@
  * binary is started from `/tmp` with a foreign `HOME` and no `node_modules` for one import → markdown
  * round trip, so a dependency upgrade that reintroduces a disk read fails the build, not the app.
  */
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as Y from "yjs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -91,7 +92,9 @@ for (const forbidden of ["@blocknote/xl-ai", "y-websocket", "y-webrtc"]) {
 const diskReads = [...bundled.matchAll(/^.*(?:readFileSync\(|__dirname|createRequire\(|require\.resolve\().*$/gm)].map((m) => m[0].trim().slice(0, 160));
 if (diskReads.length) throw new Error(`helper bundle resolves files at import — the compiled binary would not run standalone:\n${diskReads.join("\n")}`);
 
-const stable = join(distDir, "theuth-documents");
+// Windows executables carry .exe (Bun appends it to a suffix-less outfile anyway; name it so the copy below finds it).
+const exe = (target ? target.startsWith("bun-windows") : process.platform === "win32") ? ".exe" : "";
+const stable = join(distDir, `theuth-documents${exe}`);
 const out = await Bun.build({
   entrypoints: [entry],
   target: "bun",
@@ -105,14 +108,16 @@ if (!out.success) throw new AggregateError(out.logs, "helper compile failed");
 if (!target || target.startsWith(`bun-${process.platform}-`)) await selfTest(stable);
 else console.error(`skipping startup self-test: ${target} does not run here`);
 
-const versioned = `${stable}-${PROTOCOL_VERSION}`;
+const versioned = join(distDir, `theuth-documents-${PROTOCOL_VERSION}${exe}`);
 copyFileSync(stable, versioned);
 console.error(`built ${stable} and ${versioned}`);
 
 /** Run the binary as the installed app does: from another directory, another HOME, no node_modules. */
 async function selfTest(bin: string) {
-  const env = { ...process.env, HOME: "/tmp/x" };
-  const version = Bun.spawnSync([bin, "--version"], { cwd: "/tmp", env, stderr: "pipe", stdout: "pipe" });
+  // A foreign cwd and HOME on every OS (Windows has no /tmp; a missing cwd makes spawnSync report nothing).
+  const cwd = mkdtempSync(join(tmpdir(), "theuth-documents-selftest-"));
+  const env = { ...process.env, HOME: join(cwd, "home"), USERPROFILE: join(cwd, "home") };
+  const version = Bun.spawnSync([bin, "--version"], { cwd, env, stderr: "pipe", stdout: "pipe" });
   const said = version.stdout.toString().trim();
   if (version.exitCode !== 0 || said !== `theuth-documents ${PROTOCOL_VERSION}`) {
     throw new Error(`self-test: --version exited ${version.exitCode}: ${said}\n${version.stderr.toString().slice(0, 2000)}`);
@@ -124,7 +129,7 @@ async function selfTest(bin: string) {
     { id: 2, op: "import", doc: "t", markdown: "# Self-test\n\nOne paragraph.", mode: "replace" },
     { id: 3, op: "markdown", doc: "t" },
   ];
-  const run = Bun.spawnSync([bin], { cwd: "/tmp", env, stdin: Buffer.from(requests.map((r) => `${JSON.stringify(r)}\n`).join("")), stderr: "pipe", stdout: "pipe" });
+  const run = Bun.spawnSync([bin], { cwd, env, stdin: Buffer.from(requests.map((r) => `${JSON.stringify(r)}\n`).join("")), stderr: "pipe", stdout: "pipe" });
   const replies = run.stdout
     .toString()
     .split("\n")
@@ -135,5 +140,5 @@ async function selfTest(bin: string) {
   if (run.exitCode !== 0 || failed || !md.includes("# Self-test") || !md.includes("One paragraph.")) {
     throw new Error(`self-test: round trip failed (exit ${run.exitCode}) ${failed?.error ?? ""}\nstdout: ${run.stdout.toString().slice(0, 2000)}\nstderr: ${run.stderr.toString().slice(0, 2000)}`);
   }
-  console.error("self-test passed: --version + import/markdown round trip from /tmp");
+  console.error(`self-test passed: --version + import/markdown round trip from ${cwd}`);
 }

@@ -58,7 +58,9 @@ for (const forbidden of [
     );
 }
 
-const stable = join(distDir, "theuth-app-parser");
+// Windows executables carry .exe (Bun appends it to a suffix-less --outfile anyway; name it so the copy below finds it).
+const exe = (target ? target.startsWith("bun-windows") : process.platform === "win32") ? ".exe" : "";
+const stable = join(distDir, `theuth-app-parser${exe}`);
 const args = [
   "build",
   "--compile",
@@ -77,7 +79,7 @@ const proc = Bun.spawnSync(["bun", ...args], {
 });
 if (proc.exitCode !== 0) process.exit(proc.exitCode ?? 1);
 
-const versioned = `${stable}-${hash}`;
+const versioned = join(distDir, `theuth-app-parser-${hash}${exe}`);
 copyFileSync(stable, versioned);
 writeFileSync(join(distDir, "library-hash"), `${hash}\n`);
 console.error(`built ${stable} and ${versioned}`);
