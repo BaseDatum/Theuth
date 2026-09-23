@@ -441,3 +441,19 @@ process from `$SHELL -l -i -c 'printf %s "$PATH"'` (3 s budget, stdin
 `/dev/null`, stderr dropped; inherited `PATH` kept and warned once on
 failure), off with `tools.login_path: false` or `THEUTH_NO_LOGIN_PATH=1`.
 PTY `start` already runs `$SHELL -lc`, so it needed nothing.
+
+## 13. Reminders (2026-09-23)
+
+`remind_me_in { seconds, message }` (`tools/src/reminder.rs`; 5 s ≤ seconds
+≤ `tools.reminder_max_secs`, default 86400; message ≤ 2000 chars; 8 pending
+per session) arms a process-less job in the `Jobs` actor and returns
+`{id: "r3", fires_at, seconds}` at once; `cancel_reminder { id }` retires it
+with no delivery. Each reminder is an admitted `Kind::Reminder` operation
+from set to fire/cancel, so a pending one blocks the todo nudge like a
+running job (47 §3.2). On fire the guard settles `Settle::Reminder` and the
+supervisor injects `<reminder id="r3" after="600" set_at="…" late="false">
+message</reminder>` through `inject` — never `<job_result>`. Rows live in
+`reminders` (migration 0019, key `(session, id)`): `ReminderEvent::Set` →
+insert, `Cancelled` → delete, fired → delete in `settle()`. On start the
+supervisor re-arms stored rows after `ActivityRegistered` (`RearmReminder`);
+overdue ones fire at once with `late="true"`, rows of vanished sessions go.
