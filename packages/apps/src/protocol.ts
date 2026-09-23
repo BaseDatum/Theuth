@@ -29,6 +29,23 @@ export interface ParserRequest {
   tools: ToolSnapshot[];
 }
 
+/** `check_mermaid`: syntax-check one mermaid diagram (reply fences, design 30 §5). */
+export interface MermaidRequest {
+  id: string;
+  op: "check_mermaid";
+  source: string;
+}
+
+export interface MermaidError {
+  /** 1-based source line when mermaid's message carries one. */
+  line: number | null;
+  message: string;
+}
+
+export type MermaidResponse =
+  | { id: string; ok: true }
+  | { id: string; ok: false; errors: MermaidError[] };
+
 export type StatementKind = "value" | "state" | "query" | "mutation";
 
 export interface StatementInfo {

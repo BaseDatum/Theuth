@@ -24,6 +24,9 @@ use crate::{AppBinding, AppDiagnostic};
 pub const PENDING: usize = 8;
 /// Per request: from writing the line to having read the whole response.
 pub const DEADLINE: Duration = Duration::from_secs(2);
+/// The first `check_mermaid` on a child: mermaid + jsdom load lazily and
+/// take seconds under load (30 §5); later ones get [`DEADLINE`].
+pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(15);
 /// Largest response line accepted; the helper refuses request lines above
 /// the same size, so a longer response is a broken helper.
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
@@ -50,6 +53,28 @@ struct Request<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     base: Option<&'a str>,
     tools: &'a [ToolSnapshot],
+}
+
+/// `check_mermaid` request line (`protocol.ts` `MermaidRequest`).
+#[derive(Serialize)]
+struct MermaidRequest<'a> {
+    id: String,
+    op: &'static str,
+    source: &'a str,
+}
+
+/// `check_mermaid` response body (`protocol.ts` `MermaidResponse`).
+#[derive(Deserialize)]
+struct MermaidResponse {
+    ok: bool,
+    #[serde(default)]
+    errors: Vec<MermaidError>,
+}
+
+#[derive(Deserialize)]
+struct MermaidError {
+    line: Option<u32>,
+    message: String,
 }
 
 /// One statement of a checked program.
@@ -132,7 +157,9 @@ impl std::error::Error for Error {}
 struct Job {
     line: Vec<u8>,
     id: String,
-    reply: oneshot::Sender<Result<CheckResult, Error>>,
+    /// Needs the mermaid parser: the first on a child gets [`MERMAID_FIRST_DEADLINE`].
+    mermaid: bool,
+    reply: oneshot::Sender<Result<serde_json::Value, Error>>,
 }
 
 /// Handle to the helper. Cheap to share behind an `Arc`; the worker task
@@ -176,6 +203,36 @@ impl Helper {
         self.request("merge_check", patch, Some(base), tools).await
     }
 
+    /// Syntax-check one mermaid diagram (30 §5): `path` is `line:N` when the
+    /// parser located the error, else `""`.
+    pub async fn check_mermaid(&self, source: &str) -> Result<Vec<tools::FenceError>, Error> {
+        let id = self.next_id();
+        let v = self
+            .send(
+                serde_json::to_vec(&MermaidRequest {
+                    id: id.clone(),
+                    op: "check_mermaid",
+                    source,
+                }),
+                id,
+                true,
+            )
+            .await?;
+        let r: MermaidResponse = serde_json::from_value(v)
+            .map_err(|e| Error::Protocol(format!("response body: {e}")))?;
+        Ok(if r.ok {
+            Vec::new()
+        } else {
+            r.errors
+                .into_iter()
+                .map(|e| tools::FenceError {
+                    path: e.line.map(|l| format!("line:{l}")).unwrap_or_default(),
+                    message: e.message,
+                })
+                .collect()
+        })
+    }
+
     async fn request(
         &self,
         op: &'static str,
@@ -183,18 +240,36 @@ impl Helper {
         base: Option<&str>,
         tools: &[ToolSnapshot],
     ) -> Result<CheckResult, Error> {
-        let id = self
-            .next
+        let id = self.next_id();
+        let v = self
+            .send(
+                serde_json::to_vec(&Request {
+                    id: id.clone(),
+                    op,
+                    source,
+                    base,
+                    tools,
+                }),
+                id,
+                false,
+            )
+            .await?;
+        serde_json::from_value(v).map_err(|e| Error::Protocol(format!("response body: {e}")))
+    }
+
+    fn next_id(&self) -> String {
+        self.next
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .to_string();
-        let mut line = serde_json::to_vec(&Request {
-            id: id.clone(),
-            op,
-            source,
-            base,
-            tools,
-        })
-        .map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
+            .to_string()
+    }
+
+    async fn send(
+        &self,
+        line: serde_json::Result<Vec<u8>>,
+        id: String,
+        mermaid: bool,
+    ) -> Result<serde_json::Value, Error> {
+        let mut line = line.map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
         if line.len() > MAX_LINE {
             return Err(Error::Protocol(format!(
                 "request is {} bytes; the helper accepts {MAX_LINE}",
@@ -204,7 +279,12 @@ impl Helper {
         line.push(b'\n');
         let (reply, rx) = oneshot::channel();
         self.tx
-            .try_send(Job { line, id, reply })
+            .try_send(Job {
+                line,
+                id,
+                mermaid,
+                reply,
+            })
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => Error::Busy,
                 mpsc::error::TrySendError::Closed(_) => {
@@ -220,6 +300,8 @@ struct Proc {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// This child has answered one `check_mermaid`: its parser is loaded.
+    mermaid_warm: bool,
 }
 
 impl Proc {
@@ -256,9 +338,14 @@ async fn worker(
                 }
             },
         };
+        let deadline = if job.mermaid && !p.mermaid_warm {
+            MERMAID_FIRST_DEADLINE
+        } else {
+            DEADLINE
+        };
         let served = tokio::select! {
             _ = shutdown.cancelled() => None,
-            r = tokio::time::timeout(DEADLINE, serve(&mut p, &job)) => Some(r),
+            r = tokio::time::timeout(deadline, serve(&mut p, &job)) => Some(r),
         };
         let Some(served) = served else {
             p.kill().await;
@@ -267,6 +354,7 @@ async fn worker(
         };
         match served {
             Ok(Ok(result)) => {
+                p.mermaid_warm |= job.mermaid;
                 let _ = job.reply.send(Ok(result));
                 proc = Some(p);
             }
@@ -276,7 +364,7 @@ async fn worker(
                 let _ = job.reply.send(Err(e));
             }
             Err(_) => {
-                tracing::warn!("app parser helper killed after {DEADLINE:?}");
+                tracing::warn!("app parser helper killed after {deadline:?}");
                 p.kill().await;
                 let _ = job.reply.send(Err(Error::Timeout));
             }
@@ -341,11 +429,12 @@ async fn spawn(path: &std::path::Path, hash: &str) -> Result<Proc, Error> {
         child,
         stdin,
         stdout: BufReader::new(stdout),
+        mermaid_warm: false,
     })
 }
 
 /// Write one request line, read one bounded response line, check its id.
-async fn serve(p: &mut Proc, job: &Job) -> Result<CheckResult, Error> {
+async fn serve(p: &mut Proc, job: &Job) -> Result<serde_json::Value, Error> {
     p.stdin
         .write_all(&job.line)
         .await
@@ -380,7 +469,7 @@ async fn serve(p: &mut Proc, job: &Job) -> Result<CheckResult, Error> {
     if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
         return Err(Error::Protocol(e.to_owned()));
     }
-    serde_json::from_value(v).map_err(|e| Error::Protocol(format!("response body: {e}")))
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -539,5 +628,24 @@ IFS= read -r line; echo 'not json'"#;
         token.cancel();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
+    }
+
+    #[tokio::test]
+    async fn check_mermaid_maps_lines_and_gets_the_long_first_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        // First answer arrives after DEADLINE (cold parser), located; second is ok.
+        let body = r#"IFS= read -r line; sleep 3
+id=$(printf '%s' "$line" | sed -E 's/^\{"id":"([^"]*)".*/\1/')
+printf '{"id":"%s","ok":false,"errors":[{"line":4,"message":"Parse error on line 4"},{"line":null,"message":"whole"}]}\n' "$id"
+IFS= read -r line
+id=$(printf '%s' "$line" | sed -E 's/^\{"id":"([^"]*)".*/\1/')
+printf '{"id":"%s","ok":true}\n' "$id""#;
+        let h = helper(script(dir.path(), "mm.sh", body));
+        let errs = h.check_mermaid("graph TD\nA-->B[").await.unwrap();
+        assert_eq!(errs.len(), 2);
+        assert_eq!(errs[0].path, "line:4");
+        assert_eq!(errs[0].message, "Parse error on line 4");
+        assert_eq!(errs[1].path, "");
+        assert_eq!(h.check_mermaid("graph TD\nA-->B").await.unwrap(), vec![]);
     }
 }
