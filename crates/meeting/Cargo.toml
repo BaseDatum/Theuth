@@ -52,6 +52,7 @@ pipewire = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { workspace = true }  # examples/capture_probe: flexaudio's warnings on stderr
 figment = { workspace = true }
 parking_lot = { workspace = true }
 

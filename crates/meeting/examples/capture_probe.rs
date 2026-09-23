@@ -11,6 +11,13 @@ use meeting::capture::{Feed, rings};
 use meeting::{SYSTEM_AUDIO, capture, system_audio};
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let mut args = std::env::args().skip(1);
     let secs: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
     let pid: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(SYSTEM_AUDIO);
@@ -50,8 +57,9 @@ fn main() {
     println!("loopback pid {pid}: open in {:?}; capturing {secs}s", t.elapsed());
 
     let (mut chunks, mut samples, mut sumsq, mut peak) = (0u64, 0u64, 0f64, 0f32);
-    let end = Instant::now() + Duration::from_secs(secs);
-    let mut next = Instant::now() + Duration::from_secs(1);
+    let start = Instant::now();
+    let end = start + Duration::from_secs(secs);
+    let mut next = start + Duration::from_secs(1);
     while Instant::now() < end {
         while let Ok((_, pcm)) = enc.pop() {
             chunks += 1;
@@ -65,7 +73,7 @@ fn main() {
             next += Duration::from_secs(1);
             println!(
                 "  t+{:>2}s chunks={chunks} samples={samples} rms={:.4} peak={peak:.4}",
-                secs - end.duration_since(Instant::now()).as_secs(),
+                start.elapsed().as_secs(),
                 (sumsq / samples.max(1) as f64).sqrt()
             );
         }
@@ -80,10 +88,17 @@ fn main() {
         100.0 * samples as f64 / expected as f64,
         (sumsq / samples.max(1) as f64).sqrt()
     );
-    println!("mic: {:?}", mic_probe());
     if samples == 0 {
-        println!("FAIL: no frames");
-        std::process::exit(1);
+        // A tap/loopback delivers nothing while no app plays (macOS idle
+        // behaviour); play something during the probe to see frames.
+        println!("WARN: no frames — nothing was playing, or the backend is silent while idle");
+    }
+    match mic_probe() {
+        Ok(d) => println!("mic degradations: {d:?}"),
+        Err(e) => {
+            println!("mic: ERROR {e}");
+            std::process::exit(3);
+        }
     }
 }
 

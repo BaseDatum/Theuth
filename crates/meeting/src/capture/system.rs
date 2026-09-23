@@ -405,7 +405,7 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
     timer
         .update_timer(Some(Duration::from_millis(500)), None)
         .into_result()
-        .context("pipewire timer")?;
+        .map_err(|e| anyhow::anyhow!("pipewire timer: {e:?}"))?;
     mainloop.run();
     let mut out = std::mem::take(&mut *found.borrow_mut());
     sort(&mut out);

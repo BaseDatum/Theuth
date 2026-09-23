@@ -10270,6 +10270,7 @@ dependencies = [
  "tokio",
  "tools",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
  "voice",
