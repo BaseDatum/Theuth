@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Fetch every model file the daemon loads (the REQUIRED list — the same list release-models.sh
-# publishes) that is missing or empty under <data_dir>/models/, from where each one was taken.
-# "Latest" = the origin's current `main`; the log line records the revision / etag the origin
-# reports. Files already on disk are never re-downloaded or overwritten. Downloads land as
-# `<file>.part` and are renamed when complete. No AWS credentials involved.
+# publishes) that is missing or empty under <data_dir>/models/. Per file: local copy → documented
+# origin → the already-published release bucket (the URL the desktop downloader uses; the copy is
+# checked against the bucket's models.json size + sha256). "Latest" = the origin's current `main`;
+# the log line records the revision / etag the origin reports. Files already on disk are never
+# re-downloaded or overwritten. Downloads land as `<file>.part` and are renamed when complete. No
+# AWS credentials involved.
 #
 #   scripts/fetch-models.sh              fetch what is missing (also `just fetch-models`)
-#   release-models.sh sources this file for REQUIRED / fetch_missing and runs it first.
+#   release-models.sh sources this file for REQUIRED / fetch_missing / PUB_MODELS and runs it first.
 #
 # Origins (43 §5, 45, 54 §7, meetings 04 §0.1, 57 §4.1 + §12.8):
 #   hf:<owner>/<repo>/<path>   https://huggingface.co/<owner>/<repo>/resolve/main/<path>;
 #                              HF_TOKEN (Authorization: Bearer) is sent when set — kyutai/pocket-tts is gated
 #   https://…                  verbatim (pyannote-rs GitHub release assets)
-#   none:<why>                 no documented download: the script names the file and stops
+#   none:<why>                 no documented download (parakeet-tdt's hub id was never recorded; the voice
+#                              is generated): only the bucket copy
 #
 # Env:
 #   THEUTH_MODELS_DIR / MODELS_DIR   destination (default: ${THEUTH_DATA_DIR:-~/.theuth}/models)
-#   THEUTH_S3_DRY_RUN / DRY_RUN=1    print what would be fetched, download nothing
+#   THEUTH_S3_DRY_RUN / DRY_RUN=1    print what would be fetched (origin, then bucket), download nothing
 #   HF_TOKEN                         Hugging Face token for gated repos
+#   THEUTH_S3_ENDPOINT / THEUTH_S3_BUCKET / THEUTH_S3_PREFIX / THEUTH_S3_PUBLIC_BASE_URL  bucket, as release-s3.sh
 set -euo pipefail
 
 # The files each loader opens; nothing optional (config.json, nemo128.onnx, READMEs, HF caches).
@@ -57,62 +61,102 @@ origin_of() {
   esac
 }
 
+# shellcheck source=load-signing-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load-signing-env.sh"   # THEUTH_S3_* overrides; no-op when already loaded
 MODELS_DIR="${THEUTH_MODELS_DIR:-${MODELS_DIR:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models}}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-${DRY_RUN:-0}}"
+ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+BUCKET="${THEUTH_S3_BUCKET:-theuth}"
+PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
+PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
+PUB_MODELS="${PUBLIC_BASE}/models"
 
 size_of() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
 
-# Download $1 (a REQUIRED path) into $MODELS_DIR. Returns 1 when there is nothing to fetch it from.
+# Download $2 to $1.part (headers to $1.headers), extra curl args after. Prints one line and
+# returns 1 on any HTTP/transport failure, leaving nothing behind.
+download() { # dst url [curl args...]
+  local dst="$1" url="$2" code why=""; shift 2
+  mkdir -p "$(dirname "$dst")"
+  code="$(curl -sSL --retry 3 --progress-bar -D "$dst.headers" -o "$dst.part" -w '%{http_code}' "$@" "$url")" || code="curl failed"
+  [[ "$code" == 2* && -s "$dst.part" ]] && return 0
+  case "$code:$url" in
+    40[13]:*huggingface.co/*) why=" — gated repo (set HF_TOKEN) or a proxy blocking the host" ;;
+    40[13]:*)                 why=" — not published there (or not public)" ;;
+    404:*)                    why=" — the file moved or was renamed at the origin; fix origin_of in scripts/fetch-models.sh" ;;
+  esac
+  grep -qi zscaler "$dst.part" 2>/dev/null && why=" — blocked by the Zscaler proxy on this network"
+  rm -f "$dst.part" "$dst.headers"
+  echo "    HTTP $code from $url$why"
+  return 1
+}
+header() { tr -d '\r' <"$1" | awk -v k="$2" 'tolower($1)==k {v=$2} END {print v}'; }
+
+# The bucket's models.json, fetched once (empty list when unreachable).
+BUCKET_MANIFEST=""
+bucket_manifest() {
+  [[ -n "$BUCKET_MANIFEST" ]] || BUCKET_MANIFEST="$(curl -fsSL --retry 3 "$PUB_MODELS/models.json" 2>/dev/null || echo '{"files":[]}')"
+}
+# "size sha256" of $1 as the bucket lists it ("" when not listed).
+bucket_row() { jq -r --arg p "$1" '.files[] | select(.path == $p and (.platform | not)) | "\(.size) \(.sha256)"' <<<"$BUCKET_MANIFEST"; }
+
+# Put $1 (a REQUIRED path) under $MODELS_DIR: documented origin first, then the release bucket.
 fetch_one() {
-  local f="$1" dst="$MODELS_DIR/$1" origin url auth=() hdr code rev etag
+  local f="$1" dst="$MODELS_DIR/$1" origin url="" auth=() fallback="$PUB_MODELS/$1" row
   origin="$(origin_of "$f")"
   case "$origin" in
-    none:*) echo "    $f: MISSING, no known source (${origin#none:}); put it in $MODELS_DIR/$f" >&2; return 1 ;;
+    none:*) ;;
     hf:*)   local rest="${origin#hf:}" owner repo; owner="${rest%%/*}"; rest="${rest#*/}"; repo="${rest%%/*}"
             url="https://huggingface.co/$owner/$repo/resolve/main/${rest#*/}"
             [[ -n "${HF_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $HF_TOKEN") ;;
     *)      url="$origin" ;;
   esac
-  if [[ "$DRY_RUN" == "1" ]]; then echo "    DRY_RUN: fetch $f ← $url"; return 0; fi
-  echo "    $f: fetching $url"
-  mkdir -p "$(dirname "$dst")"
-  hdr="$dst.headers"
-  code="$(curl -sSL --retry 3 --progress-bar -D "$hdr" -o "$dst.part" -w '%{http_code}' "${auth[@]}" "$url")" || code="curl failed"
-  if [[ "$code" != 2* ]] || [[ ! -s "$dst.part" ]]; then
-    local why=""
-    case "$code" in
-      401|403) why=" — gated repo (set HF_TOKEN) or a proxy blocking the host"
-               grep -qi zscaler "$dst.part" 2>/dev/null && why=" — blocked by the Zscaler proxy on this network" ;;
-      404)     why=" — the file moved or was renamed at the origin; fix origin_of in scripts/fetch-models.sh" ;;
-    esac
-    rm -f "$dst.part" "$hdr"
-    echo "error: $f: HTTP $code from $url$why" >&2
+  if [[ "$DRY_RUN" == "1" ]]; then
+    if [[ -n "$url" ]]; then echo "    DRY_RUN: fetch $f ← $url, else ← $fallback"
+    else echo "    DRY_RUN: fetch $f ← $fallback (no documented origin: ${origin#none:})"; fi
+    return 0
+  fi
+  if [[ -n "$url" ]]; then
+    echo "    $f: fetching $url"
+    if download "$dst" "$url" ${auth[@]+"${auth[@]}"}; then
+      local rev etag
+      rev="$(header "$dst.headers" x-repo-commit:)"; etag="$(header "$dst.headers" etag:)"
+      rm -f "$dst.headers"; mv "$dst.part" "$dst"
+      echo "    $f: fetched $(size_of "$dst") bytes${rev:+ (rev $rev)}${etag:+ (etag $etag)}"
+      return 0
+    fi
+    echo "    $f: origin failed; trying the release bucket"
+  else
+    echo "    $f: no documented origin (${origin#none:}); trying the release bucket"
+  fi
+  download "$dst" "$fallback" || { echo "error: $f: not at its origin and not on the bucket; put it in $MODELS_DIR/$f" >&2; return 1; }
+  rm -f "$dst.headers"
+  bucket_manifest
+  row="$(bucket_row "$f")"
+  if [[ "$row" != "$(size_of "$dst.part") $(shasum -a 256 "$dst.part" | awk '{print $1}')" ]]; then
+    rm -f "$dst.part"
+    echo "error: $f: bucket copy does not match $PUB_MODELS/models.json (${row:-not listed})" >&2
     return 1
   fi
-  rev="$(tr -d '\r' <"$hdr" | awk 'tolower($1)=="x-repo-commit:" {r=$2} END {print r}')"
-  etag="$(tr -d '\r' <"$hdr" | awk 'tolower($1)=="etag:" {e=$2} END {print e}')"
-  rm -f "$hdr"
   mv "$dst.part" "$dst"
-  echo "    $f: fetched $(size_of "$dst") bytes${rev:+ (rev $rev)}${etag:+ (etag $etag)}"
+  echo "    $f: fetched $(size_of "$dst") bytes from the bucket (size + sha256 match models.json)"
 }
 
-# Every REQUIRED file missing or empty under $MODELS_DIR → fetch_one. One failure stops the run.
+# Every REQUIRED file missing or empty under $MODELS_DIR → fetch_one. The first failure stops the run.
 fetch_missing() {
-  echo "==> models missing under $MODELS_DIR (dry run: $DRY_RUN)"
-  local f n=0 unsourced=()
+  echo "==> models missing under $MODELS_DIR (dry run: $DRY_RUN; bucket $PUB_MODELS/)"
+  local f n=0
   for f in "${REQUIRED[@]}"; do
     [[ -s "$MODELS_DIR/$f" ]] && continue
     n=$((n + 1))
-    fetch_one "$f" || { [[ "$(origin_of "$f")" == none:* ]] && unsourced+=("$f") || exit 1; }
+    fetch_one "$f" || exit 1
   done
   [[ $n -eq 0 ]] && echo "    all ${#REQUIRED[@]} files present"
-  if [[ ${#unsourced[@]} -gt 0 && "$DRY_RUN" != "1" ]]; then
-    echo "error: ${#unsourced[@]} file(s) have no documented source: ${unsourced[*]}" >&2
-    exit 1
-  fi
+  return 0
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
+  command -v jq >/dev/null 2>&1 || { echo "error: jq required" >&2; exit 1; }
   fetch_missing
 fi

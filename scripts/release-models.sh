@@ -6,8 +6,9 @@
 # plugin only for its own platform.
 #
 #   fetch       scripts/fetch-models.sh: every REQUIRED file missing under $MODELS_DIR is downloaded
-#               from its documented origin (HF_TOKEN for gated repos); a file with no documented
-#               origin stops the run and names itself. Local files are never re-downloaded.
+#               from its documented origin (HF_TOKEN for gated repos), else from the already-published
+#               bucket copy (checked against the bucket's models.json); a file found nowhere stops the
+#               run and names itself. Local files are never re-downloaded.
 #   upload      each REQUIRED file → s3://$BUCKET/$PREFIX/models/<model>/<file>
 #               (every upload is skipped when the object is already there with the same size)
 #   runtime     for each PLATFORMS entry: Microsoft's release archive (tgz; zip for win-*; cached in
@@ -65,12 +66,8 @@ ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSI
 NUPKG="microsoft.ml.onnxruntime.ep.webgpu.${WEBGPU_EP_VERSION}.nupkg"
 NUPKG_URL="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.webgpu/${WEBGPU_EP_VERSION}/${NUPKG}"
 
-ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
-BUCKET="${THEUTH_S3_BUCKET:-theuth}"
-PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
-PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
+# ENDPOINT / BUCKET / PREFIX / PUBLIC_BASE / PUB_MODELS come from fetch-models.sh (same env, same defaults).
 S3_MODELS="s3://${BUCKET}/${PREFIX}/models"
-PUB_MODELS="${PUBLIC_BASE}/models"
 
 # rustfs: path-style, no mandatory checksums, no IMDS probe (release-s3.sh).
 export AWS_S3_FORCE_PATH_STYLE=true
