@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use app::{
     AppCallChanged, AppPlugin, Apps, CallArgs, CallStatus, CallStatusOf, CallTool, CloseApp,
-    GetApp, Trigger,
+    GetApp, PublishFromUi, Trigger,
 };
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -311,6 +311,47 @@ async fn publish_open_call_edit_end_to_end() {
         .await
         .is_err()
     );
+
+    // The desktop publishes a reply fence as an app (30 §9): same validation and
+    // commit, a synthetic `ui-` call id, listed as an artifact, no tool message.
+    let from_ui = apps
+        .ask(PublishFromUi {
+            session,
+            name: "fence".into(),
+            source: SOURCE.into(),
+        })
+        .await
+        .unwrap();
+    assert!(from_ui.artifact.call_id.starts_with("ui-"), "{}", from_ui.artifact.call_id);
+    assert_eq!(from_ui.artifact.name, "fence.openui");
+    assert_eq!(from_ui.artifact.session, session);
+    assert_eq!(from_ui.library_hash, app::hash());
+    assert_eq!(from_ui.bindings.len(), 3);
+    let listed: Vec<artifact::Artifact> = ActorRef::<artifact::ArtifactActor>::lookup(artifact::ARTIFACT_ACTOR)
+        .unwrap()
+        .unwrap()
+        .ask(artifact::List {
+            session: Some(session),
+            descendants: false,
+        })
+        .await
+        .unwrap();
+    let mut ids: Vec<&str> = listed.iter().map(|a| a.call_id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["call-1", from_ui.artifact.call_id.as_str()]);
+    // Errors are the tool's text, as the RPC error message.
+    let err = match apps
+        .ask(PublishFromUi {
+            session,
+            name: "../etc".into(),
+            source: SOURCE.into(),
+        })
+        .await
+    {
+        Err(kameo::error::SendError::HandlerError(e)) => e,
+        other => panic!("expected a handler error, got {other:?}"),
+    };
+    assert!(err.contains("must be letters, digits"), "{err}");
 
     // Automatic read of an allowed tool runs; of an asking tool needs a press.
     let r = apps

@@ -22,6 +22,7 @@ schemars = { workspace = true }
 parking_lot = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }
