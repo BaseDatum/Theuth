@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a2a"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -141,7 +141,7 @@ checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
 
 [[package]]
 name = "acp"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a-lf",
  "acp",
@@ -493,7 +493,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -617,7 +617,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "artifact"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "codeindex"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3020,7 +3020,7 @@ checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
 
 [[package]]
 name = "computer"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "cursor"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "bytes",
  "futures",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "decision"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4170,7 +4170,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "block2",
@@ -4359,7 +4359,7 @@ dependencies = [
 
 [[package]]
 name = "document"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5057,7 +5057,7 @@ checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
 name = "firecrawl-native"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "kuchikiki",
  "psl",
@@ -9055,7 +9055,7 @@ dependencies = [
 
 [[package]]
 name = "knowledge"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9783,7 +9783,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "link"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10131,7 +10131,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "mdstream",
  "pulldown-cmark",
@@ -10245,7 +10245,7 @@ checksum = "f3327364edd79c4f66b36db667c0a28e078389351b0855e5f95ed4f22d778821"
 
 [[package]]
 name = "meeting"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -10463,7 +10463,7 @@ dependencies = [
 
 [[package]]
 name = "models"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "ort",
  "platform",
@@ -10844,7 +10844,7 @@ checksum = "a5eb86a92577833b75522336f210c49d9ebd7dd55a44d80a92e68c668a75f27c"
 
 [[package]]
 name = "nodes"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "acp",
  "agent",
@@ -11134,7 +11134,7 @@ dependencies = [
 
 [[package]]
 name = "oauth"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "base64 0.22.1",
  "platform",
@@ -12759,7 +12759,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -14089,7 +14089,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -14344,7 +14344,7 @@ checksum = "afab94fb28594581f62d981211a9a4d53cc8130bbcbbb89a0440d9b8e81a7746"
 
 [[package]]
 name = "routes"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -14394,7 +14394,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a",
  "acp",
@@ -14812,7 +14812,7 @@ dependencies = [
 
 [[package]]
 name = "runtime"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15186,7 +15186,7 @@ dependencies = [
 
 [[package]]
 name = "schedule"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -15291,7 +15291,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scrape"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15316,7 +15316,7 @@ dependencies = [
 
 [[package]]
 name = "search"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "nucleo",
  "schemars 1.2.2",
@@ -15326,7 +15326,7 @@ dependencies = [
 
 [[package]]
 name = "search-providers"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15345,7 +15345,7 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -15369,6 +15369,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -15889,7 +15890,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a",
  "agent",
@@ -16109,7 +16110,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slack"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a",
  "agent",
@@ -16982,7 +16983,7 @@ checksum = "e396b6523b11ccb83120b115a0b7366de372751aa6edf19844dfb13a6af97e91"
 
 [[package]]
 name = "surface"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "jsonrepair-rs",
  "markdown",
@@ -17998,7 +17999,7 @@ dependencies = [
 
 [[package]]
 name = "theuth"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a",
  "agent",
@@ -18626,7 +18627,7 @@ dependencies = [
 
 [[package]]
 name = "tools"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anydoc",
  "anyhow",
@@ -18994,7 +18995,7 @@ dependencies = [
 
 [[package]]
 name = "tui"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "a2a",
  "acp",
@@ -20076,7 +20077,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "update"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -20457,7 +20458,7 @@ dependencies = [
 
 [[package]]
 name = "voice"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -20840,7 +20841,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "1.13.4"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
