@@ -76,8 +76,11 @@ names starting with `_`, which do not carry across cells. Imports and variables 
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
 nothing is lost. `shell()` returns the output when
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
-result arrives later as <job_result>. A PTY job whose screen stops changing for a minute
-wakes you with <job_idle> and the screen: the program is likely waiting on you.
+result arrives later as <job_result>, the way a timer's message arrives as <reminder>. A PTY
+job whose screen stops changing for a minute wakes you with <job_idle> and the screen: the
+program is likely waiting on you. Waiting for something? Prefer `remind_me_in(seconds, message)`:
+it returns immediately, the session is free, and your message comes back as a <reminder> input
+when the timer fires. `asyncio.sleep` is for sub-minute pauses inside one cell.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path=\"x.rs\")`)

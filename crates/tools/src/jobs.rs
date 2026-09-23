@@ -570,6 +570,9 @@ pub struct Jobs {
     pub(crate) pty_bytes: usize,
     /// Snapshot renders admitted at once (51 §7.4).
     pub(crate) snapshots: Arc<tokio::sync::Semaphore>,
+    /// Pending reminder timers per session (`reminder.rs`); their guards
+    /// live in `live` like any job's.
+    pub(crate) reminders: HashMap<SessionId, crate::reminder::SessionReminders>,
 }
 
 impl Jobs {
@@ -585,6 +588,7 @@ impl Jobs {
             live: HashMap::new(),
             pty_bytes: 0,
             snapshots: Arc::new(tokio::sync::Semaphore::new(crate::pty::SNAPSHOTS)),
+            reminders: HashMap::new(),
         }
     }
 
@@ -905,6 +909,9 @@ impl Message<CloseSessions> for Jobs {
                     dirs.push(dir.to_path_buf());
                 }
             }
+        }
+        for session in &m.sessions {
+            self.close_reminders(*session).await;
         }
         let Some(tx) = tx else { return reply };
         tokio::spawn(async move {

@@ -77,3 +77,12 @@ test('schedule fire carries name, at, quiet and the prompt body', () => {
     { kind: 'schedule', name: 'morning-brief', at: '2026-09-16T09:00:00-07:00', quiet: false, text: 'brief me' },
   ])
 })
+
+test('reminder carries id, after, late and the message', () => {
+  expect(classify('<reminder id="r3" after="600" set_at="2026-09-23T10:00:00+02:00" late="false">\ncheck the deploy\n</reminder>')).toEqual([
+    { kind: 'reminder', id: 'r3', after: '600', late: false, text: 'check the deploy' },
+  ])
+  expect(classify('<reminder id="r1" after="5" set_at="x" late="true">\n\n</reminder>')).toEqual([
+    { kind: 'reminder', id: 'r1', after: '5', late: true, text: '' },
+  ])
+})

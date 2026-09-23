@@ -26,6 +26,7 @@ reqwest = { workspace = true }
 platform = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
+chrono = { workspace = true }
 notify = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }
