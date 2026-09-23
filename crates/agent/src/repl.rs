@@ -541,12 +541,84 @@ fn prelude(imports: &BTreeMap<String, String>, code: &str, cell_names: &BTreeSet
     lines.into_iter().collect::<Vec<_>>().join("\n")
 }
 
-static DIAG_RES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+static DIAG_RES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     [
         Regex::new(r"main\.py:(\d+):").expect("loc re"),
         Regex::new(r"(?m)^(\s*)(\d+) \|").expect("gutter re"),
+        Regex::new(r"(?s)error\[([\w-]+)\]: ([^\n]*)\n.*?main\.py:(\d+):").expect("error re"),
     ]
 });
+
+/// `(code, message, line in the fed source)` of every `error[...]` in a
+/// typing diagnostic.
+fn diag_errors(diag: &str) -> Vec<(&str, &str, usize)> {
+    DIAG_RES[2]
+        .captures_iter(diag)
+        .map(|c| {
+            (
+                c.get(1).expect("code").as_str(),
+                c.get(2).expect("msg").as_str(),
+                c[3].parse().unwrap_or(0),
+            )
+        })
+        .collect()
+}
+
+/// Names a line rebinds that the heap holds: the identifiers in its target
+/// region (`x = …`, `x: T = …`, `x += …`, `a, b = …`, `for x in …`,
+/// `with … as x:`) that are in `names`.
+fn rebound_names(line: &str, names: &BTreeMap<String, Slot>) -> Vec<String> {
+    let t = line.trim_start();
+    let region = if let Some(rest) = t.strip_prefix("for ") {
+        rest.split(" in ").next().unwrap_or("")
+    } else if t.starts_with("with ") {
+        t.rsplit(" as ").next().unwrap_or("")
+    } else {
+        t.split('=').next().unwrap_or("")
+    };
+    IDENT_RE
+        .find_iter(region)
+        .filter(|m| names.contains_key(m.as_str()))
+        .map(|m| m.as_str().to_owned())
+        .collect()
+}
+
+/// The persisted names to redeclare (08 §4.6): the targets of every
+/// `invalid-assignment` diagnostic that rebinds a name the heap holds — the
+/// checker declared it with the type it had. Other diagnostics in the same
+/// cell do not veto the retry: the old type usually drags follow-on errors
+/// behind it (`m + 1` after `for m in [1, 2]` reports `unsupported-operator`
+/// on `Match[str] | None`), and a retry that still fails returns the
+/// original diagnostic. `None` when no diagnostic is such a rebinding.
+fn redeclare_targets(
+    errors: &[(&str, &str, usize)],
+    src: &str,
+    names: &BTreeMap<String, Slot>,
+) -> Option<BTreeSet<String>> {
+    let out: BTreeSet<String> = errors
+        .iter()
+        .filter(|(code, _, _)| *code == "invalid-assignment")
+        .filter_map(|(_, _, line)| src.lines().nth(line.checked_sub(1)?))
+        .flat_map(|l| rebound_names(l, names))
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
+static UNRESOLVED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Name `(\w+)` used when not defined").expect("unresolved re"));
+
+/// Every diagnostic is an `unresolved-reference` to a name the heap holds:
+/// a module the prelude could not reconstruct, an `outN`, a name bound by
+/// an unchecked feed. The checker is wrong, the cell can run.
+fn all_unresolved_held(errors: &[(&str, &str, usize)], names: &BTreeMap<String, Slot>) -> bool {
+    !errors.is_empty()
+        && errors.iter().all(|(code, msg, _)| {
+            *code == "unresolved-reference"
+                && UNRESOLVED_RE
+                    .captures(msg)
+                    .is_some_and(|c| names.contains_key(&c[1]))
+        })
+}
 
 /// Shift every `main.py:LINE:` and, in the snippets under a `main.py`
 /// location, every ` N | ` gutter number down by `offset` (the prelude
@@ -556,7 +628,7 @@ fn rebase_lines(diag: &str, offset: usize) -> String {
     if offset == 0 {
         return diag.to_owned();
     }
-    let [loc, gutter] = &*DIAG_RES;
+    let [loc, gutter, _] = &*DIAG_RES;
     let mut out = String::with_capacity(diag.len());
     let mut in_main = false;
     for line in diag.lines() {
@@ -914,6 +986,37 @@ impl Repl {
             outcome = self
                 .drive(&src, Vec::new(), false, call_id, &mut files, &mut on_print)
                 .await;
+        }
+        if let Err(PoolError::Typing(diag)) = &outcome {
+            let errors = diag_errors(diag);
+            if let Some(targets) = redeclare_targets(&errors, &src, &self.names) {
+                // The checker declared each name with the type it had; an
+                // `Any` redeclaration lets the cell rebind it. `del` is not
+                // an option: monty does not parse it and ty keeps the
+                // declaration anyway. `_Any` stays out of the inventory and
+                // of later cells' checks (`_`-prefixed).
+                let mut retry = String::from("from typing import Any as _Any\n");
+                for n in &targets {
+                    retry.push_str(&format!("{n}: _Any\n"));
+                }
+                retry.push_str(&src);
+                let outcome2 = self
+                    .drive(&retry, Vec::new(), false, call_id, &mut files, &mut on_print)
+                    .await;
+                if !matches!(outcome2, Err(PoolError::Typing(_))) {
+                    offset += 1 + targets.len();
+                    outcome = outcome2;
+                }
+            } else if all_unresolved_held(&errors, &self.names) {
+                tracing::info!(
+                    target: "runtime",
+                    session = %self.cx.session,
+                    "type check skipped: every unresolved name is in the heap"
+                );
+                outcome = self
+                    .drive(&src, Vec::new(), true, call_id, &mut files, &mut on_print)
+                    .await;
+            }
         }
         drop(on_print);
 
@@ -1593,6 +1696,49 @@ mod tests {
         assert_eq!(rebase_lines(diag, 0), diag);
     }
 
+    /// Captured diagnostics classify into the two retries — or neither.
+    #[test]
+    fn typing_retry_classification() {
+        let names: BTreeMap<String, Slot> = ["m", "items", "out1"]
+            .into_iter()
+            .map(|n| (n.to_owned(), Slot { kind: "int".into(), len: None }))
+            .collect();
+        let src = "import re\nfor m in items:\n    pass\nm = 'x'";
+        let assign = "error[invalid-assignment]: Object of type `int` is not assignable to `Match[str] | None`\n \
+                      --> main.py:2:5\n  |\n2 | for m in items:\n  |     ^\n\
+                      error[invalid-assignment]: Object of type `Literal[\"x\"]` is not assignable to `Match[str] | None`\n \
+                      --> main.py:4:5\n  |\n4 | m = 'x'\n  |     ^^^\n";
+        let errors = diag_errors(assign);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].0, "invalid-assignment");
+        assert_eq!(
+            redeclare_targets(&errors, src, &names),
+            Some(BTreeSet::from(["m".to_owned()]))
+        );
+        assert!(!all_unresolved_held(&errors, &names));
+
+        let unresolved = "error[unresolved-reference]: Name `out1` used when not defined\n \
+                          --> main.py:1:5\n  |\n1 | len(out1)\n  |     ^^^^\n";
+        let errors = diag_errors(unresolved);
+        assert!(all_unresolved_held(&errors, &names));
+        assert_eq!(redeclare_targets(&errors, "len(out1)", &names), None);
+        let typo = unresolved.replace("out1", "nope");
+        assert!(!all_unresolved_held(&diag_errors(&typo), &names));
+
+        // follow-on errors ride along with the rebinding (retry is attempted,
+        // a failure returns the original); an assignment to a name the heap
+        // lacks is the model's own error
+        let mixed = format!("{assign}{unresolved}");
+        assert_eq!(
+            redeclare_targets(&diag_errors(&mixed), src, &names),
+            Some(BTreeSet::from(["m".to_owned()]))
+        );
+        assert!(!all_unresolved_held(&diag_errors(&mixed), &names));
+        let fresh = "error[invalid-assignment]: Object of type `int` is not assignable to `str`\n \
+                     --> main.py:1:1\n  |\n1 | z: str = 1\n  | ^\n";
+        assert_eq!(redeclare_targets(&diag_errors(fresh), "z: str = 1", &names), None);
+    }
+
     #[test]
     fn json_round_trip() {
         let v = serde_json::json!({"a": [1, 2.5, null, true, "s"], "b": {"c": {}}});
@@ -1965,6 +2111,49 @@ mod tests {
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c4", "re.compile('c').pattern").await;
             assert_eq!(out.content, "→ 'c'", "{}", out.content);
+            repl.close().await;
+        });
+    }
+
+    /// A persisted name can be rebound to another type (redeclare retry),
+    /// and a name the heap holds but the checker never saw (bound by a cell
+    /// that then raised) is usable (skip retry); skipped without `monty`.
+    #[test]
+    fn persisted_names_rebind_and_resolve() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            let out = repl.run("c1", "import re\nm = re.match('a', 'a')").await;
+            assert!(!out.is_error, "{}", out.content);
+            let out = repl.run("c2", "for m in [1, 2]:\n    pass\nm + 1").await;
+            assert_eq!(out.content, "→ 3", "{}", out.content);
+            // the checker follows: later cells see the new type, no `_Any` leaks
+            let out = repl.run("c3", "m = 'x'\nm * 2").await;
+            assert_eq!(
+                out.content,
+                "→ 'xx'\nbindings (reuse, do not re-read): m (str, 1) · also re",
+                "{}",
+                out.content
+            );
+            // a genuine error on a persisted name is still an error (the
+            // checker's if it still types `m`, else the runtime's), never a run
+            let out = repl.run("c4", "m + 1").await;
+            assert!(
+                out.is_error
+                    && (out.content.contains("error[unsupported-operator]")
+                        || out.content.contains("TypeError")),
+                "{}",
+                out.content
+            );
+            // bound, then the cell raised: in the heap, unknown to the checker
+            let out = repl.run("c5", "k = 5\n1/0").await;
+            assert!(out.is_error, "{}", out.content);
+            let out = repl.run("c6", "k + 1").await;
+            assert_eq!(out.content, "→ 6", "{}", out.content);
             repl.close().await;
         });
     }
