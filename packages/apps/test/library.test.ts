@@ -23,9 +23,10 @@ describe("curated library", () => {
 
   test("container child unions mention only curated components while keeping upstream renderers", () => {
     const sig = library.toSpec().components.Card!.signature;
-    expect(sig).not.toContain("Tabs");
-    expect(sig).not.toContain("MarkDownRenderer");
+    expect(sig).not.toContain("Form");
+    expect(sig).not.toContain("EditableTable");
     expect(sig).toContain("TextContent");
+    expect(sig).toContain("Tabs");
     expect(library.components.Card!.component).toBe(
       openuiLibrary.components.Card!.component,
     );
@@ -42,10 +43,14 @@ describe("curated library", () => {
       isReactiveSchema(library.components.Select!.props._zod.def.shape.value),
     ).toBeTrue();
     expect(reactiveProps(library)).toEqual({
+      Callout: ["visible"],
       Input: ["value"],
       TextArea: ["value"],
       Select: ["value"],
       SwitchGroup: ["value"],
+      RadioGroup: ["value"],
+      CheckBoxGroup: ["value"],
+      Slider: ["value"],
     });
   });
 
