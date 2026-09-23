@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react from '@vitejs/plugin-react'
-import { type Plugin, searchForWorkspaceRoot } from 'vite'
+import { type Plugin, normalizePath, searchForWorkspaceRoot } from 'vite'
 import { defineConfig } from 'vitest/config'
 
 /** The product version: `just bump-version` keeps tauri.conf.json and Cargo.toml in lockstep. */
@@ -16,6 +16,20 @@ const apps = fileURLToPath(new URL('../../../packages/apps', import.meta.url))
 const documents = fileURLToPath(new URL('../../../packages/documents', import.meta.url))
 
 /**
+ * `importer` lies under `dir`. Vite hands importers with forward slashes and, on Windows, a drive letter whose case
+ * differs between sources (`C:/…` from the file system, `c:/…` from resolved ids), so a bare `startsWith` on the
+ * `fileURLToPath` form silently never matched there — `packages/documents` then pulled its own headless
+ * `@blocknote/core` + `prosemirror-view`, and the Windows bundle carried two `DecorationSet` classes
+ * ("Cannot read properties of undefined (reading 'localsInner')" on every note open).
+ */
+const under = (importer: string | undefined, dir: string): boolean => {
+  if (!importer) return false
+  const a = normalizePath(importer)
+  const b = `${normalizePath(dir)}/`
+  return process.platform === 'win32' ? a.toLowerCase().startsWith(b.toLowerCase()) : a.startsWith(b)
+}
+
+/**
  * Resolve every `@openuidev/*` import as if it came from inside `packages/apps`, through Vite's own resolver: the
  * package `exports` maps (import condition, subpaths such as `./genui-lib` and `./layered/styles/index.css`) apply,
  * and only the patched ESM builds under `packages/apps/node_modules` are ever loaded, whoever imports them.
@@ -25,7 +39,7 @@ const openui = (): Plugin => ({
   enforce: 'pre',
   resolveId(source, importer, options) {
     if (!source.startsWith('@openuidev/')) return null
-    if (importer?.startsWith(`${apps}/`)) return null
+    if (under(importer, apps)) return null
     return this.resolve(source, `${apps}/src/index.ts`, { ...options, skipSelf: true })
   },
 })
@@ -39,7 +53,7 @@ const documentsDeps = (): Plugin => ({
   name: 'theuth:documents-shared-deps',
   enforce: 'pre',
   resolveId(source, importer, options) {
-    if (!importer?.startsWith(`${documents}/`)) return null
+    if (!under(importer, documents)) return null
     if (source.startsWith('.') || source.startsWith('/')) return null
     return this.resolve(source, fileURLToPath(new URL('./src/main.tsx', import.meta.url)), { ...options, skipSelf: true })
   },
@@ -56,8 +70,15 @@ export default defineConfig({
       { find: /^@theuth\/documents\/schema$/, replacement: `${documents}/src/schema.ts` },
       { find: /^@theuth\/documents\/yaml$/, replacement: `${documents}/src/yaml.ts` },
     ],
-    // The package's `node_modules` carries its own React/zod/zustand; one copy each, ours.
-    dedupe: ['react', 'react-dom', 'zod', 'zustand'],
+    // The packages' `node_modules` carry their own React/zod/zustand and (documents) a headless BlockNote with the
+    // whole ProseMirror/Yjs family; one copy each, ours — two `prosemirror-view`s break every editor.
+    dedupe: [
+      'react', 'react-dom', 'zod', 'zustand',
+      'yjs', 'y-prosemirror', 'y-protocols', '@tiptap/pm', '@tiptap/core',
+      'prosemirror-model', 'prosemirror-state', 'prosemirror-view', 'prosemirror-transform', 'prosemirror-commands',
+      'prosemirror-history', 'prosemirror-keymap', 'prosemirror-inputrules', 'prosemirror-dropcursor', 'prosemirror-gapcursor',
+      'prosemirror-schema-list', 'prosemirror-tables', 'prosemirror-changeset', 'prosemirror-highlight',
+    ],
   },
   clearScreen: false,
   server: { port: 1420, strictPort: true, fs: { allow: [searchForWorkspaceRoot(process.cwd()), apps, documents] } },
