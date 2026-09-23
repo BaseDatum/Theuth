@@ -73,7 +73,7 @@ need ssh; need scp; need git; need jq; need shasum
 
 # ── the commit that ships ────────────────────────────────────────────────────
 if [[ -z "$REF" ]]; then
-  [[ "$RESUME" == "1" || -z "$(git status --porcelain)" ]] || { echo "error: working tree is dirty — commit first, or build a commit/tag with --ref" >&2; exit 1; }
+  [[ "$RESUME" == "1" || -z "$(git status --porcelain --untracked-files=no)" ]]   # untracked files never ship (git archive) — only tracked changes count as dirty || { echo "error: working tree is dirty — commit first, or build a commit/tag with --ref" >&2; exit 1; }
   REF=HEAD
 fi
 COMMIT="$(git rev-parse --verify --quiet "$REF^{commit}")" || { echo "error: $REF is not a commit" >&2; exit 1; }
