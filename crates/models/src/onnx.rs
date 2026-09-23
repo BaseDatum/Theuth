@@ -12,7 +12,7 @@
 //! load aborts. As a dylib its symbols stay private to it.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use ort::AsPointer;
@@ -61,6 +61,12 @@ static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
 /// `Environment::devices()` (stable for the process; the list only grows at registration) and
 /// its label for the bench.
 static WEBGPU_CHOICE: Mutex<Option<(usize, String)>> = Mutex::new(None);
+
+/// The one `RegisterExecutionProviderLibrary` this process makes for `webgpu_ep`, with the
+/// plugin path it named: ORT rejects a second under the same name ("library is already
+/// registered under webgpu_ep"), which sent the second caller in a process — meeting STT after
+/// voice Status — to the CPU. See [`register_once`].
+static WEBGPU_REGISTERED: OnceLock<(PathBuf, Result<(), String>)> = OnceLock::new();
 
 /// Record `models.webgpu_adapter` (`theuth` main, before any model loads).
 pub fn prefer_webgpu_adapter(substring: Option<String>) {
@@ -347,8 +353,11 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
                 ));
             }
         }
-        env.register_ep_library("webgpu_ep", plugin)
-            .map_err(|e| format!("register {}: {e}", plugin.display()))?;
+        register_once(&WEBGPU_REGISTERED, plugin, |p| {
+            env.register_ep_library("webgpu_ep", p)
+                .map(drop)
+                .map_err(|e| format!("register {}: {e}", p.display()))
+        })?;
     }
     let adapters = webgpu_adapters(&env);
     if adapters.is_empty() {
@@ -365,6 +374,32 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((*index, label.clone()));
     Ok(())
+}
+
+/// Run `register(plugin)` at most once per `cell` (concurrent callers wait for the first) and
+/// hand every caller the first result; a later call naming another path is logged and gets it
+/// too. An error containing "already registered" counts as success — something else in the
+/// process (a second environment, an earlier run of us) loaded the library under that name.
+fn register_once(
+    cell: &OnceLock<(PathBuf, Result<(), String>)>,
+    plugin: &Path,
+    register: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let (first, result) = cell.get_or_init(|| {
+        let r = match register(plugin) {
+            Err(e) if e.contains("already registered") => Ok(()),
+            r => r,
+        };
+        (plugin.to_path_buf(), r)
+    });
+    if first != plugin {
+        tracing::debug!(
+            "onnxruntime: {WEBGPU_EP} plugin already registered from {}; {} ignored",
+            first.display(),
+            plugin.display()
+        );
+    }
+    result.clone()
 }
 
 /// The loaded runtime's version from the `VERSION` file beside it (the models-dir layout);
@@ -522,6 +557,30 @@ mod tests {
         for a in [Accelerator::Cpu, Accelerator::Directml, Accelerator::Cuda] {
             assert!(!webgpu_wanted(a, true), "{a:?}");
         }
+    }
+
+    #[test]
+    fn plugin_is_registered_once_and_already_registered_is_success() {
+        let cell = OnceLock::new();
+        let a = Path::new("/plugins/a.dll");
+        let calls = std::cell::Cell::new(0);
+        let reg = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        };
+        assert_eq!(register_once(&cell, a, reg), Ok(()));
+        assert_eq!(register_once(&cell, a, reg), Ok(()));
+        // Another path, another caller: the first registration is what counts.
+        assert_eq!(register_once(&cell, Path::new("/plugins/b.dll"), |_| Err("x".into())), Ok(()));
+        assert_eq!(calls.get(), 1);
+
+        // ORT's refusal is a success; any other first error is final for the process.
+        let cell = OnceLock::new();
+        let ort = |p: &Path| Err(format!("register {}: library is already registered under webgpu_ep", p.display()));
+        assert_eq!(register_once(&cell, a, ort), Ok(()));
+        let cell = OnceLock::new();
+        assert_eq!(register_once(&cell, a, |_| Err("no such file".into())), Err("no such file".into()));
+        assert_eq!(register_once(&cell, a, |_| Ok(())), Err("no such file".into()));
     }
 
     #[test]

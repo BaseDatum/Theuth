@@ -8,6 +8,7 @@ description = "Interactive OpenUI apps: the `app` publishing tool, the headless 
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+platform = { workspace = true }
 artifact = { workspace = true }
 link = { workspace = true }
 agent = { workspace = true }

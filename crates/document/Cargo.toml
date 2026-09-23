@@ -8,6 +8,7 @@ description = "Documents: the Yjs authority (yrs) behind every BlockNote editor,
 [dependencies]
 runtime = { workspace = true }
 tools = { workspace = true }
+platform = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

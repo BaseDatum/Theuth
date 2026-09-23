@@ -65,7 +65,7 @@ pub async fn install(
         .map_or(relay.as_str(), |(_, h)| h)
         .trim_end_matches('/');
     let name = match opts.name.unwrap_or(cfg.name) {
-        n if n.is_empty() => hostname(),
+        n if n.is_empty() => platform::process::hostname().to_owned(),
         n => n,
     };
     println!("service installed: {scope} · relay {host} · name {name}");
@@ -188,16 +188,6 @@ fn shell_argv((shell, interactive): &(PathBuf, bool), exe: &Path, data_dir: &Pat
 /// Single-quote for `sh -c`; a literal `'` becomes `'\''`.
 fn sq(p: &Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
-}
-
-/// This machine's hostname; `"theuth"` when `hostname` fails.
-fn hostname() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "theuth".to_owned())
 }
 
 #[cfg(test)]

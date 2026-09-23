@@ -1563,16 +1563,6 @@ fn link() -> RpcResult<ActorRef<LinkActor>> {
     })
 }
 
-/// This machine's hostname, read once; `"theuth"` when `hostname` fails.
-static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "theuth".to_owned())
-});
-
 /// Write `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`; an existing
 /// file is not rewritten. Shared by `put_attachment` and the ACP prompt path;
 /// the naming rule lives in `agent::context` (48 §3.3).
@@ -1643,7 +1633,7 @@ impl ApiServer for Server {
         let pty_idle_secs = ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetPtyIdle).await?;
         let name = match self.rt.section::<LinkConfig>("link") {
             Ok(c) if !c.name.is_empty() => c.name,
-            _ => HOSTNAME.clone(),
+            _ => platform::process::hostname().to_owned(),
         };
         let communication =
             ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session: None }).await?;
