@@ -1,0 +1,32 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Graph",
+      "props": {
+        "direction": "LR",
+        "groups": [
+          {"id": "edge", "label": "Edge"},
+          {"id": "core", "label": "Core"}
+        ],
+        "nodes": [
+          {"id": "browser", "label": "Browser", "kind": "actor", "group": "edge"},
+          {"id": "cdn", "label": "CDN", "group": "edge", "state": "muted"},
+          {"id": "api", "label": "API", "kind": "rounded", "group": "core"},
+          {"id": "worker", "label": "Worker", "group": "core", "state": "active"},
+          {"id": "db", "label": "Postgres", "kind": "cylinder", "group": "core"},
+          {"id": "mailer", "label": "Mailer", "kind": "pill", "state": "danger"}
+        ],
+        "edges": [
+          {"from": "browser", "to": "api", "label": "HTTPS"},
+          {"from": "browser", "to": "cdn"},
+          {"from": "cdn", "to": "api", "label": "origin"},
+          {"from": "api", "to": "worker", "label": "enqueue"},
+          {"from": "api", "to": "db", "label": "reads"},
+          {"from": "worker", "to": "db", "label": "writes"},
+          {"from": "worker", "to": "mailer", "label": "notify", "style": "dashed"}
+        ]
+      }
+    }
+  }
+}

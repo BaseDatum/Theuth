@@ -1,5 +1,6 @@
 import type { Spec, UIElement } from '@json-render/core'
 import { jsonrepair } from 'jsonrepair'
+import type { GraphData } from '@/lib/graph-layout'
 import { COMPONENT_NAMES, COMPONENTS, isContainer } from './catalog'
 
 // Mirrors `crates/surface::parse` (design 30 §3.2, §4 R3/R4): strict JSON → jsonrepair → JSON, then the same
@@ -9,6 +10,8 @@ import { COMPONENT_NAMES, COMPONENTS, isContainer } from './catalog'
 export const MAX_ELEMENTS = 256
 /** `crates/surface::MAX_DEPTH`. */
 export const MAX_DEPTH = 32
+/** `crates/surface::MAX_GRAPH_*`. */
+export const MAX_GRAPH = { nodes: 120, edges: 240, groups: 12, label: 80 }
 
 type Obj = Record<string, unknown>
 type Element = UIElement & { props: Obj; children: string[] }
@@ -46,12 +49,44 @@ function element(id: string, raw: unknown): Element {
   if (!isObj(props)) throw new SpecError(`${at}/props`, 'expected object')
   const issue = COMPONENTS[type]!.safeParse(props).error?.issues[0]
   if (issue) throw new SpecError([`${at}/props`, ...issue.path.map(String)].join('/'), issue.message)
+  if (type === 'Graph') graph(props as unknown as GraphData, `${at}/props`)
   if (!Array.isArray(children)) throw new SpecError(`${at}/children`, 'expected array')
   if (children.length && !isContainer(type)) throw new SpecError(`${at}/children`, `${type} cannot have children`)
   children.forEach((c, i) => {
     if (!isStr(c)) throw new SpecError(`${at}/children/${i}`, 'expected string')
   })
   return { type, props, children: children as string[] }
+}
+
+/** `crates/surface::validate::graph`, same paths: caps, unique ids, known endpoints and groups, label length. */
+function graph(g: GraphData, at: string): void {
+  if (g.nodes.length > MAX_GRAPH.nodes) throw new SpecError(`${at}/nodes`, `${g.nodes.length} nodes, limit ${MAX_GRAPH.nodes}`)
+  if (g.edges.length > MAX_GRAPH.edges) throw new SpecError(`${at}/edges`, `${g.edges.length} edges, limit ${MAX_GRAPH.edges}`)
+  const groups = g.groups ?? []
+  if (groups.length > MAX_GRAPH.groups) throw new SpecError(`${at}/groups`, `${groups.length} groups, limit ${MAX_GRAPH.groups}`)
+  const label = (path: string, text: string) => {
+    const n = [...text].length
+    if (n > MAX_GRAPH.label) throw new SpecError(path, `${n} characters, limit ${MAX_GRAPH.label}`)
+  }
+  const gids: Record<string, true> = {}
+  groups.forEach((grp, i) => {
+    if (gids[grp.id]) throw new SpecError(`${at}/groups/${i}/id`, `duplicate group id ${JSON.stringify(grp.id)}`)
+    gids[grp.id] = true
+    label(`${at}/groups/${i}/label`, grp.label)
+  })
+  const nids: Record<string, true> = {}
+  g.nodes.forEach((n, i) => {
+    if (nids[n.id]) throw new SpecError(`${at}/nodes/${i}/id`, `duplicate node id ${JSON.stringify(n.id)}`)
+    nids[n.id] = true
+    if (n.group != null && !gids[n.group]) throw new SpecError(`${at}/nodes/${i}/group`, `unknown group ${JSON.stringify(n.group)}`)
+    label(`${at}/nodes/${i}/label`, n.label)
+  })
+  g.edges.forEach((e, i) => {
+    for (const end of ['from', 'to'] as const) {
+      if (!nids[e[end]]) throw new SpecError(`${at}/edges/${i}/${end}`, `unknown node ${JSON.stringify(e[end])}`)
+    }
+    if (e.label != null) label(`${at}/edges/${i}/label`, e.label)
+  })
 }
 
 /** Tree checks after every element is typed: ids resolve, ≤ 1 parent, root exists, no cycle, limits. */

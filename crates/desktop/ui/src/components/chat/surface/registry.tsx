@@ -7,6 +7,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
+import { GraphView } from './Graph'
 
 // Every string is a React text node — no `dangerouslySetInnerHTML` (design 30 §11). Text, lists and headings are
 // `div`s with ARIA roles because the Streamdown wrapper styles `p`/`li`/`h1-h4` descendants for prose.
@@ -248,6 +249,8 @@ const components: Components<typeof catalog> = {
       ))}
     </div>
   ),
+  // 65: the one component with a renderer of ours; `loading` = the fence is still streaming (dangling edges dropped).
+  Graph: ({ props, loading }) => <GraphView props={props} loading={loading} />,
 }
 
 /** json-render registry over the v0 catalog; the only thing `JsonRenderFence` needs. */
