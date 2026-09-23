@@ -72,11 +72,11 @@ Compact signature for the prompt (catalog.rs:65): `Graph(nodes[{id,label,kind?,g
 root = Stack([title, graph, narrative, nav])
 $step = 0
 steps = [{ids: ["client"], text: "The client…"}, {ids: ["client","api"], text: "…"}, {ids: ["api","db"], text: "…"}]
-graph = Graph(nodes, edges, null, "LR", steps[$step].ids, Action([@Set($selected, id)]))
+graph = Graph(nodes, edges, null, "LR", steps[$step].ids, Action([@Set($selected, $value)]))
 narrative = TextContent(steps[$step].text)
 nav = Buttons([Button("Back", Action([@Set($step, @Max($step - 1, 0))]), "secondary"), Button("Next", Action([@Set($step, @Min($step + 1, 2))]))])
 ```
-Whether `steps[$step].ids` indexes as written is a fact of OpenUI Lang the step-4 spike verifies; if not, `@Filter` over a steps table is the fallback and the skill example changes, not the component.
+As built (step 4): `steps[$step].ids` indexes as written; the pressed node's id reaches `onSelect` as `$value` (upstream's name for a component's produced value — a bare `id` is an unresolved `Ref` in its parser), and only `@Set` defers its argument, so a selection that must reach `@ToAssistant` goes through `$selected`. Other deviations (actor lowered to a circle, one ELK copy per thread, inline token colours) are in `65-as-built.md`.
 
 ### 3.6 Prompt and skill (30 §6.2 block, `visualize.md`)
 Catalog line gains `Graph(...)`. One rule added to "Choose the block": *Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a json-render block; it draws on every surface and an app can highlight it. Mermaid stays for sequence, state, class and ER diagrams, and for anything that needs mermaid's own syntax.* One worked example (the "Architecture answer" of 30 §6.3 rewritten as a `Graph`). Steering is measured (30 §6.4): 10 architecture/flow prompts before and after, count `Graph` vs mermaid; the rule is tuned until ≥ 8/10 pick `Graph` for box-and-arrow and 10/10 keep mermaid for sequence.
