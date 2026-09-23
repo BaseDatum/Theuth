@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use tools::SessionResources;
 
+use crate::archive;
 use crate::kind::{self, Receipt};
 use crate::pdf::{self, Source};
 use crate::search;
@@ -677,6 +678,7 @@ impl State {
         let mut preview_png = None;
         let mut heading_src: Option<&str> = None;
         let mut compiled = false;
+        let mut listing = None;
         let _writing = self.gate.read().await;
         self.admit().map_err(|e| format!("{name}: {e}"))?;
 
@@ -712,8 +714,20 @@ impl State {
                 preview_png = Some(r.png);
                 bytes
             }
-            (Kind::Markdown | Kind::Text | Kind::Html, _) => {
+            (Kind::Markdown | Kind::Text | Kind::Html | Kind::Mermaid, _) => {
                 receipt.lines = Some(count_lines(&bytes));
+                bytes
+            }
+            // Headers only, never extracted (35 §3.2); a corrupt archive is
+            // still shown as an Archive, just without a listing.
+            (Kind::Archive, _) => {
+                match archive::list(&bytes, &name) {
+                    Ok(l) => {
+                        receipt.files = Some(l.total_entries);
+                        listing = Some(l);
+                    }
+                    Err(e) => tracing::warn!(target: "artifact", name, "archive listing: {e:#}"),
+                }
                 bytes
             }
             (Kind::Csv, _) => {
@@ -735,10 +749,17 @@ impl State {
             .unwrap_or_else(|| name.clone());
 
         let id = sha16(&bytes);
+        let blob = blob_name(&id, &name);
         let path = self
-            .put_blob(&blob_name(&id, &name), &bytes)
+            .put_blob(&blob, &bytes)
             .await
             .map_err(|e| format!("{name}: {e:#}"))?;
+        if let Some(l) = &listing {
+            let json = serde_json::to_vec(l).map_err(|e| format!("{name}: {e}"))?;
+            self.put_blob(&format!("{blob}.listing.json"), &json)
+                .await
+                .map_err(|e| format!("{name}: {e:#}"))?;
+        }
         let preview_file = match preview_png {
             Some(png) => {
                 let f = format!("{id}.preview.png");
@@ -1873,6 +1894,40 @@ mod tests {
         assert_eq!(shown.artifact.kind, Kind::Text);
         assert_eq!(shown.artifact.mime, "text/plain");
         assert_eq!(shown.receipt.lines, Some(1));
+    }
+
+    /// A shown archive gets a `<blob>.listing.json` sidecar the sweep keeps;
+    /// a corrupt one is still an `Archive` record, just without a listing.
+    #[tokio::test]
+    async fn show_archive_writes_listing_sidecar() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        let file = d.path().join("src.tar.gz");
+        std::fs::write(
+            &file,
+            crate::archive::tests::tar_gz_fixture(&[("src/main.rs", b"fn main() {}")]),
+        )
+        .unwrap();
+        let shown = s.show(sess, "c1".into(), by_path(file)).await.unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Archive);
+        assert_eq!(shown.artifact.mime, "application/gzip");
+        assert_eq!(shown.receipt.files, Some(1));
+        assert_eq!(
+            kind::receipt(&shown.artifact, &shown.receipt),
+            format!("shown src.tar.gz (v1 · 1 files · {})", kind::human(shown.artifact.bytes))
+        );
+        let listing = archive::read_listing(&shown.artifact.path).await.unwrap();
+        assert_eq!(listing.entries[0].path, "src/main.rs");
+        assert_eq!(s.sweep().await.unwrap(), 0);
+        assert!(archive::sidecar(&shown.artifact.path).exists());
+
+        let bad = s
+            .show(sess, "c2".into(), content("bad.zip", "not a zip"))
+            .await
+            .unwrap();
+        assert_eq!(bad.artifact.kind, Kind::Archive);
+        assert_eq!(bad.receipt.files, None);
+        assert!(archive::read_listing(&bad.artifact.path).await.is_err());
     }
 
     /// One blob, one metadata sidecar, two records with their own sessions.

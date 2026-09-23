@@ -184,6 +184,8 @@ async fn export_bindings() {
         artifact::Artifact,
         artifact::Kind,
         artifact::ArtifactShown,
+        artifact::archive::ArchiveListing,
+        artifact::archive::ArchiveEntry,
         app::AppDoc,
         app::AppBinding,
         app::AppDiagnostic,

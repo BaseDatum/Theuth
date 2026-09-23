@@ -251,22 +251,23 @@ function Fullscreen({ svg, chart, onClose }: { svg: string; chart: string; onClo
  * Streamdown custom renderer for ```` ```mermaid ```` fences (design 30 §8.3): the diagram through the plugin's
  * mermaid, our pan/zoom, an overlay toolbar (export + fullscreen) and a fullscreen dialog. Replaces streamdown's
  * built-in block, whose fullscreen is a bare body portal and whose toolbar and pan/zoom cannot be extended.
+ * `fill` (the `.mmd` artifact view, 35 §3.2) sizes the block and the diagram to the parent instead of inline height.
  */
-export function MermaidFence({ code, isIncomplete }: CustomRendererProps) {
+export function MermaidFence({ code, isIncomplete, fill }: CustomRendererProps & { fill?: boolean }) {
   const { svg, error } = useRender(code, isIncomplete)
   const [view, setView] = useState(HOME)
   const [full, setFull] = useState(false)
   if (error && !svg) return <ErrorCard title="Diagram unavailable" error={error} source={code} />
   return (
-    <div className="group relative my-4 rounded-xl border bg-layer-1 p-2" data-streamdown="mermaid-block" title={error ?? undefined}>
+    <div className={cn('group relative rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4')} data-streamdown="mermaid-block" title={error ?? undefined}>
       <div className="flex h-8 items-center px-1 font-mono text-xs text-fg-tertiary">mermaid</div>
       {svg && (
         <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           <Tools svg={svg} chart={code} extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => setFull(true)} />} />
         </div>
       )}
-      <div className="rounded-md border bg-background">
-        {svg ? <Diagram svg={svg} view={view} onView={setView} /> : <div className="flex min-h-28 items-center justify-center text-xs text-fg-tertiary">Rendering diagram…</div>}
+      <div className={cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
+        {svg ? <Diagram svg={svg} view={view} onView={setView} fill={fill} /> : <div className="flex min-h-28 items-center justify-center text-xs text-fg-tertiary">Rendering diagram…</div>}
       </div>
       {full && svg && <Fullscreen svg={svg} chart={code} onClose={() => setFull(false)} />}
     </div>

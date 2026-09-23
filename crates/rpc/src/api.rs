@@ -1199,6 +1199,12 @@ pub trait Api {
     /// without listing everything; vanished record is an error (49 §4.2).
     #[method(name = "get_artifact")]
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact>;
+    /// The member listing of a `Kind::Archive` record (35 §3.2): paths,
+    /// sizes and dates from the archive's headers, at most 5,000 entries
+    /// (`truncated` past that). Rejects when the record vanished or the
+    /// archive was unreadable at show time (no listing sidecar).
+    #[method(name = "get_artifact_listing")]
+    async fn get_artifact_listing(&self, call_id: String) -> RpcResult<artifact::archive::ArchiveListing>;
     /// Up to 2,000 characters of the artifact's indexed text around the
     /// occurrence `query` matches, with highlight ranges and content coverage;
     /// unavailable extraction is an error, never the live `origin` (49 §7).
@@ -3480,6 +3486,23 @@ impl ApiServer for Server {
 
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
         send(&artifact()?, artifact::search::Get { call_id }).await
+    }
+
+    async fn get_artifact_listing(
+        &self,
+        call_id: String,
+    ) -> RpcResult<artifact::archive::ArchiveListing> {
+        let a = send(&artifact()?, artifact::search::Get { call_id }).await?;
+        if a.kind != artifact::Kind::Archive {
+            return Err(ErrorObjectOwned::owned(
+                ASK_FAILED,
+                format!("{}: not an archive", a.name),
+                None::<()>,
+            ));
+        }
+        artifact::archive::read_listing(&a.path)
+            .await
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e, None::<()>))
     }
 
     async fn artifact_search_match(

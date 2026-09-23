@@ -12,6 +12,7 @@
 //!   [`ListInvocations`]
 //! - events: [`ArtifactShown`]
 
+pub mod archive;
 pub mod kind;
 pub mod pdf;
 pub mod search;
@@ -82,6 +83,11 @@ pub enum Kind {
     /// A validated OpenUI app (`.openui`, 46 §3.2). Never derived from an
     /// extension: only [`Commit`] creates one.
     App,
+    /// `zip`, `tar`, `tgz`, `tar.gz` (and `tar.bz2`/`tbz2`): a listing without
+    /// extraction as a `<blob>.listing.json` sidecar ([`archive`]).
+    Archive,
+    /// `mmd`, `mermaid`: a standalone diagram source.
+    Mermaid,
     /// Anything else: download only.
     File,
 }
@@ -98,6 +104,8 @@ impl Kind {
             Self::Pdf => "pdf",
             Self::Html => "html",
             Self::App => "app",
+            Self::Archive => "archive",
+            Self::Mermaid => "mermaid",
             Self::File => "file",
         }
     }
@@ -113,6 +121,8 @@ impl Kind {
             Self::Pdf,
             Self::Html,
             Self::App,
+            Self::Archive,
+            Self::Mermaid,
             Self::File,
         ]
         .into_iter()
