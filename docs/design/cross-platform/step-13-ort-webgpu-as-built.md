@@ -28,8 +28,8 @@ no raw `ort-sys` calls: the workspace `ort` line gained `"api-22"`, nothing else
 
 | accelerator | ONNX sessions (STT, dictation, diarisation) |
 |---|---|
-| `auto` | WebGPU iff `<data_dir>/models/onnxruntime/plugins/<WEBGPU_LIB>` exists **and** registration yields a `WebGpuExecutionProvider` device; else CPU. DirectML is no longer reachable from `auto`. |
-| `webgpu` | WebGPU asked for regardless of the file check; one WARN and CPU when the plugin is missing, refuses the runtime, or finds no adapter |
+| `auto` | WebGPU iff `<data_dir>/models/onnxruntime/plugins/<WEBGPU_LIB>` exists **and** registration yields a `WebGpuExecutionProvider` device on a **discrete hardware GPU** (NVIDIA/AMD — Sky's ruling, second pass); an integrated or software adapter → one WARN, CPU. DirectML is no longer reachable from `auto`. |
+| `webgpu` | WebGPU asked for regardless of the file check, on whatever adapter exists (discrete first, `models.webgpu_adapter` overrides); one WARN and CPU when the plugin is missing or refuses the runtime; one WARN and the software adapter when that is all Dawn found |
 | `directml` | as step 12 (explicit only) |
 | `cpu`, `cuda` | CPU |
 
@@ -61,6 +61,30 @@ pointing `$ORT_DYLIB_PATH` at the old build with `accelerator: directml`.
     | `CPUExecutionProvider`. `devices()` lists every EP device as text for the bench.
   - `webgpu_wanted(accelerator, plugin_present)` is the pure selection rule; tests cover it and
     the version gate.
+- Second pass (`onnx.rs`, after the host numbers below):
+  - `Adapter { Discrete, Integrated, Software }`, `classify_adapter(ty, vendor, vendor_id,
+    description)`: not a GPU → `None`; no vendor name **and** vendor id 0 (Dawn's adapter on the
+    GPU-less LXC), vendor id 0x1414 Microsoft / 0x1AE0 Google / 0x10005 Mesa, or `swiftshader` |
+    `llvmpipe` | `lavapipe` | `warp` | `microsoft basic render` anywhere in vendor + metadata →
+    `Software`; 0x10DE / 0x1002 or `nvidia` | `amd` | `radeon` → `Discrete`; else `Integrated`.
+    Vendor id and the hardware/EP metadata (`HardwareDevice_VendorId`, `HardwareDevice_Metadata`,
+    `EpDevice_EpMetadata`, `GetKeyValuePairs`) are raw `ort::api()` calls — `ort` rc.13 wraps none
+    of them; `AsPointer` gives the handles.
+  - `pick_adapter(kinds, preferred)`: `models.webgpu_adapter` substring (case-insensitive, over
+    `<type> <vendor> <metadata values>`) first, else first `Discrete`, else first `Integrated`,
+    else `None`. `choose_adapter(accelerator, kinds, preferred)`: `auto` → the pick must be
+    `Discrete` or it is an `Err` (the WARN text: `… is not a discrete GPU; using CPU
+    (models.webgpu_adapter …)` / `only a software adapter (…); using CPU`); `webgpu` → any pick,
+    or the software adapter with `WARN webgpu: only a software adapter (…); using it because
+    models.accelerator is webgpu`. Three unit tests over fake descriptions (Windows box, Mac, LXC).
+  - `register_webgpu` stores the chosen device's position in `Environment::devices()` +
+    label in `WEBGPU_CHOICE`; `configure` appends exactly that device (`skip(i).take(1)`).
+    `webgpu_device() -> Option<String>` for the bench (`onnxruntime webgpu device: …`).
+    `ep()` still returns the bare EP name: its two callers (`voice`, `meeting` status structs)
+    are outside the allow-list, so the device label is bench-only.
+  - `ModelsConfig.webgpu_adapter: Option<String>`, `onnx::prefer_webgpu_adapter` set from
+    `main.rs` beside `accelerator::set`; config sample updated. `devices()` lines now carry
+    `<vendor>:<vendor id> [k=v, …]` so the metadata keys each platform reports are visible.
 - `crates/voice/src/stt.rs`: `speech_sample(tts_dir, voice, text) -> Vec<f32>` (16 kHz) renders a
   sentence with the Pocket TTS checkpoint through `ptts::synth::Synth::stream_with` and
   `resample`s 24 → 16 kHz; re-exported from `voice` (`lib.rs`, one word in the `pub use` line —
@@ -196,7 +220,39 @@ M2000M has no AMX-class CPU beside it, so the ratio may flip.
 
 ## Numbers — Windows (Quadro M2000M, DX12) and Ubuntu LXC
 
-_(orchestrator's runs; to be pasted from the steer messages)_
+Orchestrator's runs, first pass of the code (before the discrete-only gate; same sessions).
+
+**Windows 11**, release build, ORT 1.27.0 CPU `onnxruntime.dll` + NuGet EP.WebGpu 0.4.0 plugin +
+`dxcompiler.dll` + `dxil.dll` in `<data_dir>/models/onnxruntime/plugins/`. Registration worked
+from the plugin directory (no DXC warning — the DLL-search question is closed). Devices:
+`CPUExecutionProvider — CPU Intel`, `WebGpuExecutionProvider — GPU NVIDIA` (Quadro M2000M,
+Maxwell 2015, 4 GB), `WebGpuExecutionProvider — GPU Intel Corporation` (HD P530). The first
+enumerated WebGPU device (NVIDIA) was used.
+
+| run | `--accelerator cpu` | `--accelerator webgpu` | `auto` (picked WebGPU) |
+|---|---|---|---|
+| stt load | 4603 ms | 3596 ms | — |
+| first run, 5 s silence | 610 ms | 2180 ms (**1650 ms** first-run overhead) | 1402 ms (879 ms overhead) |
+| second run, 5 s silence | 627 ms | 530 ms | 523 ms |
+| third run, 5.1 s synthesized speech | 617 ms | 858 ms | — |
+| transcript | verbatim | verbatim | — |
+
+**Ubuntu 24.04 LXC**, no GPU, no Vulkan hardware, debug build, ORT 1.27.0 `.so` + linux-x64
+plugin. Registration **also succeeded**: Dawn produced a software adapter — devices
+`CPUExecutionProvider — CPU Intel (Microsoft)` and `WebGpuExecutionProvider — GPU  (Microsoft)`
+(empty hardware vendor). `--accelerator webgpu`: 5 s silence **4602 ms** vs 316 / 277 ms on the
+CPU EP — 15× slower. The first-pass `auto` gate (plugin file + any WebGPU device) therefore
+picked the slow path on a headless machine; hence the classification above.
+
+**Verdict:** on a 2015 Maxwell GPU WebGPU is ~15 % faster than CPU warm on silence (530 vs
+620 ms) with a 0.9–1.7 s first-run shader compile, but **slower on real speech** (858 vs 617 ms;
+verbatim transcript on both EPs). On no-GPU Linux the software adapter is 15× slower than the
+CPU. **Sky's ruling:** ship `auto` = WebGPU on a discrete hardware GPU anyway — Maxwell/Pascal
+cards are 10+ years old and the unmeasured modern cards are the target; integrated (the M3 Max
+measured slower) and software adapters stay on the CPU with one WARN; explicit
+`models.accelerator: webgpu` uses whatever hardware adapter exists (or the software one, with
+the WARN). Consequence on the Mac: `auto` with the plugin file now logs `WARN … GPU Apple is not
+a discrete GPU; using CPU` and runs the CPU EP, which is also the faster one there.
 
 ## Judgement calls
 

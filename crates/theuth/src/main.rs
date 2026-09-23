@@ -286,9 +286,13 @@ agent:
 #                            # (STT, dictation, diarisation) the WebGPU plugin EP — Dawn on D3D12 / Vulkan / Metal, any GPU — when
 #                            # <data_dir>/models/onnxruntime/plugins/{onnxruntime_providers_webgpu.dll | lib….so | lib….dylib} exists
 #                            # (Windows: dxcompiler.dll + dxil.dll beside it); CUDA for the decision model when this binary was built
-#                            # with `decision/cuda`; else CPU. webgpu forces the plugin (WARN + CPU when it is missing or finds no GPU);
-#                            # directml is explicit-only (Microsoft's DirectML ORT build ended at 1.24.4); cuda only affects candle.
-#                            # A GPU that fails to initialise logs one WARN and that engine runs on the CPU.
+#                            # with `decision/cuda`; else CPU. auto takes WebGPU only on a discrete hardware GPU (NVIDIA/AMD); an
+#                            # integrated one (Intel, Apple, APU) or a software adapter (SwiftShader, llvmpipe, WARP — a GPU-less box)
+#                            # logs one WARN and stays on the CPU. webgpu forces the plugin on whatever adapter exists, discrete first
+#                            # (WARN + CPU when the plugin is missing; WARN + software adapter when that is all there is); directml is
+#                            # explicit-only (Microsoft's DirectML ORT build ended at 1.24.4); cuda only affects candle. A GPU that
+#                            # fails to initialise logs one WARN and that engine runs on the CPU.
+#   webgpu_adapter: ~        # substring of the WebGPU adapter's vendor/description to use when several GPUs answer (e.g. NVIDIA, Intel)
 
 # decision:                  # local typed-probability oracle in front of the reasoning model (design doc 57): laya in candle
 #                            # answers typed questions (choice / bool / score) with a probability per option; a per-family gate
@@ -465,6 +469,7 @@ async fn run() -> anyhow::Result<()> {
     let models_cfg: models::accelerator::ModelsConfig =
         config.extract_inner("models").unwrap_or_default();
     models::accelerator::set(models_cfg.accelerator);
+    models::onnx::prefer_webgpu_adapter(models_cfg.webgpu_adapter);
     if cli.bench_models {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

@@ -45,6 +45,9 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
             for d in models::onnx::devices() {
                 println!("onnxruntime device: {d}");
             }
+            if let Some(d) = models::onnx::webgpu_device() {
+                println!("onnxruntime webgpu device: {d}");
+            }
             let dir = data_dir.join("models").join(voice::TDT_MODEL_SUBDIR);
             if !dir.is_dir() {
                 missing = true;

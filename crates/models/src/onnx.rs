@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use ort::AsPointer;
+use ort::memory::DeviceType;
 use ort::session::builder::SessionBuilder;
 
 use crate::accelerator::{self, Accelerator};
@@ -50,6 +52,36 @@ static ORT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// [`webgpu_plugin_path`] of the `data_dir` [`ort_lib`] loaded from, when the file exists.
 static WEBGPU_PLUGIN: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// `models.webgpu_adapter`: a substring of the adapter's vendor or description that wins the
+/// device choice ([`pick_adapter`]); `None` = discrete over integrated over first.
+static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
+
+/// The WebGPU device [`configure`] appends once [`WEBGPU_STATE`] is 1: its position in
+/// `Environment::devices()` (stable for the process; the list only grows at registration) and
+/// its label for the bench.
+static WEBGPU_CHOICE: Mutex<Option<(usize, String)>> = Mutex::new(None);
+
+/// Record `models.webgpu_adapter` (`theuth` main, before any model loads).
+pub fn prefer_webgpu_adapter(substring: Option<String>) {
+    *WEBGPU_ADAPTER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = substring.filter(|s| !s.trim().is_empty());
+}
+
+/// The WebGPU device sessions run on (`<type> <vendor> <metadata>`), once [`ep`] or
+/// [`configure`] has chosen one; `None` on the CPU or DirectML.
+pub fn webgpu_device() -> Option<String> {
+    (WEBGPU_STATE.load(Ordering::Relaxed) == 1)
+        .then(|| {
+            WEBGPU_CHOICE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(|(_, label)| label.clone())
+        })
+        .flatten()
+}
 
 /// `ort::init_from` runs once per process, on the first call that finds the runtime; every
 /// later call returns the path it used. The error text names `libonnxruntime` so callers
@@ -92,8 +124,9 @@ pub const WEBGPU_EP: &str = "WebGpuExecutionProvider";
 /// straight to the CPU and the WARN is not repeated.
 static DML_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// WebGPU plugin registration: 0 = not tried, 1 = registered and a device answers, 2 = failed
-/// (one WARN; every session on the CPU from then on).
+/// WebGPU plugin registration: 0 = not tried, 1 = registered and a hardware GPU (or, for
+/// explicit `webgpu`, a software adapter) chosen in [`WEBGPU_CHOICE`], 2 = failed (one WARN;
+/// every session on the CPU from then on).
 static WEBGPU_STATE: AtomicU8 = AtomicU8::new(0);
 
 /// Whether sessions built by [`configure`] ask for DirectML: only when the configured
@@ -104,10 +137,11 @@ fn directml_wanted() -> bool {
     cfg!(windows) && !DML_FAILED.load(Ordering::Relaxed) && accelerator::get() == Accelerator::Directml
 }
 
-/// Whether the WebGPU plugin is registered and has a device, registering it on the first
+/// Whether the WebGPU plugin is registered and a device chosen, registering it on the first
 /// call that wants it: the configured accelerator is `webgpu`, or `auto` and the plugin
-/// library sits under `<data_dir>/models/onnxruntime/plugins/`. Needs [`ort_lib`] first
-/// (before it there is no environment to register with); a failure is final for the process.
+/// library sits under `<data_dir>/models/onnxruntime/plugins/` **and** a discrete GPU answers
+/// ([`choose_adapter`]). Needs [`ort_lib`] first (before it there is no environment to register
+/// with); a failure is final for the process.
 fn webgpu_ready() -> bool {
     match WEBGPU_STATE.load(Ordering::Relaxed) {
         1 => return true,
@@ -145,42 +179,192 @@ pub fn webgpu_wanted(accelerator: Accelerator, plugin_present: bool) -> bool {
     }
 }
 
+/// What a WebGPU adapter is, from ORT's device description ([`classify_adapter`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Adapter {
+    /// NVIDIA / AMD: preferred.
+    Discrete,
+    /// Intel, Apple, Qualcomm, … — any other hardware GPU.
+    Integrated,
+    /// A software renderer (SwiftShader, llvmpipe/lavapipe, WARP, Dawn's null adapter with
+    /// no vendor): 15× slower than the CPU EP on the Ubuntu LXC; `auto` never takes it.
+    Software,
+}
+
+/// Names that mark a software renderer, matched case-insensitively against the hardware
+/// vendor and every metadata value.
+const SOFTWARE_NAMES: [&str; 5] = ["swiftshader", "llvmpipe", "lavapipe", "warp", "microsoft basic render"];
+/// PCI vendor IDs of software renderers: Microsoft (WARP, Basic Render Driver), Google
+/// (SwiftShader), Mesa (`VK_VENDOR_ID_MESA`).
+const SOFTWARE_VENDOR_IDS: [u32; 3] = [0x1414, 0x1AE0, 0x10005];
+/// PCI vendor IDs of the discrete-GPU makers: NVIDIA, AMD.
+const DISCRETE_VENDOR_IDS: [u32; 2] = [0x10DE, 0x1002];
+
+/// Classify one EP device's hardware: `None` when it is not a GPU at all. A GPU with neither a
+/// vendor name nor a vendor ID (Dawn's fallback adapter on a driverless Linux box), a software
+/// renderer's vendor ID, or a software renderer's name anywhere in `description` (the metadata
+/// values joined) is [`Adapter::Software`]; NVIDIA/AMD by ID or name is [`Adapter::Discrete`];
+/// everything else [`Adapter::Integrated`].
+pub fn classify_adapter(ty: DeviceType, vendor: &str, vendor_id: u32, description: &str) -> Option<Adapter> {
+    if ty != DeviceType::GPU {
+        return None;
+    }
+    let text = format!("{vendor} {description}").to_ascii_lowercase();
+    Some(if (vendor.trim().is_empty() && vendor_id == 0)
+        || SOFTWARE_VENDOR_IDS.contains(&vendor_id)
+        || SOFTWARE_NAMES.iter().any(|n| text.contains(n))
+    {
+        Adapter::Software
+    } else if DISCRETE_VENDOR_IDS.contains(&vendor_id) || ["nvidia", "amd", "radeon"].iter().any(|n| text.contains(n)) {
+        Adapter::Discrete
+    } else {
+        Adapter::Integrated
+    })
+}
+
+/// Which of `adapters` (kind, label) a session should use: the first whose label contains
+/// `preferred` (`models.webgpu_adapter`, case-insensitive — an explicit name may pick anything),
+/// else the first discrete GPU, else the first integrated one, else `None`: a software renderer
+/// is never chosen by kind.
+pub fn pick_adapter(adapters: &[(Adapter, String)], preferred: Option<&str>) -> Option<usize> {
+    if let Some(p) = preferred {
+        let p = p.to_ascii_lowercase();
+        if let Some(i) = adapters.iter().position(|(_, label)| label.to_ascii_lowercase().contains(&p)) {
+            return Some(i);
+        }
+        tracing::warn!("webgpu: no adapter matches models.webgpu_adapter {p:?}; choosing by kind");
+    }
+    [Adapter::Discrete, Adapter::Integrated]
+        .iter()
+        .find_map(|k| adapters.iter().position(|(a, _)| a == k))
+}
+
+/// The adapter sessions get, or why none does (the WARN text). Sky's ruling (58 step 13):
+/// `auto` ships WebGPU for a **discrete** GPU only — integrated GPUs measured slower than the
+/// CPU EP (M3 Max), a software adapter 15× slower (Ubuntu LXC). Explicit `webgpu` takes any
+/// hardware adapter, or the software one with a WARN.
+pub fn choose_adapter(accelerator: Accelerator, adapters: &[(Adapter, String)], preferred: Option<&str>) -> Result<usize, String> {
+    let explicit = accelerator == Accelerator::Webgpu;
+    let Some(i) = pick_adapter(adapters, preferred) else {
+        if explicit {
+            tracing::warn!("webgpu: only a software adapter ({}); using it because models.accelerator is webgpu", adapters[0].1);
+            return Ok(0);
+        }
+        return Err(format!("only a software adapter ({}); using CPU", adapters[0].1));
+    };
+    let (kind, label) = &adapters[i];
+    if !explicit && *kind != Adapter::Discrete {
+        return Err(format!("{label} is not a discrete GPU; using CPU (models.accelerator: webgpu overrides)"));
+    }
+    Ok(i)
+}
+
+/// `key=value` pairs of an `OrtKeyValuePairs` (raw `ort-sys`: `ort` rc.13 wraps neither the
+/// device metadata nor `HardwareDevice_VendorId`).
+fn key_values(kv: *const ort::sys::OrtKeyValuePairs) -> Vec<(String, String)> {
+    if kv.is_null() {
+        return Vec::new();
+    }
+    let api = ort::api();
+    let (mut keys, mut values, mut n) = (std::ptr::null(), std::ptr::null(), 0usize);
+    // SAFETY: `kv` is a live pointer ORT handed out for a device the environment still owns;
+    // the arrays it fills are ORT-owned, read for `n` entries only.
+    unsafe {
+        (api.GetKeyValuePairs)(kv, &mut keys, &mut values, &mut n);
+        let text = |p: *const std::ffi::c_char| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+        (0..n).map(|i| (text(*keys.add(i)), text(*values.add(i)))).collect()
+    }
+}
+
+/// One EP device as text: `<EP> — <type> <vendor>[:<vendor id>] [<k>=<v>, …] (<EP vendor>)`.
+fn describe(d: &ort::device::Device<'_>) -> String {
+    let hw = d.hardware_device();
+    // SAFETY: `hw.ptr()` is non-null and ORT-owned for the environment's lifetime.
+    let vendor_id = unsafe { (ort::api().HardwareDevice_VendorId)(hw.ptr()) };
+    let meta: Vec<String> = key_values(unsafe { (ort::api().HardwareDevice_Metadata)(hw.ptr()) })
+        .into_iter()
+        .chain(key_values(unsafe { (ort::api().EpDevice_EpMetadata)(d.ptr()) }))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    format!(
+        "{} — {:?} {}:{vendor_id:#x} [{}] ({})",
+        d.ep().unwrap_or("?"),
+        hw.ty(),
+        hw.vendor().unwrap_or_default(),
+        meta.join(", "),
+        d.ep_vendor().unwrap_or("?")
+    )
+}
+
+/// The WebGPU devices in `env`: (position in `devices()`, kind, label), GPUs only.
+fn webgpu_adapters(env: &ort::environment::Environment) -> Vec<(usize, Adapter, String)> {
+    env.devices()
+        .enumerate()
+        .filter(|(_, d)| d.ep().is_ok_and(|n| n == WEBGPU_EP))
+        .filter_map(|(i, d)| {
+            let hw = d.hardware_device();
+            // SAFETY: as in `describe`.
+            let vendor_id = unsafe { (ort::api().HardwareDevice_VendorId)(hw.ptr()) };
+            let meta = key_values(unsafe { (ort::api().HardwareDevice_Metadata)(hw.ptr()) })
+                .into_iter()
+                .chain(key_values(unsafe { (ort::api().EpDevice_EpMetadata)(d.ptr()) }))
+                .map(|(_, v)| v)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let vendor = hw.vendor().unwrap_or_default();
+            let kind = classify_adapter(hw.ty(), vendor, vendor_id, &meta)?;
+            Some((i, kind, format!("{:?} {vendor} {meta}", hw.ty()).trim_end().to_owned()))
+        })
+        .collect()
+}
+
 /// Whether the environment already offers a WebGPU device.
 fn has_webgpu_device(env: &ort::environment::Environment) -> bool {
     env.devices().any(|d| d.ep().is_ok_and(|n| n == WEBGPU_EP))
 }
 
-/// Make a WebGPU device available in the process-wide environment. A runtime with the EP built
-/// in (Microsoft's osx-arm64 1.27.0 has it; the win-x64 and linux-x64 CPU builds do not) already
-/// has one, and loading the plugin beside it would add a second `WebGpuExecutionProvider` from
-/// another factory that `with_devices` refuses to mix — so the plugin is only registered
-/// (`RegisterExecutionProviderLibrary` + `GetEpDevices` through `ort`'s `api-22`) when there is
-/// none, and must then produce a device (no adapter — no GPU, no Vulkan loader on Linux, an old
-/// driver — registers fine but yields none).
+/// Make a WebGPU device available in the process-wide environment and choose the one sessions
+/// use. A runtime with the EP built in (Microsoft's osx-arm64 1.27.0 has it; the win-x64 and
+/// linux-x64 CPU builds do not) already has one, and loading the plugin beside it would add a
+/// second `WebGpuExecutionProvider` from another factory that `with_devices` refuses to mix —
+/// so the plugin is only registered (`RegisterExecutionProviderLibrary` + `GetEpDevices`
+/// through `ort`'s `api-22`) when there is none, and must then produce a device. Then
+/// [`pick_adapter`]: a hardware GPU, discrete first; only a software renderer (Dawn on a
+/// GPU-less box makes one) is a failure for `auto` and a WARN for explicit `webgpu`.
 fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
     let env = ort::environment::Environment::current().map_err(|e| e.to_string())?;
     if has_webgpu_device(&env) {
         tracing::debug!("onnxruntime: {WEBGPU_EP} is built into the runtime; plugin not loaded");
-        return Ok(());
-    }
-    let plugin = plugin.ok_or_else(|| {
-        format!("the runtime has no {WEBGPU_EP} and there is no {WEBGPU_LIB} under <data_dir>/models/{DIR}/{PLUGIN_DIR}/ (Microsoft.ML.OnnxRuntime.EP.WebGpu, runtimes/<rid>/native/)")
-    })?;
-    if let Some(v) = runtime_version() {
-        if !webgpu_accepts(&v) {
-            return Err(format!(
-                "ONNX Runtime {v} is older than {}.{}.{}, the plugin's minimum",
-                WEBGPU_MIN_ORT[0], WEBGPU_MIN_ORT[1], WEBGPU_MIN_ORT[2]
-            ));
-        }
-    }
-    env.register_ep_library("webgpu_ep", plugin)
-        .map_err(|e| format!("register {}: {e}", plugin.display()))?;
-    if has_webgpu_device(&env) {
-        Ok(())
     } else {
-        Err(format!("{} registered but no WebGPU device was found (no GPU adapter, no Vulkan loader, or an old driver)", plugin.display()))
+        let plugin = plugin.ok_or_else(|| {
+            format!("the runtime has no {WEBGPU_EP} and there is no {WEBGPU_LIB} under <data_dir>/models/{DIR}/{PLUGIN_DIR}/ (Microsoft.ML.OnnxRuntime.EP.WebGpu, runtimes/<rid>/native/)")
+        })?;
+        if let Some(v) = runtime_version() {
+            if !webgpu_accepts(&v) {
+                return Err(format!(
+                    "ONNX Runtime {v} is older than {}.{}.{}, the plugin's minimum",
+                    WEBGPU_MIN_ORT[0], WEBGPU_MIN_ORT[1], WEBGPU_MIN_ORT[2]
+                ));
+            }
+        }
+        env.register_ep_library("webgpu_ep", plugin)
+            .map_err(|e| format!("register {}: {e}", plugin.display()))?;
     }
+    let adapters = webgpu_adapters(&env);
+    if adapters.is_empty() {
+        return Err(format!("{WEBGPU_EP} registered but no WebGPU device was found (no GPU adapter, no Vulkan loader, or an old driver)"));
+    }
+    let preferred = WEBGPU_ADAPTER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let kinds: Vec<(Adapter, String)> = adapters.iter().map(|(_, k, l)| (*k, l.clone())).collect();
+    let (index, kind, label) = &adapters[choose_adapter(accelerator::get(), &kinds, preferred.as_deref())?];
+    tracing::debug!("onnxruntime: {WEBGPU_EP} device {label} ({kind:?})");
+    *WEBGPU_CHOICE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((*index, label.clone()));
+    Ok(())
 }
 
 /// The loaded runtime's version from the `VERSION` file beside it (the models-dir layout);
@@ -217,23 +401,12 @@ pub fn ep() -> &'static str {
     }
 }
 
-/// Every execution-provider device the environment knows, one line each
-/// (`<EP> — <type> <hardware vendor> (<EP vendor>)`), for `t --bench-models`. Empty before
-/// [`ort_lib`]. WebGPU shows up only after registration ([`ep`] or [`configure`] triggers it).
+/// Every execution-provider device the environment knows, one line each ([`describe`]), for
+/// `t --bench-models`. Empty before [`ort_lib`]. WebGPU shows up only after registration
+/// ([`ep`] or [`configure`] triggers it).
 pub fn devices() -> Vec<String> {
     let Ok(env) = ort::environment::Environment::current() else { return Vec::new() };
-    env.devices()
-        .map(|d| {
-            let hw = d.hardware_device();
-            format!(
-                "{} — {:?} {} ({})",
-                d.ep().unwrap_or("?"),
-                hw.ty(),
-                hw.vendor().unwrap_or_default(),
-                d.ep_vendor().unwrap_or("?")
-            )
-        })
-        .collect()
+    env.devices().map(|d| describe(&d)).collect()
 }
 
 /// Register the execution provider [`accelerator::get`] resolves to on `builder`. CPU is
@@ -242,9 +415,14 @@ pub fn devices() -> Vec<String> {
 /// untouched in the worst case.
 pub fn configure(builder: SessionBuilder) -> SessionBuilder {
     if webgpu_ready() {
+        let index = WEBGPU_CHOICE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |(i, _)| *i);
         return match ort::environment::Environment::current() {
-            // One device: several adapters would be several factories' devices, which ORT refuses to mix.
-            Ok(env) => match builder.with_devices(env.devices().filter(|d| d.ep().is_ok_and(|n| n == WEBGPU_EP)).take(1), None) {
+            // One device, the chosen adapter: several would be several factories' devices, which ORT refuses to mix.
+            Ok(env) => match builder.with_devices(env.devices().skip(index).take(1), None) {
                 Ok(b) => b,
                 Err(e) => {
                     WEBGPU_STATE.store(2, Ordering::Relaxed);
@@ -344,5 +522,59 @@ mod tests {
         for a in [Accelerator::Cpu, Accelerator::Directml, Accelerator::Cuda] {
             assert!(!webgpu_wanted(a, true), "{a:?}");
         }
+    }
+
+    #[test]
+    fn adapters_are_classified_from_the_device_description() {
+        use Adapter::*;
+        let gpu = DeviceType::GPU;
+        // The Windows box: Quadro M2000M + HD P530, by vendor id and by name alone.
+        assert_eq!(classify_adapter(gpu, "NVIDIA", 0x10DE, "Description=NVIDIA Quadro M2000M"), Some(Discrete));
+        assert_eq!(classify_adapter(gpu, "NVIDIA", 0, ""), Some(Discrete));
+        assert_eq!(classify_adapter(gpu, "Intel Corporation", 0x8086, "Intel(R) HD Graphics P530"), Some(Integrated));
+        assert_eq!(classify_adapter(gpu, "Advanced Micro Devices", 0x1002, "Radeon RX 6600"), Some(Discrete));
+        // The Mac's built-in EP names Apple with no metadata.
+        assert_eq!(classify_adapter(gpu, "Apple", 0, ""), Some(Integrated));
+        // The Ubuntu LXC: Dawn's adapter with no vendor at all.
+        assert_eq!(classify_adapter(gpu, "", 0, ""), Some(Software));
+        assert_eq!(classify_adapter(gpu, "Microsoft", 0x1414, "Microsoft Basic Render Driver"), Some(Software));
+        assert_eq!(classify_adapter(gpu, "Microsoft", 0, "WARP"), Some(Software));
+        assert_eq!(classify_adapter(gpu, "Google", 0x1AE0, "SwiftShader Device (LLVM 10.0.0)"), Some(Software));
+        assert_eq!(classify_adapter(gpu, "Mesa", 0, "llvmpipe (LLVM 15.0.7, 256 bits)"), Some(Software));
+        assert_eq!(classify_adapter(gpu, "Mesa", 0x10005, "lavapipe"), Some(Software));
+        assert_eq!(classify_adapter(DeviceType::CPU, "Intel", 0x8086, ""), None);
+    }
+
+    #[test]
+    fn discrete_beats_integrated_and_software_is_never_picked_by_kind() {
+        let win = [
+            (Adapter::Integrated, "GPU Intel Corporation HD P530".to_owned()),
+            (Adapter::Discrete, "GPU NVIDIA Quadro M2000M".to_owned()),
+        ];
+        assert_eq!(pick_adapter(&win, None), Some(1));
+        assert_eq!(pick_adapter(&win, Some("intel")), Some(0));
+        assert_eq!(pick_adapter(&win, Some("nomatch")), Some(1));
+        let lxc = [(Adapter::Software, "GPU".to_owned())];
+        assert_eq!(pick_adapter(&lxc, None), None);
+        assert_eq!(pick_adapter(&lxc, Some("gpu")), Some(0));
+        let mixed = [(Adapter::Software, "GPU WARP".to_owned()), (Adapter::Integrated, "GPU Apple".to_owned())];
+        assert_eq!(pick_adapter(&mixed, None), Some(1));
+    }
+
+    #[test]
+    fn auto_takes_only_a_discrete_gpu_and_webgpu_takes_anything() {
+        let win = [
+            (Adapter::Integrated, "GPU Intel Corporation HD P530".to_owned()),
+            (Adapter::Discrete, "GPU NVIDIA Quadro M2000M".to_owned()),
+        ];
+        let mac = [(Adapter::Integrated, "GPU Apple".to_owned())];
+        let lxc = [(Adapter::Software, "GPU".to_owned())];
+        assert_eq!(choose_adapter(Accelerator::Auto, &win, None), Ok(1));
+        assert!(choose_adapter(Accelerator::Auto, &win, Some("intel")).is_err());
+        assert!(choose_adapter(Accelerator::Auto, &mac, None).unwrap_err().contains("not a discrete GPU"));
+        assert!(choose_adapter(Accelerator::Auto, &lxc, None).unwrap_err().contains("software adapter"));
+        assert_eq!(choose_adapter(Accelerator::Webgpu, &win, Some("intel")), Ok(0));
+        assert_eq!(choose_adapter(Accelerator::Webgpu, &mac, None), Ok(0));
+        assert_eq!(choose_adapter(Accelerator::Webgpu, &lxc, None), Ok(0));
     }
 }

@@ -66,6 +66,9 @@ impl std::str::FromStr for Accelerator {
 pub struct ModelsConfig {
     /// `auto` | `cpu` | `directml` | `cuda` | `webgpu`.
     pub accelerator: Accelerator,
+    /// WebGPU: a substring (case-insensitive) of the adapter's vendor or description that picks
+    /// the device when several GPUs answer; unset = discrete over integrated over first.
+    pub webgpu_adapter: Option<String>,
 }
 
 static CURRENT: AtomicU8 = AtomicU8::new(Accelerator::Auto as u8);
