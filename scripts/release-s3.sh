@@ -37,8 +37,11 @@
 #   THEUTH_S3_PUBLIC_BASE_URL   public base for downloads (default: ${ENDPOINT}/${BUCKET}/${PREFIX})
 #   THEUTH_UPDATE_KEY           minisign private key: path (~/.tauri/theuth.key) or base64 contents
 #   THEUTH_UPDATE_KEY_PASSWORD  its password (empty for --ci keys)
-#   THEUTH_RELEASE_LINUX        require | skip (default: require). skip = manifest without
-#                            cli-linux-* / linux-* keys, formula without on_linux (macOS-only hotfix)
+#   THEUTH_RELEASE_LINUX        present | require | skip (default: present). present = every Linux CLI
+#                            tarball found in dist/ or staging/ ships (at least one; a missing arch is a
+#                            WARN, its latest.json keys and formula branch are omitted); require = both
+#                            x86_64 and aarch64 must exist; skip = manifest without cli-linux-* / linux-*
+#                            keys, formula without on_linux (macOS-only hotfix)
 #   THEUTH_SKIP_LINUX_SMOKE=1   gate 7 off: no Docker on this Mac (the Ubuntu build host already ran
 #                            `t --version` natively; glibc breakage of the Docker-built aarch64 tarball
 #                            would reach users). Without it, a missing docker fails gate 7.
@@ -74,11 +77,11 @@ ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
 PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
-LINUX="${THEUTH_RELEASE_LINUX:-require}"
+LINUX="${THEUTH_RELEASE_LINUX:-present}"
 PRERELEASE="${THEUTH_RELEASE_PRERELEASE:-0}"
 TAP_REPO="${THEUTH_TAP_REPO:-git@github.com:basedatum/homebrew-tap}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
-case "$LINUX" in require | skip) ;; *) echo "error: THEUTH_RELEASE_LINUX must be require|skip" >&2; exit 1 ;; esac
+case "$LINUX" in present | require | skip) ;; *) echo "error: THEUTH_RELEASE_LINUX must be present|require|skip" >&2; exit 1 ;; esac
 
 # rustfs: path-style, no mandatory checksums, no IMDS probe (jarvis release-s3.sh:164-174).
 export AWS_S3_FORCE_PATH_STYLE=true
@@ -110,8 +113,9 @@ PUB_VER="${PUBLIC_BASE}/${VERSION}"
 APP_TGZ="theuth_${VERSION}_${KEY}.app.tar.gz"
 CLI_TGZ="theuth_${VERSION}_${KEY}.tar.gz"
 DMG="theuth_${VERSION}_${KEY}.dmg"
-LINUX_TGZ=()
-[[ "$LINUX" == "skip" ]] || LINUX_TGZ=("theuth_${VERSION}_linux-x86_64.tar.gz" "theuth_${VERSION}_linux-aarch64.tar.gz")
+LINUX_ARCHES=(x86_64 aarch64)
+LINUX_TGZ=()   # the CLI tarballs that ship; filled by gate 6 (present) or fixed (require)
+[[ "$LINUX" != "require" ]] || LINUX_TGZ=("theuth_${VERSION}_linux-x86_64.tar.gz" "theuth_${VERSION}_linux-aarch64.tar.gz")
 MANIFEST_NAME="latest.json"; [[ "$PRERELEASE" == "1" ]] && MANIFEST_NAME="latest-prerelease.json"
 
 for f in "$APP_TGZ" "$CLI_TGZ" "$DMG"; do
@@ -193,9 +197,17 @@ WIN_SETUP=""; WIN_ZIP=""
 if [[ "$LINUX" == "skip" ]]; then
   echo "    THEUTH_RELEASE_LINUX=skip: manifest and formula without Linux"
 else
-  for f in "${LINUX_TGZ[@]}"; do
-    fetch "$f" || fail 6 "$f neither in $DIST/ nor $S3_STAGING/ (just build-remote <host> linux, just stage-linux on that arch, or THEUTH_RELEASE_LINUX=skip)"
-  done
+  if [[ "$LINUX" == "require" ]]; then
+    for f in "${LINUX_TGZ[@]}"; do
+      fetch "$f" || fail 6 "$f neither in $DIST/ nor $S3_STAGING/ (just build-remote <host> linux, just stage-linux on that arch, or THEUTH_RELEASE_LINUX=present|skip)"
+    done
+  else
+    for arch in "${LINUX_ARCHES[@]}"; do
+      f="theuth_${VERSION}_linux-${arch}.tar.gz"
+      if fetch "$f"; then LINUX_TGZ+=("$f"); else echo "    WARN: no $f — cli-linux-${arch} omitted from latest.json and the formula" >&2; fi
+    done
+    [[ ${#LINUX_TGZ[@]} -gt 0 ]] || fail 6 "no theuth_${VERSION}_linux-*.tar.gz in $DIST/ or $S3_STAGING/ (just build-remote <host> linux, or THEUTH_RELEASE_LINUX=skip)"
+  fi
   # Desktop bundles (just build-remote <host> linux / just package-linux) are optional.
   for arch in x86_64 aarch64; do
     for ext in deb rpm AppImage; do
@@ -354,13 +366,19 @@ fi
 
 # ── tap bump (§5.3) ──────────────────────────────────────────────────────────
 # Rendered files always land in dist/tap/ so a failed audit or a dry run leaves something to inspect.
+# has_linux_tgz <arch>: that arch's CLI tarball ships in this release.
+has_linux_tgz() { local f; for f in ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}; do [[ "$f" == *"linux-$1."* ]] && return 0; done; return 1; }
 render() { # tmpl out
   sed -e "s|@VERSION@|$VERSION|g" -e "s|@BASE_URL@|$PUBLIC_BASE|g" \
       -e "s|@SHA_MACOS_CLI@|$(sha_of "$CLI_TGZ")|g" -e "s|@SHA_DMG@|$(sha_of "$DMG")|g" \
       -e "s|@SHA_LINUX_X86@|$(sha_of "theuth_${VERSION}_linux-x86_64.tar.gz")|g" \
       -e "s|@SHA_LINUX_ARM@|$(sha_of "theuth_${VERSION}_linux-aarch64.tar.gz")|g" "$1" \
     | if [[ "$LINUX" == "skip" ]]; then sed '/^# @LINUX_BEGIN@$/,/^# @LINUX_END@$/d'
-      else sed -e '/^# @LINUX_BEGIN@$/d' -e '/^# @LINUX_END@$/d'; fi >"$2"
+      else sed -e '/^# @LINUX_BEGIN@$/d' -e '/^# @LINUX_END@$/d'; fi \
+    | if has_linux_tgz aarch64; then sed -e '/^# @LINUX_ARM_BEGIN@$/d' -e '/^# @LINUX_ARM_END@$/d'
+      else sed '/^# @LINUX_ARM_BEGIN@$/,/^# @LINUX_ARM_END@$/d'; fi \
+    | if has_linux_tgz x86_64; then sed -e '/^# @LINUX_X86_BEGIN@$/d' -e '/^# @LINUX_X86_END@$/d'
+      else sed '/^# @LINUX_X86_BEGIN@$/,/^# @LINUX_X86_END@$/d'; fi >"$2"
 }
 mkdir -p "$DIST/tap/Formula" "$DIST/tap/Casks"
 render scripts/tap/theuth.rb.formula.tmpl "$DIST/tap/Formula/theuth.rb"

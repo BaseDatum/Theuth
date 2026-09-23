@@ -12,14 +12,18 @@ class Theuth < Formula
   end
 # @LINUX_BEGIN@
   on_linux do
+# @LINUX_ARM_BEGIN@
     on_arm do
       url "@BASE_URL@/@VERSION@/theuth_@VERSION@_linux-aarch64.tar.gz"
       sha256 "@SHA_LINUX_ARM@"
     end
+# @LINUX_ARM_END@
+# @LINUX_X86_BEGIN@
     on_intel do
       url "@BASE_URL@/@VERSION@/theuth_@VERSION@_linux-x86_64.tar.gz"
       sha256 "@SHA_LINUX_X86@"
     end
+# @LINUX_X86_END@
   end
 # @LINUX_END@
 
