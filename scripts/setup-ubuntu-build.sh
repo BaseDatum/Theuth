@@ -52,6 +52,7 @@ echo "==> apt packages (same set as deploy/update/Dockerfile)"
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip \
+  protobuf-compiler nasm \
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
   libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev \
   libdbus-1-dev \

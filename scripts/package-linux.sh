@@ -42,6 +42,7 @@ source "$ROOT/scripts/app-parser-env.sh"
 
 HOST_PKGS=(
   curl ca-certificates git build-essential clang cmake llvm libclang-dev pkg-config perl unzip
+  protobuf-compiler nasm   # signal's spqr (prost-build); aws-lc-sys / boringssl assembly
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev
   libx11-dev libxtst-dev libxdo-dev libxkbcommon-dev
   libdbus-1-dev
