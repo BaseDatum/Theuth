@@ -13,6 +13,7 @@ import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import {
   isTauri,
+  islandCapabilities,
   islandHide,
   islandPlace,
   islandResignKey,
@@ -58,6 +59,11 @@ export function Island() {
   const cursor = useMeeting((s) => s.cursor)
   const unseen = useMeeting((s) => s.unseen)
   const hidden = useMeetingSettings((s) => s.hidden)
+  // 58 §6.2 / §3.3: read once; `true` until answered so macOS renders as before.
+  const [canHide, setCanHide] = useState(true)
+  useEffect(() => {
+    void islandCapabilities().then((c) => setCanHide(c.hide_from_share))
+  }, [])
   const [menu, setMenu] = useState(false)
   const brief = current({ briefs, cursor })
   const shown = live(state) || state === 'Starting' || state === 'Stopping'
@@ -237,15 +243,26 @@ export function Island() {
             </>
           )}
         </div>
-        <button
-          type="button"
-          className="flex size-7 shrink-0 items-center justify-center rounded-full text-fg-secondary hover:bg-accent"
-          aria-label={hidden ? 'Hidden from capture' : 'Visible in capture'}
-          title={hidden ? 'Hidden from screen capture' : 'Visible in screen capture'}
-          onClick={() => void setHiddenFromCapture(!hidden)}
-        >
-          {hidden ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-        </button>
+        {canHide ? (
+          <button
+            type="button"
+            className="flex size-7 shrink-0 items-center justify-center rounded-full text-fg-secondary hover:bg-accent"
+            aria-label={hidden ? 'Hidden from capture' : 'Visible in capture'}
+            title={hidden ? 'Hidden from screen capture' : 'Visible in screen capture'}
+            onClick={() => void setHiddenFromCapture(!hidden)}
+          >
+            {hidden ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+          </button>
+        ) : (
+          <span
+            className="flex size-7 shrink-0 items-center justify-center text-fg-tertiary"
+            role="img"
+            aria-label="Visible in screen shares"
+            title="Visible in screen shares: this window system cannot hide the island from capture"
+          >
+            <Eye className="size-4" />
+          </span>
+        )}
         <button
           type="button"
           className="flex size-7 shrink-0 items-center justify-center rounded-full text-fg-secondary hover:bg-accent"

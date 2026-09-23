@@ -4174,6 +4174,7 @@ dependencies = [
  "platform",
  "portable-pty",
  "rand 0.9.5",
+ "raw-window-handle",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -4195,6 +4196,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
