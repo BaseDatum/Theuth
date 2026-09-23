@@ -124,7 +124,19 @@ fi
 # the helper names carry the library hash / protocol version, so the overlay is rendered here, not committed.
 BUNDLE_CONF="$(jq -cn --arg h "binaries/$HELPER" --arg d "binaries/$DOC_HELPER" '{bundle: {externalBin: ["binaries/t", $h, $d]}}')"
 rm -rf "$BUNDLE_DIR/deb" "$BUNDLE_DIR/rpm" "$BUNDLE_DIR/appimage"
-(cd crates/desktop && TAURI_FRONTEND_PATH=ui cargo tauri build --config "$BUNDLE_CONF")
+# linuxdeploy aborts when `ldd` fails on any executable in the AppDir; on aarch64 `ldd` exits 1 with no output on
+# Bun-compiled binaries (the two helpers) although `ld.so --verify` accepts them and they need only glibc, which
+# linuxdeploy never bundles. A shim turns "failed silently" into "no dependencies"; every other case passes through.
+LDD_SHIM="$(mktemp -d)"
+cat >"$LDD_SHIM/ldd" <<'SH'
+#!/usr/bin/env bash
+out="$(/usr/bin/ldd "$@" 2>&1)"; rc=$?
+if [[ $rc -ne 0 && -z "$out" ]]; then exit 0; fi
+printf '%s\n' "$out"; exit $rc
+SH
+chmod +x "$LDD_SHIM/ldd"
+(cd crates/desktop && PATH="$LDD_SHIM:$PATH" TAURI_FRONTEND_PATH=ui cargo tauri build --config "$BUNDLE_CONF")
+rm -rf "$LDD_SHIM"
 
 echo "==> [4/5] → $DIST"
 mkdir -p "$DIST"
