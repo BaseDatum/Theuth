@@ -5776,7 +5776,7 @@ impl From<&Resolved> for ModelInfo {
 /// per-row context metadata (48 §3.3): a text entry gets its own row's, a
 /// tool card its response row's, narrowed to that response's images; a
 /// call still running has no stored response and so no target.
-fn render(
+pub(crate) fn render(
     messages: &[(i64, ChatMessage)],
     entries: &BTreeMap<i64, ContextEntry>,
 ) -> Vec<(i64, HistoryEntry)> {
