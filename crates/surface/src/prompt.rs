@@ -133,6 +133,7 @@ Shapes for the replies you write most:\n\
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
 \n\
 Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
+Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `\"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.\n\
 \n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
 \n\
@@ -293,6 +294,7 @@ mod tests {
         }
         assert!(block.contains("<surface_error>"));
         assert!(block.contains("No Query/Mutation/@ToAssistant in a fence."));
+        assert!(block.contains("\nMermaid styling: outline, never fill. "));
         assert!(block.ends_with("}}}}\n```"));
 
         let (_, rest) = block.split_once("```json-render\n").unwrap();
@@ -344,6 +346,7 @@ mod tests {
         let skill = visualize_skill();
         assert!(skill.starts_with("---\nname: visualize\n"));
         assert!(!skill.contains("{{"), "unfilled placeholder");
+        assert!(skill.contains("\n## Mermaid styling: outline, never fill\n"));
         for e in &catalog().entries {
             assert!(skill.contains(&format!("\n### {}\n", e.name)), "{}", e.name);
         }

@@ -450,6 +450,7 @@ Shapes for the replies you write most:
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, "first… then… finally", "if X then Y state", "A vs B": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.
 
 Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.
+Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.
 
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.
 
@@ -507,8 +508,19 @@ diagram of the diagram you are about to show. In a voice-note reply, draw
 nothing. Never describe the picture in prose — one sentence of takeaway above
 it, then the block.
 
+## Mermaid styling: outline, never fill
+
+(Sky's style guide, verbatim: every `classDef` is `fill:none` with a
+colored `stroke` at `stroke-width:2.5px`, `stroke-dasharray:6 3` for a soft
+category; palette red `#dc2626` gate, blue `#2563eb` mutation, amber
+`#d97706` warning, green `#16a34a` done, gray `#6b7280` external; two or
+three classes; `rect rgba(0,0,0,0)` bands in `sequenceDiagram`; category in
+the node text plus a one-line legend; a worked `classDef` example. Its
+"syntax traps" bullet lives in the rules list below.)
+
 ## Mermaid rules that avoid errors
 - Quote labels that contain `(`, `)`, `[`, `]`, `{`, `}`, `:` or `|`: `A["fetch(url)"]`.
+- Syntax traps that break the parser: no double quotes inside `[...]` node labels, no `;` inside any label or note, no `(`/`)` inside `([...])` stadium labels.
 - Node ids are bare words; `end` is reserved — write `End` or `finish`.
 - Edge labels: `A -->|label| B` or `A -- label --> B`, no spaces inside `|…|` delimiters.
 - One diagram, one direction; ≤ 12 nodes; split otherwise.

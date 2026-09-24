@@ -45,8 +45,24 @@ diagram of the diagram you are about to show. In a voice-note reply, draw
 nothing. Never describe the picture in prose — one sentence of takeaway above
 it, then the block.
 
+## Mermaid styling: outline, never fill
+Diagrams render on light and dark themes and on phones; filled node backgrounds fight the theme's text color and become unreadable. Encode meaning in the **stroke**, never the fill:
+- Every `classDef` uses `fill:none` (or `fill:transparent`), a colored `stroke`, and `stroke-width:2.5px`. Add `stroke-dasharray:6 3` for a secondary/soft category (e.g. advisory or non-gating).
+- Palette (mid-saturation, legible on both themes): red `#dc2626` = human gate / blocker, blue `#2563eb` = mutating action, amber `#d97706` = warning / non-gating, green `#16a34a` = verified / done, gray `#6b7280` = external or out of scope. Two or three classes per diagram, not five.
+- In `sequenceDiagram`, use `rect rgba(0,0,0,0)` for stage grouping so the band is a boundary, not a tint; notes carry the label.
+- Never rely on color alone: put the category into the node text (PREFLIGHT, HEALTH — shim, exit 2) and finish with a one-line legend: "red outline = gates · blue outline = mutations · amber dashed = non-gating".
+
+Example:
+    classDef gate fill:none,stroke:#dc2626,stroke-width:2.5px;
+    classDef soft fill:none,stroke:#d97706,stroke-width:2.5px,stroke-dasharray:6 3;
+    classDef mut  fill:none,stroke:#2563eb,stroke-width:2.5px;
+    class PRE,CONF gate;
+    class HLT,SMK soft;
+    class AUR,K8S,DNS mut;
+
 ## Mermaid rules that avoid errors
 - Quote labels that contain `(`, `)`, `[`, `]`, `{`, `}`, `:` or `|`: `A["fetch(url)"]`.
+- Syntax traps that break the parser: no double quotes inside `[...]` node labels (write `set 0`, not `"0"`), no `;` inside any label or note (mermaid reads it as end-of-statement), and no `(`/`)` inside `([...])` stadium labels.
 - Node ids are bare words; `end` is reserved — write `End` or `finish`.
 - Edge labels: `A -->|label| B` or `A -- label --> B`, no spaces inside `|…|` delimiters.
 - One diagram, one direction; ≤ 12 nodes; split otherwise.
