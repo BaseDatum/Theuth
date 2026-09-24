@@ -144,8 +144,8 @@ fn main() -> anyhow::Result<()> {
         if system_words.is_empty() { "" } else { "; words = stored system-track words by midpoint" }
     );
     println!(
-        "{:<12} {:>5} {:>10} {:>8} {:>9} {:>10} {:>14} {}",
-        "config", "spk", "frames=", "DER", "words=", "unassigned", "unassigned-off", "channel map"
+        "{:<12} {:>5} {:>10} {:>8} {:>9} {:>10} {:>14} channel map",
+        "config", "spk", "frames=", "DER", "words=", "unassigned", "unassigned-off"
     );
     let offline = &runs[0];
     for r in &runs {
@@ -326,13 +326,13 @@ fn agreement(reference: &[f32], hyp: &[f32], words: &[(u64, u64)]) -> Agreement 
     let mut overlap = [[0usize; SPEAKERS]; SPEAKERS];
     let mut hyp_frames = [0usize; SPEAKERS];
     for t in 0..frames {
-        for h in 0..SPEAKERS {
-            hyp_frames[h] += usize::from(active(hyp, t, h));
+        for (h, n) in hyp_frames.iter_mut().enumerate() {
+            *n += usize::from(active(hyp, t, h));
         }
-        for r in 0..SPEAKERS {
+        for (r, row) in overlap.iter_mut().enumerate() {
             if active(reference, t, r) {
-                for h in 0..SPEAKERS {
-                    overlap[r][h] += usize::from(active(hyp, t, h));
+                for (h, cell) in row.iter_mut().enumerate() {
+                    *cell += usize::from(active(hyp, t, h));
                 }
             }
         }

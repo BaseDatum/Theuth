@@ -177,9 +177,9 @@ pub struct Live {
     pub diar: Option<tokio::task::JoinHandle<Option<crate::diar::Labels>>>,
     /// 07 §3: what the diariser has scored so far.
     pub labels: LiveLabels,
-    /// 07 §3: closed system utterances (with their close stamps) waiting for the
-    /// diariser's horizon to pass their end before they are logged and batched.
-    pub held_system: Vec<(Utterance, Instant)>,
+    /// 07 §3: closed system utterances waiting for the diariser's horizon to pass their
+    /// end before they are logged and batched, in close order.
+    pub held_system: Vec<Utterance>,
     /// 57 §3.2: batches the oracle kept from the model (`(stamp, utterances)`), written as
     /// context into the next delivered batch line, then cleared. Oldest first.
     pub carry: Vec<(String, Vec<Utterance>)>,

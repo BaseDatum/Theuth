@@ -1399,7 +1399,7 @@ impl Meeting {
         let Some(rec) = self.current.as_mut() else { return };
         if u.track == Track::System && rec.live.diar.is_some() {
             // 07 §3: the line is logged and batched once the diariser has scored it.
-            rec.live.held_system.push((u, at));
+            rec.live.held_system.push(u);
             self.release_held(me, false).await;
             return;
         }
@@ -1422,10 +1422,10 @@ impl Meeting {
         loop {
             let Some(rec) = self.current.as_mut() else { return };
             let horizon = rec.live.labels.horizon_ms;
-            if rec.live.held_system.first().is_none_or(|(u, _)| !all && u.t1_ms > horizon) {
+            if rec.live.held_system.first().is_none_or(|u| !all && u.t1_ms > horizon) {
                 return;
             }
-            let (mut u, _) = rec.live.held_system.remove(0);
+            let mut u = rec.live.held_system.remove(0);
             u.speaker = diar::speaker_of(u.t0_ms, u.t1_ms, &rec.live.labels.spans);
             if u.speaker.is_some() {
                 self.rt
@@ -2066,7 +2066,7 @@ impl Message<StopMeeting> for Meeting {
                 });
             }
         }
-        let held: Vec<Utterance> = live.held_system.drain(..).map(|(u, _)| u).collect();
+        let held: Vec<Utterance> = live.held_system.drain(..).collect();
         // 02 §4: the engines are gone (the tasks owned them); pending lines go
         // out as one last input, then the session compacts like any other. 57 §3.2:
         // batches the oracle kept back ride along as context, unfiltered at stop.
