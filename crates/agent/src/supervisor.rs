@@ -722,6 +722,7 @@ impl Agents {
             cwd,
             resume,
             fallback_model,
+            self.request_deadline(),
             self.store.clone(),
             self.rt.clone(),
         )));
@@ -1315,6 +1316,12 @@ impl Agents {
     /// (`Ledger::handed_off`), and the parent's ticket is admitted inside
     /// `enqueue_peer` before the child is released (47 §3.2).
     async fn child_finished(&mut self, child: SessionId, turn: TurnId, stop_reason: &str) {
+        // 06 §3.5 (2026-09-24): harness work after its prompt returned;
+        // no result exists and nothing is owed to the parent.
+        if stop_reason == crate::acp_child::HARNESS_CONTINUED {
+            self.ledger.handed_off(child, turn);
+            return;
+        }
         let owned = self.owned_children.remove(&child);
         match self.sessions.get(&child).and_then(|l| l.parent.clone()) {
             Some((parent, _)) => {
