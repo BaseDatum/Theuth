@@ -98,7 +98,7 @@ pub fn render(read: &SessionRead, range: Option<[usize; 2]>, outline: bool, with
         Some([a, b]) => (a.max(1), b.min(n)),
         None => (1, n.min(MAX_TURNS)),
     };
-    let mut s = header(&read.summary, n, from, to);
+    let mut s = header(&read.summary, first_user_line(&read.history), n, from, to);
     if n == 0 {
         s.push_str("(no turns)\n");
         return s;
@@ -136,8 +136,8 @@ pub fn render(read: &SessionRead, range: Option<[usize; 2]>, outline: bool, with
     s
 }
 
-fn header(sum: &SessionSummary, n: usize, from: usize, to: usize) -> String {
-    let title = fallback_title(sum);
+fn header(sum: &SessionSummary, first_line: Option<String>, n: usize, from: usize, to: usize) -> String {
+    let title = attach::session_title(&sum.title, first_line.as_deref(), Some(sum.created_at));
     let project = sum.project.as_deref().unwrap_or("no project");
     let mut s = format!(
         "[session_read {title:?} {}: {n} turns, {project}, {} – {}",
@@ -158,13 +158,12 @@ fn header(sum: &SessionSummary, n: usize, from: usize, to: usize) -> String {
     s
 }
 
-/// §8: a session with no user turn yet is `Chat · <created>`.
-fn fallback_title(sum: &SessionSummary) -> String {
-    if sum.title.trim().is_empty() {
-        format!("Chat · {}", sum.created_at.format("%b %-d %H:%M"))
-    } else {
-        sum.title.clone()
-    }
+/// What a title-less session is named by (66 §8): its first user turn's line.
+fn first_user_line(history: &[HistoryEntry]) -> Option<String> {
+    history.iter().find_map(|e| match e {
+        HistoryEntry::User { text, .. } => attach::first_line(text),
+        _ => None,
+    })
 }
 
 fn first_line(text: &str, max: usize) -> String {
@@ -414,6 +413,8 @@ mod tests {
         assert!(full.contains("\nfrom the other agent\n[end external content"), "{full}");
     }
 
+    /// 66 §8: a title-less session is named by its first user line, markers
+    /// skipped; with no turns at all, `Untitled chat · <Mon d>`.
     #[test]
     fn empty_title_falls_back_and_empty_session_says_so() {
         let read = SessionRead {
@@ -421,8 +422,19 @@ mod tests {
             history: vec![],
         };
         let out = render(&read, None, false, false);
-        assert!(out.starts_with("[session_read \"Chat · "), "{out}");
+        assert!(out.starts_with("[session_read \"Untitled chat · "), "{out}");
         assert!(out.ends_with("(no turns)\n"), "{out}");
+        let mut read = chat(1);
+        read.summary = summary("");
+        read.history[0] = HistoryEntry::User {
+            text: "[attached note abc \"Groceries\" · 1 KB]\nwhat's missing?".into(),
+            turn: Some(1),
+            context: None,
+            peer: None,
+            vision: None,
+        };
+        let out = render(&read, None, false, false);
+        assert!(out.starts_with("[session_read \"what's missing?\" "), "{out}");
     }
 
     #[test]

@@ -81,7 +81,7 @@ use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
     AGENT_ACTOR, AgentConfig, AgentEvent, Agents, CompactStyle, QueuedInput, SurfaceConfig,
-    Toolset, Usage, VisionStage, compact, skills, spill, todo,
+    Toolset, Usage, VisionStage, attach, compact, skills, spill, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`] (and
@@ -953,25 +953,28 @@ impl Session {
         let rest: Vec<Queued> = inputs.collect();
         if !self.titled {
             self.titled = true;
-            // A skill injection titles by the user's words (or the skill's name), never the `<skill>` body.
+            // A skill injection titles by the user's words (or the skill's name), never the `<skill>` body;
+            // leading attachment markers are never the name (66 §8), their body or the attachment's title is.
             let seed = match skills::injected(&texts[0]) {
-                Some((name, _, "")) => name,
-                Some((_, _, words)) => words,
-                None => texts[0].trim(),
+                Some((name, _, "")) => Some(name.to_owned()),
+                Some((_, _, words)) => Some(words.to_owned()),
+                None => attach::first_line(&texts[0]),
             };
-            let title: String = seed.chars().take(60).collect();
-            match self.shared.store.set_title(self.shared.id, &title).await {
-                Ok(()) => {
-                    self.shared
-                        .rt
-                        .publish(AgentEvent::TitleChanged {
-                            session: self.shared.id,
-                            title,
-                            tags: Vec::new(),
-                        })
-                        .await;
+            if let Some(seed) = seed {
+                let title = attach::seed_title(&seed);
+                match self.shared.store.set_title(self.shared.id, &title).await {
+                    Ok(()) => {
+                        self.shared
+                            .rt
+                            .publish(AgentEvent::TitleChanged {
+                                session: self.shared.id,
+                                title,
+                                tags: Vec::new(),
+                            })
+                            .await;
+                    }
+                    Err(e) => tracing::warn!(session = %self.shared.id, "set_title: {e:#}"),
                 }
-                Err(e) => tracing::warn!(session = %self.shared.id, "set_title: {e:#}"),
             }
         }
         let model = {

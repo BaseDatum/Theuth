@@ -198,6 +198,52 @@ fn quoted(s: &str) -> Option<(String, &str)> {
     None
 }
 
+/// The line a session is named by until it has a title (66 §8): the first
+/// non-empty body line of its first user input, leading markers stripped;
+/// when the input is markers only, the first attachment's title. Never a
+/// marker's syntax. `None` when there is nothing to name by.
+pub fn first_line(text: &str) -> Option<String> {
+    let p = parse(text);
+    p.body
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_owned)
+        .or_else(|| p.refs.into_iter().map(|r| r.title).find(|t| !t.trim().is_empty()))
+}
+
+/// The placeholder a first input seeds as the stored title (07 §15): `line`
+/// cut to 60 chars, `…` when cut.
+pub fn seed_title(line: &str) -> String {
+    let mut s: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        s.push('…');
+    }
+    s
+}
+
+/// A session's display name, the one rule for every surface (66 §8 as ruled;
+/// `lib/attach.ts` `chatName` is the UI's copy): the title; else
+/// [`first_line`] cut by [`seed_title`]; else `Untitled chat · <Mon d>` in
+/// local time from `created`, `Untitled chat` when that is unknown.
+pub fn session_title(
+    title: &str,
+    first_line: Option<&str>,
+    created: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    if let Some(line) = first_line.map(str::trim).filter(|l| !l.is_empty()) {
+        return seed_title(line);
+    }
+    match created {
+        Some(t) => format!("Untitled chat · {}", t.with_timezone(&chrono::Local).format("%b %-d")),
+        None => "Untitled chat".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +307,32 @@ mod tests {
     fn empty_meta_omits_separator() {
         let r = AttachRef { kind: Kind::Note, id: "abc".into(), title: "T".into(), meta: String::new() };
         assert_eq!(marker(&r), r#"[attached note abc "T"]"#);
+    }
+
+    /// 66 §8: a first message that opens with markers is named by its body,
+    /// a markers-only message by the attachment's title; the marker syntax is
+    /// never a name. The display rule falls through title → line → date.
+    #[test]
+    fn names_skip_markers_and_fall_back_to_the_attachment_title() {
+        let note = "[attached note abc \"Groceries\" · 1 KB]";
+        assert_eq!(first_line(&format!("{note}\n\nwhat's on the list?")).as_deref(), Some("what's on the list?"));
+        assert_eq!(first_line(note).as_deref(), Some("Groceries"));
+        assert_eq!(first_line(&format!("{note}\n")).as_deref(), Some("Groceries"));
+        assert_eq!(first_line("[doc knowledge:facts/x \"Relay timeouts\"]\n  ").as_deref(), Some("Relay timeouts"));
+        assert_eq!(first_line("\n  \n"), None);
+        assert_eq!(first_line("").as_deref(), None);
+        // A malformed line is body: it is the name, brackets and all.
+        assert_eq!(first_line("[attached note]\nhi").as_deref(), Some("[attached note]"));
+
+        let long = "x".repeat(70);
+        assert_eq!(seed_title(&long), format!("{}…", "x".repeat(60)));
+        assert_eq!(seed_title("short"), "short");
+
+        let created = chrono::DateTime::parse_from_rfc3339("2026-09-01T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(session_title(" Fix relay ", Some("ignored"), Some(created)), "Fix relay");
+        assert_eq!(session_title("", Some(&long), Some(created)), seed_title(&long));
+        assert_eq!(session_title("", Some("  "), None), "Untitled chat");
+        let day = created.with_timezone(&chrono::Local).format("%b %-d").to_string();
+        assert_eq!(session_title("", None, Some(created)), format!("Untitled chat · {day}"));
     }
 }

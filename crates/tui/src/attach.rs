@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use agent::SessionSummary;
-use agent::attach::{AttachRef, Kind, parse};
+use agent::attach::{AttachRef, Kind, parse, session_title};
 use chrono::{DateTime, Datelike, Local, Utc};
 
 use crate::search::Hit;
@@ -58,11 +58,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             AttachRef {
                 kind: Kind::Session,
                 id: h.session.to_string(),
-                title: if h.title.trim().is_empty() {
-                    format!("Chat · {}", date_rfc3339(&h.created_at))
-                } else {
-                    h.title.clone()
-                },
+                title: session_title(
+                    &h.title,
+                    None,
+                    DateTime::parse_from_rfc3339(&h.created_at).ok().map(|t| t.with_timezone(&Utc)),
+                ),
                 meta,
             }
         }
@@ -149,11 +149,7 @@ pub fn from_session(s: &SessionSummary) -> AttachRef {
     AttachRef {
         kind: Kind::Session,
         id: s.id.to_string(),
-        title: if s.title.trim().is_empty() {
-            format!("Chat · {}", s.created_at.with_timezone(&Local).format("%b %-d %H:%M"))
-        } else {
-            s.title.clone()
-        },
+        title: session_title(&s.title, None, Some(s.created_at)),
         meta,
     }
 }
@@ -219,7 +215,7 @@ mod tests {
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);
-        assert!(r.title.starts_with("Chat · "), "{}", r.title);
+        assert!(r.title.starts_with("Untitled chat · "), "{}", r.title);
         assert_eq!(r.meta, format!("chat · no project · updated {} · archived", date(now)));
     }
 }

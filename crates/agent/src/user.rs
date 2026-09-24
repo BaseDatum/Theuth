@@ -200,7 +200,7 @@ impl Tool for MessageUserTool {
         let origin = format!(
             "session {} · {}",
             &id[id.len().saturating_sub(8)..],
-            root.title.as_deref().unwrap_or("untitled")
+            crate::attach::session_title(root.title.as_deref().unwrap_or(""), None, None)
         );
         let m = Outbound {
             sessions: chain.iter().map(|a| a.id).collect(),

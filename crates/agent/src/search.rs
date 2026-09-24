@@ -285,9 +285,8 @@ impl Index {
         let mut first_lines: HashMap<SessionId, String> = HashMap::new();
         for d in &docs {
             if d.role == HitRole::User && !first_lines.contains_key(&d.session) {
-                let body = crate::attach::parse(d.text.as_str()).body;
-                if let Some(line) = body.lines().map(str::trim).find(|l| !l.is_empty()) {
-                    first_lines.insert(d.session, line.to_owned());
+                if let Some(line) = crate::attach::first_line(d.text.as_str()) {
+                    first_lines.insert(d.session, line);
                 }
             }
         }
@@ -409,24 +408,12 @@ impl Index {
 }
 
 impl Title {
-    /// 66 §8: the title; else the first user line cut to 60 chars; else
-    /// `Untitled chat · <Mon d>` from `created_at`.
+    /// [`crate::attach::session_title`] over the row.
     fn display_title(&self) -> String {
-        let title = self.title.as_str().trim();
-        if !title.is_empty() {
-            return title.to_owned();
-        }
-        if let Some(line) = &self.first_line {
-            let mut s: String = line.chars().take(60).collect();
-            if line.chars().count() > 60 {
-                s.push('…');
-            }
-            return s;
-        }
-        let day = chrono::DateTime::parse_from_rfc3339(&self.created_at)
-            .map(|t| t.with_timezone(&chrono::Local).format("%b %-d").to_string())
-            .unwrap_or_default();
-        if day.is_empty() { "Untitled chat".to_owned() } else { format!("Untitled chat · {day}") }
+        let created = chrono::DateTime::parse_from_rfc3339(&self.created_at)
+            .ok()
+            .map(|t| t.with_timezone(&chrono::Utc));
+        crate::attach::session_title(self.title.as_str(), self.first_line.as_deref(), created)
     }
 }
 
