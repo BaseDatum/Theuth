@@ -2156,6 +2156,7 @@ impl Worker {
             | AgentEvent::InputInjected { .. }
             | AgentEvent::InputWithdrawn { .. }
             | AgentEvent::ModelChanged { .. }
+            | AgentEvent::HarnessModelChanged { .. }
             | AgentEvent::EffortChanged { .. }
             | AgentEvent::Compacting { .. }
             | AgentEvent::Harvesting { .. }

@@ -78,6 +78,11 @@ pub struct AcpChild {
     titled: bool,
     /// An unusable `usage_update.cost` was already logged (once per connection).
     meter_warned: bool,
+    /// `agents.yaml` `model:` — shown when the harness reports no model (06 §8.2).
+    fallback_model: Option<String>,
+    /// The model last persisted and published for this session (06 §8.2):
+    /// the harness's `configOptions` model select, else [`Self::fallback_model`].
+    harness_model: Option<String>,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -144,13 +149,16 @@ struct KillTimer(TurnId);
 
 impl AcpChild {
     /// Bind session `id` to harness `name` reached over `transport`, prompting
-    /// in `cwd`; `resume` is the stored ACP session id to `session/load`.
+    /// in `cwd`; `resume` is the stored ACP session id to `session/load`;
+    /// `fallback_model` is the entry's `model:` label (06 §8.2).
+    #[allow(clippy::too_many_arguments)] // one call site (the supervisor); a builder would only rename the fields
     pub fn new(
         id: SessionId,
         name: String,
         transport: Transport,
         cwd: PathBuf,
         resume: Option<String>,
+        fallback_model: Option<String>,
         store: Store,
         rt: Runtime,
     ) -> Self {
@@ -175,11 +183,31 @@ impl AcpChild {
             turn: None,
             titled: false,
             meter_warned: false,
+            fallback_model,
+            harness_model: None,
         }
     }
 
     async fn publish(&self, ev: AgentEvent) {
         self.rt.publish(ev).await;
+    }
+
+    /// 06 §8.2: `model` is what the harness runs on now. Persist and publish
+    /// it once per distinct value; a failed write advertises nothing.
+    async fn set_harness_model(&mut self, model: String) {
+        if self.harness_model.as_deref() == Some(model.as_str()) {
+            return;
+        }
+        if let Err(e) = self.store.set_harness_model(self.id, &model).await {
+            tracing::warn!(session = %self.id, "set_harness_model: {e:#}");
+            return;
+        }
+        self.publish(AgentEvent::HarnessModelChanged {
+            session: self.id,
+            model: model.clone(),
+        })
+        .await;
+        self.harness_model = Some(model);
     }
 
     /// 51 §6.3: one `usage_update.cost` observation → the ledger. An
@@ -857,6 +885,15 @@ impl Message<Connected> for AcpChild {
                 if let Err(e) = self.store.set_acp_session(self.id, h.session_id()).await {
                     tracing::warn!(session = %self.id, "set_acp_session: {e:#}");
                 }
+                // 06 §8.2: the model select of the session response, else the
+                // entry's `model:`; nothing when neither says.
+                let model = h
+                    .model()
+                    .map(str::to_owned)
+                    .or_else(|| self.fallback_model.clone());
+                if let Some(model) = model {
+                    self.set_harness_model(model).await;
+                }
                 // 51 §6.3: a session this wrapper created has a known-zero
                 // baseline; persist that before any prompt so the first
                 // cumulative total is attributed in full.
@@ -1015,6 +1052,13 @@ impl Message<Update> for AcpChild {
     async fn handle(&mut self, u: Update, ctx: &mut Context<Self, Self::Reply>) {
         match u {
             Update::Session(SessionUpdate::Plan(p)) => self.plan(&p).await,
+            // 06 §8.2: a mid-session switch (`/switch` in omp); an update
+            // without a model select keeps the last known value.
+            Update::Session(SessionUpdate::ConfigOptionUpdate(u)) => {
+                if let Some(model) = acp::current_model(&u.config_options) {
+                    self.set_harness_model(model).await;
+                }
+            }
             Update::Session(update) => {
                 let Some(turn) = &mut self.turn else { return };
                 let events = translate(update, turn);

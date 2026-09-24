@@ -644,6 +644,9 @@ export function apply(
         historyGeneration: slice.historyGeneration + 1,
         live: slice.live + 1,
       };
+    // An ACP child's harness reported its LLM (06 §8.2): header text, not transcript state — no tail close, no `live` bump.
+    case "HarnessModelChanged":
+      return slice.harnessModel === e.model ? slice : { ...slice, harnessModel: e.model };
   }
   // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
   const next = turn(closeTail(slice, e), e, ctx);

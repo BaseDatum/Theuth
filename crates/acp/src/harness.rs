@@ -23,7 +23,8 @@ use agent_client_protocol::schema::v1::{
     AgentRequest, AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
     ClientCapabilities, ContentBlock, Error, ErrorCode, Implementation, InitializeRequest,
     InitializeResponse, LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, SessionId,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionId,
     SessionNotification, SessionUpdate, StopReason, ToolCallUpdate,
 };
 use agent_client_protocol::{
@@ -150,6 +151,8 @@ pub struct Harness {
     cx: ConnectionTo<Agent>,
     session: SessionId,
     resumed: bool,
+    /// [`current_model`] of the `session/new` | `session/load` response.
+    model: Option<String>,
     shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
@@ -306,7 +309,7 @@ impl Link {
         cwd: &Path,
         resume: Option<String>,
         authenticate: bool,
-    ) -> Result<(SessionId, bool), Fail> {
+    ) -> Result<(SessionId, bool, Option<String>), Fail> {
         let init: InitializeResponse = match self.request(initialize_request()).await {
             Ok(i) => i,
             Err(e) => return Err(Fail::Other(self.explain(e).await)),
@@ -318,11 +321,17 @@ impl Link {
                 Some(sid) => self
                     .request(LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd))
                     .await
-                    .map(|_| (SessionId::new(sid.as_str()), true)),
+                    .map(|r| {
+                        let model = r.config_options.as_deref().and_then(current_model);
+                        (SessionId::new(sid.as_str()), true, model)
+                    }),
                 None => self
                     .request(NewSessionRequest::new(cwd))
                     .await
-                    .map(|r| (r.session_id, false)),
+                    .map(|r| {
+                        let model = r.config_options.as_deref().and_then(current_model);
+                        (r.session_id, false, model)
+                    }),
             };
             match opened {
                 Ok(session) => return Ok(session),
@@ -375,7 +384,7 @@ impl Harness {
         } = c;
         let config = transport.config().cloned();
         let mut link = Link::spawn(transport, &stderr_log, tx.clone()).await?;
-        let (session, resumed) = match link.open(config.as_ref(), &cwd, resume, true).await {
+        let (session, resumed, model) = match link.open(config.as_ref(), &cwd, resume, true).await {
             Ok(s) => s,
             Err(Fail::Login(cmd)) => {
                 return Err(format!(
@@ -399,8 +408,16 @@ impl Harness {
             cx,
             session,
             resumed,
+            model,
             shutdown: Arc::new(Mutex::new(Some(shutdown))),
         })
+    }
+
+    /// The model the harness reported when the session opened
+    /// ([`current_model`]); `None` when it reported none.
+    #[must_use]
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 
     /// The harness's session id.
@@ -444,6 +461,29 @@ impl Harness {
             guard.take();
         }
     }
+}
+
+/// The active model in a harness's session `configOptions` (06 §8.2): the
+/// current value of the `model`-category select, else of the first select
+/// whose id or name mentions "model" (a harness without categories). The raw
+/// value (`anthropic/claude-opus-4-8`), not its display name. Both omp and
+/// opencode report `{"id":"model","category":"model","type":"select"}`.
+#[must_use]
+pub fn current_model(options: &[SessionConfigOption]) -> Option<String> {
+    let select = |o: &SessionConfigOption| match &o.kind {
+        SessionConfigKind::Select(s) => Some(s.current_value.0.to_string()),
+        _ => None,
+    };
+    options
+        .iter()
+        .find(|o| o.category == Some(SessionConfigOptionCategory::Model))
+        .or_else(|| {
+            options.iter().find(|o| {
+                o.id.0.to_ascii_lowercase().contains("model")
+                    || o.name.to_ascii_lowercase().contains("model")
+            })
+        })
+        .and_then(select)
 }
 
 /// Open, `initialize`, `session/new`, report, close. Never authenticates.
@@ -566,6 +606,34 @@ mod tests {
             "max_turn_requests"
         );
         assert_eq!(stop_reason(StopReason::Cancelled), "cancelled");
+    }
+
+    /// omp/opencode shape: `category: model` wins over an earlier `mode`
+    /// select; without categories the id/name fallback picks the model
+    /// select; a boolean or unrelated option yields nothing.
+    #[test]
+    fn current_model_reads_the_model_select() {
+        let opts: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"default",
+             "options":[{"value":"default","name":"Default"}]},
+            {"id":"model","name":"Model","category":"model","type":"select",
+             "currentValue":"anthropic/claude-opus-4-8",
+             "options":[{"value":"anthropic/claude-opus-4-8","name":"Claude Opus 4.8"}]}
+        ]))
+        .unwrap();
+        assert_eq!(
+            current_model(&opts).as_deref(),
+            Some("anthropic/claude-opus-4-8")
+        );
+        let uncategorised: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"fast","name":"Fast mode","type":"boolean","currentValue":true},
+            {"id":"llm","name":"Active model","type":"select","currentValue":"gpt-5.4",
+             "options":[{"value":"gpt-5.4","name":"GPT-5.4"}]}
+        ]))
+        .unwrap();
+        assert_eq!(current_model(&uncategorised).as_deref(), Some("gpt-5.4"));
+        assert_eq!(current_model(&uncategorised[..1]), None);
+        assert_eq!(current_model(&[]), None);
     }
 
     #[test]

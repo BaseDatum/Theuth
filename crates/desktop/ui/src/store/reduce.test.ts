@@ -506,6 +506,33 @@ test('store: TurnStarted stamps the optimistic send and its reply with the turn;
   expect(s?.entries.map((e) => (e.kind === 'user' ? e.text : e.kind))).toEqual(['one', 'assistant'])
 })
 
+test('harness model (06 §8.2): the event sets it beside the harness name without touching the transcript; a load carries it', () => {
+  const H = 'harness'
+  let s = run([
+    { type: 'HarnessModelChanged', session: H, model: 'anthropic/claude-opus-4-8' },
+    { type: 'TurnStarted', session: H, turn: T, text: 'go', model: 'omp', turn_seq: 1 },
+    { type: 'TextDelta', session: H, turn: T, text: 'Hel' },
+  ])
+  expect(s).toMatchObject({ model: 'omp', harnessModel: 'anthropic/claude-opus-4-8' })
+  const same = apply(s, { type: 'HarnessModelChanged', session: H, model: 'anthropic/claude-opus-4-8' }, ctx())
+  expect(same).toBe(s)
+  const live = s.live
+  s = apply(s, { type: 'HarnessModelChanged', session: H, model: 'openai/gpt-5.4' }, ctx())
+  expect(s.harnessModel).toBe('openai/gpt-5.4')
+  expect(s.live).toBe(live)
+  // The streaming tail stays open: the next delta still appends to it.
+  s = apply(s, { type: 'TextDelta', session: H, turn: T, text: 'lo' }, ctx())
+  expect(s.entries.map((e) => (e.kind === 'assistant' ? e.text : e.kind))).toEqual(['user', 'Hello'])
+
+  const st = useSessions.getState()
+  st.loadHistory(H, { ...loaded(), agent: 'omp', harness_model: 'anthropic/claude-opus-4-8', history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[H]).toMatchObject({ agent: 'omp', harnessModel: 'anthropic/claude-opus-4-8' })
+  // A reload without the field (older server) keeps what the event said.
+  st.applyEvents([{ type: 'HarnessModelChanged', session: H, model: 'openai/gpt-5.4' }])
+  st.loadHistory(H, { ...loaded(), agent: 'omp', history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[H]?.harnessModel).toBe('openai/gpt-5.4')
+})
+
 test('ContextChanged marks the slice stale and moves the generation; the installed revision is a no-op unless stale', () => {
   const base: SessionSlice = { ...empty(S), contextRevision: '3', contextEditable: true, loaded: true }
   expect(apply(base, { type: 'ContextChanged', session: S, revision: '3', reason: 'settled' }, ctx())).toBe(base)

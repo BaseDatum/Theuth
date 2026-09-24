@@ -731,6 +731,7 @@ mod tests {
                 args: Vec::new(),
                 env: Default::default(),
                 description: Some("ChatGPT's coding agent".into()),
+                model: None,
             },
         );
         acp::save(&dir, &entries).unwrap();

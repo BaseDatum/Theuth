@@ -685,9 +685,12 @@ impl Agents {
             .unwrap_or_else(|p| p.into_inner())
             .get(&name)
             .map(|(_, d)| d.clone());
-        let transport = match (entries.get(&name), node) {
-            (Some(entry), _) => acp::Transport::Process(entry.config()),
-            (None, Some(dialer)) => acp::Transport::Dial(dialer),
+        let (transport, fallback_model) = match (entries.get(&name), node) {
+            (Some(entry), _) => (
+                acp::Transport::Process(entry.config()),
+                entry.model.clone(),
+            ),
+            (None, Some(dialer)) => (acp::Transport::Dial(dialer), None),
             (None, None) => anyhow::bail!(
                 "{}",
                 crate::peers::unknown(&name, &entries, &node_lines(&self.nodes))
@@ -718,6 +721,7 @@ impl Agents {
             transport,
             cwd,
             resume,
+            fallback_model,
             self.store.clone(),
             self.rt.clone(),
         )));
@@ -4755,8 +4759,18 @@ impl Message<LoadSession> for Agents {
                 tracing::error!(session = %m.session, "hidden_turns: {e:#}");
                 0
             });
-        let (model, effort, agent, name, parent, project) = row
-            .map(|r| (r.model, r.effort, r.agent, r.name, r.parent, r.project))
+        let (model, effort, agent, harness_model, name, parent, project) = row
+            .map(|r| {
+                (
+                    r.model,
+                    r.effort,
+                    r.agent,
+                    r.harness_model,
+                    r.name,
+                    r.parent,
+                    r.project,
+                )
+            })
             .unwrap_or_default();
         let (context_revision, context_editable, context_reason, context_estimate, settled) =
             context;
@@ -4777,6 +4791,7 @@ impl Message<LoadSession> for Agents {
             queued,
             undone,
             agent,
+            harness_model,
             name,
             parent,
             skills,

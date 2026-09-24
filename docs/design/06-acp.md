@@ -291,7 +291,8 @@ empty.
 
 `SessionSummary` gains `agent: Option<String>`. `AgentEvent` gains nothing:
 `SubagentSpawned` already names the child; `TurnStarted.model` carries the
-harness name for the header. ACP children appear in the `/agents` picker and
+harness name for the header (superseded by §8.2: the harness's own model is
+discovered and shown beside it). ACP children appear in the `/agents` picker and
 board (19) with `running`/`idle`/`approval` only — never `awaiting`, since
 they have no `send_message` (§3.8); opening one and approval modals work
 because they key on `SessionId`.
@@ -624,3 +625,55 @@ off, `spawn_subagent{agent: "opencode"}` is refused with the inherited/global
 reason and no child process starts; with it on, the 2026-09-12 flow above
 repeats unchanged and an enabled `send_message` to the child during a prompt
 is queued, not dropped.
+
+### 8.2 Harness model (2026-09-24)
+
+§3.6 said `AgentEvent` gains nothing and the header shows the harness name.
+It now shows `omp · anthropic/claude-opus-4-8`: the harness name stays where
+it was (`TurnStarted.model`, `Loaded.model`, `sessions.model`) and the LLM the
+harness itself runs on is discovered and carried beside it.
+
+- **Source, in order.** (1) The session response: `NewSessionResponse` /
+  `LoadSessionResponse.configOptions[]`, the option with `category:
+  "model"` (schema `SessionConfigOptionCategory::Model`; `model_config` is a
+  model *parameter*, not the selector), else the first select whose id or
+  name contains `model`; its `currentValue` verbatim (`acp::current_model`,
+  `Harness::model()`). (2) `session/update` `config_option_update` with the
+  same extraction, mid-session (`/switch` in omp) — handled in the
+  `Update` mailbox before the turn check, so a switch between prompts
+  counts. (3) The `agents.yaml` entry's optional `model: <label>`
+  (`acp::Entry::model`; a display fallback, never sent to the harness).
+  (4) Nothing: the header shows the harness name alone, as before.
+- **Carried as.** `sessions.harness_model TEXT` (migration
+  `0021_harness_model.sql`), written by `Store::set_harness_model` once per
+  distinct value; `SessionSummary.harness_model` and `Loaded.harness_model`
+  (`Option<String>`, TS optional); `AgentEvent::HarnessModelChanged {session,
+  model}` published after the row is written — at connect and on every
+  change. `ModelChanged` is not reused: its consumers replace the shown model
+  id, which for an ACP child must stay the harness name. `TurnStarted` did
+  not grow a field; the event precedes the first turn and the store row
+  covers a client that loads later.
+- **Rendering.** Desktop `ModelMenu`: an ACP child (`agent` set) renders
+  `agent · harnessModel` (or `agent`) as plain text — no picker, no effort
+  menu; `set_model` on a harness is not possible from theuth. Store slice
+  `harnessModel` from `Loaded` and the event. TUI `Model::header`:
+  `model_id · harness_model` before the effort/ctx segments (`↳ name  child ·
+  …` when a subagent); `HarnessModelChanged` after a shown value adds
+  `harness model → …`, the first report is silent; the line printer prints
+  `harness model → …`.
+- **Probe (throwaway Bun stdio client, `initialize` → `session/new` →
+  `session/prompt "reply with the single word OK"`).** `omp acp` (Oh My Pi
+  18.2.9): `session/new` → `configOptions: [{id:"mode", category:"mode",
+  …}, {id:"model", name:"Model", category:"model", type:"select",
+  currentValue:"anthropic/claude-fable-5-1", options:[…]}, {id:"thinking",
+  category:"thought_level", …}]` plus `modes`; notifications during the
+  prompt: `available_commands_update`, `session_info_update`,
+  `agent_message_chunk`×2, `usage_update{used, size, cost}`; no
+  `config_option_update`, no `_meta`. `opencode acp` (OpenCode 1.18.30):
+  `configOptions: [{id:"model", name:"Model", category:"model",
+  type:"select", currentValue:"opencode/big-pickle", options:[…]},
+  {id:"mode", name:"Session Mode", category:"mode", …}]`, no `modes`;
+  notifications: `available_commands_update`, `agent_thought_chunk`,
+  `agent_message_chunk`, `usage_update`; `session/prompt` result carries
+  `_meta: {}`. Neither puts a model anywhere but `configOptions`; neither
+  emitted `config_option_update` during a plain prompt.

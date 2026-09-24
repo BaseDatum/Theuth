@@ -612,6 +612,11 @@ pub struct Loaded {
     pub undone: u32,
     /// External harness (`agents.yaml` key) when this is an ACP child (design doc 06).
     pub agent: Option<String>,
+    /// Model the external harness reports for its session (design doc 06
+    /// §8.2); `None` for native sessions and a harness that reports none.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub harness_model: Option<String>,
     /// Peer name when this is a subagent; `None` for a top-level session.
     pub name: Option<String>,
     /// Parent session when this is a subagent (where `/parent` goes).
@@ -1226,6 +1231,10 @@ pub struct SessionSummary {
     pub agent: Option<String>,
     /// Working directory recorded by ACP (`session/new` or `spawn_subagent.cwd`).
     pub cwd: Option<String>,
+    /// Model the external harness reports for its session (design doc 06 §8.2).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub harness_model: Option<String>,
     /// Kept at the top of the list.
     #[serde(default)]
     pub pinned: bool,
@@ -1586,6 +1595,15 @@ pub enum AgentEvent {
         /// Canonical model id.
         model: String,
     },
+    /// An external harness (ACP child, design doc 06 §8.2) reported the LLM
+    /// model its session runs on — at connect, or when it switched
+    /// mid-session. `TurnStarted.model` stays the harness name.
+    HarnessModelChanged {
+        /// Session.
+        session: SessionId,
+        /// The harness's model id (`anthropic/claude-opus-4-8`).
+        model: String,
+    },
     /// The session's reasoning effort was set or cleared (takes effect on its next turn).
     EffortChanged {
         /// Session.
@@ -1762,6 +1780,7 @@ impl AgentEvent {
             | Self::InputWithdrawn { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
+            | Self::HarnessModelChanged { session, .. }
             | Self::EffortChanged { session, .. }
             | Self::Compacting { session, .. }
             | Self::Compacted { session, .. }

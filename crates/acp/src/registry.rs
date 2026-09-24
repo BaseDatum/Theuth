@@ -165,6 +165,7 @@ pub fn entry_from_distribution(
         args,
         env: package.env.clone(),
         description,
+        model: None,
     }))
 }
 
@@ -198,6 +199,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
             args: bin.args.clone(),
             env: bin.env.clone(),
             description,
+            model: None,
         });
     }
 
@@ -264,6 +266,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         args: bin.args.clone(),
         env: bin.env.clone(),
         description,
+        model: None,
     })
 }
 

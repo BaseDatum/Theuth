@@ -114,6 +114,7 @@ struct SessionRow {
     effort: Option<String>,
     agent: Option<String>,
     cwd: Option<String>,
+    harness_model: Option<String>,
     pinned: bool,
     archived: bool,
     project: Option<String>,
@@ -144,7 +145,8 @@ macro_rules! session_cols {
     () => {
         concat!(
             "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.tags, sessions.model, \
-             sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.pinned, ",
+             sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.harness_model, \
+             sessions.pinned, ",
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
@@ -174,6 +176,7 @@ impl TryFrom<SessionRow> for SessionSummary {
             effort: r.effort,
             agent: r.agent,
             cwd: r.cwd,
+            harness_model: r.harness_model,
             pinned: r.pinned,
             archived: r.archived,
             project: r.project,
@@ -387,6 +390,17 @@ impl Store {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row.and_then(|(s,)| s))
+    }
+
+    /// Record the model an external harness reports for this session
+    /// (design doc 06 §8.2); published as [`crate::AgentEvent::HarnessModelChanged`].
+    pub async fn set_harness_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET harness_model = ? WHERE id = ?")
+            .bind(model)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Record the working directory an ACP client gave `session/new` (design doc 06 §4.1).
@@ -2116,7 +2130,7 @@ mod tests {
     async fn acp_columns_round_trip() {
         let (store, id, dir) = fresh().await;
         let row = store.session(id).await.unwrap().unwrap();
-        assert_eq!((row.agent, row.cwd), (None, None));
+        assert_eq!((row.agent, row.cwd, row.harness_model), (None, None, None));
         assert_eq!(store.acp_session(id).await.unwrap(), None);
 
         store
@@ -2124,9 +2138,17 @@ mod tests {
             .await
             .unwrap();
         store.set_acp_session(id, "s-1").await.unwrap();
+        store
+            .set_harness_model(id, "anthropic/claude-opus-4-8")
+            .await
+            .unwrap();
         let row = store.session(id).await.unwrap().unwrap();
         assert_eq!(row.agent.as_deref(), Some("codex"));
         assert_eq!(row.cwd.as_deref(), Some("/tmp/w"));
+        assert_eq!(
+            row.harness_model.as_deref(),
+            Some("anthropic/claude-opus-4-8")
+        );
         assert_eq!(store.acp_session(id).await.unwrap().as_deref(), Some("s-1"));
         assert_eq!(
             store.list_sessions().await.unwrap()[0].agent.as_deref(),
