@@ -6,9 +6,11 @@ import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { type AttachRef, atTrigger, compose, marker, parse, size, subtitle, title, toRef } from './attach'
-import fixtures from './attach.fixtures.json'
+// One grammar, one fixture (66 §3.3): the same file drives `agent::attach::tests`.
+import fixtures from '../../../../agent/tests/fixtures/attach_markers.json'
 
-type Case = { name: string; input: string; refs: AttachRef[]; body: string }
+/** `canonical: false` marks an input `marker()` would spell differently (an unknown escape, ` · ` with empty meta). */
+type Case = { name: string; input: string; refs: AttachRef[]; body: string; canonical?: boolean }
 const cases = (fixtures as { cases: Case[] }).cases
 
 describe('grammar fixtures (shared with agent::attach)', () => {
@@ -18,7 +20,7 @@ describe('grammar fixtures (shared with agent::attach)', () => {
 
   test('every parsed new-form line re-serialises to the same line', () => {
     for (const c of cases) {
-      if (c.refs.length === 0 || c.input.startsWith('[doc ')) continue
+      if (c.refs.length === 0 || c.input.startsWith('[doc ') || c.canonical === false) continue
       const lines = c.input.split('\n').slice(0, c.refs.length)
       c.refs.forEach((r, i) => {
         if (lines[i]?.startsWith('[attached ')) expect(marker(r)).toBe(lines[i])

@@ -40,7 +40,8 @@ export const key = (r: { kind: Kind; id: string }): string => `${r.kind}:${r.id}
 
 export const isKind = (s: string): s is Kind => (KINDS as readonly string[]).includes(s)
 
-const unescape = (s: string) => s.replace(/\\(["\\])/g, '$1')
+/** `\x` → `x` for any `x`: the writer only escapes `"` and `\`, the reader accepts any pair the grammar admits. */
+const unescape = (s: string) => s.replace(/\\(.)/g, '$1')
 
 /** The marker line (§3.3): `[attached <kind> <id> "<title>" · <meta>]`; ` · <meta>` only when `meta` is non-empty. */
 export function marker(ref: AttachRef): string {
