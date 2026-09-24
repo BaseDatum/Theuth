@@ -74,7 +74,10 @@ generators, no class inheritance; stdlib: json re math datetime time random copy
 itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
 names starting with `_`, which do not carry across cells. Imports and variables persist
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
-nothing is lost. `shell()` returns the output when
+nothing is lost. `asyncio.gather` takes positional awaitables only - no `return_exceptions=`
+or other keyword arguments (monty limitation); to tolerate individual failures wrap each call
+in an `async def` that try/excepts. A cell that raises before awaiting a tool future leaves
+that call un-run. `shell()` returns the output when
 the command finishes within a few seconds, otherwise `{\"job\": id, \"log\": path}`; the
 result arrives later as <job_result>, the way a timer's message arrives as <reminder>. A PTY
 job whose screen stops changing for a minute wakes you with <job_idle> and the screen: the
@@ -773,6 +776,64 @@ struct PendingCall {
     args: Value,
 }
 
+/// Output of an inner call the cell created but never awaited.
+const NOT_AWAITED: &str = "ERROR: not run: the cell ended before this call was awaited";
+
+/// Inner calls whose `ToolCallStarted` went out and whose future the cell has
+/// not awaited yet. Whatever is left when the cell ends — return, raise, host
+/// error, timeout — is finished as an error and never invoked (`drain`); a
+/// cancelled cell (dropped `drive`) does the same from `Drop`, so no UI card
+/// spins forever.
+struct Pending<'a> {
+    calls: HashMap<u32, PendingCall>,
+    cx: &'a RunCx,
+}
+
+impl Pending<'_> {
+    /// Remaining calls in invocation order, leaving none.
+    fn take(&mut self) -> Vec<PendingCall> {
+        let mut left: Vec<PendingCall> = self.calls.drain().map(|(_, c)| c).collect();
+        left.sort_unstable_by_key(|c| c.seq);
+        left
+    }
+
+    /// Finish every remaining call as not run; how many there were.
+    async fn drain(&mut self) -> usize {
+        let left = self.take();
+        for c in &left {
+            self.cx.rt.publish(not_run(self.cx, c)).await;
+        }
+        left.len()
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if self.calls.is_empty() {
+            return;
+        }
+        let (left, cx) = (self.take(), self.cx.clone());
+        if let Ok(h) = tokio::runtime::Handle::try_current() {
+            h.spawn(async move {
+                for c in &left {
+                    cx.rt.publish(not_run(&cx, c)).await;
+                }
+            });
+        }
+    }
+}
+
+fn not_run(cx: &RunCx, c: &PendingCall) -> AgentEvent {
+    AgentEvent::ToolCallFinished {
+        session: cx.session,
+        turn: cx.turn,
+        call_id: c.id.clone(),
+        output: NOT_AWAITED.into(),
+        is_error: true,
+        files: Vec::new(),
+    }
+}
+
 /// One session's runtime for one turn (08 §4).
 pub struct Repl {
     pool: Arc<Pool>,
@@ -796,6 +857,8 @@ pub struct Repl {
     out_seq: u32,
     /// `<runtime>` line prepended to the next cell result.
     lost: Option<String>,
+    /// Inner calls the last `drive` finished as not run (created, never awaited).
+    unawaited: usize,
 }
 
 impl Repl {
@@ -879,6 +942,7 @@ impl Repl {
             imports,
             out_seq: 0,
             lost: None,
+            unawaited: 0,
         };
         if let Err(e) = repl.ensure_checkout().await {
             tracing::warn!("python runtime checkout failed: {e}");
@@ -1034,7 +1098,16 @@ impl Repl {
         let (mut body, is_error) = match outcome {
             Ok(v) => (render_value(&stdout, &v), false),
             Err(PoolError::Runtime(exc)) if exc.exc_type() != ExcType::MemoryError => {
-                (join_out(&stdout, &exc.to_string()), true)
+                let mut text = exc.to_string();
+                if text.contains("gather() does not yet support keyword arguments") {
+                    text.push_str(&format!(
+                        "\nhint: monty's asyncio.gather takes positional awaitables only (no return_exceptions=); \
+                         wrap each call in a small async helper that catches its exception instead. \
+                         The {} tool calls created before the error were not run.",
+                        self.unawaited
+                    ));
+                }
+                (join_out(&stdout, &text), true)
             }
             Err(PoolError::Typing(diag)) => {
                 return self.finish_output(
@@ -1233,205 +1306,220 @@ impl Repl {
             cx,
             mounts,
             spill,
+            unawaited,
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
         let checkout = checkout.as_mut().ok_or(PoolError::Finished)?;
-        let mut pending: HashMap<u32, PendingCall> = HashMap::new();
+        let mut pending = Pending {
+            calls: HashMap::new(),
+            cx,
+        };
         let mut n = 0u32;
-        // 50 §8: the interpreter executes from the feed until it completes,
-        // except while it awaits its tool calls (`ResolveFutures`), where the
-        // guard is dropped and only those calls count. Holding one includes
-        // the permit; a dropped `drive` (cancelled cell) drops the guard.
-        let mut running = hold(cx.permit.as_ref()).await?;
-        let mut ev = checkout
-            .feed(
-                code,
-                inputs,
-                mounts.clone(),
-                skip_type_check,
-                &mut *on_print,
-            )
-            .await?;
-        loop {
-            ev = match ev {
-                TurnEvent::Complete(v) => return Ok(v),
-                TurnEvent::NameLookup { name, .. } => {
-                    let answer = match name.as_str() {
-                        "tools" | "help" => {
-                            NameLookupResult::Value(MontyObject::function(name, None))
-                        }
-                        _ => match find_tool(&cx.registry, cx.session, &name).await {
-                            Some(spec) => NameLookupResult::Value(MontyObject::function(
-                                name,
-                                Some(summary(&spec.description)),
-                            )),
-                            None => NameLookupResult::Undefined,
-                        },
-                    };
-                    checkout.resume_name_lookup(answer, &mut *on_print).await?
-                }
-                TurnEvent::FunctionCall {
-                    function_name,
-                    args,
-                    call_id: fid,
-                    ..
-                } => {
-                    let answer = match function_name.as_str() {
-                        "tools" => {
-                            let query = first_arg(&args, "query").and_then(|q| q.as_str());
-                            let specs = cx
-                                .registry
-                                .ask(ListTools(Some(cx.session)))
-                                .await
-                                .unwrap_or_default();
-                            ResumeValue::Return(MontyObject::list(
-                                specs
-                                    .iter()
-                                    .map(signature)
-                                    .filter(|line| query.is_none_or(|q| line.contains(q)))
-                                    .map(MontyObject::string),
-                            ))
-                        }
-                        "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
-                            Some(name) => match find_tool(&cx.registry, cx.session, &name).await {
-                                Some(spec) => ResumeValue::Return(MontyObject::string(help(&spec))),
-                                None => ResumeValue::Error(MontyException::new(
-                                    ExcType::ValueError,
-                                    Some(format!("help: unknown tool {name:?}")),
+        // The loop is a block so every exit — value, exception, host error —
+        // falls through to the drain below.
+        let out: Result<MontyObject, PoolError> = async {
+            // 50 §8: the interpreter executes from the feed until it completes,
+            // except while it awaits its tool calls (`ResolveFutures`), where the
+            // guard is dropped and only those calls count. Holding one includes
+            // the permit; a dropped `drive` (cancelled cell) drops the guard.
+            let mut running = hold(cx.permit.as_ref()).await?;
+            let mut ev = checkout
+                .feed(
+                    code,
+                    inputs,
+                    mounts.clone(),
+                    skip_type_check,
+                    &mut *on_print,
+                )
+                .await?;
+            loop {
+                ev = match ev {
+                    TurnEvent::Complete(v) => return Ok(v),
+                    TurnEvent::NameLookup { name, .. } => {
+                        let answer = match name.as_str() {
+                            "tools" | "help" => {
+                                NameLookupResult::Value(MontyObject::function(name, None))
+                            }
+                            _ => match find_tool(&cx.registry, cx.session, &name).await {
+                                Some(spec) => NameLookupResult::Value(MontyObject::function(
+                                    name,
+                                    Some(summary(&spec.description)),
+                                )),
+                                None => NameLookupResult::Undefined,
+                            },
+                        };
+                        checkout.resume_name_lookup(answer, &mut *on_print).await?
+                    }
+                    TurnEvent::FunctionCall {
+                        function_name,
+                        args,
+                        call_id: fid,
+                        ..
+                    } => {
+                        let answer = match function_name.as_str() {
+                            "tools" => {
+                                let query = first_arg(&args, "query").and_then(|q| q.as_str());
+                                let specs = cx
+                                    .registry
+                                    .ask(ListTools(Some(cx.session)))
+                                    .await
+                                    .unwrap_or_default();
+                                ResumeValue::Return(MontyObject::list(
+                                    specs
+                                        .iter()
+                                        .map(signature)
+                                        .filter(|line| query.is_none_or(|q| line.contains(q)))
+                                        .map(MontyObject::string),
+                                ))
+                            }
+                            "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
+                                Some(name) => {
+                                    match find_tool(&cx.registry, cx.session, name).await {
+                                        Some(spec) => {
+                                            ResumeValue::Return(MontyObject::string(help(&spec)))
+                                        }
+                                        None => ResumeValue::Error(MontyException::new(
+                                            ExcType::ValueError,
+                                            Some(format!("help: unknown tool {name:?}")),
+                                        )),
+                                    }
+                                }
+                                _ => ResumeValue::Error(MontyException::new(
+                                    ExcType::TypeError,
+                                    Some("help(name: str) takes one string argument".into()),
                                 )),
                             },
-                            _ => ResumeValue::Error(MontyException::new(
-                                ExcType::TypeError,
-                                Some("help(name: str) takes one string argument".into()),
-                            )),
-                        },
-                        _ => match find_tool(&cx.registry, cx.session, &function_name).await {
-                            Some(spec) => {
-                                n += 1;
-                                let id = format!("{call_id}.{n}");
-                                let args = merge_args(&spec, &args);
-                                cx.rt
-                                    .publish(AgentEvent::ToolCallStarted {
-                                        session: cx.session,
-                                        turn: cx.turn,
-                                        call_id: id.clone(),
-                                        name: spec.name.clone(),
-                                        args: args.clone(),
-                                    })
-                                    .await;
-                                pending.insert(
-                                    fid,
-                                    PendingCall {
-                                        seq: n,
-                                        id,
-                                        name: spec.name,
-                                        args,
-                                    },
-                                );
-                                ResumeValue::Future
-                            }
-                            None => ResumeValue::NotFound,
-                        },
-                    };
-                    checkout.resume(answer, &mut *on_print).await?
-                }
-                TurnEvent::ResolveFutures { pending_call_ids } => {
-                    // In invocation order (gather input order), whatever order
-                    // the sandbox lists the futures in.
-                    let mut calls: Vec<(u32, PendingCall)> = pending_call_ids
-                        .iter()
-                        .filter_map(|id| pending.remove(id).map(|c| (*id, c)))
-                        .collect();
-                    calls.sort_unstable_by_key(|(_, c)| c.seq);
-                    // Suspended computation, not execution: the calls count
-                    // themselves through the registry's seam (a blocking peer
-                    // send or an approval alone releases the permit; a sibling
-                    // still running keeps it), and the interpreter resumes only
-                    // once a permit is held again.
-                    drop(running.take());
-                    // Each result's images are copied as it lands: a sibling
-                    // still running may overwrite the same path next.
-                    let outs = join_all(calls.iter().map(|(_, c)| async move {
-                        let mut out = cx
-                            .registry
-                            .ask(Invoke(tools::ToolCall {
-                                id: c.id.clone(),
-                                name: c.name.clone(),
-                                args: c.args.clone(),
-                                session: cx.session,
-                                quiet: false,
-                            }))
-                            .send()
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")));
-                        snapshot_files(&mut out, spill);
-                        out
-                    }))
-                    .await;
-                    running = hold(cx.permit.as_ref()).await?;
-                    let mut results = Vec::with_capacity(calls.len());
-                    for ((fid, call), mut out) in calls.into_iter().zip(outs) {
-                        cx.rt
-                            .publish(AgentEvent::ToolCallFinished {
-                                session: cx.session,
-                                turn: cx.turn,
-                                call_id: call.id,
-                                output: crate::frame::truncate(&out.content, DISPLAY_CHARS),
-                                is_error: out.is_error,
-                                files: out.files.clone(),
-                            })
-                            .await;
-                        files.append(&mut out.files);
-                        results.push((fid, tool_result(&call.name, out)));
+                            _ => match find_tool(&cx.registry, cx.session, &function_name).await {
+                                Some(spec) => {
+                                    n += 1;
+                                    let id = format!("{call_id}.{n}");
+                                    let args = merge_args(&spec, &args);
+                                    cx.rt
+                                        .publish(AgentEvent::ToolCallStarted {
+                                            session: cx.session,
+                                            turn: cx.turn,
+                                            call_id: id.clone(),
+                                            name: spec.name.clone(),
+                                            args: args.clone(),
+                                        })
+                                        .await;
+                                    pending.calls.insert(
+                                        fid,
+                                        PendingCall {
+                                            seq: n,
+                                            id,
+                                            name: spec.name,
+                                            args,
+                                        },
+                                    );
+                                    ResumeValue::Future
+                                }
+                                None => ResumeValue::NotFound,
+                            },
+                        };
+                        checkout.resume(answer, &mut *on_print).await?
                     }
-                    // Ids we never registered (should not happen): fail them
-                    // rather than strand the sandbox.
-                    for id in pending_call_ids {
-                        if !results.iter().any(|(fid, _)| *fid == id) {
-                            results.push((
-                                id,
-                                ResumeValue::Error(MontyException::new(
-                                    ExcType::RuntimeError,
-                                    Some("unknown pending call".into()),
-                                )),
-                            ));
+                    TurnEvent::ResolveFutures { pending_call_ids } => {
+                        // In invocation order (gather input order), whatever order
+                        // the sandbox lists the futures in.
+                        let mut calls: Vec<(u32, PendingCall)> = pending_call_ids
+                            .iter()
+                            .filter_map(|id| pending.calls.remove(id).map(|c| (*id, c)))
+                            .collect();
+                        calls.sort_unstable_by_key(|(_, c)| c.seq);
+                        // Suspended computation, not execution: the calls count
+                        // themselves through the registry's seam (a blocking peer
+                        // send or an approval alone releases the permit; a sibling
+                        // still running keeps it), and the interpreter resumes only
+                        // once a permit is held again.
+                        drop(running.take());
+                        // Each result's images are copied as it lands: a sibling
+                        // still running may overwrite the same path next.
+                        let outs = join_all(calls.iter().map(|(_, c)| async move {
+                            let mut out = cx
+                                .registry
+                                .ask(Invoke(tools::ToolCall {
+                                    id: c.id.clone(),
+                                    name: c.name.clone(),
+                                    args: c.args.clone(),
+                                    session: cx.session,
+                                    quiet: false,
+                                }))
+                                .send()
+                                .await
+                                .unwrap_or_else(|e| ToolOutput::err(format!("tool registry: {e}")));
+                            snapshot_files(&mut out, spill);
+                            out
+                        }))
+                        .await;
+                        running = hold(cx.permit.as_ref()).await?;
+                        let mut results = Vec::with_capacity(calls.len());
+                        for ((fid, call), mut out) in calls.into_iter().zip(outs) {
+                            cx.rt
+                                .publish(AgentEvent::ToolCallFinished {
+                                    session: cx.session,
+                                    turn: cx.turn,
+                                    call_id: call.id,
+                                    output: crate::frame::truncate(&out.content, DISPLAY_CHARS),
+                                    is_error: out.is_error,
+                                    files: out.files.clone(),
+                                })
+                                .await;
+                            files.append(&mut out.files);
+                            results.push((fid, tool_result(&call.name, out)));
                         }
+                        // Ids we never registered (should not happen): fail them
+                        // rather than strand the sandbox.
+                        for id in pending_call_ids {
+                            if !results.iter().any(|(fid, _)| *fid == id) {
+                                results.push((
+                                    id,
+                                    ResumeValue::Error(MontyException::new(
+                                        ExcType::RuntimeError,
+                                        Some("unknown pending call".into()),
+                                    )),
+                                ));
+                            }
+                        }
+                        checkout.resume_futures(results, &mut *on_print).await?
                     }
-                    checkout.resume_futures(results, &mut *on_print).await?
-                }
-                // `time.sleep`/`asyncio.sleep`: the worker clamps the delay to
-                // `MAX_SLEEP`, the pool charges `MAX_TOTAL_SLEEP`, and the host
-                // waits here — the wait is suspended computation like a tool
-                // call, not interpreter execution, so the permit is released.
-                // ponytail: the async form is answered settled after the wait,
-                // so `gather(sleep(n), tool())` waits n first; register the
-                // sleep as a `pending` future if overlap matters.
-                TurnEvent::OsCall {
-                    system_sleep: Some(delay),
-                    ..
-                } => {
-                    drop(running.take());
-                    tokio::time::sleep(delay).await;
-                    running = hold(cx.permit.as_ref()).await?;
-                    checkout
-                        .resume(ResumeValue::Return(MontyObject::none()), &mut *on_print)
-                        .await?
-                }
-                TurnEvent::OsCall {
-                    function_name,
-                    args,
-                    ..
-                } => match checkout.resume_from_mounts(&mut *on_print).await? {
-                    Some(ev) => ev,
-                    None => {
+                    // `time.sleep`/`asyncio.sleep`: the worker clamps the delay to
+                    // `MAX_SLEEP`, the pool charges `MAX_TOTAL_SLEEP`, and the host
+                    // waits here — the wait is suspended computation like a tool
+                    // call, not interpreter execution, so the permit is released.
+                    // ponytail: the async form is answered settled after the wait,
+                    // so `gather(sleep(n), tool())` waits n first; register the
+                    // sleep as a `pending` future if overlap matters.
+                    TurnEvent::OsCall {
+                        system_sleep: Some(delay),
+                        ..
+                    } => {
+                        drop(running.take());
+                        tokio::time::sleep(delay).await;
+                        running = hold(cx.permit.as_ref()).await?;
                         checkout
-                            .resume(os_answer(&function_name, &args), &mut *on_print)
+                            .resume(ResumeValue::Return(MontyObject::none()), &mut *on_print)
                             .await?
                     }
-                },
-            };
+                    TurnEvent::OsCall {
+                        function_name,
+                        args,
+                        ..
+                    } => match checkout.resume_from_mounts(&mut *on_print).await? {
+                        Some(ev) => ev,
+                        None => {
+                            checkout
+                                .resume(os_answer(&function_name, &args), &mut *on_print)
+                                .await?
+                        }
+                    },
+                };
+            }
         }
+        .await;
+        *unawaited = pending.drain().await;
+        out
     }
 }
 
@@ -2085,6 +2173,93 @@ mod tests {
         assert_eq!(out.content, "→ 2");
         assert!(out.files.is_empty(), "{:?}", out.files);
         repl.close().await;
+    }
+
+    /// Every `AgentEvent` on the bus, in order.
+    #[derive(kameo::Actor)]
+    struct Sink(tokio::sync::mpsc::UnboundedSender<AgentEvent>);
+
+    impl kameo::message::Message<AgentEvent> for Sink {
+        type Reply = ();
+        async fn handle(&mut self, e: AgentEvent, _: &mut kameo::message::Context<Self, ()>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// A cell that creates tool futures and raises before awaiting them
+    /// (monty's `gather` rejects keyword arguments after building the
+    /// futures) finishes each started call as an error without running it,
+    /// and the traceback carries the gather hint; skipped without `monty`.
+    #[test]
+    fn unawaited_inner_calls_are_finished_not_run() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir).await;
+            cx.registry
+                .ask(tools::registry::RegisterTool(Arc::new(Shot(dir.clone()))))
+                .await
+                .unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let sink =
+                kameo::actor::Spawn::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
+            cx.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+            let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
+            let out = repl
+                .run(
+                    "c1",
+                    "import asyncio\nr = await asyncio.gather(shot(v=1), shot(v=2), return_exceptions=True)",
+                )
+                .await;
+            assert!(
+                out.is_error
+                    && out.content.contains(
+                        "NotImplementedError: gather() does not yet support keyword arguments\n\
+                         hint: monty's asyncio.gather takes positional awaitables only (no return_exceptions=); \
+                         wrap each call in a small async helper that catches its exception instead. \
+                         The 2 tool calls created before the error were not run.\n"
+                    ),
+                "{}",
+                out.content
+            );
+            assert!(!dir.join("shot.png").exists(), "tool ran");
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("event")
+                    .unwrap();
+                seen.push(match ev {
+                    AgentEvent::ToolCallStarted { call_id, .. } => (call_id, None),
+                    AgentEvent::ToolCallFinished {
+                        call_id,
+                        output,
+                        is_error,
+                        files,
+                        ..
+                    } => {
+                        assert!(is_error && files.is_empty());
+                        (call_id, Some(output))
+                    }
+                    other => panic!("{other:?}"),
+                });
+            }
+            let not_run = Some(NOT_AWAITED.to_owned());
+            assert_eq!(
+                seen,
+                [
+                    ("c1.1".to_owned(), None),
+                    ("c1.2".to_owned(), None),
+                    ("c1.1".to_owned(), not_run.clone()),
+                    ("c1.2".to_owned(), not_run),
+                ]
+            );
+            tokio::task::yield_now().await;
+            assert!(rx.try_recv().is_err(), "extra event");
+            repl.close().await;
+        });
     }
 
     fn tempdir() -> PathBuf {
