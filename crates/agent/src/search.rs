@@ -22,7 +22,6 @@ use ::search::{FuzzyMatcher, MatchRange, SearchPage, SearchText, snippet};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
-use crate::attach;
 use crate::loop_::text_of;
 use crate::store::Store;
 
@@ -190,8 +189,7 @@ pub enum HitRole {
 pub struct SearchHit {
     /// The session.
     pub session: SessionId,
-    /// The session's title; never empty ([`crate::attach::session_title`]
-    /// fills a title-less session from its first user line or created date).
+    /// The session's title (may be empty for a title-less session).
     pub title: String,
     /// What matched.
     pub kind: HitKind,
@@ -222,10 +220,7 @@ pub struct SearchHit {
 
 struct Title {
     id: SessionId,
-    /// What the query matches: the stored title, empty when unset.
     title: SearchText,
-    /// What the hit shows: the stored title or its fallback.
-    display: String,
     updated_at: String,
     archived: bool,
 }
@@ -260,7 +255,18 @@ impl Index {
     /// user and assistant messages. Tool results are left out: they are
     /// large, and what matters in them the assistant repeats.
     pub async fn build(store: &Store) -> anyhow::Result<Index> {
-        let docs: Vec<Doc> = store
+        let titles = store
+            .search_titles()
+            .await?
+            .into_iter()
+            .map(|(id, title, updated_at, archived)| Title {
+                id,
+                title: SearchText::new(title),
+                updated_at,
+                archived,
+            })
+            .collect();
+        let docs = store
             .search_bodies()
             .await?
             .into_iter()
@@ -278,26 +284,6 @@ impl Index {
                     text: SearchText::new(text),
                     removed,
                 })
-            })
-            .collect();
-        // Rows come ordered by session, seq: the first user row per session.
-        let mut first_user: HashMap<SessionId, &str> = HashMap::new();
-        for d in docs.iter().filter(|d| d.role == HitRole::User) {
-            first_user.entry(d.session).or_insert(d.text.as_str());
-        }
-        let titles = store
-            .search_titles()
-            .await?
-            .into_iter()
-            .map(|(id, title, created_at, updated_at, archived)| {
-                let created = created_at.parse().unwrap_or_default();
-                Title {
-                    id,
-                    display: attach::session_title(&title, first_user.get(&id).copied(), created),
-                    title: SearchText::new(title),
-                    updated_at,
-                    archived,
-                }
             })
             .collect();
         Ok(Index { titles, docs })
@@ -386,7 +372,7 @@ impl Index {
                 let t = by_id.get(&c.session);
                 SearchHit {
                     session: c.session,
-                    title: t.map(|t| t.display.clone()).unwrap_or_default(),
+                    title: t.map(|t| t.title.as_str().to_owned()).unwrap_or_default(),
                     kind: c.kind,
                     seq: c.seq,
                     role: c.role,
@@ -419,7 +405,6 @@ mod tests {
                 .map(|(i, (id, t))| Title {
                     id: sid(*id),
                     title: SearchText::new(*t),
-                    display: (*t).to_owned(),
                     updated_at: format!("2026-09-{:02}T00:00:00Z", i + 1),
                     archived: false,
                 })
@@ -601,30 +586,6 @@ mod tests {
         cache.invalidate();
         assert_eq!(page("release").await.unwrap().state, PageState::Indexing);
         assert_eq!(settled("release").await.hits.len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A title-less session is named from its first user line (markers
-    /// stripped) or its created date, engine-side, so every client agrees.
-    #[tokio::test]
-    async fn title_less_sessions_get_a_human_name() {
-        let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
-        let spoken = SessionId::new();
-        store.create_session(spoken, "m", None, None, None).await.unwrap();
-        store
-            .append(spoken, &genai::chat::ChatMessage::user("[attached note abc \"Groceries\"]\nplease add milk"))
-            .await
-            .unwrap();
-        let silent = SessionId::new();
-        store.create_session(silent, "m", None, None, None).await.unwrap();
-        store.append(silent, &genai::chat::ChatMessage::assistant("milk noted")).await.unwrap();
-        let idx = Index::build(&store).await.unwrap();
-        let title = |q: &str, s: SessionId| idx.search(q, 10).into_iter().find(|h| h.session == s).unwrap().title;
-        assert_eq!(title("add milk", spoken), "please add milk");
-        let silent_title = title("noted", silent);
-        assert!(silent_title.starts_with("Untitled chat · "), "{silent_title}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

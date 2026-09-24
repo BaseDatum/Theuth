@@ -235,6 +235,7 @@ impl Hit {
     /// First row: what the hit is.
     pub fn title(&self) -> String {
         match self {
+            Hit::Session(h) if h.title.is_empty() => short(h.session),
             Hit::Session(h) => h.title.clone(),
             Hit::Artifact(h)
                 if h.artifact.title.is_empty() || h.artifact.title == h.artifact.name =>

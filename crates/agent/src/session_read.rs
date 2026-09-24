@@ -98,7 +98,7 @@ pub fn render(read: &SessionRead, range: Option<[usize; 2]>, outline: bool, with
         Some([a, b]) => (a.max(1), b.min(n)),
         None => (1, n.min(MAX_TURNS)),
     };
-    let mut s = header(read, n, from, to);
+    let mut s = header(&read.summary, n, from, to);
     if n == 0 {
         s.push_str("(no turns)\n");
         return s;
@@ -136,13 +136,8 @@ pub fn render(read: &SessionRead, range: Option<[usize; 2]>, outline: bool, with
     s
 }
 
-fn header(read: &SessionRead, n: usize, from: usize, to: usize) -> String {
-    let sum = &read.summary;
-    let first_user = read.history.iter().find_map(|e| match e {
-        HistoryEntry::User { text, .. } => Some(text.as_str()),
-        _ => None,
-    });
-    let title = attach::session_title(&sum.title, first_user, sum.created_at);
+fn header(sum: &SessionSummary, n: usize, from: usize, to: usize) -> String {
+    let title = fallback_title(sum);
     let project = sum.project.as_deref().unwrap_or("no project");
     let mut s = format!(
         "[session_read {title:?} {}: {n} turns, {project}, {} – {}",
@@ -161,6 +156,15 @@ fn header(read: &SessionRead, n: usize, from: usize, to: usize) -> String {
     }
     s.push_str("]\n");
     s
+}
+
+/// §8: a session with no user turn yet is `Chat · <created>`.
+fn fallback_title(sum: &SessionSummary) -> String {
+    if sum.title.trim().is_empty() {
+        format!("Chat · {}", sum.created_at.format("%b %-d %H:%M"))
+    } else {
+        sum.title.clone()
+    }
 }
 
 fn first_line(text: &str, max: usize) -> String {
@@ -417,12 +421,8 @@ mod tests {
             history: vec![],
         };
         let out = render(&read, None, false, false);
-        assert!(out.starts_with("[session_read \"Untitled chat · "), "{out}");
+        assert!(out.starts_with("[session_read \"Chat · "), "{out}");
         assert!(out.ends_with("(no turns)\n"), "{out}");
-        let mut read = chat(1);
-        read.summary.title = String::new();
-        read.history[0] = user("[attached note abc \"Groceries\" · 1 KB]\nadd milk to it", 1);
-        assert!(render(&read, None, false, false).starts_with("[session_read \"add milk to it\" "));
     }
 
     #[test]

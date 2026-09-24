@@ -104,27 +104,6 @@ pub struct Parsed<'a> {
     pub body: &'a str,
 }
 
-/// What a session is called when its stored title is empty (66 §8, Sky's
-/// ruling: a human name, never an id): the first user line with the markers
-/// stripped, cut at [`TITLE_CHARS`] with an ellipsis, else
-/// `Untitled chat · <Mon d>` from `created_at` (local time).
-pub fn session_title(title: &str, first_user: Option<&str>, created_at: chrono::DateTime<chrono::Utc>) -> String {
-    if !title.trim().is_empty() {
-        return title.to_owned();
-    }
-    if let Some(line) = first_user.and_then(|t| parse(t).body.lines().map(str::trim).find(|l| !l.is_empty())) {
-        let mut out: String = line.chars().take(TITLE_CHARS).collect();
-        if line.chars().nth(TITLE_CHARS).is_some() {
-            out.push('…');
-        }
-        return out;
-    }
-    format!("Untitled chat · {}", created_at.with_timezone(&chrono::Local).format("%b %-d"))
-}
-
-/// Characters of the first user line kept as a fallback session title.
-pub const TITLE_CHARS: usize = 60;
-
 /// `[attached <kind> <id> "<title>" · <meta>]`; `"` and `\` in the title are
 /// escaped, ` · <meta>` is omitted when `meta` is empty.
 pub fn marker(r: &AttachRef) -> String {
@@ -282,19 +261,5 @@ mod tests {
     fn empty_meta_omits_separator() {
         let r = AttachRef { kind: Kind::Note, id: "abc".into(), title: "T".into(), meta: String::new() };
         assert_eq!(marker(&r), r#"[attached note abc "T"]"#);
-    }
-
-    #[test]
-    fn session_title_prefers_title_then_first_user_line_then_date() {
-        let created = chrono::DateTime::parse_from_rfc3339("2026-09-18T14:05:00Z").unwrap().to_utc();
-        assert_eq!(session_title("Fix relay", Some("hello"), created), "Fix relay");
-        let first = "[attached note abc \"Groceries\" · 1 KB]\n\n  add milk to the list  \nsecond line";
-        assert_eq!(session_title(" ", Some(first), created), "add milk to the list");
-        let long = "x".repeat(70);
-        assert_eq!(session_title("", Some(&long), created), format!("{}…", "x".repeat(60)));
-        assert_eq!(session_title("", Some(&"y".repeat(60)), created), "y".repeat(60));
-        let expected = format!("Untitled chat · {}", created.with_timezone(&chrono::Local).format("%b %-d"));
-        assert_eq!(session_title("", Some("[attached note abc \"Groceries\"]"), created), expected);
-        assert_eq!(session_title("", None, created), expected);
     }
 }
