@@ -641,10 +641,56 @@ one run later.
 (`https://s3.rwx.dev`), `THEUTH_S3_BUCKET` (`theuth`), `THEUTH_S3_PREFIX`
 (`releases`), `THEUTH_S3_PUBLIC_BASE_URL` (derived), `THEUTH_UPDATE_KEY[_PASSWORD]`,
 `THEUTH_RELEASE_PRERELEASE`, `THEUTH_RELEASE_LINUX` (`require` | `skip`),
-`THEUTH_TAP_REPO` (`git@github.com:basedatum/homebrew-tap`), `THEUTH_S3_DRY_RUN`.
+`THEUTH_RELEASE_ADD` (§5.5), `THEUTH_TAP_REPO` (`git@github.com:basedatum/homebrew-tap`),
+`THEUTH_S3_DRY_RUN`.
 Same rustfs compatibility flags as jarvis (`AWS_S3_FORCE_PATH_STYLE=true`,
 checksums `when_required`, `AWS_EC2_METADATA_DISABLED=true`). All from
 `.env.signing` (`.env.signing.example` documents them).
+
+### 5.5 Adding a platform after release
+
+**When.** A version is live (`latest.json.version == <ver>`) and one Linux
+arch finished afterwards — the build box was slow, or the release went out
+with `THEUTH_RELEASE_LINUX=present` while that arch was missing. Only
+`linux-x86_64` / `linux-aarch64`; macOS and Windows are built on the release
+path and are not added afterwards.
+
+**Command.** On the release Mac, with `theuth_<ver>_<arch>.tar.gz` (required)
+and `.AppImage` / `.deb` / `.rpm` (optional, one WARN each) in `dist/` or
+`staging/<ver>/`:
+
+```
+just release-add linux-aarch64      # = THEUTH_RELEASE_ADD=linux-aarch64 ./scripts/release-s3.sh
+```
+
+Gates 1 and 4 run as on a release; 2–3 are off (no `.app` involved); 5 is
+inverted (`<ver>/` must exist and the live manifest must be `<ver>`); 6–8 run
+for the new tarball only — 7 in Docker (`THEUTH_SKIP_LINUX_SMOKE` honoured),
+8 lists the tarball's contents but cannot run a foreign-arch `t --version`
+on the host. Same env as §5.4; `THEUTH_RELEASE_PRERELEASE=1` targets
+`latest-prerelease.json` and renders the tap without pushing.
+
+**What mutates.** Two objects, both by extension only:
+
+- `<ver>/SHA256SUMS` — downloaded, one line appended per new file not yet
+  listed, re-uploaded. It joins `latest.json` as a mutable object; it is
+  append-only, existing lines are never rewritten.
+- `latest.json` — downloaded, `platforms["cli-<arch>"]` and (with an
+  AppImage) `platforms["<arch>"]` set, re-uploaded. `version`, `notes` and
+  every other platform entry are untouched.
+
+New objects: the tarball and AppImage with their `.sig`, the deb and rpm.
+The tap is re-rendered from the *merged* `SHA256SUMS`, so the other
+platforms' hashes are right even when this machine's `dist/` lacks them;
+commit `theuth <ver>: add <arch>`. `staging/<ver>/` is left in place.
+
+**What is refused.** `<ver>/` absent or the live manifest at another version
+(gate 5: this is not a release). Any file to upload that already exists under
+`<ver>/` with different bytes (gate 6: objects are immutable); byte-identical
+→ that upload is skipped and the published `.sig` is reused in the manifest,
+so a run that died half-way is simply re-run. A published payload without its
+`.sig` (or the reverse) — remove by hand first. `THEUTH_RELEASE_LINUX=skip`
+together with `THEUTH_RELEASE_ADD`.
 
 ## 6. Security (28)
 

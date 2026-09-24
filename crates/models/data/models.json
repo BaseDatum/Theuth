@@ -8403,7 +8403,7 @@
         "id": "openai.gpt-5.4",
         "name": "GPT-5.4",
         "limit": {
-          "context": 272000,
+          "context": 1000000,
           "output": 128000
         },
         "cost": {
@@ -17942,6 +17942,36 @@
           }
         ]
       },
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ]
+      },
       "grok-4.5": {
         "id": "grok-4.5",
         "name": "Grok 4.5",
@@ -18611,6 +18641,35 @@
             "max": 262144
           }
         ]
+      },
+      "space-bunny-free": {
+        "id": "space-bunny-free",
+        "name": "Space Bunny Free",
+        "limit": {
+          "context": 1048576,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0,
+          "cache_read": 0.0,
+          "cache_write": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ]
       }
     }
   },
@@ -18671,6 +18730,58 @@
         "tool_call": true,
         "image": false,
         "reasoning_options": []
+      },
+      "aion-labs/aion-3.5": {
+        "id": "aion-labs/aion-3.5",
+        "name": "Aion 3.5",
+        "limit": {
+          "context": 262144,
+          "output": 32768
+        },
+        "cost": {
+          "input": 3.0,
+          "output": 6.0,
+          "cache_read": 0.75
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ]
+      },
+      "aion-labs/aion-3.5-mini": {
+        "id": "aion-labs/aion-3.5-mini",
+        "name": "Aion 3.5 Mini",
+        "limit": {
+          "context": 262144,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0.7,
+          "output": 1.4,
+          "cache_read": 0.18
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ]
       },
       "aion-labs/aion-rp-llama-3.1-8b": {
         "id": "aion-labs/aion-rp-llama-3.1-8b",
@@ -19695,9 +19806,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.088606,
-          "output": 0.177212,
-          "cache_read": 0.017721
+          "input": 0.07784,
+          "output": 0.15568,
+          "cache_read": 0.015568
         },
         "reasoning": true,
         "tool_call": true,
@@ -19781,9 +19892,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.95526,
-          "output": 1.91052,
-          "cache_read": 0.079605
+          "input": 0.946386,
+          "output": 1.892772,
+          "cache_read": 0.078866
         },
         "reasoning": true,
         "tool_call": true,
@@ -19809,9 +19920,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 1.32,
-          "output": 3.96,
-          "cache_read": 0.044
+          "input": 0.462,
+          "output": 1.386,
+          "cache_read": 0.0154
         },
         "reasoning": true,
         "tool_call": true,
@@ -20768,33 +20879,13 @@
         "id": "inclusionai/ling-3.0-flash-vl",
         "name": "Ling 3.0 Flash VL",
         "limit": {
-          "context": 131072,
+          "context": 262144,
           "output": 32768
         },
         "cost": {
           "input": 0.06,
           "output": 0.18,
           "cache_read": 0.012
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          }
-        ]
-      },
-      "inclusionai/ling-3.0-flash-vl:free": {
-        "id": "inclusionai/ling-3.0-flash-vl:free",
-        "name": "Ling 3.0 Flash VL (free)",
-        "limit": {
-          "context": 262144,
-          "output": 32768
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
         },
         "reasoning": true,
         "tool_call": true,
@@ -21395,23 +21486,6 @@
           "input": 0.3,
           "output": 0.9,
           "cache_read": 0.03
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": []
-      },
-      "mistralai/devstral-2512": {
-        "id": "mistralai/devstral-2512",
-        "name": "Devstral 2",
-        "limit": {
-          "context": 262144,
-          "output": 209715
-        },
-        "cost": {
-          "input": 0.4,
-          "output": 2.0,
-          "cache_read": 0.04
         },
         "reasoning": false,
         "tool_call": true,
@@ -25031,6 +25105,34 @@
           }
         ]
       },
+      "qwen/qwen3.8-max-prime": {
+        "id": "qwen/qwen3.8-max-prime",
+        "name": "Qwen3.8 Max Prime",
+        "limit": {
+          "context": 1000000,
+          "output": 131072
+        },
+        "cost": {
+          "input": 4.0,
+          "output": 12.0,
+          "cache_read": 0.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ]
+      },
       "qwen/qwen3.8-omni-flash": {
         "id": "qwen/qwen3.8-omni-flash",
         "name": "Qwen3.8 Omni Flash",
@@ -25271,6 +25373,33 @@
         "image": false,
         "reasoning_options": []
       },
+      "stealth/space-bunny-alpha": {
+        "id": "stealth/space-bunny-alpha",
+        "name": "Space Bunny Alpha",
+        "limit": {
+          "context": 1000000,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.0,
+          "output": 0.0
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ]
+      },
       "stepfun/step-3.5-flash": {
         "id": "stepfun/step-3.5-flash",
         "name": "Step 3.5 Flash",
@@ -25389,9 +25518,9 @@
           "output": 128000
         },
         "cost": {
-          "input": 0.132,
-          "output": 0.528,
-          "cache_read": 0.033
+          "input": 0.0825,
+          "output": 0.33,
+          "cache_read": 0.020625
         },
         "reasoning": true,
         "tool_call": true,
@@ -25655,6 +25784,36 @@
         "tool_call": false,
         "image": false,
         "reasoning_options": []
+      },
+      "upstage/solar-mini4": {
+        "id": "upstage/solar-mini4",
+        "name": "Solar Mini 4",
+        "limit": {
+          "context": 524288,
+          "output": 131072
+        },
+        "cost": {
+          "input": 0.05,
+          "output": 0.2,
+          "cache_read": 0.005
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": false,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ]
       },
       "upstage/solar-pro-3": {
         "id": "upstage/solar-pro-3",
@@ -26333,7 +26492,7 @@
         "cost": {
           "input": 0.37,
           "output": 1.25,
-          "cache_read": 0.075
+          "cache_read": 0.09
         },
         "reasoning": true,
         "tool_call": true,
@@ -26516,12 +26675,12 @@
         "name": "DeepSeek Pro Latest",
         "limit": {
           "context": 1048576,
-          "output": 384000
+          "output": 393216
         },
         "cost": {
-          "input": 0.4,
-          "output": 4.3,
-          "cache_read": 0.033
+          "input": 0.39336,
+          "output": 1.18008,
+          "cache_read": 0.012516
         },
         "reasoning": true,
         "tool_call": true,
@@ -26860,9 +27019,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.5625,
-          "output": 2.5,
-          "cache_read": 0.125
+          "input": 0.5614,
+          "output": 1.7644,
+          "cache_read": 0.10426
         },
         "reasoning": true,
         "tool_call": true,

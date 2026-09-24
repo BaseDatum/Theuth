@@ -133,6 +133,12 @@ build-remote host os *ARGS:
 release-s3:
     ./scripts/release-s3.sh
 
+# Add one Linux arch (linux-x86_64 | linux-aarch64) to the version already live: gates for that tarball
+# only, append SHA256SUMS + latest.json, tap re-rendered from the merged sums. Refuses objects already
+# under <ver>/ unless byte-identical. Same env as release-s3.
+release-add arch:
+    THEUTH_RELEASE_ADD={{arch}} ./scripts/release-s3.sh
+
 # Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, pyannote,
 # laya decision checkpoints) that is missing under ${THEUTH_DATA_DIR:-~/.theuth}/models, fetched from
 # its documented origin (HF_TOKEN for gated repos). No AWS creds. DRY_RUN=1 lists instead.
