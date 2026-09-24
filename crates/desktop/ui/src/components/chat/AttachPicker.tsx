@@ -25,7 +25,6 @@ import {
   keyAction,
   latestVersions,
   loadRecents,
-  localMatches,
   nextTab,
 } from '@/lib/attach-picker'
 import { useKeyboardInset } from '@/lib/mobile'
@@ -147,8 +146,7 @@ export function AttachPicker({
     return () => clearTimeout(t)
   }, [query, debounced])
 
-  // ---- Browse sources (§7.4), fetched in parallel, shown as they arrive. Client-side notes/meetings filtering lives
-  // here too (`localMatches`) until phase 5 gives them search categories.
+  // ---- Browse sources (§7.4), fetched in parallel, shown as they arrive.
   const browsing = open && debounced === ''
   const notes = useNotes()
   const knowledge = useQuery({
@@ -167,7 +165,11 @@ export function AttachPicker({
     enabled: open && session !== null && tab === 'all' && browsing,
   })
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: open })
-  const meetings = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(30), enabled: open })
+  const meetings = useQuery({
+    queryKey: queryKeys.meetings,
+    queryFn: () => api.meeting_list(30),
+    enabled: open && (tab === 'all' || tab === 'meeting') && browsing,
+  })
   const entries = useEntries(session ?? '')
   const recents = useMemo(() => (open ? loadRecents(harness) : []), [open, harness])
 
@@ -195,7 +197,8 @@ export function AttachPicker({
   const searchGroup = (c: SearchCategory) => {
     const m = more[moreCats.indexOf(c)]
     const g: SearchGroup | undefined = m?.data?.groups[0] ?? base.data?.groups.find((x) => x.category === c)
-    const kind: Kind = c === 'sessions' ? 'session' : c === 'artifacts' ? 'artifact' : 'knowledge'
+    const kind: Kind =
+      c === 'sessions' ? 'session' : c === 'artifacts' ? 'artifact' : c === 'notes' ? 'note' : c === 'meetings' ? 'meeting' : 'knowledge'
     const heading = c === 'knowledge_history' ? 'Knowledge history' : TAB_LABEL[kind]
     if (!g) {
       if (base.error)
@@ -249,6 +252,12 @@ export function AttachPicker({
         break
       case 'knowledge_history':
         rows = g.page.hits.map((h) => row({ kind: 'knowledge', revision: h }, now, { badges: ['revision'] }))
+        break
+      case 'notes':
+        rows = g.page.hits.map((h) => row({ kind: 'note', doc: h.doc }, now))
+        break
+      case 'meetings':
+        rows = g.page.hits.map((h) => row({ kind: 'meeting', meeting: h.meeting }, now))
         break
     }
     const limit = limits[c] ?? LIMITS[0]
@@ -356,23 +365,7 @@ export function AttachPicker({
       }
     }
   } else if (open) {
-    if (tab === 'all' || tab === 'note')
-      groups.push({
-        id: 'note',
-        heading: TAB_LABEL.note,
-        rows: localMatches(notes.data ?? [], query, (d) => d.title)
-          .slice(0, cap(tab, 'note', 10, 50))
-          .map((d) => row({ kind: 'note', doc: d }, now)),
-      })
     for (const c of cats) searchGroup(c)
-    if (tab === 'all' || tab === 'meeting')
-      groups.push({
-        id: 'meeting',
-        heading: TAB_LABEL.meeting,
-        rows: localMatches(meetings.data ?? [], query, (m) => m.title || m.process_name)
-          .slice(0, cap(tab, 'meeting', 10, 50))
-          .map((m) => row({ kind: 'meeting', meeting: m }, now)),
-      })
   }
   const shown = groups.filter((g) => g.rows.length > 0 || g.section || (browsing && tab !== 'all'))
   const flat = shown.flatMap((g) => g.rows)

@@ -1,7 +1,5 @@
-// The attach picker's pure parts (66 §7.4, §7.7): tab → categories, browse merge/dedupe, recents, the client-side
-// filter that stands in for the `notes`/`meetings` search categories until phase 5, and the keyboard map.
+// The attach picker's pure parts (66 §7.4, §7.7): tab → categories, browse merge/dedupe, recents, and the keyboard map.
 
-import { defaultFilter } from 'cmdk'
 import { type ArtifactRecord, type AttachRef, type Kind, key, parse, toRef } from '@/lib/attach'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 
@@ -16,20 +14,21 @@ export const TAB_LABEL: Record<Tab, string> = {
   meeting: 'Meetings',
 }
 
-/** Which `search` categories a tab requests; notes and meetings have none yet (phase 5) and filter client-side. */
+/** Which `search` categories a tab requests, in the picker's group order (notes first, as the browse view). */
 export function categoriesFor(tab: Tab): SearchCategory[] {
   switch (tab) {
     case 'all':
-      return ['sessions', 'artifacts', 'knowledge', 'knowledge_history']
+      return ['notes', 'knowledge', 'knowledge_history', 'artifacts', 'sessions', 'meetings']
+    case 'note':
+      return ['notes']
     case 'knowledge':
       return ['knowledge', 'knowledge_history']
     case 'artifact':
       return ['artifacts']
     case 'session':
       return ['sessions']
-    case 'note':
     case 'meeting':
-      return []
+      return ['meetings']
   }
 }
 
@@ -107,20 +106,6 @@ export function saveRecents(harness: string, refs: readonly AttachRef[]): void {
   } catch {
     // Storage full or disabled: recents are a convenience.
   }
-}
-
-/**
- * Client-side stand-in for a search category (§7.4, phase 5 removes it): cmdk's `command-score` over `text(item)`,
- * best first, zero-score rows dropped. An empty query returns `items` unchanged.
- */
-export function localMatches<T>(items: readonly T[], query: string, text: (item: T) => string): T[] {
-  const q = query.trim()
-  if (!q) return [...items]
-  return items
-    .map((item) => ({ item, score: defaultFilter(text(item), q) }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.item)
 }
 
 /** What a key does in the picker (§7.7); `null` leaves it to cmdk (arrows) or the input. */

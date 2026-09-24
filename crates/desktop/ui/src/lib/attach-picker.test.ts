@@ -6,7 +6,6 @@ import {
   inThisChat,
   keyAction,
   latestVersions,
-  localMatches,
   nextTab,
   pushRecents,
   stripAt,
@@ -60,20 +59,13 @@ test('recents: sent first, deduped, capped at 20', () => {
 })
 
 test('tabs map to search categories and cycle', () => {
-  expect(categoriesFor('all')).toEqual(['sessions', 'artifacts', 'knowledge', 'knowledge_history'])
+  expect(categoriesFor('all')).toEqual(['notes', 'knowledge', 'knowledge_history', 'artifacts', 'sessions', 'meetings'])
   expect(categoriesFor('knowledge')).toEqual(['knowledge', 'knowledge_history'])
-  expect(categoriesFor('note')).toEqual([])
-  expect(categoriesFor('meeting')).toEqual([])
+  expect(categoriesFor('note')).toEqual(['notes'])
+  expect(categoriesFor('meeting')).toEqual(['meetings'])
   expect(nextTab('all', 1)).toBe('note')
   expect(nextTab('all', -1)).toBe('meeting')
   expect(nextTab('meeting', 1)).toBe('all')
-})
-
-test('local matches rank by command-score and drop misses; empty query passes through', () => {
-  const notes = ['Groceries', 'Grocery run plan', 'Meeting notes']
-  expect(localMatches(notes, 'groc', (n) => n)).toEqual(['Groceries', 'Grocery run plan'])
-  expect(localMatches(notes, 'zzz', (n) => n)).toEqual([])
-  expect(localMatches(notes, '  ', (n) => n)).toEqual(notes)
 })
 
 test('keyboard map (§7.7)', () => {
