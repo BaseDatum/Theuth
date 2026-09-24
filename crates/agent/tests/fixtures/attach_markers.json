@@ -1,0 +1,163 @@
+{
+  "cases": [
+    {
+      "input": "[attached note agqmlbgmk57ybm2rdgyj7kcery \"Groceries\" · updated Sep 24 · 1 KB]\nadd milk",
+      "refs": [{"kind": "note", "id": "agqmlbgmk57ybm2rdgyj7kcery", "title": "Groceries", "meta": "updated Sep 24 · 1 KB"}],
+      "body": "add milk"
+    },
+    {
+      "input": "[attached knowledge decisions/prod-dr-scale-to-zero@3f2a9c1 \"ICD prod DR — scale to zero\" · revision of Sep 12]\nwhat changed since?",
+      "refs": [{"kind": "knowledge", "id": "decisions/prod-dr-scale-to-zero@3f2a9c1", "title": "ICD prod DR — scale to zero", "meta": "revision of Sep 12"}],
+      "body": "what changed since?"
+    },
+    {
+      "input": "[attached artifact toolu_01HZ3v7Q \"Q3 pipeline report\" · pdf v2 · 3 pages · 84 KB · Sep 21]\ncheck the numbers",
+      "refs": [{"kind": "artifact", "id": "toolu_01HZ3v7Q", "title": "Q3 pipeline report", "meta": "pdf v2 · 3 pages · 84 KB · Sep 21"}],
+      "body": "check the numbers"
+    },
+    {
+      "input": "[attached session 0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10 \"Fix relay reconnect loop\" · chat · theuth · updated Sep 19]\npick up where that left off",
+      "refs": [{"kind": "session", "id": "0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10", "title": "Fix relay reconnect loop", "meta": "chat · theuth · updated Sep 19"}],
+      "body": "pick up where that left off"
+    },
+    {
+      "input": "[attached meeting 0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44 \"Weekly planning\" · Sep 23 · 42 min]\nfold in the action items",
+      "refs": [{"kind": "meeting", "id": "0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44", "title": "Weekly planning", "meta": "Sep 23 · 42 min"}],
+      "body": "fold in the action items"
+    },
+    {
+      "input": "[attached note abc \"Plain\"]\nno meta here",
+      "refs": [{"kind": "note", "id": "abc", "title": "Plain", "meta": ""}],
+      "body": "no meta here"
+    },
+    {
+      "input": "[attached note abc \"Say \\\"hi\\\" now\"]\nquotes",
+      "refs": [{"kind": "note", "id": "abc", "title": "Say \"hi\" now", "meta": ""}],
+      "body": "quotes"
+    },
+    {
+      "input": "[attached note abc \"C:\\\\temp\\\\x\" · 2 KB]\nbackslashes",
+      "refs": [{"kind": "note", "id": "abc", "title": "C:\\temp\\x", "meta": "2 KB"}],
+      "body": "backslashes"
+    },
+    {
+      "input": "[attached artifact t1 \"Q3 · pipeline · report\" · pdf v2]\nmiddle dots in the title",
+      "refs": [{"kind": "artifact", "id": "t1", "title": "Q3 · pipeline · report", "meta": "pdf v2"}],
+      "body": "middle dots in the title"
+    },
+    {
+      "input": "[attached note abc \"\\\"\\\\\\\" · \\\\\" · x]\nall three",
+      "refs": [{"kind": "note", "id": "abc", "title": "\"\\\" · \\", "meta": "x"}],
+      "body": "all three"
+    },
+    {
+      "input": "[attached note abc \"Escaped \\· dot\"]\nlenient escape",
+      "refs": [{"kind": "note", "id": "abc", "title": "Escaped · dot", "meta": ""}],
+      "body": "lenient escape"
+    },
+    {
+      "input": "[doc agqmlbgmk57ybm2rdgyj7kcery \"Groceries\"]\nlegacy note",
+      "refs": [{"kind": "note", "id": "agqmlbgmk57ybm2rdgyj7kcery", "title": "Groceries", "meta": ""}],
+      "body": "legacy note"
+    },
+    {
+      "input": "[doc knowledge:facts/relay-timeouts \"Relay timeouts\"]\nlegacy knowledge",
+      "refs": [{"kind": "knowledge", "id": "facts/relay-timeouts", "title": "Relay timeouts", "meta": ""}],
+      "body": "legacy knowledge"
+    },
+    {
+      "input": "[doc abc \"Old \\\"quoted\\\" title\"]\nlegacy escaping",
+      "refs": [{"kind": "note", "id": "abc", "title": "Old \"quoted\" title", "meta": ""}],
+      "body": "legacy escaping"
+    },
+    {
+      "input": "[attached note abc \"A\"]\n[doc def \"B\"]\n[attached session 0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10 \"C\" · chat]\nline one\nline two",
+      "refs": [
+        {"kind": "note", "id": "abc", "title": "A", "meta": ""},
+        {"kind": "note", "id": "def", "title": "B", "meta": ""},
+        {"kind": "session", "id": "0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10", "title": "C", "meta": "chat"}
+      ],
+      "body": "line one\nline two"
+    },
+    {
+      "input": "[attached note abc \"A\"]",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": ""
+    },
+    {
+      "input": "[attached note abc \"A\"]\n",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": ""
+    },
+    {
+      "input": "[attached note abc \"A\"]\n\nafter a blank line",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": "\nafter a blank line"
+    },
+    {
+      "input": "hello\n[attached note abc \"A\"]\nmore",
+      "refs": [],
+      "body": "hello\n[attached note abc \"A\"]\nmore"
+    },
+    {
+      "input": "[attached note abc \"A\"]\nfirst sentence\n[attached note def \"B\"]",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": "first sentence\n[attached note def \"B\"]"
+    },
+    {
+      "input": "just a message with [brackets] in it",
+      "refs": [],
+      "body": "just a message with [brackets] in it"
+    },
+    {
+      "input": "[attached brief abc \"A\"]\nunknown kind",
+      "refs": [],
+      "body": "[attached brief abc \"A\"]\nunknown kind"
+    },
+    {
+      "input": "[attached note \"A\"]\nmissing id",
+      "refs": [],
+      "body": "[attached note \"A\"]\nmissing id"
+    },
+    {
+      "input": "[attached note abc \"A]\nunterminated title",
+      "refs": [],
+      "body": "[attached note abc \"A]\nunterminated title"
+    },
+    {
+      "input": "[attached note abc A]\nunquoted title",
+      "refs": [],
+      "body": "[attached note abc A]\nunquoted title"
+    },
+    {
+      "input": "[attached note abc \"A\"] trailing\nbody",
+      "refs": [],
+      "body": "[attached note abc \"A\"] trailing\nbody"
+    },
+    {
+      "input": "[attached note abc \"A\" extra]\nbody",
+      "refs": [],
+      "body": "[attached note abc \"A\" extra]\nbody"
+    },
+    {
+      "input": "[attached note abc \"A\" · ]\nempty meta after the separator",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": "empty meta after the separator"
+    },
+    {
+      "input": "[attached note abc \"A\"]\n[attached note \"B\"]\nsecond line malformed",
+      "refs": [{"kind": "note", "id": "abc", "title": "A", "meta": ""}],
+      "body": "[attached note \"B\"]\nsecond line malformed"
+    },
+    {
+      "input": "[voice note, 4 s]\nnot an attachment",
+      "refs": [],
+      "body": "[voice note, 4 s]\nnot an attachment"
+    },
+    {
+      "input": "",
+      "refs": [],
+      "body": ""
+    }
+  ]
+}
