@@ -149,7 +149,13 @@ works on a machine with no `git` at all (`10-knowledge.md` §2.4).
   header, collapsed, Ctrl+O) for review.
 - `/<skill> [words]` — the same hand-off with the user's words attached
   (`/caveman lite`). Commands win a name clash; the index is fetched at
-  start and by `/skills`.
+  start and by `/skills`. A `/word` that is neither a command nor a known
+  skill is message text and goes down the normal send path (a message may
+  begin with a path: `/etc/hosts has a bad entry`); the index not yet
+  loaded, a plain word still goes to `use_skill` (the agent names an unknown
+  skill) while a word holding another `/` or a `.` is text. A bare `/` is
+  text. Both clients (`tui::Model::skill_word`, desktop `slash.isCommand`);
+  as built 2026-09-24.
 - `/skills add <url>`, `/skills rm <name>`, `/skills sync` — the tools
   above without the model in the loop.
 - RPC: `list_skills → Vec<SkillMeta>`, `load_skill`, `use_skill`,

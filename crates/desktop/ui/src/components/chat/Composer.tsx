@@ -40,7 +40,7 @@ import { ContextPicker } from './ContextPicker'
 import { HeldStrip } from './HeldStrip'
 import { LevelMeter } from './LevelMeter'
 import { QueuedChips } from './QueuedChips'
-import { type Ctx, FRESH, draftSkill, matches, run } from './slash'
+import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 
 /** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
 export type DraftCreate = { private: boolean; project: string | null }
@@ -99,7 +99,8 @@ function SlashList({
  * `HeldStrip`) and its `⟦paste n⟧` token lands at the caret; submit puts the block back where the token stands, so
  * several blocks interleave with typed words in order. Deleting a token drops its chip, a chip's ✕ its token. Attachments
  * and documents are chips without tokens. `/` at column 0 opens
- * the command list; `/skill:<name>` parks a skill on the next send; other `/x` runs `use_skill` now.
+ * the command list; `/skill:<name>` parks a skill on the next send; a built-in or known `/<skill>` runs now
+ * (`isCommand`); any other `/x` — a path, a typo — is message text.
  */
 export function Composer({
   session,
@@ -145,6 +146,11 @@ export function Composer({
   const { data: visionModel } = useQuery({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
+  })
+  // The skill index: which `/<word>` sends are skills (`isCommand`); the popup itself lists only `COMMANDS`.
+  const { data: skillIndex } = useQuery({
+    queryKey: queryKeys.skills,
+    queryFn: () => api.list_skills(),
   })
   // A panel's composer (`onCreated`) keeps its own draft apart from the chat page's for the same session.
   const draftKey = `${onCreated ? 'panel:' : ''}${session ?? ''}`
@@ -377,7 +383,7 @@ export function Composer({
         if (session) setText(words.join(' '))
         return
       }
-      if (line.startsWith('/')) {
+      if (isCommand(line, skillIndex?.map((s) => s.name) ?? null)) {
         reset()
         await run(line, ctx)
         return
