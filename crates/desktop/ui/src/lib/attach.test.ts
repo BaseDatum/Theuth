@@ -163,7 +163,7 @@ describe('§8 naming table', () => {
   })
   test('session', () => {
     expect(title({ kind: 'session', session }, NOW)).toBe('Fix relay reconnect loop')
-    expect(title({ kind: 'session', session: { ...session, title: '' } }, NOW)).toBe('Chat · Sep 18 14:05')
+    expect(title({ kind: 'session', session: { ...session, title: '' } }, NOW)).toBe('Untitled chat · Sep 18')
     expect(subtitle({ kind: 'session', session }, NOW)).toBe('chat · theuth · updated Sep 19')
     expect(subtitle({ kind: 'session', session: { ...session, project: null, archived: true } }, NOW)).toBe(
       'chat · no project · updated Sep 19 · archived',

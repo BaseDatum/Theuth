@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
+import { chatName } from '@/lib/attach'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -37,7 +38,7 @@ function Parent({ id }: { id: string }) {
       params={{ session: id }}
       className="truncate text-sm text-fg-secondary hover:text-foreground"
     >
-      ↳ {row?.name ?? row?.title ?? id.slice(0, 8)}
+      ↳ {row ? (row.name ?? chatName(row)) : 'Untitled chat'}
     </Link>
   )
 }

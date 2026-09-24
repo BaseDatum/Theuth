@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { ChatPicker } from '@/components/notes/ChatPicker'
-import { type AttachRef, toRef } from '@/lib/attach'
+import { type AttachRef, chatName, toRef } from '@/lib/attach'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
@@ -112,6 +112,7 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
 export const SessionItem = memo(function SessionItem({
   id,
   title,
+  created,
   tags,
   pinned,
   archived,
@@ -124,6 +125,7 @@ export const SessionItem = memo(function SessionItem({
 }: {
   id: string
   title: string
+  created: string
   tags: string[]
   pinned: boolean
   archived: boolean
@@ -140,7 +142,7 @@ export const SessionItem = memo(function SessionItem({
   const navigate = useNavigate()
   const live = useSessionField(id, 'title')
   const liveTags = useSessionField(id, 'tags') ?? tags
-  const raw = live || title || id.slice(0, 8)
+  const raw = live || chatName({ title, created_at: created })
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown

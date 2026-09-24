@@ -714,18 +714,18 @@ impl Store {
         decode_masked(id, rows)
     }
 
-    /// `(id, title, updated_at, archived)` of every session, for the search
-    /// index (26 §2); `archived` is the root's (49 §7: hits mark archived chats).
-    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String, bool)>> {
-        let rows: Vec<(String, String, String, bool)> = sqlx::query_as(concat!(
-            "SELECT id, title, updated_at, ",
+    /// `(id, title, created_at, updated_at, archived)` of every session, for the
+    /// search index (26 §2); `archived` is the root's (49 §7: hits mark archived chats).
+    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String, String, bool)>> {
+        let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(concat!(
+            "SELECT id, title, created_at, updated_at, ",
             root_col!("archived"),
             " FROM sessions"
         ))
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(id, title, updated_at, archived)| Ok((id.parse()?, title, updated_at, archived)))
+            .map(|(id, title, created_at, updated_at, archived)| Ok((id.parse()?, title, created_at, updated_at, archived)))
             .collect()
     }
 
@@ -2068,7 +2068,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .map(|(s, _, _, a)| (*s, *a))
+                .map(|(s, _, _, _, a)| (*s, *a))
                 .collect::<std::collections::HashSet<_>>(),
             std::collections::HashSet::from([(id, true), (child, true)])
         );

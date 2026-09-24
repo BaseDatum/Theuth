@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import { memo, useMemo } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
 import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
-import { toRef } from '@/lib/attach'
+import { chatName, toRef } from '@/lib/attach'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
 import { UNGROUPED } from '@/components/sidebar/SessionList'
@@ -21,9 +21,10 @@ export function useArtifactList() {
   return useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null) })
 }
 
-/** The session's title, or the id's tail when the list does not know it (a deleted or foreign session). */
+/** The session's name (`chatName`), or "Unknown chat" when the list does not know it (a deleted or foreign session). */
 export function sessionLabel(id: string, sessions: SessionSummary[] | undefined): string {
-  return sessions?.find((s) => s.id === id)?.title || `…${id.slice(-8)}`
+  const s = sessions?.find((x) => x.id === id)
+  return s ? chatName(s) : 'Unknown chat'
 }
 
 export type Filter = { q: string; kind: Kind | null; session: string | null }

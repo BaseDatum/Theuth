@@ -12,7 +12,7 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import type { AttachRef } from '@/lib/attach'
+import { type AttachRef, chatName } from '@/lib/attach'
 import { queryKeys, useApi } from '@/lib/rpc'
 
 /**
@@ -53,7 +53,7 @@ export function ChatPicker({
             .map((s) => (
               <CommandItem key={s.id} value={`${s.title} ${s.id}`} onSelect={() => go(s.id)}>
                 <MessageSquare />
-                <span className="flex-1 truncate">{s.title || `…${s.id.slice(-8)}`}</span>
+                <span className="flex-1 truncate">{chatName(s)}</span>
                 <span className="text-xs text-fg-tertiary">{ago(s.updated_at)}</span>
               </CommandItem>
             ))}

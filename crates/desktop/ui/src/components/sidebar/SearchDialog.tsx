@@ -44,6 +44,7 @@ import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
 import { Archived, Notice, Notices, Section, Snippet, status } from '@/components/search/parts'
 import { ago } from './AgentTree'
@@ -112,15 +113,15 @@ function items(g: SearchGroup): Item[] {
         key: `notes:${h.doc.id}`,
         dest: { category: 'notes', id: h.doc.id },
         node: <NoteRow hit={h} />,
-      }))
         ref: toRef({ kind: 'note', doc: h.doc }),
+      }))
     case 'meetings':
       return g.page.hits.map((h) => ({
         key: `meetings:${h.meeting.id}`,
         dest: { category: 'meetings', id: h.meeting.id },
         node: <MeetingRow hit={h} />,
-      }))
         ref: toRef({ kind: 'meeting', meeting: h.meeting }),
+      }))
   }
 }
 
@@ -635,7 +636,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                       >
                         <MessageSquare aria-hidden />
                         <span className="min-w-0 flex-1 truncate">
-                          {s.name ? `↳ ${s.name}` : s.title || s.id.slice(0, 8)}
+                          {s.name ? `↳ ${s.name}` : chatName(s)}
                           {s.archived && <Archived />}
                         </span>
                         <span className="text-xs text-fg-tertiary">{ago(s.updated_at)}</span>
@@ -842,7 +843,7 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
 }
 
 function SessionRow({ hit }: { hit: SearchHit }) {
-  const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title || hit.session.slice(0, 8)
+  const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title || 'Untitled chat'
   return (
     <Lines
       title={
@@ -867,6 +868,8 @@ const FIELD: Record<string, string> = { content: 'Content match', source: 'Sourc
 function ArtifactRow({ hit }: { hit: ArtifactSearchHit }) {
   const a = hit.artifact
   const m = hit.match
+  // The sidebar keeps `list_sessions` warm; a chat the cache lacks shows no provenance rather than an id.
+  const chat = useQueryClient().getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((s) => s.id === a.session)
   // A title hit is shown highlighted in the title line itself; anything else keeps the title and shows the match below.
   const titled = m.field === 'title'
   return (
@@ -877,7 +880,7 @@ function ArtifactRow({ hit }: { hit: ArtifactSearchHit }) {
         a.name,
         a.kind,
         `v${a.version}`,
-        a.session.slice(0, 8),
+        chat ? `in "${chatName(chat)}"` : '',
         ago(new Date(Number(a.created_at) * 1000).toISOString()),
         FIELD[m.field] ?? 'Metadata match',
         hit.content_coverage === 'metadata_only' ? 'Content not searchable' : '',

@@ -112,13 +112,6 @@ export function date(at: Date | number | string, now: Date = new Date()): string
   return d.getFullYear() === now.getFullYear() ? s : `${s}, ${d.getFullYear()}`
 }
 
-/** `MMM d HH:mm`, local. */
-function dateTime(at: string, now: Date): string {
-  const d = new Date(at)
-  if (Number.isNaN(d.getTime())) return ''
-  return `${date(d, now)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 /** `KB`/`MB` with one decimal below 10 (`1.2 KB`, `84 KB`, `3.5 MB`); a whole number drops its `.0`. */
 export function size(bytes: number | bigint): string {
   const n = Number(bytes)
@@ -126,6 +119,10 @@ export function size(bytes: number | bigint): string {
   const fmt = (v: number, unit: string) => `${v < 10 ? v.toFixed(1).replace(/\.0$/, '') : Math.round(v)} ${unit}`
   return n < 1024 * 1024 ? fmt(n / 1024, 'KB') : fmt(n / (1024 * 1024), 'MB')
 }
+
+/** A chat's name where a `SessionSummary` is in hand: its title, else `Untitled chat · <created MMM d>` (§8, engine parity). */
+export const chatName = (s: { title: string; created_at: string }, now: Date = new Date()): string =>
+  s.title || `Untitled chat · ${date(s.created_at, now)}`
 
 /** The title the user sees, with §8's fallback when the record's is empty; never `""`. */
 export function title(src: Source, now: Date = new Date()): string {
@@ -137,8 +134,9 @@ export function title(src: Source, now: Date = new Date()): string {
     case 'artifact':
       return src.artifact.title || src.artifact.name
     case 'session':
-      if ('hit' in src) return src.hit.title || `Chat · ${src.hit.session.slice(0, 8)}`
-      return src.session.title || `Chat · ${dateTime(src.session.created_at, now)}`
+      // A hit's title is filled by the engine (`agent::attach::session_title`); an older harness may still send "".
+      if ('hit' in src) return src.hit.title || 'Untitled chat'
+      return chatName(src.session, now)
     case 'meeting':
       return src.meeting.title || src.meeting.process_name || `Meeting · ${date(src.meeting.started_at, now)}`
   }
