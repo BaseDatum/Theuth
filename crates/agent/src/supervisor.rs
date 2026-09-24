@@ -1594,6 +1594,43 @@ impl Message<AgentEvent> for Agents {
                 self.child_finished(session, turn, &stop_reason).await;
                 self.idle_check(session).await;
             }
+            // Nested `python` calls (08 as-built): the only durable trace of
+            // an inner call, since none enters the model's messages. The
+            // repl publishes with a bus `tell`, so this write never sits on
+            // the interpreter's path. A closed private id has no row (51 §4.4).
+            AgentEvent::ToolCallStarted {
+                session,
+                call_id,
+                name,
+                args,
+                ..
+            } if store::inner_call_id(&call_id).is_some() => {
+                if !self.closing.contains(&session)
+                    && let Err(e) = self
+                        .store_for(session)
+                        .inner_call_started(session, &call_id, &name, &args)
+                        .await
+                {
+                    tracing::warn!(session = %session, "inner_call_started: {e:#}");
+                }
+            }
+            AgentEvent::ToolCallFinished {
+                session,
+                call_id,
+                output,
+                is_error,
+                files,
+                ..
+            } if store::inner_call_id(&call_id).is_some() => {
+                if !self.closing.contains(&session)
+                    && let Err(e) = self
+                        .store_for(session)
+                        .inner_call_finished(session, &call_id, &output, is_error, &files)
+                        .await
+                {
+                    tracing::warn!(session = %session, "inner_call_finished: {e:#}");
+                }
+            }
             // `SessionDeleted` is only ever published by `DeleteSession`,
             // which bumps before replying; `TitleChanged` also comes from the
             // loop's title generation.
@@ -4671,6 +4708,13 @@ impl Message<LoadSession> for Agents {
                     Err(e) => tracing::error!(session = %m.session, "consumed_exchanges: {e:#}"),
                 }
                 let (mut history, first_seq, more) = page(out, m.before, m.limit);
+                match store.inner_calls(m.session).await {
+                    Ok(mut inner) if !inner.is_empty() => {
+                        attach_inner(&mut history, &mut inner, running);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(session = %m.session, "inner_calls: {e:#}"),
+                }
                 // Previews land under the tree's root (51 §4.5): the data
                 // dir for durable, the scratch dir for private.
                 let root = self.resources_for(m.session).root.clone();
@@ -4781,6 +4825,59 @@ fn page(
         first_seq,
         more,
     )
+}
+
+/// Result of an inner call the cell never awaited, once the turn is over.
+const NOT_RUN: &str = "ERROR: not run: the cell ended before this call was awaited";
+
+/// Nested cards (08 as-built): right after each `python` card, its stored
+/// inner calls in `n` order as `Tool` entries with ids `<parent>.<n>`. Runs
+/// on the paged history, so `before`/`limit` count stored rows only and a
+/// parent is never split from its children; rows whose parent is hidden,
+/// stripped or on another page stay unattached. A call without a result is
+/// `result: None` only while its cell is still running (a live card the
+/// `ToolCallFinished` will complete); otherwise it is the [`NOT_RUN`] error.
+fn attach_inner(
+    history: &mut Vec<HistoryEntry>,
+    inner: &mut HashMap<String, Vec<store::InnerCall>>,
+    running: bool,
+) {
+    let mut i = 0;
+    while i < history.len() {
+        i += 1;
+        let HistoryEntry::Tool {
+            call_id,
+            name,
+            result,
+            ..
+        } = &history[i - 1]
+        else {
+            continue;
+        };
+        if name != repl::NAME {
+            continue;
+        }
+        let Some(children) = inner.remove(call_id.as_str()) else {
+            continue;
+        };
+        let live = running && result.is_none();
+        let parent = call_id.clone();
+        let n = children.len();
+        history.splice(
+            i..i,
+            children.into_iter().map(|c| HistoryEntry::Tool {
+                call_id: format!("{parent}.{}", c.n),
+                name: c.name,
+                args: c.args,
+                result: c
+                    .result
+                    .or_else(|| (!live).then(|| (NOT_RUN.to_owned(), true))),
+                files: c.files,
+                context: None,
+            }),
+        );
+        i += n;
+    }
 }
 
 /// Preview files for the binary occurrences on one page (48 §3.3): stored
@@ -7393,6 +7490,98 @@ pub(crate) mod tests {
         assert_eq!((h.len(), first, more), (5, Some(0), false));
         let (h, first, more) = page(Vec::new(), None, Some(3));
         assert_eq!((h.len(), first, more), (0, None, false));
+    }
+
+    /// 08 as-built: a `python` card is followed by its stored inner calls in
+    /// `n` order, whatever page it lands on; a row the cell never awaited is a
+    /// live card only while the turn runs, else the `NOT_RUN` error; rows of a
+    /// parent not on the page stay out.
+    #[test]
+    fn attach_inner_glues_children_to_their_python_card() {
+        let user = |s: &str| HistoryEntry::User {
+            text: s.into(),
+            turn: None,
+            context: None,
+            peer: None,
+            vision: None,
+        };
+        let python = |id: &str, result| HistoryEntry::Tool {
+            call_id: id.into(),
+            name: repl::NAME.into(),
+            args: serde_json::json!({"code": "x"}),
+            result,
+            files: Vec::new(),
+            context: None,
+        };
+        let child = |n: u32, name: &str, result: Option<(String, bool)>| store::InnerCall {
+            n,
+            name: name.into(),
+            args: serde_json::json!({"n": n}),
+            result,
+            files: Vec::new(),
+        };
+        let inner = || {
+            HashMap::from([
+                (
+                    "p1".to_owned(),
+                    vec![
+                        child(1, "shell", Some(("ok".into(), false))),
+                        child(2, "read", Some(("ERROR: boom".into(), true))),
+                    ],
+                ),
+                ("p2".to_owned(), vec![child(1, "grep", None)]),
+            ])
+        };
+        let ids = |h: &[HistoryEntry]| -> Vec<String> {
+            h.iter()
+                .map(|e| match e {
+                    HistoryEntry::Tool { call_id, .. } => call_id.clone(),
+                    HistoryEntry::User { text, .. } => text.clone(),
+                    _ => unreachable!(),
+                })
+                .collect()
+        };
+        let all = || {
+            vec![
+                (0, user("a")),
+                (2, python("p1", Some(("done".into(), false)))),
+                (3, user("b")),
+                (4, python("p2", None)),
+            ]
+        };
+        // Whole transcript, turn running: p2's unawaited call is a live card.
+        let (mut h, _, _) = page(all(), None, None);
+        attach_inner(&mut h, &mut inner(), true);
+        assert_eq!(ids(&h), ["a", "p1", "p1.1", "p1.2", "b", "p2", "p2.1"]);
+        assert!(matches!(
+            &h[2],
+            HistoryEntry::Tool { name, args, result: Some((out, false)), .. }
+                if name == "shell" && args == &serde_json::json!({"n": 1}) && out == "ok"
+        ));
+        assert!(matches!(
+            &h[3],
+            HistoryEntry::Tool { name, result: Some((out, true)), .. }
+                if name == "read" && out == "ERROR: boom"
+        ));
+        assert!(matches!(&h[6], HistoryEntry::Tool { result: None, .. }));
+        // Turn over (crash, or loaded later): the same row is the not-run error.
+        let (mut h, _, _) = page(all(), None, None);
+        attach_inner(&mut h, &mut inner(), false);
+        assert!(matches!(
+            &h[6],
+            HistoryEntry::Tool { result: Some((out, true)), .. } if out == NOT_RUN
+        ));
+        // A one-entry page holding p1 carries both children; p2's rows stay out.
+        let (mut h, first, more) = page(all(), Some(3), Some(1));
+        let mut left = inner();
+        attach_inner(&mut h, &mut left, true);
+        assert_eq!((first, more), (Some(2), true));
+        assert_eq!(ids(&h), ["p1", "p1.1", "p1.2"]);
+        assert!(left.contains_key("p2") && !left.contains_key("p1"));
+        // The page before it has no python card and gains nothing.
+        let (mut h, _, _) = page(all(), first, None);
+        attach_inner(&mut h, &mut inner(), true);
+        assert_eq!(ids(&h), ["a"]);
     }
 
     /// A limit that would land inside a group of entries sharing one seq

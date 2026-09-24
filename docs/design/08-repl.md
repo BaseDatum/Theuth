@@ -375,6 +375,33 @@ every UI shows them as tool cards under the `python` card with the same
 `describe` rendering, and approvals show the same modal. The user sees
 exactly what ran.
 
+**Inner calls survive reload** (as-built 2026-09-24). Inner calls never
+enter the model's messages (the cell's own response is what it sees), so
+`load_session` used to rebuild the transcript without them. They now live
+out of band in the session store, table `inner_calls(session_id,
+parent_id, n, at_seq, name, args, output, is_error, files, at)`, primary
+key `(session_id, parent_id, n)` where `parent_id` is the `python` call id
+and `n` the suffix of `"{parent}.{n}"`. The supervisor's `AgentEvent`
+subscriber writes the rows: `ToolCallStarted` with a dotted id inserts a
+row with `output NULL` (a crash mid-call still leaves a trace);
+`ToolCallFinished` completes it (upsert, so a finish without its start
+still lands). The repl publishes with a bus `tell`, so the interpreter
+never waits on the write. `output` is what the event carried, already
+capped at `DISPLAY_CHARS` (2 000). `at_seq` is the last visible message
+seq when the call started, the same anchor as `errors`: a committed undo
+deletes `at_seq >= cut_at`, a fork copies `at_seq < end`, session deletion
+drops the session's rows. `history()` attaches children after paging
+(`attach_inner`): after each `Tool` entry named `python`, its rows in `n`
+order as `Tool` entries with ids `"{parent}.{n}"`, `context: None`.
+Attaching after `page` means `before`/`limit` count stored rows only, a
+parent is never split from its children, and rows whose parent is hidden
+(undo), stripped (fork with `reply`) or on another page are simply not
+emitted. A row with `output NULL` is `result: None` only while the turn
+is running and its cell has no response yet; otherwise it renders as
+`ERROR: not run: the cell ended before this call was awaited`. Clients
+need nothing new: both `fromHistory` (desktop) and `from_history` (TUI)
+already treat a dotted id as a child card.
+
 Inner tool **image files** (52 §7.1, built 2026-09-19): when an inner
 `Invoke` returns `ToolOutput.files`, `snapshot_files` copies each image via
 `tools::images::snapshot` into `<spill_dir>/<session>` the moment the result
