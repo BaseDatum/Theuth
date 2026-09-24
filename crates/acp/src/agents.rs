@@ -93,7 +93,8 @@ pub fn save(data_dir: &Path, entries: &BTreeMap<String, Entry>) -> anyhow::Resul
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// One line for the tool description: `External harnesses: claude — …; codex — …`.
+/// One line for the tool description: `External harnesses: claude — …; codex — …`
+/// plus the note that a busy harness takes a message late (06 §8.3).
 /// With none configured it says so and how the user adds one, so the model
 /// points at `/acp` instead of guessing a name. An entry without a description
 /// shows its command line.
@@ -116,7 +117,10 @@ pub fn describe(entries: &BTreeMap<String, Entry>) -> String {
             }
         })
         .collect();
-    format!("External harnesses: {}", items.join("; "))
+    format!(
+        "External harnesses: {}. A harness still busy with its previous task takes a send_message late: the prompt is retried until it is accepted.",
+        items.join("; ")
+    )
 }
 
 /// Error text for a name that is not in `entries`: lists the configured names,
@@ -190,7 +194,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             describe(&entries),
-            "External harnesses: claude — npx -y x; codex — ChatGPT"
+            "External harnesses: claude — npx -y x; codex — ChatGPT. A harness still busy with its previous task takes a send_message late: the prompt is retried until it is accepted."
         );
     }
 }

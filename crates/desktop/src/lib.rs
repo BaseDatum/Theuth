@@ -23,6 +23,8 @@ mod update;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
+    #[cfg(target_os = "linux")]
+    desktop::webkit_no_gpu_workaround();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init());
@@ -161,6 +163,35 @@ mod desktop {
     struct Flags {
         position_on_show: AtomicBool,
         quitting: AtomicBool,
+    }
+
+    /// WebKitGTK's DMA-BUF renderer needs a DRM render node; without one (a VM with no GPU
+    /// passthrough) it logs `libEGL warning: failed to get driver name` / `ZINK: failed to
+    /// choose pdev` and may paint a blank window. `WEBKIT_DISABLE_DMABUF_RENDERER=1` is the
+    /// upstream workaround; set it only when the user has not decided and no render node
+    /// opens, before GTK/WebKit initialise (`tauri::Builder::build`).
+    #[cfg(target_os = "linux")]
+    pub(super) fn webkit_no_gpu_workaround() {
+        const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+        if std::env::var_os(VAR).is_some() {
+            return;
+        }
+        let usable = std::fs::read_dir("/dev/dri")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| {
+                e.file_name().to_string_lossy().starts_with("renderD")
+                    && std::fs::File::open(e.path()).is_ok()
+            });
+        if usable {
+            return;
+        }
+        // ponytail: a node that opens but has no Mesa driver still logs the EGL warnings; honour
+        // WEBKIT_DISABLE_DMABUF_RENDERER by hand there, or probe EGL if that case turns up in the field.
+        tracing::info!("no usable DRM render node; setting {VAR}=1 for WebKitGTK");
+        // SAFETY: single-threaded here — before the Tauri builder spawns anything that reads the environment.
+        unsafe { std::env::set_var(VAR, "1") };
     }
 
     /// Desktop plugins, managed state, commands, menu and window hooks.

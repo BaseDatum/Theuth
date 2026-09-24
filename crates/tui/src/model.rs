@@ -5851,16 +5851,10 @@ impl Model {
             "/secrets" => self.secrets_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
-            c if c.starts_with('/') => {
-                // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
-                // the index has arrived the agent decides; it names an unknown skill.
-                let name = &c[1..];
-                if self.skills.is_empty() || self.skills.iter().any(|s| s.name == name) {
-                    self.use_skill(name.to_owned(), arg.to_owned(), tx);
-                } else {
-                    self.entries
-                        .push(Entry::Error(format!("unknown command {c}")));
-                }
+            // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
+            // is message text and takes the arm below.
+            c if c.starts_with('/') && self.skill_word(&c[1..]) => {
+                self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
             }
             _ => {
                 let (text, files) = self.expand_pastes(line);
@@ -5902,6 +5896,17 @@ impl Model {
                     }
                 }
             }
+        }
+    }
+
+    /// Does `/name` hand over a skill: a known one; before the index has
+    /// arrived, any plain word (the agent names an unknown skill) — but not
+    /// one holding another `/` or a `.` (`/etc/hosts`, `/x.txt`), nor a bare `/`.
+    fn skill_word(&self, name: &str) -> bool {
+        if self.skills.is_empty() {
+            !name.is_empty() && !name.contains(['/', '.'])
+        } else {
+            self.skills.iter().any(|s| s.name == name)
         }
     }
 
@@ -9958,18 +9963,37 @@ pub fn money_units(nanos: u64) -> String {
     format!("{}.{:03}", millis / 1000, millis % 1000)
 }
 
-/// `USD 0.123 · EUR 0.010`: one entry per currency, as sorted by the owner.
+/// The display symbol for an ISO 4217 code, from `iso_currency`'s table, or `None`
+/// to print the code. The table gives 18 currencies a bare `$` (and several a `£`,
+/// `¥`, `kr`), so a symbol is used only when no other currency shares it, or for
+/// the three CLDR English also shows bare (USD `$`, GBP `£`, JPY `¥`) — the same
+/// result the desktop gets from `Intl` for these, minus its `CA$`-style prefixes.
+fn currency_symbol(code: &str) -> Option<String> {
+    use iso_currency::{Currency, IntoEnumIterator};
+    let c = Currency::from_code(code)?;
+    let sym = c.symbol().symbol;
+    if sym.is_empty() || sym == "¤" || sym == code {
+        return None;
+    }
+    let shared = Currency::iter().filter(|o| o.symbol().symbol == sym).count() > 1;
+    (!shared || matches!(code, "USD" | "GBP" | "JPY")).then_some(sym)
+}
+
+/// `$0.123 · €0.010 · CAD 0.500`: one entry per currency, as sorted by the owner.
 fn money_list(list: &[Money], prefix: &str) -> String {
     list.iter()
-        .map(|m| format!("{prefix}{} {}", m.currency, money_units(m.nanos)))
+        .map(|m| match currency_symbol(&m.currency) {
+            Some(s) => format!("{prefix}{s}{}", money_units(m.nanos)),
+            None => format!("{prefix}{} {}", m.currency, money_units(m.nanos)),
+        })
         .collect::<Vec<_>>()
         .join(" · ")
 }
 
 /// The display rules of 51 §6.2 over one bucket: `Returned cost —` when
-/// nothing was dispatched; `Returned cost USD 0.123`; partial coverage adds
+/// nothing was dispatched; `Returned cost $0.123`; partial coverage adds
 /// `· N unavailable`; calls the provider did not price but the catalog or
-/// adapter could add a second line `Estimated ~USD 0.023`. Returned and
+/// adapter could add a second line `Estimated ~$0.023`. Returned and
 /// estimated never share a line.
 pub fn cost_lines(b: &CostBucket) -> Vec<String> {
     let mut first = String::from("Returned cost ");
@@ -9992,7 +10016,7 @@ pub fn cost_lines(b: &CostBucket) -> Vec<String> {
 }
 
 /// One bucket for a header tag or child row: returned money, else the
-/// estimate as `~USD 0.123` (the tilde keeps its provenance visible), else `—`.
+/// estimate as `~$0.123` (the tilde keeps its provenance visible), else `—`.
 pub fn cost_short(b: &CostBucket) -> String {
     if !b.returned.is_empty() {
         money_list(&b.returned, "")
@@ -10090,7 +10114,7 @@ impl Model {
         })
     }
 
-    /// `  ·  cost USD 0.123` (or `~USD 0.123` when only an estimate exists) for
+    /// `  ·  cost $0.123` (or `~$0.123` when only an estimate exists) for
     /// the shown session's inclusive total; empty until the owner summary arrived (51 §8.3).
     fn cost_tag(&self) -> String {
         match &self.cost {
@@ -10099,8 +10123,8 @@ impl Model {
         }
     }
 
-    /// A direct child's inclusive total for its `/agents` row: `  ·  USD 0.123`
-    /// (`~USD` for an estimate, `—` when nothing was priced); empty for deeper rows and before the summary arrived.
+    /// A direct child's inclusive total for its `/agents` row: `  ·  $0.123`
+    /// (`~$` for an estimate, `—` when nothing was priced); empty for deeper rows and before the summary arrived.
     pub fn child_cost_tag(&self, id: SessionId) -> String {
         let Some(child) = self
             .cost
@@ -13513,10 +13537,22 @@ mod tests {
             rx.try_recv(),
             Ok(Command::UseSkill { session: Some(id), name, args }) if id == s && name == "caveman" && args == "lite"
         ));
+        // An unknown word is message text, not an error — as is a path even before the index arrives.
         m.submit("/nonesuch", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/nonesuch"));
+        assert!(matches!(m.entries.last(), Some(Entry::User { text, .. }) if text == "/nonesuch"));
+        m.submit("/Users/x/y.txt is broken, look at it", &tx);
         assert!(
-            matches!(m.entries.last(), Some(Entry::Error(t)) if t == "unknown command /nonesuch")
+            matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/Users/x/y.txt is broken, look at it")
         );
+        let mut fresh = Model::new("m".into(), true);
+        fresh.session = Some(s);
+        fresh.submit("/etc/hosts has a bad entry", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/etc/hosts has a bad entry"));
+        fresh.submit("/", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/"));
+        fresh.submit("/maybe lite", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, .. }) if name == "maybe" && args == "lite"));
 
         // `/skills` opens the picker; Enter uses, `s` shows.
         m.submit("/skills", &tx);
@@ -14795,6 +14831,7 @@ mod tests {
             archived: false,
             project: project.map(str::to_owned),
             retention: Retention::Durable,
+            running: false,
         }
     }
 
@@ -14853,22 +14890,22 @@ mod tests {
         b.calls = 3;
         b.dispatched = 3;
         b.returned = vec![usd(123_000_000)];
-        assert_eq!(cost_lines(&b), ["Returned cost USD 0.123"]);
+        assert_eq!(cost_lines(&b), ["Returned cost $0.123"]);
         b.returned = vec![usd(100_000_000)];
         b.unavailable = 2;
         b.estimated_for_unavailable = vec![usd(23_400_000)];
         assert_eq!(
             cost_lines(&b),
             [
-                "Returned cost USD 0.100 · 2 unavailable",
-                "Estimated ~USD 0.023"
+                "Returned cost $0.100 · 2 unavailable",
+                "Estimated ~$0.023"
             ]
         );
         // Header tag and child rows: returned wins, then the estimate keeps its tilde, then a dash.
-        assert_eq!(cost_short(&b), "USD 0.100");
+        assert_eq!(cost_short(&b), "$0.100");
         b.returned.clear();
-        assert_eq!(cost_short(&b), "~USD 0.023");
-        assert_eq!(cost_lines(&b), ["Returned cost — · 2 unavailable", "Estimated ~USD 0.023"]);
+        assert_eq!(cost_short(&b), "~$0.023");
+        assert_eq!(cost_lines(&b), ["Returned cost — · 2 unavailable", "Estimated ~$0.023"]);
         b.estimated_for_unavailable.clear();
         assert_eq!(cost_short(&b), "—");
         b.unavailable = 0;
@@ -14879,7 +14916,7 @@ mod tests {
             },
             usd(5_000_000),
         ];
-        assert_eq!(cost_lines(&b), ["Returned cost EUR 2.000 · USD 0.005"]);
+        assert_eq!(cost_lines(&b), ["Returned cost €2.000 · $0.005"]);
         // Nanos never touch a float: the u64 ceiling formats exactly.
         assert_eq!(money_units(u64::MAX), "18446744073.710");
     }

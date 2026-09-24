@@ -3,7 +3,6 @@ import { BookOpen, FolderOpen, Megaphone, Mic, PanelLeft, Settings, SquarePen, S
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
-import { useHasMeetings } from '@/components/meeting/MeetingList'
 import { Button } from '@/components/ui/button'
 import {
   Sidebar,
@@ -48,7 +47,6 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
-  const hasMeetings = useHasMeetings()
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
@@ -129,15 +127,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          {hasMeetings && (
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-                <Link to="/meetings">
-                  <Mic /> Meetings
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          )}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/meetings">
+                <Mic /> Meetings
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>

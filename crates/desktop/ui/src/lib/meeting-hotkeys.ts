@@ -1,12 +1,13 @@
 // 53 decisions 9–10 / 03 §4: the two global shortcuts of a meeting — push-to-talk (held → `meeting_ptt`)
-// and the eye (toggle hidden-from-capture). Registered from the main webview only, and only while a
-// meeting records or is paused: a global ⌥` outside a meeting is a stolen key.
+// and the eye (toggle hidden-from-capture). Registered from the main webview only, on a desktop shell
+// (the daemon records on every desktop OS, 58 §6.1), and only while a meeting records or is paused:
+// a global ⌥` outside a meeting is a stolen key.
 
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { useMeetingSettings } from '@/lib/meeting-settings'
-import { container } from '@/lib/platform'
+import { isDesktop } from '@/lib/platform'
 import { isIsland, setHiddenFromCapture } from '@/lib/tauri'
 import { live, useMeeting } from '@/store/meeting'
 import { useConnection } from '@/store/connection'
@@ -17,7 +18,7 @@ export function useMeetingHotkeys(): void {
   const ptt = useMeetingSettings((s) => s.ptt)
   const eye = useMeetingSettings((s) => s.eye)
   useEffect(() => {
-    if (!active || container() !== 'macos' || isIsland()) return
+    if (!active || !isDesktop() || isIsland()) return
     let held = false
     const api = () => useConnection.getState().api
     void register(ptt, (e) => {
