@@ -39,6 +39,7 @@ pub mod project;
 pub mod providers;
 pub mod repl;
 pub mod search;
+pub mod session_read;
 pub mod skills;
 pub mod snap;
 pub mod spill;
@@ -494,6 +495,28 @@ pub struct LoadSession {
     /// instead of a snapshot that could race a live turn; clients reject it.
     #[serde(default)]
     pub settled_only: bool,
+}
+
+/// `ask` → `Result<SessionRead, String>`: the stored transcript of `session`
+/// as the history projection, for the `session_read` tool (66 §6.1).
+/// Authorised like `load_session` for `caller`'s tree: a session inside a
+/// private root is readable only from a session of that same root;
+/// archived sessions are readable.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ReadSession {
+    /// Target session.
+    pub session: SessionId,
+    /// The session whose tool call is asking.
+    pub caller: SessionId,
+}
+
+/// [`ReadSession`] reply: the row and the full projected history.
+#[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply)]
+pub struct SessionRead {
+    /// The session row, retention filled in.
+    pub summary: SessionSummary,
+    /// Every history entry, oldest first.
+    pub history: Vec<HistoryEntry>,
 }
 
 /// `ask` → `Result<(), String>`: set a session's title by hand and announce it

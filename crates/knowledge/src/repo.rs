@@ -188,6 +188,19 @@ impl Repo {
         blob_data(&c, path)
     }
 
+    /// Resolve `spec` (full or unique abbreviated commit id) to the commit's
+    /// id and time in unix seconds. Read-only.
+    pub fn commit_at(&self, spec: &str) -> anyhow::Result<(ObjectId, i64)> {
+        let repo = self.inner.to_thread_local();
+        let c = repo
+            .rev_parse_single(spec)
+            .with_context(|| format!("unknown commit {spec}"))?
+            .object()?
+            .try_into_commit()
+            .with_context(|| format!("{spec} is not a commit"))?;
+        Ok((c.id, c.time()?.seconds))
+    }
+
     /// The blob at `path` in `commit` (abbreviated or full id); `None` when
     /// the path is absent there.
     pub fn show(&self, path: &Path, commit: &str) -> anyhow::Result<Option<Vec<u8>>> {

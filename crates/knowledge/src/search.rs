@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ::search::{Coverage, FuzzyMatcher, SearchNotice, SearchPage, SearchText, TextMatch};
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, bail};
 use gix::ObjectId;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
@@ -95,6 +95,8 @@ pub struct HistoricalConcept {
     pub id: String,
     /// Full commit id.
     pub commit: String,
+    /// Commit time, RFC 3339 UTC.
+    pub time: String,
     /// The file verbatim as committed.
     pub text: String,
 }
@@ -118,12 +120,12 @@ pub struct SearchHistory {
 }
 
 /// `ask` → `Result<HistoricalConcept, String>`: read, never restore. `commit`
-/// must be a full object id.
+/// is a full object id or a unique prefix.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadRevision {
     /// Concept id (normalised like every other command).
     pub id: String,
-    /// Full commit object id.
+    /// Commit object id, full or a unique prefix.
     pub commit: String,
 }
 
@@ -411,30 +413,38 @@ impl Knowledge {
         matched.unwrap_or_else(|e| SearchPage::error(e.to_string()))
     }
 
-    /// The complete text of `id` in the commit `commit` (full id). Read-only:
-    /// nothing is written, committed or restored. Absent → error.
+    /// The complete text of `id` in the commit `commit` (full id or a unique
+    /// prefix). Read-only: nothing is written, committed or restored. Absent → error.
     pub async fn read_revision(&self, id: &str, commit: &str) -> anyhow::Result<HistoricalConcept> {
         let Some(repo) = self.repo.clone() else {
             bail!("history unavailable: no repository")
         };
         let cid = concept_id(id)?;
-        let oid = ObjectId::from_hex(commit.trim().as_bytes())
-            .map_err(|_| anyhow!("commit must be a full object id, got {commit:?}"))?;
+        let spec = commit.trim();
+        if spec.len() < 4 || !spec.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("commit must be a hex object id (≥ 4 chars), got {commit:?}");
+        }
         let id = cid.to_string();
         let rel = cid.to_path(Path::new(""));
-        let text = {
+        let (oid, seconds, text) = {
             let id = id.clone();
-            tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let spec = spec.to_owned();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(ObjectId, i64, String)> {
+                let (oid, seconds) = repo.commit_at(&spec)?;
                 let bytes = repo
                     .read_at(&rel, oid)?
                     .with_context(|| format!("{id} is not in commit {oid}"))?;
-                String::from_utf8(bytes).context("concept is not UTF-8")
+                Ok((oid, seconds, String::from_utf8(bytes).context("concept is not UTF-8")?))
             })
             .await??
         };
+        let time = chrono::DateTime::from_timestamp(seconds, 0)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .unwrap_or_default();
         Ok(HistoricalConcept {
             id,
             commit: oid.to_string(),
+            time,
             text,
         })
     }
@@ -1104,7 +1114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_revision_requires_full_commit_and_valid_id() {
+    async fn read_revision_accepts_prefix_and_rejects_unknown_or_invalid() {
         let k = open().await;
         k.put(put("facts/a", "A", "alpha"), Source::Model)
             .await
@@ -1117,10 +1127,10 @@ mod tests {
             .unwrap()
             .unwrap()
             .to_string();
-        assert!(
-            k.read_revision("facts/a", &full[..7]).await.is_err(),
-            "abbreviated"
-        );
+        let short = k.read_revision("facts/a", &full[..7]).await.unwrap();
+        assert_eq!(short.commit, full, "prefix resolves to the full id");
+        assert!(!short.time.is_empty(), "commit time reported");
+        assert!(k.read_revision("facts/a", "zz").await.is_err(), "not hex");
         assert!(
             k.read_revision("facts/a", &"0".repeat(40)).await.is_err(),
             "unknown"

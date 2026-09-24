@@ -129,131 +129,151 @@ impl Tool for ReadFile {
         let bytes = tokio::fs::read(&a.path)
             .await
             .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
-        // A detected document that fails to convert is an error the model can
-        // act on, never 64 KiB of object streams; undetected bytes stay text.
-        let (note, text) = match crate::doc::format(&bytes) {
-            Some(fmt) => {
-                let md = crate::doc::to_markdown(bytes, fmt)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
-                let note = format!(
-                    "[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]"
-                );
-                (Some(note), md)
-            }
-            None => (None, String::from_utf8_lossy(&bytes).into_owned()),
-        };
-        let all: Vec<&str> = text.lines().collect();
-        let total = all.len();
-        let mut sel = select(&a, &shown, total)?;
+        let (note, text) = text_of(bytes, &shown).await?;
+        let mut notes = Vec::new();
         if a.outline {
+            exclusive(&a)?;
             let Some(o) = outliner() else {
                 anyhow::bail!("outline needs the codeindex plugin (codeindex.enabled)");
             };
             match o.outline(&a.path).await? {
                 Some(outline) => {
                     return Ok(ToolOutput::ok(format!(
-                        "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes{READ_HEADER_OUTLINE}\n{outline}",
+                        "{READ_HEADER_PREFIX}{shown}: {} lines, {} bytes{READ_HEADER_OUTLINE}\n{outline}",
+                        text.lines().count(),
                         text.len()
                     )));
                 }
-                None => sel
-                    .notes
-                    .push("no outline for this language, showing text".into()),
+                None => notes.push("no outline for this language, showing text".into()),
             }
         }
-        let width = match sel.windows.iter().map(|w| w.1).max() {
-            Some(last) if a.numbers => last.checked_ilog10().map_or(1, |d| d as usize + 1),
-            _ => 0,
-        };
-        let mut body = String::new();
-        let mut seps = Vec::new();
-        let mut long = 0;
-        for &(first, end) in &sel.windows {
-            if sel.ranged {
-                if !body.is_empty() {
-                    body.push('\n');
-                }
-                seps.push(body.len());
-                body.push_str(&format!("@@ lines {first}–{end} @@"));
-            }
-            if end >= first {
-                if !body.is_empty() {
-                    body.push('\n');
-                }
-                long += render(&mut body, &all[first - 1..end], first, width);
-            }
-        }
-        let requested: usize = sel
-            .windows
-            .iter()
-            .map(|&(f, e)| (e + 1).saturating_sub(f))
-            .sum();
-        let mut count = requested;
-        let cut = body.len() > MAX_BYTES;
-        if cut {
-            let mut at = MAX_BYTES;
-            while !body.is_char_boundary(at) {
-                at -= 1;
-            }
-            body.truncate(at);
-            if body.ends_with('\n') {
-                body.pop();
-            }
-            // The line the cut lands in is shown partially and counts;
-            // separator lines do not.
-            count = body.matches('\n').count() + 1 - seps.iter().filter(|&&s| s < at).count();
-        }
-        let mut out = format!(
-            "{READ_HEADER_PREFIX}{shown}: {total} lines, {} bytes",
-            text.len()
-        );
-        let first = sel.windows.first().map_or(1, |w| w.0);
-        let last = first + count - count.min(1);
-        if sel.ranged {
-            let n = sel.windows.len();
-            let s = if n == 1 { "" } else { "s" };
-            out.push_str(&format!(
-                "{READ_HEADER_SHOWING} {n} range{s}, {count} lines"
-            ));
-        } else if count == 0 {
-            out.push_str(&format!("{READ_HEADER_SHOWING} 0 lines"));
-        } else if last < total {
-            out.push_str(&format!(
-                "{READ_HEADER_SHOWING} lines {first}–{last} of {total}"
-            ));
-        } else {
-            out.push_str(&format!("{READ_HEADER_SHOWING} lines {first}–{last}"));
-        }
-        for note in &sel.notes {
-            out.push_str("; ");
-            out.push_str(note);
-        }
-        if long > 0 {
-            out.push_str(&format!("; {long} long lines cut"));
-        }
-        if cut {
-            out.push_str("; cut at 64 KiB — read the rest with offset/limit");
-        }
-        out.push(']');
-        if let Some(note) = note {
-            out.push('\n');
-            out.push_str(&note);
-        }
-        if !body.is_empty() {
-            out.push('\n');
-            out.push_str(&body);
-        }
-        if cut || sel.capped {
-            let more = if sel.ranged {
-                sel.more + requested - count
-            } else {
-                total - last
-            };
-            out.push_str(&format!("\n[read_file: {more} more lines{TRUNCATED_TAIL}"));
-        }
-        Ok(ToolOutput::ok(out))
+        Ok(ToolOutput::ok(paginate("read_file", &shown, note.as_deref(), &text, &a, notes)?))
     }
+}
+
+/// `bytes` as text: a detected document (PDF, Office, …) rendered as
+/// Markdown with a note saying so — a document that fails to convert is an
+/// error the model can act on, never 64 KiB of object streams; undetected
+/// bytes are lossy UTF-8.
+pub async fn text_of(bytes: Vec<u8>, shown: &str) -> anyhow::Result<(Option<String>, String)> {
+    Ok(match crate::doc::format(&bytes) {
+        Some(fmt) => {
+            let md = crate::doc::to_markdown(bytes, fmt)
+                .await
+                .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+            let note = format!("[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]");
+            (Some(note), md)
+        }
+        None => (None, String::from_utf8_lossy(&bytes).into_owned()),
+    })
+}
+
+/// `read_file`'s page over `text`: the header
+/// `[<tool> <shown>: N lines, B bytes; showing lines a–b]`, `note` if any,
+/// the selected lines (`cat -n` unless `numbers=false`), and the
+/// `[<tool>: N more lines; use offset/limit, tail or ranges]` footer when
+/// the read stopped early. Capped at 64 KiB. `a.path`/`a.outline` are not
+/// consulted. Shared with `artifact_read` (66 §6.2).
+pub fn paginate(
+    tool: &str,
+    shown: &str,
+    note: Option<&str>,
+    text: &str,
+    a: &ReadFileArgs,
+    mut notes: Vec<String>,
+) -> anyhow::Result<String> {
+    let all: Vec<&str> = text.lines().collect();
+    let total = all.len();
+    let mut sel = select(a, shown, total)?;
+    sel.notes.append(&mut notes);
+    let width = match sel.windows.iter().map(|w| w.1).max() {
+        Some(last) if a.numbers => last.checked_ilog10().map_or(1, |d| d as usize + 1),
+        _ => 0,
+    };
+    let mut body = String::new();
+    let mut seps = Vec::new();
+    let mut long = 0;
+    for &(first, end) in &sel.windows {
+        if sel.ranged {
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            seps.push(body.len());
+            body.push_str(&format!("@@ lines {first}–{end} @@"));
+        }
+        if end >= first {
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            long += render(&mut body, &all[first - 1..end], first, width);
+        }
+    }
+    let requested: usize = sel
+        .windows
+        .iter()
+        .map(|&(f, e)| (e + 1).saturating_sub(f))
+        .sum();
+    let mut count = requested;
+    let cut = body.len() > MAX_BYTES;
+    if cut {
+        let mut at = MAX_BYTES;
+        while !body.is_char_boundary(at) {
+            at -= 1;
+        }
+        body.truncate(at);
+        if body.ends_with('\n') {
+            body.pop();
+        }
+        // The line the cut lands in is shown partially and counts;
+        // separator lines do not.
+        count = body.matches('\n').count() + 1 - seps.iter().filter(|&&s| s < at).count();
+    }
+    let mut out = format!("[{tool} {shown}: {total} lines, {} bytes", text.len());
+    let first = sel.windows.first().map_or(1, |w| w.0);
+    let last = first + count - count.min(1);
+    if sel.ranged {
+        let n = sel.windows.len();
+        let s = if n == 1 { "" } else { "s" };
+        out.push_str(&format!(
+            "{READ_HEADER_SHOWING} {n} range{s}, {count} lines"
+        ));
+    } else if count == 0 {
+        out.push_str(&format!("{READ_HEADER_SHOWING} 0 lines"));
+    } else if last < total {
+        out.push_str(&format!(
+            "{READ_HEADER_SHOWING} lines {first}–{last} of {total}"
+        ));
+    } else {
+        out.push_str(&format!("{READ_HEADER_SHOWING} lines {first}–{last}"));
+    }
+    for note in &sel.notes {
+        out.push_str("; ");
+        out.push_str(note);
+    }
+    if long > 0 {
+        out.push_str(&format!("; {long} long lines cut"));
+    }
+    if cut {
+        out.push_str("; cut at 64 KiB — read the rest with offset/limit");
+    }
+    out.push(']');
+    if let Some(note) = note {
+        out.push('\n');
+        out.push_str(note);
+    }
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
+    }
+    if cut || sel.capped {
+        let more = if sel.ranged {
+            sel.more + requested - count
+        } else {
+            total - last
+        };
+        out.push_str(&format!("\n[{tool}: {more} more lines{TRUNCATED_TAIL}"));
+    }
+    Ok(out)
 }
 
 /// The line windows a read shows, resolved against a file of `total` lines.
@@ -273,8 +293,8 @@ struct Selection {
     notes: Vec<String>,
 }
 
-fn select(a: &ReadFileArgs, shown: &str, total: usize) -> anyhow::Result<Selection> {
-    let mut sel = Selection::default();
+/// Err when two selection options that exclude each other are both set.
+fn exclusive(a: &ReadFileArgs) -> anyhow::Result<()> {
     let set = |n: &str| match n {
         "tail" => a.tail.is_some(),
         "offset" => a.offset.is_some(),
@@ -299,6 +319,12 @@ fn select(a: &ReadFileArgs, shown: &str, total: usize) -> anyhow::Result<Selecti
             "`{x}` cannot be combined with `{y}`; pass one of them"
         );
     }
+    Ok(())
+}
+
+fn select(a: &ReadFileArgs, shown: &str, total: usize) -> anyhow::Result<Selection> {
+    let mut sel = Selection::default();
+    exclusive(a)?;
     if let Some(n) = a.tail {
         sel.windows.push((total.saturating_sub(n) + 1, total));
         return Ok(sel);

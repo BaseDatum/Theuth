@@ -124,7 +124,7 @@ impl Tool for SearchTool {
 /// Arguments naming one concept.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct IdArgs {
-    /// Concept id (`dir/slug`).
+    /// Concept id (`dir/slug`); `dir/slug@<commit>` reads a past revision (read-only).
     pub id: String,
 }
 
@@ -139,11 +139,22 @@ impl Tool for GetTool {
 
     fn description(&self) -> String {
         "Read a knowledge concept by id: the file verbatim (frontmatter incl. source/timestamp, body), \
-         its links (→ missing when the target does not exist) and the concepts citing it."
+         its links (→ missing when the target does not exist) and the concepts citing it. \
+         `<id>@<commit>` (as `search` prints it) reads that past revision, read-only."
             .into()
     }
 
     async fn call(&self, a: IdArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if let Some((id, commit)) = a.id.split_once('@') {
+            let c = self.0.read_revision(id, commit).await?;
+            let date = c.time.get(..10).unwrap_or(&c.time);
+            return Ok(ToolOutput::ok(format!(
+                "revision {} of {date} (read-only; latest: knowledge_get(\"{}\"))\n{}",
+                &c.commit[..7.min(c.commit.len())],
+                c.id,
+                c.text
+            )));
+        }
         let c = self.0.get(&a.id).await?;
         let mut s = c.text;
         if !c.links.is_empty() {

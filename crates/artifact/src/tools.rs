@@ -1,14 +1,15 @@
-//! The `show` tool (35 §3.1) and the prompt block (35 §5).
+//! The `show` tool (35 §3.1), `artifact_read` (66 §6.2) and the prompt block (35 §5).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tools::fs::ReadFileArgs;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::pdf::Source;
 use crate::store::Stores;
-use crate::{Kind, kind};
+use crate::{Artifact, Kind, kind};
 
 /// Arguments of `show`. Exactly one of `path` / `content`; `content` requires `name`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -84,4 +85,183 @@ impl Tool for ShowTool {
             ..ToolOutput::ok(content)
         })
     }
+}
+
+/// Arguments of `artifact_read`: the `call_id` and `read_file`'s selection.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ReadArgs {
+    /// The artifact's `call_id`, from an `[attached artifact …]` line, a `show` result or `search`.
+    pub artifact: String,
+    /// 1-based first line to return.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Maximum number of lines to return (default 2000).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Return the last N lines instead; not combinable with `offset`/`limit`.
+    #[serde(default)]
+    pub tail: Option<usize>,
+    /// 1-based inclusive `[start, end]` line windows, as `read_file`'s. Not combinable with `offset`/`tail`.
+    #[serde(default)]
+    pub ranges: Option<Vec<[usize; 2]>>,
+}
+
+/// `artifact_read`: one artifact version by `call_id` — text and PDFs paged
+/// like `read_file`, images returned as pictures, archives as their listing,
+/// apps as their source.
+pub struct ReadTool {
+    /// The stores; the id is looked up in every one (a call_id names one row).
+    pub stores: Arc<Stores>,
+}
+
+#[async_trait::async_trait]
+impl Tool for ReadTool {
+    const NAME: &'static str = "artifact_read";
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = ReadArgs;
+
+    fn description(&self) -> String {
+        "Read a saved artifact by its call_id. Line 1 is a header `[artifact_read \"<title>\" (<name> v<N> of <M>, \
+         <kind>, <size>, shown <date> in session \"…\"): …]` — a newer version is named there. Text kinds and \
+         PDFs/documents (rendered as Markdown) page like `read_file`: first 2000 lines, then `offset`/`limit`, \
+         `tail` or `ranges`. Images come back as pictures, archives as their listing, apps as their source; a \
+         markdown artifact bound to a document names its document id for `doc_read`/`doc_replace`."
+            .into()
+    }
+
+    async fn call(&self, a: ReadArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let call_id = a.artifact.trim();
+        let mut found = None;
+        for state in self.stores.all() {
+            if let Ok(r) = state.record(call_id).await {
+                found = Some((state, r));
+                break;
+            }
+        }
+        let Some((state, art)) = found else {
+            return Ok(ToolOutput::err(format!(
+                "artifact {call_id} not found (deleted or from another data dir)"
+            )));
+        };
+        let siblings = state.list(Some(art.session), false).await.unwrap_or_default();
+        let same: Vec<&Artifact> = siblings.iter().filter(|s| s.name == art.name).collect();
+        let versions = same.len().max(art.version as usize);
+        let latest = same.iter().max_by_key(|s| s.version).filter(|s| s.version > art.version);
+        let doc = if art.kind == Kind::Markdown { bound_document(&art).await } else { None };
+        let shown = header(&art, versions, latest.map(|l| l.call_id.as_str()), session_title(art.session).await.as_deref(), doc.as_deref());
+
+        let bytes = match tokio::fs::read(&art.path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ToolOutput::err(format!("[artifact_read {shown}]: blob missing")));
+            }
+            Err(e) => anyhow::bail!("{}: {e}", art.path.display()),
+        };
+        match art.kind {
+            Kind::Image => Ok(ToolOutput {
+                files: vec![art.path.clone()],
+                ..ToolOutput::ok(format!("[artifact_read {shown}: image, {}]", kind::human(art.bytes)))
+            }),
+            Kind::Archive => {
+                let listing = match crate::archive::read_listing(&art.path).await {
+                    Ok(l) => l,
+                    Err(e) => return Ok(ToolOutput::err(format!("[artifact_read {shown}]: {e}"))),
+                };
+                let mut s = format!(
+                    "[artifact_read {shown}: archive, {} entries, {} unpacked{}]\n",
+                    listing.total_entries,
+                    kind::human(listing.total_size),
+                    if listing.truncated { ", listing truncated" } else { "" }
+                );
+                for e in &listing.entries {
+                    s.push_str(&e.path);
+                    if e.is_dir {
+                        if !e.path.ends_with('/') {
+                            s.push('/');
+                        }
+                    } else {
+                        s.push_str(&format!("\t{}", kind::human(e.size)));
+                    }
+                    s.push('\n');
+                }
+                Ok(ToolOutput::ok(s))
+            }
+            _ => {
+                let (note, text) = match tools::fs::text_of(bytes, &shown).await {
+                    Ok(t) => t,
+                    Err(e) => return Ok(ToolOutput::err(e.to_string())),
+                };
+                if note.is_none() && text.contains('\u{FFFD}') && art.kind == Kind::File {
+                    return Ok(ToolOutput::ok(format!(
+                        "[artifact_read {shown}: binary, {}; not readable as text]",
+                        kind::human(art.bytes)
+                    )));
+                }
+                let args = ReadFileArgs {
+                    path: art.path.clone(),
+                    offset: a.offset,
+                    limit: a.limit,
+                    tail: a.tail,
+                    ranges: a.ranges,
+                    numbers: true,
+                    outline: false,
+                };
+                Ok(ToolOutput::ok(tools::fs::paginate("artifact_read", &shown, note.as_deref(), &text, &args, Vec::new())?))
+            }
+        }
+    }
+}
+
+/// `"<title>" (<name> v<N> of <M>, <kind>, <bytes>, shown <date> in session "<title>")`,
+/// plus `; latest is <call_id>` and `; editable as document <id> (doc_read)` when they apply.
+fn header(a: &Artifact, versions: usize, latest: Option<&str>, session: Option<&str>, doc: Option<&str>) -> String {
+    let date = chrono::DateTime::from_timestamp(a.created_at, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
+    let mut s = format!(
+        "{:?} ({} v{} of {versions}, {}, {}",
+        a.title,
+        a.name,
+        a.version,
+        a.kind.as_str(),
+        kind::human(a.bytes)
+    );
+    if let Some(p) = a.pages {
+        s.push_str(&format!(", {p} pages"));
+    }
+    s.push_str(&format!(", shown {date}"));
+    if let Some(t) = session {
+        s.push_str(&format!(" in session {t:?}"));
+    }
+    if let Some(l) = latest {
+        s.push_str(&format!("; latest is {l}"));
+    }
+    if let Some(d) = doc {
+        s.push_str(&format!("; editable as document {d} (doc_read)"));
+    }
+    s.push(')');
+    s
+}
+
+/// The document a markdown artifact is bound to (59 §0.7), if the document plugin runs.
+async fn bound_document(a: &Artifact) -> Option<String> {
+    let docs = document::Handle::lookup()?;
+    docs.actor()
+        .ask(document::Lookup {
+            binding: document::Binding::Artifact {
+                session: a.session.to_string(),
+                name: a.name.clone(),
+            },
+        })
+        .await
+        .ok()
+        .flatten()
+        .map(|id| id.to_string())
+}
+
+/// The owning session's title, when the agent supervisor runs and lists it.
+async fn session_title(session: runtime::SessionId) -> Option<String> {
+    let agents = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()?;
+    let rows: Vec<agent::SessionSummary> = agents.ask(agent::ListSessions).await.ok()?;
+    rows.into_iter().find(|r| r.id == session).map(|r| r.title).filter(|t| !t.trim().is_empty())
 }

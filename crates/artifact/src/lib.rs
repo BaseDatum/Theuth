@@ -783,6 +783,9 @@ impl runtime::Plugin for ArtifactPlugin {
                 .await
             {
                 let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tools::ReadTool { stores: stores.clone() })))
+                    .await;
+                let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tools::ShowTool { stores })))
                     .await;
                 let _ = reg
