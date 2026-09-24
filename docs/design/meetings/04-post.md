@@ -10,6 +10,16 @@ consumer. Its UI lands on phase 3's `/meetings/$id` route
 Contract: `README.md` §3. Facts re-verified 2026-09-20 against the tree and
 the `pyannote-rs` sources (upstream `main` = 0.3.4; not in the local registry).
 
+> **Superseded in part (2026-09-24):** the diarization stage no longer runs
+> pyannote segmentation-3.0 + agglomerative clustering. It runs NVIDIA's
+> Nemotron 3 Diarization (Streaming Sortformer, ONNX) with one wespeaker
+> embedding per speaker for the profile match; the models live under
+> `<data_dir>/models/{nemotron-diarization,pyannote}/` and `meeting.models_dir`
+> now names that root. Decision 1's file list, §1's `diarize.rs` line, §2's
+> stage-2 text and deviations 1 and 3 below describe the replaced code; what
+> runs is in `04-post-nemotron-as-built.md`. Decision 2 (alignment), 3
+> (profiles) and deviation 2 (wespeaker tiling) stand.
+
 Goal of the phase: after stop, the user gets a transcript with named
 speakers they can correct, a guided summary in the same session, knowledge
 harvested, and a session that answers "what did Dana say about X" through
@@ -87,7 +97,7 @@ tools rather than from a pasted transcript.
 crates/voice/src/stt.rs            + pub struct Engine (02 §0.1's text: load(dir), transcribe(pcm16k, words) -> Piece); Transcriber.model becomes Option<Arc<Engine>>
 crates/meeting/src/post/mod.rs     run(meeting) task: stages, progress, failure handling; resume at plugin start
 crates/meeting/src/post/transcribe.rs   Opus → PCM 48 kHz (voice::stt::decode) → 16 kHz (voice::stt::resample) → Engine words (180 s pieces, 45 §0.8)
-crates/meeting/src/post/diarize.rs      pyannote-rs segmentation + embeddings + clustering
+crates/meeting/src/post/diarize.rs      Nemotron 3 Diarization streaming loop → turns; one wespeaker embedding per speaker (04-post-nemotron-as-built)
 crates/meeting/src/post/align.rs        words + spans → Vec<Segment> (pure; unit-tested)
 crates/meeting/src/speakers.rs          profiles: load/save/match/enroll (pure math + files; unit-tested)
 crates/meeting/src/transcript.rs        Transcript, Segment, Word, EditOp, apply (pure; unit-tested)

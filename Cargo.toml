@@ -77,9 +77,11 @@ objc2-core-audio = { version = "0.3", default-features = false, features = ["std
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }  # 53
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }  # 53
 libc = "0.2"  # 53
-# Phase 4 (04-post): pyannote segmentation-3.0 + wespeaker embeddings run on `ort` directly (the
-# `pyannote-rs` 0.3.4 crate does not compile against rc.13 — 04 §10); `knf-rs` = kaldi fbank
-# features for wespeaker (cmake, as `ptts`); `hound` = the WAV the review pane plays.
+# Phase 4 (04-post): Nemotron 3 Diarization (Streaming Sortformer ONNX) + wespeaker embeddings run
+# on `ort` directly (04-post-nemotron-as-built); `realfft` = the STFT of the diariser's log-mel front
+# end (already in the graph under parakeet-rs); `knf-rs` = kaldi fbank features for wespeaker (cmake,
+# as `ptts`); `hound` = the WAV the review pane plays.
+realfft = "3.5"
 knf-rs = "0.3"  # 53
 hound = "3.5"  # 53
 # Voice (design doc 43): `ptts` = pure-Rust Pocket TTS (`sp` = SentencePiece `tokenizer.model`,

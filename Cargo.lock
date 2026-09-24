@@ -10270,6 +10270,7 @@ dependencies = [
  "ort",
  "parking_lot",
  "pipewire",
+ "realfft",
  "rtrb",
  "rubato 0.16.2",
  "runtime",
@@ -15369,6 +15370,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

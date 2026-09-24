@@ -31,6 +31,7 @@ ogg = { workspace = true }
 flexaudio = { workspace = true }
 libc = { workspace = true }
 knf-rs = { workspace = true }
+realfft = { workspace = true }
 ort = { workspace = true }
 hound = { workspace = true }
 base64 = { workspace = true }

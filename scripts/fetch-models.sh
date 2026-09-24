@@ -10,10 +10,10 @@
 #   scripts/fetch-models.sh              fetch what is missing (also `just fetch-models`)
 #   release-models.sh sources this file for REQUIRED / fetch_missing / PUB_MODELS and runs it first.
 #
-# Origins (43 §5, 45, 54 §7, meetings 04 §0.1, 57 §4.1 + §12.8):
+# Origins (43 §5, 45, 54 §7, meetings 04 §0.1 + 04-post-nemotron-as-built, 57 §4.1 + §12.8):
 #   hf:<owner>/<repo>/<path>   https://huggingface.co/<owner>/<repo>/resolve/main/<path>;
 #                              HF_TOKEN (Authorization: Bearer) is sent when set — kyutai/pocket-tts is gated
-#   https://…                  verbatim (pyannote-rs GitHub release assets)
+#   https://…                  verbatim (pyannote-rs GitHub release assets: wespeaker)
 #   none:<why>                 no documented download (parakeet-tdt's hub id was never recorded; the voice
 #                              is generated): only the bucket copy
 #
@@ -35,8 +35,9 @@ REQUIRED=(
   nemotron-streaming-en/encoder.onnx               # voice/src/stt.rs Stream::open
   nemotron-streaming-en/decoder_joint.onnx
   nemotron-streaming-en/tokenizer.model
-  pyannote/segmentation-3.0.onnx                   # meeting/src/post/diarize.rs
-  pyannote/wespeaker_en_voxceleb_CAM++.onnx
+  nemotron-diarization/model_quantized.onnx        # meeting/src/post/diarize.rs DIAR_MODEL (graph) …
+  nemotron-diarization/model_quantized.onnx_data   # … and its weights (ONNX external data, must sit beside it)
+  pyannote/wespeaker_en_voxceleb_CAM++.onnx        # meeting/src/post/diarize.rs EMBEDDING
   decision/model.safetensors                       # decision/src/engine.rs MODEL_FILES (57 §12.8): the Hugging Face
   decision/encoder/config.json                     # convaiinnovations/laya root layout, loaded by candle/mod.rs Loaded::open
   decision/tokenizer/tokenizer.json
@@ -54,6 +55,7 @@ origin_of() {
     pocket-tts/*)             echo "hf:kyutai/pocket-tts/${1#pocket-tts/}" ;;
     parakeet-tdt/*)           echo "none:parakeet-tdt-0.6b-v3-int8-smoothquant (Olicorne's requantisation of istupakov's export, files renamed to parakeet-rs names) — hub id not recorded (45 §STT)" ;;
     nemotron-streaming-en/*)  echo "hf:lokkju/nemotron-speech-streaming-en-0.6b-int8/${1#*/}" ;;
+    nemotron-diarization/*)   echo "hf:onnx-community/Nemotron-3-Diarization-ONNX/onnx/${1#*/}" ;;
     pyannote/*)               echo "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/${1#*/}" ;;
     decision/*)               echo "hf:convaiinnovations/laya/${1#*/}" ;;
     decision-browser/*)       echo "hf:cklxx/laya-browser/v10/${1#*/}" ;;

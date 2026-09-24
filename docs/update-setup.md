@@ -216,8 +216,8 @@ its two `SHASUMS256` sums — bump all three together). No host needs Bun.
    brew install --cask basedatum/tap/theuth && ls /Applications/theuth.app/Contents/MacOS/theuth-app-parser-*
    ```
 6. Speech models, once (and again only when a checkpoint changes): with the
-   four checkpoints in `~/.theuth/models/` (pocket-tts, parakeet-tdt,
-   nemotron-streaming-en, pyannote), `just release-models` uploads the files
+   checkpoints in `~/.theuth/models/` (pocket-tts, parakeet-tdt,
+   nemotron-streaming-en, nemotron-diarization, pyannote), `just release-models` uploads the files
    each loader opens to `releases/models/<model>/<file>` and writes
    `releases/models/models.json` (`{files: [{path, size, sha256}]}`) last.
    The desktop app reads that manifest at start and fetches whatever is
