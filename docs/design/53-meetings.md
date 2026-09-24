@@ -117,7 +117,11 @@ new permissions (first-use prompts only).
    is a user act on a played-back segment ("this is John"). The mic track
    defaults to `Me`; the user enrolls themselves manually if they want a
    profile. Delete profile = delete file. Rejected: live diarization (the
-   user's own call: inaccurate and expensive); diarizing the mix (bleed
+   user's own call: inaccurate and expensive) — **reversed 2026-09-24 by
+   `meetings/07-live-diarization.md`** once Nemotron 3 Diarization replaced
+   pyannote (04 as built): live `Speaker N` labels on the system track at a
+   quarter of a core, offline still authoritative, `meeting.live_diarization`
+   switch; diarizing the mix (bleed
    from the user's own voice contaminates clusters when there are no
    headphones); exporting embeddings (out of scope).
 7. **The post pipeline is a gate the user walks through in the main

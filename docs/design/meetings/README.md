@@ -70,7 +70,8 @@ pub enum MeetingEvent {                                  // one stream; the isla
     State { meeting: MeetingId, state: MeetingState, degraded: Vec<Degradation> },
     Level { meeting: MeetingId, mic_rms: f32, system_rms: f32 },        // 10 Hz, not persisted
     Utterance { meeting: MeetingId, track: Track, t0_ms: u64, t1_ms: u64, text: String, request: bool,
-                #[serde(default = "yes")] final: bool },   // false = rolling partial of an open utterance (02 §2)
+                #[serde(default = "yes")] final: bool,     // false = rolling partial of an open utterance (02 §2)
+                #[serde(default)] speaker: Option<String> }, // 07 §4: live label `s1`..`s8` of a scored system line; a second final event carries it
     TopicAdded { meeting: MeetingId, topic: Topic },
     TopicRemoved { meeting: MeetingId, topic: TopicId, why: TopicGone },
     Brief { meeting: MeetingId, brief: Brief },
@@ -119,6 +120,7 @@ meeting:
   topic_ttl_secs: 600       # phase 2
   max_topics: 6             # phase 2
   models_dir: null          # phase 4: diarization models root; default <data_dir>/models (nemotron-diarization/, pyannote/)
+  live_diarization: true    # 07: label the other side's live lines by speaker; off → `them:` (the post pass diarizes either way); next meeting start
 ```
 
 ## 4. Integration pass (phase 7, done together)

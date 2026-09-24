@@ -1,27 +1,30 @@
 # Meetings phase 7 — live speaker labels on the `them` side
 
-Status: design + bench · 2026-09-24 · scopes what 53 decision 6 rejected
+Status: **as built** · 2026-09-24 · scopes what 53 decision 6 rejected
 ("live diarization: inaccurate and expensive") now that the offline stage runs
 Nemotron 3 Diarization (`04-post-nemotron-as-built.md`), a streaming model
 whose offline loop is already the streaming loop with big chunks. Owner's
 steer: **optimise for accuracy; one switch in Meeting settings turns it off.**
-No production code in this branch; the bench is
-`crates/meeting/examples/live_diar_bench.rs`.
+Owner's decisions on §8 (2026-09-24): geometry **`acc8`** (not the bench's
+`acc4` recommendation), every other question as recommended. §9 lists what
+was built and where it deviates. Bench: `crates/meeting/examples/live_diar_bench.rs`;
+headless smoke: `crates/meeting/examples/live_diar_smoke.rs`.
 
 ## 0. Decisions
 
 1. **Feasible; do it.** On this M3 Max the accuracy-first geometry below runs
-   at RTF 0.07 (half a core) beside the live STT (a third of a core), agrees
-   with the offline pass on 97–99 % of frames, and finds the same speaker
+   at RTF 0.035 (a quarter of a core) beside the live STT (a third of a core),
+   agrees with the offline pass on 97–99 % of frames, and finds the same speaker
    count on both real recordings (4 and 8). Per-step compute is ~constant
    (170–290 ms at 8 threads whatever the chunk), so **cost ∝ 1/chunk** and
    accuracy grows slowly with chunk + look-ahead: the trade is latency for CPU.
-2. **Geometry: chunk 36 · right context 12 · FIFO 264 · update 222** (all 80 ms
-   encoder frames; the model card's `low_latency` cache policy with a 4× chunk
-   and 3× look-ahead). Input buffer 3.84 s, labels ≈ 4.1 s behind real time.
-   Named `acc4` in the bench. §1 has the numbers; §8 Q1 has the alternative.
+2. **Geometry: chunk 80 · right context 20 · FIFO 264 · update 222** (all 80 ms
+   encoder frames; the model card's `low_latency` cache policy with a 9× chunk
+   and 5× look-ahead). Input buffer 8.0 s, labels ≈ 8.3 s behind real time.
+   `acc8` in the bench, `diarize::LIVE` in code; the owner chose it over `acc4`
+   (§8 Q1) for the last 0.4 pt of agreement and half the CPU. §1 has the numbers.
 3. **Labels are late, never wrong-then-fixed for the model.** A closed system
-   utterance is *held* until the diariser has scored its last frame (≤ ~4 s),
+   utterance is *held* until the diariser has scored its last frame (≤ ~8 s),
    then logged, batched and published with its speaker. The island shows the
    text at once as `them:` (partial and final) and re-paints the row when the
    label lands. Stop flushes the diariser (last chunk, no look-ahead) so every
@@ -70,8 +73,8 @@ audio second, i.e. share of one core while live.
 | mid | 18/4/264/222 | 1.76 s | 0.113 · 90 % · 162/211 · 98.8 % · 1.9 % · 99.1 % | 0.145 · 116 % · 207/267 · 96.6 % · 5.2 % · 96.7 % |
 | mid_fifo40 | 18/4/40/300 | 1.76 s | — | 0.089 · 71 % · 127/137 · 95.9 % · 6.2 % · 96.0 % · **channels 1↔2, 5↔6 swapped** |
 | acc2 | 18/8/264/222 | 2.08 s | 0.120 · 96 % · 172/226 · 98.7 % · 2.0 % · 99.3 % | 0.135 · 107 % · 192/252 · 96.6 % · 5.1 % · 96.3 % |
-| **acc4** | **36/12/264/222** | **3.84 s** | **0.066 · 53 % · 190/241 · 98.9 % · 1.7 % · 99.2 %** | **0.070 · 56 % · 198/250 · 97.0 % · 4.5 % · 97.0 %** |
-| acc8 | 80/20/264/222 | 8.0 s | 0.035 · 27 % · 225/273 · 99.1 % · 1.4 % · 99.3 % | 0.036 · 28 % · 234/282 · 97.4 % · 4.0 % · 97.4 % |
+| acc4 | 36/12/264/222 | 3.84 s | 0.066 · 53 % · 190/241 · 98.9 % · 1.7 % · 99.2 % | 0.070 · 56 % · 198/250 · 97.0 % · 4.5 % · 97.0 % |
+| **acc8 (shipped)** | **80/20/264/222** | **8.0 s** | **0.035 · 27 % · 225/273 · 99.1 % · 1.4 % · 99.3 %** | **0.036 · 28 % · 234/282 · 97.4 % · 4.0 % · 97.4 %** |
 
 Every configuration found 4 and 8 speakers; per-channel speech seconds match
 offline within a few seconds per channel (the 8-speaker `s7`, 28 s offline,
@@ -82,8 +85,8 @@ memory); the diariser session itself is ~300 MB resident.
 
 **Threads** (standup, first 240 s, `low` / `mid`): 8 threads RTF 0.24 / 0.11;
 4: 0.38 / 0.19 (cpu 150 % / 77 %); 2: 0.71 / 0.37; **1: 1.39 / 0.71** — the
-card's `low` does not keep real time on one core; `acc4` on one core ≈ 0.35
-[INFERENCE from the 4× fewer steps; not run]. CPU seconds are nearly
+card's `low` does not keep real time on one core; `acc8` on one core ≈ 0.16
+[INFERENCE from the 9× fewer steps; not run]. CPU seconds are nearly
 thread-independent, so the cap only trades wall latency per step.
 
 **Beside the live STT** (standup, first 300 s; `voice::live::Utterer` with the
@@ -95,13 +98,13 @@ Nemotron streaming int8 model, 20 ms pushes as the ring delivers):
 | STT ∥ `low`, diariser 8 threads | 0.120 | 0.339 · 231/395 ms | 325 % |
 | STT ∥ `low`, diariser 4 threads | 0.083 | 0.415 · 298/421 ms | 206 % |
 
-Both stay real time even in the worst case measured; the pair with `acc4`
-should sit near 0.9 of one core [INFERENCE: 31 % + 56 %, not run together].
+Both stay real time even in the worst case measured; the pair with `acc8`
+should sit near 0.6 of one core [INFERENCE: 31 % + 28 %, not run together].
 Peak RSS 1.96 GB = one STT session (~0.9 GB) + diariser + audio; a meeting has
 two STT sessions, so ~2.1 GB live instead of 1.8 GB.
 
 **Windows/Linux, CPU only, no AEC** (58 §6.1): a 4-core laptop runs STT ~0.3
-core + `acc4` ~0.6 core at a 4-thread cap — plausible; a 2-core machine is
+core + `acc8` ~0.3 core at a 4-thread cap — plausible; a 2-core machine is
 tight, and the switch is the escape hatch. `MatMulNBits` dequantises on the
 fly and fp32 is not faster on Apple BLAS (04 §6); on x86 the int8 path may be
 relatively better. Not measured there.
@@ -124,10 +127,10 @@ capture::system thread ──► Feed::push ──► enc ring ──► encoder
 - `meeting/src/diar.rs` (new, the shape of `stt.rs`): one `spawn_blocking`
   task for the meeting owning `Diarizer { session, Mel, SpeakerCache,
   rubato 48→16 k, buf: Vec<f32> (16 kHz, the unscored tail), labeller }`.
-  Loop: pop `(at, pcm48)`, resample, append; once `buf` holds `(36 + 12) × 8
+  Loop: pop `(at, pcm48)`, resample, append; once `buf` holds `(80 + 20) × 8
   × 160` samples past the scored position, run one step (`input_features` =
-  48 encoder frames of mel, `cached_embeds` = cache ‖ FIFO, exactly 04 §4
-  with the new sizes), keep the 36 chunk frames' probabilities, feed the
+  100 encoder frames of mel, `cached_embeds` = cache ‖ FIFO, exactly 04 §4
+  with the new sizes), keep the 80 chunk frames' probabilities, feed the
   labeller, `tell` the actor. Same `stop`/`paused` flags as `stt::Flags`:
   pause → nothing arrives (the `Feed` does not push); resume → discard the
   stale ring, **keep** the `SpeakerCache` (speakers survive a pause; the
@@ -153,7 +156,7 @@ capture::system thread ──► Feed::push ──► enc ring ──► encoder
 
 The streaming STT gives no word times (02 §2); an utterance is `[t0, t1]`
 from the VAD (t0 includes a 320 ms pre-roll). The diariser's **horizon** is
-the recording time of the last scored frame — ~3.84 s + step compute behind
+the recording time of the last scored frame — ~8 s + step compute behind
 real time.
 
 Labelling rule (pure, unit-tested): over the 10 ms frames in `[t0 + 320 ms,
@@ -172,7 +175,7 @@ the immediate final are published unchanged with `speaker: None` so the text
 is on screen at once; the labelled re-publish has the same `track`/`t0_ms`
 and the UI updates that row (§4). Mic finals and requests are never held.
 Batch rule (c) (a `System` utterance ending in `?` flushes at once) fires
-when that utterance is *labelled*, i.e. ≤ ~4 s later than today — inside the
+when that utterance is *labelled*, i.e. ≤ ~8 s later than today — inside the
 25 s cadence's noise. At stop, the diariser's final `Labels` arrives before
 the last batch is built (`StopMeeting` joins the task with the STT tasks);
 anything still unlabelled goes out as `them:`. Diariser off/missing/dead →
@@ -265,7 +268,7 @@ for the STT models).
 | 6 | config `live_diarization` (default true); RPC `meeting_live_diarization` / `set_meeting_live_diarization` (`runtime::write_config_value` + actor `SetLiveDiarization`, the `set_decision_mode` shape); Settings › Meetings row "Live speaker labels" (blurb: ~half a core, labels ~4 s late, off = labels after the meeting only); `Line.speaker`, reducer relabel, `who()` ×2 | `lib.rs`, `rpc/src/api.rs`, `desktop/ui/src/{components/settings/Meetings.tsx, store/meeting.ts, components/meeting/IslandTranscript.tsx, ControlCenter.tsx, rpc/events.ts}` | vitest: reducer relabels the matching final row; `preview()` with a speaker | ~130 Rust + TS |
 | 7 | `align::reconcile` + call in `post/mod.rs` before `segments` | `post/align.rs`, `post/mod.rs` | two offline labels vs three live labels with a swap → renamed, unmatched gets next id | ~80 |
 | 8 | docs: 02 §2 amendment (system finals may be held), README §3 (`speaker` field, `live_diarization` key), 53 decision 6 note, this doc's Status | docs | — | — |
-| 9 | smoke: play back a recording through the live path (headless RPC as 02 §9), confirm `Speaker N:` in batches, relabel in the control center, reconciled ids in review; the `live_diar_bench` `--stt` line with `acc4` for the pair number | — | — | — |
+| 9 | smoke: `examples/live_diar_smoke.rs` — the real `diar::run` over a capture ring fed with a recorded track, live `Utterer` utterances, hold-back replay, offline pass + `reconcile` on the same audio (§10) | `examples/` | — | ~200 |
 | later | live voiceprint names (§6) | `diar.rs`, UI | — | ~80 |
 
 Total ≈ 900 lines, 1–2 days. Steps 1–3 are independent of 4–6 and can go in
@@ -274,11 +277,10 @@ parallel; 7 needs 4's `speaker` field.
 ## 8. Open questions (recommended answer first)
 
 1. **Label latency: `acc4` (≈4 s, 0.55 core) or `acc8` (≈8 s, 0.28 core, +0.4
-   pt agreement)?** → **`acc4`.** The accuracy gap is one recording's noise;
-   8 s of `them:` on the island before the name lands is long, and half a
-   core is affordable on every target. Switch to `acc8` only if the Windows
-   dogfood shows CPU pressure — one const.
-2. **Hold system finals until labelled (text reaches the model ≤ ~4 s later)
+   pt agreement)?** → recommended `acc4`; **owner chose `acc8`**: accuracy
+   first, half the CPU, and the hold-back makes the latency invisible to the
+   model. One const (`diarize::LIVE`) to revisit.
+2. **Hold system finals until labelled (text reaches the model ≤ ~8 s later)
    or send at once with `them:` and never relabel for the model?** → **hold.**
    The batcher already waits up to 25 s; the model sees one consistent label
    per line and no correction traffic. Requests and mic lines are never held.
@@ -302,3 +304,104 @@ parallel; 7 needs 4's `speaker` field.
 9. **Thread cap 4 for the live session?** → **yes** (const): CPU seconds are
    the same, step wall time stays under a second, and the STT tasks and the
    capture threads keep their cores.
+
+## 9. As built (2026-09-24) and deviations from §2–§7
+
+Steps 1–9 landed on `design/live-diarization`, one commit per step
+(`meeting: live diarization step N — …`; 3 and 4 in one commit, the `Labels`
+handler couples them).
+
+- `post/diarize.rs`: `Geometry { chunk, right, fifo, update }`, `OFFLINE`,
+  `LIVE` (= `acc8`), `LIVE_INTRA_THREADS = 4`; `SpeakerCache::new(Geometry)`;
+  `Streamer::open(model, data_dir, geometry, intra_threads)` /
+  `step(pcm16, m0) -> probs` — mel-frame clamping at the end of `pcm` is the
+  last-chunk behaviour, so there is no `is_last` flag; `probabilities()` is a
+  loop over it in `OFFLINE` (same output). Test
+  `live_fifo_fills_before_the_cache_takes_an_update_period`.
+- `capture/mod.rs`: `Feed { enc, taps }`, `Feed::tap()`; `rings()` unchanged
+  for callers; `Capture::take_diar()`.
+- `diar.rs`: `Labels { at, position, scored, spans: (sample, sample, label) }`
+  in **16 kHz sample coordinates anchored to the newest ring `Instant`**;
+  `Labels::view(at_ms) -> state::LiveLabels` does the recording-clock mapping
+  in the actor (`elapsed_at(at) − (position − s)/16 kHz`). `Labeller` (channel
+  → label at the first run ≥ 200 ms, in time order; 500 ms merge; runs kept
+  for `KEEP_MS` = 120 s). `speaker_of(t0, t1, spans)`: dominant label over
+  `[t0 + 320 ms, t1]`, ≥ 30 % cover. `run(ring, streamer, flags, sink)`
+  **returns the final view** after the stop flush (the smoke and `StopMeeting`
+  read it directly; §3's "final `Labels` arrives in the mailbox" would have
+  landed after `current` was taken). `spawn` → `JoinHandle<Option<Labels>>`,
+  `DiarizationDown` on error/panic. Tests: labeller order/merge/growth,
+  `speaker_of`, `view`.
+- `lib.rs` / `state.rs`: `Utterance.speaker` (`#[serde(default,
+  skip_serializing_if = None)]`), `MeetingEvent::Utterance.speaker`,
+  `Utterance::who()` (`me` / `Speaker N` / `them`) as the one renderer;
+  `Live { diar, labels: LiveLabels, held_system }`; `closed()` does the alias
+  scan and cached-topic work **at close time** and holds only the log + batcher
+  feed (`commit()`), so 05's < 1 s cached briefs are not delayed;
+  `release_held(me, all)`; `Message<diar::Labels>`; `Degrade(DiarizationDown)`
+  drops the task handle and releases everything held; `StopMeeting` joins the
+  diariser, labels held + STT-flush system lines against the final view and
+  sorts the last batch by `t0_ms`. `live.jsonl` gains `speaker`; its two
+  readers (`LiveText`, `meeting_read`) **sort by `t0_ms`** because held system
+  lines are appended after later mic lines. `MeetingConfig.live_diarization`
+  (default `true`) gates the session load in `start_task`; missing models →
+  `info` log only, a failed load → `DiarizationDown`.
+- The oracle's `state()` (57) keeps `them:`/`me:`: its classifier was trained
+  on that shape; only the model line and `meeting_read` show `Speaker N:`.
+- `tools.rs`: prompt text; `meeting_read.speaker` accepts `them` (every system
+  line), `Speaker 2`, or `s2` while recording.
+- RPC `meeting_live_diarization` / `set_meeting_live_diarization(on)`
+  (`runtime::write_config_value(config.yaml, "meeting", "live_diarization")`
+  + `cfg` update; next meeting start). Desktop: Settings › Meetings › "Live
+  transcript › Live speaker labels" switch; `store/meeting.ts` `Line.speaker`,
+  `who()`, the reducer updates the committed row with the same `track`/`t0_ms`
+  when a labelled final arrives; `IslandTranscript` and `ControlCenter` both
+  render through `who()` (the control center's private `LogRow` is gone);
+  `Island` badge and control-center text for `DiarizationDown`; the dev fixture
+  replays a late relabel. Bindings regenerated (`just ts-desktop`).
+- `post/align.rs::reconcile(live, spans) -> HashMap<old, new>`: **greedy**
+  best-overlap one-to-one matching (descending, ≥ 50 % of the offline label's
+  speech) instead of §5's exhaustive permutation — the labels agree at 96–99 %,
+  so the greedy answer is the optimum in practice and the code is a third the
+  size; unmatched offline labels take the lowest ids no matched live label
+  holds. `post/mod.rs` applies it to spans and `embeddings.json` keys before
+  `align::segments`.
+- Smoke: `examples/live_diar_smoke.rs` replaces §7 step 9's headless-RPC
+  playback (which needs a virtual audio device): the real `diar::run` over a
+  capture ring fed with the recorded 48 kHz track (producer paced by
+  back-pressure, no drops), the live `Utterer` for the system utterances, the
+  hold-back replayed against the emitted `Labels`, then the offline pass and
+  `reconcile` on the same audio. Results in §10.
+
+Not exercised here: the actor path end to end inside the daemon (`Begun` →
+`diar::spawn`, `release_held`, `StopMeeting` join) — compile-checked and
+unit-tested at the function level; a live dogfood with a real call remains.
+`cargo clippy -p meeting --no-deps --all-targets -- -D warnings` clean; `rpc`'s
+only lints are pre-existing ones in `client.rs` (none in the touched `api.rs`);
+desktop `tsc` clean on the touched files (pre-existing `@openuidev/*` errors
+elsewhere in this worktree); vitest green for `store/meeting`,
+`IslandTranscript`, `rpc/api`.
+
+## 10. Smoke (`live_diar_smoke`, M3 Max, release, `LIVE` = acc8, 4 intra-op threads)
+
+The real `diar::run` over a capture ring fed with the recorded 48 kHz system
+track (producer paced by back-pressure), the live `Utterer` for the system
+utterances, the hold-back replayed against the emitted `Labels`, then
+`diarize::probabilities` + `turns` + `align::reconcile` on the same audio.
+"Hold-back latency" = audio time between an utterance's end (VAD close) and
+the step that labelled it; the actor adds the ~0.9 s close/flush delay the STT
+already has and the step's compute (≈ 0.3–0.7 s).
+
+| recording | live spk / offline spk | steps · diariser RTF | utterances · labelled | hold-back p50 / p95 / max | reconcile offline → live | agreement (both labelled) |
+|---|---|---|---|---|---|---|
+| standup, 705 s | 4 / 4 | 109 · 0.117 | 104 · 101 (97.1 %) | 4.6 s / 7.6 s / 7.9 s | identity | **100 / 101 (99.0 %)** |
+| migration, 1348 s | 8 / 8 | 210 · 0.115 | 179 · 169 (94.4 %) | 4.8 s / 7.5 s / 7.9 s | **s2→s3, s3→s2**, rest identity | **163 / 165 (98.8 %)** |
+
+Unlabelled utterances (3 % / 6 %) are ones no label covered ≥ 30 % of — short
+back-channels and overlap — and read `them:`; the offline pass leaves a
+similar share of words outside every span (04 §6). The diariser RTF here is
+with the 4-thread cap and the ring's 2 ms producer sleep, ~3× the bench's
+8-thread figure; still a tenth of real time. The migration swap (offline
+channel 2 arrived as live channel 3 and vice versa) is exactly what §5
+guards against: without `reconcile`, "Speaker 2" in the session and in the
+reviewed transcript would be two different people.

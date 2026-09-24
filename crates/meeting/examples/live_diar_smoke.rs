@@ -121,15 +121,18 @@ fn main() -> anyhow::Result<()> {
     close(texts, position);
     println!("live STT: {} system utterances · wall {:.1} s", utterances.len(), t.elapsed().as_secs_f64());
 
-    // 3. Hold-back replay: an utterance is labelled by the first view whose horizon passes its end.
+    // 3. Hold-back replay: an utterance is labelled by the first view whose horizon passes
+    // its end; at stop the actor labels the rest against the final view (07 §3).
     let ms = |s: usize| (s as u64 * 1000) / u64::from(RATE);
     let mut latencies: Vec<u64> = Vec::new();
-    let mut unlabelled_at_stop = 0usize;
+    let mut at_stop = 0usize;
     for u in &mut utterances {
-        let view = views.iter().find(|v| ms(v.scored) >= u.t1_ms);
-        let Some(v) = view else {
-            unlabelled_at_stop += 1;
-            continue;
+        let v = match views.iter().find(|v| ms(v.scored) >= u.t1_ms) {
+            Some(v) => v,
+            None => {
+                at_stop += 1;
+                &final_view
+            }
         };
         // The view's `position` is the audio time the step ran at; the label is that far after `t1`.
         latencies.push(ms(v.position).saturating_sub(u.t1_ms));
@@ -143,14 +146,14 @@ fn main() -> anyhow::Result<()> {
     live_ids.sort_unstable();
     live_ids.dedup();
     println!(
-        "hold-back: label latency after utterance end p50 {:.2} s · p95 {:.2} s · max {:.2} s · {} of {} utterances labelled ({:.1} %), {} past the final horizon",
+        "hold-back: label latency after utterance end p50 {:.2} s · p95 {:.2} s · max {:.2} s · {} of {} utterances labelled ({:.1} %), {} labelled by the stop flush",
         pct(0.5) as f64 / 1000.0,
         pct(0.95) as f64 / 1000.0,
         latencies.last().copied().unwrap_or(0) as f64 / 1000.0,
         labelled,
         utterances.len(),
         labelled as f64 * 100.0 / utterances.len().max(1) as f64,
-        unlabelled_at_stop
+        at_stop
     );
     println!("live speakers: {} {live_ids:?}", live_ids.len());
 
