@@ -20,7 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { attach, attachDoc, type DocRef, docMarker, expand, type Pastes, tokenize } from '@/lib/pastes'
+import { attach, attachDoc, type DocRef, docMarker, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -95,8 +95,10 @@ function SlashList({
 /**
  * ChatGPT's composer: `+` attach on the left, send / stop on the right, Enter
  * sends (mid-turn: queues a steer), ⌘/Ctrl+Enter interjects (cancels the turn
- * so the message runs now), Shift+Enter breaks a line. Large pastes and attachments are held as chips above the
- * box (`lib/pastes`, `HeldStrip`) and appended on submit. `/` at column 0 opens
+ * so the message runs now), Shift+Enter breaks a line. A large paste is held as a chip above the box (`lib/pastes`,
+ * `HeldStrip`) and its `⟦paste n⟧` token lands at the caret; submit puts the block back where the token stands, so
+ * several blocks interleave with typed words in order. Deleting a token drops its chip, a chip's ✕ its token. Attachments
+ * and documents are chips without tokens. `/` at column 0 opens
  * the command list; `/skill:<name>` parks a skill on the next send; other `/x` runs `use_skill` now.
  */
 export function Composer({
@@ -255,10 +257,14 @@ export function Composer({
     setPendingCaret(null)
   }, [pendingCaret, dictating])
 
-  const insert = (s: string) => {
+  /** Put `s` at the selection (replacing it), caret after it; a chip whose token the selection took goes too. */
+  const insert = (s: string, held: Pastes = pastes) => {
     const ta = ref.current
     const [a, b] = ta ? [ta.selectionStart, ta.selectionEnd] : [text.length, text.length]
-    setText((t) => t.slice(0, a) + s + t.slice(b))
+    const next = text.slice(0, a) + s + text.slice(b)
+    setText(next)
+    setPastes(reconcile(next, held))
+    setPendingCaret(a + s.length)
   }
 
   const addFiles = (paths: string[], dims?: [number, number]) => {
@@ -331,8 +337,7 @@ export function Composer({
     if (!plain) return
     e.preventDefault()
     const held = tokenize(plain, pastes)
-    setPastes(held.pastes)
-    if (held.text) insert(held.text)
+    insert(held.text, held.pastes)
   }
 
   const reset = () => {
@@ -602,7 +607,15 @@ export function Composer({
         onDrop={onDrop}
       >
         {slash && slashWord && <SlashList word={slashWord} selected={selected} onPick={pick} />}
-        <HeldStrip pastes={pastes} pinned={pinned} onChange={setPastes} />
+        <HeldStrip
+          pastes={pastes}
+          pinned={pinned}
+          onChange={setPastes}
+          onRemove={(i) => {
+            setText(untoken(text, i))
+            setPastes(drop(i, pastes))
+          }}
+        />
         <div className="flex items-end gap-1">
           <Popover>
             <PopoverTrigger asChild>
@@ -659,6 +672,7 @@ export function Composer({
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value)
+                  setPastes(reconcile(e.target.value, pastes))
                   setSelected(0)
                 }}
                 onKeyDown={onKeyDown}
