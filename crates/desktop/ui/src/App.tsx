@@ -236,11 +236,11 @@ function useTauri(): void {
     const onQuit = () => void quit()
     window.addEventListener('theuth:quit', onQuit)
     void primeNotifications()
-    if (container() === 'macos') {
-      startUpdateListener()
-      // 53 decision 9: the eye applies to both windows from startup, not only on toggle.
-      void setHiddenFromCapture(useMeetingSettings.getState().hidden)
-    }
+    // The updater swaps a `.app` bundle (update.rs `bundle_dir`): macOS only.
+    if (container() === 'macos') startUpdateListener()
+    // 53 decision 9: the eye applies to both windows from startup, not only on toggle; the command
+    // exists on every desktop OS and no-ops where `island_capabilities().hide_from_share` is false.
+    if (isDesktop()) void setHiddenFromCapture(useMeetingSettings.getState().hidden)
     return () => {
       for (const u of unlistens) void u.then((f) => f())
       window.removeEventListener('theuth:quit', onQuit)
