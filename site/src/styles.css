@@ -17,10 +17,11 @@
   --accent: #c47a2c;
   --accent-hover: #a36220;
   --accent-fg: #12100e;
-  /* pyramid: limestone faces lit by an ochre key and a faint faience fill; soot in the joints */
-  --stone: 232 220 200;
-  --stone-dim: 176 156 118;
-  --grout-rgb: 18 16 14;
+  /* pyramid: polished Tura casing, the sand it stands on lit by a low sun, the shadow it casts */
+  --casing: 240 232 216;
+  --sand: 132 100 62;
+  --shadow-rgb: 6 5 4;
+  --halo: 0.5;
 }
 
 @media (prefers-color-scheme: light) {
@@ -36,9 +37,10 @@
     --accent: #b4531e;
     --accent-hover: #8a3e16;
     --accent-fg: #f3eadf;
-    --stone: 201 180 138;
-    --stone-dim: 138 120 94;
-    --grout-rgb: 44 38 32;
+    --casing: 246 240 228;
+    --sand: 222 198 156;
+    --shadow-rgb: 44 38 32;
+    --halo: 0.15;
   }
 }
 
