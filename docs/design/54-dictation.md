@@ -445,7 +445,11 @@ the TUI in its status line, the desktop as a toast.
   including a refused `getUserMedia`; before this, the context stayed
   running at `play-and-record` and the Dynamic Island showed the app as
   playing until a restart. `visibilitychange` → hidden with nothing held
-  re-applies the idle state.
+  re-applies the idle state. Read-aloud's `speak` hold ends when the
+  utterance's last scheduled source fires `onended`, not on `SpeechFinished`;
+  every scheduled source is stopped before any suspend (2026-09-24, see 45
+  §7.3) — a dictation's `release` with speech still running keeps the
+  context up, as before.
 
 ## 8. RPC (`crates/rpc/src/api.rs`)
 

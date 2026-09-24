@@ -472,10 +472,10 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
   `Map<session, lastSpokenEntryId>` in `speech.ts`; presence = voice mode).
   No char cursor, no store fields — nothing but `speech.ts` reads them.
 - `enqueue` chains: `queue = queue.then(() => idle()).then(() => api.speak
-  (session, text))` where `idle()` resolves when nothing is speaking and
-  `remaining()` has elapsed — so `Speak`'s replace-semantics never cut a
-  block off. `Speaking.entry` is set to the assistant entry so the badge
-  from 43 shows.
+  (session, text))` where `idle()` resolves when nothing is speaking — the
+  last scheduled source of a `Done` utterance has fired `onended` — so
+  `Speak`'s replace-semantics never cut a block off. `Speaking.entry` is set
+  to the assistant entry so the badge from 43 shows.
 - One `AudioContext` for the module, created or resumed inside the mic
   click (a user gesture) and reused by `start` — iOS WKWebView will not
   start one that was created outside a gesture [INFERENCE, §10 step 6].
@@ -483,10 +483,19 @@ it. The mirror (43 §4.6) adds `models/parakeet-tdt/<rev>/` when it is built;
   `speech.ts` — `unlock(use)` / `release(use)` over the holders `speak`,
   `dictate` (54), `record`. `record()` takes `record` on the tap and gives it
   back in `MediaRecorder.onstop` (upload and Escape-discard alike) and on a
-  failed `getUserMedia`; read-aloud's `stop()` gives back `speak`. The last
-  release suspends the context and resets `navigator.audioSession.type` to
-  `auto` — a running context or a forced `play-and-record`/`playback` type
-  kept the Dynamic Island's Now Playing up after the note was sent.
+  failed `getUserMedia`; read-aloud gives back `speak` when the utterance's
+  last `AudioBufferSourceNode` has ended (`drain`), not when `SpeechFinished
+  { done }` arrives — synthesis runs ahead of playback. The last release
+  suspends the context and resets `navigator.audioSession.type` to `auto` —
+  a running context or a forced `play-and-record`/`playback` type kept the
+  Dynamic Island's Now Playing up after the note was sent.
+- Fixed 2026-09-24 (iPhone): a suspended context keeps its scheduled sources
+  and plays them on the next `resume`, so a `speak` hold given back early
+  (the old `setTimeout(remaining())` off `currentTime`) cut the reply off and
+  the *next* unlock replayed the tail before the new audio. `speech.ts`
+  tracks the live sources; `stop`, a new utterance and the last-holder-out
+  suspend `stop()`+`disconnect()` every one first, and `unlock` with nothing
+  held cuts leftovers before resuming.
 
 ### 7.4 Bubble
 
