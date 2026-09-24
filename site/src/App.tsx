@@ -3,11 +3,23 @@ import engraving from "./engraving.webp";
 import { Pyramid } from "./Pyramid";
 
 declare const __APP_VERSION__: string;
+declare const __RELEASE_VERSION__: string;
 
 const GITHUB = "https://github.com/skymoore/theuth";
 const APP = "https://app.theuth.io";
 const RELEASES = "https://s3.rwx.dev/theuth/releases";
-const dmg = (v: string) => `${RELEASES}/${v}/theuth_${v}_macos-aarch64.dmg`;
+/** Release artifacts live at releases/<version>/theuth_<version>_<target>; there is no latest/ path, latest.json names the version. */
+const artifact = (v: string, target: string) => `${RELEASES}/${v}/theuth_${v}_${target}`;
+
+type Os = "macos" | "windows" | "linux";
+
+/** navigator.userAgentData.platform where Chromium ships it, the UA string elsewhere; anything unrecognised is a Mac. */
+function detectOs(): Os {
+  const p = ((navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.userAgent).toLowerCase();
+  if (p.includes("windows")) return "windows";
+  if (p.includes("linux") || p.includes("x11") || p.includes("android")) return "linux";
+  return "macos";
+}
 
 /** The brand mark (crates/desktop/icons): compact skull, one disk for an eye, a beak that tapers into a reed-pen nib. */
 function Ibis({ size = 22 }: { size?: number }) {
@@ -22,33 +34,49 @@ function Ibis({ size = 22 }: { size?: number }) {
   );
 }
 
-const TABS = [
-  {
-    id: "macos",
-    label: "macOS arm64",
-    cmd: "brew update\nbrew install basedatum/tap/theuth",
-    note: "The CLI: t, the daemon and the terminal UI in one binary. It keeps itself current.",
+/** Per OS: the install command (none for Windows: there is no script), the note, and the downloads; the first download is the primary. */
+const OSES: Record<Os, { label: string; cmd: string | null; note: string; files: [string, string][] }> = {
+  macos: {
+    label: "macOS",
+    cmd: "brew update\nbrew install --cask basedatum/tap/theuth",
+    note: "The cask is the app; brew install basedatum/tap/theuth is the CLI alone: t, the daemon and the terminal UI in one binary, kept current by itself. Apple silicon; the app wants macOS 15.",
+    files: [
+      ["disk image", "macos-aarch64.dmg"],
+      ["CLI tar.gz", "macos-aarch64.tar.gz"],
+    ],
   },
-  {
-    id: "linux",
+  windows: {
+    label: "Windows",
+    cmd: null,
+    note: "x86_64, Windows 11 or Windows 10 with WebView2. The installer is unsigned: SmartScreen says unknown publisher once; More info, Run anyway. It installs per user under %LOCALAPPDATA%\\theuth with t.exe beside the app. The zip is t.exe and its helpers; unzip it anywhere.",
+    files: [
+      ["installer", "windows-x86_64-setup.exe"],
+      ["CLI zip", "windows-x86_64.zip"],
+    ],
+  },
+  linux: {
     label: "Linux",
     cmd: "brew update\nbrew install basedatum/tap/theuth",
-    note: "Tarballs exist for linux-x86_64 and linux-aarch64. glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 and later.",
+    note: "glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 and later. The formula installs the CLI on x86_64 and arm64; the bundles are the app with t beside it. AppImage: chmod +x, then run. Debian: sudo apt install ./theuth_<version>_linux-x86_64.deb.",
+    files: [
+      ["AppImage x86_64", "linux-x86_64.AppImage"],
+      ["deb x86_64", "linux-x86_64.deb"],
+      ["rpm x86_64", "linux-x86_64.rpm"],
+      ["CLI tar.gz x86_64", "linux-x86_64.tar.gz"],
+      ["AppImage arm64", "linux-aarch64.AppImage"],
+      ["deb arm64", "linux-aarch64.deb"],
+      ["rpm arm64", "linux-aarch64.rpm"],
+      ["CLI tar.gz arm64", "linux-aarch64.tar.gz"],
+    ],
   },
-  {
-    id: "app",
-    label: "macOS app",
-    cmd: "brew update\nbrew install --cask basedatum/tap/theuth",
-    note: "The cask lists Monterey and later; the bundle itself wants macOS 15. Apple silicon only.",
-  },
-] as const;
+};
 
-function Install({ dmgUrl }: { dmgUrl: string }) {
-  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("macos");
+function Install({ os, setOs, version }: { os: Os; setOs: (os: Os) => void; version: string }) {
   const [copied, setCopied] = useState(false);
-  const active = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const active = OSES[os];
 
   const copy = () => {
+    if (!active.cmd) return;
     navigator.clipboard
       .writeText(active.cmd)
       .then(() => {
@@ -65,54 +93,59 @@ function Install({ dmgUrl }: { dmgUrl: string }) {
           role="tablist"
           className="grid grid-cols-3 border-b border-well bg-well text-[13px] font-medium"
         >
-          {TABS.map((t) => (
+          {(Object.keys(OSES) as Os[]).map((id) => (
             <button
-              key={t.id}
+              key={id}
               role="tab"
-              aria-selected={t.id === tab}
-              onClick={() => setTab(t.id)}
+              aria-selected={id === os}
+              onClick={() => setOs(id)}
               className={
-                t.id === tab
+                id === os
                   ? "bg-raised py-3 text-fg shadow-[inset_0_-2px_0_var(--accent)] transition-colors duration-[120ms]"
                   : "py-3 text-fg-3 transition-colors duration-[120ms] hover:text-fg-2"
               }
             >
-              {t.label}
+              {OSES[id].label}
             </button>
           ))}
         </div>
-        <div className="flex items-start justify-between gap-4 p-5">
-          <pre className="font-mono text-[13px] leading-6 text-fg">
-            {active.cmd.split("\n").map((line) => (
-              <div key={line}>
-                <span className="select-none text-fg-3">$ </span>
-                {line}
-              </div>
-            ))}
-          </pre>
-          <button
-            onClick={copy}
-            className="btn h-8 px-3 text-[12px]"
-            aria-live="polite"
-          >
-            {copied ? "copied" : "copy"}
-          </button>
-        </div>
+        {active.cmd && (
+          <div className="flex items-start justify-between gap-4 border-b border-well p-5">
+            <pre className="min-w-0 overflow-x-auto font-mono text-[13px] leading-6 text-fg">
+              {active.cmd.split("\n").map((line) => (
+                <div key={line}>
+                  <span className="select-none text-fg-3">$ </span>
+                  {line}
+                </div>
+              ))}
+            </pre>
+            <button
+              onClick={copy}
+              className="btn h-8 shrink-0 px-3 text-[12px]"
+              aria-live="polite"
+            >
+              {copied ? "copied" : "copy"}
+            </button>
+          </div>
+        )}
+        <ul className="flex flex-wrap items-center gap-x-5 gap-y-3 p-5 font-mono text-[13px]">
+          {active.files.map(([label, target], i) => (
+            <li key={target}>
+              <a
+                href={artifact(version, target)}
+                className={
+                  i === 0
+                    ? "btn btn-primary h-9 px-4 text-[13px]"
+                    : "text-fg-2 underline decoration-fg-3 underline-offset-4 hover:text-fg"
+                }
+              >
+                {i === 0 ? `Download ${label}` : label}
+              </a>
+            </li>
+          ))}
+        </ul>
         <p className="border-t border-well px-5 py-3 text-[13px] leading-relaxed text-fg-3">
           {active.note}
-          {tab === "app" && (
-            <>
-              {" "}
-              Or{" "}
-              <a
-                href={dmgUrl}
-                className="text-fg-2 underline decoration-fg-3 underline-offset-4 hover:text-fg"
-              >
-                download the disk image
-              </a>
-              .
-            </>
-          )}
         </p>
       </div>
       <dl className="mt-8 grid gap-x-8 gap-y-3 font-mono text-[13px] text-fg-3 sm:grid-cols-2">
@@ -488,12 +521,13 @@ const SOON = ["Telegram", "iOS and Android apps"];
 const NOT = ["Discord", "WhatsApp", "docker run of the harness", "Intel Macs"];
 
 export function App() {
-  const [dmgUrl, setDmgUrl] = useState(dmg(__APP_VERSION__));
+  const [version, setVersion] = useState(__RELEASE_VERSION__);
+  const [os, setOs] = useState<Os>(detectOs);
   useEffect(() => {
     // latest.json is the only mutable object in the bucket; when it is reachable, follow it instead of the build-time version.
     fetch(`${RELEASES}/latest.json`)
       .then((r) => r.json() as Promise<{ version: string }>)
-      .then(({ version }) => setDmgUrl(dmg(version)))
+      .then(({ version }) => setVersion(version))
       .catch(() => {});
   }, []);
 
@@ -538,8 +572,8 @@ export function App() {
               <a href="#install" className="btn btn-primary">
                 Install
               </a>
-              <a href={dmgUrl} className="btn">
-                Download for macOS
+              <a href={artifact(version, OSES[os].files[0]![1])} className="btn">
+                Download for {OSES[os].label}
               </a>
             </div>
           </div>
@@ -550,7 +584,7 @@ export function App() {
           </div>
         </section>
 
-        <Install dmgUrl={dmgUrl} />
+        <Install os={os} setOs={setOs} version={version} />
 
         <section className="mx-auto max-w-[1400px] px-6 pb-36 md:px-10">
           <div className="md:w-[54%]">

@@ -8,8 +8,18 @@ const { version } = JSON.parse(readFileSync(new URL('../crates/desktop/tauri.con
   version: string
 }
 
+/**
+ * The released version from the bucket's latest.json, baked in at build time so the first paint (and dev/preview on
+ * localhost, which the bucket's CORS policy does not allow) links a real release; on theuth.io the runtime fetch of
+ * latest.json still refreshes it. Offline builds fall back to the product version.
+ */
+const released = await fetch('https://s3.rwx.dev/theuth/releases/latest.json')
+  .then((r) => r.json() as Promise<{ version: string }>)
+  .then((j) => j.version)
+  .catch(() => version)
+
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(version) },
+  define: { __APP_VERSION__: JSON.stringify(version), __RELEASE_VERSION__: JSON.stringify(released) },
   plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: { port: 1430, strictPort: true },
