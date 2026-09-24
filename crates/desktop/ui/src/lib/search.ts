@@ -8,14 +8,23 @@ import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import { scoped } from '@/store/harness-scope'
 
-/** Display and wire order of the four categories; also the canonical order of a selection. */
-export const CATEGORIES: readonly SearchCategory[] = ['sessions', 'artifacts', 'knowledge', 'knowledge_history']
+/** Display and wire order of the six categories; also the canonical order of a selection. */
+export const CATEGORIES: readonly SearchCategory[] = [
+  'sessions',
+  'artifacts',
+  'knowledge',
+  'knowledge_history',
+  'notes',
+  'meetings',
+]
 
 export const CATEGORY_LABEL: Record<SearchCategory, string> = {
   sessions: 'Sessions',
   artifacts: 'Artifacts',
   knowledge: 'Knowledge',
   knowledge_history: 'Knowledge history',
+  notes: 'Notes',
+  meetings: 'Meetings',
 }
 
 /** Per-group page sizes Show more steps through (49 §2.3); the last is the backend cap. */
@@ -23,7 +32,14 @@ export const LIMITS = [10, 30, 50] as const
 export const MAX_QUERY_CHARS = 1024
 
 export type Limits = Record<SearchCategory, number>
-export const DEFAULT_LIMITS: Limits = { sessions: 10, artifacts: 10, knowledge: 10, knowledge_history: 10 }
+export const DEFAULT_LIMITS: Limits = {
+  sessions: 10,
+  artifacts: 10,
+  knowledge: 10,
+  knowledge_history: 10,
+  notes: 10,
+  meetings: 10,
+}
 
 /** Dedupe into fixed order, dropping unknown values — the request identity the backend also computes. */
 export function canonical(categories: readonly string[]): SearchCategory[] {
@@ -56,6 +72,8 @@ export type SearchDestination =
   | { category: 'artifacts'; callId: string }
   | { category: 'knowledge'; id: string }
   | { category: 'knowledge_history'; id: string; commit: string; snapshot: string | null }
+  | { category: 'notes'; id: string }
+  | { category: 'meetings'; id: string }
 
 /** The search a destination was opened from; the query stays out of the URL. */
 export type SearchOrigin = { query: string; destination: SearchDestination }
@@ -146,5 +164,9 @@ export function isSearchDestination(origin: SearchOrigin | null, destination: Se
         o.commit === destination.commit &&
         o.snapshot === destination.snapshot
       )
+    case 'notes':
+      return o.category === 'notes' && o.id === destination.id
+    case 'meetings':
+      return o.category === 'meetings' && o.id === destination.id
   }
 }

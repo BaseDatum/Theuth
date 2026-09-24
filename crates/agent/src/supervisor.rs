@@ -83,16 +83,16 @@ use crate::{
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp,
+    NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
-    SearchSessionPage, SendInput, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
+    SearchSessionPage, SendInput, SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
     SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
     Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{frame, repl, search, spill};
+use crate::{attach, frame, repl, search, spill};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::SessionCostQuery;
 use crate::lifecycle::{
@@ -4614,6 +4614,43 @@ impl Message<Ancestors> for Agents {
     }
 }
 
+impl Message<ReadSession> for Agents {
+    type Reply = Result<SessionRead, String>;
+
+    async fn handle(&mut self, m: ReadSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // 51 §4.2 / 66 §9: a private tree's sessions are readable only from
+        // inside that tree; everything durable is readable from anywhere.
+        let target_root = self.private_member.get(&m.session);
+        if target_root.is_some() && target_root != self.private_member.get(&m.caller) {
+            return Err(format!("session {} is private to another tree", m.session));
+        }
+        let store = self.store_for(m.session).clone();
+        let mut summary = store
+            .session(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or_else(|| format!("session {} not found", m.session))?;
+        summary.retention = self.retention_of(m.session);
+        let h = store.context_history(m.session).await.map_err(|e| format!("{e:#}"))?;
+        let mut out = render(&h.messages, &h.entries);
+        // Peer provenance (50 §9), as `load_session` marks it.
+        if let Ok(rows) = store.consumed_exchanges(m.session).await {
+            let peers: HashMap<i64, PeerOrigin> = rows.into_iter().map(|(seq, r)| (seq, origin_of(&r))).collect();
+            for (seq, entry) in &mut out {
+                if let HistoryEntry::User { peer, .. } = entry
+                    && let Some(o) = peers.get(seq)
+                {
+                    *peer = Some(o.clone());
+                }
+            }
+        }
+        Ok(SessionRead {
+            summary,
+            history: out.into_iter().map(|(_, e)| e).collect(),
+        })
+    }
+}
+
 impl Message<LoadSession> for Agents {
     type Reply = Loaded;
 
@@ -6447,6 +6484,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 ),
             })
             .await;
+        let _ = reg
+            .ask(RegisterPrompt {
+                plugin: "attachments",
+                text: attach::PROMPT.to_owned(),
+            })
+            .await;
         if cfg.surface.enabled {
             let _ = reg
                 .ask(RegisterPrompt {
@@ -6491,6 +6534,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg.ask(RegisterTool(Arc::new(PeerMessageTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(MessageUserTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(crate::session_read::SessionReadTool)))
+            .await;
     });
     Ok(())
 }

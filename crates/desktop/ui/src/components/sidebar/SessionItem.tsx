@@ -24,6 +24,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useSessionDrag } from '@/components/chat/Panes'
+import { ChatPicker } from '@/components/notes/ChatPicker'
+import { type AttachRef, chatName, toRef } from '@/lib/attach'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
@@ -110,6 +112,7 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
 export const SessionItem = memo(function SessionItem({
   id,
   title,
+  created,
   tags,
   pinned,
   archived,
@@ -122,6 +125,7 @@ export const SessionItem = memo(function SessionItem({
 }: {
   id: string
   title: string
+  created: string
   tags: string[]
   pinned: boolean
   archived: boolean
@@ -138,7 +142,7 @@ export const SessionItem = memo(function SessionItem({
   const navigate = useNavigate()
   const live = useSessionField(id, 'title')
   const liveTags = useSessionField(id, 'tags') ?? tags
-  const raw = live || title || id.slice(0, 8)
+  const raw = live || chatName({ title, created_at: created })
   // A session opened by a voice note is titled from its input; the `[voice note, N s]` marker is not a title (45 §7.4).
   const shown = parseNote(raw)?.body || raw
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
@@ -147,6 +151,12 @@ export const SessionItem = memo(function SessionItem({
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [attaching, setAttaching] = useState(false)
+  /** 66 §7.8: this chat as a reference — the list row's record when the sessions query has it. */
+  const asRef = (): AttachRef => {
+    const row = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((x) => x.id === id)
+    return row ? toRef({ kind: 'session', session: row }) : { kind: 'session', id, title: shown, meta: `chat · ${project ?? 'no project'}${archived ? ' · archived' : ''}` }
+  }
 
   const remove = async () => {
     try {
@@ -277,6 +287,7 @@ export const SessionItem = memo(function SessionItem({
               <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
                 {selected ? 'Deselect' : 'Select'}
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>
                 Copy id
               </DropdownMenuItem>
@@ -285,6 +296,7 @@ export const SessionItem = memo(function SessionItem({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {attaching && <ChatPicker open onOpenChange={setAttaching} item={asRef()} />}
           <AlertDialog open={confirming} onOpenChange={setConfirming}>
             <AlertDialogContent>
               <AlertDialogHeader>

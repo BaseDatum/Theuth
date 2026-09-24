@@ -38,6 +38,7 @@ pub mod broadcast;
 mod clip;
 pub mod dictation;
 pub mod model;
+pub mod attach;
 pub mod search;
 mod ui;
 
@@ -1092,7 +1093,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             writeln!(out, "⊘ removed from context: summary (epoch {epoch})")
         }
         agent::HistoryEntry::User { text, context, .. } => {
-            writeln!(out, "> {text}{}", labels(context))
+            writeln!(out, "> {}{}", attach::display(&text), labels(context))
         }
         agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
         agent::HistoryEntry::Tool {

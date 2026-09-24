@@ -1,4 +1,4 @@
-//! `/search` (design doc 49 §6–7): one live menu over the four search
+//! `/search` (design doc 49 §6–7): one live menu over the six search
 //! categories, the request identities that keep late replies inert, the
 //! read-only previews it opens, and the page-at-seq inspection of an old
 //! session message. Pure state: `ui.rs` draws it, `lib.rs` turns its
@@ -18,8 +18,10 @@ use ::search::{
 use agent::search::{HitKind, HitRole, SearchHit};
 use agent::{Loaded, SessionSummary};
 use artifact::search::{ArtifactMatchContext, ArtifactSearchHit, ContentCoverage};
+use document::search::NoteSearchHit;
 use knowledge::search::{ConceptSearchHit, HistoricalConcept, HistorySearchHit, HistorySide};
 use knowledge::{ChangeStatus, Concept, Revision};
+use meeting::search::MeetingSearchHit;
 use rpc::search::{SearchGroup, SearchResponse};
 use runtime::SessionId;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -38,6 +40,8 @@ pub const RECENT: usize = 10;
 pub const PAGE: u32 = 60;
 /// Chars of a document a preview shows; anything past is one notice line.
 const PREVIEW_CHARS: usize = 400_000;
+/// Category count: the chip and limit arrays' length.
+pub const N: usize = SearchCategory::ALL.len();
 
 /// Fixed chip labels, in [`SearchCategory::ALL`] order.
 pub fn label(c: SearchCategory) -> &'static str {
@@ -46,6 +50,8 @@ pub fn label(c: SearchCategory) -> &'static str {
         SearchCategory::Artifacts => "Artifacts",
         SearchCategory::Knowledge => "Knowledge",
         SearchCategory::KnowledgeHistory => "Knowledge history",
+        SearchCategory::Notes => "Notes",
+        SearchCategory::Meetings => "Meetings",
     }
 }
 
@@ -56,6 +62,8 @@ pub fn wire(c: SearchCategory) -> &'static str {
         SearchCategory::Artifacts => "artifacts",
         SearchCategory::Knowledge => "knowledge",
         SearchCategory::KnowledgeHistory => "knowledge_history",
+        SearchCategory::Notes => "notes",
+        SearchCategory::Meetings => "meetings",
     }
 }
 
@@ -183,6 +191,10 @@ pub enum Hit {
     Knowledge(ConceptSearchHit),
     /// One changed concept in one commit.
     History(HistorySearchHit),
+    /// One free-standing note (66 §10).
+    Note(NoteSearchHit),
+    /// One meeting (66 §10).
+    Meeting(MeetingSearchHit),
 }
 
 /// Stable identity of a selectable row: keeps the cursor on the same thing
@@ -197,6 +209,10 @@ pub enum Key {
     Knowledge(String),
     /// `(id, commit)` of a history hit.
     History(String, String),
+    /// A note hit.
+    Note(String),
+    /// A meeting hit.
+    Meeting(meeting::MeetingId),
     /// A group's `show more` row.
     More(SearchCategory),
     /// A recent-sessions row.
@@ -211,13 +227,14 @@ impl Hit {
             Hit::Artifact(h) => Key::Artifact(h.artifact.call_id.clone()),
             Hit::Knowledge(h) => Key::Knowledge(h.meta.id.clone()),
             Hit::History(h) => Key::History(h.id.clone(), h.commit.clone()),
+            Hit::Note(h) => Key::Note(h.doc.id.to_string()),
+            Hit::Meeting(h) => Key::Meeting(h.meeting.id),
         }
     }
 
     /// First row: what the hit is.
     pub fn title(&self) -> String {
         match self {
-            Hit::Session(h) if h.title.is_empty() => short(h.session),
             Hit::Session(h) => h.title.clone(),
             Hit::Artifact(h)
                 if h.artifact.title.is_empty() || h.artifact.title == h.artifact.name =>
@@ -227,6 +244,9 @@ impl Hit {
             Hit::Artifact(h) => format!("{} · {}", h.artifact.name, h.artifact.title),
             Hit::Knowledge(h) => format!("{} · {}", h.meta.title, h.meta.id),
             Hit::History(h) => format!("{} · {}", h.title, h.id),
+            Hit::Note(h) if h.doc.title.trim().is_empty() => format!("Untitled note · {}", h.doc.id),
+            Hit::Note(h) => h.doc.title.clone(),
+            Hit::Meeting(h) => meeting::search::title_of(&h.meeting).to_owned(),
         }
     }
 
@@ -284,6 +304,18 @@ impl Hit {
                 when(&h.time),
                 h.message
             ),
+            Hit::Note(h) => format!("note · updated {}", when(&ms_rfc3339(h.doc.updated_ms))),
+            Hit::Meeting(h) => {
+                let m = &h.meeting;
+                let mut s = format!("meeting · {}", when(&m.started_at));
+                if let Some(d) = m.duration_ms {
+                    let _ = write!(s, " · {} min", d / 60_000);
+                }
+                if m.state != meeting::MeetingState::Done {
+                    let _ = write!(s, " · {:?}", m.state);
+                }
+                s
+            }
         }
     }
 
@@ -310,6 +342,16 @@ impl Hit {
                 h.r#match.snippet.as_str(),
                 h.r#match.ranges.as_slice(),
             ),
+            Hit::Note(h) => (
+                field_label(&h.r#match.field),
+                h.r#match.snippet.as_str(),
+                h.r#match.ranges.as_slice(),
+            ),
+            Hit::Meeting(h) => (
+                field_label(&h.r#match.field),
+                h.r#match.snippet.as_str(),
+                h.r#match.ranges.as_slice(),
+            ),
         }
     }
 
@@ -326,8 +368,17 @@ impl Hit {
                 Some(s) => format!("{} @ {} snapshot {s}", h.id, h.commit),
                 None => format!("{} @ {}", h.id, h.commit),
             },
+            Hit::Note(h) => format!("note {}", h.doc.id),
+            Hit::Meeting(h) => format!("meeting {}", h.meeting.id),
         }
     }
+}
+
+/// Unix milliseconds as RFC 3339 UTC, for [`when`].
+pub(crate) fn ms_rfc3339(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
 }
 
 /// `content: ` / `source: ` / `metadata: ` / `title: ` …; empty for a body.
@@ -340,6 +391,7 @@ fn field_label(field: &str) -> &'static str {
         "name" => "name: ",
         "title" => "title: ",
         "kind" => "kind: ",
+        "transcript" => "transcript: ",
         _ => "",
     }
 }
@@ -418,6 +470,12 @@ impl Group {
                 generation,
                 limit,
             ),
+            SearchGroup::Notes { page: p } => {
+                page(SearchCategory::Notes, p, Hit::Note, generation, limit)
+            }
+            SearchGroup::Meetings { page: p } => {
+                page(SearchCategory::Meetings, p, Hit::Meeting, generation, limit)
+            }
         }
     }
 
@@ -490,7 +548,7 @@ pub enum Focus {
     /// The query editor.
     #[default]
     Query,
-    /// `All` (0) or chip `1..=4`.
+    /// `All` (0) or chip `1..=N` (the category count).
     Filters(usize),
     /// The result rows.
     Results,
@@ -747,7 +805,7 @@ pub struct State {
     /// Editable query, verbatim (the request trims it).
     pub query: String,
     /// Chip bits in [`SearchCategory::ALL`] order; any subset, empty allowed.
-    pub selected: [bool; 4],
+    pub selected: [bool; N],
     /// Which part has the keys.
     pub focus: Focus,
     /// Current view identity; every request carries it.
@@ -761,7 +819,7 @@ pub struct State {
     /// Result requests of `generation` not yet answered.
     in_flight: usize,
     /// Per-group limit, [`SearchCategory::ALL`] order.
-    pub limits: [u32; 4],
+    pub limits: [u32; N],
     /// Groups shown, canonical order; each stamped with its generation.
     pub groups: Vec<Group>,
     /// Local validation failure of the current query.
@@ -798,14 +856,14 @@ impl Default for State {
     fn default() -> Self {
         Self {
             query: String::new(),
-            selected: [true; 4],
+            selected: [true; N],
             focus: Focus::Query,
             generation: 0,
             requested: String::new(),
             deadline: None,
             poll_at: None,
             in_flight: 0,
-            limits: [LIMITS[0]; 4],
+            limits: [LIMITS[0]; N],
             groups: Vec::new(),
             failed: None,
             recent: None,
@@ -849,7 +907,7 @@ impl State {
         self.deadline = None;
         self.poll_at = None;
         self.in_flight = 0;
-        self.limits = [LIMITS[0]; 4];
+        self.limits = [LIMITS[0]; N];
         self.groups.clear();
         self.failed = None;
         self.recent = None;
@@ -909,7 +967,7 @@ impl State {
         self.generation += 1;
         self.in_flight = 0;
         self.poll_at = None;
-        self.limits = [LIMITS[0]; 4];
+        self.limits = [LIMITS[0]; N];
         self.failed = None;
         self.notice = None;
         self.deadline = Some(if trimmed.is_empty() {
@@ -921,20 +979,20 @@ impl State {
     }
 
     /// `All` (chip 0) selects every category (a no-op when all are on);
-    /// chips `1..=4` toggle. Query and focus stay; the request starts now.
+    /// chips `1..=N` toggle. Query and focus stay; the request starts now.
     pub fn toggle(&mut self, chip: usize) -> Vec<Request> {
         match chip {
             0 => {
                 if self.all() {
                     return Vec::new();
                 }
-                self.selected = [true; 4];
+                self.selected = [true; N];
             }
-            1..=4 => self.selected[chip - 1] = !self.selected[chip - 1],
+            1..=N => self.selected[chip - 1] = !self.selected[chip - 1],
             _ => return Vec::new(),
         }
         self.generation += 1;
-        self.limits = [LIMITS[0]; 4];
+        self.limits = [LIMITS[0]; N];
         self.groups.retain(|g| self.selected[idx(g.category)]);
         self.deadline = None;
         self.poll_at = None;
@@ -1114,6 +1172,26 @@ impl State {
         }]
     }
 
+    /// `/attach` Enter (66 §10): the highlighted hit or recent session as a
+    /// reference; `None` on a pending edit, a `show more` row, a stale group
+    /// or nothing selectable — the caller falls back to [`State::enter`].
+    pub fn pick(&self) -> Option<agent::attach::AttachRef> {
+        if self.deadline.is_some() {
+            return None;
+        }
+        match self.rows.get(self.cursor)? {
+            Row::Recent(i) => self.recent.as_ref()?.get(*i).map(crate::attach::from_session),
+            Row::Hit(g, i) => {
+                let group = self.groups.get(*g)?;
+                if group.generation != self.generation {
+                    return None;
+                }
+                group.hits.get(*i).map(crate::attach::from_hit)
+            }
+            Row::More(_) | Row::Header(_) | Row::Note(_) => None,
+        }
+    }
+
     /// Enter: flush a pending edit, open the highlighted row, or grow a group.
     pub fn enter(&mut self) -> Act {
         if self.deadline.is_some() {
@@ -1202,6 +1280,15 @@ impl State {
                     },
                 ),
             },
+            // No TUI reader for these yet: name the id and the way to hand it to the agent.
+            Hit::Note(h) => {
+                self.notice = Some(format!("note {} — attach it with /attach", h.doc.id));
+                Act::None
+            }
+            Hit::Meeting(h) => {
+                self.notice = Some(format!("meeting {} — attach it with /attach", h.meeting.id));
+                Act::None
+            }
         }
     }
 
@@ -2013,7 +2100,7 @@ mod tests {
         typed(&mut s, "x", 0);
         assert!(s.all());
         assert!(s.toggle(0).is_empty(), "All while all on is a no-op");
-        for chip in 1..=4 {
+        for chip in 1..=N {
             s.toggle(chip);
         }
         assert_eq!(s.categories(), Vec::<SearchCategory>::new());
@@ -2035,7 +2122,9 @@ mod tests {
             vec![
                 SearchCategory::Sessions,
                 SearchCategory::Knowledge,
-                SearchCategory::KnowledgeHistory
+                SearchCategory::KnowledgeHistory,
+                SearchCategory::Notes,
+                SearchCategory::Meetings,
             ]
         );
     }

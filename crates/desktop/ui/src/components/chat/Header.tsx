@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
+import { chatName } from '@/lib/attach'
 import { type HeaderItem, decideTier, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -36,7 +37,7 @@ function Parent({ id, row }: { id: string; row?: boolean }) {
     queryFn: () => api.list_sessions(),
   })
   const r = sessions?.find((s) => s.id === id)
-  const name = r?.name ?? r?.title ?? id.slice(0, 8)
+  const name = r ? (r.name ?? chatName(r)) : 'Untitled chat'
   if (row) {
     return (
       <MenuRow

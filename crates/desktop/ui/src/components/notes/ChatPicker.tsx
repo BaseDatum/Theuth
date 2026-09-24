@@ -12,32 +12,32 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import type { DocRef } from '@/lib/pastes'
+import { type AttachRef, chatName } from '@/lib/attach'
 import { queryKeys, useApi } from '@/lib/rpc'
 
 /**
- * A document page's "Attach to chat…" (59 §7.3), the note picker in reverse: pick a recent chat or a new one; its
- * composer opens with `doc` as a chip, the user writes the request and sends.
+ * "Attach to chat…" (59 §7.3, 66 §7.8), the attach picker in reverse: pick a recent chat or a new one; its composer
+ * opens with `item` as a chip, the user writes the request and sends.
  */
 export function ChatPicker({
   open,
   onOpenChange,
-  doc,
+  item,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  doc: DocRef
+  item: AttachRef
 }) {
   const api = useApi()
   const navigate = useNavigate()
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: open })
   const go = (session: string | null) => {
-    prefillDraft(session, '', [doc])
+    prefillDraft(session, '', [item])
     onOpenChange(false)
     void (session ? navigate({ to: '/c/$session', params: { session } }) : navigate({ to: '/' }))
   }
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} title="Attach to chat" description="Pick the chat this document goes to">
+    <CommandDialog open={open} onOpenChange={onOpenChange} title="Attach to chat" description={`Pick the chat ${item.title} goes to`}>
       <CommandInput placeholder="Search chats…" autoFocus />
       <CommandList>
         <CommandGroup forceMount>
@@ -53,7 +53,7 @@ export function ChatPicker({
             .map((s) => (
               <CommandItem key={s.id} value={`${s.title} ${s.id}`} onSelect={() => go(s.id)}>
                 <MessageSquare />
-                <span className="flex-1 truncate">{s.title || `…${s.id.slice(-8)}`}</span>
+                <span className="flex-1 truncate">{chatName(s)}</span>
                 <span className="text-xs text-fg-tertiary">{ago(s.updated_at)}</span>
               </CommandItem>
             ))}

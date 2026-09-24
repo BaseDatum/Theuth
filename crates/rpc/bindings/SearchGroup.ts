@@ -2,6 +2,8 @@
 import type { ArtifactSearchHit } from "./ArtifactSearchHit";
 import type { ConceptSearchHit } from "./ConceptSearchHit";
 import type { HistorySearchHit } from "./HistorySearchHit";
+import type { MeetingSearchHit } from "./MeetingSearchHit";
+import type { NoteSearchHit } from "./NoteSearchHit";
 import type { SearchHit } from "./SearchHit";
 import type { SearchPage } from "./SearchPage";
 
@@ -25,4 +27,12 @@ page: SearchPage<ConceptSearchHit>, } | { "category": "knowledge_history",
 /**
  * The page.
  */
-page: SearchPage<HistorySearchHit>, };
+page: SearchPage<HistorySearchHit>, } | { "category": "notes", 
+/**
+ * The page.
+ */
+page: SearchPage<NoteSearchHit>, } | { "category": "meetings", 
+/**
+ * The page.
+ */
+page: SearchPage<MeetingSearchHit>, };

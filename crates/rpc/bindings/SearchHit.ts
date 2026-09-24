@@ -13,7 +13,8 @@ export type SearchHit = {
  */
 session: SessionId, 
 /**
- * The session's title (may be empty for a title-less session).
+ * The session's title; never empty ([`crate::attach::session_title`]
+ * fills a title-less session from its first user line or created date).
  */
 title: string, 
 /**

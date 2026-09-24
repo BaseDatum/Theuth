@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
@@ -9,11 +10,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { chatName } from '@/lib/attach'
 import { describe } from '@/lib/describe'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Risk } from '@/rpc/bindings/Risk'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useApprovals } from '@/store/approvals'
 
 const RISK: Record<Risk, string> = {
@@ -81,6 +84,12 @@ export function ApprovalsSheet({
   onOpenChange(open: boolean): void
 }) {
   const pending = useApprovals((s) => s.pending)
+  // The sidebar keeps `list_sessions` warm; a chat the cache lacks is just "chat", never an id.
+  const sessions = useQueryClient().getQueryData<SessionSummary[]>(queryKeys.sessions)
+  const name = (id: string) => {
+    const s = sessions?.find((x) => x.id === id)
+    return s ? chatName(s) : 'chat'
+  }
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:w-[480px] sm:max-w-[480px]">
@@ -99,7 +108,7 @@ export function ApprovalsSheet({
                 onClick={() => onOpenChange(false)}
                 className="text-xs text-fg-accent hover:underline"
               >
-                open session {p.session.slice(0, 8)}
+                open {name(p.session)}
               </Link>
               <ApprovalCard approval={p} />
             </div>

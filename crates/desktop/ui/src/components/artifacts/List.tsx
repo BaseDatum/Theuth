@@ -2,7 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { memo, useMemo } from 'react'
+import { dragSource } from '@/components/chat/AttachChip'
 import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
+import { chatName, toRef } from '@/lib/attach'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
 import { UNGROUPED } from '@/components/sidebar/SessionList'
@@ -19,9 +21,10 @@ export function useArtifactList() {
   return useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null) })
 }
 
-/** The session's title, or the id's tail when the list does not know it (a deleted or foreign session). */
+/** The session's name (`chatName`), or "Unknown chat" when the list does not know it (a deleted or foreign session). */
 export function sessionLabel(id: string, sessions: SessionSummary[] | undefined): string {
-  return sessions?.find((s) => s.id === id)?.title || `…${id.slice(-8)}`
+  const s = sessions?.find((x) => x.id === id)
+  return s ? chatName(s) : 'Unknown chat'
 }
 
 export type Filter = { q: string; kind: Kind | null; session: string | null }
@@ -161,6 +164,7 @@ const Row = memo(function Row({ stack: s, active }: { stack: Stack; active: stri
       params={{ callId: a.call_id }}
       ref={on ? reveal : undefined}
       className={cn('flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', on && 'bg-layer-3 hover:bg-layer-3')}
+      {...dragSource(() => toRef({ kind: 'artifact', artifact: a }))}
     >
       <Thumb a={a} />
       <div className="min-w-0 flex-1">

@@ -3,8 +3,10 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
+import { dragSource } from '@/components/chat/AttachChip'
 import { createNote } from '@/components/notes/create'
-import { useNotes } from '@/components/notes/NotePicker'
+import { toRef } from '@/lib/attach'
+import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -118,7 +120,12 @@ function Row({ note }: { note: DocSummary }) {
           onKeyDown={onKeyDown}
         />
       ) : (
-        <Link to="/notes/$id" params={{ id: note.id }} className="flex min-w-0 flex-1 items-baseline gap-2 py-2 text-sm">
+        <Link
+          to="/notes/$id"
+          params={{ id: note.id }}
+          className="flex min-w-0 flex-1 items-baseline gap-2 py-2 text-sm"
+          {...dragSource(() => toRef({ kind: 'note', doc: note }))}
+        >
           <span className="min-w-0 flex-1 truncate">{note.title || 'Untitled'}</span>
           {note.kind !== 'note' && <span className="shrink-0 rounded-md bg-layer-2 px-1.5 text-[11px] text-fg-secondary">{note.kind}</span>}
           <span className="shrink-0 text-xs text-fg-tertiary">{ago(new Date(Number(note.updated_ms)).toISOString())}</span>

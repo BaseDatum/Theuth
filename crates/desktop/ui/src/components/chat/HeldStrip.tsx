@@ -3,7 +3,9 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { type DocRef, label, type Paste, type Pastes, retext, token } from '@/lib/pastes'
+import type { AttachRef } from '@/lib/attach'
+import { label, type Paste, type Pastes, retext, token } from '@/lib/pastes'
+import { AttachChip } from './AttachChip'
 import { Attachments } from './Attachments'
 
 /** Corner `X` shared by every held item. */
@@ -77,19 +79,9 @@ function TextCard({ n, paste, onChange }: { n: number; paste: Extract<Paste, { k
   )
 }
 
-/** An attached document (59 §7.3): its title; the pinned one has no corner `X`. */
-function DocChip({ title }: { title: string }) {
-  return (
-    <span className="flex h-7 max-w-[240px] items-center gap-1 rounded-full bg-layer-2 px-2 text-xs">
-      <FileText className="size-3.5 shrink-0 text-fg-secondary" />
-      <span className="truncate">{title}</span>
-    </span>
-  )
-}
-
-/** What the next send carries besides the typed words: the pinned document (59 §7.3, not removable here), pasted blocks
- * as numbered cards (their `⟦paste n⟧` tokens sit in the box), images as thumbnails, PDFs as name chips, attached documents
- * as title chips; each with a corner `X` (`onRemove`, so the host can drop the token too). Nothing when nothing is held. */
+/** What the next send carries besides the typed words: the pinned reference (59 §7.3, not removable here), pasted blocks
+ * as numbered cards (their `⟦paste n⟧` tokens sit in the box), images as thumbnails, PDFs as name chips, attached references
+ * as chips (66 §7.6: click for subtitle and Open); each with a corner `X` (`onRemove`, so the host can drop the token too). Nothing when nothing is held. */
 export function HeldStrip({
   pastes,
   pinned,
@@ -97,24 +89,24 @@ export function HeldStrip({
   onRemove,
 }: {
   pastes: Pastes
-  pinned?: DocRef
+  pinned?: AttachRef
   onChange(next: Pastes): void
   onRemove(i: number): void
 }) {
   if (pastes.size === 0 && !pinned) return null
   return (
     <div className="flex flex-wrap items-end gap-3 px-2 pt-2 pb-1">
-      {pinned && <DocChip title={pinned.title} />}
+      {pinned && <AttachChip item={pinned} />}
       {[...pastes].map(([i, p]) => (
         <div key={i} className="relative">
           {p.kind === 'text' ? (
             <TextCard n={i} paste={p} onChange={(text) => onChange(retext(i, text, pastes))} />
-          ) : p.kind === 'doc' ? (
-            <DocChip title={p.title} />
+          ) : p.kind === 'ref' ? (
+            <AttachChip item={p.ref} />
           ) : (
             <Attachments files={[p.path]} className="[&_img]:max-h-20" />
           )}
-          <Remove what={p.kind === 'text' ? `pasted text #${i}` : p.kind === 'doc' ? p.title : 'attachment'} onClick={() => onRemove(i)} />
+          <Remove what={p.kind === 'text' ? `pasted text #${i}` : p.kind === 'ref' ? p.ref.title : 'attachment'} onClick={() => onRemove(i)} />
         </div>
       ))}
     </div>

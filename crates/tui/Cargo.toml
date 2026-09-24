@@ -21,6 +21,8 @@ link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
 artifact = { workspace = true }
+document = { workspace = true }
+meeting = { workspace = true }
 web = { workspace = true }
 secrets = { workspace = true }
 update = { workspace = true }

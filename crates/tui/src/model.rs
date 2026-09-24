@@ -1030,7 +1030,7 @@ impl Entry {
             v.lines().map(|l| line_rows(l, width)).sum::<usize>() + text_rows(v.plain, width)
         };
         match self {
-            Entry::User { text, .. } => text_rows(text, inner) + 4,
+            Entry::User { text, .. } => text_rows(&crate::attach::display(text), inner) + 4,
             // Rendered fences (diagrams, surfaces) never exceed the construction
             // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
@@ -1076,11 +1076,14 @@ pub enum Paste {
     Text(String),
     /// An image file to send with the input.
     Image(Image),
+    /// A reference picked with `/attach` (66 §10): its marker line leads the sent text.
+    Ref(agent::attach::AttachRef),
 }
 
 /// What the input box shows for a held paste: `[⎘ paste 1: 69 lines]`
 /// (`chars` for a single long line), `[⎘ image 2: 1440×900]` (file name
-/// when the size is unknown; `file` for a PDF). `i` is the index into `Model::pastes`.
+/// when the size is unknown; `file` for a PDF), `[⎘ attach 3: <title>]`.
+/// `i` is the index into `Model::pastes`.
 pub fn paste_token(i: usize, p: &Paste) -> String {
     match p {
         Paste::Text(text) => {
@@ -1106,6 +1109,7 @@ pub fn paste_token(i: usize, p: &Paste) -> String {
             };
             format!("[⎘ {kind} {}: {name}]", i + 1)
         }
+        Paste::Ref(r) => format!("[⎘ attach {}: {}]", i + 1, r.title),
     }
 }
 
@@ -1311,6 +1315,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/search",
         "[query]",
         "search sessions, artifacts, knowledge and history (live; fzf syntax)",
+    ),
+    (
+        "/attach",
+        "[query]",
+        "attach a note, concept, artifact, chat or meeting to the next message (66)",
     ),
     ("/resume", "<id>", "open a session"),
     (
@@ -1536,6 +1545,8 @@ pub enum Menu {
     },
     /// `/search` (49 §6): the live menu over [`Model::search`].
     Search,
+    /// `/attach` (66 §10): the search menu picking a reference for the input box.
+    Attach,
     /// `/agents` picker.
     Agents {
         /// The current session's subtree: running first, then awaiting /
@@ -3186,6 +3197,8 @@ pub struct Model {
     pub dictation_model: voice::ModelState,
     /// `(value, caret)` the editor must take this frame: a dictation stopped or was discarded.
     pub pending_input: Option<(String, usize)>,
+    /// A `/attach` pick this frame: the token the editor prepends to its text.
+    pub attach_token: Option<String>,
 }
 
 impl Model {
@@ -3408,7 +3421,12 @@ impl Model {
 
     /// The `/search` menu is up (49 §6).
     pub fn search_open(&self) -> bool {
-        matches!(self.menu, Some(Menu::Search))
+        matches!(self.menu, Some(Menu::Search | Menu::Attach))
+    }
+
+    /// The `/attach` menu is up (66 §10): Enter attaches instead of opening.
+    pub fn attach_open(&self) -> bool {
+        matches!(self.menu, Some(Menu::Attach))
     }
 
     /// The todo card has the keys: F2 focused it and nothing modal is up.
@@ -3806,17 +3824,19 @@ impl Model {
     }
 
     /// `line` with every paste token the user left in place replaced by its
-    /// text and every image token removed (with one adjacent space), the
-    /// images' paths in token order; `pastes` is emptied either way. A token
-    /// the user deleted drops its paste.
+    /// text, every image token removed (with one adjacent space) and the
+    /// images' paths returned in token order, every attach token removed and
+    /// its marker line put first (66 §10); `pastes` is emptied either way. A
+    /// token the user deleted drops its paste.
     fn expand_pastes(&mut self, line: &str) -> (String, Vec<PathBuf>) {
         let mut text = line.to_owned();
         let mut files = Vec::new();
+        let mut markers = String::new();
         for (i, p) in std::mem::take(&mut self.pastes).into_iter().enumerate() {
             let token = paste_token(i, &p);
             match p {
                 Paste::Text(t) => text = text.replace(&token, &t),
-                Paste::Image(img) => {
+                Paste::Image(_) | Paste::Ref(_) => {
                     let Some(at) = text.find(&token) else {
                         continue;
                     };
@@ -3829,9 +3849,20 @@ impl Model {
                         at..end
                     };
                     text.replace_range(range, "");
-                    files.push(img.path);
+                    match p {
+                        Paste::Image(img) => files.push(img.path),
+                        Paste::Ref(r) => {
+                            markers.push_str(&agent::attach::marker(&r));
+                            markers.push('\n');
+                        }
+                        Paste::Text(_) => {}
+                    }
                 }
             }
+        }
+        if !markers.is_empty() {
+            markers.push_str(text.trim_start());
+            text = markers;
         }
         (text, files)
     }
@@ -5643,6 +5674,7 @@ impl Model {
             }
             "/sessions" => send(tx, Command::ListSessions),
             "/search" => self.open_search(arg, tx),
+            "/attach" => self.open_attach(arg, tx),
             "/resume" => match arg.parse::<SessionId>() {
                 Ok(id) => self.resume(id, tx),
                 Err(_) => self
@@ -7654,7 +7686,7 @@ impl Model {
             Some(Menu::Efforts { .. }) => self.efforts_key(code, tx),
             Some(Menu::AwsProfiles { .. }) => self.aws_key(code, tx),
             Some(Menu::Sessions { .. }) => self.sessions_key(code, tx),
-            Some(Menu::Search) => MenuKey::Consumed,
+            Some(Menu::Search | Menu::Attach) => MenuKey::Consumed,
             Some(Menu::Agents { .. }) => self.agents_key(code, tx),
             Some(Menu::Mcp { .. }) => self.mcp_key(code, tx),
             Some(Menu::Acp { .. }) => self.acp_key(code, tx),
@@ -7886,6 +7918,33 @@ impl Model {
         }
     }
 
+    /// `/attach [query]` (66 §10): the search menu in pick mode — Enter on a
+    /// row holds it as a [`Paste::Ref`] and puts its token in the input box.
+    pub fn open_attach(&mut self, query: &str, tx: &UnboundedSender<Command>) {
+        self.inspect = None;
+        self.menu = Some(Menu::Attach);
+        for r in self.search.open(query) {
+            send(tx, Command::Search(r));
+        }
+    }
+
+    /// Hold `r` for the next submit; returns its [`paste_token`]. Attaching
+    /// the same kind+id twice is a no-op that returns the existing token.
+    pub fn attach_ref(&mut self, r: agent::attach::AttachRef) -> String {
+        if let Some((i, p)) = self
+            .pastes
+            .iter()
+            .enumerate()
+            .find(|(_, p)| matches!(p, Paste::Ref(x) if x.kind == r.kind && x.id == r.id))
+        {
+            return paste_token(i, p);
+        }
+        let p = Paste::Ref(r);
+        let token = paste_token(self.pastes.len(), &p);
+        self.pastes.push(p);
+        token
+    }
+
     /// The search editor changed (49 §6.1): the debounce starts.
     pub fn search_edit(&mut self, text: String) {
         if self.search_open() {
@@ -8061,7 +8120,7 @@ impl Model {
                 Act::None
             }
             (KeyCode::Right, Focus::Filters(i)) => {
-                self.search.focus = Focus::Filters((i + 1).min(4));
+                self.search.focus = Focus::Filters((i + 1).min(crate::search::N));
                 Act::None
             }
             (KeyCode::Char(' ') | KeyCode::Enter, Focus::Filters(i)) => {
@@ -8081,6 +8140,18 @@ impl Model {
             (KeyCode::Char(' ') | KeyCode::Enter, Focus::Footer(_)) => {
                 self.search.previews.push(search::Preview::Help);
                 Act::None
+            }
+            (KeyCode::Enter, Focus::Query | Focus::Results) if self.attach_open() => {
+                match self.search.pick() {
+                    Some(r) => {
+                        self.attach_token = Some(self.attach_ref(r));
+                        self.menu = None;
+                        self.search.close();
+                        Act::None
+                    }
+                    // A `show more` row or nothing selectable: the ordinary key.
+                    None => self.search.enter(),
+                }
             }
             (KeyCode::Enter, Focus::Query | Focus::Results) => self.search.enter(),
             _ => Act::None,
@@ -10963,13 +11034,13 @@ mod tests {
         ));
         m.search_key(KeyCode::Esc, 80, 10, &tx);
         assert!(m.menu.is_none());
-        // A prefilled query runs at once, all four chips at limit 10.
+        // A prefilled query runs at once, all six chips at limit 10.
         m.submit("/search deploy", &tx);
         let cmd = rx.try_recv().unwrap();
         assert!(matches!(
             &cmd,
             Command::Search(search::Request { kind: search::RequestKind::Results { query, categories, limit: 10 }, .. })
-                if query == "deploy" && categories.len() == 4
+                if query == "deploy" && categories.len() == search::N
         ));
         let hit = SessionId::new();
         m.apply(search_answer(cmd, vec![search_session_hit(hit, None)]));
@@ -10983,9 +11054,48 @@ mod tests {
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
         // Chips survive the reset a session switch performs.
-        m.search.selected = [true, false, false, false];
+        m.search.selected = [true, false, false, false, false, false];
         m.resume(SessionId::new(), &tx);
-        assert_eq!(m.search.selected, [true, false, false, false]);
+        assert_eq!(m.search.selected, [true, false, false, false, false, false]);
+    }
+
+    /// 66 §10: `/attach q` opens the search menu in pick mode; Enter on a hit
+    /// holds a `Paste::Ref`, hands its token to the editor, and the send puts
+    /// the marker line first with the token gone. The same pick twice is one ref.
+    #[test]
+    fn attach_picks_a_hit_and_sends_its_marker_first() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/attach deploy", &tx);
+        assert!(m.search_open() && m.attach_open());
+        let cmd = rx.try_recv().unwrap();
+        let hit = SessionId::new();
+        m.apply(search_answer(cmd, vec![search_session_hit(hit, None)]));
+        m.search_key(KeyCode::Enter, 80, 10, &tx);
+        assert!(m.menu.is_none(), "the menu closes on a pick");
+        assert_eq!(m.session, None, "a pick is not a session switch");
+        let token = m.attach_token.take().expect("a token for the editor");
+        assert_eq!(token, "[⎘ attach 1: deploy checklist]");
+        assert_eq!(m.pastes.len(), 1);
+        // Attaching the same thing again is a no-op returning the same token.
+        let again = m.attach_ref(crate::attach::from_hit(&search::Hit::Session(search_session_hit(hit, None))));
+        assert_eq!((again, m.pastes.len()), (token.clone(), 1));
+
+        m.submit(&format!("{token} pick up where this left off"), &tx);
+        let Ok(Command::Send { text, files, .. }) = rx.try_recv() else {
+            panic!("no send");
+        };
+        assert!(files.is_empty());
+        let parsed = agent::attach::parse(&text);
+        assert_eq!(parsed.refs.len(), 1);
+        assert_eq!(parsed.refs[0].kind, agent::attach::Kind::Session);
+        assert_eq!(parsed.refs[0].id, hit.to_string());
+        assert_eq!(parsed.refs[0].title, "deploy checklist");
+        assert_eq!(parsed.body, "pick up where this left off");
+        assert!(m.pastes.is_empty());
+        // The transcript card shows the reference as a `⎘` line, not the marker.
+        let shown = crate::attach::display(&text);
+        assert!(shown.starts_with("⎘ deploy checklist (session)\n"), "{shown}");
     }
 
     #[test]

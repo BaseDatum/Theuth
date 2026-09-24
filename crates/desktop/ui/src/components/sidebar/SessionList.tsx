@@ -312,6 +312,7 @@ export function SessionList({
                 <SessionItem
                   id={row.session.id}
                   title={row.session.title}
+                  created={row.session.created_at}
                   tags={row.session.tags}
                   pinned={row.session.pinned}
                   archived={row.session.archived}

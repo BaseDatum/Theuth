@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, AudioLines, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
+import { ArrowUp, AudioLines, FileUp, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -20,7 +20,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { attach, attachDoc, type DocRef, docMarker, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
+import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
+import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
+import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -33,7 +35,9 @@ import { noteText } from '@/lib/voice-note'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
-import { NotePicker } from '@/components/notes/NotePicker'
+import { createNote } from '@/components/notes/create'
+import { useNotes } from '@/components/notes/useNotes'
+import { AttachPicker } from './AttachPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
@@ -49,10 +53,10 @@ const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /**
  * Seed the next mount of `session`'s composer (`null` = the new chat at `/`; `panel` = a note page's panel) with `text`
- * and a held chip per document in `docs` (59 §5.4 "Ask theuth…", §7.3 "Attach to chat…").
+ * and a held chip per reference in `refs` (59 §5.4 "Ask theuth…", 66 §7.8 "Attach to chat…").
  */
-export function prefillDraft(session: string | null, text: string, docs: DocRef[] = [], panel = false): void {
-  drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: docs.reduce((held, d) => attachDoc(d, held), NONE) })
+export function prefillDraft(session: string | null, text: string, refs: AttachRef[] = [], panel = false): void {
+  drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
 }
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
@@ -118,7 +122,7 @@ export function Composer({
   draftEffort?: string | null
   draftCreate?: DraftCreate
   /** 59 §7.3 chat under a note: this document's marker line leads every message (not removable here). */
-  pinned?: DocRef
+  pinned?: AttachRef
   /** Title of the session the first message creates (a note's chat: the note title). */
   sessionTitle?: string
   /** The first message created `session`; the host keeps it instead of the default navigation to `/c/$session`. */
@@ -192,7 +196,17 @@ export function Composer({
   const slashWord = /^\/\S*$/.test(text) ? text : null
   const slash = slashWord !== null && matches(slashWord).length > 0
   const held = pastes.size > 0
-  const [pickingNote, setPickingNote] = useState(false)
+  /** The attach picker (66 §7.1): `'menu'` from `+`/`theuth:attach-open`, `'at'` from the `@` trigger (§7.8). */
+  const [picking, setPicking] = useState<'menu' | 'at' | null>(null)
+  const [menu, setMenu] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const qc = useQueryClient()
+  const notes = useNotes()
+  const newNote = useMutation({
+    mutationFn: () => createNote(api, qc, notes.data ?? []),
+    onSuccess: (n) => addRef(toRef({ kind: 'note', doc: n })),
+    onError: (e) => toast.error(e.message),
+  })
 
   // ⇧Esc lands in the focused pane's composer (or the new-chat draft when it is not in a pane).
   const focused = usePanes((s) => pane === null || s.focused === pane)
@@ -285,8 +299,61 @@ export function Composer({
       )
   }
 
-  /** 59 §7.3: attach a document; its chip stands above the box until send expands it to the marker line. */
-  const addDoc = (doc: DocRef) => setPastes(attachDoc(doc, pastes))
+  /** 66 §7.6: attach a reference; its chip stands above the box until send expands it to the marker line. */
+  const addRef = (ref: AttachRef) => setPastes((held) => attachRef(ref, held))
+  // `theuth:attach` (66 §7.8, §7.9): "Attach again", "Attach to this chat", the search dialog's row action — and
+  // `theuth:attach-open` — land in the focused composer of that session, like `theuth:focus-composer`.
+  useEffect(() => {
+    if (!focused) return
+    const add = (e: Event) => {
+      const d = (e as CustomEvent<AttachRequest>).detail
+      if (d.session === session) addRef(d.ref)
+    }
+    const open = (e: Event) => {
+      if ((e as CustomEvent<{ session: string | null }>).detail.session === session) setPicking('menu')
+    }
+    window.addEventListener('theuth:attach', add)
+    window.addEventListener('theuth:attach-open', open)
+    return () => {
+      window.removeEventListener('theuth:attach', add)
+      window.removeEventListener('theuth:attach-open', open)
+    }
+  }, [session, focused])
+  /** The `@word` under the caret while the picker is in quiet mode (§7.8). */
+  const [atWord, setAtWord] = useState<{ start: number; word: string } | null>(null)
+  /** The `@` the user dismissed (Esc, no results): it stays as typed and does not reopen until edited past. */
+  const atDismissed = useRef<number | null>(null)
+  /** Text changed: open the picker on a fresh `@word`, keep its query in step, close it when the word ends (a space). */
+  const changed = (next: string, caret: number) => {
+    const t = atTrigger(next, caret)
+    if (!t) {
+      atDismissed.current = null
+      setAtWord(null)
+      if (picking === 'at') setPicking(null)
+      return
+    }
+    if (atDismissed.current === t.start) return
+    setAtWord(t)
+    if (picking === null) setPicking('at')
+  }
+  const dismissAt = () => {
+    if (atWord) atDismissed.current = atWord.start
+    setPicking(null)
+    setAtWord(null)
+  }
+  /** The picker's result: chips for every picked reference, the `@word` gone (§7.8), focus back in the box (§7.7). */
+  const picked = (refs: AttachRef[]) => {
+    const held = refs.reduce((h, r) => attachRef(r, h), pastes)
+    if (picking === 'at' && atWord) {
+      const next = stripAt(text, atWord.start, atWord.word)
+      setText(next)
+      setPastes(reconcile(next, held))
+      setPendingCaret(atWord.start)
+    } else setPastes(held)
+    setPicking(null)
+    setAtWord(null)
+    ref.current?.focus()
+  }
 
   // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the harness paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
@@ -327,8 +394,18 @@ export function Composer({
     return () => void un.then((f) => f())
   }, [])
 
+  // 66 §7.8: a dragged row (`application/x-theuth-attach`) attaches; anything else is files.
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
+    const ref = e.dataTransfer.getData(DRAG_TYPE)
+    if (ref) {
+      try {
+        addRef(JSON.parse(ref) as AttachRef)
+      } catch {
+        toast.error('Could not read the dropped item')
+      }
+      return
+    }
     void addBlobs([...e.dataTransfer.files])
   }
 
@@ -400,9 +477,12 @@ export function Composer({
       }
       const expanded = expand(line, pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
-      const body = pinned ? `${docMarker(pinned)}\n${expanded.text}` : expanded.text
+      const body = pinned ? compose([pinned], expanded.text) : expanded.text
       const { files } = expanded
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
+      // 66 §7.6: recents are recorded on send, not on pick.
+      const sent = [...pastes.values()].flatMap((p) => (p.kind === 'ref' ? [p.ref] : []))
+      if (sent.length > 0) saveRecents(active, pushRecents(loadRecents(active), sent))
       reset()
       if (session && running) {
         const id = crypto.randomUUID()
@@ -602,12 +682,21 @@ export function Composer({
           e.target.value = ''
         }}
       />
-      <NotePicker
-        open={pickingNote}
-        onOpenChange={setPickingNote}
-        onPick={(note) => addDoc({ ref: note.id, title: note.title })}
+      <AttachPicker
+        session={session}
+        open={picking !== null}
+        at={picking === 'at' ? (atWord?.word ?? '') : null}
+        anchor={box}
+        onClose={() => {
+          if (picking === 'at') dismissAt()
+          else setPicking(null)
+          ref.current?.focus()
+        }}
+        onAttach={picked}
+        onEmpty={dismissAt}
       />
       <div
+        ref={box}
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
@@ -623,7 +712,7 @@ export function Composer({
           }}
         />
         <div className="flex items-end gap-1">
-          <Popover>
+          <Popover open={menu} onOpenChange={setMenu}>
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
@@ -633,7 +722,17 @@ export function Composer({
                 <Plus className="size-5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-48 p-1">
+            <PopoverContent align="start" className="w-52 p-1">
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                onClick={() => {
+                  setMenu(false)
+                  setPicking('menu')
+                }}
+              >
+                <Paperclip /> Attach…
+              </Button>
               <Button
                 variant="ghost"
                 className="w-full justify-start"
@@ -654,10 +753,18 @@ export function Composer({
                   if (picked) addFiles(picked)
                 }}
               >
-                <Paperclip /> Attach file
+                <FileUp /> Attach file
               </Button>
-              <Button variant="ghost" className="w-full justify-start" onClick={() => setPickingNote(true)}>
-                <StickyNote /> Attach note…
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                disabled={newNote.isPending}
+                onClick={() => {
+                  setMenu(false)
+                  newNote.mutate()
+                }}
+              >
+                <StickyNote /> New note
               </Button>
               <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
                 <Megaphone /> Send to many…
@@ -680,6 +787,7 @@ export function Composer({
                   setText(e.target.value)
                   setPastes(reconcile(e.target.value, pastes))
                   setSelected(0)
+                  changed(e.target.value, e.target.selectionStart)
                 }}
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}

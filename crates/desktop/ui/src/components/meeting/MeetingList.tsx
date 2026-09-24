@@ -4,8 +4,10 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { PanelLeft } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { PanelLeft, Paperclip } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { dragSource } from '@/components/chat/AttachChip'
+import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText } from '@/components/settings/shared'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
@@ -15,6 +17,7 @@ import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { type AttachRef, toRef } from '@/lib/attach'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 
 /** `Post(Transcribing)` → `Transcribing`. */
@@ -80,8 +83,11 @@ export function MeetingList() {
   const navigate = useNavigate()
   const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
   const canRecord = useCanRecord()
+  // 66 §7.8: a row's paperclip → "Attach to chat…"; rows drag onto a composer.
+  const [attaching, setAttaching] = useState<AttachRef | null>(null)
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {attaching && <ChatPicker open onOpenChange={(o) => !o && setAttaching(null)} item={attaching} />}
       <MeetingHeader title={<MeetingTabs />}>
         {canRecord && (
           <Button size="sm" asChild>
@@ -94,11 +100,21 @@ export function MeetingList() {
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
         <ul className="divide-y divide-border-subtle">
           {list.data?.map((m) => (
-            <li key={m.id}>
+            <li key={m.id} className="group/row relative">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Attach to chat…"
+                className="absolute top-1/2 right-0 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                onClick={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))}
+              >
+                <Paperclip />
+              </Button>
               <button
                 type="button"
-                className="flex w-full items-center gap-4 py-3 text-left text-sm hover:bg-accent/50"
+                className="flex w-full items-center gap-4 py-3 pr-9 text-left text-sm hover:bg-accent/50"
                 onClick={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}
+                {...dragSource(() => toRef({ kind: 'meeting', meeting: m }))}
               >
                 <span className="w-36 shrink-0 text-fg-secondary tabular-nums">{new Date(m.started_at).toLocaleString()}</span>
                 <span className="min-w-0 flex-1 truncate">{m.title ?? `Meeting with ${m.process_name}`}</span>
