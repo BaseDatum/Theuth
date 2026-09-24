@@ -233,7 +233,10 @@ generators, no class inheritance; stdlib: json re math datetime time random copy
 itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
 names starting with `_`, which do not carry across cells. Imports and variables persist
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
-nothing is lost.
+nothing is lost. `asyncio.gather` takes positional awaitables only - no `return_exceptions=`
+or other keyword arguments (monty limitation); to tolerate individual failures wrap each call
+in an `async def` that try/excepts. A cell that raises before awaiting a tool future leaves
+that call un-run.
 
 The runtime is your working memory; the conversation is for decisions. Every tool call
 is an `await` expression - bind its result to a name (`src = await read_file(path="x.rs")`)
