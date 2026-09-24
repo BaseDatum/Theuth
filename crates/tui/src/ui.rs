@@ -1962,6 +1962,7 @@ mod tests {
             ranges: vec![MatchRange { start: 10, end: 16 }],
             score: 5,
             matches: 2,
+            created_at: "2026-09-18T09:00:00Z".into(),
             updated_at: "2026-09-18T10:00:00Z".into(),
             context_removed: true,
             archived: false,

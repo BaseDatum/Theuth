@@ -13,7 +13,8 @@ export type SearchHit = {
  */
 session: SessionId, 
 /**
- * The session's title (may be empty for a title-less session).
+ * The session's display title (66 §8): its title, else its first user
+ * line cut to 60 chars, else `Untitled chat · <Mon d>`. Never empty.
  */
 title: string, 
 /**
@@ -44,6 +45,10 @@ score: number,
  * Messages of this session that matched (0 for a title-only hit).
  */
 matches: number, 
+/**
+ * The session's `created_at` (RFC 3339).
+ */
+created_at: string, 
 /**
  * The session's `updated_at` (RFC 3339), the tie-breaker after score.
  */

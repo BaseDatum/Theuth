@@ -10987,6 +10987,7 @@ mod tests {
             ranges: vec![MatchRange { start: 0, end: 6 }],
             score: 1,
             matches: 1,
+            created_at: String::new(),
             updated_at: String::new(),
             context_removed: false,
             archived: false,

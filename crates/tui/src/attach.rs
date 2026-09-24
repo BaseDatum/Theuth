@@ -58,7 +58,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             AttachRef {
                 kind: Kind::Session,
                 id: h.session.to_string(),
-                title: if h.title.trim().is_empty() { format!("Chat · {}", h.session) } else { h.title.clone() },
+                title: if h.title.trim().is_empty() {
+                    format!("Chat · {}", date_rfc3339(&h.created_at))
+                } else {
+                    h.title.clone()
+                },
                 meta,
             }
         }
