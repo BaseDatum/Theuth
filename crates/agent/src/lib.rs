@@ -1249,6 +1249,10 @@ pub struct SessionSummary {
     /// Storage class of the root (51 §4); durable unless created private.
     #[serde(default)]
     pub retention: tools::Retention,
+    /// A turn is in flight: the supervisor's live `TurnStarted`/`TurnFinished`
+    /// view (what `AgentState::Running` means); `false` on a bare store row.
+    #[serde(default)]
+    pub running: bool,
 }
 
 /// A project's icon and colour (51 §3 as-built): one row per styled project,

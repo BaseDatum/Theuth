@@ -4551,10 +4551,21 @@ impl Message<ListSessions> for Agents {
         _: ListSessions,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<SessionSummary> {
-        self.store.list_sessions().await.unwrap_or_else(|e| {
+        self.list_sessions().await
+    }
+}
+
+impl Agents {
+    /// The durable session list with each row's live `running` flag.
+    async fn list_sessions(&self) -> Vec<SessionSummary> {
+        let mut rows = self.store.list_sessions().await.unwrap_or_else(|e| {
             tracing::error!("list sessions: {e:#}");
             Vec::new()
-        })
+        });
+        for r in &mut rows {
+            r.running = self.running.contains(&r.id);
+        }
+        rows
     }
 }
 
@@ -8829,6 +8840,22 @@ pub(crate) mod tests {
         // Pre-order: a child right after its root.
         let at = |id| ids.iter().position(|x| *x == id).unwrap();
         assert_eq!(at(live_child), at(root) + 1);
+    }
+
+    /// `ListSessions` stamps each row with the live `running` set: a running
+    /// child is `running` while its idle root is not.
+    #[tokio::test]
+    async fn list_sessions_stamps_running() {
+        let mut a = agents().await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        a.running.insert(child);
+        let rows = a.list_sessions().await;
+        let running = |id| rows.iter().find(|r| r.id == id).unwrap().running;
+        assert!(running(child) && !running(root));
     }
 
     /// 62 §0.2, §3.3: `Running` names roots only — a running child is never
