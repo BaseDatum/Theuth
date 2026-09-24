@@ -62,11 +62,12 @@ impl Geometry {
     }
 }
 
-/// The model card's four rows, then the variants this bench adds: `mid` doubles the
-/// chunk (1.76 s buffer, half the steps); `low_fifo124` / `low_fifo40` shrink the FIFO
-/// the step re-attends (the offline policy's 40 with its update period of 300);
-/// `mid_fifo40` does both.
-const GEOMETRIES: [Geometry; 8] = [
+/// The model card's four rows, then the variants this bench adds. Cost-side: `mid`
+/// doubles the chunk (half the steps); `low_fifo124` / `low_fifo40` shrink the FIFO the
+/// step re-attends (the offline policy's 40 with its update period of 300); `mid_fifo40`
+/// does both. Accuracy-side (07 §1, the owner's steer): `acc2`/`acc4`/`acc8` grow the
+/// chunk and the look-ahead towards the offline geometry at 2.1 / 3.8 / 8.0 s buffers.
+const GEOMETRIES: [Geometry; 11] = [
     Geometry { name: "offline", chunk: 340, right: 40, fifo: 40, update: 300 },
     Geometry { name: "low", chunk: 9, right: 4, fifo: 264, update: 222 },
     Geometry { name: "very_low", chunk: 6, right: 2, fifo: 264, update: 222 },
@@ -75,6 +76,9 @@ const GEOMETRIES: [Geometry; 8] = [
     Geometry { name: "low_fifo124", chunk: 9, right: 4, fifo: 124, update: 100 },
     Geometry { name: "low_fifo40", chunk: 9, right: 4, fifo: 40, update: 300 },
     Geometry { name: "mid_fifo40", chunk: 18, right: 4, fifo: 40, update: 300 },
+    Geometry { name: "acc2", chunk: 18, right: 8, fifo: 264, update: 222 },
+    Geometry { name: "acc4", chunk: 36, right: 12, fifo: 264, update: 222 },
+    Geometry { name: "acc8", chunk: 80, right: 20, fifo: 264, update: 222 },
 ];
 /// Without `--configs`: the model card's rows.
 const DEFAULT_CONFIGS: &str = "low,very_low,ultra_low";
