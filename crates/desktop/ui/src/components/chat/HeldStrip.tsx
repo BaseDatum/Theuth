@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { type DocRef, drop, label, type Paste, type Pastes, retext } from '@/lib/pastes'
+import { type DocRef, label, type Paste, type Pastes, retext, token } from '@/lib/pastes'
 import { Attachments } from './Attachments'
 
 /** Corner `X` shared by every held item. */
@@ -20,8 +20,8 @@ function Remove({ onClick, what }: { onClick(): void; what: string }) {
   )
 }
 
-/** A pasted block: icon, size and the first line; click opens it for review or trimming. */
-function TextCard({ paste, onChange }: { paste: Extract<Paste, { kind: 'text' }>; onChange(text: string): void }) {
+/** Pasted block `n`: icon, its number (matching the `⟦paste n⟧` token in the box), size and the first line; click opens it for review or trimming. */
+function TextCard({ n, paste, onChange }: { n: number; paste: Extract<Paste, { kind: 'text' }>; onChange(text: string): void }) {
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState(paste.text)
   const first = paste.text.trimStart().split('\n', 1)[0] ?? ''
@@ -37,15 +37,19 @@ function TextCard({ paste, onChange }: { paste: Extract<Paste, { kind: 'text' }>
       >
         <span className="flex items-center gap-1.5 font-medium text-foreground">
           <FileText className="size-3.5 shrink-0 text-fg-secondary" /> Pasted text
-          <span className="ml-auto font-normal text-fg-tertiary">{label(paste)}</span>
+          <span className="ml-auto font-normal text-fg-tertiary">
+            #{n} · {label(paste)}
+          </span>
         </span>
         <span className="line-clamp-2 font-mono text-fg-secondary wrap-anywhere">{first}</span>
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Pasted text</DialogTitle>
-            <DialogDescription>{label({ kind: 'text', text: value })} · sent after your message</DialogDescription>
+            <DialogTitle>Pasted text #{n}</DialogTitle>
+            <DialogDescription>
+              {label({ kind: 'text', text: value })} · sent where {token(n)} stands in your message
+            </DialogDescription>
           </DialogHeader>
           <Textarea
             value={value}
@@ -84,9 +88,19 @@ function DocChip({ title }: { title: string }) {
 }
 
 /** What the next send carries besides the typed words: the pinned document (59 §7.3, not removable here), pasted blocks
- * as cards, images as thumbnails, PDFs as name chips, attached documents as title chips; each with a corner `X`.
- * Nothing when nothing is held. */
-export function HeldStrip({ pastes, pinned, onChange }: { pastes: Pastes; pinned?: DocRef; onChange(next: Pastes): void }) {
+ * as numbered cards (their `⟦paste n⟧` tokens sit in the box), images as thumbnails, PDFs as name chips, attached documents
+ * as title chips; each with a corner `X` (`onRemove`, so the host can drop the token too). Nothing when nothing is held. */
+export function HeldStrip({
+  pastes,
+  pinned,
+  onChange,
+  onRemove,
+}: {
+  pastes: Pastes
+  pinned?: DocRef
+  onChange(next: Pastes): void
+  onRemove(i: number): void
+}) {
   if (pastes.size === 0 && !pinned) return null
   return (
     <div className="flex flex-wrap items-end gap-3 px-2 pt-2 pb-1">
@@ -94,13 +108,13 @@ export function HeldStrip({ pastes, pinned, onChange }: { pastes: Pastes; pinned
       {[...pastes].map(([i, p]) => (
         <div key={i} className="relative">
           {p.kind === 'text' ? (
-            <TextCard paste={p} onChange={(text) => onChange(retext(i, text, pastes))} />
+            <TextCard n={i} paste={p} onChange={(text) => onChange(retext(i, text, pastes))} />
           ) : p.kind === 'doc' ? (
             <DocChip title={p.title} />
           ) : (
             <Attachments files={[p.path]} className="[&_img]:max-h-20" />
           )}
-          <Remove what={p.kind === 'text' ? 'pasted text' : p.kind === 'doc' ? p.title : 'attachment'} onClick={() => onChange(drop(i, pastes))} />
+          <Remove what={p.kind === 'text' ? `pasted text #${i}` : p.kind === 'doc' ? p.title : 'attachment'} onClick={() => onRemove(i)} />
         </div>
       ))}
     </div>
