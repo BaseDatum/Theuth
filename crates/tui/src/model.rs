@@ -5851,16 +5851,10 @@ impl Model {
             "/secrets" => self.secrets_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
-            c if c.starts_with('/') => {
-                // `/<skill> [args]` hands the skill to the model (04 §2.4). Before
-                // the index has arrived the agent decides; it names an unknown skill.
-                let name = &c[1..];
-                if self.skills.is_empty() || self.skills.iter().any(|s| s.name == name) {
-                    self.use_skill(name.to_owned(), arg.to_owned(), tx);
-                } else {
-                    self.entries
-                        .push(Entry::Error(format!("unknown command {c}")));
-                }
+            // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
+            // is message text and takes the arm below.
+            c if c.starts_with('/') && self.skill_word(&c[1..]) => {
+                self.use_skill(c[1..].to_owned(), arg.to_owned(), tx);
             }
             _ => {
                 let (text, files) = self.expand_pastes(line);
@@ -5902,6 +5896,17 @@ impl Model {
                     }
                 }
             }
+        }
+    }
+
+    /// Does `/name` hand over a skill: a known one; before the index has
+    /// arrived, any plain word (the agent names an unknown skill) — but not
+    /// one holding another `/` or a `.` (`/etc/hosts`, `/x.txt`), nor a bare `/`.
+    fn skill_word(&self, name: &str) -> bool {
+        if self.skills.is_empty() {
+            !name.is_empty() && !name.contains(['/', '.'])
+        } else {
+            self.skills.iter().any(|s| s.name == name)
         }
     }
 
@@ -13513,10 +13518,22 @@ mod tests {
             rx.try_recv(),
             Ok(Command::UseSkill { session: Some(id), name, args }) if id == s && name == "caveman" && args == "lite"
         ));
+        // An unknown word is message text, not an error — as is a path even before the index arrives.
         m.submit("/nonesuch", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/nonesuch"));
+        assert!(matches!(m.entries.last(), Some(Entry::User { text, .. }) if text == "/nonesuch"));
+        m.submit("/Users/x/y.txt is broken, look at it", &tx);
         assert!(
-            matches!(m.entries.last(), Some(Entry::Error(t)) if t == "unknown command /nonesuch")
+            matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/Users/x/y.txt is broken, look at it")
         );
+        let mut fresh = Model::new("m".into(), true);
+        fresh.session = Some(s);
+        fresh.submit("/etc/hosts has a bad entry", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/etc/hosts has a bad entry"));
+        fresh.submit("/", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/"));
+        fresh.submit("/maybe lite", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, .. }) if name == "maybe" && args == "lite"));
 
         // `/skills` opens the picker; Enter uses, `s` shows.
         m.submit("/skills", &tx);
