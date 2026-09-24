@@ -507,6 +507,18 @@ pub struct Utterance {
     pub speaker: Option<String>,
 }
 
+impl Utterance {
+    /// The speaker tag of the line the model reads (07 §4): `me` for the mic, the live
+    /// label's display name (`Speaker 2`) when the diariser labelled it, else `them`.
+    pub fn who(&self) -> String {
+        match (self.track, &self.speaker) {
+            (Track::Mic, _) => "me".to_owned(),
+            (Track::System, Some(s)) => transcript::default_name(s),
+            (Track::System, None) => "them".to_owned(),
+        }
+    }
+}
+
 /// `meeting:` config section (README §3). Phase 1 reads `enabled` and
 /// `max_minutes`; phase 2 the batching, model, topic keys; phase 4 `models_dir`.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

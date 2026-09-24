@@ -7,7 +7,7 @@ use kameo::actor::ActorRef;
 use runtime::{InputId, SessionId};
 
 use crate::state::Prompted;
-use crate::{BriefId, Track, Utterance};
+use crate::{BriefId, Utterance};
 
 /// `hh:mm:ss` on the recording clock.
 pub fn hms(ms: u64) -> String {
@@ -47,7 +47,7 @@ pub fn cached_label(label: &str, age: &str) -> String {
 }
 
 /// One transcript batch: the header with the live and dismissed label sets,
-/// then one `them:`/`me:` line per utterance. `batch` is non-empty.
+/// then one `Speaker N:`/`them:`/`me:` line per utterance (07 §4). `batch` is non-empty.
 pub fn batch_line(batch: &[Utterance], live: &[String], dismissed: &[String]) -> String {
     batch_line_with(batch, live, dismissed, &[], None)
 }
@@ -85,12 +85,8 @@ pub fn batch_line_with(
         s.push_str(e);
     }
     for u in carried.iter().flat_map(|(_, b)| b.iter()).chain(batch) {
-        let who = match u.track {
-            Track::Mic => "me",
-            Track::System => "them",
-        };
         s.push('\n');
-        s.push_str(who);
+        s.push_str(&u.who());
         s.push_str(": ");
         s.push_str(u.text.trim());
     }
@@ -200,6 +196,7 @@ pub async fn queued(session: SessionId) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Track;
 
     fn u(track: Track, t0_ms: u64, text: &str) -> Utterance {
         Utterance {
@@ -213,7 +210,8 @@ mod tests {
     }
 
     /// §3's example verbatim: the header time is the first utterance's `t0`,
-    /// labels render as sets or `none`, speakers as `them:`/`me:`.
+    /// labels render as sets or `none`, speakers as `them:`/`me:` — `Speaker N:` once the
+    /// live diariser labelled a system line (07 §4).
     #[test]
     fn batch_line_matches_the_design() {
         let batch = [
@@ -231,6 +229,12 @@ mod tests {
             "[meeting 00:14:32] live: SRE-2386, DR cutover · dismissed: KEDA\n\
              them: so the DR sync for two-three-eight-six is blocked on the image tags\n\
              me: right, I think the app patches those"
+        );
+        let labelled = [Utterance { speaker: Some("s2".into()), ..batch[0].clone() }];
+        assert_eq!(
+            batch_line(&labelled, &[], &[]),
+            "[meeting 00:14:32] live: none · dismissed: none\n\
+             Speaker 2: so the DR sync for two-three-eight-six is blocked on the image tags"
         );
         assert_eq!(
             batch_line(&batch[1..], &[], &[]),
