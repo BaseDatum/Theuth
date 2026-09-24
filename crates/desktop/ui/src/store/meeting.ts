@@ -23,16 +23,31 @@ export const ORACLE_KEEP = 50
 /** Live transcript lines kept for the island's transcript dropdown (03 §2); `meeting_live` holds the full 2 000. */
 export const LINES_KEEP = 200
 
-/** One live transcript row; `open` = rolling partial (02 §2), replaced in place by the track's next `Utterance`. */
-export type Line = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean }
+/**
+ * One live transcript row; `open` = rolling partial (02 §2), replaced in place by the track's next `Utterance`.
+ * `speaker` (07 §4): the live label (`s1`…) of a system row once the diariser scored it — a second final
+ * `Utterance` for the same `track`/`t0_ms` carries it and updates the row.
+ */
+export type Line = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean; speaker: string | null }
 
-export const toLine = (u: { track: Track; t0_ms: bigint; text: string; request: boolean }, open = false): Line => ({
+export const toLine = (
+  u: { track: Track; t0_ms: bigint; text: string; request: boolean; speaker?: string | null },
+  open = false,
+): Line => ({
   track: u.track,
   t0_ms: Number(u.t0_ms),
   text: u.text,
   request: u.request,
   open,
+  speaker: u.speaker ?? null,
 })
+
+/** `me:` / `Speaker N:` / `them:` — what the row's speaker column shows (07 §4). */
+export const who = (l: Line): string => {
+  if (l.track === 'Mic') return 'me:'
+  const n = l.speaker?.match(/^s(\d+)$/)?.[1]
+  return n ? `Speaker ${n}:` : 'them:'
+}
 
 export type MeetingSlice = {
   meeting: string | null
@@ -194,8 +209,12 @@ export function reduce(s: MeetingSlice, e: MeetingEvent): MeetingSlice {
     }
     case 'Utterance': {
       if (s.meeting !== e.meeting) return s
+      const line = toLine(e, !e.final)
+      // A labelled re-publish of a committed row updates it in place (07 §3).
+      const i = e.final && e.speaker ? s.lines.findIndex((l) => !l.open && l.track === e.track && l.t0_ms === line.t0_ms) : -1
+      if (i >= 0) return { ...s, lines: s.lines.map((l, j) => (j === i ? line : l)) }
       const kept = s.lines.filter((l) => !(l.open && l.track === e.track))
-      return { ...s, lines: [...kept, toLine(e, !e.final)].slice(-LINES_KEEP) }
+      return { ...s, lines: [...kept, line].slice(-LINES_KEEP) }
     }
     default:
       return s

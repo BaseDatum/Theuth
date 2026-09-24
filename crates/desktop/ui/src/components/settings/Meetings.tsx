@@ -1,6 +1,7 @@
 // 53 decisions 9–10 / 03 §3: Settings › Meetings — the eye (hidden from capture) with its hotkey, the
 // push-to-talk hotkey, and the black-screenshot note. All desktop-local (`lib/meeting-settings.ts`) — except
-// the enrolled speaker profiles (04 §7), which are the daemon's. The decision-oracle switch moved to Labs (57 §7.1).
+// the live speaker labels switch (07 §6, `meeting.live_diarization` in the daemon's config) and the enrolled
+// speaker profiles (04 §7), which are the daemon's. The decision-oracle switch moved to Labs (57 §7.1).
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -21,6 +22,8 @@ export function Meetings() {
   const local = isMacDesktop()
   const speakers = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
   const del = useAction((profile: string) => api.meeting_speaker_delete(profile), { keys: [queryKeys.meetingSpeakers] })
+  const liveDiar = useQuery({ queryKey: queryKeys.meetingLiveDiarization, queryFn: () => api.meeting_live_diarization() })
+  const setLiveDiar = useAction((on: boolean) => api.set_meeting_live_diarization(on), { keys: [queryKeys.meetingLiveDiarization] })
   return (
     <>
       <Section title="Screen capture">
@@ -41,6 +44,19 @@ export function Meetings() {
         >
           <Hotkey kind="ptt" value={ptt} fallback={DEFAULT_PTT} />
         </Row>
+      </Section>
+      <Section title="Live transcript">
+        <Row
+          label="Live speaker labels"
+          description="Label the other side's lines by voice (Speaker 1, Speaker 2…) while the meeting runs. Labels arrive about eight seconds after the words and cost roughly a quarter of a CPU core. Off: lines read `them:` until the post-meeting pass labels speakers. Applies from the next meeting."
+        >
+          <Switch
+            checked={liveDiar.data ?? true}
+            disabled={liveDiar.isLoading || liveDiar.isError || setLiveDiar.isPending}
+            onCheckedChange={(on) => setLiveDiar.mutate(on)}
+          />
+        </Row>
+        {liveDiar.isError && <Empty>{errorText(liveDiar.error)}</Empty>}
       </Section>
       <Section title="Local decision oracle">
         <OraclePointer />

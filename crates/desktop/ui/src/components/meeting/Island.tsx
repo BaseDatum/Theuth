@@ -42,6 +42,7 @@ function badge(d: Degradation): string | null {
   if (d === 'NearMaxLength') return '10 min left'
   if (d === 'NoNote') return 'no note'
   if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
+  if (d === 'DiarizationDown') return 'speaker labels down'
   return null
 }
 

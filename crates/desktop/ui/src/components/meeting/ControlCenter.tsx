@@ -22,21 +22,21 @@ import { cn } from '@/lib/utils'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { PostStage } from '@/rpc/bindings/PostStage'
-import type { Track } from '@/rpc/bindings/Track'
-import { current, live, oracleSummary, useMeeting } from '@/store/meeting'
+import { type Line, current, live, oracleSummary, toLine, useMeeting, who } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
-type LogRow = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean }
 const STAGES: PostStage[] = ['Transcribing', 'Diarizing', 'Aligning']
 
 const degradationText = (d: Degradation): string =>
   d === 'NoNote'
     ? 'no meeting note: the documents helper is missing (Settings › Harness › Documents)'
-    : typeof d === 'string'
-      ? d
-      : 'SttDown' in d
-        ? `STT down (${d.SttDown})`
-        : `${d.PermissionDenied} denied`
+    : d === 'DiarizationDown'
+      ? 'live speaker labels down (the post pass still labels speakers)'
+      : typeof d === 'string'
+        ? d
+        : 'SttDown' in d
+          ? `STT down (${d.SttDown})`
+          : `${d.PermissionDenied} denied`
 
 const hhmmss = (ms: number): string => {
   const s = Math.floor(ms / 1000)
@@ -182,22 +182,28 @@ export function ControlCenter({ id }: { id: string }) {
   )
 }
 
-/** `meeting_live` on load, then `Utterance` events; partials replace their track's open row in place. */
+/**
+ * `meeting_live` on load, then `Utterance` events; partials replace their track's open row in place, a labelled
+ * re-publish (07 §3) updates the committed row with the same track and start.
+ */
 function LiveLog({ id }: { id: string }) {
   const api = useApi()
-  const [rows, setRows] = useState<LogRow[]>([])
+  const [rows, setRows] = useState<Line[]>([])
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
   useEffect(() => {
     void api
       .meeting_live(id)
-      .then((us) => setRows(us.map((u) => ({ track: u.track, t0_ms: Number(u.t0_ms), text: u.text, request: u.request, open: false }))))
+      .then((us) => setRows(us.map((u) => toLine(u))))
       .catch(() => undefined)
     return on('Utterance', (e) => {
       if (e.meeting !== id) return
       setRows((prev) => {
+        const line = toLine(e, !e.final)
+        const i = e.final && e.speaker ? prev.findIndex((r) => !r.open && r.track === e.track && r.t0_ms === line.t0_ms) : -1
+        if (i >= 0) return prev.map((r, j) => (j === i ? line : r))
         const kept = prev.filter((r) => !(r.open && r.track === e.track))
-        return [...kept, { track: e.track, t0_ms: Number(e.t0_ms), text: e.text, request: e.request, open: !e.final }]
+        return [...kept, line]
       })
     })
   }, [api, id])
@@ -213,9 +219,7 @@ function LiveLog({ id }: { id: string }) {
         {rows.map((r, i) => (
           <div key={`${r.track}-${r.t0_ms}-${i}`} className={cn('flex gap-2', r.open && 'text-fg-tertiary', r.request && 'bg-fg-accent/10')}>
             <span className="shrink-0 text-fg-tertiary">{hhmmss(r.t0_ms)}</span>
-            <span className={cn('shrink-0', r.track === 'Mic' ? 'text-fg-accent' : 'text-fg-secondary')}>
-              {r.track === 'Mic' ? 'me:' : 'them:'}
-            </span>
+            <span className={cn('shrink-0', r.track === 'Mic' ? 'text-fg-accent' : 'text-fg-secondary')}>{who(r)}</span>
             <span className="min-w-0 break-words">
               {r.request && <span className="mr-1 rounded bg-fg-accent px-1 text-[10px] text-primary-foreground">request</span>}
               {r.text}

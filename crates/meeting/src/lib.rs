@@ -926,6 +926,19 @@ pub struct DeleteSpeaker {
     pub profile: ProfileId,
 }
 
+/// `ask` → `bool`: the `meeting.live_diarization` switch (07 §6) as configured.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct LiveDiarization;
+
+/// `ask` → `Result<bool, String>`: persist `meeting.live_diarization` in `config.yaml` and
+/// apply it from the next meeting start (a running meeting keeps its mode). A failed
+/// config write changes nothing.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetLiveDiarization {
+    /// The new value.
+    pub on: bool,
+}
+
 /// `ask` → `Result<(), String>`: `Review` → `Summarizing`; the guided form goes
 /// to the session; `Summarized{title}` (and `Done`) follow when the turn ends.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -2977,6 +2990,31 @@ impl Message<DeleteSpeaker> for Meeting {
         Profiles::load(&self.paths().speakers)
             .map_err(|e| format!("{e:#}"))?
             .delete(m.profile)
+    }
+}
+
+impl Message<LiveDiarization> for Meeting {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: LiveDiarization, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cfg.live_diarization
+    }
+}
+
+impl Message<SetLiveDiarization> for Meeting {
+    type Reply = Result<bool, String>;
+
+    async fn handle(&mut self, m: SetLiveDiarization, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        runtime::write_config_value(
+            &self.rt.data_dir.join("config.yaml"),
+            "meeting",
+            "live_diarization",
+            if m.on { "true" } else { "false" },
+        )
+        .map_err(|e| format!("config.yaml: {e}"))?;
+        self.cfg.live_diarization = m.on;
+        tracing::info!("meeting: live_diarization → {}", m.on);
+        Ok(m.on)
     }
 }
 

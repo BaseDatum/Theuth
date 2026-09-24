@@ -1,12 +1,12 @@
 // 03 §2: the live transcript dropdown between the brief pane and the request box. Collapsed (the default) it is one
 // row — `▸ Transcript` plus the newest line as a muted preview; open it is the last `LINES_KEEP` rows from
-// `store/meeting.ts`, painted like the control center's live log (`mm:ss  me:/them: text`, partials muted,
-// requests tinted), scrolling inside a fixed height and pinned to the bottom until the user scrolls up.
+// `store/meeting.ts`, painted like the control center's live log (`mm:ss  me:/Speaker N:/them: text`, partials
+// muted, requests tinted), scrolling inside a fixed height and pinned to the bottom until the user scrolls up.
 
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { type Line, mmss, useMeeting } from '@/store/meeting'
+import { type Line, mmss, useMeeting, who } from '@/store/meeting'
 
 /** Open/closed survives a reload of this webview only. */
 const KEY = 'island.transcript.open'
@@ -14,8 +14,6 @@ const KEY = 'island.transcript.open'
 const STICK = 8
 /** Preview length on the collapsed row. */
 const PREVIEW = 60
-
-const who = (l: Line): string => (l.track === 'Mic' ? 'me:' : 'them:')
 
 /** The collapsed row's preview: `me: first sixty chars…`. */
 export function preview(l: Line, max = PREVIEW): string {

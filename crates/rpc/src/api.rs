@@ -1079,6 +1079,13 @@ pub trait Api {
     /// Delete a speaker profile file. Transcripts keep their labels.
     #[method(name = "meeting_speaker_delete")]
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()>;
+    /// 07 §6: the `meeting.live_diarization` switch as configured (default `true`).
+    #[method(name = "meeting_live_diarization")]
+    async fn meeting_live_diarization(&self) -> RpcResult<bool>;
+    /// Persist `meeting.live_diarization` and apply it from the next meeting start; a
+    /// running meeting keeps its mode. A failed config write changes nothing.
+    #[method(name = "set_meeting_live_diarization")]
+    async fn set_meeting_live_diarization(&self, on: bool) -> RpcResult<bool>;
     /// `Review` → `Summarizing`: the guided summary turn; `Summarized{title}` and `State{Done}` follow.
     #[method(name = "meeting_summarize")]
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()>;
@@ -3372,6 +3379,14 @@ impl ApiServer for Server {
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {
         send(&meeting()?, meeting::DeleteSpeaker { profile }).await
+    }
+
+    async fn meeting_live_diarization(&self) -> RpcResult<bool> {
+        send(&meeting()?, meeting::LiveDiarization).await
+    }
+
+    async fn set_meeting_live_diarization(&self, on: bool) -> RpcResult<bool> {
+        send(&meeting()?, meeting::SetLiveDiarization { on }).await
     }
 
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()> {
