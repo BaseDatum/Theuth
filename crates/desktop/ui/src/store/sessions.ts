@@ -181,6 +181,8 @@ export type SessionSlice = {
   name?: string | null;
   parent?: string | null;
   agent?: string | null;
+  /** Model the external harness reports for its session (06 §8.2); the header shows `agent · harnessModel`. */
+  harnessModel?: string | null;
   undone: number;
   /** `load_session` has run at least once. */
   loaded: boolean;
@@ -366,6 +368,7 @@ export const createSessions = (): SessionsApi =>
             queued: loaded.queued,
             undone: loaded.undone,
             agent: loaded.agent,
+            harnessModel: loaded.harness_model ?? cur.harnessModel,
             name: loaded.name,
             parent: loaded.parent,
             skills: loaded.skills,

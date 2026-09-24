@@ -39,6 +39,8 @@ export function ModelItems({ models, model, onSelect }: { models: ModelInfo[]; m
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
  * `list_models`, then the selected model's effort levels. A fresh chat keeps
  * effort in the UI until submit creates the session; model changes update the default.
+ * An ACP child (06 §8.2) shows `omp · anthropic/claude-opus-4-8` as plain text: the
+ * harness owns its model, theuth cannot switch it.
  */
 export function ModelMenu({
   session,
@@ -54,6 +56,8 @@ export function ModelMenu({
   const info = useConnection((s) => s.info)
   const sessionModel = useSessionField(session ?? '', 'model')
   const sessionEffort = useSessionField(session ?? '', 'effort')
+  const agent = useSessionField(session ?? '', 'agent')
+  const harnessModel = useSessionField(session ?? '', 'harnessModel')
   const model = sessionModel ?? info?.default_model
   const effort = session ? sessionEffort : draftEffort
   const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
@@ -88,6 +92,13 @@ export function ModelMenu({
     }
   }
 
+  if (agent) {
+    return (
+      <span className="flex h-9 max-w-full items-center gap-1 px-2.5 text-lg font-medium text-fg-secondary" title="External harness; its model is set on the harness side">
+        <span className="min-w-0 truncate">{harnessModel ? `${agent} · ${harnessModel}` : agent}</span>
+      </span>
+    )
+  }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
