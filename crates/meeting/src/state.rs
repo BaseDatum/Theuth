@@ -14,10 +14,21 @@ use decision::training::{Amendment, ExampleId, Reaction};
 
 use crate::batch::Batcher;
 use crate::capture::Capture;
+use crate::post::align::Span;
 use crate::store::{Gap, Manifest};
 use crate::stt::Piece;
 use crate::topics::{Record, Topics};
 use crate::{BriefId, MeetingConfig, TopicId, Utterance};
+
+/// 07 §3: the live diariser's latest view on the recording clock — labels exist up to
+/// `horizon_ms`; `spans` are the labelled turns of the last `diar::KEEP_MS`.
+#[derive(Clone, Debug, Default)]
+pub struct LiveLabels {
+    /// Recording time up to which the diariser has scored.
+    pub horizon_ms: u64,
+    /// Labelled turns (`s1`..`s8`) of the window, by start.
+    pub spans: Vec<Span>,
+}
 
 /// Wall `Instant` minus accumulated pause time. Also used by the encoder
 /// thread to decide how many frames are due, so file time and manifest time
@@ -161,6 +172,14 @@ pub struct Live {
     pub outstanding: Vec<Outstanding>,
     /// The two track tasks; resolve to their final flush at stop.
     pub stt: Vec<tokio::task::JoinHandle<Vec<Piece>>>,
+    /// 07 §2: the live diariser task; resolves to its final view at stop. `None` when
+    /// live diarization is off, the models are missing, or it went down.
+    pub diar: Option<tokio::task::JoinHandle<Option<crate::diar::Labels>>>,
+    /// 07 §3: what the diariser has scored so far.
+    pub labels: LiveLabels,
+    /// 07 §3: closed system utterances (with their close stamps) waiting for the
+    /// diariser's horizon to pass their end before they are logged and batched.
+    pub held_system: Vec<(Utterance, Instant)>,
     /// 57 §3.2: batches the oracle kept from the model (`(stamp, utterances)`), written as
     /// context into the next delivered batch line, then cleared. Oldest first.
     pub carry: Vec<(String, Vec<Utterance>)>,
@@ -277,6 +296,9 @@ impl Recording {
                 held_flag: Arc::new(AtomicBool::new(false)),
                 outstanding: Vec::new(),
                 stt: Vec::new(),
+                diar: None,
+                labels: LiveLabels::default(),
+                held_system: Vec::new(),
                 carry: Vec::new(),
                 pending: Vec::new(),
                 published: Vec::new(),
@@ -304,6 +326,9 @@ mod tests {
             held_flag: Arc::new(AtomicBool::new(false)),
             outstanding: Vec::new(),
             stt: Vec::new(),
+            diar: None,
+            labels: LiveLabels::default(),
+            held_system: Vec::new(),
             carry: Vec::new(),
             pending: Vec::new(),
             published: Vec::new(),

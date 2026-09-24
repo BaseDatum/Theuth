@@ -1088,8 +1088,8 @@ them: No, that's the thing. It's all inferred from the clustering.";
     #[test]
     fn state_and_batch_id() {
         let batch = vec![
-            Utterance { track: Track::System, t0_ms: 872_000, t1_ms: 873_000, text: " so the DR sync ".into(), request: false },
-            Utterance { track: Track::Mic, t0_ms: 874_000, t1_ms: 875_000, text: "right".into(), request: false },
+            Utterance { track: Track::System, t0_ms: 872_000, t1_ms: 873_000, text: " so the DR sync ".into(), request: false, speaker: None },
+            Utterance { track: Track::Mic, t0_ms: 874_000, t1_ms: 875_000, text: "right".into(), request: false, speaker: None },
         ];
         assert_eq!(state(&batch), "them: so the DR sync\nme: right");
         assert_eq!(batch_id(&batch), "00:14:32");

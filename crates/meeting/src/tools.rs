@@ -273,7 +273,9 @@ impl MeetingReadTool {
             Ok(t) if !recording => t.lines(a.from_ms, a.to_ms, a.speaker.as_deref()).collect(),
             _ => {
                 let path = self.0.meeting_dir(id).join(LIVE_LOG);
-                let live: Vec<Utterance> = crate::read_jsonl(&path, crate::LIVE_TEXT_CAP)?;
+                let mut live: Vec<Utterance> = crate::read_jsonl(&path, crate::LIVE_TEXT_CAP)?;
+                // 07 §3: held system lines are appended after later mic lines.
+                live.sort_by_key(|u| u.t0_ms);
                 let who = a.speaker.as_deref().map(str::to_lowercase);
                 live.iter()
                     .filter(|u| a.from_ms.is_none_or(|f| u.t1_ms >= f))

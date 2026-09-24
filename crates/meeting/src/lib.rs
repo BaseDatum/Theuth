@@ -32,9 +32,12 @@ use serde::{Deserialize, Serialize};
 use ::tools::{ApprovalRequested, ApprovalResolved};
 use voice::live::Utterer;
 
+use crate::post::diarize;
+
 pub mod batch;
 pub mod cache;
 pub mod capture;
+pub mod diar;
 pub mod note;
 pub mod ogg;
 pub mod oracle;
@@ -192,6 +195,9 @@ pub enum Degradation {
     PermissionDenied(Permission),
     /// Documents run but refused the meeting's note (59 §7.4; the documents helper missing): no note, no summary note.
     NoNote,
+    /// Live speaker labels stopped (07 §6): the diariser's session failed or its task
+    /// panicked; system lines are `them:` from here, the post pass still diarizes.
+    DiarizationDown,
 }
 
 /// 58 §3.3: what this host can do for meetings, stated to the UI.
@@ -301,6 +307,11 @@ pub enum MeetingEvent {
         /// `false` = rolling partial of an open utterance (02 §2).
         #[serde(default = "yes")]
         r#final: bool,
+        /// 07 §4: the live speaker label (`s1`..`s8`) of a system utterance once the
+        /// diariser has scored it — a second `final: true` event for the same
+        /// `track`/`t0_ms` carries it; `None` before, for the mic, and when off.
+        #[serde(default)]
+        speaker: Option<String>,
     },
     /// A topic button appeared (phase 2).
     TopicAdded {
@@ -490,6 +501,10 @@ pub struct Utterance {
     pub text: String,
     /// Closed by a push-to-talk release (53 decision 10).
     pub request: bool,
+    /// 07 §4: live speaker label (`s1`..`s8`) of a system utterance; `None` for the mic,
+    /// when live diarization is off, or when no speaker covered the utterance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// `meeting:` config section (README §3). Phase 1 reads `enabled` and
@@ -517,6 +532,9 @@ pub struct MeetingConfig {
     /// Phase 4: the diarization models root (`nemotron-diarization/`, `pyannote/`);
     /// `None` → `<data_dir>/models`.
     pub models_dir: Option<std::path::PathBuf>,
+    /// 07: label the other side's live lines by speaker (`Speaker N:`) while recording.
+    /// `false` → today's `them:`; the post pass diarizes either way. Read at meeting start.
+    pub live_diarization: bool,
     /// 06 §1.5: the registry tools the meeting session may call directly while
     /// recording; every other tool is hidden from it until stop.
     pub live_tools: Vec<String>,
@@ -536,6 +554,7 @@ impl Default for MeetingConfig {
             topic_ttl_secs: 600,
             max_topics: 6,
             models_dir: None,
+            live_diarization: true,
             live_tools: [
                 "meeting_topic",
                 "meeting_brief",
@@ -926,6 +945,8 @@ struct Begun {
     manifest: Manifest,
     result: Result<capture::Capture, String>,
     engines: Option<(Utterer, Utterer)>,
+    /// 07 §2: the live diariser's session, when enabled and its models are present.
+    diar: Option<diarize::Streamer>,
     /// The note documents were still creating when the meeting started (`note::Created::Late`).
     late_note: Option<tokio::task::JoinHandle<Option<document::DocId>>>,
 }
@@ -1338,12 +1359,11 @@ impl Meeting {
     /// A closed utterance: `live.jsonl`, the alias scan (05 §3), then the batcher
     /// (or the request line). `at` is the close stamp, for the latency log.
     async fn closed(&mut self, u: Utterance, at: Instant, me: &ActorRef<Self>) {
-        let Some(rec) = self.current.as_mut() else { return };
-        rec.live.log_utterance(&u);
         let hits = self.scan(&u.text);
         if u.request {
             let cached = self.cached_request(&hits).await;
             let Some(rec) = self.current.as_mut() else { return };
+            rec.live.log_utterance(&u);
             rec.live
                 .prompted(Prompted::Request { spoken: true }, u.text.clone());
             let line = session::request_line(true, &u.text, cached.as_deref());
@@ -1352,8 +1372,51 @@ impl Meeting {
         }
         self.cached_topics(hits, u.t1_ms, at).await;
         let Some(rec) = self.current.as_mut() else { return };
+        if u.track == Track::System && rec.live.diar.is_some() {
+            // 07 §3: the line is logged and batched once the diariser has scored it.
+            rec.live.held_system.push((u, at));
+            self.release_held(me, false).await;
+            return;
+        }
+        self.commit(u, me).await;
+    }
+
+    /// The tail of [`Meeting::closed`]: `live.jsonl`, then the batcher.
+    async fn commit(&mut self, u: Utterance, me: &ActorRef<Self>) {
+        let Some(rec) = self.current.as_mut() else { return };
+        rec.live.log_utterance(&u);
         if let Some(batch) = rec.live.batcher.feed(u, Instant::now()) {
             self.send_batch(batch, me).await;
+        }
+    }
+
+    /// 07 §3: label and commit the held system utterances the diariser's horizon has
+    /// passed (all of them when `all`: the diariser is gone). A label is published as a
+    /// second `final` `Utterance` event for the same row.
+    async fn release_held(&mut self, me: &ActorRef<Self>, all: bool) {
+        loop {
+            let Some(rec) = self.current.as_mut() else { return };
+            let horizon = rec.live.labels.horizon_ms;
+            if rec.live.held_system.first().is_none_or(|(u, _)| !all && u.t1_ms > horizon) {
+                return;
+            }
+            let (mut u, _) = rec.live.held_system.remove(0);
+            u.speaker = diar::speaker_of(u.t0_ms, u.t1_ms, &rec.live.labels.spans);
+            if u.speaker.is_some() {
+                self.rt
+                    .publish(MeetingEvent::Utterance {
+                        meeting: rec.manifest.id,
+                        track: u.track,
+                        t0_ms: u.t0_ms,
+                        t1_ms: u.t1_ms,
+                        text: u.text.clone(),
+                        request: u.request,
+                        r#final: true,
+                        speaker: u.speaker.clone(),
+                    })
+                    .await;
+            }
+            self.commit(u, me).await;
         }
     }
 
@@ -1505,6 +1568,7 @@ impl Message<StartMeeting> for Meeting {
                     .join(voice::STREAMING_MODEL_SUBDIR)
             }),
             data_dir: self.rt.data_dir.clone(),
+            diarization: self.cfg.live_diarization.then(|| self.paths().models),
         };
         tokio::spawn(async move {
             let begun = start_task(&store, manifest, &setup).await;
@@ -1531,6 +1595,8 @@ struct Setup {
     live_model_dir: PathBuf,
     /// Locates the ONNX Runtime (`models::onnx::ort_lib`).
     data_dir: PathBuf,
+    /// 07: the diarization models root when live diarization is on.
+    diarization: Option<PathBuf>,
 }
 
 /// Session → directory + manifest → devices → STT sessions (01 §3, 02 §4, off
@@ -1649,10 +1715,40 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
             None
         }
     };
+    // 07 §2: the live diariser (≈ 300 MB). Missing models are not a degradation (labels
+    // are simply absent, as with the switch off); a failed load with the switch on is.
+    let diar = match setup.diarization.as_ref().and_then(|dir| diarize::models(dir, &setup.data_dir)) {
+        Some(models) => {
+            let t = Instant::now();
+            match tokio::task::spawn_blocking(move || diar::open(&models)).await {
+                Ok(Ok(s)) => {
+                    tracing::info!(meeting = %manifest.id, "meeting: live diarization session loaded in {:?}", t.elapsed());
+                    Some(s)
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(meeting = %manifest.id, "meeting: live diarization unavailable: {e:#}");
+                    manifest.degraded.push(Degradation::DiarizationDown);
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(meeting = %manifest.id, "meeting: live diarization load panicked: {e}");
+                    manifest.degraded.push(Degradation::DiarizationDown);
+                    None
+                }
+            }
+        }
+        None => {
+            if setup.diarization.is_some() {
+                tracing::info!(meeting = %manifest.id, "meeting: live diarization off: models missing");
+            }
+            None
+        }
+    };
     Begun {
         manifest,
         result: Ok(capture),
         engines,
+        diar,
         late_note,
     }
 }
@@ -1674,6 +1770,7 @@ impl Begun {
             manifest,
             result: Err(reason),
             engines: None,
+            diar: None,
             late_note: None,
         }
     }
@@ -1745,6 +1842,20 @@ impl Message<Begun> for Meeting {
                         me.clone(),
                     ));
                 }
+                // 07 §2: the live diariser on the system feed's own ring.
+                if let Some(streamer) = m.diar
+                    && let Some(ring) = rec.capture.take_diar()
+                {
+                    rec.live.diar = Some(diar::spawn(
+                        ring,
+                        streamer,
+                        diar::Flags {
+                            stop: rec.capture.stop_flag(),
+                            paused: rec.capture.paused_flag(),
+                        },
+                        me.clone(),
+                    ));
+                }
                 tools::register(me).await;
                 // 57 §3.5 item 5: load the oracle now so batch 1 never pays the cold load.
                 tokio::spawn(oracle::warm_up());
@@ -1786,7 +1897,15 @@ impl Message<Begun> for Meeting {
 impl Message<Degrade> for Meeting {
     type Reply = ();
 
-    async fn handle(&mut self, m: Degrade, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: Degrade, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
+        if m.0 == Degradation::DiarizationDown && rec.live.diar.take().is_some() {
+            // 07 §6: nothing more will be labelled; what is held goes out as it is.
+            let me = ctx.actor_ref().clone();
+            self.release_held(&me, true).await;
+        }
         let Some(rec) = self.current.as_mut() else {
             return;
         };
@@ -1899,39 +2018,55 @@ impl Message<StopMeeting> for Meeting {
         if let Err(e) = tokio::task::spawn_blocking(move || capture.stop()).await {
             tracing::warn!(meeting = %manifest.id, "capture stop: {e}");
         }
-        let mut finals = Vec::new();
+        // 07 §3: the diariser flushes its tail (no look-ahead) and returns its final
+        // view; the held system lines and the STT flush are labelled against it.
+        if let Some(task) = live.diar.take()
+            && let Ok(Some(labels)) = task.await
+        {
+            live.labels = labels.view(clock.elapsed_at(labels.at).as_millis() as u64);
+        }
+        let mut finals: Vec<Utterance> = Vec::new();
         let tasks: Vec<_> = live.stt.drain(..).collect();
         for task in tasks {
             let Ok(pieces) = task.await else { continue };
             for p in pieces.into_iter().filter(|p| p.is_final && said_something(&p.text)) {
                 let (t0_ms, t1_ms) = times(&clock, &p);
-                let u = Utterance {
+                finals.push(Utterance {
                     track: p.track,
                     t0_ms,
                     t1_ms,
                     text: p.text,
                     request: p.request,
-                };
-                live.log_utterance(&u);
-                self.rt
-                    .publish(MeetingEvent::Utterance {
-                        meeting: manifest.id,
-                        track: u.track,
-                        t0_ms,
-                        t1_ms,
-                        text: u.text.clone(),
-                        request: u.request,
-                        r#final: true,
-                    })
-                    .await;
-                finals.push(u);
+                    speaker: None,
+                });
             }
         }
+        let held: Vec<Utterance> = live.held_system.drain(..).map(|(u, _)| u).collect();
         // 02 §4: the engines are gone (the tasks owned them); pending lines go
         // out as one last input, then the session compacts like any other. 57 §3.2:
         // batches the oracle kept back ride along as context, unfiltered at stop.
         let mut pending = live.batcher.drain();
-        pending.extend(finals);
+        for mut u in held.into_iter().chain(finals) {
+            if u.track == Track::System && u.speaker.is_none() {
+                u.speaker = diar::speaker_of(u.t0_ms, u.t1_ms, &live.labels.spans);
+            }
+            live.log_utterance(&u);
+            self.rt
+                .publish(MeetingEvent::Utterance {
+                    meeting: manifest.id,
+                    track: u.track,
+                    t0_ms: u.t0_ms,
+                    t1_ms: u.t1_ms,
+                    text: u.text.clone(),
+                    request: u.request,
+                    r#final: true,
+                    speaker: u.speaker.clone(),
+                })
+                .await;
+            pending.push(u);
+        }
+        // Held system lines predate the mic lines already pending.
+        pending.sort_by_key(|u| u.t0_ms);
         if !pending.is_empty() || !live.carry.is_empty() {
             let carried = std::mem::take(&mut live.carry);
             let (pending, carried) = if pending.is_empty() {
@@ -2125,6 +2260,7 @@ impl Message<Piece> for Meeting {
                 text: p.text.clone(),
                 request: p.request,
                 r#final: p.is_final,
+                speaker: None,
             })
             .await;
         if p.is_final {
@@ -2135,12 +2271,26 @@ impl Message<Piece> for Meeting {
                     t1_ms,
                     text: p.text,
                     request: p.request,
+                    speaker: None,
                 },
                 p.at,
                 ctx.actor_ref(),
             )
             .await;
         }
+    }
+}
+
+impl Message<diar::Labels> for Meeting {
+    type Reply = ();
+
+    /// 07 §3: the diariser's view replaces the last one; whatever it now covers is released.
+    async fn handle(&mut self, m: diar::Labels, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else { return };
+        let at_ms = rec.clock.elapsed_at(m.at).as_millis() as u64;
+        rec.live.labels = m.view(at_ms);
+        let me = ctx.actor_ref().clone();
+        self.release_held(&me, false).await;
     }
 }
 
@@ -2460,7 +2610,11 @@ impl Message<LiveText> for Meeting {
         if !dir.is_dir() {
             return Err(format!("no meeting {}", m.meeting));
         }
-        read_jsonl(&dir.join(LIVE_LOG), LIVE_TEXT_CAP)
+        read_jsonl(&dir.join(LIVE_LOG), LIVE_TEXT_CAP).map(|mut v: Vec<Utterance>| {
+            // 07 §3: held system lines are appended after later mic lines.
+            v.sort_by_key(|u| u.t0_ms);
+            v
+        })
     }
 }
 
