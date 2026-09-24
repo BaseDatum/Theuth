@@ -1,8 +1,8 @@
 //! Session titles (design doc 07 §15): a model-written name that tracks what
 //! the session is about *now*, not only how it started.
 //!
-//! The first finished turn replaces the placeholder (the first input, cut to 60
-//! chars). Later refreshes are rate-limited by [`due`]: every [`EVERY`] turns or
+//! The first finished turn replaces the placeholder (the first input line after
+//! any attachment markers, cut to 60 chars — `attach::seed_title`). Later refreshes are rate-limited by [`due`]: every [`EVERY`] turns or
 //! after a compaction, and only when the user has typed enough since the last
 //! title to have possibly changed subject. The titler sees a [`digest`] — the
 //! current title and tags, the epoch's summary head, the user's asks oldest →
@@ -103,11 +103,21 @@ pub fn digest(
         out.push_str(&cut(&text_of(&h.content), HEAD_CHARS));
         out.push('\n');
     }
+    // 66 §8: a leading marker line is a reference, never the subject's
+    // spelling; the titler sees the attachment by its title.
     let asks: Vec<String> = history
         .iter()
         .filter(|(_, m)| m.role == ChatRole::User)
         .map(|(_, m)| text_of(&m.content))
         .filter(|t| !t.trim_start().starts_with('<') && !t.trim().is_empty())
+        .map(|t| {
+            let p = crate::attach::parse(&t);
+            if p.refs.is_empty() {
+                return t;
+            }
+            let titles: Vec<String> = p.refs.iter().map(|r| format!("\"{}\"", r.title)).collect();
+            format!("(attached: {}) {}", titles.join(", "), p.body.trim())
+        })
         .collect();
     out.push_str("\nWhat the developer asked, oldest first:\n");
     let n = asks.len();
@@ -285,5 +295,17 @@ mod tests {
             user_chars(["  hi ", "<message from=\"x\">y</message>"].into_iter()),
             2
         );
+    }
+
+    /// 66 §8: the titler is shown an attachment by its title, never the marker line.
+    #[test]
+    fn digest_names_attachments_by_title() {
+        let h = vec![(
+            0,
+            ChatMessage::user("[attached note abc \"Groceries\" · 1 KB]\n[doc knowledge:facts/x \"Relay timeouts\"]\nwhat's missing?"),
+        )];
+        let d = digest("", &[], None, &h);
+        assert!(d.contains("- (attached: \"Groceries\", \"Relay timeouts\") what's missing?\n"), "{d}");
+        assert!(!d.contains("[attached") && !d.contains("abc"), "{d}");
     }
 }

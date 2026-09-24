@@ -648,7 +648,7 @@ this year and `MMM d, yyyy` otherwise; recency in lists uses the existing
 | note | `DocSummary.title` | `Untitled note · <created MMM d>` | `note · updated <ago or date> · <bytes>` |
 | knowledge | `Meta.title` (already the id when absent, `types.rs:66-70`) | — (id) | `<type> · <id> · <timestamp date>`; revision: `revision <commit[..7]> · <time date>` |
 | artifact | `Artifact.title` (`store.rs:401-403` never leaves it blank) | `name` | `<kind> · v<N> · <pages> pages · <bytes> · <created date>`; from another session: ` · in "<session title>"` |
-| session | `SessionSummary.title` (first input ≤ 60 until the title model runs, `loop_.rs:957-962`) | `Chat · <created MMM d HH:mm>` (only a session with no user turn yet) | `chat · <project ?? "no project"> · updated <date>` + ` · archived` |
+| session | `SessionSummary.title` (first user line after any marker lines ≤ 60 until the title model runs, `agent::attach::{first_line, seed_title}`; a markers-only first message is named by its first attachment's title) | `Untitled chat · <created MMM d>` (as built: one rule, `agent::attach::session_title` / `lib/attach.ts` `chatName`, for search hits, `session_read`'s header, the TUI and the UI; a hit or `session_read` names a title-less session by its first user line before the date) | `chat · <project ?? "no project"> · updated <date>` + ` · archived` |
 | meeting | `title ?? process_name` (`meeting/src/tools.rs:474`) | `Meeting · <started MMM d>` | `<started MMM d> · <duration min> min` + ` · <state>` if not summarised |
 
 The same table is the fixture for `attach.test.ts`. Rust duplicates only the

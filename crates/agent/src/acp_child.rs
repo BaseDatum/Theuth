@@ -44,7 +44,7 @@ use crate::loop_::{
 use crate::store::Store;
 use crate::store::communication::CommError;
 use crate::todo::{Status, Todo, TodoSource};
-use crate::{AgentEvent, Usage};
+use crate::{AgentEvent, Usage, attach};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
@@ -415,7 +415,8 @@ impl AcpChild {
         }
     }
 
-    /// First prompt of a fresh row names the session, like a native first turn.
+    /// First prompt of a fresh row names the session, like a native first
+    /// turn: its first line after any attachment markers (66 §8).
     async fn title(&mut self, text: &str) {
         if self.titled {
             return;
@@ -423,8 +424,9 @@ impl AcpChild {
         self.titled = true;
         if let Ok(Some(row)) = self.store.session(self.id).await
             && row.title.is_empty()
+            && let Some(line) = attach::first_line(text)
         {
-            let title: String = text.trim().chars().take(60).collect();
+            let title = attach::seed_title(&line);
             match self.store.set_title(self.id, &title).await {
                 Ok(()) => {
                     self.publish(AgentEvent::TitleChanged {
