@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
-import { buildRows, newChatLabel, type Row } from './SessionList'
+import type { SessionSlice } from '@/store/sessions'
+import { runningSubagents } from './SessionItem'
+import { buildRows, newChatLabel, type Row, subtrees } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => ({
   id,
@@ -18,6 +20,7 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   archived,
   project,
   retention: 'durable',
+  running: false,
 })
 
 const keys = (rows: Row[]) => rows.map((r) => r.key)
@@ -58,4 +61,26 @@ test('archived roots leave the groups for one collapsed Archived header at the b
 test('project header menu label names the project; the null bucket is the plain new chat', () => {
   expect(newChatLabel('alpha')).toBe('New chat in “alpha”')
   expect(newChatLabel(null)).toBe('New chat (no project)')
+})
+
+test('subtrees roll every depth up to the top-level row; a root without subagents has no entry', () => {
+  const sessions = [
+    s('a', null, '2026-01-01T00:00:00Z'),
+    s('b', null, '2026-01-01T00:00:00Z'),
+    { ...s('a1', null, '2026-01-01T00:00:00Z'), parent: 'a' },
+    { ...s('a11', null, '2026-01-01T00:00:00Z'), parent: 'a1' },
+  ]
+  const subs = subtrees(sessions)
+  expect(subs.get('a')?.map((d) => d.id)).toEqual(['a1', 'a11'])
+  expect(subs.has('b')).toBe(false)
+  expect(subs.has('a1')).toBe(false)
+})
+
+test('running subagents: a live slice counts, so does the list snapshot for a child this client has no slice for; idle ones do not', () => {
+  const d = (id: string, running: boolean) => ({ ...s(id, null, '2026-01-01T00:00:00Z'), parent: 'a', running })
+  const slice = (running: boolean) => ({ running }) as SessionSlice
+  const subs = [d('live', false), d('cold', true), d('idle', false), d('none', false)]
+  expect(runningSubagents(subs, { live: slice(true), idle: slice(false) })).toBe(2)
+  expect(runningSubagents(subs, { live: slice(false), idle: slice(false) })).toBe(1)
+  expect(runningSubagents([], {})).toBe(0)
 })

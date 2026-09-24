@@ -107,6 +107,20 @@ function rootOf(sessions: SessionSummary[], id: string | undefined): string | un
   }
 }
 
+/** Every subagent under its top-level ancestor (all depths), for the collapsed row's subagent glyph. */
+export function subtrees(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
+  const out = new Map<string, SessionSummary[]>()
+  for (const s of sessions) {
+    if (s.parent === null) continue
+    const root = rootOf(sessions, s.id)
+    if (root === undefined) continue
+    const list = out.get(root)
+    if (list) list.push(s)
+    else out.set(root, [s])
+  }
+  return out
+}
+
 /**
  * Pinned top-level sessions first under one `Pinned` header, then the rest newest first with day-group headers;
  * the root of every open chat (the URL's and each split pane's) is followed by its agent tree. With any project
@@ -196,6 +210,7 @@ export function SessionList({
   const root = usePanes((s) => s.root)
   const open = useMemo(() => (root ? leaves(root) : active ? [active] : []), [root, active])
   const rows = useMemo(() => buildRows(sessions, open, collapsed, archivedOpen), [sessions, open, collapsed, archivedOpen])
+  const subs = useMemo(() => subtrees(sessions), [sessions])
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
   // Every selected row is archived: the bar offers Unarchive instead of Archive.
@@ -301,6 +316,7 @@ export function SessionList({
                   pinned={row.session.pinned}
                   archived={row.session.archived}
                   project={row.session.project}
+                  subagents={subs.get(row.session.id)}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}
                   selecting={selected.size > 0}

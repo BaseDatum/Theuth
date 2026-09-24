@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Cog, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Cog, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
 import { memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -32,7 +32,8 @@ import { touch } from '@/lib/hotkeys'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
-import { type Activity, shownActivity, useSessionField } from '@/store/sessions'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
@@ -71,6 +72,20 @@ function SessionJobs({ id }: { id: string }) {
   )
 }
 
+const NONE: SessionSummary[] = []
+
+/** Descendants with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot. */
+export const runningSubagents = (subagents: readonly SessionSummary[], slices: Record<string, SessionSlice>): number =>
+  subagents.filter((d) => slices[d.id]?.running || d.running).length
+
+/** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row shows which. */
+function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {
+  const n = useSessions((s) => runningSubagents(subagents, s.sessions))
+  if (n === 0) return null
+  const label = `${n} subagent${n === 1 ? '' : 's'} running`
+  return <Network className="size-3.5 shrink-0 animate-pulse text-info" aria-label={label} role="img" />
+}
+
 /** Submenu body: the other known projects, then a new one (typed inline). Mounted only while the submenu is open. */
 function ProjectItems({ current, onPick, onNew }: { current: string | null; onPick(p: string): void; onNew(): void }) {
   const others = useProjects().filter((p) => p !== current)
@@ -99,6 +114,7 @@ export const SessionItem = memo(function SessionItem({
   pinned,
   archived,
   project,
+  subagents,
   active,
   selected,
   selecting,
@@ -110,6 +126,8 @@ export const SessionItem = memo(function SessionItem({
   pinned: boolean
   archived: boolean
   project: string | null
+  /** Its subtree from `list_sessions` (all depths); absent when it has none. */
+  subagents: readonly SessionSummary[] | undefined
   active: boolean
   selected: boolean
   selecting: boolean
@@ -235,6 +253,7 @@ export const SessionItem = memo(function SessionItem({
               )}
               <SessionActivity id={id} />
               <SessionJobs id={id} />
+              <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
             </Link>
           </SidebarMenuButton>

@@ -676,6 +676,7 @@ mod tests {
             archived: false,
             project: None,
             retention: agent::Retention::Durable,
+            running: false,
         }
     }
 

@@ -14831,6 +14831,7 @@ mod tests {
             archived: false,
             project: project.map(str::to_owned),
             retention: Retention::Durable,
+            running: false,
         }
     }
 

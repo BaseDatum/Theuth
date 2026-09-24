@@ -181,6 +181,7 @@ impl TryFrom<SessionRow> for SessionSummary {
             archived: r.archived,
             project: r.project,
             retention: tools::Retention::Durable,
+            running: false,
         })
     }
 }
