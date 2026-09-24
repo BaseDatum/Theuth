@@ -15,17 +15,17 @@ const bucket = (o: Partial<CostBucket>): CostBucket => ({
 })
 
 test('formatMoney rounds nanos half up to milli-units without floats', () => {
-  expect(formatMoney(usd('123000000'))).toBe('USD 0.123')
-  expect(formatMoney(usd('100000000'))).toBe('USD 0.100')
-  expect(formatMoney(usd('0'))).toBe('USD 0.000')
-  expect(formatMoney(usd('1234499999'))).toBe('USD 1.234')
-  expect(formatMoney(usd('1234500000'))).toBe('USD 1.235')
-  expect(formatMoney(usd('99999999999999999999'))).toBe('USD 100000000000.000')
+  expect(formatMoney(usd('123000000'))).toBe('$0.123')
+  expect(formatMoney(usd('100000000'))).toBe('$0.100')
+  expect(formatMoney(usd('0'))).toBe('$0.000')
+  expect(formatMoney(usd('1234499999'))).toBe('$1.234')
+  expect(formatMoney(usd('1234500000'))).toBe('$1.235')
+  expect(formatMoney(usd('99999999999999999999'))).toBe('$100000000000.000')
 })
 
 test('costLines follows 51 §6.2 and never merges returned with estimate', () => {
   expect(costLines(bucket({ calls: 2 }))).toEqual({ primary: 'Returned cost —' })
-  expect(costLines(bucket({ dispatched: 3, returned: [usd('123000000')] }))).toEqual({ primary: 'Returned cost USD 0.123' })
+  expect(costLines(bucket({ dispatched: 3, returned: [usd('123000000')] }))).toEqual({ primary: 'Returned cost $0.123' })
   expect(
     costLines(
       bucket({
@@ -36,18 +36,18 @@ test('costLines follows 51 §6.2 and never merges returned with estimate', () =>
       }),
     ),
   ).toEqual({
-    primary: 'Returned cost USD 0.100 · 2 unavailable',
-    secondary: 'Estimated ~USD 0.023',
+    primary: 'Returned cost $0.100 · 2 unavailable',
+    secondary: 'Estimated ~$0.023',
   })
   expect(costLines(bucket({ dispatched: 2, unavailable: 2 }))).toEqual({ primary: 'Returned cost — · 2 unavailable' })
   expect(costLines(bucket({ dispatched: 2, returned: [usd('1000000000'), { currency: 'EUR', nanos: '500000000' }] })).primary).toBe(
-    'Returned cost USD 1.000 + EUR 0.500',
+    'Returned cost $1.000 + €0.500',
   )
 })
 
 test('costShort prefers returned, then a tilde-marked estimate, then a dash', () => {
   const est = [usd('23000000')]
-  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('USD 0.100')
-  expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~USD 0.023')
+  expect(costShort(bucket({ dispatched: 2, returned: [usd('100000000')], estimated_for_unavailable: est }))).toBe('$0.100')
+  expect(costShort(bucket({ dispatched: 2, estimated_for_unavailable: est }))).toBe('~$0.023')
   expect(costShort(bucket({ dispatched: 2, unavailable: 2 }))).toBe('—')
 })
