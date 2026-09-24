@@ -208,12 +208,14 @@ impl Labeller {
     }
 }
 
-/// Run until stop; the final view after the flush. Blocking, call from `spawn_blocking`.
+/// Run until stop; the final view after the flush. `sink` receives the view after every
+/// step and says whether to go on (`false`: the actor is gone). Blocking, call from
+/// `spawn_blocking`.
 pub fn run(
     mut ring: Consumer<Sample>,
     mut streamer: Streamer,
     flags: Flags,
-    me: ActorRef<Meeting>,
+    mut sink: impl FnMut(Labels) -> bool,
 ) -> anyhow::Result<Labels> {
     let g: Geometry = streamer.geometry();
     let block = RATE as usize / 50;
@@ -231,10 +233,8 @@ pub fn run(
     let mut was_paused = false;
     let mut drops = 0u32;
     let mut drop_log = Instant::now();
-    let report = |labeller: &Labeller, at: Instant, position: usize, scored_m: usize| -> bool {
-        me.tell(view(labeller, at, position, scored_m))
-            .blocking_send()
-            .is_ok()
+    let mut report = |labeller: &Labeller, at: Instant, position: usize, scored_m: usize| -> bool {
+        sink(view(labeller, at, position, scored_m))
     };
     loop {
         if flags.stop.load(Ordering::SeqCst) {
@@ -327,7 +327,10 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<Option<Labels>> {
     tokio::spawn(async move {
         let actor = me.clone();
-        let r = tokio::task::spawn_blocking(move || run(ring, streamer, flags, me)).await;
+        let r = tokio::task::spawn_blocking(move || {
+            run(ring, streamer, flags, |l| me.tell(l).blocking_send().is_ok())
+        })
+        .await;
         match r {
             Ok(Ok(labels)) => Some(labels),
             Ok(Err(e)) => {
