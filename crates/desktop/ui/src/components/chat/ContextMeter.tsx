@@ -5,8 +5,11 @@ import { useSessionField } from '@/store/sessions'
 
 const k = (n: number) => `${Math.round(n / 1000)}k`
 
-/** `used/limit k · pct%` pill (colour steps at 70 / 90 %) plus the last turn's cache hit rate. */
-export function ContextMeter({ session }: { session: string }) {
+/**
+ * `used/limit k · pct% · cache` pill (colour steps at 70 / 90 %). `compact`: the percent alone, for the narrow header;
+ * the pane's own width decides that, not the viewport, so no `md:` gating here.
+ */
+export function ContextMeter({ session, compact }: { session: string; compact?: boolean }) {
   const api = useApi()
   const used = useSessionField(session, 'context')
   const estimated = useSessionField(session, 'contextEstimated')
@@ -27,18 +30,11 @@ export function ContextMeter({ session }: { session: string }) {
             ? 'border-warning-border bg-warning-bg text-warning'
             : 'border-danger-border bg-danger-bg text-danger',
       )}
-      title={`${estimated ? 'Estimated context window used' : 'Context window used'} · last turn prefix cache hit rate`}
+      title={`${estimated ? 'Estimated context window used' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}`}
     >
       {estimated && '~'}
-      {pct === null ? (
-        k(used)
-      ) : (
-        <>
-          <span className="hidden md:inline">{`${k(used)}/${k(limit)} · `}</span>
-          {pct}%
-        </>
-      )}
-      {cache !== null && <span className="hidden md:inline"> · cache {cache}%</span>}
+      {pct === null ? k(used) : compact ? `${pct}%` : `${k(used)}/${k(limit)} · ${pct}%`}
+      {cache !== null && !compact && ` · cache ${cache}%`}
     </span>
   )
 }

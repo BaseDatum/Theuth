@@ -15,6 +15,7 @@ import type { Key } from '@/rpc/bindings/Key'
 import type { PtyChunk } from '@/rpc/bindings/PtyChunk'
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
+import { MenuRow } from './HeaderMenu'
 
 // Fixed soot canvas so the 16-colour palette reads on either app theme.
 const BG = '#12100e'
@@ -224,9 +225,19 @@ function Body({ session }: { session: string }) {
   )
 }
 
-/** The session's PTY jobs (51 §7.3, 55 §4) in a real terminal. Dialog on desktop, full-height sheet on mobile. Streams only while open. */
+/**
+ * The session's PTY jobs (51 §7.3, 55 §4) in a real terminal. Dialog on desktop, full-height sheet on mobile. Streams
+ * only while open. `/terminals` reaches it through the `theuth:terminals` window event.
+ */
 export function TerminalViewer({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const mobile = useIsMobile()
+  useEffect(() => {
+    const h = (e: Event) => {
+      if ((e as CustomEvent<{ session?: string }>).detail?.session === session) onOpenChange(true)
+    }
+    window.addEventListener('theuth:terminals', h)
+    return () => window.removeEventListener('theuth:terminals', h)
+  }, [session, onOpenChange])
   if (mobile)
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
@@ -253,35 +264,28 @@ export function TerminalViewer({ session, open, onOpenChange }: { session: strin
 }
 
 /**
- * Header icon, shown once the session (or its subtree) has a PTY: a live `JobStarted.pty` or a retained terminal
- * found on load, the same way the globe follows the first `browser_*` call. `/terminals` reaches the viewer through
- * the `theuth:terminals` window event even before then.
+ * The session (or its subtree) has a PTY: a live `JobStarted.pty` or a retained terminal found on load, the same way
+ * the globe follows the first `browser_*` call.
  */
-export function TerminalButton({ session }: { session: string }) {
+export function useHasTerminals(session: string | null): boolean {
   const api = useApi()
-  const [open, setOpen] = useState(false)
-  const live = useSessionField(session, 'terminal')
+  const live = useSessionField(session ?? '', 'terminal')
   const { data } = useQuery({
-    queryKey: queryKeys.terminals(session),
-    queryFn: () => api.list_terminals(session, true),
-    enabled: !live,
+    queryKey: queryKeys.terminals(session ?? ''),
+    queryFn: () => api.list_terminals(session ?? '', true),
+    enabled: session !== null && !live,
     staleTime: Infinity,
   })
-  useEffect(() => {
-    const h = (e: Event) => {
-      if ((e as CustomEvent<{ session?: string }>).detail?.session === session) setOpen(true)
-    }
-    window.addEventListener('theuth:terminals', h)
-    return () => window.removeEventListener('theuth:terminals', h)
-  }, [session])
+  return live || (data?.length ?? 0) > 0
+}
+
+/** Header icon (or compact menu `row`) opening `TerminalViewer`, which the header owns; shown once `useHasTerminals`. */
+export function TerminalButton({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
+  if (!useHasTerminals(session)) return null
+  if (row) return <MenuRow icon={SquareTerminal} label="Terminals" onSelect={onOpen} />
   return (
-    <>
-      {(live || (data?.length ?? 0) > 0) && (
-        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={() => setOpen(true)}>
-          <SquareTerminal className="size-5" />
-        </Button>
-      )}
-      <TerminalViewer session={session} open={open} onOpenChange={setOpen} />
-    </>
+    <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={onOpen}>
+      <SquareTerminal className="size-5" />
+    </Button>
   )
 }

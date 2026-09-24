@@ -1,15 +1,18 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { Globe, PanelLeft, ShieldOff, X } from 'lucide-react'
-import { useState } from 'react'
+import { Link, useNavigate } from '@tanstack/react-router'
+import { CornerLeftUp, Gauge, Globe, LayoutGrid, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { Fragment, type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
+import { type HeaderItem, decideTier, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -18,45 +21,70 @@ import { metaLine } from './ArtifactCard'
 import { ArtifactPanel } from './ArtifactPanel'
 import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
-import { ModelMenu } from './ModelMenu'
+import { CostDialog, CostPill } from './CostPill'
+import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
+import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
 import { SessionMenu } from './SessionMenu'
-import { CostPill } from './CostPill'
-import { TerminalButton } from './TerminalViewer'
+import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 
-/** `↳ parent` breadcrumb of a subagent's transcript. */
-function Parent({ id }: { id: string }) {
+/** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. */
+function Parent({ id, row }: { id: string; row?: boolean }) {
   const api = useApi()
+  const navigate = useNavigate()
   const { data: sessions } = useQuery({
     queryKey: queryKeys.sessions,
     queryFn: () => api.list_sessions(),
   })
-  const row = sessions?.find((s) => s.id === id)
+  const r = sessions?.find((s) => s.id === id)
+  const name = r?.name ?? r?.title ?? id.slice(0, 8)
+  if (row) {
+    return (
+      <MenuRow
+        icon={CornerLeftUp}
+        label="Parent"
+        detail={name}
+        onSelect={() => void navigate({ to: '/c/$session', params: { session: id } })}
+      />
+    )
+  }
   return (
     <Link
       to="/c/$session"
       params={{ session: id }}
       className="truncate text-sm text-fg-secondary hover:text-foreground"
     >
-      ↳ {row?.name ?? row?.title ?? id.slice(0, 8)}
+      ↳ {name}
     </Link>
   )
 }
 
-/** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). */
-function Artifacts({ session }: { session: string }) {
+/** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). `row`: the compact menu's line. */
+function Artifacts({ session, row }: { session: string; row?: boolean }) {
   const artifacts = useSessionField(session, 'artifacts')
+  const close = useHeaderMenuClose()
   if (!artifacts?.size) return null
   const list = [...artifacts.values()].sort((x, y) => y.created_at - x.created_at)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="h-9 gap-1 rounded-lg px-2 text-fg-secondary" aria-label="Artifacts">
-          ▣<span className="text-xs">{list.length}</span>
-        </Button>
+        {row ? (
+          <MenuRow icon={LayoutGrid} label="Artifacts" detail={list.length} />
+        ) : (
+          <Button variant="ghost" className="h-9 gap-1 rounded-lg px-2 text-fg-secondary" aria-label="Artifacts">
+            ▣<span className="text-xs">{list.length}</span>
+          </Button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
         {list.map((a) => (
-          <DropdownMenuItem key={a.call_id} className="flex-col items-start gap-0" onSelect={() => useSessions.getState().setArtifactPanel(session, a.call_id)}>
+          <DropdownMenuItem
+            key={a.call_id}
+            className="flex-col items-start gap-0"
+            onSelect={() => {
+              close()
+              useSessions.getState().setArtifactPanel(session, a.call_id)
+            }}
+          >
             <span className="w-full truncate">{a.title}</span>
             <span className="w-full truncate text-xs text-fg-tertiary">
               {metaLine(a)}
@@ -69,9 +97,43 @@ function Artifacts({ session }: { session: string }) {
   )
 }
 
-/** 52 px bar over the column: model on the left, context / approvals / session menu on the right. Draggable window region.
- * `first` (default): this column touches the window's top-left, so it carries the sidebar toggle and the traffic-light
- * inset; `onClose` adds a close control for a split pane. */
+/**
+ * The layout tier (lib/header.ts) for the pane this header sits in, from measurement rather than a viewport
+ * breakpoint: `row` has `min-w-max`, so its width is the bar's natural width whenever that exceeds the pane's, and
+ * `header.clientWidth` is the pane's. Re-checked after every render (a pill appeared) and on every pane resize;
+ * both run before paint (layout effect; `flushSync` in the observer), so a wrong tier is never drawn.
+ */
+function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLElement | null>): number {
+  const [tier, setTier] = useState(0)
+  const need = useRef<(number | undefined)[]>([])
+  const check = useRef(() => {})
+  check.current = () => {
+    const el = header.current
+    const r = row.current
+    if (!el || !r) return
+    need.current[tier] = r.offsetWidth
+    const next = decideTier(tier, el.clientWidth, need.current)
+    if (next !== tier) setTier(next)
+  }
+  useLayoutEffect(() => check.current())
+  useLayoutEffect(() => {
+    const el = header.current
+    if (!el) return
+    const ro = new ResizeObserver(() => flushSync(() => check.current()))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [header])
+  return tier
+}
+
+/**
+ * 52 px bar over the column. Every control is one `HeaderItem`, rendered inline by the full bar and, when the pane is
+ * too narrow for that (`useTier`), either kept in the compact bar (title · context % · one panel button · chevron · ⋯)
+ * or listed as a labelled row behind the chevron (`HeaderMenu`), so the two layouts share one source of truth.
+ * The dialogs and sheets the items open live here, not in the items, so a menu that closes on selection cannot
+ * unmount them. Draggable window region. `first` (default): this column touches the window's top-left, so it carries
+ * the sidebar toggle and the traffic-light inset; `onClose` adds a close control for a split pane.
+ */
 export function Header({
   session,
   draftEffort,
@@ -85,78 +147,192 @@ export function Header({
   first?: boolean
   onClose?(): void
 }) {
+  const api = useApi()
   const { open, isMobile } = useSidebar()
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
   const browser = useSessionField(session ?? '', 'browser')
   const live = useSessionField(session ?? '', 'browserLive')
+  const artifacts = useSessionField(session ?? '', 'artifacts')
+  const terminals = useHasTerminals(session)
+  const liveTitle = useSessionField(session ?? '', 'title')
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session && !liveTitle })
   const [sheet, setSheet] = useState(false)
+  const [cost, setCost] = useState(false)
+  const [terminal, setTerminal] = useState(false)
+  const [picker, setPicker] = useState(false)
   const approvalsOff = info !== null && (!info.approvals.global || !info.approvals.session)
   const mac = isMacDesktop()
-  return (
-    <header
-      data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', first && !open && mac && 'pl-20')}
-    >
-      {first && (!open || isMobile) && (
-        <div className="flex shrink-0 items-center">
-          <SearchTrigger />
-          <SidebarToggle />
-        </div>
-      )}
-      <div className="min-w-0">
-        <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
-      </div>
-      {parent && <Parent id={parent} />}
-      <div className="flex-1" data-tauri-drag-region={mac || undefined} />
-      {session && <ContextMeter session={session} />}
-      {session && <CostPill session={session} />}
-      {session && <TerminalButton session={session} />}
-      {session && browser && (
-        <Button
-          variant="ghost"
-          className="size-9 rounded-lg text-fg-secondary"
-          aria-label="Live browser"
-          onClick={() => useSessions.getState().setBrowserLive(session, true)}
-        >
-          <Globe className="size-5" />
-        </Button>
-      )}
-      {session && <Artifacts session={session} />}
-      {approvalsOff && (
-        <>
-          <Badge variant="outline" className="hidden text-fg-secondary md:inline-flex">
+  const ref = useRef<HTMLElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const tier = useTier(ref, rowRef)
+  const compact = tier > 0
+
+  const raw = session ? liveTitle || sessions.data?.find((s) => s.id === session)?.title || session.slice(0, 8) : 'New chat'
+  const title = parseNote(raw)?.body || raw
+  const nav = first && (!open || isMobile)
+  /**
+   * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
+   * live browser over terminals (a job detail); the others move behind the chevron.
+   */
+  const panel = artifacts?.size ? 'artifacts' : browser ? 'browser' : terminals ? 'terminals' : null
+
+  const items: HeaderItem[] = [
+    {
+      id: 'search',
+      slot: 'menu',
+      render: (mode) =>
+        !nav ? null : mode === 'row' ? (
+          <MenuRow icon={Search} label="Search" onSelect={() => window.dispatchEvent(new Event('theuth:search'))} />
+        ) : (
+          <SearchTrigger className="shrink-0" />
+        ),
+    },
+    { id: 'sidebar', slot: 'bar', render: () => (nav ? <SidebarToggle /> : null) },
+    {
+      id: 'model',
+      slot: 'menu',
+      render: (mode) =>
+        mode === 'row' ? (
+          <ModelRow session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} onOpen={() => setPicker(true)} />
+        ) : (
+          <div className="min-w-0">
+            <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
+          </div>
+        ),
+    },
+    { id: 'parent', slot: 'menu', render: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null) },
+    {
+      id: 'title',
+      slot: 'bar',
+      render: (mode) =>
+        mode === 'bar' ? (
+          // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never
+          // pushes the controls out; it truncates to nothing before they move.
+          <span data-tauri-drag-region={mac || undefined} className="w-0 min-w-0 flex-1 truncate text-sm font-medium" title={title}>
+            {title}
+          </span>
+        ) : null,
+    },
+    {
+      id: 'spacer',
+      slot: 'bar',
+      render: (mode) => (mode === 'full' ? <div className="flex-1" data-tauri-drag-region={mac || undefined} /> : null),
+    },
+    {
+      id: 'context',
+      slot: 'both',
+      shed: true,
+      render: (mode) =>
+        !session ? null : mode === 'row' ? (
+          <MenuRow icon={Gauge} label="Context" detail={<ContextMeter session={session} />} />
+        ) : (
+          <ContextMeter session={session} compact={mode === 'bar'} />
+        ),
+    },
+    { id: 'cost', slot: 'menu', render: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null) },
+    {
+      id: 'terminals',
+      slot: panel === 'terminals' ? 'bar' : 'menu',
+      shed: true,
+      render: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
+    },
+    {
+      id: 'browser',
+      slot: panel === 'browser' ? 'bar' : 'menu',
+      shed: true,
+      render: (mode) =>
+        !session || !browser ? null : mode === 'row' ? (
+          <MenuRow icon={Globe} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
+        ) : (
+          <Button
+            variant="ghost"
+            className="size-9 rounded-lg text-fg-secondary"
+            aria-label="Live browser"
+            onClick={() => useSessions.getState().setBrowserLive(session, true)}
+          >
+            <Globe className="size-5" />
+          </Button>
+        ),
+    },
+    {
+      id: 'artifacts',
+      slot: panel === 'artifacts' ? 'bar' : 'menu',
+      shed: true,
+      render: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
+    },
+    {
+      id: 'approvalsOff',
+      slot: 'menu',
+      render: (mode) =>
+        !approvalsOff ? null : mode === 'row' ? (
+          <MenuRow icon={ShieldOff} label="Approvals off" />
+        ) : (
+          <Badge variant="outline" className="text-fg-secondary">
             approvals off
           </Badge>
-          <ShieldOff className="size-4 shrink-0 text-fg-secondary md:hidden" aria-label="Approvals off" />
+        ),
+    },
+    {
+      id: 'pending',
+      slot: 'menu',
+      render: (mode) =>
+        pending === 0 ? null : mode === 'row' ? (
+          <MenuRow label="Pending approvals" detail={pending} className="text-warning" onSelect={() => setSheet(true)} />
+        ) : (
+          <Button variant="ghost" className="h-7 rounded-full px-2 text-warning" onClick={() => setSheet(true)} aria-label="Pending approvals">
+            ●{pending}
+          </Button>
+        ),
+    },
+    {
+      id: 'more',
+      slot: 'bar',
+      render: (mode) =>
+        mode === 'full' ? null : (
+          <HeaderMenu header={ref} badge={pending > 0}>
+            {menu.map((i) => (
+              <Fragment key={i.id}>{i.render('row')}</Fragment>
+            ))}
+          </HeaderMenu>
+        ),
+    },
+    { id: 'menu', slot: 'bar', render: () => (session ? <SessionMenu session={session} /> : null) },
+    {
+      id: 'close',
+      slot: 'bar',
+      render: () =>
+        onClose ? (
+          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
+            <X className="size-5" />
+          </Button>
+        ) : null,
+    },
+  ]
+  const { bar, menu } = layout(items, tier)
+
+  return (
+    <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
+      <div
+        ref={rowRef}
+        data-tauri-drag-region={mac || undefined}
+        className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', nav && !open && mac && 'pl-20')}
+      >
+        {bar.map((i) => (
+          <Fragment key={i.id}>{i.render(compact ? 'bar' : 'full')}</Fragment>
+        ))}
+      </div>
+      <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
+      {compact && <ModelDialog session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} open={picker} onOpenChange={setPicker} />}
+      {session && (
+        <>
+          <CostDialog session={session} open={cost} onOpenChange={setCost} />
+          <TerminalViewer session={session} open={terminal} onOpenChange={setTerminal} />
+          <BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} />
+          <ArtifactPanel session={session} />
         </>
       )}
-      {pending > 0 && (
-        <Button
-          variant="ghost"
-          className="h-7 rounded-full px-2 text-warning"
-          onClick={() => setSheet(true)}
-          aria-label="Pending approvals"
-        >
-          ●{pending}
-        </Button>
-      )}
-      {session && <SessionMenu session={session} />}
-      {onClose && (
-        <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
-          <X className="size-5" />
-        </Button>
-      )}
-      <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
-      {session && (
-        <BrowserLive
-          session={session}
-          open={!!live}
-          onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)}
-        />
-      )}
-      {session && <ArtifactPanel session={session} />}
     </header>
   )
 }

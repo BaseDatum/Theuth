@@ -1,0 +1,62 @@
+import { expect, test } from 'vitest'
+import { HYSTERESIS, TIERS, decideTier, layout } from './header'
+
+test('the full bar holds until it overflows, then the compact bar; a tier never measured is never entered', () => {
+  expect(decideTier(0, 900, [700])).toBe(0)
+  expect(decideTier(0, 699, [700])).toBe(1)
+  // Nothing measured yet (first render): stay put rather than guess.
+  expect(decideTier(0, 100, [])).toBe(0)
+  expect(decideTier(1, 900, [])).toBe(1)
+})
+
+test('coming back needs the wider layout to fit with hysteresis, so the boundary does not flap', () => {
+  const need = [700, 300]
+  expect(decideTier(1, 700, need)).toBe(1)
+  expect(decideTier(1, 700 + HYSTERESIS - 1, need)).toBe(1)
+  expect(decideTier(1, 700 + HYSTERESIS, need)).toBe(0)
+  // Around the flip point every width has one stable answer per direction.
+  for (let w = 690; w < 700 + HYSTERESIS; w++) {
+    expect(decideTier(1, w, need)).toBe(1)
+    expect(decideTier(0, w, need)).toBe(w < 700 ? 1 : 0)
+  }
+})
+
+test('tier 2 sheds when even the compact bar overflows, and the top tier is a ceiling', () => {
+  expect(decideTier(1, 250, [700, 300])).toBe(2)
+  expect(decideTier(2, 200, [700, 300, 220])).toBe(TIERS - 1)
+  expect(decideTier(2, 300 + HYSTERESIS, [700, 300, 220])).toBe(1)
+  expect(decideTier(2, 299 + HYSTERESIS, [700, 300, 220])).toBe(2)
+})
+
+const items = [
+  { id: 'nav', slot: 'bar' },
+  { id: 'model', slot: 'menu' },
+  { id: 'context', slot: 'both', shed: true },
+  { id: 'panel', slot: 'bar', shed: true },
+  { id: 'menu', slot: 'bar' },
+] as const
+
+const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id)
+
+test('tier 0 shows every item inline and the chevron menu is empty', () => {
+  const { bar, menu } = layout(items, 0)
+  expect(ids(bar)).toEqual(['nav', 'model', 'context', 'panel', 'menu'])
+  expect(menu).toEqual([])
+})
+
+test('tier 1 keeps bar and both items inline; menu and both items go behind the chevron, in header order', () => {
+  const { bar, menu } = layout(items, 1)
+  expect(ids(bar)).toEqual(['nav', 'context', 'panel', 'menu'])
+  expect(ids(menu)).toEqual(['model', 'context'])
+})
+
+test('tier 2 moves shed items out of the bar and into the menu, so nothing is lost', () => {
+  const { bar, menu } = layout(items, 2)
+  expect(ids(bar)).toEqual(['nav', 'menu'])
+  expect(ids(menu)).toEqual(['model', 'context', 'panel'])
+  // Every item is reachable somewhere at every tier.
+  for (let t = 0; t < TIERS; t++) {
+    const l = layout(items, t)
+    expect([...new Set([...ids(l.bar), ...ids(l.menu)])].sort()).toEqual(ids(items).sort())
+  }
+})

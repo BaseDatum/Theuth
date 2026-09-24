@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { Coins } from 'lucide-react'
+import { useEffect } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import { MenuRow } from './HeaderMenu'
 
 function Bucket({ label, bucket }: { label: string; bucket: CostBucket }) {
   const { primary, secondary } = costLines(bucket)
@@ -59,38 +61,48 @@ function Breakdown({ cost }: { cost: SessionCost }) {
   )
 }
 
-/** Header pill with the session's returned total, else its estimate (51 §6.2); click or `/cost` opens the breakdown. */
-export function CostPill({ session }: { session: string }) {
+const useCost = (session: string) => {
   const api = useApi()
-  const [open, setOpen] = useState(false)
-  const { data } = useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) })
-  useEffect(() => {
-    const h = (e: Event) => {
-      if ((e as CustomEvent<{ session: string }>).detail.session === session) setOpen(true)
-    }
-    window.addEventListener('theuth:open-cost', h)
-    return () => window.removeEventListener('theuth:open-cost', h)
-  }, [session])
+  return useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
+}
+
+/** Header pill with the session's returned total, else its estimate (51 §6.2); `row`: the compact menu's line. Click opens `CostDialog`. */
+export function CostPill({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
+  const data = useCost(session)
   if (!data) return null
   const amount = costShort(data.total)
   const lines = costLines(data.total)
+  if (row) return <MenuRow icon={Coins} label="Cost" detail={amount} onSelect={onOpen} />
   return (
-    <>
-      <button
-        type="button"
-        className="rounded-full border border-border-subtle px-2.5 py-0.5 text-xs whitespace-nowrap text-fg-secondary tabular-nums"
-        title={lines.secondary ? `${lines.primary}\n${lines.secondary}` : lines.primary}
-        aria-label="Cost"
-        onClick={() => setOpen(true)}
-      >
-        {amount}
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
-          <DialogTitle>Cost</DialogTitle>
-          <Breakdown cost={data} />
-        </DialogContent>
-      </Dialog>
-    </>
+    <button
+      type="button"
+      className="rounded-full border border-border-subtle px-2.5 py-0.5 text-xs whitespace-nowrap text-fg-secondary tabular-nums"
+      title={lines.secondary ? `${lines.primary}\n${lines.secondary}` : lines.primary}
+      aria-label="Cost"
+      onClick={onOpen}
+    >
+      {amount}
+    </button>
+  )
+}
+
+/** The breakdown; lives in the header (not the pill) so it outlives a compact menu that closes on selection. `/cost` opens it too. */
+export function CostDialog({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+  const data = useCost(session)
+  useEffect(() => {
+    const h = (e: Event) => {
+      if ((e as CustomEvent<{ session: string }>).detail.session === session) onOpenChange(true)
+    }
+    window.addEventListener('theuth:open-cost', h)
+    return () => window.removeEventListener('theuth:open-cost', h)
+  }, [session, onOpenChange])
+  if (!data) return null
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogTitle>Cost</DialogTitle>
+        <Breakdown cost={data} />
+      </DialogContent>
+    </Dialog>
   )
 }
