@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub mod actor;
 pub mod helper;
 pub mod meta;
+pub mod search;
 pub mod share;
 pub mod store;
 pub mod tools;

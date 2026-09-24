@@ -9,6 +9,7 @@ description = "Documents: the Yjs authority (yrs) behind every BlockNote editor,
 runtime = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
+search = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -35,7 +36,7 @@ figment = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "search/ts"]
 
 [lints]
 workspace = true

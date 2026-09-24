@@ -43,6 +43,7 @@ pub mod note;
 pub mod ogg;
 pub mod oracle;
 pub mod post;
+pub mod search;
 pub mod session;
 pub mod speakers;
 pub mod state;
@@ -994,7 +995,7 @@ pub(crate) struct NoteReady {
 pub struct Meeting {
     rt: Runtime,
     cfg: MeetingConfig,
-    store: Arc<Store>,
+    pub(crate) store: Arc<Store>,
     /// The brief cache (phase 5); `None` when `briefs.sqlite` would not open — the
     /// meeting then runs on the model path only.
     cache: Option<Arc<Cache>>,

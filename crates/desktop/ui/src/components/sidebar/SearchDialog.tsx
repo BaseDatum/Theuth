@@ -1,7 +1,19 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, RefreshCw, Search, X } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  CircleHelp,
+  FileText,
+  History,
+  MessageSquare,
+  Mic,
+  RefreshCw,
+  Search,
+  StickyNote,
+  X,
+} from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { LevelMeter } from '@/components/chat/LevelMeter'
 import { Button } from '@/components/ui/button'
@@ -38,6 +50,8 @@ import { cn } from '@/lib/utils'
 import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
 import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
+import type { MeetingSearchHit } from '@/rpc/bindings/MeetingSearchHit'
+import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
@@ -56,6 +70,8 @@ const ICON: Record<SearchCategory, typeof Search> = {
   artifacts: FileText,
   knowledge: Search,
   knowledge_history: History,
+  notes: StickyNote,
+  meetings: Mic,
 }
 
 /** Show more steps 10 → 30 → 50; the cap stays put. */
@@ -99,6 +115,18 @@ function items(g: SearchGroup): Item[] {
         key: `knowledge_history:${h.commit}:${h.id}`,
         dest: { category: 'knowledge_history', id: h.id, commit: h.commit, snapshot: h.snapshot_commit },
         node: <HistoryRow hit={h} />,
+      }))
+    case 'notes':
+      return g.page.hits.map((h) => ({
+        key: `notes:${h.doc.id}`,
+        dest: { category: 'notes', id: h.doc.id },
+        node: <NoteRow hit={h} />,
+      }))
+    case 'meetings':
+      return g.page.hits.map((h) => ({
+        key: `meetings:${h.meeting.id}`,
+        dest: { category: 'meetings', id: h.meeting.id },
+        node: <MeetingRow hit={h} />,
       }))
   }
 }
@@ -327,6 +355,10 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
           params: { _splat: dest.id },
           search: dest.snapshot === null ? { change: dest.commit } : { change: dest.commit, snapshot: dest.snapshot },
         })
+      case 'notes':
+        return void navigate({ to: '/notes/$id', params: { id: dest.id }, search: {} })
+      case 'meetings':
+        return void navigate({ to: '/meetings/$id', params: { id: dest.id } })
     }
   }
 
@@ -920,6 +952,37 @@ function HistoryRow({ hit }: { hit: HistorySearchHit }) {
       title={hit.title}
       snippet={<Snippet text={m.snippet} ranges={m.ranges} />}
       meta={[hit.id, hit.status, hit.commit.slice(0, 8), ago(hit.time), hit.message, SIDE[hit.side]]}
+    />
+  )
+}
+
+function NoteRow({ hit }: { hit: NoteSearchHit }) {
+  const m = hit.match
+  const titled = m.field === 'title'
+  return (
+    <Lines
+      title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : hit.doc.title || 'Untitled note'}
+      snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
+      meta={['note', ago(new Date(Number(hit.doc.updated_ms)).toISOString())]}
+    />
+  )
+}
+
+function MeetingRow({ hit }: { hit: MeetingSearchHit }) {
+  const m = hit.match
+  const mt = hit.meeting
+  const titled = m.field === 'title'
+  const title = mt.title || mt.process_name
+  return (
+    <Lines
+      title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : title}
+      snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
+      meta={[
+        'meeting',
+        ago(mt.started_at),
+        mt.duration_ms === null ? '' : `${Math.round(Number(mt.duration_ms) / 60000)} min`,
+        typeof mt.state === 'string' ? mt.state : 'Post',
+      ]}
     />
   )
 }

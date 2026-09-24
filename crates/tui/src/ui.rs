@@ -479,6 +479,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             if m.search_open() {
                 let (inner, area, _, _) = search_layout(&m, w, view);
                 m.search_key(code, inner, area, &commands);
+                // `/attach` picked a row (66 §10): its token leads the draft.
+                if let Some(token) = m.attach_token.take() {
+                    let v = input.read().to_string();
+                    let v = if v.is_empty() { token } else { format!("{token} {v}") };
+                    m.sync_slash(&v);
+                    input.set(v);
+                }
                 return;
             }
             if m.menu.is_some() {
@@ -943,7 +950,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
             *cursor,
         ),
         // Drawn by `search_box`, never here.
-        Menu::Search => return None,
+        Menu::Search | Menu::Attach => return None,
         Menu::Agents { items, cursor } => (
             "agents  ⏎ open  esc close  (the one you leave keeps running)".to_owned(),
             items
@@ -1527,11 +1534,15 @@ fn search_box(
     }
     // Footer: the actions the footer focus walks, the key legend before
     // them when the row has the room.
-    const LEGEND: &str = "⇥ filters · ↑↓ results · ⏎ open · esc close  ";
+    let legend: &str = if m.attach_open() {
+        "⇥ filters · ↑↓ results · ⏎ attach · esc close  "
+    } else {
+        "⇥ filters · ↑↓ results · ⏎ open · esc close  "
+    };
     let actions: usize = search::FOOTER.iter().map(|a| search::cells(a) + 3).sum();
     let mut footer = Vec::with_capacity(1 + 2 * search::FOOTER.len());
-    if search::cells(LEGEND) + actions <= inner {
-        footer.push(MixedTextContent::new(LEGEND).color(dim));
+    if search::cells(legend) + actions <= inner {
+        footer.push(MixedTextContent::new(legend).color(dim));
     }
     for (i, action) in search::FOOTER.iter().enumerate() {
         let mut c = MixedTextContent::new(format!("[{action}]")).color(BONE_DIM);
@@ -1639,7 +1650,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
         Entry::User { text: t, .. } => element! {
             View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
                 Text(content: "◆ you", color: USER, weight: Weight::Bold)
-                #(plain(t, TextWrap::Wrap, |c| c))
+                #(plain(&crate::attach::display(t), TextWrap::Wrap, |c| c))
             }
         }
         .into_any(),
@@ -2031,7 +2042,7 @@ mod tests {
         for (width, budget) in (30..=120u16).flat_map(|w| [(w, 6usize), (w, 12), (w, 30)]) {
             for (focus, shown) in [
                 (Focus::Query, "Query:"),
-                (Focus::Filters(4), "Knowledge history]"),
+                (Focus::Filters(6), "Meetings]"),
                 (Focus::Footer(1), "[? Help]"),
             ] {
                 let frame = element!(SearchProbe(width, budget, focus)).to_string();
