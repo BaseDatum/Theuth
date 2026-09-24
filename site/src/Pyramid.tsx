@@ -2,11 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import still from './pyramid-still.webp'
 
 /*
- * The pyramid: a square-base limestone pyramid rendered with raw WebGL (four faces, one program), pinned behind the
- * page. Stone is procedural in the fragment shader: courses of blocks with staggered joints, soot grout, per-block
- * tone, limestone grain, weathering streaks, a bevel catch on the four arrises. One warm key from the upper left, a
- * faint cold fill from below, a soft contact shadow on an invisible floor. Scroll turns it ~110° about Y and eases the
- * pitch; the motion is inertial. Reduced motion renders a still frame. No WebGL: the still photograph instead.
+ * The pyramid: the Great Pyramid as it stood c. 2560 BC, rendered with raw WebGL (four faces, one program), pinned
+ * behind the page. True proportions: slope 51.84°, height / half-base 1.273. The faces are polished white Tura
+ * limestone casing: near-planar, with hairline joints between courses so fine they fade out when the courses are a
+ * few pixels apart; each face is indented a fraction of a degree along its centre line, so the two halves split the
+ * light. A small gilded pyramidion caps the apex, with a faint screen-space halo. Lighting is physically based and
+ * HDR: one low golden-hour sun (GGX specular, Schlick Fresnel), a hemisphere of faience-grey sky and warm ground
+ * bounce, a Fresnel sheen of that sky in the polished stone, ground occlusion at the base. The floor carries the
+ * sun-cast shadow (convex hull of the base and the projected apex) and a contact shadow, on a pool of lit sand.
+ * ACES tone map, gamma 2.2, dithered. Scroll turns it ~110° about Y and eases the pitch; the motion is inertial.
+ * Reduced motion renders a still frame. No WebGL (or no derivatives): the still photograph instead.
  */
 
 const VERT = `
@@ -14,29 +19,45 @@ attribute vec3 aPos;
 attribute vec3 aNor;
 attribute vec2 aUV;
 uniform mat4 uProj, uView, uModel;
-uniform float uShift;
+uniform float uShift, uMode, uHeight;
+uniform vec2 uGlow;
 varying vec3 vN;
 varying vec2 vUV;
 varying vec3 vPos;
 void main() {
-  vec4 w = uModel * vec4(aPos, 1.0);
-  vPos = w.xyz;
-  vN = mat3(uModel) * aNor;
   vUV = aUV;
-  vec4 p = uProj * uView * w;
+  vec4 p;
+  if (uMode > 1.5) {
+    // apex halo: a screen-aligned quad of constant screen size at the apex
+    p = uProj * uView * vec4(0.0, uHeight, 0.0, 1.0);
+    p.xy += aPos.xy * uGlow * p.w;
+  } else {
+    vec4 w = uModel * vec4(aPos, 1.0);
+    vPos = w.xyz;
+    vN = mat3(uModel) * aNor;
+    p = uProj * uView * w;
+  }
   p.x += uShift * p.w;
   gl_Position = p;
 }`
 
 const FRAG = `
+#extension GL_OES_standard_derivatives : enable
 precision highp float;
 varying vec3 vN;
 varying vec2 vUV;
 varying vec3 vPos;
-uniform vec3 uStone, uStoneDim, uGrout, uKey, uFill;
-uniform vec3 uKeyDir, uFillDir;
-uniform float uSlant;
-uniform float uGround;
+uniform vec3 uCasing, uSand, uShadow;
+uniform vec3 uSunDir, uEye;
+uniform mat4 uModel;
+uniform float uSlant, uHeight, uMode, uHalo;
+
+const vec3 SUN = vec3(1.0, 0.74, 0.46) * 3.1;          // low sun, HDR
+const vec3 SKY = vec3(0.40, 0.50, 0.54) * 0.50;        // faience-grey zenith
+const vec3 HORIZON = vec3(0.70, 0.52, 0.34) * 0.60;    // golden-hour band at the horizon
+const vec3 BOUNCE = vec3(0.36, 0.25, 0.14) * 0.50;     // warm sand bounce
+const vec3 GOLD = vec3(1.0, 0.70, 0.24);               // electrum F0
+const float PI = 3.14159265;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -46,69 +67,137 @@ float vnoise(vec2 p) {
 }
 float fbm(vec2 p) {
   float v = 0.0, a = 0.5;
-  for (int i = 0; i < 4; i++) { v += a * vnoise(p); p = p * 2.03 + 17.3; a *= 0.5; }
+  for (int i = 0; i < 3; i++) { v += a * vnoise(p); p = p * 2.03 + 17.3; a *= 0.5; }
   return v;
 }
 
+// sky dome seen from any direction: warm horizon band under a cool zenith, sand below, a glow around the low sun
+vec3 env(vec3 d) {
+  vec3 up = mix(HORIZON, SKY, pow(clamp(d.y, 0.0, 1.0), 0.55));
+  vec3 e = mix(BOUNCE, up, smoothstep(-0.15, 0.1, d.y));
+  return e + SUN * 0.20 * pow(max(dot(d, uSunDir), 0.0), 5.0);
+}
+
+vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+vec3 finish(vec3 hdr) {
+  vec3 c = pow(aces(hdr), vec3(1.0 / 2.2));
+  return c + (hash(gl_FragCoord.xy) - 0.5) / 255.0;
+}
+
+float sdTriangle(vec2 p, vec2 a, vec2 b, vec2 c) {
+  vec2 e0 = b - a, e1 = c - b, e2 = a - c;
+  vec2 v0 = p - a, v1 = p - b, v2 = p - c;
+  vec2 pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+  vec2 pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+  vec2 pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+  float s = sign(e0.x * e2.y - e0.y * e2.x);
+  vec2 d = min(min(vec2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+                   vec2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+                   vec2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)));
+  return -sqrt(d.x) * sign(d.y);
+}
+
+// GGX specular with correlated Smith visibility; returns D * V (F applied by the caller)
+float ggx(float NdH, float NdL, float NdV, float rough) {
+  float a2 = rough * rough * rough * rough;
+  float d = NdH * NdH * (a2 - 1.0) + 1.0;
+  float D = a2 / (PI * d * d);
+  float V = 0.5 / (NdL * sqrt(NdV * NdV * (1.0 - a2) + a2) + NdV * sqrt(NdL * NdL * (1.0 - a2) + a2) + 1e-4);
+  return D * V;
+}
+
 void main() {
-  if (uGround > 0.5) {
-    // contact shadow: soft dark ellipse on the floor, pushed away from the key light
-    vec2 c = vPos.xz - vec2(0.22, -0.18);
-    float d = length(c * vec2(0.85, 1.0));
-    float a = 0.6 * (1.0 - smoothstep(0.5, 1.5, d));
-    gl_FragColor = vec4(uGrout, a);
+  if (uMode > 1.5) {
+    // apex halo: warm bloom, hot core, zero at the quad's edge
+    float r2 = dot(vUV, vUV);
+    float a = max(0.0, exp(-r2 * 4.0) * (1.0 - r2));
+    vec3 c = mix(vec3(1.0, 0.76, 0.40), vec3(1.0, 0.95, 0.82), exp(-r2 * 14.0));
+    gl_FragColor = vec4(c, a * uHalo + (hash(gl_FragCoord.xy) - 0.5) / 255.0);
     return;
   }
 
-  // ── masonry ───────────────────────────────────────────────────────────────
-  vec2 uv = vUV + 0.003 * (vec2(vnoise(vUV * 9.0), vnoise(vUV * 9.0 + 5.0)) - 0.5);   // hand-cut joints wander
-  float courseH = 0.036;
-  float row = floor(uv.y / courseH);
-  float fy = fract(uv.y / courseH);
-  float blockW = 0.075 + 0.05 * hash(vec2(row, 7.0));
-  float xu = uv.x / blockW + hash(vec2(row, 3.0)) * 1.7;
-  float col = floor(xu);
-  float fx = fract(xu);
-  vec2 id = vec2(col, row);
-  float bh = hash(id);
+  if (uMode > 0.5) {
+    // ── floor: cast shadow (hull of the base square and the projected apex), contact shadow, pool of lit sand ──
+    mat3 R = mat3(uModel);
+    vec3 local = vPos * R;                                    // world → model (rotation only)
+    float sq = max(abs(local.x), abs(local.z)) - 1.0;         // distance outside the base square
+    vec2 apex = -uSunDir.xz * (uHeight / uSunDir.y);
+    vec2 c0 = (R * vec3(-1.0, 0.0, -1.0)).xz, c1 = (R * vec3(1.0, 0.0, -1.0)).xz;
+    vec2 c2 = (R * vec3(1.0, 0.0, 1.0)).xz, c3 = (R * vec3(-1.0, 0.0, 1.0)).xz;
+    float d = min(min(sdTriangle(vPos.xz, c0, c1, apex), sdTriangle(vPos.xz, c1, c2, apex)),
+                  min(sdTriangle(vPos.xz, c2, c3, apex), sdTriangle(vPos.xz, c3, c0, apex)));
+    d = min(d, sq);
+    float far = length(vPos.xz);
+    float pen = 0.04 + 0.10 * clamp((far - 1.0) / 3.0, 0.0, 1.0);   // penumbra widens away from the base
+    float shadow = 1.0 - smoothstep(-pen, pen, d);
+    float contact = 1.0 - smoothstep(0.0, 0.7, sq);
+    float shade = max(shadow * 0.9, contact * 0.75);
+    float pool = 1.0 - smoothstep(0.3, 3.6, far);
+    vec3 lit = finish(uSand * (SUN * uSunDir.y + env(vec3(0.0, 1.0, 0.0))));
+    float lightA = 0.8 * pool * (1.0 - shade);
+    float shadeA = 0.65 * shade * (1.0 - smoothstep(1.8, 4.6, far));
+    float alpha = lightA + shadeA;
+    gl_FragColor = vec4((lightA * lit + shadeA * uShadow) / max(alpha, 1e-4), alpha);
+    return;
+  }
 
-  float mx = min(fx, 1.0 - fx) * blockW;
-  float my = min(fy, 1.0 - fy) * courseH;
-  float m = min(mx, my);
-  float groutW = 0.0016 + 0.0012 * hash(id + 9.0);
-  float grout = 1.0 - smoothstep(0.0, groutW, m);
-  float ao = 1.0 - 0.30 * (1.0 - smoothstep(groutW, groutW + 0.009, m));
+  // ── faces ─────────────────────────────────────────────────────────────────
+  vec3 n0 = normalize(vN);
+  vec3 T = normalize(cross(vec3(0.0, 1.0, 0.0), n0));        // along the base, face +x
+  vec3 B = cross(n0, T);                                      // up the face
+  float px = max(fwidth(vUV.y), 1e-5);                        // face units per pixel
 
-  // ── stone ─────────────────────────────────────────────────────────────────
-  float grain = fbm(vUV * 70.0 + bh * 10.0);
-  float pits = smoothstep(0.6, 0.9, vnoise(vUV * 420.0));
-  float tone = mix(0.55, 1.0, bh) * (0.86 + 0.28 * grain) - 0.14 * pits;
-  vec3 stone = mix(uStoneDim, uStone, clamp(tone, 0.0, 1.0));
-  float streak = fbm(vec2(vUV.x * 2.2, vUV.y * 0.7) + 31.0);
-  stone = mix(stone, uStoneDim, 0.5 * smoothstep(0.5, 0.85, streak));
-  stone *= mix(0.78, 1.0, smoothstep(0.0, 0.45, vUV.y));   // dust and floor occlusion at the base
+  // casing courses: ~96 to the apex, blocks about twice as wide as tall, staggered per course
+  float xw = vUV.x * (1.0 - vUV.y / uSlant);                  // horizontal position in half-base units
+  float courseH = uSlant / 96.0;
+  float blockW = courseH * 2.1;
+  float row = floor(vUV.y / courseH);
+  float xu = xw / blockW + hash(vec2(row, 3.0)) * 1.7;
+  vec2 id = vec2(floor(xu), row);
+  float fy = fract(vUV.y / courseH), fx = fract(xu);
+  float m = min(min(fy, 1.0 - fy) * courseH, min(fx, 1.0 - fx) * blockW);
+  float joint = (1.0 - smoothstep(0.0, 0.8 * px, m)) * smoothstep(2.5, 6.0, courseH / px);
 
-  // ── arrises: distance to the face's slanted edges, in face units ──────────
-  float edge = (1.0 - vUV.y / uSlant) - abs(vUV.x);
-  float bevel = 1.0 - smoothstep(0.0, 0.03, edge);
-  float chip = smoothstep(0.3, 0.7, vnoise(vUV * 90.0));
+  // faint concavity along the centre line; polished blocks each set a hair differently
+  float side = smoothstep(-px, px, xw) * 2.0 - 1.0;
+  vec3 n = normalize(n0 - 0.013 * side * T + 0.003 * ((hash(id) - 0.5) * T + (hash(id + 7.0) - 0.5) * B));
 
-  // ── lighting ──────────────────────────────────────────────────────────────
-  vec3 jitter = vec3(hash(id + 1.0), hash(id + 2.0), hash(id + 3.0)) - 0.5;
-  vec3 n = normalize(vN + 0.07 * jitter + 0.10 * bevel * vec3(sign(vUV.x), 0.3, 0.0));
-  float key = max(0.0, dot(n, uKeyDir));
-  float fill = max(0.0, dot(n, uFillDir));
-  float wrap = 0.5 + 0.5 * dot(n, uKeyDir);           // soft self-shadow wraps past the terminator
-  float relief = 1.0 + 0.10 * (fy - 0.5) * (1.0 - grout);          // each block reads as a lip: lighter top, darker bottom
-  vec3 lit = stone * (0.20 + 0.14 * wrap + 0.66 * key * uKey) * ao * relief;
-  lit += stone * uFill * 0.34 * fill;
-  lit = mix(lit, lit * (1.0 - 0.35 * chip), bevel);
-  lit = mix(lit, uGrout, grout * 0.9);
-  gl_FragColor = vec4(lit, 1.0);
+  // pyramidion: the top ~6% of the slant, with a hairline seam where it meets the casing
+  float capY = uSlant * 0.94;
+  float gold = smoothstep(capY - px, capY + px, vUV.y);
+  float seam = 1.0 - smoothstep(0.0, 1.5 * px, abs(vUV.y - capY));
+
+  vec3 V = normalize(uEye - vPos);
+  vec3 L = uSunDir;
+  vec3 H = normalize(L + V);
+  float NdL = max(dot(n, L), 0.0), NdV = max(dot(n, V), 1e-3);
+  float NdH = max(dot(n, H), 0.0), VdH = max(dot(V, H), 0.0);
+  vec3 refl = env(reflect(-V, n));
+  float ao = mix(0.45, 1.0, smoothstep(0.0, 0.5, vUV.y));    // the ground hides half the sky at the base
+
+  // polished limestone: dielectric, near-white, a breath of tonal variation per block and across the face
+  vec3 albedo = uCasing * (0.965 + 0.035 * fbm(vec2(xw * 4.0, vUV.y * 4.0))) * (1.0 + 0.03 * (hash(id + 3.0) - 0.5));
+  vec3 F = vec3(0.05) + 0.95 * pow(1.0 - VdH, 5.0);
+  vec3 Fv = vec3(0.05) + 0.95 * pow(1.0 - NdV, 5.0);
+  // a tight lobe for the polish and a broad one for the soft sheen that sweeps the face as it turns
+  float spec = ggx(NdH, NdL, NdV, 0.28) + 0.6 * ggx(NdH, NdL, NdV, 0.6);
+  vec3 stone = SUN * NdL * (albedo * (1.0 - F) / PI + F * spec)
+             + albedo * env(n) * ao
+             + refl * Fv * 1.6 * ao;
+  stone *= 1.0 - 0.22 * joint;
+
+  // gilded cap: metal, sun glint plus the sky in it
+  vec3 Fg = GOLD + (1.0 - GOLD) * pow(1.0 - VdH, 5.0);
+  vec3 Fgv = GOLD + (1.0 - GOLD) * pow(1.0 - NdV, 5.0);
+  vec3 cap = SUN * NdL * Fg * ggx(NdH, NdL, NdV, 0.22) + refl * Fgv * 1.6 + GOLD * (SUN * NdL * 0.5 + env(n) * 1.1);
+
+  vec3 col = mix(stone, cap, gold) * (1.0 - 0.3 * seam);
+  col = mix(col, HORIZON * 2.2, 0.10 * (1.0 - smoothstep(0.0, 0.55, vUV.y)));   // dust haze near the ground
+  gl_FragColor = vec4(finish(col), 1.0);
 }`
 
 const HALF = 1
-const HEIGHT = 1.27
+const HEIGHT = 146.6 / 115.15   // Great Pyramid: 146.6 m over a 230.3 m base → 51.84°
 const SLANT = Math.hypot(HEIGHT, HALF)
 
 type M4 = Float32Array
@@ -141,8 +230,8 @@ function rotY(a: number): M4 {
   return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1])
 }
 
-/** Four lateral faces plus a floor quad for the shadow: [pos3, nor3, uv2] per vertex. */
-function geometry(): { faces: Float32Array; floor: Float32Array } {
+/** Four lateral faces, a floor quad for the shadow, a unit quad for the apex halo: [pos3, nor3, uv2] per vertex. */
+function geometry(): Float32Array {
   const v: number[] = []
   for (let i = 0; i < 4; i++) {
     const a = (i * Math.PI) / 2
@@ -158,10 +247,10 @@ function geometry(): { faces: Float32Array; floor: Float32Array } {
     v.push(lx, 0, lz, ...n, -1, 0)
     v.push(rx, 0, rz, ...n, 1, 0)
   }
-  const f: number[] = []
-  const q = [[-3, -3], [3, -3], [3, 3], [-3, -3], [3, 3], [-3, 3]]
-  for (const [x, z] of q) f.push(x!, 0, z!, 0, 1, 0, 0, 0)
-  return { faces: new Float32Array(v), floor: new Float32Array(f) }
+  const q = [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]] as const
+  for (const [x, z] of q) v.push(x * 5, 0, z * 5, 0, 1, 0, 0, 0)
+  for (const [x, y] of q) v.push(x, y, 0, 0, 0, 1, x, y)
+  return new Float32Array(v)
 }
 
 function css(name: string): [number, number, number] {
@@ -169,14 +258,9 @@ function css(name: string): [number, number, number] {
   return [(v[0] ?? 200) / 255, (v[1] ?? 180) / 255, (v[2] ?? 140) / 255]
 }
 
-function unit(x: number, y: number, z: number): [number, number, number] {
-  const l = Math.hypot(x, y, z)
-  return [x / l, y / l, z / l]
-}
-
 function start(canvas: HTMLCanvasElement): (() => void) | null {
   const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: false, powerPreference: 'low-power' })
-  if (!gl) return null
+  if (!gl || !gl.getExtension('OES_standard_derivatives')) return null
 
   const compile = (type: number, src: string) => {
     const sh = gl.createShader(type)!
@@ -192,13 +276,9 @@ function start(canvas: HTMLCanvasElement): (() => void) | null {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) ?? 'link')
   gl.useProgram(prog)
 
-  const { faces, floor } = geometry()
   const buf = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, buf)
-  const all = new Float32Array(faces.length + floor.length)
-  all.set(faces)
-  all.set(floor, faces.length)
-  gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW)
+  gl.bufferData(gl.ARRAY_BUFFER, geometry(), gl.STATIC_DRAW)
   const stride = 8 * 4
   const attr = (name: string, size: number, offset: number) => {
     const loc = gl.getAttribLocation(prog, name)
@@ -210,21 +290,22 @@ function start(canvas: HTMLCanvasElement): (() => void) | null {
   attr('aUV', 2, 24)
 
   const u = (name: string) => gl.getUniformLocation(prog, name)
-  const uProj = u('uProj'), uView = u('uView'), uModel = u('uModel'), uShift = u('uShift'), uGround = u('uGround')
+  const uProj = u('uProj'), uView = u('uView'), uModel = u('uModel'), uShift = u('uShift'), uMode = u('uMode')
+  const uEye = u('uEye'), uGlow = u('uGlow')
   gl.uniform1f(u('uSlant'), SLANT)
-  gl.uniform3fv(u('uKeyDir'), unit(-0.62, 0.62, 0.48))
-  gl.uniform3fv(u('uFillDir'), unit(0.25, -1, 0.35))
-  gl.uniform3f(u('uKey'), 1.0, 0.92, 0.8)
-  gl.uniform3f(u('uFill'), 0.36, 0.56, 0.54)
+  gl.uniform1f(u('uHeight'), HEIGHT)
+  // a low sun, 24° up, 47° to the left of the camera; fixed to the view, so the faces turn through it
+  const az = -0.83, el = 0.42
+  gl.uniform3f(u('uSunDir'), Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el))
 
   const theme = () => {
-    gl.uniform3fv(u('uStone'), css('--stone'))
-    gl.uniform3fv(u('uStoneDim'), css('--stone-dim'))
-    gl.uniform3fv(u('uGrout'), css('--grout-rgb'))
+    gl.uniform3fv(u('uCasing'), css('--casing'))
+    gl.uniform3fv(u('uSand'), css('--sand'))
+    gl.uniform3fv(u('uShadow'), css('--shadow-rgb'))
+    gl.uniform1f(u('uHalo'), parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--halo')) || 0.5)
   }
   theme()
 
-  gl.enable(gl.DEPTH_TEST)
   gl.enable(gl.BLEND)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
   gl.clearColor(0, 0, 0, 0)
@@ -239,6 +320,7 @@ function start(canvas: HTMLCanvasElement): (() => void) | null {
     canvas.height = Math.round(h * dpr)
     gl.viewport(0, 0, canvas.width, canvas.height)
     gl.uniformMatrix4fv(uProj, false, perspective(0.46, w / h, 0.5, 30))
+    gl.uniform2f(uGlow, (0.13 * h) / w, 0.13)
   }
 
   const progress = () => scrollY / Math.max(1, document.documentElement.scrollHeight - innerHeight)
@@ -252,15 +334,19 @@ function start(canvas: HTMLCanvasElement): (() => void) | null {
     const pitch = (14 - 8 * p) * (Math.PI / 180)
     const dist = (7.2 + 1.4 * p) / scale
     // aim a little above the centroid so the pyramid sits in the lower half of the frame, on its shadow
-    gl.uniformMatrix4fv(uView, false, lookAt([0, 0.7 + Math.sin(pitch) * dist, Math.cos(pitch) * dist], [0, 0.7, 0]))
+    const eye = [0, 0.7 + Math.sin(pitch) * dist, Math.cos(pitch) * dist]
+    gl.uniform3fv(uEye, eye)
+    gl.uniformMatrix4fv(uView, false, lookAt(eye, [0, 0.7, 0]))
     gl.uniformMatrix4fv(uModel, false, rotY((-32 + 110 * p) * (Math.PI / 180) + drift))
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-    gl.uniform1f(uGround, 1)
-    gl.depthMask(false)
-    gl.drawArrays(gl.TRIANGLES, 12, 6)
-    gl.depthMask(true)
-    gl.uniform1f(uGround, 0)
-    gl.drawArrays(gl.TRIANGLES, 0, 12)
+    gl.uniform1f(uMode, 1)
+    gl.drawArrays(gl.TRIANGLES, 12, 6)          // floor: shadow and lit sand, before the faces
+    gl.enable(gl.DEPTH_TEST)
+    gl.uniform1f(uMode, 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 12)          // faces
+    gl.disable(gl.DEPTH_TEST)
+    gl.uniform1f(uMode, 2)
+    gl.drawArrays(gl.TRIANGLES, 18, 6)          // apex halo, over everything
   }
 
   const frame = (now: number) => {
@@ -297,7 +383,6 @@ function start(canvas: HTMLCanvasElement): (() => void) | null {
     removeEventListener('resize', onResize)
     removeEventListener('scroll', onResize)
     scheme.removeEventListener('change', onScheme)
-    gl.getExtension('WEBGL_lose_context')?.loseContext()
   }
 }
 
@@ -312,7 +397,8 @@ export function Pyramid() {
       const stop = start(canvas)
       if (!stop) setFallback(true)
       return stop ?? undefined
-    } catch {
+    } catch (e) {
+      console.error('pyramid: falling back to the still', e)
       setFallback(true)
       return undefined
     }
