@@ -20,7 +20,7 @@ real path. Everything below is relative to it.
 | `secrets.key` | the vault key, 0600 — only when no OS keychain holds it (`secrets.key_store`); losing it loses the vault | read on every use |
 | `providers.yaml` | named OpenAI-compatible gateways: `name: {base_url}`; the key is the secret of the same name; `/provider add` writes both | startup |
 | `models.json` | optional; same shape as the bundled models.dev catalog, adds or overrides models | startup |
-| `prompt.md` | standing instructions, prepended to every model call | every call |
+| `prompt.md` | standing instructions, prepended to every model call. Text between `<!-- root-only -->` and `<!-- /root-only -->` (several spans allowed; an unclosed opener runs to the end of the file) reaches only sessions a person reads; subagents and scheduled runs get the file without those spans, everyone else gets the content with the marker lines removed | every call |
 | `skills/` | markdown skills (`*.md` or `<dir>/SKILL.md`); `add_skill_repo` clones under it | every call (index) |
 | `mcp/*.json` | MCP servers, one or many per file, any `mcp.json` shape | ~1 s (watched) |
 | `mcp/config.yaml` | risk gates per server / tool (below) | ~1 s (watched) |

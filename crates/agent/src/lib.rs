@@ -1119,6 +1119,10 @@ pub struct RemoveProvider {
 pub struct NewSession {
     /// The client's working directory.
     pub cwd: Option<PathBuf>,
+    /// Nobody reads this session directly (the scheduler's roots): its system
+    /// prompt gets no visualization or interactive-screen instructions.
+    #[serde(default)]
+    pub unattended: bool,
 }
 
 /// `ask` → `Result<SessionId, String>`: a trusted creator (owner console,

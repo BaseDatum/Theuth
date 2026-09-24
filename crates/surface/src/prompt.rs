@@ -88,19 +88,65 @@ const EXAMPLES: [(&str, &str); 19] = [
     ),
 ];
 
-/// The `## Show, don't tell` prompt block (doc §6.2) with the compact catalog filled in.
+/// The `## Show first, then tell` prompt block (doc §6.2): [`BLOCK_HEAD`], the compact
+/// catalog, [`BLOCK_TAIL`]. Concatenated, not `format!`ed, so the worked example's JSON
+/// braces stay literal.
 pub fn prompt_block() -> String {
-    format!(
-        "## Show, don't tell\n\
-Your reply can draw. Three fenced blocks render as pictures in the terminal and the desktop app, and read as text everywhere else:\n\
-- ```mermaid — sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram (and flowchart when you need mermaid's own syntax). Use it when the answer is an order of messages, which states lead where, or a class or data model.\n\
-- ```json-render — one JSON object {{root, elements:{{id:{{type, props, children}}}}}}. Use it when the answer is structured data: a comparison, a status board, before/after, metrics, a plan with states, a timeline — and for boxes and arrows: architecture, dependencies, data flow, a pipeline are a `Graph` (nodes, edges, groups, a state per node); it draws on every surface and an app can highlight it. Catalog: {catalog}\n\
-- ```openui — OpenUI Lang, the same statements as the `app` tool, for a richer static card in the reply: Tabs, Steps, Callout, MetricIndicatorInline, Card, Table, charts. `$state`, `@Set`, `@OpenUrl` and inputs work in place; do not use Query, Mutation or @ToAssistant in a fence (the user can open it as an app). Use it for a multi-step explanation (Steps), options with trade-offs (Tabs), a status update (MetricIndicatorInline + Callout), instead of paragraphs.\n\
-Draw when a reader would sketch it on a whiteboard to explain it; that is most architecture, flow, dependency, sequence, state and comparison answers. One picture per idea, ≤ 12 nodes or ≤ 8 rows; labels ≤ 4 words; put the takeaway in one sentence before the block and do not repeat in prose what the picture already shows. Do not draw a one-line answer, a list of two, code, or anything the user asked to copy or paste. Prose is still right for reasoning, caveats and instructions.\n\
-Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> message with the exact path of each error: answer with the corrected block only.",
-        catalog = catalog_compact()
-    )
+    [BLOCK_HEAD, &catalog_compact(), BLOCK_TAIL].concat()
 }
+
+/// Everything of the block before the catalog line's `Catalog: `.
+const BLOCK_HEAD: &str = "## Show first, then tell\n\
+This chat renders pictures, and a reader takes in a picture in one glance where the same content as prose takes ten. **Default to showing.** Words are for what a picture cannot carry: the reason, a caveat, an exact value the reader must copy, an instruction, the decision you need from them. Most substantive replies should contain at least one block; a reply that is only paragraphs and bullets should be the exception you chose, not the habit.\n\
+\n\
+Three fenced blocks render (the terminal and desktop draw them, other channels read them as text):\n\
+- ```json-render: structured data and boxes-and-arrows. Catalog: ";
+
+/// Everything of the block after the catalog.
+const BLOCK_TAIL: &str = "\n\
+- ```openui: richer static cards with local interaction: Steps, Tabs, Callout, Card, Table, BarChart/LineChart, MetricIndicatorInline, Buttons with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence.\n\
+- ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).\n\
+\n\
+Pick by the shape of the answer:\n\
+| The answer is… | Draw |\n\
+|---|---|\n\
+| components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |\n\
+| who calls whom in what order | mermaid sequenceDiagram |\n\
+| lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |\n\
+| schema, types, relationships | mermaid erDiagram / classDiagram |\n\
+| how-to or explanation in steps | openui Steps |\n\
+| options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |\n\
+| a comparison, before/after, a matrix | json-render Table (Badge for verdict cells) |\n\
+| status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress) |\n\
+| what happened when: incident, history, plan | json-render Timeline (state per item) |\n\
+| numbers, counts, durations, sizes | json-render MetricGrid / Bars, openui BarChart / LineChart for series |\n\
+| a warning, a blocker, the one thing to act on | openui Callout or json-render Alert |\n\
+| facts about one thing (config, host, PR) | json-render KeyValueList |\n\
+\n\
+Shapes for the replies you write most:\n\
+- **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
+- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
+- **Plan or proposal:** Steps or Timeline → Table of risks/choices → the question for the user in words.\n\
+- **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say.\n\
+- **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
+\n\
+Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
+\n\
+Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
+\n\
+Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
+\n\
+When you report finished work, a subagent's result or an investigation, report visually first as above.\n\
+\n\
+Worked example. Instead of:\n\
+> I updated the parser and the tests. All 412 tests pass, coverage went from 78% to 81%. The migration is done and staging is deployed, but prod is still pending approval.\n\
+\n\
+write the one-sentence takeaway, then:\n\
+```json-render\n\
+{\"root\":\"r\",\"elements\":{\"r\":{\"type\":\"Stack\",\"children\":[\"m\",\"c\"]},\n\
+\"m\":{\"type\":\"MetricGrid\",\"props\":{\"items\":[{\"label\":\"Tests\",\"value\":\"412/412\"},{\"label\":\"Coverage\",\"value\":\"81%\",\"delta\":\"+3%\",\"trend\":\"up\"}]}},\n\
+\"c\":{\"type\":\"Checklist\",\"props\":{\"items\":[{\"text\":\"Parser updated\",\"done\":true},{\"text\":\"Staging deployed\",\"done\":true},{\"text\":\"Prod approval\",\"done\":false}]}}}}\n\
+```";
 
 /// The `<surface_error>` message (doc §5) for the fences that still fail this round. Each
 /// block is named by kind and ordinal with its located errors; the json-render catalog line
@@ -235,16 +281,27 @@ mod tests {
     use super::*;
     use crate::{SpecError, check, parse};
 
+    /// (d) of the brief: the rendered block carries the catalog, and its worked json-render
+    /// example is strict JSON that the crate's own validator accepts.
     #[test]
-    fn prompt_block_names_every_component() {
+    fn prompt_block_names_every_component_and_its_example_validates() {
         let block = prompt_block();
-        assert!(block.starts_with("## Show, don't tell\n"));
+        assert!(block.starts_with("## Show first, then tell\n"));
+        assert!(block.contains(&format!("Catalog: {}\n", catalog_compact())));
         for e in &catalog().entries {
             assert!(block.contains(&format!("{}(", e.name)), "{}", e.name);
         }
         assert!(block.contains("<surface_error>"));
-        assert!(block.contains("\n- ```openui — OpenUI Lang, the same statements as the `app` tool"));
-        assert!(block.contains("do not use Query, Mutation or @ToAssistant in a fence"));
+        assert!(block.contains("No Query/Mutation/@ToAssistant in a fence."));
+        assert!(block.ends_with("}}}}\n```"));
+
+        let (_, rest) = block.split_once("```json-render\n").unwrap();
+        let (body, _) = rest.split_once("\n```").unwrap();
+        let json: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["root"], "r");
+        assert_eq!(json["elements"]["c"]["type"], "Checklist");
+        parse(body).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(check(&block).is_empty(), "{:?}", check(&block));
     }
 
     #[test]
