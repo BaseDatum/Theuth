@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { HYSTERESIS, TIERS, decideTier, layout } from './header'
+import { HYSTERESIS, PANEL_GAP, PANEL_MAX, TIERS, decideTier, layout, panelGeometry } from './header'
 
 test('the full bar holds until it overflows, then the compact bar; a tier never measured is never entered', () => {
   expect(decideTier(0, 900, [700])).toBe(0)
@@ -59,4 +59,25 @@ test('tier 2 moves shed items out of the bar and into the menu, so nothing is lo
     const l = layout(items, t)
     expect([...new Set([...ids(l.bar), ...ids(l.menu)])].sort()).toEqual(ids(items).sort())
   }
+})
+
+test('the panel is centred on a wide pane and never wider than PANEL_MAX', () => {
+  expect(panelGeometry(222, 1122, 1122)).toEqual({ left: 222 + 450 - PANEL_MAX / 2, width: PANEL_MAX })
+})
+
+test('a narrow pane shrinks the panel to its width minus the gaps, wherever the pane sits', () => {
+  // Phone: the pane is the viewport.
+  expect(panelGeometry(0, 375, 375)).toEqual({ left: PANEL_GAP, width: 375 - 2 * PANEL_GAP })
+  // Far-left split pane.
+  expect(panelGeometry(0, 241, 1375)).toEqual({ left: PANEL_GAP, width: 241 - 2 * PANEL_GAP })
+  // Far-right split pane: right edge stays PANEL_GAP inside the pane and the viewport.
+  const g = panelGeometry(1134, 1375, 1375)
+  expect(g).toEqual({ left: 1134 + PANEL_GAP, width: 241 - 2 * PANEL_GAP })
+  expect(g.left + g.width).toBe(1375 - PANEL_GAP)
+})
+
+test('a pane partly off the viewport is clamped to the visible part', () => {
+  expect(panelGeometry(-100, 300, 1000)).toEqual({ left: PANEL_GAP, width: 300 - 2 * PANEL_GAP })
+  expect(panelGeometry(900, 1300, 1000)).toEqual({ left: 900 + PANEL_GAP, width: 100 - 2 * PANEL_GAP })
+  expect(panelGeometry(0, 10, 1000).width).toBe(0)
 })

@@ -47,3 +47,20 @@ export function layout<T extends Pick<HeaderItem, 'slot' | 'shed'>>(items: reado
     menu: items.filter((i) => i.slot !== 'bar' || (tier > 1 && i.shed)),
   }
 }
+
+/** The chevron panel's widest, and its inset from the pane's and viewport's edges. */
+export const PANEL_MAX = 360
+export const PANEL_GAP = 8
+
+/**
+ * Where the chevron panel goes: centred on the pane, `PANEL_GAP` inside both the pane and the viewport. `left`/`right`
+ * are the pane's viewport x-edges; `viewport` its width. A pane narrower than the panel plus gaps gets the panel
+ * shrunk to fit; a pane hanging off the viewport (mid-drag, a scrolled shell) is clamped to the visible part.
+ */
+export function panelGeometry(left: number, right: number, viewport: number): { left: number; width: number } {
+  const lo = Math.max(left, 0) + PANEL_GAP
+  const hi = Math.min(right, viewport) - PANEL_GAP
+  const width = Math.max(0, Math.min(PANEL_MAX, hi - lo))
+  const centred = (lo + hi) / 2 - width / 2
+  return { left: Math.round(Math.min(Math.max(centred, lo), hi - width)), width: Math.round(width) }
+}
