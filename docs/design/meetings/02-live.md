@@ -207,7 +207,12 @@ recording clock, and handles PTT:
 6. the actor: `final: true` → one JSON line in `live.jsonl`,
    `MeetingEvent::Utterance`, feed the batcher, `touch` topics; `final:
    false` → `MeetingEvent::Utterance` and `touch` only (the control center
-   replaces the open row in place; nothing is persisted).
+   replaces the open row in place; nothing is persisted). **Amended by 07
+   (2026-09-24):** with live diarization on, a `System` final is published at
+   once but its `live.jsonl` line and batcher feed wait (≤ ~8 s) until the
+   diariser has scored it, then go out with `speaker: Some("sN")` and a second
+   `final: true` event for the same `track`/`t0_ms`; the alias scan and topics
+   still run at close time. Mic finals and requests are never held.
 
 `Utterance` gains `final: bool` in the README §3 contract (`#[serde(default
 = "true")]`-style default so phase-1 bindings stay valid). `request` is

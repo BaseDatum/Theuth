@@ -20,7 +20,7 @@ use voice::Engine;
 use crate::speakers::Profiles;
 use crate::store::{Manifest, Stem, Store};
 use crate::transcript::{self, ME, Proposed, SpeakerLabel, Transcript, Word, default_name};
-use crate::{MeetingEvent, MeetingId, MeetingState, PostStage};
+use crate::{MeetingEvent, MeetingId, MeetingState, PostStage, Utterance};
 
 /// Where the pipeline finds its models and profiles.
 #[derive(Clone, Debug)]
@@ -181,7 +181,7 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
             diarize::EMBEDDING
         )
     });
-    let (diarized, me_emb) = match models {
+    let (mut diarized, me_emb) = match models {
         None => (diarize::Diarized::default(), None),
         Some(models) => {
             stage(cx, m, PostStage::Diarizing, 60).await;
@@ -202,10 +202,22 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
         }
     };
 
-    // 3. Aligning (90–100 %).
+    // 3. Aligning (90–100 %). 07 §5: the offline labels are renamed to agree with the live
+    // ones first, so "Speaker 2" is one voice in the session and in the record.
     stage(cx, m, PostStage::Aligning, 90).await;
+    let live: Vec<Utterance> = crate::read_jsonl(&dir.join(crate::LIVE_LOG), usize::MAX).unwrap_or_default();
+    let renamed = align::reconcile(&live, &diarized.spans);
+    for s in &mut diarized.spans {
+        if let Some(id) = renamed.get(&s.speaker) {
+            s.speaker.clone_from(id);
+        }
+    }
     let segments = align::segments(&t.mic, &t.system, &diarized.spans);
-    let mut embeddings: HashMap<String, Vec<f32>> = diarized.embeddings;
+    let mut embeddings: HashMap<String, Vec<f32>> = diarized
+        .embeddings
+        .into_iter()
+        .map(|(id, e)| (renamed.get(&id).cloned().unwrap_or(id), e))
+        .collect();
     if let Some(e) = me_emb {
         embeddings.insert(ME.to_owned(), e);
     }

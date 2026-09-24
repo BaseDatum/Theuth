@@ -91,6 +91,8 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
+  /** `meeting_live_diarization()` (07 §6): the Settings › Meetings switch. */
+  meetingLiveDiarization: ['meeting-live-diarization'] as const,
   // 57 §3.4 / §7.1: the decision oracle — `decision_mode(prefix)` (Labs switches, the Meetings pointer, the island's
   // mode badge), `decision_training(prefix)` (Labs capture/share rows), `decision_stats()` (Labs counters).
   decisionMode: (prefix: string) => ['decision-mode', prefix] as const,

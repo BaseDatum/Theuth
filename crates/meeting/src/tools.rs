@@ -26,7 +26,8 @@ pub const READ_CAP: usize = 400;
 /// 53 §3.4 verbatim plus 05 §6's cache paragraph: one static block.
 pub const PROMPT: &str = "**Meetings.** \
 A user line beginning `[meeting hh:mm:ss]` is a live transcript batch from a meeting the user is \
-in (`them:` other participants, `me:` the user). You are not a participant. Your job: notice \
+in (`me:` the user; `Speaker 1:`, `Speaker 2:`… the other participants by voice, numbered in order \
+of first speaking — `them:` when the speaker is not yet known). You are not a participant. Your job: notice \
 anything the user might have to ask about — a ticket, a system, a person, a project, a number, a \
 term of art, a past decision — look it up with your tools (knowledge first), and call \
 `meeting_topic` with a label of at most four words as it was spoken and a brief of two or three \
@@ -234,7 +235,8 @@ pub struct ReadArgs {
     /// Only segments starting at or before this time.
     #[serde(default)]
     pub to_ms: Option<u64>,
-    /// Only this speaker (label id like `s1`, or the name, or `me`/`them` while recording).
+    /// Only this speaker: a label id like `s1`, a name, or — while recording — `me`, `them`
+    /// (every other-side line) or `Speaker 2`.
     #[serde(default)]
     pub speaker: Option<String>,
 }
@@ -273,17 +275,21 @@ impl MeetingReadTool {
             Ok(t) if !recording => t.lines(a.from_ms, a.to_ms, a.speaker.as_deref()).collect(),
             _ => {
                 let path = self.0.meeting_dir(id).join(LIVE_LOG);
-                let live: Vec<Utterance> = crate::read_jsonl(&path, crate::LIVE_TEXT_CAP)?;
+                let mut live: Vec<Utterance> = crate::read_jsonl(&path, crate::LIVE_TEXT_CAP)?;
+                // 07 §3: held system lines are appended after later mic lines.
+                live.sort_by_key(|u| u.t0_ms);
                 let who = a.speaker.as_deref().map(str::to_lowercase);
                 live.iter()
                     .filter(|u| a.from_ms.is_none_or(|f| u.t1_ms >= f))
                     .filter(|u| a.to_ms.is_none_or(|t| u.t0_ms <= t))
-                    .map(|u| {
-                        let name = if u.track == Track::Mic { "me" } else { "them" };
-                        (name, u)
+                    .filter(|u| {
+                        who.as_deref().is_none_or(|w| {
+                            w == u.who().to_lowercase()
+                                || (w == "them" && u.track == Track::System)
+                                || u.speaker.as_deref().is_some_and(|s| s == w)
+                        })
                     })
-                    .filter(|(name, _)| who.as_deref().is_none_or(|w| w == *name))
-                    .map(|(name, u)| format!("[{}] {name}: {}", mmss(u.t0_ms), u.text))
+                    .map(|u| format!("[{}] {}: {}", mmss(u.t0_ms), u.who(), u.text))
                     .collect()
             }
         };

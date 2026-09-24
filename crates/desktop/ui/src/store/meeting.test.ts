@@ -3,7 +3,7 @@ import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefSource } from '@/rpc/bindings/BriefSource'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { type MeetingSlice, LINES_KEEP, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting } from './meeting'
+import { type MeetingSlice, LINES_KEEP, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting, who } from './meeting'
 
 const M = 'm1'
 const brief = (id: string, source: BriefSource, topic: string | null = null): Brief => ({
@@ -132,7 +132,7 @@ test('57 §3.4: OracleDeciding lights the chip; a verdict replaces it and an out
   expect(oracleSummary([])).toBeNull()
 })
 
-const said = (track: 'Mic' | 'System', text: string, t0: number, final = true, meeting = M): MeetingEvent => ({
+const said = (track: 'Mic' | 'System', text: string, t0: number, final = true, meeting = M, speaker: string | null = null): MeetingEvent => ({
   type: 'Utterance',
   meeting,
   track,
@@ -141,6 +141,7 @@ const said = (track: 'Mic' | 'System', text: string, t0: number, final = true, m
   text,
   request: false,
   final,
+  speaker,
 })
 
 test('02 §2: a partial replaces its track’s open row in place, a final commits it; other tracks and meetings are untouched', () => {
@@ -162,4 +163,19 @@ test('02 §2: a partial replaces its track’s open row in place, a final commit
   for (let i = 0; i < LINES_KEEP + 5; i++) s = reduce(s, said('Mic', `l${i}`, 3000 + i))
   expect(s.lines.length).toBe(LINES_KEEP)
   expect(s.lines[0]?.text).toBe('l5')
+})
+
+test('07 §3: a labelled final for a committed row relabels it in place; who() renders Speaker N', () => {
+  let s = fresh()
+  s = reduce(s, said('System', 'so the DR sync', 1000))
+  s = reduce(s, said('Mic', 'right', 1600))
+  expect(s.lines.map(who)).toEqual(['them:', 'me:'])
+  s = reduce(s, said('System', 'so the DR sync', 1000, true, M, 's2'))
+  expect(s.lines.map((l) => [who(l), l.text])).toEqual([
+    ['Speaker 2:', 'so the DR sync'],
+    ['me:', 'right'],
+  ])
+  // A label for a row that is no longer kept is a new row, not a duplicate of the last one.
+  s = reduce(s, said('System', 'later', 9000, true, M, 's1'))
+  expect(s.lines.length).toBe(3)
 })

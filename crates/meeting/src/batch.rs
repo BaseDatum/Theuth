@@ -87,6 +87,7 @@ mod tests {
             t1_ms: 1000,
             text: text.into(),
             request: false,
+            speaker: None,
         }
     }
 

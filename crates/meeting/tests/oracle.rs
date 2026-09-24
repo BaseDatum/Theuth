@@ -54,6 +54,7 @@ fn batch(lines: &[(Track, &str)]) -> Vec<Utterance> {
             t1_ms: 873_000 + i as u64 * 2_000,
             text: (*text).to_owned(),
             request: false,
+            speaker: None,
         })
         .collect()
 }

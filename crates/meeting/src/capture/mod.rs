@@ -27,41 +27,47 @@ pub const RATE: u32 = 48_000;
 /// Ring capacity in chunks: 5 s at 20 ms.
 const RING: usize = 250;
 
-/// The two producers of one source. `try_push`, drop on full: the STT ring
-/// has no consumer in this phase (phase 2 attaches one) and costs nothing.
+/// One source's producers: the encoder ring and the taps (STT, and the live diariser
+/// on the system feed). `try_push`, drop on full: a tap without a consumer costs nothing.
 pub struct Feed {
     enc: Producer<Sample>,
-    stt: Producer<Sample>,
+    taps: Vec<Producer<Sample>>,
     paused: Arc<AtomicBool>,
 }
 
 impl Feed {
-    /// Stamp and push one chunk to both rings; nothing while paused.
+    /// Stamp and push one chunk to every ring; nothing while paused.
     pub fn push(&mut self, pcm: Vec<f32>) {
         if self.paused.load(Ordering::Relaxed) {
             return;
         }
         let now = Instant::now();
-        if self.stt.slots() > 0 {
-            let _ = self.stt.push((now, pcm.clone()));
+        for tap in &mut self.taps {
+            if tap.slots() > 0 {
+                let _ = tap.push((now, pcm.clone()));
+            }
         }
         let _ = self.enc.push((now, pcm));
+    }
+
+    /// One more ring fed with every chunk; its consumer.
+    pub fn tap(&mut self) -> Consumer<Sample> {
+        let (p, c) = RingBuffer::new(RING);
+        self.taps.push(p);
+        c
     }
 }
 
 /// One source's feed and its two consumers `(encoder, stt)`; `pub` for `examples/capture_probe`.
 pub fn rings(paused: &Arc<AtomicBool>) -> (Feed, Consumer<Sample>, Consumer<Sample>) {
     let (enc_p, enc_c) = RingBuffer::new(RING);
-    let (stt_p, stt_c) = RingBuffer::new(RING);
-    (
-        Feed {
-            enc: enc_p,
-            stt: stt_p,
-            paused: paused.clone(),
-        },
-        enc_c,
-        stt_c,
-    )
+    let mut feed = Feed {
+        enc: enc_p,
+        taps: Vec::with_capacity(2),
+        paused: paused.clone(),
+    };
+    let stt_c = feed.tap();
+    (feed, enc_c, stt_c)
 }
 
 /// The running devices and threads of one meeting. Lives inside the actor,
@@ -80,6 +86,8 @@ struct Devices {
     threads: Vec<JoinHandle<()>>,
     /// Phase 2's consumers (mic, system); taken once by `StartMeeting`.
     stt: Option<(Consumer<Sample>, Consumer<Sample>)>,
+    /// 07: the live diariser's system consumer; taken once.
+    diar: Option<Consumer<Sample>>,
 }
 
 impl Capture {
@@ -92,7 +100,8 @@ impl Capture {
         // with the actor's recording clock, not with the first device up.
         let paused = Arc::new(AtomicBool::new(true));
         let (mic_feed, mic_enc, mic_stt) = rings(&paused);
-        let (sys_feed, sys_enc, sys_stt) = rings(&paused);
+        let (mut sys_feed, sys_enc, sys_stt) = rings(&paused);
+        let sys_diar = sys_feed.tap();
         let (level_tx, level) = watch::channel((0.0, 0.0));
         // Encoder first: the files exist before any device opens.
         let encoder = encode::spawn(
@@ -111,6 +120,7 @@ impl Capture {
                 mic: None,
                 threads: vec![encoder],
                 stt: Some((mic_stt, sys_stt)),
+                diar: Some(sys_diar),
             }),
             level,
         };
@@ -154,6 +164,15 @@ impl Capture {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stt
+            .take()
+    }
+
+    /// The live diariser's system ring consumer, once; `None` after.
+    pub fn take_diar(&self) -> Option<Consumer<Sample>> {
+        self.devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .diar
             .take()
     }
 

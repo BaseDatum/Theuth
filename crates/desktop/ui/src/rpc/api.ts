@@ -405,6 +405,10 @@ export interface Api {
   meeting_summary(id: MeetingId): Promise<string>
   /** `set_decision_mode('meeting', mode)` (57 §3.4). */
   set_meeting_oracle_mode(mode: Mode): Promise<ModeInfo>
+  /** 07 §6: the `meeting.live_diarization` switch as configured (default true). */
+  meeting_live_diarization(): Promise<boolean>
+  /** Persist `meeting.live_diarization`; applies from the next meeting start. */
+  set_meeting_live_diarization(on: boolean): Promise<boolean>
   /** 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`, `browser`): `mode` as configured, `effective` with a `reason` when forced off, `enabled` (the plugin), `installed` (the checkpoint). */
   decision_mode(prefix: string): Promise<ModeInfo>
   /** Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective from the next ask. `browser` off ↔ on also changes whether `browser_run` is registered — that part takes a restart. */
@@ -692,6 +696,7 @@ export const METHODS = [
   'meeting_get',
   'meeting_list',
   'meeting_live',
+  'meeting_live_diarization',
   'meeting_oracle_mode',
   'meeting_pause',
   'meeting_permissions',
@@ -753,6 +758,7 @@ export const METHODS = [
   'set_max_tool_rounds',
   'set_mcp_gate',
   'set_mcp_hidden',
+  'set_meeting_live_diarization',
   'set_meeting_oracle_mode',
   'set_model',
   'set_peer_scope',

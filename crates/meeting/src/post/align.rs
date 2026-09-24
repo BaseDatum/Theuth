@@ -9,8 +9,10 @@
 //! two rows in reading order even when residual far-end audio on the mic keeps
 //! its words gap-free (04 §10 deviation 13).
 
-use crate::Track;
+use std::collections::HashMap;
+
 use crate::transcript::{ME, Segment, Word};
+use crate::{Track, Utterance};
 
 /// Nearest-span tolerance for a word outside every span.
 pub const NEAR_MS: u64 = 500;
@@ -106,6 +108,71 @@ pub fn segments(mic: &[Word], system: &[Word], spans: &[Span]) -> Vec<Segment> {
         s.id = i as u32;
     }
     all
+}
+
+/// Least share of an offline label's speech a live label must cover to take its name.
+pub const RECONCILE_COVER: f64 = 0.5;
+
+/// 07 §5: rename the offline labels so they agree with the live ones. For every offline
+/// label and every live label, the overlap between the offline spans and the live system
+/// utterances carrying that label; pairs are matched greedily by overlap, one to one,
+/// while the overlap is at least [`RECONCILE_COVER`] of the offline label's speech; a
+/// matched offline label takes the live id, the rest take the lowest ids no matched live
+/// label uses, in offline order. Returns `offline id → new id` for every offline label
+/// (identity when `live` carries no labels). Never maps by channel index: a FIFO change
+/// swaps channels (07 §1).
+pub fn reconcile(live: &[Utterance], spans: &[Span]) -> HashMap<String, String> {
+    let mut offline: Vec<&str> = spans.iter().map(|s| s.speaker.as_str()).collect();
+    offline.sort_by_key(|id| id[1..].parse::<u32>().unwrap_or(u32::MAX));
+    offline.dedup();
+    let live: Vec<&Utterance> = live
+        .iter()
+        .filter(|u| u.track == Track::System && u.speaker.is_some())
+        .collect();
+    let mut live_ids: Vec<&str> = live.iter().filter_map(|u| u.speaker.as_deref()).collect();
+    live_ids.sort_unstable();
+    live_ids.dedup();
+    // overlap[o][l] in ms, and each offline label's total speech.
+    let mut overlap = vec![vec![0u64; live_ids.len()]; offline.len()];
+    let mut speech = vec![0u64; offline.len()];
+    for s in spans {
+        let o = offline.iter().position(|&id| id == s.speaker).expect("collected above");
+        speech[o] += s.t1_ms - s.t0_ms;
+        for u in &live {
+            let l = live_ids
+                .iter()
+                .position(|&id| Some(id) == u.speaker.as_deref())
+                .expect("collected above");
+            overlap[o][l] += s.t1_ms.min(u.t1_ms).saturating_sub(s.t0_ms.max(u.t0_ms));
+        }
+    }
+    let mut pairs: Vec<(u64, usize, usize)> = (0..offline.len())
+        .flat_map(|o| (0..live_ids.len()).map(move |l| (o, l)))
+        .map(|(o, l)| (overlap[o][l], o, l))
+        .filter(|&(ov, o, _)| ov > 0 && ov as f64 >= RECONCILE_COVER * speech[o] as f64)
+        .collect();
+    pairs.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut to: Vec<Option<&str>> = vec![None; offline.len()];
+    let mut taken: Vec<bool> = vec![false; live_ids.len()];
+    for (_, o, l) in pairs {
+        if to[o].is_none() && !taken[l] {
+            to[o] = Some(live_ids[l]);
+            taken[l] = true;
+        }
+    }
+    // Unmatched offline labels: the lowest ids no matched live label holds.
+    let used: Vec<&str> = to.iter().flatten().copied().collect();
+    let mut next = (1u32..).map(|n| format!("s{n}")).filter(|id| !used.contains(&id.as_str()));
+    offline
+        .iter()
+        .zip(&to)
+        .map(|(&o, t)| {
+            (
+                o.to_owned(),
+                t.map_or_else(|| next.next().expect("infinite"), str::to_owned),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -220,5 +287,44 @@ mod tests {
                 (ME.into(), "second thing".into())
             ]
         );
+    }
+
+    fn live(t0: u64, t1: u64, speaker: Option<&str>) -> Utterance {
+        Utterance {
+            track: Track::System,
+            t0_ms: t0,
+            t1_ms: t1,
+            text: "x".into(),
+            request: false,
+            speaker: speaker.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn reconcile_renames_offline_labels_to_the_live_ones_by_overlap() {
+        // Offline: s1 0–10 s, s2 10–20 s, s3 20–22 s (2 s, matched by nothing).
+        // Live: what offline calls s1 was live s2, and vice versa; live s3 only overlaps
+        // a sliver of offline s3 (below the 50 % cover) and a mic line carries no label.
+        let spans = [span(0, 10_000, "s1"), span(10_000, 20_000, "s2"), span(20_000, 22_000, "s3")];
+        let lines = [
+            live(300, 9_800, Some("s2")),
+            live(10_200, 19_900, Some("s1")),
+            live(21_500, 23_000, Some("s3")),
+            Utterance { track: Track::Mic, ..live(0, 1_000, None) },
+        ];
+        let map = reconcile(&lines, &spans);
+        // s1 ↔ s2 swap; offline s3 gets the lowest id no matched live label holds: s3 is
+        // free (live s3 was not matched), so it keeps its number.
+        assert_eq!(map["s1"], "s2");
+        assert_eq!(map["s2"], "s1");
+        assert_eq!(map["s3"], "s3");
+        // Live labels above the offline count are kept: offline s1 ↔ live s5 leaves the
+        // unmatched offline s2 at s1 (the lowest free id).
+        let spans = [span(0, 10_000, "s1"), span(10_000, 20_000, "s2")];
+        let map = reconcile(&[live(0, 9_000, Some("s5"))], &spans);
+        assert_eq!((map["s1"].as_str(), map["s2"].as_str()), ("s5", "s1"));
+        // No live labels: identity.
+        let map = reconcile(&[], &spans);
+        assert_eq!((map["s1"].as_str(), map["s2"].as_str()), ("s1", "s2"));
     }
 }

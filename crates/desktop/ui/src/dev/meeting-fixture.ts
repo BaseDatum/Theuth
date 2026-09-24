@@ -19,7 +19,7 @@ const brief = (id: string, source: 'Auto' | 'Tap', title: string, bullets: strin
   brief: { id, topic, title, bullets, source, at_ms: 0n, parent: null, cached: null },
 })
 
-const said = (track: 'Mic' | 'System', t0_ms: number, text: string, final = true): MeetingEvent => ({
+const said = (track: 'Mic' | 'System', t0_ms: number, text: string, final = true, speaker: string | null = null): MeetingEvent => ({
   type: 'Utterance',
   meeting: M,
   track,
@@ -28,6 +28,7 @@ const said = (track: 'Mic' | 'System', t0_ms: number, text: string, final = true
   text,
   request: false,
   final,
+  speaker,
 })
 
 /** `[at ms, event]`, in order. */
@@ -46,6 +47,8 @@ const SCRIPT: [number, MeetingEvent][] = [
   [300, { type: 'State', meeting: M, state: 'Recording', degraded: ['MicNoAec'] }],
   [1200, said('System', 1200, 'so the DR', false)],
   [1800, said('System', 1200, 'so the DR sync is still blocked on the image tags')],
+  // 07 §3: the diariser's label lands a few seconds after the line committed.
+  [3400, said('System', 1200, 'so the DR sync is still blocked on the image tags', true, 's1')],
   [2600, said('Mic', 2600, 'right, SRE-2386 — who owns that now?')],
   [4000, said('System', 4000, 'platform team, but KEDA scaling keeps eating the on-call rotation')],
   [4800, said('System', 4800, 'can we pin the', false)],
