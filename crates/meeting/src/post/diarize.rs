@@ -5,7 +5,9 @@
 //! frames become `s1..sn` turns, and wespeaker CAM++ embeds each speaker's speech
 //! once for the profile match. Both run on `ort` directly; [`session`] runs the
 //! process-wide `models::onnx::ort_lib(data_dir)` first (a no-op once voice has).
-//! The graph's I/O, the streaming loop and the thresholds are written up in
+//! [`Streamer`] is the streaming loop for one [`Geometry`]: the offline pass drives
+//! it with [`OFFLINE`], the live diariser (`meeting::diar`, 07) with [`LIVE`]. The
+//! graph's I/O, the loop and the thresholds are written up in
 //! `docs/design/meetings/04-post-nemotron-as-built.md`.
 
 use std::collections::HashMap;
@@ -54,14 +56,7 @@ const SPEAKERS: usize = 8;
 /// One logit frame.
 const STEP_MS: u64 = 10;
 
-// The offline streaming setup (`config.json`: `chunk_length`, `chunk_right_context`,
-// `fifo_length`, `speaker_cache_update_period`; the cache policy from `streaming_config`).
-// All in encoder frames (80 ms): 27.2 s chunks with 3.2 s look-ahead, a 40-frame FIFO
-// and a 264-frame arrival-order speaker cache that keeps identities across the whole meeting.
-const CHUNK: usize = 340;
-const RIGHT_CONTEXT: usize = 40;
-const FIFO: usize = 40;
-const CACHE_UPDATE: usize = 300;
+// The cache policy from `config.json` `streaming_config`, shared by every geometry.
 const CACHE: usize = 264;
 const SILENCE_SLOTS: usize = 1;
 const SCORE_THRESHOLD: f32 = 0.25;
@@ -71,6 +66,57 @@ const STRONG_BOOST_RATE: f32 = 0.75;
 const WEAK_BOOST_RATE: f32 = 1.5;
 /// Per-speaker share of the cache once compressed, minus its silence slot.
 const BUDGET: usize = CACHE / SPEAKERS - SILENCE_SLOTS;
+
+/// One streaming geometry of the model card, in encoder frames (80 ms = 8 mel frames):
+/// how much audio a step scores, how far it looks ahead, how many recent frames the
+/// FIFO keeps, and how many of its oldest move to the speaker cache when it overflows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Geometry {
+    /// Frames scored per step.
+    pub chunk: usize,
+    /// Look-ahead frames attended to but scored again as the head of the next step.
+    pub right: usize,
+    /// FIFO length.
+    pub fifo: usize,
+    /// Frames moved from the FIFO to the cache per update.
+    pub update: usize,
+}
+
+impl Geometry {
+    /// The audio a step waits for: chunk plus look-ahead.
+    pub const fn buffer_ms(self) -> u64 {
+        ((self.chunk + self.right) * SUBSAMPLING) as u64 * STEP_MS
+    }
+
+    /// 16 kHz samples per scored chunk.
+    pub const fn chunk_samples(self) -> usize {
+        self.chunk * SUBSAMPLING * HOP
+    }
+
+    /// 16 kHz samples a step needs from the chunk start: chunk plus look-ahead.
+    pub const fn step_samples(self) -> usize {
+        (self.chunk + self.right) * SUBSAMPLING * HOP
+    }
+}
+
+/// The offline setup of `config.json` (`chunk_length`, `chunk_right_context`,
+/// `fifo_length`, `speaker_cache_update_period`): 27.2 s chunks with 3.2 s look-ahead,
+/// the card's best-scoring "30.4 s input buffer" (04 §4).
+pub const OFFLINE: Geometry = Geometry {
+    chunk: 340,
+    right: 40,
+    fifo: 40,
+    update: 300,
+};
+/// The live setup (07 §0.2, `acc8` in the bench): the card's low-latency cache policy
+/// (FIFO 264, update 222) with a 6.4 s chunk and 1.6 s look-ahead — an 8 s input
+/// buffer, RTF 0.035 on the CPU, 97–99 % frame agreement with [`OFFLINE`].
+pub const LIVE: Geometry = Geometry {
+    chunk: 80,
+    right: 20,
+    fifo: 264,
+    update: 222,
+};
 
 // Frames → turns.
 /// A speaker is active in a frame at or above this probability (the reference's default).
@@ -117,12 +163,17 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
-fn session(path: &Path, data_dir: &Path) -> anyhow::Result<Session> {
+/// `intra_threads`: ORT's default (the physical cores) when `None`; the live diariser
+/// caps it so the STT tasks and capture threads keep theirs (07 §2).
+fn session(path: &Path, data_dir: &Path, intra_threads: Option<usize>) -> anyhow::Result<Session> {
     models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
-    let builder = Session::builder()
+    let mut builder = Session::builder()
         .map_err(ort_err)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(ort_err)?;
+    if let Some(n) = intra_threads {
+        builder = builder.with_intra_threads(n).map_err(ort_err)?;
+    }
     models::onnx::configure(builder)
         .commit_from_file(path)
         .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))
@@ -237,13 +288,14 @@ impl Mel {
     }
 }
 
-/// The streaming state (a port of HF's `Nemotron3DiarizationSpeakerCache` with the
-/// offline sizes): the arrival-order speaker cache — up to [`CACHE`] encoder frames
-/// with the speaker probabilities they were kept for — and the FIFO of the newest
-/// frames. Every chunk attends to both, so a speaker heard in minute 2 keeps their
-/// channel in minute 50.
-#[derive(Default)]
+/// The streaming state (a port of HF's `Nemotron3DiarizationSpeakerCache`): the
+/// arrival-order speaker cache — up to [`CACHE`] encoder frames with the speaker
+/// probabilities they were kept for — and the FIFO of the newest frames, sized by the
+/// [`Geometry`]. Every chunk attends to both, so a speaker heard in minute 2 keeps
+/// their channel in minute 50.
 struct SpeakerCache {
+    fifo_len: usize,
+    update_period: usize,
     /// `n × HIDDEN`.
     embeds: Vec<f32>,
     /// `n × SPEAKERS`.
@@ -254,6 +306,17 @@ struct SpeakerCache {
 }
 
 impl SpeakerCache {
+    fn new(g: Geometry) -> Self {
+        Self {
+            fifo_len: g.fifo,
+            update_period: g.update,
+            embeds: Vec::new(),
+            probs: Vec::new(),
+            fifo: Vec::new(),
+            compressed: false,
+        }
+    }
+
     /// The `cached_embeds` input: cache then FIFO.
     fn cached(&self) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.embeds.len() + self.fifo.len());
@@ -266,7 +329,7 @@ impl SpeakerCache {
     /// over its whole input (cache, FIFO, chunk, look-ahead); `chunk_embeds`: the
     /// step's fresh frames (chunk and look-ahead), of which the first `n_chunk` join the
     /// FIFO — the look-ahead frames open the next chunk. When the FIFO overflows, at
-    /// least [`CACHE_UPDATE`] of its oldest frames move to the cache, which is
+    /// least `update_period` of its oldest frames move to the cache, which is
     /// compressed once it exceeds [`CACHE`].
     fn update(&mut self, probs: &[f32], chunk_embeds: &[f32], n_chunk: usize, silence: &[f32]) {
         let n_cache = self.embeds.len() / HIDDEN;
@@ -274,10 +337,10 @@ impl SpeakerCache {
         let mut fifo = std::mem::take(&mut self.fifo);
         fifo.extend_from_slice(&chunk_embeds[..n_chunk * HIDDEN]);
         let len = n_fifo + n_chunk;
-        let popped = if len <= FIFO {
+        let popped = if len <= self.fifo_len {
             0
         } else {
-            CACHE_UPDATE.max(len - FIFO).min(len)
+            self.update_period.max(len - self.fifo_len).min(len)
         };
         if popped > 0 {
             // An uncompressed cache holds plain frames whose probabilities this step
@@ -410,39 +473,66 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Per-frame speaker probabilities of the whole recording (`⌊len/160⌋ × SPEAKERS`, one row
-/// per 10 ms), from the streaming loop: [`CHUNK`] encoder frames at a time with
-/// [`RIGHT_CONTEXT`] look-ahead, every step attending to the speaker cache and FIFO.
-/// `progress(done, total)` in chunks.
-pub fn probabilities(
-    pcm: &[f32],
-    model: &Path,
-    data_dir: &Path,
-    mut progress: impl FnMut(usize, usize),
-) -> anyhow::Result<Vec<f32>> {
-    let frames = pcm.len() / HOP;
-    let encoder_frames = frames.div_ceil(SUBSAMPLING);
-    let mut out = Vec::with_capacity(frames * SPEAKERS);
-    if frames == 0 {
-        return Ok(out);
+/// Thread cap of the live diariser's session (07 §2): CPU seconds are the same at any
+/// count, this keeps the STT tasks and capture threads on their cores.
+pub const LIVE_INTRA_THREADS: usize = 4;
+
+/// The streaming loop's state: session, front end and speaker cache for one
+/// [`Geometry`]. [`Streamer::step`] scores one chunk; the offline pass
+/// ([`probabilities`]) and the live diariser (`meeting::diar`) both drive it.
+pub struct Streamer {
+    sess: Session,
+    mel: Mel,
+    cache: SpeakerCache,
+    geometry: Geometry,
+    feats: Vec<f32>,
+}
+
+impl Streamer {
+    /// Load `model` (`ort_lib` first) with `intra_threads` (`None`: ORT's default).
+    pub fn open(
+        model: &Path,
+        data_dir: &Path,
+        geometry: Geometry,
+        intra_threads: Option<usize>,
+    ) -> anyhow::Result<Streamer> {
+        Ok(Streamer {
+            sess: session(model, data_dir, intra_threads)?,
+            mel: Mel::default(),
+            cache: SpeakerCache::new(geometry),
+            geometry,
+            feats: Vec::new(),
+        })
     }
-    let mut sess = session(model, data_dir)?;
-    let mut mel = Mel::default();
-    let mut cache = SpeakerCache::default();
-    let mut feats = Vec::new();
-    let chunks = encoder_frames.div_ceil(CHUNK);
-    for (k, start) in (0..encoder_frames).step_by(CHUNK).enumerate() {
-        let end = (start + CHUNK).min(encoder_frames);
-        let stop = (end + RIGHT_CONTEXT).min(encoder_frames);
-        let n_chunk = end - start;
-        let (m0, m1) = (start * SUBSAMPLING, (stop * SUBSAMPLING).min(frames));
-        feats.clear();
-        mel.frames(pcm, m0, m1, &mut feats);
-        let cached = cache.cached();
+
+    /// The geometry this streamer was opened with.
+    pub fn geometry(&self) -> Geometry {
+        self.geometry
+    }
+
+    /// Score the chunk whose first mel frame is `m0` of `pcm` (16 kHz; frame `t` is
+    /// centred on sample `160·t`, so `pcm` must reach a little before `160·m0` for the
+    /// window's left half, or start at the recording's start). The chunk is
+    /// `[m0, min(m0 + chunk·8, ⌊len/160⌋))`; the look-ahead after it is whatever `pcm`
+    /// holds up to `right·8` frames — clamp at the end of `pcm` is the last-chunk
+    /// behaviour (every frame scored, no look-ahead). Returns one row of `SPEAKERS`
+    /// probabilities per 10 ms frame of the chunk (empty when `m0` is past the end).
+    pub fn step(&mut self, pcm: &[f32], m0: usize) -> anyhow::Result<Vec<f32>> {
+        let frames = pcm.len() / HOP;
+        let m_end = (m0 + self.geometry.chunk * SUBSAMPLING).min(frames);
+        if m_end <= m0 {
+            return Ok(Vec::new());
+        }
+        let m_stop = (m_end + self.geometry.right * SUBSAMPLING).min(frames);
+        let n_chunk = (m_end - m0).div_ceil(SUBSAMPLING);
+        let n_fresh = (m_stop - m0).div_ceil(SUBSAMPLING);
+        self.feats.clear();
+        self.mel.frames(pcm, m0, m_stop, &mut self.feats);
+        let cached = self.cache.cached();
         let n_cached = cached.len() / HIDDEN;
-        let n_in = n_cached + stop - start;
-        let outputs = sess.run(ort::inputs![
-            "input_features" => Tensor::from_array((vec![1i64, (m1 - m0) as i64, MELS as i64], std::mem::take(&mut feats)))?,
+        let n_in = n_cached + n_fresh;
+        let outputs = self.sess.run(ort::inputs![
+            "input_features" => Tensor::from_array((vec![1i64, (m_stop - m0) as i64, MELS as i64], std::mem::take(&mut self.feats)))?,
             "cached_embeds" => Tensor::from_array((vec![1i64, n_cached as i64, HIDDEN as i64], cached))?,
             "attention_mask" => Tensor::from_array((vec![1i64, n_in as i64], vec![1i64; n_in]))?,
         ])?;
@@ -459,9 +549,10 @@ pub fn probabilities(
             "diarization: {} logits for {n_in} encoder frames",
             logits.len()
         );
-        // The chunk's own frames, at 10 ms; the look-ahead is scored again next step.
-        let own = n_cached * SUBSAMPLING * SPEAKERS..(n_cached + n_chunk) * SUBSAMPLING * SPEAKERS;
-        out.extend(logits[own].iter().map(|&x| sigmoid(x)));
+        // The chunk's own frames, at 10 ms (a padded last group is cut to the real
+        // frames); the look-ahead is scored again next step.
+        let own = n_cached * SUBSAMPLING * SPEAKERS..(n_cached * SUBSAMPLING + (m_end - m0)) * SPEAKERS;
+        let probs: Vec<f32> = logits[own].iter().map(|&x| sigmoid(x)).collect();
         // Pooled to encoder frames for the cache policy.
         let pooled: Vec<f32> = (0..n_in * SPEAKERS)
             .map(|i| {
@@ -472,15 +563,37 @@ pub fn probabilities(
                     / SUBSAMPLING as f32
             })
             .collect();
-        cache.update(
+        self.cache.update(
             &pooled,
             get("chunk_embeds")?,
             n_chunk,
             get("silence_embeds")?,
         );
+        Ok(probs)
+    }
+}
+
+/// Per-frame speaker probabilities of the whole recording (`⌊len/160⌋ × SPEAKERS`, one row
+/// per 10 ms), from the streaming loop in the [`OFFLINE`] geometry, every step attending
+/// to the speaker cache and FIFO. `progress(done, total)` in chunks.
+pub fn probabilities(
+    pcm: &[f32],
+    model: &Path,
+    data_dir: &Path,
+    mut progress: impl FnMut(usize, usize),
+) -> anyhow::Result<Vec<f32>> {
+    let frames = pcm.len() / HOP;
+    let mut out = Vec::with_capacity(frames * SPEAKERS);
+    if frames == 0 {
+        return Ok(out);
+    }
+    let mut streamer = Streamer::open(model, data_dir, OFFLINE, None)?;
+    let step = OFFLINE.chunk * SUBSAMPLING;
+    let chunks = frames.div_ceil(step);
+    for (k, m0) in (0..frames).step_by(step).enumerate() {
+        out.extend(streamer.step(pcm, m0)?);
         progress(k + 1, chunks);
     }
-    out.truncate(frames * SPEAKERS);
     Ok(out)
 }
 
@@ -545,7 +658,7 @@ pub struct Embedder(Session);
 impl Embedder {
     /// Open the embedding model.
     pub fn open(models: &Models) -> anyhow::Result<Self> {
-        Ok(Self(session(&models.embedding, &models.data_dir)?))
+        Ok(Self(session(&models.embedding, &models.data_dir, None)?))
     }
 
     /// One embedding for `pcm` (16 kHz); at least a few hundred ms of audio.
@@ -708,25 +821,46 @@ mod tests {
 
     #[test]
     fn fifo_overflow_moves_frames_to_the_cache_and_compresses_it() {
-        let mut cache = SpeakerCache::default();
+        let (chunk_len, fifo) = (OFFLINE.chunk, OFFLINE.fifo);
+        let mut cache = SpeakerCache::new(OFFLINE);
         let silence = vec![0f32; HIDDEN];
         // First chunk: 340 frames + 40 look-ahead, nothing cached yet.
         let step = |n_in: usize| vec![0.01f32; n_in * SPEAKERS];
         let chunk = |n: usize| vec![1f32; n * HIDDEN];
-        cache.update(&step(380), &chunk(380), CHUNK, &silence);
+        cache.update(&step(380), &chunk(380), chunk_len, &silence);
         // 340 > FIFO 40 → 300 popped to the cache (> 264 → compressed), 40 stay.
         assert_eq!(cache.embeds.len() / HIDDEN, CACHE);
-        assert_eq!(cache.fifo.len() / HIDDEN, FIFO);
+        assert_eq!(cache.fifo.len() / HIDDEN, fifo);
         assert!(cache.compressed);
         // Second chunk attends to 304 cached frames.
-        assert_eq!(cache.cached().len() / HIDDEN, CACHE + FIFO);
-        cache.update(&step(CACHE + FIFO + 380), &chunk(380), CHUNK, &silence);
+        assert_eq!(cache.cached().len() / HIDDEN, CACHE + fifo);
+        cache.update(&step(CACHE + fifo + 380), &chunk(380), chunk_len, &silence);
         assert_eq!(cache.embeds.len() / HIDDEN, CACHE);
-        assert_eq!(cache.fifo.len() / HIDDEN, FIFO);
+        assert_eq!(cache.fifo.len() / HIDDEN, fifo);
         // A 10-frame last chunk still overflows the 40-frame FIFO: all 50 move to the cache.
-        cache.update(&step(CACHE + FIFO + 10), &chunk(10), 10, &silence);
+        cache.update(&step(CACHE + fifo + 10), &chunk(10), 10, &silence);
         assert_eq!(cache.fifo.len() / HIDDEN, 0);
         assert_eq!(cache.embeds.len() / HIDDEN, CACHE);
+    }
+
+    #[test]
+    fn live_fifo_fills_before_the_cache_takes_an_update_period() {
+        // LIVE: 80-frame chunks, FIFO 264, update 222. Three chunks (240) fit; the fourth
+        // overflows: 222 move to the cache (uncompressed, ≤ 264), 98 stay.
+        let mut cache = SpeakerCache::new(LIVE);
+        let silence = vec![0f32; HIDDEN];
+        let step = |n_in: usize| vec![0.01f32; n_in * SPEAKERS];
+        let chunk = |n: usize| vec![1f32; n * HIDDEN];
+        for k in 0..3 {
+            cache.update(&step(k * 80 + 100), &chunk(100), 80, &silence);
+        }
+        assert_eq!((cache.embeds.len(), cache.fifo.len() / HIDDEN), (0, 240));
+        cache.update(&step(240 + 100), &chunk(100), 80, &silence);
+        assert_eq!(cache.embeds.len() / HIDDEN, LIVE.update);
+        assert_eq!(cache.fifo.len() / HIDDEN, 320 - LIVE.update);
+        assert!(!cache.compressed);
+        assert_eq!(LIVE.buffer_ms(), 8_000);
+        assert_eq!(OFFLINE.buffer_ms(), 30_400);
     }
 
     #[test]
