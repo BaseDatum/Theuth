@@ -8,7 +8,7 @@ import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { EMPTY, MIN_HEIGHT, useNoteChat } from '@/lib/note-chat'
-import type { DocRef } from '@/lib/pastes'
+import type { AttachRef } from '@/lib/attach'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
 
@@ -16,11 +16,11 @@ const PAGE = 60
 
 /**
  * 59 §7.3: the chat under a note. A resizable bottom panel with the remembered session's transcript (`compact`)
- * and a composer whose every message leads with the note's `[doc …]` marker; the first message creates a session
- * titled like the note and the panel keeps it (`lib/note-chat`). "New chat" forgets the session; the session itself
- * stays in the normal chat list.
+ * and a composer whose every message leads with the note's `[attached note …]` marker (66 §3.3); the first message
+ * creates a session titled like the note and the panel keeps it (`lib/note-chat`). "New chat" forgets the session; the
+ * session itself stays in the normal chat list.
  */
-export function NoteChat({ note, doc }: { note: string; doc: DocRef }) {
+export function NoteChat({ note, doc }: { note: string; doc: AttachRef }) {
   const state = useNoteChat((s) => s.notes[note] ?? EMPTY)
   const set = useNoteChat((s) => s.set)
   const navigate = useNavigate()

@@ -45,6 +45,8 @@ import type { Api } from "@/rpc/api";
 import type { Artifact, Kind } from "@/rpc/extra";
 import { useConnection } from "@/store/connection";
 import { type Entry, useSessions } from "@/store/sessions";
+import { ChatPicker } from "@/components/notes/ChatPicker";
+import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
@@ -140,7 +142,11 @@ export function ArtifactMenu({
   const navigate = useNavigate();
   const active = useHarnesses((s) => s.active);
   const local = isLocal(active);
+  // 66 §7.8: the card's artifact as a reference, into this session's composer or a picked chat.
+  const [attaching, setAttaching] = useState(false);
   return (
+    <>
+    {attaching && <ChatPicker open onOpenChange={setAttaching} item={toRef({ kind: "artifact", artifact: a })} />}
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -186,6 +192,11 @@ export function ArtifactMenu({
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => attachTo(a.session, toRef({ kind: "artifact", artifact: a }))}>
+          Attach to this chat
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={() => void navigator.clipboard.writeText(a.path)}
         >
@@ -193,6 +204,7 @@ export function ArtifactMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    </>
   );
 }
 

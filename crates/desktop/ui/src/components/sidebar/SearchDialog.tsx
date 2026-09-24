@@ -1,64 +1,15 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import {
-  Check,
-  ChevronDown,
-  CircleHelp,
-  FileText,
-  History,
-  MessageSquare,
-  Mic,
-  RefreshCw,
-  Search,
-  StickyNote,
-  X,
-} from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { LevelMeter } from '@/components/chat/LevelMeter'
-import { Button } from '@/components/ui/button'
-import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import * as dictation from '@/lib/dictation'
-import { queryKeys, useApi } from '@/lib/rpc'
-import * as speech from '@/lib/speech'
-import {
-  CATEGORIES,
-  CATEGORY_LABEL,
-  DEFAULT_LIMITS,
-  LIMITS,
-  MAX_QUERY_CHARS,
-  type Limits,
-  type SearchDestination,
-  type SearchRequest,
-  type SearchView,
-  canonical,
-  indexing,
-  patch,
-  useSearchState,
-} from '@/lib/search'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
-import { cn } from '@/lib/utils'
-import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
-import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
-import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
+import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, StickyNote, X } from 'lucide-react'
 import type { MeetingSearchHit } from '@/rpc/bindings/MeetingSearchHit'
 import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
-import type { SearchNotice } from '@/rpc/bindings/SearchNotice'
-import type { SearchPage } from '@/rpc/bindings/SearchPage'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
+import { Archived, Notice, Notices, Section, Snippet, status } from '@/components/search/parts'
 import { ago } from './AgentTree'
 
 const DEBOUNCE_MS = 150
@@ -87,8 +38,8 @@ function visibleTrigger(): HTMLElement | undefined {
   })
 }
 
-/** One activatable row: cmdk value/React key is the stable source identity (49 §2.3), never a row index. */
-type Item = { key: string; dest: SearchDestination; node: ReactNode }
+/** One activatable row: cmdk value/React key is the stable source identity (49 §2.3), never a row index. `ref` is the row as an attachment (66 §7.8). */
+type Item = { key: string; dest: SearchDestination; node: ReactNode; ref: AttachRef }
 
 function items(g: SearchGroup): Item[] {
   switch (g.category) {
@@ -97,24 +48,28 @@ function items(g: SearchGroup): Item[] {
         key: `sessions:${h.session}:${h.seq ?? 'title'}`,
         dest: { category: 'sessions', session: h.session, seq: h.seq },
         node: <SessionRow hit={h} />,
+        ref: toRef({ kind: 'session', hit: h }),
       }))
     case 'artifacts':
       return g.page.hits.map((h) => ({
         key: `artifacts:${h.artifact.call_id}`,
         dest: { category: 'artifacts', callId: h.artifact.call_id },
         node: <ArtifactRow hit={h} />,
+        ref: toRef({ kind: 'artifact', artifact: h.artifact }),
       }))
     case 'knowledge':
       return g.page.hits.map((h) => ({
         key: `knowledge:${h.meta.id}`,
         dest: { category: 'knowledge', id: h.meta.id },
         node: <ConceptRow hit={h} />,
+        ref: toRef({ kind: 'knowledge', meta: h.meta }),
       }))
     case 'knowledge_history':
       return g.page.hits.map((h) => ({
         key: `knowledge_history:${h.commit}:${h.id}`,
         dest: { category: 'knowledge_history', id: h.id, commit: h.commit, snapshot: h.snapshot_commit },
         node: <HistoryRow hit={h} />,
+        ref: toRef({ kind: 'knowledge', revision: h }),
       }))
     case 'notes':
       return g.page.hits.map((h) => ({
@@ -147,6 +102,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
+  // 66 §7.8: with a chat open, every row offers "Attach to current chat".
+  const currentChat = useParams({ strict: false }).session ?? null
   const remembered = useSearchState((s) => s.categories)
   const setRemembered = useSearchState((s) => s.setCategories)
   const leave = useSearchState((s) => s.leave)
@@ -681,6 +638,14 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                       onRetryMore={() => void m?.refetch()}
                       onRetry={() => void refresh([category])}
                       onOpen={go}
+                      onAttach={
+                        currentChat
+                          ? (ref) => {
+                              attachTo(currentChat, ref)
+                              onOpenChange(false)
+                            }
+                          : undefined
+                      }
                     />
                   ) : (
                     <Section key={category} category={category} state="No answer for this category." />
@@ -718,69 +683,6 @@ const chip = (on: boolean) =>
     on ? 'border-fg-accent bg-accent text-foreground' : 'border-border-subtle text-fg-secondary hover:bg-accent/60',
   )
 
-/** Heading suffix and live-region wording for one page. */
-function status(page: SearchPage<unknown>): string {
-  switch (page.state) {
-    case 'ready':
-      return page.hits.length === 0
-        ? 'no matches'
-        : page.has_more
-          ? `${page.hits.length}+ matches`
-          : `${page.hits.length} shown`
-    case 'indexing':
-      return 'indexing…'
-    case 'unavailable':
-      return 'unavailable'
-    case 'error':
-      return 'error'
-  }
-}
-
-function Notice({ children, tone }: { children: ReactNode; tone?: 'error' }) {
-  return (
-    <div
-      role={tone === 'error' ? 'alert' : undefined}
-      className={cn('px-3 py-6 text-center text-sm', tone === 'error' ? 'text-destructive' : 'text-fg-secondary')}
-    >
-      {children}
-    </div>
-  )
-}
-
-function Notices({ notices }: { notices: SearchNotice[] }) {
-  if (notices.length === 0) return null
-  return (
-    <ul className="px-2 pb-2 text-xs text-fg-tertiary">
-      {notices.map((n, i) => (
-        <li key={i}>
-          {n.message}
-          {n.affected !== null && ` (${n.affected})`}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-/** A category heading with a state line and no rows: unavailable/error/indexing, or a missing group. */
-function Section({
-  category,
-  state,
-  children,
-}: {
-  category: SearchCategory
-  state: string
-  children?: ReactNode
-}) {
-  return (
-    <div className="px-1 pt-2">
-      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-        {CATEGORY_LABEL[category]} · <span id={`search-state-${category}`}>{state}</span>
-      </div>
-      {children}
-    </div>
-  )
-}
-
 function Group({
   group,
   stale,
@@ -792,6 +694,7 @@ function Group({
   onRetryMore,
   onRetry,
   onOpen,
+  onAttach,
 }: {
   group: SearchGroup
   stale: boolean
@@ -803,6 +706,8 @@ function Group({
   onRetryMore(): void
   onRetry(): void
   onOpen(dest: SearchDestination): void
+  /** Present while a chat is open: the row action that attaches the hit to it (66 §7.8). */
+  onAttach?(ref: AttachRef): void
 }) {
   const { category, page } = group
   if (page.state !== 'ready') {
@@ -836,10 +741,26 @@ function Group({
           value={it.key}
           disabled={stale}
           onSelect={() => onOpen(it.dest)}
-          className="min-h-11 items-start gap-3 py-2"
+          className="group/hit min-h-11 items-start gap-3 py-2"
         >
           <Icon className="mt-0.5" aria-hidden />
           {it.node}
+          {onAttach && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Attach ${it.ref.title} to current chat`}
+              title="Attach to current chat"
+              className="shrink-0 opacity-0 group-data-[selected=true]/hit:opacity-100 hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onAttach(it.ref)
+              }}
+            >
+              <Paperclip />
+            </Button>
+          )}
         </CommandItem>
       ))}
       {page.has_more && (
@@ -880,11 +801,6 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
       <div className="truncate text-xs text-fg-tertiary">{meta.filter(Boolean).join(' · ')}</div>
     </div>
   )
-}
-
-/** Muted marker after the title of an archived chat (51 §3): hidden from the sidebar, still found here. */
-function Archived() {
-  return <span className="ml-1.5 text-xs text-fg-tertiary">Archived</span>
 }
 
 function SessionRow({ hit }: { hit: SearchHit }) {
@@ -987,20 +903,3 @@ function MeetingRow({ hit }: { hit: MeetingSearchHit }) {
   )
 }
 
-/** `ranges` are `[start, end)` char offsets (not UTF-16 units), so slice the code-point array. */
-function Snippet({ text, ranges }: { text: string; ranges: MatchRange[] }) {
-  const chars = Array.from(text)
-  const out: ReactNode[] = []
-  let i = 0
-  for (const r of ranges) {
-    if (r.start > i) out.push(chars.slice(i, r.start).join(''))
-    out.push(
-      <mark key={r.start} className="rounded-xs bg-accent font-semibold text-foreground">
-        {chars.slice(r.start, r.end).join('')}
-      </mark>,
-    )
-    i = r.end
-  }
-  out.push(chars.slice(i).join(''))
-  return <>{out}</>
-}

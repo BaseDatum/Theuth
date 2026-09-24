@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
-import { attach, attachDoc, drop, expand, label, type Pastes, reconcile, retext, token, tokenize, untoken } from './pastes'
+import type { AttachRef } from './attach'
+import { attach, attachRef, drop, expand, label, type Pastes, reconcile, retext, token, tokenize, untoken } from './pastes'
 
 const none: Pastes = new Map()
 const X = 'x'.repeat(401)
@@ -77,16 +78,18 @@ test('drop keeps numbering; retext edits in place', () => {
   expect(expand('⟦paste 1⟧', retext(1, 'edited', f)).text).toBe('edited')
 })
 
-test('doc chips expand to marker lines ahead of the text; the same ref attaches once', () => {
-  const a = attachDoc({ ref: 'abc', title: 'Plan "B"' }, none)
+test('ref chips expand to marker lines ahead of the text; the same kind+id attaches once', () => {
+  const plan: AttachRef = { kind: 'note', id: 'abc', title: 'Plan "B"', meta: 'note · updated Sep 24 · 1 KB' }
+  const facts: AttachRef = { kind: 'knowledge', id: 'facts/x', title: 'Facts', meta: '' }
+  const a = attachRef(plan, none)
   expect([...a.values()].map(label)).toEqual(['Plan "B"'])
-  expect(attachDoc({ ref: 'abc', title: 'Plan "B"' }, a)).toBe(a)
-  const k = attachDoc({ ref: 'knowledge:facts/x', title: 'Facts' }, a)
+  expect(attachRef({ ...plan, title: 'renamed' }, a)).toBe(a)
+  const k = attachRef(facts, a)
   expect(expand('add a bullet', k)).toEqual({
-    text: '[doc abc "Plan \\"B\\""]\n[doc knowledge:facts/x "Facts"]\nadd a bullet',
+    text: '[attached note abc "Plan \\"B\\"" · note · updated Sep 24 · 1 KB]\n[attached knowledge facts/x "Facts"]\nadd a bullet',
     files: [],
   })
   // Dropping the chip drops its marker; a pasted block still lands at its token.
   const t = tokenize(X, drop(1, k))
-  expect(expand(`hi ${t.text}`, t.pastes).text).toBe(`[doc knowledge:facts/x "Facts"]\nhi ${X}`)
+  expect(expand(`hi ${t.text}`, t.pastes).text).toBe(`[attached knowledge facts/x "Facts"]\nhi ${X}`)
 })

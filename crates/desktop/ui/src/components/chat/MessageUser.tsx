@@ -1,32 +1,63 @@
-import { GitFork, Mic, Pencil } from 'lucide-react'
+import { GitFork, Mic, Pencil, X } from 'lucide-react'
 import { memo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { type AttachRef, compose, parse } from '@/lib/attach'
 import { useApi } from '@/lib/rpc'
 import { parseNote } from '@/lib/voice-note'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useSessionField } from '@/store/sessions'
+import { AttachChip } from './AttachChip'
 import { Attachments } from './Attachments'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 import { SkillCard } from './SkillCard'
 
-/** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so `text` seeds it once. */
+/** The message's references as a chip row above the bubble (66 §7.9); `onDrop` (editing) adds a `×` per chip. */
+function ChipRow({ refs, session, onDrop }: { refs: AttachRef[]; session?: string; onDrop?: (i: number) => void }) {
+  if (refs.length === 0) return null
+  return (
+    <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5 md:max-w-[70%]">
+      {refs.map((r, i) => (
+        <span key={`${r.kind}:${r.id}`} className="relative">
+          <AttachChip item={r} again={session} />
+          {onDrop && (
+            <button
+              type="button"
+              aria-label={`Remove ${r.title}`}
+              onClick={() => onDrop(i)}
+              className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-foreground text-background"
+            >
+              <X className="size-2.5" />
+            </button>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so
+ * `text` seeds it once. Edits the body; the marker lines are re-prepended on send, minus any chip the `×` dropped (66 §7.9). */
 function EditBubble({
+  refs,
   text,
   onSend,
   onCancel,
 }: {
+  refs: AttachRef[]
   text: string
   onSend: (text: string) => void
   onCancel: () => void
 }) {
   const [value, setValue] = useState(text)
+  const [kept, setKept] = useState(refs)
   const send = () => {
     const t = value.trim()
-    if (t) onSend(t)
+    if (t || kept.length > 0) onSend(compose(kept, t))
   }
   return (
     <>
+      <ChipRow refs={kept} onDrop={(i) => setKept(kept.filter((_, j) => j !== i))} />
       <Textarea
         autoFocus
         value={value}
@@ -54,7 +85,8 @@ function EditBubble({
 
 /** Right-aligned bubble; a full-width `SkillCard` above the words when the input was a skill injection. `turn` is set only on the message that opened a turn (steers carry none).
  * `context` is the stored row's membership (48 §3.3): its attachments are the authoritative occurrences (`files` is our optimistic list until then), and a removed row renders as archive.
- * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls. */
+ * `readOnly` (an inspection page) shows text and attachments only: no edit, fork or removal controls.
+ * Leading `[attached …]`/`[doc …]` lines (66 §7.9) render as chips; the bubble shows the body only. */
 export const MessageUser = memo(function MessageUser({
   text,
   skill,
@@ -76,12 +108,14 @@ export const MessageUser = memo(function MessageUser({
   const running = useSessionField(session, 'running')
   const fork = useFork(session)
   const [editing, setEditing] = useState(false)
-  // 45 §7.4: the marker is the text, so own sends and history render alike.
-  const note = parseNote(text)
+  // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike.
+  const { refs, body } = parse(text)
+  const note = parseNote(body)
   return (
     <div className="group flex flex-col items-end gap-2 py-2">
       {skill && <SkillCard name={skill} />}
       <Attachments files={files} occurrences={context?.attachments} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />
+      {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">
           <Mic className="size-3" /> {note.secs} s
@@ -89,7 +123,8 @@ export const MessageUser = memo(function MessageUser({
       )}
       {editing && turn != null ? (
         <EditBubble
-          text={text}
+          refs={refs}
+          text={body}
           onCancel={() => setEditing(false)}
           onSend={(t) => {
             setEditing(false)
@@ -97,9 +132,9 @@ export const MessageUser = memo(function MessageUser({
           }}
         />
       ) : (
-        text && (
+        body && (
           <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
-            {note ? note.body : text}
+            {note ? note.body : body}
           </div>
         )
       )}
