@@ -843,7 +843,7 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
 }
 
 function SessionRow({ hit }: { hit: SearchHit }) {
-  const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title || 'Untitled chat'
+  const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title
   return (
     <Lines
       title={

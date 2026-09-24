@@ -22,7 +22,6 @@ use ::search::{FuzzyMatcher, MatchRange, SearchPage, SearchText, snippet};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
-use crate::attach;
 use crate::loop_::text_of;
 use crate::store::Store;
 
@@ -190,8 +189,8 @@ pub enum HitRole {
 pub struct SearchHit {
     /// The session.
     pub session: SessionId,
-    /// The session's title; never empty ([`crate::attach::session_title`]
-    /// fills a title-less session from its first user line or created date).
+    /// The session's display title (66 §8): its title, else its first user
+    /// line cut to 60 chars, else `Untitled chat · <Mon d>`. Never empty.
     pub title: String,
     /// What matched.
     pub kind: HitKind,
@@ -208,6 +207,8 @@ pub struct SearchHit {
     pub score: u32,
     /// Messages of this session that matched (0 for a title-only hit).
     pub matches: u32,
+    /// The session's `created_at` (RFC 3339).
+    pub created_at: String,
     /// The session's `updated_at` (RFC 3339), the tie-breaker after score.
     pub updated_at: String,
     /// The matched message was removed from the model's context (48 §2.2);
@@ -222,12 +223,12 @@ pub struct SearchHit {
 
 struct Title {
     id: SessionId,
-    /// What the query matches: the stored title, empty when unset.
     title: SearchText,
-    /// What the hit shows: the stored title or its fallback.
-    display: String,
+    created_at: String,
     updated_at: String,
     archived: bool,
+    /// First user line of the transcript, the display title of a title-less session.
+    first_line: Option<String>,
 }
 
 struct Doc {
@@ -280,24 +281,27 @@ impl Index {
                 })
             })
             .collect();
-        // Rows come ordered by session, seq: the first user row per session.
-        let mut first_user: HashMap<SessionId, &str> = HashMap::new();
-        for d in docs.iter().filter(|d| d.role == HitRole::User) {
-            first_user.entry(d.session).or_insert(d.text.as_str());
+        // Bodies arrive ordered by (session, seq): the first user row wins.
+        let mut first_lines: HashMap<SessionId, String> = HashMap::new();
+        for d in &docs {
+            if d.role == HitRole::User && !first_lines.contains_key(&d.session) {
+                let body = crate::attach::parse(d.text.as_str()).body;
+                if let Some(line) = body.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    first_lines.insert(d.session, line.to_owned());
+                }
+            }
         }
         let titles = store
             .search_titles()
             .await?
             .into_iter()
-            .map(|(id, title, created_at, updated_at, archived)| {
-                let created = created_at.parse().unwrap_or_default();
-                Title {
-                    id,
-                    display: attach::session_title(&title, first_user.get(&id).copied(), created),
-                    title: SearchText::new(title),
-                    updated_at,
-                    archived,
-                }
+            .map(|(id, title, created_at, updated_at, archived)| Title {
+                first_line: first_lines.remove(&id),
+                id,
+                title: SearchText::new(title),
+                created_at,
+                updated_at,
+                archived,
             })
             .collect();
         Ok(Index { titles, docs })
@@ -386,7 +390,7 @@ impl Index {
                 let t = by_id.get(&c.session);
                 SearchHit {
                     session: c.session,
-                    title: t.map(|t| t.display.clone()).unwrap_or_default(),
+                    title: t.map(|t| t.display_title()).unwrap_or_else(|| "Untitled chat".to_owned()),
                     kind: c.kind,
                     seq: c.seq,
                     role: c.role,
@@ -394,12 +398,35 @@ impl Index {
                     ranges,
                     score: c.score,
                     matches: counts.get(&c.session).copied().unwrap_or(0),
+                    created_at: t.map(|t| t.created_at.clone()).unwrap_or_default(),
                     updated_at: t.map(|t| t.updated_at.clone()).unwrap_or_default(),
                     context_removed: c.removed,
                     archived: t.is_some_and(|t| t.archived),
                 }
             })
             .collect()
+    }
+}
+
+impl Title {
+    /// 66 §8: the title; else the first user line cut to 60 chars; else
+    /// `Untitled chat · <Mon d>` from `created_at`.
+    fn display_title(&self) -> String {
+        let title = self.title.as_str().trim();
+        if !title.is_empty() {
+            return title.to_owned();
+        }
+        if let Some(line) = &self.first_line {
+            let mut s: String = line.chars().take(60).collect();
+            if line.chars().count() > 60 {
+                s.push('…');
+            }
+            return s;
+        }
+        let day = chrono::DateTime::parse_from_rfc3339(&self.created_at)
+            .map(|t| t.with_timezone(&chrono::Local).format("%b %-d").to_string())
+            .unwrap_or_default();
+        if day.is_empty() { "Untitled chat".to_owned() } else { format!("Untitled chat · {day}") }
     }
 }
 
@@ -419,9 +446,13 @@ mod tests {
                 .map(|(i, (id, t))| Title {
                     id: sid(*id),
                     title: SearchText::new(*t),
-                    display: (*t).to_owned(),
+                    created_at: "2026-09-01T00:00:00Z".to_owned(),
                     updated_at: format!("2026-09-{:02}T00:00:00Z", i + 1),
                     archived: false,
+                    first_line: docs
+                        .iter()
+                        .find(|(s, seq, _)| s == id && *seq >= 0)
+                        .map(|(_, _, text)| text.to_string()),
                 })
                 .collect(),
             docs: docs
@@ -441,6 +472,30 @@ mod tests {
     fn empty_query_returns_nothing() {
         let idx = index(&[(1, "deploy runbook")], &[]);
         assert!(idx.search("  ", 10).is_empty());
+    }
+
+    /// 66 §8: a hit always carries a human title — the session's, else the
+    /// first user line (≤ 60 chars), else `Untitled chat · <Mon d>`.
+    #[test]
+    fn title_less_sessions_get_a_display_title() {
+        let long = "x".repeat(70);
+        let idx = index(
+            &[(1, "deploy runbook"), (2, ""), (3, ""), (4, "")],
+            &[(1, 1, "deploy it"), (2, 1, "please deploy the relay"), (3, 1, &long)],
+        );
+        let hits = idx.search("deploy", 10);
+        let by = |n: u128| hits.iter().find(|h| h.session == sid(n)).unwrap().title.clone();
+        assert_eq!(by(1), "deploy runbook");
+        assert_eq!(by(2), "please deploy the relay");
+        let mut idx2 = index(&[(4, "")], &[(4, 1, "deploy")]);
+        idx2.titles[0].first_line = None;
+        let h = &idx2.search("deploy", 10)[0];
+        assert!(h.title.starts_with("Untitled chat · Sep "), "{}", h.title);
+        assert_eq!(h.created_at, "2026-09-01T00:00:00Z");
+        let idx3 = index(&[(3, "")], &[(3, 1, &long)]);
+        let h = &idx3.search("xxx", 10)[0];
+        assert_eq!(h.title.chars().count(), 61);
+        assert!(h.title.ends_with('…'));
     }
 
     /// A removed row stays searchable (raw transcript search, 48 §2.2) and its
@@ -601,30 +656,6 @@ mod tests {
         cache.invalidate();
         assert_eq!(page("release").await.unwrap().state, PageState::Indexing);
         assert_eq!(settled("release").await.hits.len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A title-less session is named from its first user line (markers
-    /// stripped) or its created date, engine-side, so every client agrees.
-    #[tokio::test]
-    async fn title_less_sessions_get_a_human_name() {
-        let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
-        let spoken = SessionId::new();
-        store.create_session(spoken, "m", None, None, None).await.unwrap();
-        store
-            .append(spoken, &genai::chat::ChatMessage::user("[attached note abc \"Groceries\"]\nplease add milk"))
-            .await
-            .unwrap();
-        let silent = SessionId::new();
-        store.create_session(silent, "m", None, None, None).await.unwrap();
-        store.append(silent, &genai::chat::ChatMessage::assistant("milk noted")).await.unwrap();
-        let idx = Index::build(&store).await.unwrap();
-        let title = |q: &str, s: SessionId| idx.search(q, 10).into_iter().find(|h| h.session == s).unwrap().title;
-        assert_eq!(title("add milk", spoken), "please add milk");
-        let silent_title = title("noted", silent);
-        assert!(silent_title.starts_with("Untitled chat · "), "{silent_title}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

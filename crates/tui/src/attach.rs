@@ -58,8 +58,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             AttachRef {
                 kind: Kind::Session,
                 id: h.session.to_string(),
-                // The engine fills a title-less hit (`agent::attach::session_title`); nothing to fall back to here.
-                title: h.title.clone(),
+                title: if h.title.trim().is_empty() {
+                    format!("Chat · {}", date_rfc3339(&h.created_at))
+                } else {
+                    h.title.clone()
+                },
                 meta,
             }
         }
@@ -146,7 +149,11 @@ pub fn from_session(s: &SessionSummary) -> AttachRef {
     AttachRef {
         kind: Kind::Session,
         id: s.id.to_string(),
-        title: agent::attach::session_title(&s.title, None, s.created_at),
+        title: if s.title.trim().is_empty() {
+            format!("Chat · {}", s.created_at.with_timezone(&Local).format("%b %-d %H:%M"))
+        } else {
+            s.title.clone()
+        },
         meta,
     }
 }
@@ -212,7 +219,7 @@ mod tests {
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);
-        assert!(r.title.starts_with("Untitled chat · "), "{}", r.title);
+        assert!(r.title.starts_with("Chat · "), "{}", r.title);
         assert_eq!(r.meta, format!("chat · no project · updated {} · archived", date(now)));
     }
 }
