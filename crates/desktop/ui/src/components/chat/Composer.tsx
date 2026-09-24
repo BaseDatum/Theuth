@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, AudioLines, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
+import { ArrowUp, AudioLines, FileUp, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -21,6 +21,7 @@ import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, compose, toRef } from '@/lib/attach'
+import { loadRecents, pushRecents, saveRecents } from '@/lib/attach-picker'
 import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
@@ -34,7 +35,9 @@ import { noteText } from '@/lib/voice-note'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
-import { NotePicker } from '@/components/notes/NotePicker'
+import { createNote } from '@/components/notes/create'
+import { useNotes } from '@/components/notes/useNotes'
+import { AttachPicker } from './AttachPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
@@ -193,7 +196,17 @@ export function Composer({
   const slashWord = /^\/\S*$/.test(text) ? text : null
   const slash = slashWord !== null && matches(slashWord).length > 0
   const held = pastes.size > 0
-  const [pickingNote, setPickingNote] = useState(false)
+  /** The attach picker (66 §7.1): `'menu'` from `+`/`theuth:attach-open`, `'at'` from the `@` trigger (§7.8). */
+  const [picking, setPicking] = useState<'menu' | 'at' | null>(null)
+  const [menu, setMenu] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const qc = useQueryClient()
+  const notes = useNotes()
+  const newNote = useMutation({
+    mutationFn: () => createNote(api, qc, notes.data ?? []),
+    onSuccess: (n) => addRef(toRef({ kind: 'note', doc: n })),
+    onError: (e) => toast.error(e.message),
+  })
 
   // ⇧Esc lands in the focused pane's composer (or the new-chat draft when it is not in a pane).
   const focused = usePanes((s) => pane === null || s.focused === pane)
@@ -288,17 +301,30 @@ export function Composer({
 
   /** 66 §7.6: attach a reference; its chip stands above the box until send expands it to the marker line. */
   const addRef = (ref: AttachRef) => setPastes((held) => attachRef(ref, held))
-  // `theuth:attach` (66 §7.8, §7.9): "Attach again", "Attach to this chat", the search dialog's row action — lands in
-  // the focused composer of that session, like `theuth:focus-composer`.
+  // `theuth:attach` (66 §7.8, §7.9): "Attach again", "Attach to this chat", the search dialog's row action — and
+  // `theuth:attach-open` — land in the focused composer of that session, like `theuth:focus-composer`.
   useEffect(() => {
     if (!focused) return
-    const on = (e: Event) => {
+    const add = (e: Event) => {
       const d = (e as CustomEvent<AttachRequest>).detail
       if (d.session === session) addRef(d.ref)
     }
-    window.addEventListener('theuth:attach', on)
-    return () => window.removeEventListener('theuth:attach', on)
+    const open = (e: Event) => {
+      if ((e as CustomEvent<{ session: string | null }>).detail.session === session) setPicking('menu')
+    }
+    window.addEventListener('theuth:attach', add)
+    window.addEventListener('theuth:attach-open', open)
+    return () => {
+      window.removeEventListener('theuth:attach', add)
+      window.removeEventListener('theuth:attach-open', open)
+    }
   }, [session, focused])
+  /** The picker's result: chips for every picked reference, focus back in the box (§7.7). */
+  const picked = (refs: AttachRef[]) => {
+    setPastes((held) => refs.reduce((h, r) => attachRef(r, h), held))
+    setPicking(null)
+    ref.current?.focus()
+  }
 
   // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the harness paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
@@ -415,6 +441,9 @@ export function Composer({
       const body = pinned ? compose([pinned], expanded.text) : expanded.text
       const { files } = expanded
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
+      // 66 §7.6: recents are recorded on send, not on pick.
+      const sent = [...pastes.values()].flatMap((p) => (p.kind === 'ref' ? [p.ref] : []))
+      if (sent.length > 0) saveRecents(active, pushRecents(loadRecents(active), sent))
       reset()
       if (session && running) {
         const id = crypto.randomUUID()
@@ -614,12 +643,18 @@ export function Composer({
           e.target.value = ''
         }}
       />
-      <NotePicker
-        open={pickingNote}
-        onOpenChange={setPickingNote}
-        onPick={(note) => addRef(toRef({ kind: 'note', doc: note }))}
+      <AttachPicker
+        session={session}
+        open={picking !== null}
+        anchor={box}
+        onClose={() => {
+          setPicking(null)
+          ref.current?.focus()
+        }}
+        onAttach={picked}
       />
       <div
+        ref={box}
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
@@ -635,7 +670,7 @@ export function Composer({
           }}
         />
         <div className="flex items-end gap-1">
-          <Popover>
+          <Popover open={menu} onOpenChange={setMenu}>
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
@@ -645,7 +680,17 @@ export function Composer({
                 <Plus className="size-5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-48 p-1">
+            <PopoverContent align="start" className="w-52 p-1">
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                onClick={() => {
+                  setMenu(false)
+                  setPicking('menu')
+                }}
+              >
+                <Paperclip /> Attach…
+              </Button>
               <Button
                 variant="ghost"
                 className="w-full justify-start"
@@ -666,10 +711,18 @@ export function Composer({
                   if (picked) addFiles(picked)
                 }}
               >
-                <Paperclip /> Attach file
+                <FileUp /> Attach file
               </Button>
-              <Button variant="ghost" className="w-full justify-start" onClick={() => setPickingNote(true)}>
-                <StickyNote /> Attach note…
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                disabled={newNote.isPending}
+                onClick={() => {
+                  setMenu(false)
+                  newNote.mutate()
+                }}
+              >
+                <StickyNote /> New note
               </Button>
               <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
                 <Megaphone /> Send to many…

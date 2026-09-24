@@ -4,13 +4,13 @@
 // table (§8: `title`/`subtitle` over the record a picker row was built from), so the chip, the row, the history
 // chip and the line the model reads all carry the same words.
 
-import type { Artifact } from '@/rpc/bindings/Artifact'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { Meta } from '@/rpc/bindings/Meta'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { Artifact } from '@/rpc/extra'
 
 export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting'
 
@@ -88,12 +88,15 @@ export function compose(refs: readonly AttachRef[], body: string): string {
 
 // ---- §8 naming --------------------------------------------------------------------------------------------------
 
+/** An artifact row from either shape the UI sees: `list_artifacts` (numbers) or a search hit (the ts-rs binding, bigints). */
+export type ArtifactRecord = Omit<Artifact, 'bytes' | 'created_at'> & { bytes: number | bigint; created_at: number | bigint }
+
 /** The record a picker row was built from; `title`/`subtitle`/`toRef` read the same table from it. */
 export type Source =
   | { kind: 'note'; doc: DocSummary }
   | { kind: 'knowledge'; meta: Meta }
   | { kind: 'knowledge'; revision: HistorySearchHit }
-  | { kind: 'artifact'; artifact: Artifact; sessionTitle?: string }
+  | { kind: 'artifact'; artifact: ArtifactRecord; sessionTitle?: string }
   | { kind: 'session'; session: SessionSummary }
   | { kind: 'session'; hit: SearchHit }
   | { kind: 'meeting'; meeting: MeetingSummary }
