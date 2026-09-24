@@ -36,9 +36,11 @@ COPY site/ ./
 RUN bun run build
 
 # ── relay ─────────────────────────────────────────────────────────────────────
-# Copy the relay crate only. The workspace [patch.crates-io] block pulls git
-# forks (btls-sys → boringssl submodule, anydoc, brush, …) that -p relay never
-# uses; resolving them under buildx is what broke the amd64 build.
+# Copy relay and its only in-repo dependency (`platform`: SIGTERM stop).
+# The workspace [patch.crates-io] block pulls git forks (btls-sys → boringssl
+# submodule, anydoc, brush, …) that -p relay never uses; resolving them under
+# buildx is what broke the amd64 build. `platform` is path-only (tokio, anyhow,
+# dirs, libc) and has no further path deps, so it does not reintroduce those forks.
 FROM rust:1-alpine AS build
 ARG TARGETPLATFORM
 # build-base/cmake/perl/linux-headers: aws-lc-sys (rustls' provider) compiles C.
@@ -46,7 +48,8 @@ RUN apk add --no-cache build-base cmake perl linux-headers
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/relay ./crates/relay
-RUN sed -i 's|members = \["crates/\*"\]|members = ["crates/relay"]|' Cargo.toml \
+COPY crates/platform ./crates/platform
+RUN sed -i 's|members = \["crates/\*"\]|members = ["crates/relay", "crates/platform"]|' Cargo.toml \
  && sed -i '/^\[patch\.crates-io\]/,$d' Cargo.toml
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 # Cache ids are per-platform: buildx runs amd64+arm64 in parallel and a shared
