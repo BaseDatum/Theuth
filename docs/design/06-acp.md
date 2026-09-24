@@ -758,7 +758,19 @@ the message was lost. The cap semantics are unchanged (it still cancels);
   `PeerTurnFinished` is sent, and `Agents::child_finished` only marks the
   turn handed off: no `<subagent_result>`, no "result is missing" error.
   Usage/plan/mode updates alone never open one.
+- **Live probe (throwaway Bun stdio client, `omp acp` 18.2.9, three short
+  runs).** A second `session/prompt` while a `sleep 25` tool ran made omp
+  answer the *first* prompt `cancelled` at once and serve the second;
+  after a `session/cancel` in between, the third prompt was accepted and
+  omp then asked permission for and ran the first prompt's `sleep 25`
+  inside the third prompt's turn before answering it — the cancelled work
+  was queued, not dropped. A cancel during the tool alone aborted it
+  cleanly. The `session_busy` refusal did not reproduce in these runs
+  (it needs the loop to be mid-tool when the prompt lands, as in the
+  incident); its shape is taken from the incident log and pinned by
+  `busy_errors_are_recognised`.
 - **Not done.** A never-prompted dialled remote that is still working from
   a previous connection gets no continuation turn (indistinguishable from
-  replay). Verification against a live `omp acp` is owed: the in-process
-  fake in `acp_child::tests` reproduces the wire shapes above.
+  replay). The in-process fake in `acp_child::tests` reproduces the wire
+  shapes above; the retry and continuation paths have not been exercised
+  against a live harness in the busy state.
