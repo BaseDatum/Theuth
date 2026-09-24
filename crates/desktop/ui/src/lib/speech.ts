@@ -22,8 +22,6 @@ const SAMPLE_RATE = 24_000
  * silent there while reporting `running`. Packets go in as 24 kHz buffers and the graph resamples.
  */
 let ctx: AudioContext | null = null
-/** Master tap so a new utterance can mute in-flight BufferSources without closing `ctx`. */
-let out: GainNode | null = null
 let dec: OpusDecoder<OpusDecoderSampleRate> | null = null
 /** Rate of the utterance's packets. */
 let rate = SAMPLE_RATE
@@ -31,6 +29,13 @@ let rate = SAMPLE_RATE
 let next = 0
 /** Utterance being played; packets for any other id are late and dropped. */
 let id: string | null = null
+/**
+ * Sources scheduled and not yet ended. `cut` stops them: a source that is merely disconnected, or left
+ * scheduled through `suspend`, plays on (iOS: from where it stopped) the next time the context resumes.
+ */
+const active = new Set<AudioBufferSourceNode>()
+/** Utterance whose every packet is published (`SpeechFinished { done }`); it ends when `active` drains. */
+let done: string | null = null
 
 /** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2). */
 export type Use = 'speak' | 'dictate' | 'record'
@@ -55,13 +60,11 @@ function session(): void {
  * context instead of opening a second one (WKWebView). Pair with `release(use)`.
  */
 export function unlock(use: Use): AudioContext {
+  // Nothing held: whatever is still scheduled belongs to a finished utterance and must not resume with us.
+  if (uses.size === 0) cut()
   uses.add(use)
   session()
-  if (!ctx) {
-    ctx = new AudioContext()
-    out = ctx.createGain()
-    out.connect(ctx.destination)
-  }
+  ctx ??= new AudioContext()
   void ctx.resume()
   return ctx
 }
@@ -73,18 +76,22 @@ export function unlock(use: Use): AudioContext {
  */
 export async function release(use: Use): Promise<void> {
   uses.delete(use)
-  if (uses.size === 0) await ctx?.suspend()
+  if (uses.size === 0) {
+    cut()
+    await ctx?.suspend()
+  }
   session()
 }
 
+/** Stop every scheduled source and forget the utterance's schedule; `drain` never fires for them. */
 function cut(): void {
-  if (!ctx || !out) {
-    next = 0
-    return
+  for (const src of active) {
+    src.onended = null
+    src.stop()
+    src.disconnect()
   }
-  out.disconnect()
-  out = ctx.createGain()
-  out.connect(ctx.destination)
+  active.clear()
+  done = null
   next = 0
 }
 
@@ -111,7 +118,7 @@ export function push(speech: string, b64: string): void {
   // `ready` is the wasm instantiation (ms; cached after the first utterance). `.then` on a settled
   // promise keeps packet order, and lets the first packets of an utterance queue behind it.
   void d.ready.then(() => {
-    if (dec !== d || !ctx || !out) return
+    if (dec !== d || !ctx) return
     const { channelData } = d.decodeFrame(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
     const pcm = channelData[0]
     if (!pcm?.length) return
@@ -120,16 +127,31 @@ export function push(speech: string, b64: string): void {
     buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0)
     const src = ctx.createBufferSource()
     src.buffer = buf
-    src.connect(out)
+    src.connect(ctx.destination)
     const at = Math.max(ctx.currentTime + 0.02, next)
     src.start(at)
     next = at + buf.duration
+    active.add(src)
+    src.onended = () => {
+      active.delete(src)
+      drain()
+    }
   })
 }
 
-/** Seconds of scheduled audio still to play. */
-export function remaining(): number {
-  return ctx ? Math.max(0, next - ctx.currentTime) : 0
+/** The last scheduled source of a fully published utterance has played: clear it and give back `speak`. */
+function drain(): void {
+  if (done === null || active.size > 0) return
+  const speech = done
+  done = null
+  clear(speech)
+}
+
+/** Utterance `speech` is over: drop the badge and, if it is the one playing (or none is), the `speak` hold. */
+function clear(speech: string): void {
+  if (speaking?.id === speech) setSpeaking(null)
+  // `id === null`: finished (error) before its `SpeechStarted`; `stop` only drops `prime`'s hold then.
+  if (id === speech || id === null) stop()
 }
 
 /** Halt playback now, release the decoder and the session's `speak` hold (see `release`). */
@@ -159,7 +181,7 @@ export function setSpeaking(s: Speaking): void {
   for (const r of waiting) r()
 }
 
-/** Resolves once nothing is speaking: `onFinished` clears `speaking` after the scheduled tail has played. */
+/** Resolves once nothing is speaking: `drain` clears `speaking` after the scheduled tail has played. */
 function idle(): Promise<void> {
   if (!speaking) return Promise.resolve()
   const { promise, resolve } = Promise.withResolvers<void>()
@@ -263,18 +285,17 @@ function onModel(state: ModelState): void {
 
 function onFinished(speech: string, reason: FinishReason): void {
   mine.delete(speech)
-  const clear = () => {
-    if (speaking?.id === speech) setSpeaking(null)
-    // `id === null`: finished (error) before its `SpeechStarted`; `stop` only drops `prime`'s hold then.
-    if (id === speech || id === null) stop()
-  }
   if (reason.reason === 'done') {
-    // Every packet is published but the tail is still scheduled; wait for the queued pushes, then for playback.
-    void (dec?.ready ?? Promise.resolve()).then(() => setTimeout(clear, remaining() * 1000))
+    // Every packet is published but the tail is still scheduled: wait for the queued pushes, then `drain` on the
+    // last `onended` — not a timer off `currentTime`, which iOS lets drift from what has actually played.
+    void (dec?.ready ?? Promise.resolve()).then(() => {
+      done = speech
+      drain()
+    })
     return
   }
   if (reason.reason === 'error') toast.error(reason.message)
-  clear()
+  clear(speech)
 }
 
 /** Wire `VoiceEvent`s to the player and the toasts, and block boundaries to the speaking queue; once per app boot. Returns the unsubscribe. */
