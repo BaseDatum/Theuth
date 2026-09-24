@@ -149,6 +149,19 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 /** Commands whose name starts with the typed word (`/mo` → `/model`). */
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
 
+/**
+ * Is `line` a slash command: its first word is a built-in (`COMMANDS`) or names a known skill. Anything else —
+ * `/Users/x/y is broken`, `/etc/hosts`, a bare `/` — is message text. `skills === null` (index not loaded yet):
+ * a plain `/word` still counts, the agent names an unknown skill; a word holding another `/` or a `.` is a path.
+ */
+export function isCommand(line: string, skills: readonly string[] | null): boolean {
+  const word = line.split(/\s/, 1)[0] ?? ''
+  if (word.length < 2 || !word.startsWith('/')) return false
+  if (COMMANDS.some((c) => c.name === word)) return true
+  const name = word.slice(1)
+  return skills ? skills.includes(name) : !/[/.]/.test(name)
+}
+
 /** Header surfaces a command can open; the header listens for `theuth:open`. */
 export type Surface = 'model' | 'prompt' | 'jobs' | 'todos'
 
@@ -587,7 +600,8 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     default: {
-      // `/<skill> [args]` hands the skill to the model now (04 §2.4); the agent names an unknown skill.
+      // `/<skill> [args]` hands the skill to the model now (04 §2.4): `isCommand` let only a known skill (or, before
+      // the index loads, a plain word the agent may name) through; unknown words are message text, never an error.
       // `/skill:<name>` never reaches here: the composer parks it (`draftSkill`) and keeps the words typed after it.
       const id = session ?? await api.new_session()
       if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
