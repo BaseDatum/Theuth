@@ -274,7 +274,9 @@ parent or resolves an `await_reply` waiter. What differs:
 - **Cancel** → `session/cancel`; the prompt response then arrives with
   `cancelled` and the normal `TurnFinished` path runs. If no response within
   5 s the process is killed and `TurnFinished{stop_reason: "cancelled"}` is
-  synthesised.
+  synthesised. A harness that answers the cancel but keeps working, refuses
+  the next prompt as busy, or asks permission with no turn open: §8.3
+  (2026-09-24).
 - **Limits.** `max_concurrent`, `max_runtime_secs` (→ `Cancel` on the child)
   and `reply_timeout_secs` apply as-is. `max_depth`: ACP children are leaves
   (`depth(child) = depth(parent)+1` from the store, and they have no
@@ -697,3 +699,78 @@ harness itself runs on is discovered and carried beside it.
   `agent_message_chunk`, `usage_update`; `session/prompt` result carries
   `_meta: {}`. Neither puts a model anywhere but `configOptions`; neither
   emitted `config_option_update` during a plain prompt.
+
+### 8.3 A harness that stays busy after cancel (2026-09-24)
+
+Observed with `omp acp` 18.2.9 under `subagents.max_runtime_secs`: the cap
+fired, theuth sent `session/cancel`, omp answered the in-flight
+`session/prompt` with `cancelled` (so the turn finished and the parent got
+the partial report, §3.5 as before) — and then **kept working** on the task
+for 10+ minutes, running tools as if the cancel had been prompt-level only.
+Three things went wrong in theuth: its `session/request_permission`s
+arrived with no turn in flight and were answered `cancelled` (two `git
+commit`s silently blocked); its other `session/update`s were dropped (§8
+rule 11), so nothing showed or persisted the work; and the parent's next
+`send_message` → `session/prompt` was refused with a JSON-RPC error
+(`Agent is already processing. Use steer() or followUp() to queue messages,
+or wait for completion.`, data `{"reason":"session_busy","hint":
+"steer|followUp|wait"}`), which theuth turned into the child's turn result —
+the message was lost. The cap semantics are unchanged (it still cancels);
+`AcpChild` now copes with the harness that ignores it:
+
+- **Busy prompt → keep the input, retry.** `acp_child::is_busy(error)`:
+  the rendered error text contains `busy` (omp's `session_busy` is in the
+  `data` the transport appends) or `already processing`, case-insensitive.
+  Such a `PromptDone` does not finish the turn: the turn stays open with its
+  input (already persisted and consumed, its `TurnStarted` published), an
+  `AgentEvent::Error { turn }` says `<name>: harness is still busy with its
+  previous task; retrying in Ns`, and the prompt is sent again after 5 s,
+  10 s, 20 s, then every 30 s. The retry stops when `Agents::request_deadline`
+  (`max_runtime_secs`) has passed since the actor accepted the input: the
+  next busy refusal is then the turn's error, as before. The session counts
+  as busy throughout (`IsRunning`, ledger `TurnEntered`). `CancelTurn`
+  during the wait finishes the turn `cancelled` without `session/cancel` or
+  the kill grace — nothing of ours is in flight, and the harness's own work
+  is not this turn's to kill. Updates the harness emits while the retry
+  waits flow into this turn: the parent's reply is everything the harness
+  said from then on.
+- **Permission requests outside a turn are asked.** `permission()` no
+  longer needs a turn. An ask of the prompt in flight is still cancelled
+  with that turn (the spec's MUST on `session/cancel`); one arriving with no
+  turn, during a continuation turn, or after the turn's token was already
+  cancelled goes to `tools::approval` with the usual `risk(kind)` and waits
+  on `AcpChild::alive`, a token cancelled only when the harness connection
+  closes (`Closed`, kill grace, actor stop).
+- **Continuation turns.** A `tool_call`, `tool_call_update`,
+  `agent_message_chunk` or `agent_thought_chunk` arriving with no turn, on a
+  connection that has been prompted at least once (`worked`; before that the
+  updates are `session/load` replay and stay dropped, §8 rule 11), opens a
+  *continuation turn*: `TurnEntered` to the ledger like any turn, `TurnStarted
+  { text: "<runtime>harness still working after its turn ended</runtime>",
+  turn_seq: 0 }` (a wrapper no UI echoes as a user row), then the same
+  `translate()` + persistence path as a prompted turn, so the live cards
+  show and `load_session` keeps them (the rows render under the previous
+  turn's opener). It closes when (i) the next input arrives and its prompt
+  is sent, (ii) the harness closes, or (iii) no update arrived for
+  `CONTINUATION_QUIET` = 120 s. Closing runs `finish()`: open calls get
+  `ERROR: not finished`, trailing text is flushed, the turn ends on an
+  assistant row — but `stop_reason` is always `harness_continued`, no
+  `PeerTurnFinished` is sent, and `Agents::child_finished` only marks the
+  turn handed off: no `<subagent_result>`, no "result is missing" error.
+  Usage/plan/mode updates alone never open one.
+- **Live probe (throwaway Bun stdio client, `omp acp` 18.2.9, three short
+  runs).** A second `session/prompt` while a `sleep 25` tool ran made omp
+  answer the *first* prompt `cancelled` at once and serve the second;
+  after a `session/cancel` in between, the third prompt was accepted and
+  omp then asked permission for and ran the first prompt's `sleep 25`
+  inside the third prompt's turn before answering it — the cancelled work
+  was queued, not dropped. A cancel during the tool alone aborted it
+  cleanly. The `session_busy` refusal did not reproduce in these runs
+  (it needs the loop to be mid-tool when the prompt lands, as in the
+  incident); its shape is taken from the incident log and pinned by
+  `busy_errors_are_recognised`.
+- **Not done.** A never-prompted dialled remote that is still working from
+  a previous connection gets no continuation turn (indistinguishable from
+  replay). The in-process fake in `acp_child::tests` reproduces the wire
+  shapes above; the retry and continuation paths have not been exercised
+  against a live harness in the busy state.

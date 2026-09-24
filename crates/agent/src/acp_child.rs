@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use acp::{Connect, Harness, Permission, Transport, Update};
 use agent_client_protocol::schema::v1::{
@@ -51,6 +51,23 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// Stored result of a tool call the harness never reported finished (06 §3.6).
 const NOT_FINISHED: &str =
     "ERROR: not finished: the turn ended before the harness reported this call";
+/// Backoff between `session/prompt` attempts a busy harness refused (06 §3.5,
+/// 2026-09-24): the last step repeats until the request deadline.
+const RETRY: [Duration; 4] = [
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+];
+/// A continuation turn (harness work after its prompt returned, 06 §3.5)
+/// closes once no `session/update` arrived for this long.
+pub(crate) const CONTINUATION_QUIET: Duration = Duration::from_secs(120);
+/// `TurnFinished.stop_reason` of a continuation turn: the supervisor hands
+/// nothing to the parent for it.
+pub const HARNESS_CONTINUED: &str = "harness_continued";
+/// `TurnStarted.text` of a continuation turn: a harness wrapper, so no UI
+/// renders it as a user message.
+const CONTINUED_NOTE: &str = "<runtime>harness still working after its turn ended</runtime>";
 
 /// The actor. Spawn with `AcpChild::spawn(AcpChild::new(..))`; the process
 /// starts in `on_start` and dies with the actor.
@@ -75,8 +92,16 @@ pub struct AcpChild {
     worked: bool,
     /// Inputs waiting for the connection or for the prompt in flight.
     queue: VecDeque<Queued>,
-    /// The `session/prompt` in flight.
+    /// The `session/prompt` in flight, or a continuation turn (06 §3.5).
     turn: Option<Turn>,
+    /// `Agents::request_deadline`: how long a busy-refused prompt keeps retrying.
+    deadline: Duration,
+    /// [`RETRY`] and [`CONTINUATION_QUIET`]; tests shorten them.
+    retry: [Duration; 4],
+    quiet: Duration,
+    /// Cancelled when the harness connection ends: permission asks outside a
+    /// live turn wait on this, not on a turn.
+    alive: CancellationToken,
     /// The row's title was checked/set.
     titled: bool,
     /// An unusable `usage_update.cost` was already logged (once per connection).
@@ -98,6 +123,8 @@ struct Queued {
     /// Owning A2A request scope, if any (50 §6.3).
     scope: Option<Uuid>,
     peer: Option<PeerMeta>,
+    /// When this actor accepted the input: the busy-retry deadline counts from here.
+    admitted: Instant,
 }
 
 /// Per-turn state the translation accumulates into (06 §3.3). Text and tool
@@ -134,6 +161,19 @@ pub(crate) struct Turn {
     /// Owning A2A request scope of the input that opened the turn (50 §6.3):
     /// the turn is that task's work and reports as such.
     scope: Option<Uuid>,
+    /// The prompt text and its admission time, for a busy retry; `None` for
+    /// a continuation turn.
+    input: Option<(String, Instant)>,
+    /// Busy refusals so far; indexes the retry schedule.
+    retries: usize,
+    /// The pending busy retry.
+    retry: Option<AbortHandle>,
+    /// Opened by harness updates after its prompt returned (06 §3.5): no
+    /// parent hand-off, closed by [`CONTINUATION_QUIET`], the next prompt or
+    /// the harness closing.
+    continuation: bool,
+    /// The quiet timer of a continuation turn.
+    quiet: Option<AbortHandle>,
 }
 
 impl Turn {
@@ -152,6 +192,21 @@ impl Turn {
             cancel: CancellationToken::new(),
             kill: None,
             scope,
+            input: None,
+            retries: 0,
+            retry: None,
+            continuation: false,
+            quiet: None,
+        }
+    }
+
+    /// Abort every timer armed on this turn.
+    fn disarm(&mut self) {
+        for t in [self.kill.take(), self.retry.take(), self.quiet.take()]
+            .into_iter()
+            .flatten()
+        {
+            t.abort();
         }
     }
 
@@ -246,10 +301,17 @@ struct PromptDone(Result<String, String>);
 /// `tell` (internal): the cancel grace for turn `.0` elapsed.
 struct KillTimer(TurnId);
 
+/// `tell` (internal): the busy backoff for turn `.0` elapsed; prompt again.
+struct Retry(TurnId);
+
+/// `tell` (internal): continuation turn `.0` saw no update for [`CONTINUATION_QUIET`].
+struct Quiet(TurnId);
+
 impl AcpChild {
     /// Bind session `id` to harness `name` reached over `transport`, prompting
     /// in `cwd`; `resume` is the stored ACP session id to `session/load`;
-    /// `fallback_model` is the entry's `model:` label (06 §8.2).
+    /// `fallback_model` is the entry's `model:` label (06 §8.2); `deadline`
+    /// is how long a prompt the harness refuses as busy is retried.
     #[allow(clippy::too_many_arguments)] // one call site (the supervisor); a builder would only rename the fields
     pub fn new(
         id: SessionId,
@@ -258,6 +320,7 @@ impl AcpChild {
         cwd: PathBuf,
         resume: Option<String>,
         fallback_model: Option<String>,
+        deadline: Duration,
         store: Store,
         rt: Runtime,
     ) -> Self {
@@ -280,6 +343,10 @@ impl AcpChild {
             worked: false,
             queue: VecDeque::new(),
             turn: None,
+            deadline,
+            retry: RETRY,
+            quiet: CONTINUATION_QUIET,
+            alive: CancellationToken::new(),
             titled: false,
             meter_warned: false,
             fallback_model,
@@ -507,7 +574,9 @@ impl AcpChild {
             turn_seq: *persisted.as_ref().unwrap_or(&0),
         })
         .await;
-        self.turn = Some(Turn::new(self.id, turn, q.scope));
+        let mut t = Turn::new(self.id, turn, q.scope);
+        t.input = Some((q.text.clone(), q.admitted));
+        self.turn = Some(t);
         match persisted {
             Ok(_) => Ok(turn),
             Err(e) => {
@@ -521,16 +590,111 @@ impl AcpChild {
 
     /// Send one `session/prompt`; its result arrives as [`PromptDone`].
     async fn start(&mut self, q: Queued, me: &ActorRef<Self>) {
-        let Some(harness) = &self.harness else { return };
-        let fut = harness.prompt(q.text.clone());
+        if self.harness.is_none() {
+            return;
+        }
         if self.open(&q).await.is_err() {
             return;
         }
+        self.prompt(&q.text, me);
+    }
+
+    /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`].
+    fn prompt(&mut self, text: &str, me: &ActorRef<Self>) {
+        let Some(harness) = &self.harness else { return };
+        let fut = harness.prompt(text.to_owned());
         self.worked = true;
         let me = me.clone();
         tokio::spawn(async move {
             let _ = me.tell(PromptDone(fut.await)).await;
         });
+    }
+
+    /// `me.tell(msg)` after `after`; the handle to abort it.
+    fn timer<M: Send + 'static>(me: &ActorRef<Self>, after: Duration, msg: M) -> AbortHandle
+    where
+        Self: Message<M, Reply = ()>,
+    {
+        let me = me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = me.tell(msg).await;
+        })
+        .abort_handle()
+    }
+
+    /// 06 §3.5 (2026-09-24): the harness refused the prompt as busy. Keep the
+    /// turn open and prompt again after the next [`RETRY`] step, unless the
+    /// request deadline has passed since the input was admitted: then the
+    /// refusal is the turn's error. `false` when the turn was not retried.
+    async fn retry_busy(&mut self, error: &str, me: &ActorRef<Self>) -> bool {
+        let Some(turn) = &mut self.turn else {
+            return false;
+        };
+        let Some((_, admitted)) = &turn.input else {
+            return false;
+        };
+        if turn.cancel.is_cancelled() || admitted.elapsed() >= self.deadline {
+            return false;
+        }
+        let after = self.retry[turn.retries.min(self.retry.len() - 1)];
+        turn.retries += 1;
+        turn.retry = Some(Self::timer(me, after, Retry(turn.id)));
+        let (id, secs) = (turn.id, after.as_secs());
+        tracing::info!(session = %self.id, "harness busy, retrying in {secs}s: {error}");
+        self.publish(AgentEvent::Error {
+            session: self.id,
+            turn: Some(id),
+            message: format!(
+                "{}: harness is still busy with its previous task; retrying in {secs}s",
+                self.name
+            ),
+        })
+        .await;
+        true
+    }
+
+    /// `update` is harness work worth a continuation turn (06 §3.5): a tool
+    /// call or text, not usage/plan/mode bookkeeping.
+    fn continues(update: &SessionUpdate) -> bool {
+        matches!(
+            update,
+            SessionUpdate::ToolCall(_)
+                | SessionUpdate::ToolCallUpdate(_)
+                | SessionUpdate::AgentMessageChunk(_)
+                | SessionUpdate::AgentThoughtChunk(_)
+        )
+    }
+
+    /// Open a continuation turn (06 §3.5, 2026-09-24): the harness kept
+    /// working after its prompt returned. Claimed like any turn so the
+    /// ledger and board show the child busy; its `TurnStarted` text is a
+    /// harness wrapper no UI echoes; it never reports to the parent.
+    async fn continue_turn(&mut self) {
+        let turn = TurnId::new();
+        continuation::notify(TurnEntered {
+            session: self.id,
+            turn: Some(turn),
+        })
+        .await;
+        self.publish(AgentEvent::TurnStarted {
+            session: self.id,
+            turn,
+            text: CONTINUED_NOTE.into(),
+            model: self.name.clone(),
+            turn_seq: 0,
+        })
+        .await;
+        let mut t = Turn::new(self.id, turn, None);
+        t.continuation = true;
+        self.turn = Some(t);
+    }
+
+    /// Close an open continuation turn: the next prompt takes over.
+    async fn end_continuation(&mut self) {
+        if self.turn.as_ref().is_some_and(|t| t.continuation) {
+            self.finish(HARNESS_CONTINUED, None).await;
+        }
     }
 
     /// Persist `messages` in order (06 §3.6).
@@ -546,15 +710,15 @@ impl AcpChild {
     /// the turn's full text by turn ([`PeerTurnFinished`], 50 §6.3), then
     /// `TurnFinished`, then hand the state back to the supervisor
     /// ([`TurnReturned`]; it keeps this child counted until the parent holds
-    /// the result).
+    /// the result). A continuation turn (06 §3.5) persists and closes the
+    /// same way but always stops as [`HARNESS_CONTINUED`] and reports no
+    /// result: nothing reaches the parent.
     async fn finish(&mut self, stop_reason: &str, error: Option<String>) {
         let Some(mut turn) = self.turn.take() else {
             return;
         };
         turn.cancel.cancel();
-        if let Some(k) = turn.kill.take() {
-            k.abort();
-        }
+        turn.disarm();
         if let Some(e) = &error {
             self.publish(AgentEvent::Error {
                 session: self.id,
@@ -563,17 +727,28 @@ impl AcpChild {
             })
             .await;
         }
-        let text = turn.result(error);
+        let stop_reason = if turn.continuation {
+            HARNESS_CONTINUED
+        } else {
+            stop_reason
+        };
+        let text = if turn.continuation {
+            String::new()
+        } else {
+            turn.result(error)
+        };
         turn.close(&text);
         self.persist_all(std::mem::take(&mut turn.messages)).await;
-        continuation::notify(PeerTurnFinished {
-            session: self.id,
-            turn: turn.id,
-            scope: turn.scope,
-            text,
-            stop_reason: stop_reason.to_owned(),
-        })
-        .await;
+        if !turn.continuation {
+            continuation::notify(PeerTurnFinished {
+                session: self.id,
+                turn: turn.id,
+                scope: turn.scope,
+                text,
+                stop_reason: stop_reason.to_owned(),
+            })
+            .await;
+        }
         self.publish(AgentEvent::TurnFinished {
             session: self.id,
             turn: turn.id,
@@ -650,9 +825,7 @@ impl AcpChild {
     /// unknown first ([`Self::lose`], 47 §4.2 rule 6). The next
     /// `send_message` respawns the child from the store row either way (06 §3.2).
     async fn closed(&mut self, why: String, ctx: &mut Context<Self, ()>) {
-        if let Some(h) = self.harness.take() {
-            h.close();
-        }
+        self.close_harness();
         if self.remote && self.worked {
             self.lose(why, ctx).await;
             return;
@@ -660,6 +833,15 @@ impl AcpChild {
         self.finish("error", Some(why.clone())).await;
         self.drain(&why).await;
         ctx.stop();
+    }
+
+    /// End the connection (kills a child process) and release every
+    /// permission ask waiting outside a live turn.
+    fn close_harness(&mut self) {
+        if let Some(h) = self.harness.take() {
+            h.close();
+        }
+        self.alive.cancel();
     }
 
     /// Record the remote's unverifiable work as unknown under this session,
@@ -709,12 +891,12 @@ impl AcpChild {
     }
 
     /// Route a `session/request_permission` through the registry's gate
-    /// (06 §3.4) off the mailbox; a cancelled turn answers `cancelled`.
+    /// (06 §3.4) off the mailbox. An ask of the prompt in flight is answered
+    /// `cancelled` with that turn (the spec's MUST on `session/cancel`); one
+    /// arriving with no turn, during a continuation turn, or after the turn
+    /// was already cancelled (2026-09-24: omp keeps working past its cancel)
+    /// is still asked, and released only when the harness closes.
     fn permission(&self, p: Permission) {
-        let Some(turn) = &self.turn else {
-            p.respond(RequestPermissionOutcome::Cancelled);
-            return;
-        };
         let kind = p.tool_call.fields.kind.unwrap_or_default();
         let ask = ExternalApproval {
             session: self.id,
@@ -727,7 +909,10 @@ impl AcpChild {
             args: with_kind(p.tool_call.fields.raw_input.clone(), kind),
             risk: acp::risk(kind),
         };
-        let cancel = turn.cancel.clone();
+        let cancel = match &self.turn {
+            Some(t) if !t.continuation && !t.cancel.is_cancelled() => t.cancel.clone(),
+            _ => self.alive.clone(),
+        };
         tokio::spawn(async move {
             let decide = async {
                 let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
@@ -743,6 +928,16 @@ impl AcpChild {
             p.respond(o);
         });
     }
+}
+
+/// A `session/prompt` error that means "the harness is still working on
+/// its previous prompt" (06 §3.5, 2026-09-24). The transport renders the
+/// JSON-RPC error as `message: data`, so omp's `{"reason":"session_busy"}`
+/// is in the text; `already processing` in the message is the
+/// case-insensitive fallback for other harnesses.
+pub(crate) fn is_busy(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("busy") || e.contains("already processing")
 }
 
 /// `raw_input ∪ {"kind": kind}` (06 §3.3); a non-object input is kept under `input`.
@@ -955,9 +1150,7 @@ impl Actor for AcpChild {
         _: WeakActorRef<Self>,
         _: ActorStopReason,
     ) -> Result<(), Infallible> {
-        if let Some(h) = self.harness.take() {
-            h.close();
-        }
+        self.close_harness();
         Ok(())
     }
 }
@@ -1062,12 +1255,14 @@ impl Message<UserInput> for AcpChild {
             text,
             scope,
             peer: None,
+            admitted: Instant::now(),
         };
         if let Some(why) = self.dead.clone() {
             self.fail(q, &why).await;
             ctx.stop();
             return;
         }
+        self.end_continuation().await;
         if self.harness.is_none() || self.turn.is_some() {
             if let Some(id) = q.id {
                 self.publish(AgentEvent::InputQueued {
@@ -1116,12 +1311,14 @@ impl Message<PeerInput> for AcpChild {
                 generation: m.generation,
                 isolated: false,
             }),
+            admitted: Instant::now(),
         };
         if let Some(why) = self.dead.clone() {
             self.fail(q, &why).await;
             ctx.stop();
             return Ok(());
         }
+        self.end_continuation().await;
         if self.harness.is_none() || self.turn.is_some() {
             self.queue.push_back(q);
             return Ok(());
@@ -1166,7 +1363,23 @@ impl Message<Update> for AcpChild {
                 }
             }
             Update::Session(update) => {
+                // 06 §3.5 (2026-09-24): work after the prompt returned opens
+                // a continuation turn. Before any prompt on this connection
+                // the updates are `session/load` replay and stay dropped (§8 rule 11).
+                if self.turn.is_none() {
+                    if !(self.worked && self.harness.is_some() && Self::continues(&update)) {
+                        return;
+                    }
+                    self.continue_turn().await;
+                }
+                let me = ctx.actor_ref().clone();
                 let Some(turn) = &mut self.turn else { return };
+                if turn.continuation {
+                    if let Some(q) = turn.quiet.take() {
+                        q.abort();
+                    }
+                    turn.quiet = Some(Self::timer(&me, self.quiet, Quiet(turn.id)));
+                }
                 let events = translate(update, turn);
                 let meter = turn.meter.take();
                 // Rows exist before the events that show them (29 §4.2).
@@ -1189,19 +1402,25 @@ impl Message<PromptDone> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, PromptDone(r): PromptDone, ctx: &mut Context<Self, Self::Reply>) {
+        let me = ctx.actor_ref().clone();
         match r {
             Ok(stop) => self.finish(&stop, None).await,
-            // A remote prompt that failed is an unknown outcome (the
-            // transport may be gone with work still running): the blocker
-            // goes on the ledger before this turn returns. The connection
-            // itself is kept; a real disconnect follows as `Closed`.
-            Err(e) if self.remote => {
-                let why = self.unknown(e).await;
+            Err(e) => {
+                if is_busy(&e) && self.retry_busy(&e, &me).await {
+                    return;
+                }
+                // A remote prompt that failed is an unknown outcome (the
+                // transport may be gone with work still running): the blocker
+                // goes on the ledger before this turn returns. The connection
+                // itself is kept; a real disconnect follows as `Closed`.
+                let why = if self.remote {
+                    self.unknown(e).await
+                } else {
+                    e
+                };
                 self.finish("error", Some(why)).await;
             }
-            Err(e) => self.finish("error", Some(e)).await,
         }
-        let me = ctx.actor_ref().clone();
         self.next(&me).await;
     }
 }
@@ -1215,20 +1434,21 @@ impl Message<CancelTurn> for AcpChild {
         if turn.kill.is_some() {
             return;
         }
+        // Waiting out a busy refusal: nothing of ours is in flight to
+        // cancel, and the harness's own work is not this turn's to kill.
+        if turn.retry.is_some() {
+            self.finish("cancelled", None).await;
+            let me = ctx.actor_ref().clone();
+            self.next(&me).await;
+            return;
+        }
         turn.cancel.cancel();
         if let Err(e) = h.cancel() {
             self.closed(e, ctx).await;
             return;
         }
-        let id = turn.id;
         let me = ctx.actor_ref().clone();
-        turn.kill = Some(
-            tokio::spawn(async move {
-                tokio::time::sleep(CANCEL_GRACE).await;
-                let _ = me.tell(KillTimer(id)).await;
-            })
-            .abort_handle(),
-        );
+        turn.kill = Some(Self::timer(&me, CANCEL_GRACE, KillTimer(turn.id)));
     }
 }
 
@@ -1239,9 +1459,7 @@ impl Message<KillTimer> for AcpChild {
         if !self.turn.as_ref().is_some_and(|t| t.id == id) {
             return;
         }
-        if let Some(h) = self.harness.take() {
-            h.close();
-        }
+        self.close_harness();
         // Closing our end kills a child process; a remote may still be working.
         if self.remote {
             self.lose("cancel not acknowledged within grace".into(), ctx)
@@ -1253,8 +1471,42 @@ impl Message<KillTimer> for AcpChild {
     }
 }
 
-/// A prompt in flight, or an input waiting for the connection/prompt: the
-/// row is busy either way (the ledger, not this projection, is authority).
+impl Message<Retry> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, Retry(id): Retry, ctx: &mut Context<Self, Self::Reply>) {
+        let Some(turn) = &mut self.turn else { return };
+        if turn.id != id {
+            return;
+        }
+        turn.retry = None;
+        let Some((text, _)) = turn.input.clone() else {
+            return;
+        };
+        let me = ctx.actor_ref().clone();
+        self.prompt(&text, &me);
+    }
+}
+
+impl Message<Quiet> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, Quiet(id): Quiet, ctx: &mut Context<Self, Self::Reply>) {
+        if self
+            .turn
+            .as_ref()
+            .is_some_and(|t| t.id == id && t.continuation)
+        {
+            self.finish(HARNESS_CONTINUED, None).await;
+            let me = ctx.actor_ref().clone();
+            self.next(&me).await;
+        }
+    }
+}
+
+/// A prompt in flight (or waiting out a busy refusal), a continuation turn,
+/// or an input waiting for the connection/prompt: the row is busy either way
+/// (the ledger, not this projection, is authority).
 impl Message<IsRunning> for AcpChild {
     type Reply = bool;
 
@@ -1769,5 +2021,562 @@ mod tests {
             Some("always")
         );
         assert_eq!(id(outcome(&opts[..1], Some(Decision::Deny))), None);
+    }
+
+    /// omp's exact refusal (message plus the `data` the transport appends,
+    /// pretty-printed) is busy; so is a bare "already processing"; a
+    /// transport failure or an unrelated error is not.
+    #[test]
+    fn busy_errors_are_recognised() {
+        assert!(is_busy(OMP_BUSY));
+        assert!(is_busy("Agent Is Already Processing"));
+        assert!(is_busy("-32000: {\"reason\": \"session_busy\"}"));
+        assert!(!is_busy("process exited: signal 9"));
+        assert!(!is_busy("Internal error: prompt too long"));
+    }
+
+    /// The text `Harness::prompt` yields for omp's `session_busy` refusal.
+    const OMP_BUSY: &str = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.: {\n  \"reason\": \"session_busy\",\n  \"hint\": \"steer|followUp|wait\"\n}";
+
+    // ---- actor tests against an in-process fake harness ---------------
+
+    use agent_client_protocol::schema::ProtocolVersion;
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PermissionOption, PromptResponse,
+        RequestPermissionRequest, SessionNotification, StopReason,
+    };
+    use kameo::actor::Spawn;
+    use parking_lot::Mutex;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+    use tools::ApprovalRequested;
+
+    /// The agent side of a [`LineDuplex`]: the test reads what the client
+    /// sent (parsed) and writes raw JSON-RPC lines back.
+    struct Fake {
+        from_client: UnboundedReceiver<serde_json::Value>,
+        to_client: UnboundedSender<String>,
+    }
+
+    /// Hands its one duplex to the first `dial`.
+    struct FakeDialer(
+        Mutex<
+            Option<(
+                UnboundedSender<serde_json::Value>,
+                UnboundedReceiver<String>,
+            )>,
+        >,
+    );
+
+    impl std::fmt::Debug for FakeDialer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("FakeDialer")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl acp::Dialer for FakeDialer {
+        async fn dial(&self) -> Result<acp::LineDuplex, String> {
+            let (tx, rx) = self.0.lock().take().ok_or("dialled twice")?;
+            let outgoing = futures::sink::unfold(tx, |tx, line: String| async move {
+                let v: serde_json::Value = serde_json::from_str(&line).expect("client sent JSON");
+                let _ = tx.send(v);
+                Ok::<_, std::io::Error>(tx)
+            });
+            let incoming = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|s| (Ok(s), rx))
+            });
+            Ok(acp::LineDuplex {
+                outgoing: Box::pin(outgoing),
+                incoming: Box::pin(incoming),
+            })
+        }
+    }
+
+    impl Fake {
+        fn new() -> (Self, Arc<FakeDialer>) {
+            let (ctx, crx) = unbounded_channel();
+            let (atx, arx) = unbounded_channel();
+            (
+                Self {
+                    from_client: crx,
+                    to_client: atx,
+                },
+                Arc::new(FakeDialer(Mutex::new(Some((ctx, arx))))),
+            )
+        }
+
+        fn send(&self, v: serde_json::Value) {
+            self.to_client.send(v.to_string()).unwrap();
+        }
+
+        /// The client's next message, within 10 s (virtual under a paused clock).
+        async fn next(&mut self) -> serde_json::Value {
+            tokio::time::timeout(Duration::from_secs(10), self.from_client.recv())
+                .await
+                .expect("client message")
+                .expect("client connected")
+        }
+
+        fn respond(&self, id: &serde_json::Value, result: impl serde::Serialize) {
+            self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+        }
+
+        /// `initialize` → `session/new` as omp answers them.
+        async fn handshake(&mut self) {
+            let m = self.next().await;
+            assert_eq!(m["method"], "initialize", "{m}");
+            self.respond(&m["id"], InitializeResponse::new(ProtocolVersion::V1));
+            let m = self.next().await;
+            assert_eq!(m["method"], "session/new", "{m}");
+            self.respond(
+                &m["id"],
+                NewSessionResponse::new(agent_client_protocol::schema::v1::SessionId::new("s1")),
+            );
+        }
+
+        /// The next `session/prompt`: `(id, text)`.
+        async fn prompt(&mut self) -> (serde_json::Value, String) {
+            let m = self.next().await;
+            assert_eq!(m["method"], "session/prompt", "{m}");
+            let text = m["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            (m["id"].clone(), text)
+        }
+
+        /// omp 18.2.9's refusal of a prompt while its loop runs.
+        fn busy(&self, id: &serde_json::Value) {
+            self.send(json!({"jsonrpc": "2.0", "id": id, "error": {
+                "code": -32000,
+                "message": "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+                "data": {"reason": "session_busy", "hint": "steer|followUp|wait"},
+            }}));
+        }
+
+        fn end_turn(&self, id: &serde_json::Value) {
+            self.respond(id, PromptResponse::new(StopReason::EndTurn));
+        }
+
+        fn update(&self, u: SessionUpdate) {
+            self.send(json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": SessionNotification::new(agent_client_protocol::schema::v1::SessionId::new("s1"), u),
+            }));
+        }
+
+        fn permission(&self, id: &str, tool_call: ToolCallUpdate, options: Vec<PermissionOption>) {
+            self.send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": RequestPermissionRequest::new(agent_client_protocol::schema::v1::SessionId::new("s1"), tool_call, options),
+            }));
+        }
+    }
+
+    /// Every `AgentEvent` / `ApprovalRequested` published on the runtime, in order.
+    #[derive(kameo::Actor)]
+    struct Sink {
+        events: UnboundedSender<AgentEvent>,
+        approvals: UnboundedSender<ApprovalRequested>,
+    }
+
+    impl Message<AgentEvent> for Sink {
+        type Reply = ();
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, ()>) {
+            let _ = self.events.send(e);
+        }
+    }
+
+    impl Message<ApprovalRequested> for Sink {
+        type Reply = ();
+        async fn handle(&mut self, e: ApprovalRequested, _: &mut Context<Self, ()>) {
+            let _ = self.approvals.send(e);
+        }
+    }
+
+    const FAST_RETRY: [Duration; 4] = [
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+        Duration::from_millis(200),
+        Duration::from_millis(300),
+    ];
+    const FAST_QUIET: Duration = Duration::from_millis(300);
+
+    /// One spawned `AcpChild` on a fresh runtime and store, connected to a
+    /// [`Fake`] whose handshake is done.
+    struct Rig {
+        actor: ActorRef<AcpChild>,
+        fake: Fake,
+        store: Store,
+        session: SessionId,
+        rt: Runtime,
+        events: UnboundedReceiver<AgentEvent>,
+        approvals: UnboundedReceiver<ApprovalRequested>,
+    }
+
+    impl Rig {
+        async fn new(deadline: Duration) -> Self {
+            let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let rt = Runtime::new(figment::Figment::new(), dir.clone());
+            let (etx, events) = unbounded_channel();
+            let (atx, approvals) = unbounded_channel();
+            let sink = Sink::spawn_with_mailbox(
+                Sink {
+                    events: etx,
+                    approvals: atx,
+                },
+                runtime::subscriber_mailbox(),
+            );
+            rt.subscribe::<Sink, AgentEvent>(&sink).await;
+            rt.subscribe::<Sink, ApprovalRequested>(&sink).await;
+            let store = Store::open_memory().await.unwrap();
+            let session = SessionId::new();
+            store
+                .create_session(session, "omp", None, None, None)
+                .await
+                .unwrap();
+            let (mut fake, dialer) = Fake::new();
+            let mut child = AcpChild::new(
+                session,
+                "omp".into(),
+                Transport::Dial(dialer),
+                dir,
+                None,
+                None,
+                deadline,
+                store.clone(),
+                rt.clone(),
+            );
+            // The fake stands in for a child process, not a dialled node.
+            child.remote = false;
+            // Real time, scaled: 5/10/20/30 s → 50/100/200/300 ms, 120 s → 300 ms.
+            child.retry = FAST_RETRY;
+            child.quiet = FAST_QUIET;
+            let actor = AcpChild::spawn(child);
+            fake.handshake().await;
+            Self {
+                actor,
+                fake,
+                store,
+                session,
+                rt,
+                events,
+                approvals,
+            }
+        }
+
+        async fn input(&self, text: &str) {
+            self.actor
+                .tell(UserInput {
+                    id: None,
+                    text: text.into(),
+                    files: Vec::new(),
+                    ticket: None,
+                    scope: None,
+                    defer: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        /// Events up to and including the next `TurnFinished`.
+        async fn until_finished(&mut self) -> Vec<AgentEvent> {
+            let mut out = Vec::new();
+            loop {
+                let e = tokio::time::timeout(Duration::from_secs(600), self.events.recv())
+                    .await
+                    .expect("an event")
+                    .expect("bus alive");
+                let done = matches!(e, AgentEvent::TurnFinished { .. });
+                out.push(e);
+                if done {
+                    return out;
+                }
+            }
+        }
+
+        /// `(role, text)` of every stored row.
+        async fn rows(&self) -> Vec<(ChatRole, String)> {
+            self.store
+                .messages(self.session)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+                .collect()
+        }
+    }
+
+    fn stop_reasons(events: &[AgentEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TurnFinished { stop_reason, .. } => Some(stop_reason.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn errors(events: &[AgentEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 06 §8.3: a `session_busy` refusal keeps the turn open — no
+    /// `TurnFinished`, a visible retry note, the session still running —
+    /// and the same text is prompted again after the first backoff step;
+    /// the accepted attempt runs a normal turn.
+    #[tokio::test]
+    async fn busy_prompt_is_retried_until_accepted() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.input("go").await;
+        let (id, text) = rig.fake.prompt().await;
+        assert_eq!(text, "go");
+        let refused_at = Instant::now();
+        rig.fake.busy(&id);
+
+        let (id, text) = rig.fake.prompt().await;
+        assert_eq!(text, "go", "the same input is prompted again");
+        assert!(refused_at.elapsed() >= FAST_RETRY[0]);
+        assert!(
+            rig.actor.ask(IsRunning).await.unwrap(),
+            "busy while waiting"
+        );
+        rig.fake.update(chunk("ok"));
+        rig.fake.end_turn(&id);
+
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        let notes = errors(&events);
+        assert_eq!(notes.len(), 1, "{events:?}");
+        assert!(
+            notes[0].contains("still busy") && notes[0].contains("retrying in"),
+            "{}",
+            notes[0]
+        );
+        let started = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .count();
+        assert_eq!(started, 1, "one turn, not one per attempt");
+        assert_eq!(
+            rig.rows().await,
+            [
+                (ChatRole::User, "go".into()),
+                (ChatRole::Assistant, "ok".into())
+            ]
+        );
+    }
+
+    /// 06 §8.3: attempts at 0, 5, 15, 35 and 65 s (scaled ×0.01 here); the
+    /// refusal at 65 s is past a 40 s deadline and becomes the turn's
+    /// error, verbatim.
+    #[tokio::test]
+    async fn busy_retries_stop_at_the_deadline() {
+        let mut rig = Rig::new(Duration::from_millis(500)).await;
+        let t0 = Instant::now();
+        rig.input("go").await;
+        let mut at = Vec::new();
+        let mut events = Vec::new();
+        loop {
+            tokio::select! {
+                m = rig.fake.next() => {
+                    assert_eq!(m["method"], "session/prompt", "{m}");
+                    at.push(t0.elapsed());
+                    rig.fake.busy(&m["id"]);
+                }
+                e = rig.events.recv() => {
+                    let e = e.unwrap();
+                    let done = matches!(e, AgentEvent::TurnFinished { .. });
+                    events.push(e);
+                    if done {
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(at.len(), 5, "{at:?}");
+        assert!(
+            at[3] < Duration::from_millis(500) && at[4] >= Duration::from_millis(500),
+            "{at:?}"
+        );
+        assert_eq!(stop_reasons(&events), ["error"], "{events:?}");
+        let notes = errors(&events);
+        assert_eq!(
+            notes.len(),
+            5,
+            "four retry notes, then the error: {notes:?}"
+        );
+        assert_eq!(notes[4], OMP_BUSY);
+        let rows = rig.rows().await;
+        assert_eq!(rows[0], (ChatRole::User, "go".into()));
+        assert_eq!(rows[1], (ChatRole::Assistant, OMP_BUSY.into()));
+    }
+
+    /// 06 §8.3: updates after the prompt returned open a continuation turn
+    /// on a fresh turn id, its cards and text are persisted like a prompted
+    /// turn's, the session counts as running, and it closes after the quiet
+    /// period as `harness_continued`.
+    #[tokio::test]
+    async fn updates_after_the_turn_open_a_continuation_turn() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.update(chunk("done"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"]);
+        let AgentEvent::TurnFinished { turn: first, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert!(!rig.actor.ask(IsRunning).await.unwrap());
+
+        // omp keeps working: a tool call, its result, some text.
+        rig.fake.update(SessionUpdate::ToolCall(
+            ToolCall::new("c1", "git commit")
+                .kind(ToolKind::Execute)
+                .status(ToolCallStatus::InProgress),
+        ));
+        rig.fake.update(update(
+            "c1",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from("[main abc] fix")]),
+        ));
+        rig.fake.update(chunk("committed"));
+        let quiet_from = Instant::now();
+        let events = rig.until_finished().await;
+        assert!(
+            quiet_from.elapsed() >= FAST_QUIET,
+            "closed only after the quiet period"
+        );
+        let kinds: Vec<String> = events
+            .iter()
+            .map(|e| match e {
+                AgentEvent::TurnStarted { turn, text, .. } => {
+                    assert_ne!(turn, first, "a fresh turn id");
+                    assert_eq!(text, CONTINUED_NOTE);
+                    "started".into()
+                }
+                AgentEvent::ToolCallStarted { call_id, name, .. } => {
+                    format!("call {call_id} {name}")
+                }
+                AgentEvent::ToolCallFinished {
+                    call_id, output, ..
+                } => format!("done {call_id} {output}"),
+                AgentEvent::TextDelta { text, .. } => format!("text {text}"),
+                AgentEvent::TurnFinished {
+                    turn, stop_reason, ..
+                } => {
+                    assert_ne!(turn, first);
+                    format!("finished {stop_reason}")
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "started",
+                "call c1 git commit",
+                "done c1 [main abc] fix",
+                "text committed",
+                "finished harness_continued",
+            ]
+        );
+        assert!(!rig.actor.ask(IsRunning).await.unwrap());
+
+        let rows = rig.store.messages(rig.session).await.unwrap();
+        let history: Vec<(String, String)> = crate::supervisor::render(&rows, &Default::default())
+            .into_iter()
+            .map(|(_, e)| match e {
+                HistoryEntry::User { text, .. } => ("user".into(), text),
+                HistoryEntry::Assistant { text, .. } => ("assistant".into(), text),
+                HistoryEntry::Tool {
+                    name,
+                    result: Some((out, false)),
+                    ..
+                } => (name, out),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            history,
+            [
+                ("user".into(), "go".into()),
+                ("assistant".into(), "done".into()),
+                ("git commit".into(), "[main abc] fix".into()),
+                ("assistant".into(), "committed".into()),
+            ],
+            "load_session keeps the continuation's card and text"
+        );
+    }
+
+    /// 06 §8.3: a `session/request_permission` with no turn open is asked
+    /// through the approval actor (destructive → ask) and the human's
+    /// answer reaches the harness as `allow_once`, not `cancelled`.
+    #[test]
+    fn permission_with_no_turn_reaches_approval() {
+        crate::with_test_registry(permission_scenario());
+    }
+
+    async fn permission_scenario() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        tools::registry::start(&rig.rt).await.unwrap();
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.end_turn(&id);
+        assert_eq!(stop_reasons(&rig.until_finished().await), ["end_turn"]);
+
+        rig.fake.permission(
+            "p1",
+            ToolCallUpdate::new(
+                "c9",
+                ToolCallUpdateFields::new()
+                    .title("rm -rf build")
+                    .kind(ToolKind::Delete)
+                    .raw_input(json!({"command": "rm -rf build"})),
+            ),
+            vec![
+                PermissionOption::new("y", "Allow", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("n", "Reject", PermissionOptionKind::RejectOnce),
+            ],
+        );
+        let asked = tokio::time::timeout(Duration::from_secs(10), rig.approvals.recv())
+            .await
+            .expect("approval asked")
+            .unwrap();
+        assert_eq!(asked.session, rig.session);
+        assert_eq!(asked.tool, "rm -rf build");
+        assert_eq!(asked.risk, tools::Risk::Destructive);
+        assert_eq!(
+            asked.args,
+            json!({"command": "rm -rf build", "kind": "delete"})
+        );
+        let approval = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
+            .unwrap()
+            .unwrap();
+        assert!(
+            approval
+                .ask(tools::Resolve {
+                    id: asked.id,
+                    decision: Decision::Allow,
+                })
+                .await
+                .unwrap()
+        );
+        let reply = rig.fake.next().await;
+        assert_eq!(reply["id"], "p1", "{reply}");
+        assert_eq!(reply["result"]["outcome"]["outcome"], "selected", "{reply}");
+        assert_eq!(reply["result"]["outcome"]["optionId"], "y", "{reply}");
     }
 }
