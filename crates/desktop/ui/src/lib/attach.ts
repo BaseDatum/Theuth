@@ -120,7 +120,7 @@ export function size(bytes: number | bigint): string {
   return n < 1024 * 1024 ? fmt(n / 1024, 'KB') : fmt(n / (1024 * 1024), 'MB')
 }
 
-/** A chat's name where a `SessionSummary` is in hand: its title, else `Untitled chat · <created MMM d>` (§8, engine parity). */
+/** A chat's name: its title, else `Untitled chat · <created MMM d>` — the engine's own rule for search hits (§8). */
 export const chatName = (s: { title: string; created_at: string }, now: Date = new Date()): string =>
   s.title || `Untitled chat · ${date(s.created_at, now)}`
 
@@ -134,9 +134,7 @@ export function title(src: Source, now: Date = new Date()): string {
     case 'artifact':
       return src.artifact.title || src.artifact.name
     case 'session':
-      // A hit's title is filled by the engine (`agent::attach::session_title`); an older harness may still send "".
-      if ('hit' in src) return src.hit.title || 'Untitled chat'
-      return chatName(src.session, now)
+      return chatName('hit' in src ? src.hit : src.session, now)
     case 'meeting':
       return src.meeting.title || src.meeting.process_name || `Meeting · ${date(src.meeting.started_at, now)}`
   }
