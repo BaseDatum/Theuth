@@ -2123,7 +2123,9 @@ mod tests {
             vec![
                 SearchCategory::Sessions,
                 SearchCategory::Knowledge,
-                SearchCategory::KnowledgeHistory
+                SearchCategory::KnowledgeHistory,
+                SearchCategory::Notes,
+                SearchCategory::Meetings,
             ]
         );
     }
