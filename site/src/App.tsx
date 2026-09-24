@@ -145,7 +145,10 @@ const FLAGS = [
 const TOOL_FAMILIES = [
   ["shell", "background jobs"],
   ["pty", "start, send, screen, wait"],
-  ["files", "read, write, list, grep, edit"],
+  ["files", "read, write, list, grep, glob, edit"],
+  ["code", "find, outline, refs, map, symbol, impact"],
+  ["documents", "doc_read, insert, replace, delete, move"],
+  ["timers", "remind_me_in, cancel_reminder"],
   ["browser", "sixteen tools, screenshots"],
   ["computer", "eight tools, your desktop"],
   ["web", "search_web, read_url"],
@@ -161,7 +164,7 @@ const SURFACES = [
       { name: "t", body: "The terminal UI. The default." },
       {
         name: "theuth.app",
-        body: "macOS menubar app, Apple silicon. Looks like a chat page and speaks JSON-RPC to the daemon. A globe in the header opens a live view of the browser the agent is driving.",
+        body: "Menubar app on macOS, tray app on Windows and Linux. Looks like a chat page and speaks JSON-RPC to the daemon. A globe in the header opens a live view of the browser the agent is driving.",
       },
       {
         name: "t --acp",
@@ -193,12 +196,12 @@ const HANDS_BACK = [
   {
     name: "show",
     title: "Documents",
-    body: "Markdown, CSV tables, images, SVG, and PDFs compiled in-process from markdown or Typst. Every card is a versioned snapshot; the model gets the first page back as an image and fixes what it sees.",
+    body: "Markdown, CSV tables, images, SVG, Mermaid diagrams, archive listings, and PDFs compiled in-process from markdown or Typst. Every card is a versioned snapshot; the model gets the first page back as an image and fixes what it sees.",
   },
   {
     name: "app",
     title: "Screens you work in",
-    body: "A dashboard, a control panel, a form. The agent publishes an interactive app whose buttons read your installed tools live, without another model turn. The press is the approval.",
+    body: "A dashboard, a control panel, a form. The agent publishes an interactive app whose buttons read your installed tools live, without another model turn. The press is the approval. A reply can carry a static card inline; Open as app keeps it.",
   },
   {
     name: "schedule",
@@ -212,25 +215,35 @@ const HANDS_BACK = [
   },
 ];
 
-/** The whole ledger: what the tool is, what it lets you do, why that matters. Facts from the README only. */
+/** The whole ledger: what the tool is, what it lets you do, why that matters. Facts from the README and the as-built design notes only. */
 const LEDGER: { group: string; items: [string, string, string][] }[] = [
   {
     group: "It acts",
     items: [
       [
         "shell",
-        "Runs commands as background jobs. Anything that finishes in three seconds answers inline; anything longer hands back a job id and wakes the model when it exits.",
+        "Runs commands as background jobs. Anything that finishes in three seconds answers inline; anything longer hands back a job id and wakes the model when it exits. cwd, env and timeout_secs apply to one call; PATH is seeded from your login shell, so what your dotfiles install is found. A job you kill from /jobs comes back as one line, not its output.",
         "Start the build, walk away, and the result finds you. Nothing blocks on a slow command.",
       ],
       [
         "pty",
-        "Starts a program on a pseudo-terminal and drives it: type into it, read the rendered 120 by 40 screen, wait for a prompt or a port.",
-        "REPLs, dev servers, installers and TUIs, not just one-shot commands.",
+        "Starts a program on a pseudo-terminal and drives it: type into it, read the rendered 120 by 40 screen, wait for a prompt or a port. wait matches output since the model's last send. A screen that stops changing for tools.pty_idle_secs wakes the model once with job_idle and the screen. On Windows the shell is pwsh over ConPTY.",
+        "REPLs, dev servers, installers and TUIs, not just one-shot commands. A program waiting on a question no longer waits forever.",
       ],
       [
         "files",
-        "Read, write, list, grep and edit on the machine it runs on.",
-        "The unglamorous majority of real work.",
+        "Read, write, list, grep, glob and edit on the machine it runs on. read_file answers with a header and numbered lines, 2000 at a time: offset, tail, several ranges, or outline for the symbols of a source file; PDFs and Office files come back as markdown. edit forgives trailing whitespace, indentation and pasted line numbers, applies a list of edits all or nothing and returns a diff; write_file is atomic. Neither will write a truncated read back.",
+        "The unglamorous majority of real work, without re-sending a whole file for a three-line change.",
+      ],
+      [
+        "code",
+        "Six functions in the Python runtime over a tree-sitter symbol index built on first use under ~/.theuth/codeindex: code_find, code_outline, code_refs, code_map (a ranked map fitted to a token budget), code_symbol (definition, body, callers, callees, co-changed files) and code_impact (what a diff touches, down to the symbol, and its tests). Rust, TypeScript, JavaScript, Python and Go; read_file outline uses the same index. Nothing is written into your repo.",
+        "Briefing a subagent or checking its diff costs a few hundred tokens of structure instead of thousands of lines of grep.",
+      ],
+      [
+        "doc_*",
+        "doc_read, doc_insert, doc_replace, doc_delete and doc_move on any note, knowledge concept, meeting note or markdown artifact, by block id; doc_create starts a note. Edits land as one transaction, typed out in every open editor and attributed to theuth; Undo last agent edit reverts the last one. Mutating calls pass the same approval gate.",
+        "Ask for the change in chat and watch it happen in the paragraph you meant, not a rewrite of the file.",
       ],
       [
         "browser",
@@ -254,7 +267,7 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
       ],
       [
         "python",
-        "A persistent runtime where every tool is an async function and state survives across turns. The worker is the t binary itself; nothing to install.",
+        "A persistent runtime where every tool is an async function and state survives across turns. The worker is the t binary itself; nothing to install. Cells are type-checked before they run, with imports from earlier cells carried over; sleep really waits, up to five minutes a call; tool calls made inside a cell show as child cards and survive reload.",
         "Loops, data wrangling and glue code without a model round trip per step.",
       ],
       [
@@ -268,6 +281,11 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
         "It can finish the job after you close the laptop and tell you where the result is.",
       ],
       [
+        "remind_me_in",
+        "The model sets a timer instead of sleeping: the call returns at once, the session is free, and when it fires the message comes back as a reminder that starts or joins a turn. Five seconds to a day, eight pending per session, cancel_reminder retires one; reminders survive a restart.",
+        '"Check the deploy in ten minutes" costs nothing while it waits.',
+      ],
+      [
         "ask_user",
         "Puts one or more multiple-choice questions to you: pick, type your own, skip one or dismiss. Works in the TUI, the app, a Slack thread and over Signal.",
         "Fewer confident wrong guesses on the decisions that matter.",
@@ -279,13 +297,18 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
     items: [
       [
         "show",
-        "Files the agent makes for you appear as cards: markdown, code, CSV tables, images, SVG, and PDFs compiled in-process from markdown or Typst. Every card is an immutable versioned snapshot.",
+        "Files the agent makes for you appear as cards: markdown, code, CSV tables, images, SVG, PDFs compiled in-process from markdown or Typst, Mermaid diagrams with pan, zoom, fullscreen and PNG or SVG export, and zip and tar archives listed from their headers without extracting. Every card is an immutable versioned snapshot; a markdown card is also a document the agent can edit with doc_*, each edit the next version.",
         "The transcript never lies about what you were shown. Copy, save, open, reveal.",
       ],
       [
         "app",
-        "Interactive screens in OpenUI Lang: a dashboard, a control panel, a form. Buttons and inputs bind to your installed tools and run them live, without another model turn. The press is the approval.",
+        "Interactive screens in OpenUI Lang: a dashboard, a control panel, a form. Buttons and inputs bind to your installed tools and run them live, without another model turn. The press is the approval. Fifty-three curated components, from Tabs and Steps to radar charts and a Graph that lights up the node an app is talking about. A reply can carry a static openui card inline; Open as app publishes it, no model turn.",
         "A tool the agent builds once and you use for months.",
+      ],
+      [
+        "visualize",
+        "A mermaid, json-render or openui fence in the model's reply renders as a picture in the TUI and the app and reads as text on Slack and Signal. json-render has a typed catalog: cards, tables, metrics, timelines, checklists, a Graph with typed nodes and edges laid out by ELK. A block that fails to render goes back to the model for up to three fix-up rounds; you never see a red card, at worst one dim diagram omitted.",
+        "Architecture, flows and status boards arrive as one picture, and a typo in the picture is the model's problem, not yours.",
       ],
       [
         "schedule",
@@ -294,27 +317,42 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
       ],
       [
         "voice",
-        "Read aloud with Pocket TTS, voice notes with Parakeet, live dictation with Nemotron. All three run inside the harness on your machine.",
+        "Read aloud with Pocket TTS, voice notes with Parakeet, live dictation with Nemotron. All three run inside the harness on your machine. The buttons stay while a reply streams; a note or dictation mid-turn steers the running turn.",
         "Talk to it and hear it back, with nothing sent to a speech API.",
       ],
       [
+        "meetings",
+        "Record a meeting from the menubar or /meetings: system audio or one app, your mic with echo cancellation, transcribed live and batched into a session that keeps briefs on the people and tickets mentioned, shown in a notch island with a live transcript; a meeting bar under every pane, one click back. A note opens beside the transcript; the summary turn regroups what you typed under headings and appends Summary, Decisions, Action items and Open questions, never rewriting your words. Every device reads meetings; recording needs the Mac app on macOS 15.",
+        'You never have to ask "what\'s X?" in a meeting, and the notes exist before you leave the call.',
+      ],
+      [
         "knowledge",
-        "Durable facts about your machines, projects, accounts and decisions as plain markdown concepts under ~/.theuth/knowledge, full-text indexed, every write a git commit made in-process. Harvested automatically every few tool-using turns; surfaced as hints at the start of a turn.",
+        "Durable facts about your machines, projects, accounts and decisions as plain markdown concepts under ~/.theuth/knowledge, full-text indexed, every write a git commit made in-process. Harvested automatically every few tool-using turns, detached, so your next turn never waits behind one; surfaced as hints at the start of a turn. Every concept opens in the block editor with its frontmatter as the first block; the agent edits it with doc_* as knowledge:<id>.",
         "It remembers your setup across sessions, and you can read, edit, diff and restore every word of it in any editor.",
       ],
       [
+        "notes",
+        "Notes in the sidebar and /notes: block documents you type in, attach to a chat from the composer or open a chat under, so the model knows which document you mean. Deleted notes wait thirty days in the trash. The agent starts one with doc_create.",
+        "A scratchpad the agent can read and edit on request, without owning a session.",
+      ],
+      [
+        "editor",
+        "One block editor for knowledge, notes and meeting notes: headings, lists, check lists, tables, highlighted code, a frontmatter block on concepts; a mermaid or json-render code block renders as the diagram. Every document is a CRDT: the markdown on disk is rewritten 400 ms after you stop typing, and edits to the file, from sed, knowledge_put or git pull, show up in the open editor. Snapshots list and restore. On a phone a bar above the keyboard replaces the drag handles.",
+        "Type where the agent types; the file on disk stays the file every other tool reads.",
+      ],
+      [
         "search",
-        "One fuzzy search over sessions, shown artifacts, current knowledge and knowledge history. Command K in the app, /search in the TUI, and the same tool for the model.",
+        "One fuzzy search over sessions, shown artifacts, current knowledge and knowledge history. Command K in the app, /search in the TUI, and the same tool for the model. Archived sessions are found and marked.",
         "Find the deployment plan you were shown last week. A paired phone gets results, never the corpus.",
       ],
       [
         "skills",
-        "SKILL.md directories, loose markdown or git clones under ~/.theuth/skills; /skills add a URL and /skills sync pulls. A harness.md manual of this install is written on every start.",
+        "SKILL.md directories, loose markdown or git clones under ~/.theuth/skills; /skills add a URL and /skills sync pulls. A harness.md manual of this install is written on every start, with the visualize and apps catalogs beside it. In the app, /skill:<name> parks a skill on the composer and it rides with the next send.",
         "Your procedures, loaded on demand instead of pasted every time.",
       ],
       [
         "subagents",
-        "spawn_subagent runs a child session, on this machine or a node. External harnesses in acp/agents.yaml run the same way. Each Slack subagent gets its own thread with a live board in the parent.",
+        "spawn_subagent runs a child session, on this machine or a node, with the model, effort and tool cap you give it: tools=read_only|mutating|destructive is a ceiling the child cannot raise, and the board shows a read-only badge. External harnesses in acp/agents.yaml run the same way. discover_peers reports who is working, with jobs, terminals and tags; send_message takes one address or sixteen. Each Slack subagent gets its own thread with a live board in the parent.",
         "Fan out, delegate, and keep the approvals in one place. Off until agent.communication is on.",
       ],
       [
@@ -333,18 +371,33 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
         "It never bites without asking, and the dial is yours.",
       ],
       [
+        "broadcast",
+        "One message to every running session, all roots, or the ones you tick, as a steer or as the next turn: /broadcast in the TUI, Broadcast in the app, owner-only /broadcast on Slack and Signal. Each recipient's transcript carries a broadcast marker; a dry run shows who is busy first.",
+        'Tell four agents "stop touching Cargo.lock" once, and each knows it was not the only one told.',
+      ],
+      [
+        "terminals",
+        "Type into the model's terminals yourself. /terminals then i in the TUI, Ctrl ] to hand the keys back; in the app and on a phone a real terminal with scrollback and resize, a key strip on mobile. The model's next screen read says user attached.",
+        "Answer the installer's prompt yourself instead of relaying keystrokes through the model.",
+      ],
+      [
+        "archive",
+        "Archive a chat from its row menu or the multi-select bar; archived trees collapse into one Archived group and stay searchable, marked. The title model also tags every session with up to four words, shown on the row and to a model picking peers.",
+        "The sidebar shows what you are working on without deleting what you might need.",
+      ],
+      [
         "secrets",
-        "An encrypted, versioned vault; the key lives in the OS keychain. The model uses a secret as {{secret:NAME}} in any tool argument and the value is swapped in at run time and scrubbed from output. secret_request opens a masked box for you to type into.",
+        "An encrypted, versioned vault; the key lives in the macOS Keychain, the Linux Secret Service or the Windows Credential Manager, with an owner-only file where none answers. The model uses a secret as {{secret:NAME}} in any tool argument and the value is swapped in at run time and scrubbed from output. secret_request opens a masked box for you to type into.",
         "API keys, tokens and passwords the model can use but never read or leak.",
       ],
       [
         "context",
-        "Compact by summary, cut or snap at a threshold you set. /undo and /redo a turn. /shake images, documents or tool output out of context without losing what came after. /edit a message and replay. Type while it works to queue; interject to redirect now.",
+        "Compact by summary, cut or snap at a threshold you set. A context meter, used over limit, moves after every model round in the app header and the TUI. /undo and /redo a turn. /shake images, documents or tool output out of context without losing what came after. /edit a message and replay. Type while it works to queue; interject to redirect now.",
         "Long sessions stay cheap and steerable instead of restarting from zero.",
       ],
       [
         "models",
-        "Sign in with the OpenAI, Anthropic, Cursor or xAI subscription you have. Keys in the vault. Bedrock through an AWS profile with SSO, no credentials in the UI. Any OpenAI-compatible gateway or a local model through models.json. Per-model effort levels.",
+        "Sign in with the OpenAI, Anthropic, Cursor or xAI subscription you have. Keys in the vault. Bedrock through an AWS profile with SSO, no credentials in the UI. Any OpenAI-compatible gateway or a local model through models.json. Per-model effort levels; agent.escalate_model names the cheap model for side calls. models.accelerator picks where local speech and decision models run, Metal, WebGPU, DirectML or CUDA where the runtime has them, and t --bench-models tells you whether they did. When a provider returns no price, the cost is estimated from catalog rates and marked as such.",
         "Use what you already pay for. Switch with /model mid-session.",
       ],
       [
@@ -353,13 +406,18 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
         "Cheap or local models keep working when a screenshot comes in.",
       ],
       [
+        "labs",
+        "Settings → Labs switches on a local classifier, laya, about 0.8 GB, loaded only while it is needed and never leaving the machine. Meeting oracle Off, Shadow or Active: small talk is skipped and a cached brief published without a model turn, a ⚡ row under each batch shows the verdict, and Shadow tells you how often it agreed with the model before you let it act. Browser System-1 adds browser_run, up to 25 actions under one approval. Training capture writes secret-scrubbed rows to this disk only.",
+        "Fewer model turns on the decisions a small local model gets right, and you watch it be right first.",
+      ],
+      [
         "failures",
         "Denied model access, expired AWS sessions and stalled streams stay in the transcript with guidance. They are never fed to the model as conversation. Interrupted replies are salvaged and resumed.",
         "You see what went wrong; the model does not hallucinate around it.",
       ],
       [
         "update",
-        "Signed release manifest, silent verification, binary replaced on disk and live at the next start. t --update forces a check.",
+        "One signed release manifest for every platform: the macOS app and CLI, the Windows installer and CLI, Linux AppImages and CLI tarballs for x86_64 and aarch64. Silent verification, binary replaced on disk and live at the next start. t --update forces a check.",
         "Always current, no reinstall, no unsigned code.",
       ],
       [
@@ -374,22 +432,27 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
     items: [
       [
         "link",
-        "Pair a phone or any browser with a QR through the relay. The uplink dials out; nothing listens on your machine. Noise end-to-end encryption; the relay keeps no state and no accounts and sees ciphertext only. Devices listed, renamed and revoked from /link. Self-host the relay with one compose file.",
+        "Pair a phone or any browser with a QR through the relay. The uplink dials out; nothing listens on your machine. Noise end-to-end encryption; the relay keeps no state and no accounts and sees ciphertext only. Devices listed, renamed and revoked from /link. Self-host the relay with one compose file. A note or concept open on a paired device edits the same document live, cursors and names shown; offline keystrokes queue and replay on reconnect.",
         "Drive the harness from a phone without opening a port.",
       ],
       [
+        "share",
+        "Share… on a note or concept makes a link, editor or viewer, expiring in a day, a week, a month or never, shown once as URL and QR. Whoever opens it in a plain browser gives a name and joins that one document over the same encrypted relay path as a paired phone, with only that document's doc_* methods. See who is here, demote, remove, revoke; a viewer's edits are refused. documents.sharing turns it off.",
+        "Co-edit with someone who has no theuth, on your machine's copy, with the relay still seeing ciphertext.",
+      ],
+      [
         "nodes",
-        "On another box: install, set a key, t --install-service. It writes a launchd or systemd user unit through your login shell, turns link on and prints a pairing key. /nodes add on your main harness.",
+        "On another box: install, set a key, t --install-service. It writes a launchd or systemd user unit through your login shell, or a Task Scheduler logon task on Windows, turns link on and prints a pairing key. /nodes add on your main harness.",
         "Give the model, and your phone, another machine. Subagents run there; approvals land in front of you.",
       ],
       [
         "slack",
-        "t --slack-setup creates the app from a manifest and verifies the tokens. DMs and mentions open sessions that stream into threads with a card per tool call, Allow and Deny buttons, and /theuth for the commands.",
+        "t --slack-setup creates the app from a manifest and verifies the tokens. DMs and mentions open sessions that stream into threads with a card per tool call, Allow and Deny buttons, and /theuth for the commands, broadcast among them.",
         "theuth agent, in your workspace, with the same approvals.",
       ],
       [
         "signal",
-        "t --link-signal pairs the daemon as a linked device. Texts become turns in a per-contact session; eyes while working, a check when done; approvals answered with a thumbs-up; files land in an inbox.",
+        "t --link-signal pairs the daemon as a linked device. Texts become turns in a per-contact session; eyes while working, a check when done; approvals answered with a thumbs-up; owner-only /broadcast; files land in an inbox.",
         "The agent in your pocket over the messenger you already trust.",
       ],
       [
@@ -398,20 +461,30 @@ const LEDGER: { group: string; items: [string, string, string][] }[] = [
         "Zed and any other ACP editor, no plugin.",
       ],
       [
+        "engine",
+        "One engine per data directory. If the app, a headless t or another t is already running on your ~/.theuth, then t, t -p and t --acp attach to it over loopback JSON-RPC: same jobs, terminals, Python runtime, MCP servers and approvals; the status line says attached. When it quits, the TUI takes over.",
+        "Never two engines fighting over one store; the terminal and the app are two views of one agent.",
+      ],
+      [
         "theuth.app",
-        "A macOS menubar app: sessions with the subagent tree, streamed markdown with tool cards, inline approvals, attachments, a settings dialog for every connection, a knowledge explorer with history and a raw editor, artifact and app panels, a live view of the agent's browser. No Dock icon; the tray or Option Space toggles it. Reuses a running daemon or starts one through your login shell.",
+        "A menubar app on macOS, a tray app on Windows and Linux: sessions with the subagent tree, streamed markdown with tool cards, inline approvals, attachments, a settings dialog for every connection, a knowledge explorer with history and a raw editor, notes, artifact and app panels, a real terminal for the agent's PTY jobs, a live view of the agent's browser. No Dock icon on macOS; the tray or a rebindable chord, Option Space by default, toggles it. Attaches to a running engine or starts one.",
         "Everything the terminal does, as a chat window that is always one keystroke away.",
       ],
       [
+        "workspace",
+        "Chats grouped under projects, each with an icon and one of ten mineral colours. Drag a row onto the chat to tile it; drag New chat to open a draft pane; with the view split, New chat opens in the focused pane. Right-click any row for its menu. Every shortcut is rebindable in Settings → Shortcuts. Sidebar glyphs show which chat is thinking, in a tool, running a job or holding a live terminal.",
+        "Two or four agents side by side in one window, and you see which one needs you.",
+      ],
+      [
         "t",
-        "The terminal UI: slash commands for everything above, Ctrl V pastes an image, drop a file to attach it, mouse selection is terminal-native, the history stays put while a reply streams.",
+        "The terminal UI: slash commands for everything above, /broadcast, /terminals, /agents with live activity, a context gauge in the header, Ctrl V pastes an image, drop a file to attach it, mouse selection is terminal-native, the history stays put while a reply streams. t.exe on Windows.",
         "One binary. Works over ssh.",
       ],
     ],
   },
 ];
 
-const SOON = ["Windows app", "Linux GUI", "Telegram", "iOS and Android apps"];
+const SOON = ["Telegram", "iOS and Android apps"];
 const NOT = ["Discord", "WhatsApp", "docker run of the harness", "Intel Macs"];
 
 export function App() {
@@ -665,8 +738,8 @@ export function App() {
             Everything it does.
           </h2>
           <p className="mt-6 max-w-[34em] text-[17px] leading-relaxed text-fg-2">
-            The whole ledger. Each line is a tool or a switch that ships in
-            1.7.0, what it lets you do, and why you would care.
+            The whole ledger. Each line is a tool or a switch that ships in{" "}
+            {__APP_VERSION__}, what it lets you do, and why you would care.
           </p>
           <div className="mt-14 border border-well bg-page/85 backdrop-blur-[2px]">
             {LEDGER.map((g) => (
@@ -725,7 +798,8 @@ export function App() {
                 ))}
               </ul>
               <p className="mt-5 text-[14px] text-fg-3">
-                Meetings need macOS 15.
+                Recording a meeting needs the Mac app on macOS 15; every device
+                can read them.
               </p>
             </div>
           </div>
