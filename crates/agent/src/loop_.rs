@@ -84,8 +84,9 @@ use crate::{
     Toolset, Usage, VisionStage, compact, skills, spill, todo,
 };
 
-/// Characters of tool output shown in [`AgentEvent::ToolCallFinished`].
-const DISPLAY_OUTPUT_CHARS: usize = 2000;
+/// Characters of tool output shown in [`AgentEvent::ToolCallFinished`] (and
+/// stored for an ACP child's tool result, 06 §3.6).
+pub(crate) const DISPLAY_OUTPUT_CHARS: usize = 2000;
 /// A cache hit is only expected within the provider's TTL (07 §7).
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Below this prompt size `cached == 0` is legitimate (07 §7).

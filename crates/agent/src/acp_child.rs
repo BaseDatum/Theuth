@@ -20,7 +20,7 @@ use agent_client_protocol::schema::v1::{
     PermissionOptionKind, Plan, PlanEntryStatus, RequestPermissionOutcome,
     SelectedPermissionOutcome, SessionUpdate, ToolCallStatus,
 };
-use genai::chat::{ChatMessage, MessageContent};
+use genai::chat::{ChatMessage, MessageContent, ToolCall, ToolResponse};
 use kameo::Actor;
 use kameo::actor::{ActorRef, WeakActorRef};
 use kameo::error::ActorStopReason;
@@ -38,8 +38,8 @@ use crate::continuation::{
 };
 use crate::cost::{MeterUpdate, Money};
 use crate::loop_::{
-    CancelPeerScope, CancelTurn, IsRunning, PEER_INTAKE, PeerInput, PeerMeta, SuppressPeerInputs,
-    UserInput, peer_wrapper, refuse_peer,
+    CancelPeerScope, CancelTurn, DISPLAY_OUTPUT_CHARS, IsRunning, PEER_INTAKE, PeerInput, PeerMeta,
+    SuppressPeerInputs, UserInput, peer_wrapper, refuse_peer,
 };
 use crate::store::Store;
 use crate::store::communication::CommError;
@@ -48,6 +48,9 @@ use crate::{AgentEvent, Usage};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// Stored result of a tool call the harness never reported finished (06 §3.6).
+const NOT_FINISHED: &str =
+    "ERROR: not finished: the turn ended before the harness reported this call";
 
 /// The actor. Spawn with `AcpChild::spawn(AcpChild::new(..))`; the process
 /// starts in `on_start` and dies with the actor.
@@ -92,14 +95,25 @@ struct Queued {
     peer: Option<PeerMeta>,
 }
 
-/// Per-turn state the translation accumulates into (06 §3.3).
+/// Per-turn state the translation accumulates into (06 §3.3). Text and tool
+/// calls are queued on `messages` as ordinary chat messages in arrival order
+/// (06 §3.6); the actor persists the queue before publishing the events.
 pub(crate) struct Turn {
     /// theuth session.
     session: SessionId,
     /// theuth turn.
     id: TurnId,
-    /// Accumulated `agent_message_chunk` text: the assistant message persisted at the end.
+    /// Accumulated `agent_message_chunk` text: the turn's result for the parent.
     text: String,
+    /// Byte length of `text` already queued as assistant messages.
+    flushed: usize,
+    /// Translated but not yet persisted messages, in order.
+    messages: Vec<ChatMessage>,
+    /// Calls started and not yet finished, in start order.
+    open: Vec<String>,
+    /// The last queued message is a tool response: the turn must still close
+    /// with an assistant row so the next user message opens a turn.
+    tool_last: bool,
     /// Last `tool_call_update` output: what the parent gets when the harness
     /// ends the turn without text (opencode after a rejected permission).
     last_tool: Option<String>,
@@ -123,12 +137,97 @@ impl Turn {
             session,
             id,
             text: String::new(),
+            flushed: 0,
+            messages: Vec::new(),
+            open: Vec::new(),
+            tool_last: false,
             last_tool: None,
             context: 0,
             meter: None,
             cancel: CancellationToken::new(),
             kill: None,
             scope,
+        }
+    }
+
+    fn assistant(&mut self, text: &str) {
+        self.messages
+            .push(ChatMessage::assistant(MessageContent::from_text(text)));
+        self.tool_last = false;
+    }
+
+    /// Queue the text since the last flush as one assistant message.
+    fn flush_text(&mut self) {
+        if self.flushed < self.text.len() {
+            let tail = self.text[self.flushed..].to_owned();
+            self.assistant(&tail);
+            self.flushed = self.text.len();
+        }
+    }
+
+    /// A call started: the text before it keeps its place, then the call.
+    fn call_started(&mut self, call_id: &str, name: &str, args: serde_json::Value) {
+        self.flush_text();
+        self.messages.push(ChatMessage::from(vec![ToolCall {
+            call_id: call_id.to_owned(),
+            fn_name: name.to_owned(),
+            fn_arguments: args,
+            thought_signatures: None,
+        }]));
+        self.tool_last = false;
+        self.open.push(call_id.to_owned());
+    }
+
+    /// An open call finished: its response, capped like the live output and
+    /// `ERROR: `-prefixed on failure so `history()` marks it. A finish for a
+    /// call never started (or already finished) is not stored: it would be a
+    /// dangling card.
+    fn call_finished(&mut self, call_id: &str, output: &str, is_error: bool) {
+        let Some(i) = self.open.iter().position(|c| c == call_id) else {
+            return;
+        };
+        self.open.remove(i);
+        let text = if is_error && !output.starts_with("ERROR: ") {
+            format!("ERROR: {output}")
+        } else {
+            output.to_owned()
+        };
+        self.messages.push(ChatMessage::from(vec![ToolResponse::new(
+            call_id,
+            crate::frame::truncate(&text, DISPLAY_OUTPUT_CHARS),
+        )]));
+        self.tool_last = true;
+    }
+
+    /// The turn's result for the parent: its text, else `error`, else the
+    /// last tool result, else `"(no text)"`.
+    fn result(&self, error: Option<String>) -> String {
+        if !self.text.is_empty() {
+            return self.text.clone();
+        }
+        error
+            .or_else(|| {
+                self.last_tool
+                    .as_ref()
+                    .map(|t| format!("[no reply; last tool result]\n{t}"))
+            })
+            .unwrap_or_else(|| "(no text)".into())
+    }
+
+    /// End of turn: every open call is answered [`NOT_FINISHED`] (pair
+    /// invariant), the trailing text is flushed (or `result` stored when no
+    /// text arrived at all), and the turn ends on an assistant row.
+    fn close(&mut self, result: &str) {
+        while let Some(id) = self.open.first().cloned() {
+            self.call_finished(&id, NOT_FINISHED, true);
+        }
+        if self.text.is_empty() {
+            self.assistant(result);
+        } else {
+            self.flush_text();
+        }
+        if self.tool_last {
+            self.assistant("");
         }
     }
 }
@@ -406,16 +505,26 @@ impl AcpChild {
         });
     }
 
-    /// Close the turn in flight: persist the assistant text (or `error`, the
-    /// last tool result, or `"(no text)"`), publish `Error` when given, report
-    /// the persisted result by turn ([`PeerTurnFinished`], 50 §6.3), then
+    /// Persist `messages` in order (06 §3.6).
+    async fn persist_all(&self, messages: Vec<ChatMessage>) {
+        for m in messages {
+            self.append(m).await;
+        }
+    }
+
+    /// Close the turn in flight: answer its unfinished tool calls, persist
+    /// the trailing assistant text (or `error`, the last tool result, or
+    /// `"(no text)"` when none arrived), publish `Error` when given, report
+    /// the turn's full text by turn ([`PeerTurnFinished`], 50 §6.3), then
     /// `TurnFinished`, then hand the state back to the supervisor
     /// ([`TurnReturned`]; it keeps this child counted until the parent holds
     /// the result).
     async fn finish(&mut self, stop_reason: &str, error: Option<String>) {
-        let Some(turn) = self.turn.take() else { return };
+        let Some(mut turn) = self.turn.take() else {
+            return;
+        };
         turn.cancel.cancel();
-        if let Some(k) = turn.kill {
+        if let Some(k) = turn.kill.take() {
             k.abort();
         }
         if let Some(e) = &error {
@@ -426,18 +535,9 @@ impl AcpChild {
             })
             .await;
         }
-        let text = if turn.text.is_empty() {
-            error
-                .or_else(|| {
-                    turn.last_tool
-                        .map(|t| format!("[no reply; last tool result]\n{t}"))
-                })
-                .unwrap_or_else(|| "(no text)".into())
-        } else {
-            turn.text
-        };
-        self.append(ChatMessage::assistant(MessageContent::from_text(&text)))
-            .await;
+        let text = turn.result(error);
+        turn.close(&text);
+        self.persist_all(std::mem::take(&mut turn.messages)).await;
         continuation::notify(PeerTurnFinished {
             session: self.id,
             turn: turn.id,
@@ -677,7 +777,8 @@ pub(crate) fn meter_update(
 }
 
 /// 06 §3.3: one `session/update` → the [`AgentEvent`]s to publish, with the
-/// text and context window accumulating on `turn`.
+/// text and context window accumulating on `turn` and the messages to
+/// persist queued on it (06 §3.6).
 pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEvent> {
     let (session, id) = (turn.session, turn.id);
     match update {
@@ -697,17 +798,20 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         }],
         SessionUpdate::ToolCall(tc) => {
             let call_id = tc.tool_call_id.0.to_string();
+            let args = with_kind(tc.raw_input, tc.kind);
+            turn.call_started(&call_id, &tc.title, args.clone());
             let mut out = vec![AgentEvent::ToolCallStarted {
                 session,
                 turn: id,
                 call_id: call_id.clone(),
                 name: tc.title,
-                args: with_kind(tc.raw_input, tc.kind),
+                args,
             }];
             // Some harnesses report a finished call in one message.
             if let Some(is_error) = finished(tc.status) {
                 let output = output(&tc.content, tc.raw_output.as_ref());
                 turn.last_tool = Some(output.clone());
+                turn.call_finished(&call_id, &output, is_error);
                 out.push(AgentEvent::ToolCallFinished {
                     session,
                     turn: id,
@@ -721,15 +825,17 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         }
         SessionUpdate::ToolCallUpdate(u) => match u.fields.status.and_then(finished) {
             Some(is_error) => {
+                let call_id = u.tool_call_id.0.to_string();
                 let output = output(
                     u.fields.content.as_deref().unwrap_or_default(),
                     u.fields.raw_output.as_ref(),
                 );
                 turn.last_tool = Some(output.clone());
+                turn.call_finished(&call_id, &output, is_error);
                 vec![AgentEvent::ToolCallFinished {
                     session,
                     turn: id,
-                    call_id: u.tool_call_id.0.to_string(),
+                    call_id,
                     output,
                     is_error,
                     files: Vec::new(),
@@ -1019,6 +1125,9 @@ impl Message<Update> for AcpChild {
                 let Some(turn) = &mut self.turn else { return };
                 let events = translate(update, turn);
                 let meter = turn.meter.take();
+                // Rows exist before the events that show them (29 §4.2).
+                let messages = std::mem::take(&mut turn.messages);
+                self.persist_all(messages).await;
                 for ev in events {
                     self.publish(ev).await;
                 }
@@ -1116,9 +1225,11 @@ mod tests {
         ContentBlock, ContentChunk, Cost, PlanEntry, PlanEntryPriority, ToolCall, ToolCallContent,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
     };
+    use genai::chat::ChatRole;
     use serde_json::json;
 
     use super::*;
+    use crate::HistoryEntry;
 
     fn turn() -> Turn {
         Turn::new(SessionId::new(), TurnId::new(), None)
@@ -1235,6 +1346,218 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    /// Persist `t`'s queued messages after a user row; the rows and their
+    /// `history()` rendering.
+    async fn stored(t: &mut Turn) -> (Vec<(i64, ChatMessage)>, Vec<HistoryEntry>) {
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "omp", None, None, None)
+            .await
+            .unwrap();
+        store.append(id, &ChatMessage::user("go")).await.unwrap();
+        for m in std::mem::take(&mut t.messages) {
+            store.append(id, &m).await.unwrap();
+        }
+        let rows = store.messages(id).await.unwrap();
+        let history = crate::supervisor::render(&rows, &std::collections::BTreeMap::new())
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        (rows, history)
+    }
+
+    fn chunk(text: &str) -> SessionUpdate {
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(text)))
+    }
+
+    fn update(id: &'static str, fields: ToolCallUpdateFields) -> SessionUpdate {
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(id, fields))
+    }
+
+    /// 06 §3.6: text and tool calls are stored as ordinary chat messages in
+    /// arrival order — text before a call flushed first, the call as an
+    /// assistant `tool_use`, its result as a tool row — so `history()` pairs
+    /// every card in place, and the parent still gets the whole text.
+    #[tokio::test]
+    async fn tool_calls_persist_in_order_with_text() {
+        let mut t = turn();
+        translate(chunk("A"), &mut t);
+        let x = ToolCall::new("x", "Read foo.rs")
+            .kind(ToolKind::Read)
+            .raw_input(json!({"path": "foo.rs"}))
+            .status(ToolCallStatus::InProgress);
+        translate(SessionUpdate::ToolCall(x), &mut t);
+        translate(
+            update(
+                "x",
+                ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
+            ),
+            &mut t,
+        );
+        translate(
+            update(
+                "x",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![ToolCallContent::from("fn main() {}")]),
+            ),
+            &mut t,
+        );
+        translate(chunk("B"), &mut t);
+        let y = ToolCall::new("y", "ls")
+            .status(ToolCallStatus::Failed)
+            .raw_output(json!("boom"));
+        translate(SessionUpdate::ToolCall(y), &mut t);
+        // A finish for a call never started is not a dangling card.
+        translate(
+            update(
+                "ghost",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ),
+            &mut t,
+        );
+        // A repeated finish is not a second row.
+        translate(
+            update(
+                "x",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ),
+            &mut t,
+        );
+        let result = t.result(None);
+        assert_eq!(result, "AB", "the parent gets the whole text");
+        t.close(&result);
+
+        let (rows, history) = stored(&mut t).await;
+        let shape: Vec<(ChatRole, String, Vec<&str>, Vec<&str>)> = rows
+            .iter()
+            .map(|(_, m)| {
+                (
+                    m.role.clone(),
+                    crate::loop_::text_of(&m.content),
+                    m.content
+                        .tool_calls()
+                        .iter()
+                        .map(|c| c.call_id.as_str())
+                        .collect(),
+                    m.content
+                        .tool_responses()
+                        .iter()
+                        .map(|r| r.call_id.as_str())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (ChatRole::User, "go".into(), vec![], vec![]),
+                (ChatRole::Assistant, "A".into(), vec![], vec![]),
+                (ChatRole::Assistant, String::new(), vec!["x"], vec![]),
+                (ChatRole::Tool, "fn main() {}".into(), vec![], vec!["x"]),
+                (ChatRole::Assistant, "B".into(), vec![], vec![]),
+                (ChatRole::Assistant, String::new(), vec!["y"], vec![]),
+                (ChatRole::Tool, "ERROR: boom".into(), vec![], vec!["y"]),
+                // Closer: the turn ends on an assistant row (invisible in history).
+                (ChatRole::Assistant, String::new(), vec![], vec![]),
+            ]
+        );
+        let call = rows[2].1.content.tool_calls()[0];
+        assert_eq!(call.fn_name, "Read foo.rs");
+        assert_eq!(call.fn_arguments, json!({"path": "foo.rs", "kind": "read"}));
+
+        // (role, text or tool name, result text, is_error); "-" = no result.
+        let flat: Vec<(&str, &str, &str, bool)> = history
+            .iter()
+            .map(|e| match e {
+                HistoryEntry::User { text, .. } => ("user", text.as_str(), "-", false),
+                HistoryEntry::Assistant { text, .. } => ("assistant", text.as_str(), "-", false),
+                HistoryEntry::Tool {
+                    name,
+                    result: Some((out, is_error)),
+                    ..
+                } => ("tool", name.as_str(), out.as_str(), *is_error),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            flat,
+            [
+                ("user", "go", "-", false),
+                ("assistant", "A", "-", false),
+                ("tool", "Read foo.rs", "fn main() {}", false),
+                ("assistant", "B", "-", false),
+                ("tool", "ls", "ERROR: boom", true),
+            ]
+        );
+    }
+
+    /// A call the harness never finished is closed at the end of the turn
+    /// with an `ERROR: not finished` result, so the card reloads with an
+    /// error instead of staying pending; the stored output is capped.
+    #[tokio::test]
+    async fn unfinished_call_is_closed_with_an_error_at_turn_end() {
+        let mut t = turn();
+        translate(chunk("working"), &mut t);
+        translate(SessionUpdate::ToolCall(ToolCall::new("x", "shell")), &mut t);
+        let long = "z".repeat(DISPLAY_OUTPUT_CHARS + 50);
+        translate(
+            SessionUpdate::ToolCall(
+                ToolCall::new("big", "cat")
+                    .status(ToolCallStatus::Completed)
+                    .raw_output(json!(long)),
+            ),
+            &mut t,
+        );
+        let result = t.result(None);
+        assert_eq!(result, "working");
+        t.close(&result);
+        let (rows, history) = stored(&mut t).await;
+        assert_eq!(rows.len(), 7, "{rows:?}");
+        assert!(t.open.is_empty());
+
+        let cards: Vec<(&str, &str, bool)> = history
+            .iter()
+            .filter_map(|e| match e {
+                HistoryEntry::Tool {
+                    name,
+                    result: Some((out, is_error)),
+                    ..
+                } => Some((name.as_str(), out.as_str(), *is_error)),
+                HistoryEntry::Tool { result: None, .. } => panic!("pending card: {e:?}"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].0, "cat");
+        assert!(
+            cards[0].1.contains("…[truncated 50 chars]"),
+            "{}",
+            cards[0].1
+        );
+        assert!(!cards[0].2);
+        assert_eq!(cards[1], ("shell", NOT_FINISHED, true));
+
+        // No text at all: the fallback is the assistant row, once.
+        let mut t = turn();
+        translate(
+            SessionUpdate::ToolCall(
+                ToolCall::new("x", "shell")
+                    .status(ToolCallStatus::Completed)
+                    .raw_output(json!("out")),
+            ),
+            &mut t,
+        );
+        let result = t.result(None);
+        assert_eq!(result, "[no reply; last tool result]\nout");
+        t.close(&result);
+        let (rows, _) = stored(&mut t).await;
+        assert_eq!(rows.len(), 4);
+        assert_eq!(crate::loop_::text_of(&rows[3].1.content), result);
+        assert_eq!(rows[3].1.role, ChatRole::Assistant);
     }
 
     #[test]

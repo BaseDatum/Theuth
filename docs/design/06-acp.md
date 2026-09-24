@@ -209,11 +209,11 @@ so the TUI, RPC subscribers and the supervisor see a normal session.
 | `agent_message_chunk {content: text}` | `TextDelta` |
 | `agent_thought_chunk` | `ReasoningDelta` |
 | `tool_call {toolCallId, title, kind, rawInput, status}` | `ToolCallStarted { call_id, name: title, args: rawInput ∪ {"kind": kind} }` |
-| `tool_call_update {status: completed \| failed, content, rawOutput}` | `ToolCallFinished { output: rendered content, is_error: status == failed }` |
+| `tool_call_update {status: completed \| failed, content, rawOutput}` | `ToolCallFinished { output: rendered content, is_error: status == failed }`; the call and its result are also persisted as chat messages (§3.6) |
 | `tool_call_update` with other statuses / partial content | dropped (UI already shows the pending call) |
 | `plan {entries}` | `TextDelta` of a rendered checklist, once per change — no new event type until a UI wants to render plans specially |
 | `usage_update {used, size}` | remembered; emitted in `TurnFinished.context = used` |
-| `user_message_chunk` (only during `session/load` replay) | ignored on live turns; on replay, persisted as history (§3.6) |
+| `user_message_chunk` (only during `session/load` replay) | ignored (§8 rule 11: the local history already holds the turn) |
 | `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update` | ignored |
 | `session/prompt` response `{stopReason}` | `TurnFinished { stop_reason, usage: {0,0} unless usage_update seen, context }` |
 | transport EOF / process exit mid-turn | `Error { message }` then `TurnFinished { stop_reason: "error" }` |
@@ -257,8 +257,10 @@ session drives `child_finished`, which delivers `<subagent_result>` to the
 parent or resolves an `await_reply` waiter. What differs:
 
 - **Final text.** Native children read it from the store. `AcpChild`
-  accumulates `agent_message_chunk` text for the turn and persists it as one
-  assistant message at `TurnFinished` (§3.6), so the same store read works.
+  accumulates `agent_message_chunk` text for the turn and reports it whole
+  as `PeerTurnFinished.text` (50 §6.3); the store holds the same text split
+  into segments around the turn's tool calls (§3.6), so nothing re-reads it
+  to build `<subagent_result>`.
 - **`send_message{to: <acp child>}`** → `UserInput` → `session/prompt`. If a
   prompt is in flight the input is queued and sent when the response arrives
   (ACP has no mid-turn steering: a turn is one `session/prompt` request and
@@ -282,12 +284,28 @@ parent or resolves an `await_reply` waiter. What differs:
 
 `sessions` gains two nullable columns: `agent TEXT` (the `agents.yaml` key)
 and `acp_session TEXT` (the harness's session id). Messages persisted per
-turn: the user text (task / delivered message with its wrapper, as today)
-and one assistant text message; tool calls are not persisted (they stream
-live and `load_session` shows text only — the harness keeps its own full
-transcript). On `session/load` replay, `user_message_chunk` /
-`agent_message_chunk` are written the same way if the local history is
-empty.
+turn (as built 2026-09-24; before, tool calls were not persisted and
+`load_session` showed text only): the user text (task / delivered message
+with its wrapper, as today), then the harness's text and tool calls as
+ordinary chat messages in arrival order, the shapes `history()` already
+pairs — a `tool_call` first flushes the accumulated text as an assistant
+message, then persists an assistant message carrying the call
+(`call_id = toolCallId`, `fn_name = title`, `fn_arguments = rawInput ∪
+{kind}`, the `ToolCallStarted` fields); its terminal `tool_call_update` (or
+a `tool_call` reported finished in one message) persists a tool message
+with the rendered output, capped like the live card (2000 chars) and
+`ERROR: `-prefixed when `failed`. At the end of the turn the trailing text
+is persisted (or the error / `[no reply; last tool result]` / `(no text)`
+fallback when no text arrived); a call the harness never reported finished
+(cancel, error, process death) gets `ERROR: not finished: the turn ended
+before the harness reported this call`, so no card stays pending on reload;
+a turn whose last row is a tool result closes with an empty assistant row so
+the next user message still opens a turn. Live events are unchanged; every
+client reloads the transcript with its tool cards through `load_session`.
+A finish for a call never started is not stored (it would be a dangling
+card). The harness keeps its own full transcript; the rows here are for
+display and search, never sent to a model. On `session/load` replay,
+updates arrive with no turn open and are dropped (§8 rule 11).
 
 `SessionSummary` gains `agent: Option<String>`. `AgentEvent` gains nothing:
 `SubagentSpawned` already names the child; `TurnStarted.model` carries the
@@ -558,7 +576,9 @@ decision.
     `Loaded.agent` are added; the TUI `/agents` list shows `(agent)` after
     the status.
 11. **`session/load` replay chunks are ignored**: the local history was
-    persisted per turn (§3.6), so replay would duplicate it.
+    persisted per turn (§3.6, text and tool calls alike), so replay would
+    duplicate it. Mechanism: replay arrives before any turn is open, and
+    `AcpChild` drops every `session/update` that has no turn in flight.
 12. **Agent half subscribes typed events.** There is no typed broadcast;
     the RPC bridge carries JSON and only exists with `RpcPlugin`. `rpc::acp`
     registers its own kameo actor on the bus for `AgentEvent`,
