@@ -514,7 +514,8 @@ pub struct MeetingConfig {
     pub topic_ttl_secs: u32,
     /// Most topic buttons at once; the oldest untouched expires first.
     pub max_topics: u32,
-    /// Phase 4: pyannote models; `None` → `<data_dir>/models/pyannote`.
+    /// Phase 4: the diarization models root (`nemotron-diarization/`, `pyannote/`);
+    /// `None` → `<data_dir>/models`.
     pub models_dir: Option<std::path::PathBuf>,
     /// 06 §1.5: the registry tools the meeting session may call directly while
     /// recording; every other tool is hidden from it until stop.
@@ -1096,11 +1097,7 @@ impl Meeting {
         let models = self.rt.data_dir.join("models");
         post::Paths {
             tdt: models.join(voice::TDT_MODEL_SUBDIR),
-            models: self
-                .cfg
-                .models_dir
-                .clone()
-                .unwrap_or_else(|| models.join("pyannote")),
+            models: self.cfg.models_dir.clone().unwrap_or(models),
             speakers: self.rt.data_dir.join(DIR).join(speakers::DIR),
             data_dir: self.rt.data_dir.clone(),
         }

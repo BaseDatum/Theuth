@@ -10270,6 +10270,7 @@ dependencies = [
  "ort",
  "parking_lot",
  "pipewire",
+ "realfft",
  "rtrb",
  "rubato 0.16.2",
  "runtime",

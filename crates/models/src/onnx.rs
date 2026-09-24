@@ -1,6 +1,6 @@
 //! The process-wide ONNX Runtime initialiser (57 §6 steps 1 and 2c), shared by every
 //! `ort` user in the tree: voice STT (Parakeet TDT, Nemotron streaming, TEN-VAD),
-//! meeting diarisation (pyannote, wespeaker) and the decision oracle (laya).
+//! meeting diarisation (Nemotron 3 Diarization, wespeaker) and the decision oracle (laya).
 //!
 //! ONNX Runtime is loaded at run time, in this order: the app bundle (`Contents/Frameworks/`
 //! beside the `.app`'s `MacOS/theuth`, or the binary's own directory — `package-macos.sh`
@@ -345,13 +345,13 @@ fn register_webgpu(plugin: Option<&Path>) -> Result<(), String> {
         let plugin = plugin.ok_or_else(|| {
             format!("the runtime has no {WEBGPU_EP} and there is no {WEBGPU_LIB} under <data_dir>/models/{DIR}/{PLUGIN_DIR}/ (Microsoft.ML.OnnxRuntime.EP.WebGpu, runtimes/<rid>/native/)")
         })?;
-        if let Some(v) = runtime_version() {
-            if !webgpu_accepts(&v) {
-                return Err(format!(
-                    "ONNX Runtime {v} is older than {}.{}.{}, the plugin's minimum",
-                    WEBGPU_MIN_ORT[0], WEBGPU_MIN_ORT[1], WEBGPU_MIN_ORT[2]
-                ));
-            }
+        if let Some(v) = runtime_version()
+            && !webgpu_accepts(&v)
+        {
+            return Err(format!(
+                "ONNX Runtime {v} is older than {}.{}.{}, the plugin's minimum",
+                WEBGPU_MIN_ORT[0], WEBGPU_MIN_ORT[1], WEBGPU_MIN_ORT[2]
+            ));
         }
         register_once(&WEBGPU_REGISTERED, plugin, |p| {
             env.register_ep_library("webgpu_ep", p)

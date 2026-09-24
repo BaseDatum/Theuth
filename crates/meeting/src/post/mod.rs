@@ -27,7 +27,8 @@ use crate::{MeetingEvent, MeetingId, MeetingState, PostStage};
 pub struct Paths {
     /// Parakeet TDT checkpoint (`voice::TDT_MODEL_SUBDIR`).
     pub tdt: PathBuf,
-    /// pyannote models (`meeting.models_dir`, default `<data_dir>/models/pyannote`).
+    /// The models root (`meeting.models_dir`, default `<data_dir>/models`): the diariser
+    /// under `nemotron-diarization/`, wespeaker under `pyannote/` (`diarize::models`).
     pub models: PathBuf,
     /// `<data_dir>/meetings/speakers/`.
     pub speakers: PathBuf,
@@ -171,10 +172,12 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
     let models = diarize::models(&cx.paths.models, &cx.paths.data_dir);
     let note = models.is_none().then(|| {
         format!(
-            "Diarization skipped: pyannote models not found in {} ({} and {}). \
+            "Diarization skipped: models not found under {} ({}/{} and {}/{}). \
              Every system segment is Speaker 1; relabel by hand or place the models and re-run.",
             cx.paths.models.display(),
-            diarize::SEGMENTATION,
+            diarize::DIAR_DIR,
+            diarize::DIAR_MODEL,
+            diarize::EMBED_DIR,
             diarize::EMBEDDING
         )
     });
@@ -187,7 +190,7 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
             let mic_pcm = std::mem::take(&mut t.mic_pcm);
             let mic_words = t.mic.clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                let d = diarize::run(&diarize::to_i16(&system_pcm), &models, |p| {
+                let d = diarize::run(&system_pcm, &models, |p| {
                     let _ = progress.send((PostStage::Diarizing, 60 + (u32::from(p) * 30 / 100) as u8));
                 })?;
                 let me = me_embedding(&models, &mic_pcm, &mic_words)?;

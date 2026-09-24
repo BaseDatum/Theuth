@@ -139,8 +139,8 @@ release-s3:
 release-add arch:
     THEUTH_RELEASE_ADD={{arch}} ./scripts/release-s3.sh
 
-# Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, pyannote,
-# laya decision checkpoints) that is missing under ${THEUTH_DATA_DIR:-~/.theuth}/models, fetched from
+# Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, nemotron-diarization,
+# pyannote/wespeaker, laya decision checkpoints) that is missing under ${THEUTH_DATA_DIR:-~/.theuth}/models, fetched from
 # its documented origin (HF_TOKEN for gated repos). No AWS creds. DRY_RUN=1 lists instead.
 fetch-models:
     ./scripts/fetch-models.sh

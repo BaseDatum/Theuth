@@ -278,7 +278,7 @@ agent:
 #   live_model_dir: ~        # Nemotron streaming dir; default <data_dir>/models/nemotron-streaming-en (the dictation checkpoint)
 #   topic_ttl_secs: 600      # how long a topic button lives unmentioned
 #   max_topics: 6            # most topic buttons at once
-#   models_dir: ~            # phase 4: pyannote models; default <data_dir>/models/pyannote
+#   models_dir: ~            # phase 4: diarization models root (nemotron-diarization/, pyannote/); default <data_dir>/models
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
 
