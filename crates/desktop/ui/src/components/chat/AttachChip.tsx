@@ -1,0 +1,93 @@
+import { useNavigate } from '@tanstack/react-router'
+import { BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote } from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { type AttachRef, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'
+import { cn } from '@/lib/utils'
+
+/** §7.5 icons; an artifact chip has no record, so it takes the generic file glyph (picker rows refine by artifact kind). */
+export const KIND_ICON: Record<Kind, LucideIcon> = {
+  note: StickyNote,
+  knowledge: BookOpen,
+  artifact: FileText,
+  session: MessageSquare,
+  meeting: Mic,
+}
+
+/** Navigate to the thing a reference points at (§7.6); a knowledge `id@commit` opens 49's historical mode. */
+export function useOpenRef(): (ref: AttachRef) => void {
+  const navigate = useNavigate()
+  return (ref) => {
+    switch (ref.kind) {
+      case 'note':
+        return void navigate({ to: '/notes/$id', params: { id: ref.id }, search: {} })
+      case 'knowledge': {
+        const at = ref.id.indexOf('@')
+        return void navigate({
+          to: '/knowledge/$',
+          params: { _splat: at < 0 ? ref.id : ref.id.slice(0, at) },
+          search: at < 0 ? {} : { change: ref.id.slice(at + 1) },
+        })
+      }
+      case 'artifact':
+        return void navigate({ to: '/artifacts/$callId', params: { callId: ref.id } })
+      case 'session':
+        return void navigate({ to: '/c/$session', params: { session: ref.id }, search: {} })
+      case 'meeting':
+        return void navigate({ to: '/meetings/$id', params: { id: ref.id } })
+    }
+  }
+}
+
+/**
+ * One attached reference as a pill: kind icon, title, muted kind. Click opens a small popover with the subtitle and
+ * **Open**; `again` (a history chip, §7.9) adds **Attach again** (a chip in `again`'s composer) and **Copy id**.
+ */
+export function AttachChip({ item: ref, again, className }: { item: AttachRef; again?: string | null; className?: string }) {
+  const open = useOpenRef()
+  const Icon = KIND_ICON[ref.kind]
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'flex h-7 max-w-[240px] items-center gap-1 rounded-full bg-layer-2 px-2 text-xs hover:bg-layer-3 pointer-coarse:h-8',
+            className,
+          )}
+          aria-label={`${KIND_LABEL[ref.kind]}: ${ref.title}`}
+        >
+          <Icon className="size-3.5 shrink-0 text-fg-secondary" />
+          <span className="truncate">{ref.title}</span>
+          <span className="shrink-0 text-fg-tertiary">{KIND_LABEL[ref.kind]}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto max-w-80 p-2 text-sm">
+        <div className="px-1 pb-1">
+          <div className="font-medium break-words">{ref.title}</div>
+          {ref.meta && <div className="text-xs text-fg-secondary break-words">{ref.meta}</div>}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <Button variant="ghost" size="sm" onClick={() => open(ref)}>
+            <ExternalLink /> Open
+          </Button>
+          {again !== undefined && (
+            <Button variant="ghost" size="sm" onClick={() => attachTo(again, ref)}>
+              <Paperclip /> Attach again
+            </Button>
+          )}
+          {again !== undefined && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigator.clipboard.writeText(ref.id).then(() => toast('Copied'), () => toast.error('Copy failed'))}
+            >
+              <Copy /> Copy id
+            </Button>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}

@@ -4,7 +4,7 @@ import { MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'luc
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
 import { createNote } from '@/components/notes/create'
-import { useNotes } from '@/components/notes/NotePicker'
+import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'

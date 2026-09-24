@@ -10,9 +10,11 @@ import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { NoteChat } from '@/components/notes/NoteChat'
 import { titleAfter } from '@/components/notes/title'
+import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { type AttachRef, subtitle } from '@/lib/attach'
 import type { HarnessProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -68,7 +70,9 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
   const [attaching, setAttaching] = useState(false)
   const [snapshots, setSnapshots] = useState(false)
   const titleInput = useRef<HTMLInputElement>(null)
-  const doc = { ref: id, title: title || 'Untitled' }
+  // 66 §3.1: the note as a reference — the live title, the list row's facts for `meta` when the list has it.
+  const summary = useNotes().data?.find((n) => n.id === id)
+  const doc: AttachRef = { kind: 'note', id, title: title || 'Untitled', meta: summary ? subtitle({ kind: 'note', doc: summary }) : '' }
   useEffect(() => {
     document.title = title
   }, [title])
@@ -133,7 +137,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
       onAsk={ask}
       below={chat.open && !deleted ? <NoteChat note={id} doc={doc} /> : null}
     >
-      <ChatPicker open={attaching} onOpenChange={setAttaching} doc={doc} />
+      <ChatPicker open={attaching} onOpenChange={setAttaching} item={doc} />
       <Snapshots id={id} open={snapshots} onOpenChange={setSnapshots} />
     </DocumentPage>
   )

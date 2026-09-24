@@ -38,13 +38,11 @@ import { cn } from '@/lib/utils'
 import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
 import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
 import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
-import type { SearchNotice } from '@/rpc/bindings/SearchNotice'
-import type { SearchPage } from '@/rpc/bindings/SearchPage'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
+import { Archived, Notice, Notices, Section, Snippet, status } from '@/components/search/parts'
 import { ago } from './AgentTree'
 
 const DEBOUNCE_MS = 150
@@ -686,69 +684,6 @@ const chip = (on: boolean) =>
     on ? 'border-fg-accent bg-accent text-foreground' : 'border-border-subtle text-fg-secondary hover:bg-accent/60',
   )
 
-/** Heading suffix and live-region wording for one page. */
-function status(page: SearchPage<unknown>): string {
-  switch (page.state) {
-    case 'ready':
-      return page.hits.length === 0
-        ? 'no matches'
-        : page.has_more
-          ? `${page.hits.length}+ matches`
-          : `${page.hits.length} shown`
-    case 'indexing':
-      return 'indexing…'
-    case 'unavailable':
-      return 'unavailable'
-    case 'error':
-      return 'error'
-  }
-}
-
-function Notice({ children, tone }: { children: ReactNode; tone?: 'error' }) {
-  return (
-    <div
-      role={tone === 'error' ? 'alert' : undefined}
-      className={cn('px-3 py-6 text-center text-sm', tone === 'error' ? 'text-destructive' : 'text-fg-secondary')}
-    >
-      {children}
-    </div>
-  )
-}
-
-function Notices({ notices }: { notices: SearchNotice[] }) {
-  if (notices.length === 0) return null
-  return (
-    <ul className="px-2 pb-2 text-xs text-fg-tertiary">
-      {notices.map((n, i) => (
-        <li key={i}>
-          {n.message}
-          {n.affected !== null && ` (${n.affected})`}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-/** A category heading with a state line and no rows: unavailable/error/indexing, or a missing group. */
-function Section({
-  category,
-  state,
-  children,
-}: {
-  category: SearchCategory
-  state: string
-  children?: ReactNode
-}) {
-  return (
-    <div className="px-1 pt-2">
-      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-        {CATEGORY_LABEL[category]} · <span id={`search-state-${category}`}>{state}</span>
-      </div>
-      {children}
-    </div>
-  )
-}
-
 function Group({
   group,
   stale,
@@ -850,11 +785,6 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
   )
 }
 
-/** Muted marker after the title of an archived chat (51 §3): hidden from the sidebar, still found here. */
-function Archived() {
-  return <span className="ml-1.5 text-xs text-fg-tertiary">Archived</span>
-}
-
 function SessionRow({ hit }: { hit: SearchHit }) {
   const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title || hit.session.slice(0, 8)
   return (
@@ -924,20 +854,3 @@ function HistoryRow({ hit }: { hit: HistorySearchHit }) {
   )
 }
 
-/** `ranges` are `[start, end)` char offsets (not UTF-16 units), so slice the code-point array. */
-function Snippet({ text, ranges }: { text: string; ranges: MatchRange[] }) {
-  const chars = Array.from(text)
-  const out: ReactNode[] = []
-  let i = 0
-  for (const r of ranges) {
-    if (r.start > i) out.push(chars.slice(i, r.start).join(''))
-    out.push(
-      <mark key={r.start} className="rounded-xs bg-accent font-semibold text-foreground">
-        {chars.slice(r.start, r.end).join('')}
-      </mark>,
-    )
-    i = r.end
-  }
-  out.push(chars.slice(i).join(''))
-  return <>{out}</>
-}

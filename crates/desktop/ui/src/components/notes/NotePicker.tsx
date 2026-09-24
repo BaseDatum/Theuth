@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, StickyNote } from 'lucide-react'
 import { toast } from 'sonner'
 import { createNote } from '@/components/notes/create'
@@ -12,14 +12,10 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import { queryKeys, useApi } from '@/lib/rpc'
+import { useApi } from '@/lib/rpc'
+import { useNotes } from '@/components/notes/useNotes'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 
-/** The notes list, newest update first (59 §7.3); `DocumentChanged` invalidates it. */
-export function useNotes() {
-  const api = useApi()
-  return useQuery({ queryKey: queryKeys.notes, queryFn: () => api.doc_list('note', 500) })
-}
 
 /**
  * Composer `+` → "Attach note…" (59 §7.3): the notes newest first, filtered as you type, and "New note" at the bottom

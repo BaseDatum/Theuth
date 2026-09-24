@@ -32,6 +32,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSearchFocus } from '@/hooks/use-search-focus'
+import { type AttachRef, toRef } from '@/lib/attach'
 import type { HarnessProvider } from '@/lib/doc/provider'
 import { classify, resolveLink } from '@/lib/resolveLink'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -89,7 +90,11 @@ function Doc({
   })
   const unavailable = useUnavailable(live, doc.data !== undefined && stripFrontmatter(doc.data.text).body.trim() !== '')
   const rootNavigate = useNavigate()
-  const docRef = () => ({ ref: `knowledge:${id}`, title: live.provider?.meta?.title ?? id })
+  // 66 §3.1: this concept as a reference (latest); `toRef` when the concept loaded, the live title or id otherwise.
+  const docRef = (): AttachRef =>
+    doc.data
+      ? toRef({ kind: 'knowledge', meta: doc.data.meta })
+      : { kind: 'knowledge', id, title: live.provider?.meta?.title || id, meta: '' }
   // 59 §5.4: "Ask theuth…" opens a new chat with this document attached (and names a block).
   const ask = (block?: string) => {
     prefillDraft(null, block ? `about block ${block}: ` : '', [docRef()])
@@ -254,7 +259,7 @@ function Doc({
           )}
         </SheetContent>
       </Sheet>
-      <ChatPicker open={attaching} onOpenChange={setAttaching} doc={docRef()} />
+      <ChatPicker open={attaching} onOpenChange={setAttaching} item={docRef()} />
       {createMissing}
       {sheet}
     </DocumentPage>

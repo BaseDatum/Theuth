@@ -20,7 +20,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { attach, attachDoc, type DocRef, docMarker, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
+import { type AttachRef, type AttachRequest, compose, toRef } from '@/lib/attach'
+import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -49,10 +50,10 @@ const NONE: Pastes = new Map()
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /**
  * Seed the next mount of `session`'s composer (`null` = the new chat at `/`; `panel` = a note page's panel) with `text`
- * and a held chip per document in `docs` (59 §5.4 "Ask theuth…", §7.3 "Attach to chat…").
+ * and a held chip per reference in `refs` (59 §5.4 "Ask theuth…", 66 §7.8 "Attach to chat…").
  */
-export function prefillDraft(session: string | null, text: string, docs: DocRef[] = [], panel = false): void {
-  drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: docs.reduce((held, d) => attachDoc(d, held), NONE) })
+export function prefillDraft(session: string | null, text: string, refs: AttachRef[] = [], panel = false): void {
+  drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
 }
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
@@ -118,7 +119,7 @@ export function Composer({
   draftEffort?: string | null
   draftCreate?: DraftCreate
   /** 59 §7.3 chat under a note: this document's marker line leads every message (not removable here). */
-  pinned?: DocRef
+  pinned?: AttachRef
   /** Title of the session the first message creates (a note's chat: the note title). */
   sessionTitle?: string
   /** The first message created `session`; the host keeps it instead of the default navigation to `/c/$session`. */
@@ -285,8 +286,19 @@ export function Composer({
       )
   }
 
-  /** 59 §7.3: attach a document; its chip stands above the box until send expands it to the marker line. */
-  const addDoc = (doc: DocRef) => setPastes(attachDoc(doc, pastes))
+  /** 66 §7.6: attach a reference; its chip stands above the box until send expands it to the marker line. */
+  const addRef = (ref: AttachRef) => setPastes((held) => attachRef(ref, held))
+  // `theuth:attach` (66 §7.8, §7.9): "Attach again", "Attach to this chat", the search dialog's row action — lands in
+  // the focused composer of that session, like `theuth:focus-composer`.
+  useEffect(() => {
+    if (!focused) return
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<AttachRequest>).detail
+      if (d.session === session) addRef(d.ref)
+    }
+    window.addEventListener('theuth:attach', on)
+    return () => window.removeEventListener('theuth:attach', on)
+  }, [session, focused])
 
   // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the harness paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
@@ -400,7 +412,7 @@ export function Composer({
       }
       const expanded = expand(line, pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
-      const body = pinned ? `${docMarker(pinned)}\n${expanded.text}` : expanded.text
+      const body = pinned ? compose([pinned], expanded.text) : expanded.text
       const { files } = expanded
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
       reset()
@@ -605,7 +617,7 @@ export function Composer({
       <NotePicker
         open={pickingNote}
         onOpenChange={setPickingNote}
-        onPick={(note) => addDoc({ ref: note.id, title: note.title })}
+        onPick={(note) => addRef(toRef({ kind: 'note', doc: note }))}
       />
       <div
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
