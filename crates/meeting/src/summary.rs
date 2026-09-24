@@ -15,7 +15,7 @@ use runtime::{Runtime, SessionId};
 use crate::store::{Manifest, SUMMARY, Store};
 use crate::{MeetingEvent, MeetingState, note};
 
-/// The form's marker: the actor matches the summary turn by the `TurnStarted` echo starting with it.
+/// The form's marker: [`finished_turn`] finds the summary turn in the history by it.
 pub const SUMMARY_HEAD: &str = "[meeting summary]";
 
 /// Sent as one user input after `Reviewed` — meetings without a note (recorded before 59 step 5).
@@ -88,6 +88,35 @@ async fn last_reply(session: SessionId) -> Result<String, String> {
             _ => None,
         })
         .ok_or_else(|| "the summary turn produced no text".to_owned())
+}
+
+/// Restart recovery (04 §2): whether `session` is idle and its history already
+/// holds a summary turn — a user row starting with [`SUMMARY_HEAD`] followed by a
+/// non-empty assistant reply — so [`spawn`] can settle on it without a new turn.
+pub async fn finished_turn(session: SessionId) -> Result<bool, String> {
+    let loaded = agents()?
+        .ask(agent::LoadSession {
+            session,
+            before: None,
+            limit: Some(8),
+            settled_only: false,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(!loaded.running && holds_summary(&loaded.history))
+}
+
+/// The tail of a history holds a finished summary turn: the last user row starting with
+/// [`SUMMARY_HEAD`] has a non-empty assistant reply after it.
+fn holds_summary(history: &[agent::HistoryEntry]) -> bool {
+    let form = history.iter().rposition(|h| {
+        matches!(h, agent::HistoryEntry::User { text, .. } if text.starts_with(SUMMARY_HEAD))
+    });
+    form.is_some_and(|at| {
+        history[at..]
+            .iter()
+            .any(|h| matches!(h, agent::HistoryEntry::Assistant { text, .. } if !text.trim().is_empty()))
+    })
 }
 
 /// After the summary turn finished: file, title, harvest, compaction, `Done`.
@@ -212,5 +241,26 @@ mod tests {
         assert_eq!(reply_title("I ran `doc_insert` and it failed"), None);
         assert_eq!(reply_title(&"x".repeat(121)), None);
         assert_eq!(reply_title("  \n"), None);
+    }
+
+    #[test]
+    fn history_holds_a_summary_only_with_a_reply_after_the_form() {
+        let user = |text: &str| agent::HistoryEntry::User {
+            text: text.into(),
+            turn: None,
+            context: None,
+            peer: None,
+            vision: None,
+        };
+        let reply = |text: &str| agent::HistoryEntry::Assistant {
+            text: text.into(),
+            turn: None,
+            context: None,
+        };
+        assert!(!holds_summary(&[]));
+        assert!(!holds_summary(&[user("[meeting batch] hi"), reply("a brief")]));
+        assert!(!holds_summary(&[reply("earlier"), user(SUMMARY_FORM)]), "form sent, no reply yet");
+        assert!(!holds_summary(&[user(SUMMARY_FORM), reply("   ")]), "an empty reply is none");
+        assert!(holds_summary(&[reply("earlier"), user(SUMMARY_FORM), reply("# Sync\n**Topics**")]));
     }
 }

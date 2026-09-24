@@ -1,8 +1,9 @@
 // 04 §7: the review pane on `/meetings/$id` once the post pipeline lands on `Review` — the speaker legend
 // (rename, accept a proposed profile, enroll), the segment list (play a span, multi-select → relabel/merge,
 // click a word → split, click the text → fix it), then *Done reviewing* and *Summarize*. Every edit is one
-// `meeting_edit` call whose answer replaces the cached transcript. `SegmentList` doubles as the read-only
-// transcript under the summary.
+// `meeting_edit` call whose answer replaces the cached transcript. `readOnly` (while `Summarizing`, and once
+// `Done`) is the same list without the legend's editors, the edit handlers or the buttons, so edits never race
+// the summary turn. A summary failure is shown by the lifecycle strip above, not here.
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, Volume2 } from 'lucide-react'
@@ -27,7 +28,7 @@ export const mmss = (ms: number): string => {
 const chipClass = (speaker: string) =>
   cn('shrink-0 rounded px-1.5 text-[11px] leading-5', speaker === 'me' ? 'bg-fg-accent/15 text-fg-accent' : 'bg-accent text-fg-secondary')
 
-export function Review({ id, failure }: { id: string; failure: string | null }) {
+export function Review({ id, readOnly = false }: { id: string; readOnly?: boolean }) {
   const api = useApi()
   const qc = useQueryClient()
   const transcript = useQuery({ queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id) })
@@ -38,29 +39,32 @@ export function Review({ id, failure }: { id: string; failure: string | null }) 
   const t = transcript.data
   return (
     <div className="flex flex-col gap-4 py-2">
-      {failure?.startsWith('summary:') && <p className="text-sm text-danger">{failure}</p>}
       {transcript.isError && <Empty>{errorText(transcript.error)}</Empty>}
       {t && (
         <>
           {!t.diarized && t.note && <p className="text-[13px] text-fg-secondary">{t.note}</p>}
-          <div className="flex flex-wrap items-start gap-2">
-            {t.speakers.map((s) => (
-              <SpeakerChip key={s.id} label={s} onEdit={(op) => edit.mutate([op])} />
-            ))}
-          </div>
-          <SegmentList id={id} transcript={t} onEdit={(ops) => edit.mutate(ops)} />
-          <div className="flex items-center gap-2 border-t border-border-subtle pt-4">
-            {t.reviewed_at ? (
-              <span className="text-[13px] text-fg-tertiary">Reviewed at {new Date(t.reviewed_at).toLocaleString()}</span>
-            ) : (
-              <Button variant="outline" disabled={edit.isPending} onClick={() => edit.mutate([{ op: 'Reviewed' }])}>
-                Done reviewing
+          {!readOnly && (
+            <div className="flex flex-wrap items-start gap-2">
+              {t.speakers.map((s) => (
+                <SpeakerChip key={s.id} label={s} onEdit={(op) => edit.mutate([op])} />
+              ))}
+            </div>
+          )}
+          <SegmentList id={id} transcript={t} onEdit={readOnly ? undefined : (ops) => edit.mutate(ops)} />
+          {!readOnly && (
+            <div className="flex items-center gap-2 border-t border-border-subtle pt-4">
+              {t.reviewed_at ? (
+                <span className="text-[13px] text-fg-tertiary">Reviewed at {new Date(t.reviewed_at).toLocaleString()}</span>
+              ) : (
+                <Button variant="outline" disabled={edit.isPending} onClick={() => edit.mutate([{ op: 'Reviewed' }])}>
+                  Done reviewing
+                </Button>
+              )}
+              <Button disabled={!t.reviewed_at || summarize.isPending} onClick={() => summarize.mutate()}>
+                {summarize.isPending && <LoaderCircle className="animate-spin" />} Summarize
               </Button>
-            )}
-            <Button disabled={!t.reviewed_at || summarize.isPending} onClick={() => summarize.mutate()}>
-              {summarize.isPending && <LoaderCircle className="animate-spin" />} Summarize
-            </Button>
-          </div>
+            </div>
+          )}
         </>
       )}
     </div>

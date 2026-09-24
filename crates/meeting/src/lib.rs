@@ -17,6 +17,7 @@
 //! The types below are the shared contract frozen in `meetings/README.md` §3;
 //! phases 2–4 add variants and fields, never rename or retype.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -27,7 +28,7 @@ use decision::training::{Amendment, ExampleId, Reaction};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use runtime::{Runtime, SessionId, TurnId};
+use runtime::{InputId, Runtime, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use ::tools::{ApprovalRequested, ApprovalResolved};
 use voice::live::Utterer;
@@ -958,12 +959,37 @@ pub struct Meeting {
     audio_capture: PermissionState,
     /// Post pipelines in flight (phase 4); finished handles are pruned on access.
     post: Vec<post::Job>,
-    /// The meeting whose summary turn is queued or running (phase 4), and that
-    /// turn's id once its `TurnStarted` echoed the form. A turn already in
-    /// flight at `Summarize` (the stop-flush batch) ends first; matching on the
-    /// session alone took its reply as the summary.
-    summarizing: Option<(Manifest, Option<TurnId>)>,
+    /// Meetings whose summary turn is queued or running (04 §6), by id. Each is
+    /// bound to its own turn through the form's input id, so a turn already in
+    /// flight at `Summarize` (the stop-flush batch) is never taken for it, and
+    /// two meetings may summarize at once — their sessions are distinct.
+    summarizing: HashMap<MeetingId, Summarizing>,
 }
+
+/// One meeting's summary in flight: the form's input id, and the turn it opened
+/// once `AgentEvent::InputInjected` echoed it.
+struct Summarizing {
+    manifest: Manifest,
+    input: InputId,
+    turn: Option<TurnId>,
+}
+
+/// Wall clock on one summary from the form's delivery to its turn's end (04 §6). The
+/// turn reads the transcript in pieces and writes at most 400 words (or edits the note);
+/// a batch turn ahead of it is one brief. Past this the slot is released and the meeting
+/// goes back to `Review` with `failure` set, so nothing stays `Summarizing` forever.
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// `tell` from the watchdog spawned by [`Meeting::begin_summary`]: `input` names the
+/// attempt, so a timer from an earlier, already settled attempt is a no-op.
+struct SummaryTimeout {
+    meeting: MeetingId,
+    input: InputId,
+}
+
+/// `tell` at plugin start for a manifest found `Summarizing`: settle on the turn the
+/// history already holds, else re-send the form (04 §2).
+struct Resummarize(Manifest);
 
 impl Meeting {
     fn cache(&self) -> Result<Arc<Cache>, String> {
@@ -2203,29 +2229,34 @@ impl Message<AgentEvent> for Meeting {
     type Reply = ();
 
     /// 02 §0.4: turn state and model health of the meeting session. 04 §6: the
-    /// summary turn's end hands the finished meeting to `summary::spawn`.
+    /// form's `InputInjected` binds a summary to the turn it opened; that turn's
+    /// `TurnFinished` hands the finished meeting to `summary::spawn`; a withdrawn
+    /// form releases the slot.
     async fn handle(&mut self, ev: AgentEvent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Some((m, turn)) = self.summarizing.as_mut() {
+        if !self.summarizing.is_empty() {
             match &ev {
-                AgentEvent::TurnStarted {
-                    session,
-                    turn: id,
-                    text,
-                    ..
-                } if *session == m.session && text.starts_with(summary::SUMMARY_HEAD) => {
-                    *turn = Some(*id);
-                    return;
+                AgentEvent::InputInjected { id, turn, .. } => {
+                    if let Some(s) = self.summarizing.values_mut().find(|s| s.input == *id) {
+                        s.turn = Some(*turn);
+                        return;
+                    }
+                }
+                AgentEvent::InputWithdrawn { id, .. } => {
+                    if let Some(s) = self.take_summarizing(|s| s.input == *id) {
+                        self.summary_failed(s.manifest, "the form was withdrawn before its turn")
+                            .await;
+                        return;
+                    }
                 }
                 AgentEvent::TurnFinished {
-                    turn: id,
-                    stop_reason,
-                    ..
-                } if *turn == Some(*id) => {
-                    let (m, _) = self.summarizing.take().expect("checked");
-                    let error = (stop_reason == "error" || stop_reason == "cancelled")
-                        .then(|| format!("the summary turn ended with {stop_reason}"));
-                    summary::spawn(self.rt.clone(), self.store.clone(), m, error);
-                    return;
+                    turn, stop_reason, ..
+                } => {
+                    if let Some(s) = self.take_summarizing(|s| s.turn == Some(*turn)) {
+                        let error = (stop_reason == "error" || stop_reason == "cancelled")
+                            .then(|| format!("the summary turn ended with {stop_reason}"));
+                        summary::spawn(self.rt.clone(), self.store.clone(), s.manifest, error);
+                        return;
+                    }
                 }
                 _ => {}
             }
@@ -2814,28 +2845,106 @@ impl Message<DeleteSpeaker> for Meeting {
     }
 }
 
+impl Meeting {
+    /// Queue the summary turn for `manifest` (04 §6): the form goes out as its own
+    /// turn — now when the session is idle, after the running turn otherwise — the
+    /// manifest becomes `Summarizing`, and a watchdog bounds the wait by
+    /// [`SUMMARY_TIMEOUT`]. `Err` leaves the manifest untouched.
+    async fn begin_summary(&mut self, mut manifest: Manifest, me: ActorRef<Self>) -> Result<(), String> {
+        let input = InputId::new();
+        session::queue_turn(manifest.session, input, summary::form_for(&manifest)).await?;
+        manifest.state = MeetingState::Summarizing;
+        manifest.failure = None;
+        self.save(&manifest).await;
+        let meeting = manifest.id;
+        self.summarizing.insert(
+            meeting,
+            Summarizing {
+                manifest,
+                input,
+                turn: None,
+            },
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(SUMMARY_TIMEOUT).await;
+            let _ = me.tell(SummaryTimeout { meeting, input }).await;
+        });
+        Ok(())
+    }
+
+    /// Release the slot matching `pred`.
+    fn take_summarizing(&mut self, pred: impl Fn(&Summarizing) -> bool) -> Option<Summarizing> {
+        let id = self.summarizing.iter().find(|(_, s)| pred(s)).map(|(id, _)| *id)?;
+        self.summarizing.remove(&id)
+    }
+
+    /// A summary that will not settle through its turn: back to `Review` with
+    /// `failure` set so the user can retry; `State` is published by `save`.
+    async fn summary_failed(&self, mut m: Manifest, reason: &str) {
+        tracing::warn!(meeting = %m.id, "summary did not complete: {reason}");
+        m.state = MeetingState::Review;
+        m.failure = Some(format!("summary did not complete: {reason}"));
+        self.save(&m).await;
+    }
+}
+
 impl Message<Summarize> for Meeting {
     type Reply = Result<(), String>;
 
-    /// 04 §6: `Review` → `Summarizing`; the form is the turn; `AgentEvent::TurnFinished` finishes it.
+    /// 04 §6: `Review` → `Summarizing`; the form is its own turn; that turn's
+    /// `AgentEvent::TurnFinished` finishes it. A `Review` with a `failure` is a retry.
     /// 59 §7.4: a meeting with a note is snapshotted `meeting-before-summary` first and gets the note contract.
-    async fn handle(&mut self, m: Summarize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let mut manifest = self.stored(m.meeting)?;
+    async fn handle(&mut self, m: Summarize, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let manifest = self.stored(m.meeting)?;
         if manifest.state != MeetingState::Review {
             return Err(format!("{:?}: review it first", manifest.state));
-        }
-        if self.summarizing.is_some() {
-            return Err("another meeting is being summarized".into());
         }
         if let Some(doc) = &manifest.note {
             note::snapshot(doc, note::BEFORE_SUMMARY).await?;
         }
-        session::deliver(manifest.session, summary::form_for(&manifest), false).await?;
-        manifest.state = MeetingState::Summarizing;
-        manifest.failure = None;
-        self.save(&manifest).await;
-        self.summarizing = Some((manifest, None));
-        Ok(())
+        self.begin_summary(manifest, ctx.actor_ref().clone()).await
+    }
+}
+
+impl Message<SummaryTimeout> for Meeting {
+    type Reply = ();
+
+    /// The watchdog fired: if this attempt still holds the slot, release it.
+    async fn handle(&mut self, t: SummaryTimeout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let held = self
+            .summarizing
+            .get(&t.meeting)
+            .is_some_and(|s| s.input == t.input);
+        if held && let Some(s) = self.summarizing.remove(&t.meeting) {
+            let why = if s.turn.is_some() { "its turn" } else { "the session" };
+            let mins = SUMMARY_TIMEOUT.as_secs() / 60;
+            self.summary_failed(s.manifest, &format!("{why} did not finish within {mins} minutes"))
+                .await;
+        }
+    }
+}
+
+impl Message<Resummarize> for Meeting {
+    type Reply = ();
+
+    /// 04 §2: a manifest found `Summarizing` at start. The session's history already
+    /// holding the finished summary turn → settle on it; otherwise the form goes out
+    /// again (no new `meeting-before-summary` snapshot: the one from the first attempt
+    /// stands). A re-send that fails leaves `Review` + `failure`.
+    async fn handle(&mut self, Resummarize(m): Resummarize, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        match summary::finished_turn(m.session).await {
+            Ok(true) => {
+                tracing::info!(meeting = %m.id, "meeting: settling the summary turn found in the history");
+                summary::spawn(self.rt.clone(), self.store.clone(), m, None);
+            }
+            Ok(false) | Err(_) => {
+                tracing::info!(meeting = %m.id, "meeting: re-sending the summary form after a restart");
+                if let Err(e) = self.begin_summary(m.clone(), ctx.actor_ref().clone()).await {
+                    self.summary_failed(m, &format!("the daemon restarted and re-sending the form failed: {e}"))
+                        .await;
+                }
+            }
+        }
     }
 }
 
@@ -2893,9 +3002,9 @@ impl runtime::Plugin for MeetingPlugin {
                 return Ok(());
             }
         };
-        // 04 §2: a restart mid-pipeline resumes it; a `Summarizing` manifest cannot
-        // know whether its turn finished, so it goes back to `Review` for a retry.
-        let (resume, mut settle): (Vec<Manifest>, Vec<Manifest>) = store
+        // 04 §2: a restart mid-pipeline resumes it; a `Summarizing` manifest is
+        // re-queued once the actor hears agent events (`Resummarize`, below).
+        let (resume, settle): (Vec<Manifest>, Vec<Manifest>) = store
             .manifests()
             .into_iter()
             .filter(|m| {
@@ -2903,13 +3012,6 @@ impl runtime::Plugin for MeetingPlugin {
                     || (m.state == MeetingState::Stopping && m.ended_at.is_some())
             })
             .partition(|m| m.state != MeetingState::Summarizing);
-        for m in &mut settle {
-            m.state = MeetingState::Review;
-            m.failure = Some("summary: the daemon restarted during the summary turn".into());
-            if let Err(e) = store.save(m).await {
-                tracing::warn!(meeting = %m.id, "manifest: {e:#}");
-            }
-        }
         // 05 §0.1: the brief cache is its own file; a broken one costs the hot path, not the meeting.
         let cache = match Cache::open(&rt.data_dir).await {
             Ok(c) => Some(Arc::new(c)),
@@ -2927,7 +3029,7 @@ impl runtime::Plugin for MeetingPlugin {
             starting: None,
             audio_capture: PermissionState::NotDetermined,
             post: Vec::new(),
-            summarizing: None,
+            summarizing: HashMap::new(),
         };
         for m in resume {
             tracing::info!(meeting = %m.id, "meeting: resuming the post pipeline");
@@ -2939,6 +3041,9 @@ impl runtime::Plugin for MeetingPlugin {
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
         rt.subscribe::<Meeting, ApprovalResolved>(&actor).await;
+        for m in settle {
+            let _ = actor.tell(Resummarize(m)).await;
+        }
         // 57 §3.4: the oracle switch position, resolved the way the decision plugin will
         // (it starts after us, so this reads the config, not the actor).
         let dcfg: decision::DecisionConfig = rt.section("decision").unwrap_or_default();
@@ -2974,5 +3079,318 @@ impl runtime::Plugin for MeetingPlugin {
             }
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+
+    /// Collects every `MeetingEvent` the bus publishes.
+    #[derive(kameo::Actor)]
+    struct Sink(Arc<Mutex<Vec<MeetingEvent>>>);
+
+    impl Message<MeetingEvent> for Sink {
+        type Reply = ();
+        async fn handle(&mut self, e: MeetingEvent, _: &mut Context<Self, ()>) {
+            self.0.lock().push(e);
+        }
+    }
+
+    struct Bench {
+        _dir: tempfile::TempDir,
+        store: Arc<Store>,
+        actor: ActorRef<Meeting>,
+        events: Arc<Mutex<Vec<MeetingEvent>>>,
+    }
+
+    /// A `Meeting` actor on a temp store with no agent registered: `queue_turn`
+    /// fails with "agent is not running", `summary::spawn` settles only through
+    /// its `error` path.
+    async fn bench() -> Bench {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(events.clone()), runtime::subscriber_mailbox());
+        rt.subscribe::<Sink, MeetingEvent>(&sink).await;
+        let store = Arc::new(Store::open(dir.path()).await.unwrap());
+        let meeting = Meeting {
+            rt,
+            cfg: MeetingConfig::default(),
+            store: store.clone(),
+            cache: None,
+            current: None,
+            starting: None,
+            audio_capture: PermissionState::NotDetermined,
+            post: Vec::new(),
+            summarizing: HashMap::new(),
+        };
+        let actor = Meeting::spawn_with_mailbox(meeting, runtime::subscriber_mailbox());
+        Bench {
+            _dir: dir,
+            store,
+            actor,
+            events,
+        }
+    }
+
+    /// A finished meeting in `state`, on disk.
+    async fn finished(store: &Store, state: MeetingState) -> Manifest {
+        let mut m = Manifest::new(
+            MeetingId::new(),
+            ProcessInfo {
+                pid: 1,
+                name: "Zoom".into(),
+                bundle_id: None,
+                active: true,
+            },
+            "2026-09-24T10:00:00+02:00".into(),
+        );
+        m.session = SessionId::new();
+        m.ended_at = Some("2026-09-24T10:30:00+02:00".into());
+        m.state = state;
+        store.create(&m).await.unwrap();
+        m
+    }
+
+    /// Hold the slot for `m` as `begin_summary` does after a successful `queue_turn`.
+    async fn hold(b: &Bench, m: &Manifest, input: InputId) {
+        let mut m = m.clone();
+        m.state = MeetingState::Summarizing;
+        b.store.save(&m).await.unwrap();
+        b.actor
+            .ask(Hold(Summarizing {
+                manifest: m,
+                input,
+                turn: None,
+            }))
+            .await
+            .unwrap();
+    }
+
+    struct Hold(Summarizing);
+    impl Message<Hold> for Meeting {
+        type Reply = ();
+        async fn handle(&mut self, h: Hold, _: &mut Context<Self, ()>) {
+            self.summarizing.insert(h.0.manifest.id, h.0);
+        }
+    }
+
+    struct Held;
+    impl Message<Held> for Meeting {
+        type Reply = Vec<MeetingId>;
+        async fn handle(&mut self, _: Held, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+            self.summarizing.keys().copied().collect()
+        }
+    }
+
+    fn finished_turn(session: SessionId, turn: TurnId, stop_reason: &str) -> AgentEvent {
+        AgentEvent::TurnFinished {
+            session,
+            turn,
+            stop_reason: stop_reason.into(),
+            usage: agent::Usage::default(),
+            context: 0,
+        }
+    }
+
+    /// `summary::spawn` settles off the mailbox: wait for the manifest to leave `Summarizing`.
+    async fn settled(store: &Store, id: MeetingId) -> Manifest {
+        for _ in 0..100 {
+            let m = store.manifest(id).unwrap();
+            if m.state != MeetingState::Summarizing {
+                return m;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("still Summarizing");
+    }
+
+    /// `State` events for `id` once the bus delivered at least one (a `tell` hop after the save).
+    async fn states(events: &Mutex<Vec<MeetingEvent>>, id: MeetingId) -> Vec<MeetingState> {
+        let pick = || {
+            events
+                .lock()
+                .iter()
+                .filter_map(|e| match e {
+                    MeetingEvent::State { meeting, state, .. } if *meeting == id => Some(*state),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..100 {
+            let s = pick();
+            if !s.is_empty() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return pick();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        pick()
+    }
+
+    /// 04 §6: the turn in flight at `Summarize` ends first and is not the summary;
+    /// the form's `InputInjected` binds the next turn, whose end settles — once.
+    #[tokio::test]
+    async fn summary_settles_on_its_own_turn_after_the_one_in_flight() {
+        let b = bench().await;
+        let m = finished(&b.store, MeetingState::Review).await;
+        let input = InputId::new();
+        hold(&b, &m, input).await;
+        let (batch, summary) = (TurnId::new(), TurnId::new());
+
+        // The stop-flush batch turn ends: nothing settles.
+        b.actor.ask(finished_turn(m.session, batch, "end_turn")).await.unwrap();
+        assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id]);
+        assert_eq!(b.store.manifest(m.id).unwrap().state, MeetingState::Summarizing);
+
+        // The deferred form opens the next turn.
+        b.actor
+            .ask(AgentEvent::InputInjected {
+                session: m.session,
+                id: input,
+                turn: summary,
+            })
+            .await
+            .unwrap();
+        b.actor
+            .ask(AgentEvent::TurnStarted {
+                session: m.session,
+                turn: summary,
+                text: summary::SUMMARY_FORM.into(),
+                model: "m".into(),
+                turn_seq: 0,
+            })
+            .await
+            .unwrap();
+        assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id]);
+
+        // Its end hands the meeting to `summary::spawn` (the cancelled path needs no agent).
+        b.actor.ask(finished_turn(m.session, summary, "cancelled")).await.unwrap();
+        assert!(b.actor.ask(Held).await.unwrap().is_empty(), "slot released");
+        let after = settled(&b.store, m.id).await;
+        assert_eq!(after.state, MeetingState::Review);
+        assert_eq!(after.failure.as_deref(), Some("summary: the summary turn ended with cancelled"));
+
+        // A second end of the same turn is nothing.
+        b.actor.ask(finished_turn(m.session, summary, "cancelled")).await.unwrap();
+        assert_eq!(states(&b.events, m.id).await, [MeetingState::Review]);
+    }
+
+    /// Idle session: `InputInjected` comes first; same settle. Two meetings hold slots at once.
+    #[tokio::test]
+    async fn two_meetings_summarize_independently() {
+        let b = bench().await;
+        let (a, c) = (
+            finished(&b.store, MeetingState::Review).await,
+            finished(&b.store, MeetingState::Review).await,
+        );
+        let (ia, ic) = (InputId::new(), InputId::new());
+        hold(&b, &a, ia).await;
+        hold(&b, &c, ic).await;
+        let (ta, tc) = (TurnId::new(), TurnId::new());
+        for (m, i, t) in [(&a, ia, ta), (&c, ic, tc)] {
+            b.actor
+                .ask(AgentEvent::InputInjected {
+                    session: m.session,
+                    id: i,
+                    turn: t,
+                })
+                .await
+                .unwrap();
+        }
+        b.actor.ask(finished_turn(c.session, tc, "error")).await.unwrap();
+        assert_eq!(b.actor.ask(Held).await.unwrap(), [a.id], "a still held");
+        assert_eq!(settled(&b.store, c.id).await.state, MeetingState::Review);
+        b.actor.ask(finished_turn(a.session, ta, "cancelled")).await.unwrap();
+        assert!(b.actor.ask(Held).await.unwrap().is_empty());
+        assert_eq!(settled(&b.store, a.id).await.state, MeetingState::Review);
+    }
+
+    /// The watchdog: a stale attempt's timer is nothing; the live one releases the
+    /// slot, `Review` + `failure`, `State` published. A withdrawn form does the same.
+    #[tokio::test]
+    async fn watchdog_and_withdrawal_release_the_slot() {
+        let b = bench().await;
+        let m = finished(&b.store, MeetingState::Review).await;
+        let input = InputId::new();
+        hold(&b, &m, input).await;
+        b.actor
+            .ask(SummaryTimeout {
+                meeting: m.id,
+                input: InputId::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id], "another attempt's timer");
+        b.actor
+            .ask(SummaryTimeout {
+                meeting: m.id,
+                input,
+            })
+            .await
+            .unwrap();
+        assert!(b.actor.ask(Held).await.unwrap().is_empty());
+        let after = b.store.manifest(m.id).unwrap();
+        assert_eq!(after.state, MeetingState::Review);
+        assert_eq!(
+            after.failure.as_deref(),
+            Some("summary did not complete: the session did not finish within 10 minutes")
+        );
+        assert_eq!(states(&b.events, m.id).await, [MeetingState::Review]);
+
+        let w = finished(&b.store, MeetingState::Review).await;
+        let input = InputId::new();
+        hold(&b, &w, input).await;
+        b.actor
+            .ask(AgentEvent::InputWithdrawn {
+                session: w.session,
+                id: input,
+            })
+            .await
+            .unwrap();
+        assert!(b.actor.ask(Held).await.unwrap().is_empty());
+        let after = b.store.manifest(w.id).unwrap();
+        assert_eq!(after.state, MeetingState::Review);
+        assert!(after.failure.as_deref().unwrap().contains("withdrawn"));
+    }
+
+    /// 04 §2: a `Summarizing` manifest at start is re-queued; with no agent the
+    /// re-send fails and the meeting lands in `Review` with the failure — never stuck.
+    #[tokio::test]
+    async fn restart_requeues_and_fails_clean_without_an_agent() {
+        let b = bench().await;
+        let m = finished(&b.store, MeetingState::Summarizing).await;
+        b.actor.ask(Resummarize(m.clone())).await.unwrap();
+        assert!(b.actor.ask(Held).await.unwrap().is_empty());
+        let after = b.store.manifest(m.id).unwrap();
+        assert_eq!(after.state, MeetingState::Review);
+        assert_eq!(
+            after.failure.as_deref(),
+            Some("summary did not complete: the daemon restarted and re-sending the form failed: agent is not running")
+        );
+        assert_eq!(states(&b.events, m.id).await, [MeetingState::Review]);
+    }
+
+    /// A `Review` with a failure accepts `Summarize` again; a held or finished
+    /// meeting does not. Without an agent the retry stops at delivery, manifest untouched.
+    #[tokio::test]
+    async fn summarize_again_after_a_failure() {
+        let b = bench().await;
+        let mut m = finished(&b.store, MeetingState::Review).await;
+        m.failure = Some("summary did not complete: the session did not finish within 10 minutes".into());
+        b.store.save(&m).await.unwrap();
+        let r = b.actor.ask(Summarize { meeting: m.id }).await;
+        assert!(
+            matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "agent is not running"),
+            "past the state gate, stopped at delivery: {r:?}"
+        );
+        assert_eq!(b.store.manifest(m.id).unwrap().state, MeetingState::Review);
+        assert!(b.actor.ask(Held).await.unwrap().is_empty());
+
+        let d = finished(&b.store, MeetingState::Done).await;
+        let r = b.actor.ask(Summarize { meeting: d.id }).await;
+        assert!(matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "Done: review it first"), "{r:?}");
     }
 }
