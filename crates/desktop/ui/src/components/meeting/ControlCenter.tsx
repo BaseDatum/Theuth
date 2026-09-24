@@ -1,13 +1,17 @@
 // 53 §4.3 / 03 §3: `/meetings/$id` — while recording: state, elapsed, degradations, pause/resume/stop, the
 // live log (`me:`/`them:`; a `final: false` utterance replaces the open row of its track, `final: true`
 // commits it), a typed request box, the brief log with the island's cursor mirrored, the session link, and the
-// meeting's note beside them (59 §7.4; tabs under `md`). After the meeting (04 §7): the post-pipeline progress
-// bar, then the review pane, the summarizing spinner, the summary (the note, when there is one) — and the
-// manifest for everything else (incl. `Failed` with *Re-run post pipeline*).
+// meeting's note beside them (59 §7.4; tabs under `md`). After the meeting (04 §7): one status strip at the top
+// — `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`, the current step highlighted, a
+// spinner on a running one, the failure and the action that fixes it (*Re-run post pipeline*, *Retry
+// summary*) inline — and the meeting underneath it whatever the step: the transcript once there is one
+// (editable in `Review`, read-only while `Summarizing` so edits never race the summary turn, and once `Done`),
+// the note beside it, the summary block once `Done`, the brief log, and the manifest (`Recording`) while the
+// pipeline runs or after it failed. `lifecycle` is the pure state → strip mapping.
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUp, LoaderCircle } from 'lucide-react'
+import { ArrowUp, Check, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
 import { MeetingNote } from '@/components/meeting/Note'
@@ -21,13 +25,54 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { Degradation } from '@/rpc/bindings/Degradation'
+import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { PostStage } from '@/rpc/bindings/PostStage'
 import type { Track } from '@/rpc/bindings/Track'
 import { current, live, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 type LogRow = { track: Track; t0_ms: number; text: string; request: boolean; open: boolean }
-const STAGES: PostStage[] = ['Transcribing', 'Diarizing', 'Aligning']
+
+/** The post-meeting lifecycle, in order; `Done` is the last step. */
+export const STEPS = ['Transcribing', 'Diarizing', 'Aligning', 'Review', 'Summarizing', 'Done'] as const
+export type Step = (typeof STEPS)[number]
+
+export type Lifecycle = {
+  /** Index into `STEPS` of the current step; `null` when no step is current (`Failed`). */
+  current: number | null
+  /** The current step is running (a spinner): a pipeline stage or `Summarizing`, never `Review`/`Done`. */
+  busy: boolean
+  /** Shown in the strip. */
+  failure: string | null
+  /** The action that fixes `failure`. */
+  action: 'post_retry' | 'summarize' | null
+}
+
+/**
+ * The strip for a finished recording: `null` while the meeting is live or its recording never ended (a
+ * `Failed` start has no lifecycle). `post` is the running stage when the store is ahead of the manifest.
+ * A `Review` whose `failure` is a summary failure offers *Retry summary*; `Failed` offers *Re-run post pipeline*.
+ */
+export function lifecycle(state: MeetingState | undefined, post: PostStage | null, failure: string | null, ended: boolean): Lifecycle | null {
+  if (state === undefined || !ended || live(state)) return null
+  const stage = post ?? (typeof state === 'object' ? state.Post : null)
+  if (stage) return { current: STEPS.indexOf(stage), busy: true, failure: null, action: null }
+  switch (state) {
+    case 'Review':
+      return { current: STEPS.indexOf('Review'), busy: false, failure, action: failure ? 'summarize' : null }
+    case 'Summarizing':
+      return { current: STEPS.indexOf('Summarizing'), busy: true, failure: null, action: null }
+    case 'Done':
+      return { current: STEPS.indexOf('Done'), busy: false, failure: null, action: null }
+    case 'Failed':
+      return { current: null, busy: false, failure, action: 'post_retry' }
+    default:
+      return null
+  }
+}
+
+/** Whether the transcript of record exists: `Review` and after. */
+const hasTranscript = (l: Lifecycle | null): boolean => l !== null && l.current !== null && l.current >= STEPS.indexOf('Review')
 
 const degradationText = (d: Degradation): string =>
   d === 'NoNote'
@@ -55,11 +100,15 @@ export function ControlCenter({ id }: { id: string }) {
   const degraded = isLive ? store.degraded : (manifest.data?.degraded ?? [])
   // The store is ahead of the manifest while the pipeline runs (`PostProgress` never touches the manifest).
   const progress = store.meeting === id ? store.progress : null
-  const post = progress?.stage ?? (typeof state === 'object' ? state.Post : null)
+  const cycle = lifecycle(state, progress?.stage ?? null, manifest.data?.failure ?? null, manifest.data?.ended_at != null)
   const retry = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })
+  const summarize = useAction(() => api.meeting_summarize(id), { keys: [queryKeys.meeting(id)] })
   const note = manifest.data?.note ?? null
   const mobile = useIsMobile()
   const [pane, setPane] = useState<'transcript' | 'note'>('transcript')
+  const transcript = hasTranscript(cycle)
+  // The note is beside the live log or the transcript; under `md` the two are tabs.
+  const split = note !== null && (isLive || transcript)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -70,7 +119,7 @@ export function ControlCenter({ id }: { id: string }) {
             {oracleSummary(store.oracle)}
           </span>
         )}
-        {session && isLive && (
+        {session && (
           <Button variant="outline" size="sm" asChild>
             <Link to="/c/$session" params={{ session }}>
               Session
@@ -82,9 +131,17 @@ export function ControlCenter({ id }: { id: string }) {
       {degraded.length > 0 && (
         <div className="px-6 pb-2 text-[12px] text-fg-tertiary">{degraded.map(degradationText).join(' · ')}</div>
       )}
-      {isLive ? (
+      {cycle && (
+        <LifecycleStrip
+          cycle={cycle}
+          pct={progress?.pct ?? null}
+          busy={retry.isPending || summarize.isPending}
+          onAction={() => (cycle.action === 'summarize' ? summarize.mutate() : retry.mutate())}
+        />
+      )}
+      {(isLive || manifest.data) && (
         <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 pb-4">
-          {note && mobile && (
+          {split && mobile && (
             <div className="flex gap-1 text-[12px]" role="tablist">
               {(['transcript', 'note'] as const).map((p) => (
                 <button
@@ -101,82 +158,83 @@ export function ControlCenter({ id }: { id: string }) {
             </div>
           )}
           <div className="flex min-h-0 flex-1 gap-4">
-            {(!note || !mobile || pane === 'transcript') && (
-              <div className="flex min-h-0 min-w-0 flex-1 gap-4">
-                <LiveLog id={id} />
-                <BriefLog id={id} cursor={current(store)?.id ?? null} />
-              </div>
-            )}
-            {note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:w-[45%] md:flex-none" />}
+            {(!split || !mobile || pane === 'transcript') &&
+              (isLive ? (
+                <div className="flex min-h-0 min-w-0 flex-1 gap-4">
+                  <LiveLog id={id} />
+                  <BriefLog id={id} cursor={current(store)?.id ?? null} />
+                </div>
+              ) : (
+                manifest.data && (
+                  <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-10">
+                    {state === 'Done' && <Summary id={id} note={note} />}
+                    {transcript ? (
+                      <Review id={id} readOnly={state !== 'Review'} />
+                    ) : (
+                      <Section title="Recording">
+                        <Row label="Started">{new Date(manifest.data.started_at).toLocaleString()}</Row>
+                        <Row label="Ended">{manifest.data.ended_at ? new Date(manifest.data.ended_at).toLocaleString() : '—'}</Row>
+                        <Row label="Duration">{manifest.data.duration_ms === null ? '—' : duration(Number(manifest.data.duration_ms))}</Row>
+                        <Row label="Meeting app">
+                          {manifest.data.process.name}
+                          {manifest.data.process.bundle_id ? ` (${manifest.data.process.bundle_id})` : ''}
+                        </Row>
+                        <Row label="Consent">{new Date(manifest.data.consent_at).toLocaleString()}</Row>
+                        <Row label="Pauses">
+                          {manifest.data.gaps.length === 0
+                            ? 'none'
+                            : manifest.data.gaps.map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ')}
+                        </Row>
+                        <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
+                        <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
+                        {manifest.data.failure && !cycle?.failure && <Row label="Failure">{manifest.data.failure}</Row>}
+                        {manifest.data.context && <Row label="Context">{manifest.data.context}</Row>}
+                      </Section>
+                    )}
+                    <BriefLog id={id} cursor={null} />
+                  </div>
+                )
+              ))}
+            {split && note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:w-[45%] md:flex-none" />}
           </div>
         </div>
-      ) : (
-        manifest.data && (
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
-            {state === 'Review' ? (
-              <Review id={id} failure={manifest.data.failure} />
-            ) : state === 'Summarizing' ? (
-              <div className="flex items-center gap-2 py-6 text-sm text-fg-secondary">
-                <LoaderCircle className="size-4 animate-spin" /> Summarizing…
-                {session && (
-                  <Link to="/c/$session" params={{ session }} className="text-fg-accent hover:underline">
-                    watch the session
-                  </Link>
-                )}
-              </div>
-            ) : state === 'Done' ? (
-              <Summary id={id} session={session ?? null} note={note} />
-            ) : (
-              <>
-                {post && (
-                  <div className="py-4">
-                    <div className="flex gap-3 text-[12px]">
-                      {STAGES.map((s) => (
-                        <span key={s} className={cn(s === post ? 'font-semibold text-fg' : 'text-fg-tertiary')}>
-                          {s}
-                        </span>
-                      ))}
-                      <span className="ml-auto text-fg-tertiary tabular-nums">{progress?.pct ?? 0}%</span>
-                    </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded bg-accent">
-                      <div className="h-full bg-fg-accent transition-[width]" style={{ width: `${progress?.pct ?? 0}%` }} />
-                    </div>
-                  </div>
-                )}
-                <Section
-                  title="Recording"
-                  actions={
-                    state === 'Failed' &&
-                    manifest.data.ended_at && (
-                      <Button size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate()}>
-                        Re-run post pipeline
-                      </Button>
-                    )
-                  }
-                >
-                  <Row label="Started">{new Date(manifest.data.started_at).toLocaleString()}</Row>
-                  <Row label="Ended">{manifest.data.ended_at ? new Date(manifest.data.ended_at).toLocaleString() : '—'}</Row>
-                  <Row label="Duration">{manifest.data.duration_ms === null ? '—' : duration(Number(manifest.data.duration_ms))}</Row>
-                  <Row label="Meeting app">
-                    {manifest.data.process.name}
-                    {manifest.data.process.bundle_id ? ` (${manifest.data.process.bundle_id})` : ''}
-                  </Row>
-                  <Row label="Consent">{new Date(manifest.data.consent_at).toLocaleString()}</Row>
-                  <Row label="Pauses">
-                    {manifest.data.gaps.length === 0
-                      ? 'none'
-                      : manifest.data.gaps.map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ')}
-                  </Row>
-                  <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
-                  <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
-                  {manifest.data.failure && <Row label="Failure">{manifest.data.failure}</Row>}
-                  {manifest.data.context && <Row label="Context">{manifest.data.context}</Row>}
-                </Section>
-                <BriefLog id={id} cursor={null} />
-              </>
-            )}
-          </div>
-        )
+      )}
+    </div>
+  )
+}
+
+/** The step indicator: done steps ticked, the current one bold with a spinner when `busy`, the failure and its fix inline. */
+function LifecycleStrip({ cycle, pct, busy, onAction }: { cycle: Lifecycle; pct: number | null; busy: boolean; onAction: () => void }) {
+  const bar = pct !== null && cycle.busy
+  return (
+    <div className="mx-6 mb-3 rounded-xl border border-border-subtle px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+        {STEPS.map((s, i) => {
+          const at = cycle.current === i
+          const done = cycle.current !== null && (i < cycle.current || (at && s === 'Done'))
+          return (
+            <span key={s} className={cn('flex items-center gap-1', at ? 'font-semibold text-fg' : done ? 'text-fg-secondary' : 'text-fg-tertiary')}>
+              {at && cycle.busy ? <LoaderCircle className="size-3 animate-spin" /> : done ? <Check className="size-3" /> : null}
+              {s}
+            </span>
+          )
+        })}
+        {bar && <span className="ml-auto text-fg-tertiary tabular-nums">{pct}%</span>}
+      </div>
+      {bar && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded bg-accent">
+          <div className="h-full bg-fg-accent transition-[width]" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {cycle.failure && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+          <span className="text-danger">{cycle.failure}</span>
+          {cycle.action && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={onAction}>
+              {cycle.action === 'summarize' ? 'Retry summary' : 'Re-run post pipeline'}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   )
