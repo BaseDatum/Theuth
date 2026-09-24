@@ -2,9 +2,45 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
 import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, StickyNote, X } from 'lucide-react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { LevelMeter } from '@/components/chat/LevelMeter'
+import { Button } from '@/components/ui/button'
+import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { type AttachRef, attachTo, chatName, toRef } from '@/lib/attach'
+import * as dictation from '@/lib/dictation'
+import { queryKeys, useApi } from '@/lib/rpc'
+import * as speech from '@/lib/speech'
+import {
+  CATEGORIES,
+  CATEGORY_LABEL,
+  DEFAULT_LIMITS,
+  LIMITS,
+  MAX_QUERY_CHARS,
+  type Limits,
+  type SearchDestination,
+  type SearchRequest,
+  type SearchView,
+  canonical,
+  indexing,
+  patch,
+  useSearchState,
+} from '@/lib/search'
+import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { cn } from '@/lib/utils'
+import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
+import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
+import type { HistorySearchHit } from '@/rpc/bindings/HistorySearchHit'
 import type { MeetingSearchHit } from '@/rpc/bindings/MeetingSearchHit'
 import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
-import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
@@ -77,12 +113,14 @@ function items(g: SearchGroup): Item[] {
         dest: { category: 'notes', id: h.doc.id },
         node: <NoteRow hit={h} />,
       }))
+        ref: toRef({ kind: 'note', doc: h.doc }),
     case 'meetings':
       return g.page.hits.map((h) => ({
         key: `meetings:${h.meeting.id}`,
         dest: { category: 'meetings', id: h.meeting.id },
         node: <MeetingRow hit={h} />,
       }))
+        ref: toRef({ kind: 'meeting', meeting: h.meeting }),
   }
 }
 
