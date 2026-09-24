@@ -1,7 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, RefreshCw, Search, X } from 'lucide-react'
+import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { LevelMeter } from '@/components/chat/LevelMeter'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { type AttachRef, attachTo, toRef } from '@/lib/attach'
 import * as dictation from '@/lib/dictation'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
@@ -69,8 +70,8 @@ function visibleTrigger(): HTMLElement | undefined {
   })
 }
 
-/** One activatable row: cmdk value/React key is the stable source identity (49 §2.3), never a row index. */
-type Item = { key: string; dest: SearchDestination; node: ReactNode }
+/** One activatable row: cmdk value/React key is the stable source identity (49 §2.3), never a row index. `ref` is the row as an attachment (66 §7.8). */
+type Item = { key: string; dest: SearchDestination; node: ReactNode; ref: AttachRef }
 
 function items(g: SearchGroup): Item[] {
   switch (g.category) {
@@ -79,24 +80,28 @@ function items(g: SearchGroup): Item[] {
         key: `sessions:${h.session}:${h.seq ?? 'title'}`,
         dest: { category: 'sessions', session: h.session, seq: h.seq },
         node: <SessionRow hit={h} />,
+        ref: toRef({ kind: 'session', hit: h }),
       }))
     case 'artifacts':
       return g.page.hits.map((h) => ({
         key: `artifacts:${h.artifact.call_id}`,
         dest: { category: 'artifacts', callId: h.artifact.call_id },
         node: <ArtifactRow hit={h} />,
+        ref: toRef({ kind: 'artifact', artifact: h.artifact }),
       }))
     case 'knowledge':
       return g.page.hits.map((h) => ({
         key: `knowledge:${h.meta.id}`,
         dest: { category: 'knowledge', id: h.meta.id },
         node: <ConceptRow hit={h} />,
+        ref: toRef({ kind: 'knowledge', meta: h.meta }),
       }))
     case 'knowledge_history':
       return g.page.hits.map((h) => ({
         key: `knowledge_history:${h.commit}:${h.id}`,
         dest: { category: 'knowledge_history', id: h.id, commit: h.commit, snapshot: h.snapshot_commit },
         node: <HistoryRow hit={h} />,
+        ref: toRef({ kind: 'knowledge', revision: h }),
       }))
   }
 }
@@ -117,6 +122,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
+  // 66 §7.8: with a chat open, every row offers "Attach to current chat".
+  const currentChat = useParams({ strict: false }).session ?? null
   const remembered = useSearchState((s) => s.categories)
   const setRemembered = useSearchState((s) => s.setCategories)
   const leave = useSearchState((s) => s.leave)
@@ -647,6 +654,14 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                       onRetryMore={() => void m?.refetch()}
                       onRetry={() => void refresh([category])}
                       onOpen={go}
+                      onAttach={
+                        currentChat
+                          ? (ref) => {
+                              attachTo(currentChat, ref)
+                              onOpenChange(false)
+                            }
+                          : undefined
+                      }
                     />
                   ) : (
                     <Section key={category} category={category} state="No answer for this category." />
@@ -695,6 +710,7 @@ function Group({
   onRetryMore,
   onRetry,
   onOpen,
+  onAttach,
 }: {
   group: SearchGroup
   stale: boolean
@@ -706,6 +722,8 @@ function Group({
   onRetryMore(): void
   onRetry(): void
   onOpen(dest: SearchDestination): void
+  /** Present while a chat is open: the row action that attaches the hit to it (66 §7.8). */
+  onAttach?(ref: AttachRef): void
 }) {
   const { category, page } = group
   if (page.state !== 'ready') {
@@ -739,10 +757,26 @@ function Group({
           value={it.key}
           disabled={stale}
           onSelect={() => onOpen(it.dest)}
-          className="min-h-11 items-start gap-3 py-2"
+          className="group/hit min-h-11 items-start gap-3 py-2"
         >
           <Icon className="mt-0.5" aria-hidden />
           {it.node}
+          {onAttach && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Attach ${it.ref.title} to current chat`}
+              title="Attach to current chat"
+              className="shrink-0 opacity-0 group-data-[selected=true]/hit:opacity-100 hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onAttach(it.ref)
+              }}
+            >
+              <Paperclip />
+            </Button>
+          )}
         </CommandItem>
       ))}
       {page.has_more && (

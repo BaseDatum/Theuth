@@ -1,9 +1,11 @@
 import { useNavigate } from '@tanstack/react-router'
 import { BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote } from 'lucide-react'
+import type { DragEvent } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { type AttachRef, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'
+import { type AttachRef, DRAG_TYPE, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'
+import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
 /** §7.5 icons; an artifact chip has no record, so it takes the generic file glyph (picker rows refine by artifact kind). */
@@ -13,6 +15,17 @@ export const KIND_ICON: Record<Kind, LucideIcon> = {
   artifact: FileText,
   session: MessageSquare,
   meeting: Mic,
+}
+
+/** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
+export function dragSource(ref: () => AttachRef): { draggable: boolean; onDragStart(e: DragEvent): void } {
+  return {
+    draggable: !touch(),
+    onDragStart(e) {
+      e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ref()))
+      e.dataTransfer.effectAllowed = 'copy'
+    },
+  }
 }
 
 /** Navigate to the thing a reference points at (§7.6); a knowledge `id@commit` opens 49's historical mode. */

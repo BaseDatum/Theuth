@@ -20,8 +20,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
-import { type AttachRef, type AttachRequest, compose, toRef } from '@/lib/attach'
-import { loadRecents, pushRecents, saveRecents } from '@/lib/attach-picker'
+import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
+import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
 import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
@@ -319,10 +319,39 @@ export function Composer({
       window.removeEventListener('theuth:attach-open', open)
     }
   }, [session, focused])
-  /** The picker's result: chips for every picked reference, focus back in the box (§7.7). */
-  const picked = (refs: AttachRef[]) => {
-    setPastes((held) => refs.reduce((h, r) => attachRef(r, h), held))
+  /** The `@word` under the caret while the picker is in quiet mode (§7.8). */
+  const [atWord, setAtWord] = useState<{ start: number; word: string } | null>(null)
+  /** The `@` the user dismissed (Esc, no results): it stays as typed and does not reopen until edited past. */
+  const atDismissed = useRef<number | null>(null)
+  /** Text changed: open the picker on a fresh `@word`, keep its query in step, close it when the word ends (a space). */
+  const changed = (next: string, caret: number) => {
+    const t = atTrigger(next, caret)
+    if (!t) {
+      atDismissed.current = null
+      setAtWord(null)
+      if (picking === 'at') setPicking(null)
+      return
+    }
+    if (atDismissed.current === t.start) return
+    setAtWord(t)
+    if (picking === null) setPicking('at')
+  }
+  const dismissAt = () => {
+    if (atWord) atDismissed.current = atWord.start
     setPicking(null)
+    setAtWord(null)
+  }
+  /** The picker's result: chips for every picked reference, the `@word` gone (§7.8), focus back in the box (§7.7). */
+  const picked = (refs: AttachRef[]) => {
+    const held = refs.reduce((h, r) => attachRef(r, h), pastes)
+    if (picking === 'at' && atWord) {
+      const next = stripAt(text, atWord.start, atWord.word)
+      setText(next)
+      setPastes(reconcile(next, held))
+      setPendingCaret(atWord.start)
+    } else setPastes(held)
+    setPicking(null)
+    setAtWord(null)
     ref.current?.focus()
   }
 
@@ -365,8 +394,18 @@ export function Composer({
     return () => void un.then((f) => f())
   }, [])
 
+  // 66 §7.8: a dragged row (`application/x-theuth-attach`) attaches; anything else is files.
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
+    const ref = e.dataTransfer.getData(DRAG_TYPE)
+    if (ref) {
+      try {
+        addRef(JSON.parse(ref) as AttachRef)
+      } catch {
+        toast.error('Could not read the dropped item')
+      }
+      return
+    }
     void addBlobs([...e.dataTransfer.files])
   }
 
@@ -646,12 +685,15 @@ export function Composer({
       <AttachPicker
         session={session}
         open={picking !== null}
+        at={picking === 'at' ? (atWord?.word ?? '') : null}
         anchor={box}
         onClose={() => {
-          setPicking(null)
+          if (picking === 'at') dismissAt()
+          else setPicking(null)
           ref.current?.focus()
         }}
         onAttach={picked}
+        onEmpty={dismissAt}
       />
       <div
         ref={box}
@@ -745,6 +787,7 @@ export function Composer({
                   setText(e.target.value)
                   setPastes(reconcile(e.target.value, pastes))
                   setSelected(0)
+                  changed(e.target.value, e.target.selectionStart)
                 }}
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}

@@ -24,6 +24,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useSessionDrag } from '@/components/chat/Panes'
+import { ChatPicker } from '@/components/notes/ChatPicker'
+import { type AttachRef, toRef } from '@/lib/attach'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
@@ -147,6 +149,12 @@ export const SessionItem = memo(function SessionItem({
   const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [attaching, setAttaching] = useState(false)
+  /** 66 §7.8: this chat as a reference — the list row's record when the sessions query has it. */
+  const asRef = (): AttachRef => {
+    const row = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((x) => x.id === id)
+    return row ? toRef({ kind: 'session', session: row }) : { kind: 'session', id, title: shown, meta: `chat · ${project ?? 'no project'}${archived ? ' · archived' : ''}` }
+  }
 
   const remove = async () => {
     try {
@@ -277,6 +285,7 @@ export const SessionItem = memo(function SessionItem({
               <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
                 {selected ? 'Deselect' : 'Select'}
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>
                 Copy id
               </DropdownMenuItem>
@@ -285,6 +294,7 @@ export const SessionItem = memo(function SessionItem({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {attaching && <ChatPicker open onOpenChange={setAttaching} item={asRef()} />}
           <AlertDialog open={confirming} onOpenChange={setConfirming}>
             <AlertDialogContent>
               <AlertDialogHeader>
