@@ -1,6 +1,6 @@
 // 03 §3: `/meetings` — the recorded meetings (date, title, duration, state, process) and *Start meeting…*.
-// Every device (phones over the relay included) reads meetings, summaries and transcripts; only the Mac
-// shell talking to its own daemon records — the tap and the mic are this machine's.
+// Every device (phones over the relay included) reads meetings, summaries and transcripts; only a desktop
+// shell talking to its own daemon records — the loopback and the mic are this machine's (58 §6.1).
 
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -11,7 +11,7 @@ import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { container } from '@/lib/platform'
+import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useHarnesses } from '@/link/harnesses'
@@ -48,11 +48,16 @@ export function MeetingHeader({ title, children }: { title: ReactNode; children?
   )
 }
 
-/** Recording is the local Mac daemon's: not iOS, not a browser, not a harness reached over the relay. */
-export const useCanRecord = (): boolean => useHarnesses((s) => s.active) === LOCAL && isMacDesktop()
-
-/** The Linux shell's own daemon has no recorder (53: macOS only) and nothing recorded; every other harness may have meetings to read. */
-export const useHasMeetings = (): boolean => useHarnesses((s) => s.active) !== LOCAL || container() !== 'linux'
+/**
+ * Recording is the local desktop daemon's: not iOS, not a browser, not a harness reached over the relay — and only
+ * when its capture backend answers (`MeetingStatus.supported`, 58 §3.3; `None` = no PipeWire / no render device).
+ */
+export function useCanRecord(): boolean {
+  const api = useApi()
+  const local = useHarnesses((s) => s.active) === LOCAL && isDesktop()
+  const status = useQuery({ queryKey: queryKeys.meetingStatus, queryFn: () => api.meeting_status(), enabled: local })
+  return local && status.data?.supported.kind !== 'None'
+}
 
 /** 05 §7: briefs are a sub-feature of meetings — a tab beside the list, not a sidebar entry. */
 export function MeetingTabs() {

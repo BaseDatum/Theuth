@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
-import { container } from '@/lib/platform'
+import { container, isDesktop } from '@/lib/platform'
 import { idbGet, idbPut } from './idb'
 
 /** One paired harness (31 §7.3). `id` is the base64url harness public key. */
@@ -24,8 +24,8 @@ export type Presence = 'online' | 'offline' | 'connecting' | 'refused'
 
 /** The desktop's own daemon in the switcher. */
 export const LOCAL = 'local'
-/** Its label; `Info.name` replaces it once connected. */
-export const LOCAL_NAME = 'This Mac'
+/** Its label by shell ("This Mac" / "This PC" / "This computer"); `Info.name` replaces it once connected. */
+export const LOCAL_NAME = container() === 'macos' ? 'This Mac' : container() === 'windows' ? 'This PC' : 'This computer'
 /** The local daemon as a `Harness` row, so its nodes nest under it. */
 const LOCAL_ROW: Harness = { id: LOCAL, name: LOCAL_NAME, relayHost: '', secure: false, pairedAt: 0, lastSeen: 0, order: -1 }
 
@@ -119,9 +119,9 @@ export function useHarnessTree(): HarnessTreeRow[] {
   return useMemo(() => harnessTree(hasLocal() ? [LOCAL_ROW, ...hs] : hs), [hs])
 }
 
-/** Whether this container has a daemon of its own: the macOS shell, or a dev browser pointed at one. */
+/** Whether this container has a daemon of its own: a desktop shell (macOS, Linux, Windows), or a dev browser pointed at one. */
 export const hasLocal = (): boolean =>
-  container() === 'macos' || (typeof import.meta.env.VITE_THEUTH_URL === 'string' && typeof import.meta.env.VITE_THEUTH_TOKEN === 'string')
+  isDesktop() || (typeof import.meta.env.VITE_THEUTH_URL === 'string' && typeof import.meta.env.VITE_THEUTH_TOKEN === 'string')
 
 /** Nothing to connect to: no local daemon and no paired harness — show the `/link` onboarding. */
 export const useNeedsPairing = (): boolean => useHarnesses((s) => s.hydrated && s.harnesses.length === 0) && !hasLocal()
