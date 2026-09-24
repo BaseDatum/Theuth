@@ -235,7 +235,6 @@ impl Hit {
     /// First row: what the hit is.
     pub fn title(&self) -> String {
         match self {
-            Hit::Session(h) if h.title.is_empty() => short(h.session),
             Hit::Session(h) => h.title.clone(),
             Hit::Artifact(h)
                 if h.artifact.title.is_empty() || h.artifact.title == h.artifact.name =>
@@ -1983,6 +1982,7 @@ mod tests {
             ranges: vec![MatchRange { start: 1, end: 3 }],
             score: 10,
             matches: 1,
+            created_at: "2026-09-18T09:00:00Z".into(),
             updated_at: "2026-09-18T10:00:00Z".into(),
             context_removed: false,
             archived: false,
