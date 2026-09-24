@@ -1,12 +1,14 @@
 //! sqlite session store (sqlx): `sessions` + `messages` + `epochs` +
-//! `todo_snapshots` + `errors`; resume by replay. Only the agent writes it;
-//! UIs read through the supervisor's commands.
+//! `todo_snapshots` + `errors` + `inner_calls`; resume by replay. Only the
+//! agent writes it; UIs read through the supervisor's commands.
 //! `sessions.cut_at` is the undo marker: rows with `seq >= cut_at` (epochs,
-//! todo snapshots and errors `at_seq >= cut_at`) are hidden from every reader
-//! until `commit_cut` deletes them. The plan is the latest visible snapshot
-//! ordered by `(at_seq, k)`; `sessions.todo_version` only ever grows (47 §5.2).
-//! `errors` are UI-only rows anchored at the last visible message seq when
-//! they happened; they never enter the model frame.
+//! todo snapshots, errors and inner calls `at_seq >= cut_at`) are hidden from
+//! every reader until `commit_cut` deletes them. The plan is the latest visible
+//! snapshot ordered by `(at_seq, k)`; `sessions.todo_version` only ever grows
+//! (47 §5.2). `errors` are UI-only rows anchored at the last visible message
+//! seq when they happened; they never enter the model frame. `inner_calls`
+//! (08 as-built) are the tool calls a `python` cell made, keyed by the cell's
+//! call id, anchored the same way and equally invisible to the model.
 //!
 //! Context removal (48 §4): `messages.excluded` / `epochs.excluded` hold
 //! [`Mask`]s beside untouched rows. *Raw* readers (`messages`, undo/redo,
@@ -25,8 +27,8 @@
 //! Communication accounting (50 §7: root scope, peer exchanges, A2A
 //! contexts/tasks, peer bindings) lives in [`communication`] on the same pool.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -195,6 +197,29 @@ pub struct ReminderRow {
     pub fires_at: i64,
     /// Requested delay.
     pub seconds: u64,
+}
+
+/// One tool call made from inside a `python` cell (08 as-built): call id
+/// `<parent>.<n>`, where the parent is the cell's own call id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InnerCall {
+    /// 1-based position within the cell.
+    pub n: u32,
+    /// Tool name.
+    pub name: String,
+    /// Raw arguments.
+    pub args: serde_json::Value,
+    /// `(output, is_error)`; `None` while the call has not finished.
+    pub result: Option<(String, bool)>,
+    /// Files the tool produced.
+    pub files: Vec<PathBuf>,
+}
+
+/// `(parent call id, n)` of an inner call id `<parent>.<n>` (08 §4.1);
+/// `None` for a top-level call id.
+pub fn inner_call_id(call_id: &str) -> Option<(&str, u32)> {
+    let (parent, n) = call_id.rsplit_once('.')?;
+    Some((parent, n.parse().ok()?))
 }
 
 impl Store {
@@ -535,6 +560,103 @@ impl Store {
         .await?)
     }
 
+    /// An inner call began (08 as-built): a row with no output yet, anchored
+    /// like [`Store::record_error`]. Not a context change.
+    pub async fn inner_call_started(
+        &self,
+        id: SessionId,
+        call_id: &str,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let Some((parent, n)) = inner_call_id(call_id) else {
+            anyhow::bail!("not an inner call id: {call_id:?}");
+        };
+        sqlx::query(
+            "INSERT OR REPLACE INTO inner_calls (session_id, parent_id, n, at_seq, name, args, at) \
+             SELECT ?1, ?2, ?3, COALESCE(MAX(seq), -1), ?4, ?5, ?6 FROM messages WHERE session_id = ?1 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
+        )
+        .bind(id.to_string())
+        .bind(parent)
+        .bind(n)
+        .bind(name)
+        .bind(args.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// An inner call returned: complete its row (`output` already capped by
+    /// the publisher). A missing start row is created with an unknown name.
+    pub async fn inner_call_finished(
+        &self,
+        id: SessionId,
+        call_id: &str,
+        output: &str,
+        is_error: bool,
+        files: &[PathBuf],
+    ) -> anyhow::Result<()> {
+        let Some((parent, n)) = inner_call_id(call_id) else {
+            anyhow::bail!("not an inner call id: {call_id:?}");
+        };
+        sqlx::query(
+            "INSERT INTO inner_calls (session_id, parent_id, n, at_seq, name, args, output, is_error, files, at) \
+             SELECT ?1, ?2, ?3, COALESCE(MAX(seq), -1), '?', 'null', ?4, ?5, ?6, ?7 FROM messages WHERE session_id = ?1 \
+             AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
+             ON CONFLICT(session_id, parent_id, n) DO UPDATE SET \
+             output = excluded.output, is_error = excluded.is_error, files = excluded.files, at = excluded.at",
+        )
+        .bind(id.to_string())
+        .bind(parent)
+        .bind(n)
+        .bind(output)
+        .bind(is_error)
+        .bind(serde_json::to_string(files)?)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every inner call of the session by parent call id, each list in `n`
+    /// order. Raw: rows of a hidden or removed parent are included and the
+    /// reader drops them by never finding their parent card.
+    pub async fn inner_calls(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<HashMap<String, Vec<InnerCall>>> {
+        #[derive(FromRow)]
+        struct Row {
+            parent_id: String,
+            n: u32,
+            name: String,
+            args: String,
+            output: Option<String>,
+            is_error: bool,
+            files: String,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT parent_id, n, name, args, output, is_error, files FROM inner_calls \
+             WHERE session_id = ? ORDER BY parent_id, n",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out: HashMap<String, Vec<InnerCall>> = HashMap::new();
+        for r in rows {
+            out.entry(r.parent_id).or_default().push(InnerCall {
+                n: r.n,
+                name: r.name,
+                args: serde_json::from_str(&r.args).unwrap_or(serde_json::Value::Null),
+                result: r.output.map(|o| (o, r.is_error)),
+                files: serde_json::from_str(&r.files).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
     /// All visible messages with their seq, in `seq` order. Raw: exclusion
     /// masks are not applied (turn identity, undo/redo, archive).
     pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
@@ -703,6 +825,13 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
+            "DELETE FROM inner_calls WHERE session_id = ?1 \
+             AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
+        )
+        .bind(&sid)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
             "UPDATE sessions SET cut_at = NULL, context_revision = context_revision + 1 \
              WHERE id = ? AND cut_at IS NOT NULL",
         )
@@ -859,6 +988,17 @@ impl Store {
              AND at_seq < ?3 \
              AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807) \
              ORDER BY at_seq, id",
+        )
+        .bind(&new)
+        .bind(&old)
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO inner_calls (session_id, parent_id, n, at_seq, name, args, output, is_error, files, at) \
+             SELECT ?1, parent_id, n, at_seq, name, args, output, is_error, files, at FROM inner_calls \
+             WHERE session_id = ?2 AND at_seq < ?3 \
+             AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
         .bind(&old)
@@ -1284,6 +1424,10 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
             sqlx::query("DELETE FROM errors WHERE session_id = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM inner_calls WHERE session_id = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
@@ -2275,6 +2419,91 @@ mod tests {
         store.delete_session(id).await.unwrap();
         let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM errors WHERE session_id = ?")
             .bind(id.to_string())
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(left.0, 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 08 as-built: inner calls of a `python` cell round-trip by parent in `n`
+    /// order, a start row without its finish reads back unfinished, and the
+    /// rows follow their turn: kept through a whole fork, dropped by a
+    /// committed undo and by session deletion.
+    #[tokio::test]
+    async fn inner_calls_follow_their_turn() {
+        let (store, id, dir) = fresh().await;
+        assert_eq!(inner_call_id("toolu_1.3"), Some(("toolu_1", 3)));
+        assert_eq!(inner_call_id("toolu_1"), None);
+        assert_eq!(inner_call_id("call.x"), None);
+        store.append(id, &ChatMessage::user("u1")).await.unwrap();
+        let args = serde_json::json!({"cmd": "ls"});
+        store
+            .inner_call_started(id, "c.1", "shell", &args)
+            .await
+            .unwrap();
+        store
+            .inner_call_started(id, "c.2", "read", &serde_json::Value::Null)
+            .await
+            .unwrap();
+        store
+            .inner_call_started(id, "c.3", "grep", &serde_json::Value::Null)
+            .await
+            .unwrap();
+        store
+            .inner_call_finished(id, "c.1", "ok", false, &[PathBuf::from("/s.png")])
+            .await
+            .unwrap();
+        store
+            .inner_call_finished(id, "c.2", "ERROR: boom", true, &[])
+            .await
+            .unwrap();
+        // A finish without its start still lands, under an unknown name.
+        store
+            .inner_call_finished(id, "c.5", "late", false, &[])
+            .await
+            .unwrap();
+        let want = vec![
+            InnerCall {
+                n: 1,
+                name: "shell".into(),
+                args: args.clone(),
+                result: Some(("ok".into(), false)),
+                files: vec![PathBuf::from("/s.png")],
+            },
+            InnerCall {
+                n: 2,
+                name: "read".into(),
+                args: serde_json::Value::Null,
+                result: Some(("ERROR: boom".into(), true)),
+                files: Vec::new(),
+            },
+            InnerCall {
+                n: 3,
+                name: "grep".into(),
+                args: serde_json::Value::Null,
+                result: None,
+                files: Vec::new(),
+            },
+            InnerCall {
+                n: 5,
+                name: "?".into(),
+                args: serde_json::Value::Null,
+                result: Some(("late".into(), false)),
+                files: Vec::new(),
+            },
+        ];
+        assert_eq!(store.inner_calls(id).await.unwrap()["c"], want);
+        let whole = store.fork(id, None, None).await.unwrap();
+        assert_eq!(store.inner_calls(whole).await.unwrap()["c"], want);
+
+        store.undo(id).await.unwrap();
+        store.commit_cut(id).await.unwrap();
+        assert!(store.inner_calls(id).await.unwrap().is_empty());
+        store.delete_session(whole).await.unwrap();
+        let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM inner_calls WHERE session_id = ?")
+            .bind(whole.to_string())
             .fetch_one(&store.pool)
             .await
             .unwrap();
