@@ -753,6 +753,7 @@ mod tests {
                 args: vec![],
                 env: BTreeMap::new(),
                 description: None,
+                model: None,
             },
         );
         let e = precheck(&our(), &[], &agents, &key, None).unwrap_err();

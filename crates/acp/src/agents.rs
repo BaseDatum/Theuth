@@ -30,6 +30,11 @@ pub struct Entry {
     /// Shown to the model in the `spawn_subagent` description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Model label shown beside the harness name when the harness does not
+    /// report one in its session `configOptions` (06 §8.2). Never sent to the
+    /// harness: it is a display fallback the user sets by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Entry {
@@ -153,6 +158,7 @@ mod tests {
                 args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp".into()],
                 env: BTreeMap::new(),
                 description: None,
+                model: None,
             },
         );
         entries.insert(
@@ -162,6 +168,7 @@ mod tests {
                 args: vec!["acp".into()],
                 env: [("OPENCODE_CONFIG".to_owned(), "/x.json".to_owned())].into(),
                 description: Some("local build".into()),
+                model: Some("gpt-5.4".into()),
             },
         );
         save(&dir, &entries).unwrap();

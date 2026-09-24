@@ -1181,6 +1181,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
+        UiEvent::Agent(AgentEvent::HarnessModelChanged { model, .. }) => {
+            writeln!(out, "harness model → {model}")
+        }
         UiEvent::Agent(AgentEvent::Compacted { epoch, style, .. }) => {
             writeln!(out, "context compacted (epoch {epoch} · {style})")
         }

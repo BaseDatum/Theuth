@@ -2974,7 +2974,11 @@ pub struct Model {
     /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
     /// Model of the shown session (`TurnStarted.model`; the config default before that).
+    /// For an ACP child this is the harness name (`omp`).
     pub model_id: String,
+    /// The LLM an ACP child's harness reports (06 §8.2); the header shows
+    /// `model_id · harness_model`. `None` for native sessions.
+    pub harness_model: Option<String>,
     /// Reasoning effort of the shown session; `None` = provider default.
     pub effort: Option<String>,
     /// A `SetEffort` is in flight; its `EffortChanged` echo is not announced twice.
@@ -3250,6 +3254,7 @@ impl Model {
         }
         self.queued = loaded.queued;
         self.model_id = loaded.model;
+        self.harness_model = loaded.harness_model;
         self.effort = loaded.effort;
         self.streaming = loaded.running;
         self.session_name = loaded.name;
@@ -5421,6 +5426,14 @@ impl Model {
                 self.entries.push(Entry::Info(format!("model → {model}")));
                 self.model_id = model;
             }
+            // The harness's own model (06 §8.2): announced only when it
+            // switches away from one already shown, not at connect.
+            AgentEvent::HarnessModelChanged { model, .. } => {
+                if self.harness_model.as_ref().is_some_and(|m| *m != model) {
+                    self.entries.push(Entry::Info(format!("harness model → {model}")));
+                }
+                self.harness_model = Some(model);
+            }
             // Our own `SetEffort` is announced by its reply; anything else
             // (a `/model` switch dropping a level the new model lacks) here.
             AgentEvent::EffortChanged { effort, .. } => {
@@ -6224,9 +6237,11 @@ impl Model {
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
     /// and its colour level. In a subagent the model is headed by its peer
-    /// name: `↳ grep-logs  child · model  ·  …`. The effort segment is
-    /// omitted while unset; `cache` is the prefix-cache hit ratio of the last
-    /// finished turn (design doc 07 §7), omitted until one has reported usage.
+    /// name: `↳ grep-logs  child · model  ·  …`. An ACP child shows the
+    /// harness and its reported model: `omp · anthropic/claude-opus-4-8`
+    /// (06 §8.2). The effort segment is omitted while unset; `cache` is the
+    /// prefix-cache hit ratio of the last finished turn (design doc 07 §7),
+    /// omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
         let used = k(self.context);
         let cache = match self.usage {
@@ -6242,9 +6257,13 @@ impl Model {
             .effort
             .as_deref()
             .map_or_else(String::new, |e| format!("  ·  {e}"));
-        let model = match &self.session_name {
-            Some(name) => format!("↳ {name}  child · {}", self.model_id),
+        let model = match &self.harness_model {
+            Some(m) => format!("{} · {m}", self.model_id),
             None => self.model_id.clone(),
+        };
+        let model = match &self.session_name {
+            Some(name) => format!("↳ {name}  child · {model}"),
+            None => model,
         };
         match catalog.closest(&self.model_id).map(|m| m.limit.context) {
             Some(limit) if limit > 0 => {
@@ -8123,6 +8142,7 @@ impl Model {
         self.entries = entries;
         self.anchor = Some((target.unwrap_or(0), 0));
         self.model_id = loaded.model;
+        self.harness_model = loaded.harness_model;
         self.effort = loaded.effort;
         self.session_name = loaded.name;
         self.session_parent = loaded.parent;
@@ -13036,6 +13056,69 @@ mod tests {
         assert!(m.header(&catalog).0.contains("  ·  high  ·  ctx "));
     }
 
+    /// An ACP child (06 §8.2): `Loaded.harness_model` and `HarnessModelChanged`
+    /// put the harness's LLM beside the harness name; the first report is
+    /// silent, a switch away from a shown model is announced;
+    /// `TurnStarted.model` (the harness name) does not disturb it.
+    #[test]
+    fn header_shows_harness_and_its_model_for_an_acp_child() {
+        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let mut m = Model::new("nobody/nothing".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                model: "omp".into(),
+                agent: Some("omp".into()),
+                ..Loaded::default()
+            },
+        ));
+        assert_eq!(m.header(&catalog).0, "omp  ·  ctx 0");
+        let infos = m.entries.len();
+        m.apply_agent(AgentEvent::HarnessModelChanged {
+            session: s,
+            model: "anthropic/claude-opus-4-8".into(),
+        });
+        assert_eq!(
+            m.header(&catalog).0,
+            "omp · anthropic/claude-opus-4-8  ·  ctx 0"
+        );
+        assert_eq!(m.entries.len(), infos, "first report is silent: {:?}", m.entries);
+        m.apply_agent(AgentEvent::TurnStarted {
+            session: s,
+            turn: TurnId::new(),
+            turn_seq: 1,
+            text: "go".into(),
+            model: "omp".into(),
+        });
+        assert!(m.header(&catalog).0.starts_with("omp · anthropic/claude-opus-4-8"));
+        m.apply_agent(AgentEvent::HarnessModelChanged {
+            session: s,
+            model: "openai/gpt-5.4".into(),
+        });
+        assert!(m.header(&catalog).0.starts_with("omp · openai/gpt-5.4"), "{}", m.header(&catalog).0);
+        assert!(
+            m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Info(t) if t == "harness model → openai/gpt-5.4")),
+            "{:?}",
+            m.entries
+        );
+
+        // A reload carries the stored value.
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                model: "omp".into(),
+                agent: Some("omp".into()),
+                harness_model: Some("openai/gpt-5.4".into()),
+                ..Loaded::default()
+            },
+        ));
+        assert_eq!(m.header(&catalog).0, "omp · openai/gpt-5.4  ·  ctx 0");
+    }
+
     #[test]
     fn large_paste_becomes_a_token_that_submit_expands() {
         let (tx, mut rx) = unbounded_channel();
@@ -14707,6 +14790,7 @@ mod tests {
             effort: None,
             agent: None,
             cwd: None,
+            harness_model: None,
             pinned: false,
             archived: false,
             project: project.map(str::to_owned),

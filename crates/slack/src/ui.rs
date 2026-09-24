@@ -671,6 +671,7 @@ mod tests {
             effort: None,
             agent: None,
             cwd: None,
+            harness_model: None,
             pinned: false,
             archived: false,
             project: None,
