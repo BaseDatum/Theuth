@@ -462,8 +462,12 @@ impl Schedule {
                 // Unattended automation roots are `isolated` (50 §2.3):
                 // `NewSession` is the isolated path; the owner promotes one
                 // with `SetPeerScope` if a schedule should reach owner roots.
+                // `unattended` drops the visualization blocks from its prompt.
                 let s = agents
-                    .ask(agent::NewSession { cwd: cwd.clone() })
+                    .ask(agent::NewSession {
+                        cwd: cwd.clone(),
+                        unattended: true,
+                    })
                     .await
                     .map_err(|e| format!("agent: {e}"))?;
                 if let Err(e) = agents

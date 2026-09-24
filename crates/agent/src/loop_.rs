@@ -2333,12 +2333,24 @@ pub(crate) fn direct_specs(
 }
 
 /// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
-/// its `prompts` plugins (`meetings/06-live-toolset.md` §1.4).
-pub(crate) fn prompt_blocks(blocks: Vec<(&'static str, String)>, toolset: Option<&Toolset>) -> String {
+/// its `prompts` plugins (`meetings/06-live-toolset.md` §1.4). An unattended
+/// session (a subagent or a scheduled run: nobody reads it directly) gets
+/// [`frame::UNATTENDED_LINE`] in place of the `surface` block and no `app`
+/// block; every other block stays.
+pub(crate) fn prompt_blocks(
+    blocks: Vec<(&'static str, String)>,
+    toolset: Option<&Toolset>,
+    attended: bool,
+) -> String {
     blocks
         .into_iter()
         .filter(|(plugin, _)| toolset.is_none_or(|t| t.prompts.iter().any(|p| p == plugin)))
-        .map(|(_, block)| block)
+        .filter_map(|(plugin, block)| match plugin {
+            _ if attended => Some(block),
+            "surface" => Some(frame::UNATTENDED_LINE.to_owned()),
+            "app" => None,
+            _ => Some(block),
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -2572,9 +2584,18 @@ impl Turn {
             }
         };
         let toolset = self.shared.toolset.read().clone();
+        // Nobody reads a subagent (depth > 0) or a scheduler-opened root directly.
+        let attended = self.shared.depth == 0
+            && !self
+                .shared
+                .store
+                .unattended(self.shared.id)
+                .await
+                .unwrap_or(false);
         let blocks = prompt_blocks(
             registry.ask(ListPrompts).await.unwrap_or_default(),
             toolset.as_ref(),
+            attended,
         );
         let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
@@ -2591,6 +2612,7 @@ impl Turn {
             &blocks,
             claude_code,
             subagent_model.as_deref(),
+            attended,
         );
         if self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
             baseline.push_str("\n\n");
@@ -5198,11 +5220,21 @@ mod tests {
             vec![
                 ("agent", "A".to_owned()),
                 ("meeting", "M".to_owned()),
+                ("surface", "## Show first, then tell\nS".to_owned()),
+                ("app", "## Interactive screens: `app`\nP".to_owned()),
                 ("web", "W".to_owned()),
             ]
         };
-        assert_eq!(prompt_blocks(blocks(), Some(&live)), "M\n\nW");
-        assert_eq!(prompt_blocks(blocks(), None), "A\n\nM\n\nW");
+        assert_eq!(prompt_blocks(blocks(), Some(&live), true), "M\n\nW");
+        assert_eq!(
+            prompt_blocks(blocks(), None, true),
+            "A\n\nM\n\n## Show first, then tell\nS\n\n## Interactive screens: `app`\nP\n\nW"
+        );
+        // Unattended: the surface block becomes the plain-text line, in place; the app block goes.
+        assert_eq!(
+            prompt_blocks(blocks(), None, false),
+            format!("A\n\nM\n\n{}\n\nW", frame::UNATTENDED_LINE)
+        );
     }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,
@@ -5623,7 +5655,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, "", "", false, None);
+        let bare = frame::baseline(&data_dir, "", "", false, None, true);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -5634,7 +5666,14 @@ mod tests {
         )
         .unwrap();
         std::fs::write(skills_dir.join("later.md"), "Listed skill\n").unwrap();
-        let full = frame::baseline(&data_dir, "## Peers\npeer text", "Plugin block.", false, None);
+        let full = frame::baseline(
+            &data_dir,
+            "## Peers\npeer text",
+            "Plugin block.",
+            false,
+            None,
+            true,
+        );
         std::fs::remove_dir_all(&data_dir).unwrap();
 
         let pos = |needle: &str| {

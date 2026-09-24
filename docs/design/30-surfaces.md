@@ -60,7 +60,7 @@ re-read today. Every claim about theuth cites `file:line` as of this tree.
    36 shadcn components that already match the desktop's stack
    (25 §0.5); the catalog is a subset of those plus four data-display
    components we write.
-8. **Show, don't tell, is a prompt rule with triggers, not a wish** (§6).
+8. **Show first, then tell, is a prompt rule with triggers, not a wish** (§6).
    A static `RegisterPrompt` block (~350 tokens, cache-safe,
    `registry.rs:98-106`) names when to draw, when not to, and the compact
    catalog; a bundled `visualize` skill carries the full schema and
@@ -378,7 +378,7 @@ crashed or timed out → the fence counts as valid (one `warn` per session); at
 most 8 checker fences per reply, 32 KiB each. TUI (§7): a failing block is one
 dim `◌ diagram omitted` line, never `✗ invalid …` plus the source.
 
-## 6. Prompting: show, don't tell
+## 6. Prompting: show first, then tell
 
 ### 6.1 Placement
 
@@ -397,19 +397,79 @@ dim `◌ diagram omitted` line, never `✗ invalid …` plus the source.
   session's delivery channel today (the prompt is cache-stable by design,
   07 §4), and every channel degrades usefully (§9). jarvis's
   `RICH_SURFACE_WITHDRAWN` machinery (`prompt.rs:253-260`) is not ported.
+- **Audience gating (2026-09-24).** A session nobody reads directly — a
+  subagent (`parent` set, `depth > 0`) or a root the scheduler opened
+  (`NewSession { unattended: true }`, persisted as `sessions.unattended`) —
+  gets neither this block nor the `app` plugin's block: `prompt_blocks`
+  (`loop_.rs`) drops them by plugin name and puts one line where the
+  surface block stood: *"Nobody reads this session directly: write results
+  as plain, terse text for the agent or channel that receives them; do not
+  draw diagrams or cards."* `frame::baseline` takes the same `attended`
+  flag: `prompt.md` spans between `<!-- root-only -->` and
+  `<!-- /root-only -->` are cut for an unattended session (markers
+  included; several spans; an unclosed opener cuts to the end of the file)
+  and kept, marker lines removed, for an attended one; the Guidance
+  sentence "Report visually first (see the Show first, then tell section)."
+  is attended-only. The flag is a property of the session, so the prompt
+  stays a pure function of `(data_dir, attended, …)` and cache-stable.
 
 ### 6.2 The prompt block (verbatim)
 
-```
-## Show, don't tell
-Your reply can draw. Two fenced blocks render as pictures in the terminal and the desktop app, and read as text everywhere else:
-- ```mermaid — flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram. Use it when the answer is a shape: how things connect, what calls what, what happens in what order, which states lead where.
-- ```json-render — one JSON object {root, elements:{id:{type, props, children}}}. Use it when the answer is structured data: a comparison, a status board, before/after, metrics, a plan with states, a timeline. Catalog: {catalog_compact}
-Draw when a reader would sketch it on a whiteboard to explain it; that is most architecture, flow, dependency, sequence, state and comparison answers. One picture per idea, ≤ 12 nodes or ≤ 8 rows; labels ≤ 4 words; put the takeaway in one sentence before the block and do not repeat in prose what the picture already shows. Do not draw a one-line answer, a list of two, code, or anything the user asked to copy or paste. Prose is still right for reasoning, caveats and instructions.
-Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> message with the exact path of each error: answer with the corrected block only.
-```
+````
+## Show first, then tell
+This chat renders pictures, and a reader takes in a picture in one glance where the same content as prose takes ten. **Default to showing.** Words are for what a picture cannot carry: the reason, a caveat, an exact value the reader must copy, an instruction, the decision you need from them. Most substantive replies should contain at least one block; a reply that is only paragraphs and bullets should be the exception you chose, not the habit.
 
-`{catalog_compact}` renders from `Spec`'s schema as one line per
+Three fenced blocks render (the terminal and desktop draw them, other channels read them as text):
+- ```json-render: structured data and boxes-and-arrows. Catalog: {catalog}
+- ```openui: richer static cards with local interaction: Steps, Tabs, Callout, Card, Table, BarChart/LineChart, MetricIndicatorInline, Buttons with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence.
+- ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).
+
+Pick by the shape of the answer:
+| The answer is… | Draw |
+|---|---|
+| components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |
+| who calls whom in what order | mermaid sequenceDiagram |
+| lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |
+| schema, types, relationships | mermaid erDiagram / classDiagram |
+| how-to or explanation in steps | openui Steps |
+| options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |
+| a comparison, before/after, a matrix | json-render Table (Badge for verdict cells) |
+| status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress) |
+| what happened when: incident, history, plan | json-render Timeline (state per item) |
+| numbers, counts, durations, sizes | json-render MetricGrid / Bars, openui BarChart / LineChart for series |
+| a warning, a blocker, the one thing to act on | openui Callout or json-render Alert |
+| facts about one thing (config, host, PR) | json-render KeyValueList |
+
+Shapes for the replies you write most:
+- **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.
+- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: "error") → Timeline if timing matters → prose for evidence you must quote exactly.
+- **Plan or proposal:** Steps or Timeline → Table of risks/choices → the question for the user in words.
+- **"How does X work":** Graph or sequenceDiagram first, then prose only for what the arrows don't say.
+- **Status check / "how's it going":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.
+
+Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, "first… then… finally", "if X then Y state", "A vs B": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.
+
+Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.
+Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.
+
+Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.
+
+When you report finished work, a subagent's result or an investigation, report visually first as above.
+
+Worked example. Instead of:
+> I updated the parser and the tests. All 412 tests pass, coverage went from 78% to 81%. The migration is done and staging is deployed, but prod is still pending approval.
+
+write the one-sentence takeaway, then:
+```json-render
+{"root":"r","elements":{"r":{"type":"Stack","children":["m","c"]},
+"m":{"type":"MetricGrid","props":{"items":[{"label":"Tests","value":"412/412"},{"label":"Coverage","value":"81%","delta":"+3%","trend":"up"}]}},
+"c":{"type":"Checklist","props":{"items":[{"text":"Parser updated","done":true},{"text":"Staging deployed","done":true},{"text":"Prod approval","done":false}]}}}}
+```
+````
+
+`{catalog}` is `catalog_compact()`; the block is built by concatenation
+(`crates/surface/src/prompt.rs`), not `format!`, so the example's braces
+are literal. It renders from `Spec`'s schema as one line per
 component, e.g. `Card(title?, description?) · Stack(direction?, gap?) ·
 Grid(columns) · Heading(text, level?) · Text(text, variant?) · Badge(text,
 variant?) · Alert(title?, message, type) · Separator · Table(columns,
@@ -427,30 +487,40 @@ name: visualize
 description: When and how to draw in a reply — Mermaid diagram types, the json-render catalog with full prop schemas, worked examples, what not to draw. Load before a reply that explains structure, flow or a comparison.
 ---
 
-# Visualize: show, don't tell
+# Visualize: show first, then tell
 
 A picture is read in one glance; the same content as prose is read in ten.
-When the thing you are explaining has a shape, give it the shape.
+When the thing you are explaining has a shape, give it the shape. Default to
+showing; words are for what a picture cannot carry.
 
 ## Choose the block
 
-| The answer is… | Draw | Not |
-|---|---|---|
-| components and what talks to what | `flowchart LR` (TD if it is a hierarchy) | a bullet list of arrows |
-| a request/response order across parties | `sequenceDiagram` | numbered prose steps |
-| a lifecycle, modes, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
-| data model / relationships | `erDiagram` or `classDiagram` | field lists |
-| options compared on criteria | `json-render` `Table` | three paragraphs |
-| where a job/rollout/checklist stands | `Checklist`, `Timeline`, `Progress` | "we have done A and B; C is pending" |
-| numbers that matter | `MetricGrid` or `Bars` | numbers buried in sentences |
-| a plan with phases | `Timeline` (state per item) | headers + bullets |
+(the routing table of §6.2, one row per shape, plus a "Not" column naming
+the prose it replaces; see `crates/surface/visualize.md`)
 
-Do not draw: one fact; two items; code or commands; anything the user will
-copy; a diagram of the diagram you are about to show. Never describe the
-picture in prose — one sentence of takeaway above it, then the block.
+## Shapes for common replies
+
+(the five recipes of §6.2: finished work, investigation, plan, "how does X
+work", status check)
+
+Do not draw: one fact; code or commands; anything the user will copy; a
+diagram of the diagram you are about to show. In a voice-note reply, draw
+nothing. Never describe the picture in prose — one sentence of takeaway above
+it, then the block.
+
+## Mermaid styling: outline, never fill
+
+(Sky's style guide, verbatim: every `classDef` is `fill:none` with a
+colored `stroke` at `stroke-width:2.5px`, `stroke-dasharray:6 3` for a soft
+category; palette red `#dc2626` gate, blue `#2563eb` mutation, amber
+`#d97706` warning, green `#16a34a` done, gray `#6b7280` external; two or
+three classes; `rect rgba(0,0,0,0)` bands in `sequenceDiagram`; category in
+the node text plus a one-line legend; a worked `classDef` example. Its
+"syntax traps" bullet lives in the rules list below.)
 
 ## Mermaid rules that avoid errors
 - Quote labels that contain `(`, `)`, `[`, `]`, `{`, `}`, `:` or `|`: `A["fetch(url)"]`.
+- Syntax traps that break the parser: no double quotes inside `[...]` node labels, no `;` inside any label or note, no `(`/`)` inside `([...])` stadium labels.
 - Node ids are bare words; `end` is reserved — write `End` or `finish`.
 - Edge labels: `A -->|label| B` or `A -- label --> B`, no spaces inside `|…|` delimiters.
 - One diagram, one direction; ≤ 12 nodes; split otherwise.

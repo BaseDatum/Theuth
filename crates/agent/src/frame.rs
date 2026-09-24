@@ -24,7 +24,8 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 /// prompt blocks (`ListPrompts`). Whether the peer tools exist at all is the
 /// communication switch's business: off hides them from the snapshot, so the
 /// text describes both states without promising either.
-const GUIDANCE: &str = "## Guidance\n\
+/// Split around [`REPORT_VISUALLY`], which only an attended session gets.
+const GUIDANCE_HEAD: &str = "## Guidance\n\
 Delegate by default when spawn_subagent is available. Do a thing yourself only when it is a couple of tool \
 calls: read a file, run a command, answer from what you know - and do that small work in `python`, binding \
 results to variables, so the data stays out of this conversation. Anything larger - code changes, \
@@ -56,7 +57,13 @@ Answer a request with `reply_to` set to its id.\n\
 Approvals are independent of communication: a child's approvals go to the user, not you, and turning \
 prompts off does not turn communication on.\n\
 You own the outcome: verify a child's claims (read the diff, run the check) before passing them on, \
-integrate the pieces, report in your own words.\n\
+integrate the pieces, report in your own words.";
+
+/// Appended to [`GUIDANCE_HEAD`] for attended sessions only: it points at the
+/// surface block, which an unattended session does not receive.
+const REPORT_VISUALLY: &str = " Report visually first (see the Show first, then tell section).";
+
+const GUIDANCE_TAIL: &str = "\n\
 Before substantive work on a request with three or more steps, or any explicit user checklist, initialize a \
 `todo` list covering the whole request, including verification. Preserve every requested item. Keep task text \
 short and stable. Update the list as work completes; continue working after bookkeeping. Incorporate new user \
@@ -65,6 +72,38 @@ A job or subagent may continue after you end a turn; its result will wake you. D
 stay active. Before a final answer, reconcile your todos with actual results. If remaining work requires user \
 input or another external prerequisite, block those items with a reason; do not mark unfinished work done. Use \
 `ask_user` when a decision is needed.";
+
+/// The line an unattended session gets where the surface block would have been.
+pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write results as plain, terse text for the agent or channel that receives them; do not draw diagrams or cards.";
+
+/// `prompt.md` for one audience: spans between `<!-- root-only -->` and
+/// `<!-- /root-only -->` are kept (marker lines removed) for an attended
+/// session and cut, markers included, for an unattended one. Several spans
+/// are allowed; an unclosed opener cuts to the end of the file.
+pub fn root_only(text: &str, attended: bool) -> String {
+    const OPEN: &str = "<!-- root-only -->";
+    const CLOSE: &str = "<!-- /root-only -->";
+    if attended {
+        return text
+            .replace(&format!("{OPEN}\n"), "")
+            .replace(&format!("{CLOSE}\n"), "")
+            .replace(OPEN, "")
+            .replace(CLOSE, "");
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find(CLOSE) else {
+            return out;
+        };
+        rest = rest[start + end + CLOSE.len()..]
+            .strip_prefix('\n')
+            .unwrap_or(&rest[start + end + CLOSE.len()..]);
+    }
+    out.push_str(rest);
+    out
+}
 
 /// How cache marks are placed for a provider family (design doc 07 §3 table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,16 +238,20 @@ pub fn strip_images(m: &mut ChatMessage) {
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
 /// identity (when `claude_code`), built-in header (with the user's preferred
-/// `subagent_model` when set), `<data_dir>/prompt.md`, `always` skill bodies,
+/// `subagent_model` when set), `<data_dir>/prompt.md` (its `root-only` spans
+/// resolved for `attended`, see [`root_only`]), `always` skill bodies,
 /// skills index, `peer_line` verbatim, `plugin_blocks` (registered
-/// `RegisterPrompt` texts, already joined), static guidance.
-/// Empty parts skipped, one blank line between the rest.
+/// `RegisterPrompt` texts, already joined and filtered for the audience by
+/// the caller), static guidance (its "report visually" sentence only when
+/// `attended`). Empty parts skipped, one blank line between the rest. A pure
+/// function of its inputs, so cache-stable for the session's lifetime.
 pub fn baseline(
     data_dir: &Path,
     peer_line: &str,
     plugin_blocks: &str,
     claude_code: bool,
     subagent_model: Option<&str>,
+    attended: bool,
 ) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -225,8 +268,17 @@ pub fn baseline(
              `model` only when a task clearly needs something else)"
         ));
     }
-    let standing = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
+    let standing = root_only(
+        &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
+        attended,
+    );
     let skills = skills::index(&skills::dir(data_dir));
+    let guidance = [
+        GUIDANCE_HEAD,
+        if attended { REPORT_VISUALLY } else { "" },
+        GUIDANCE_TAIL,
+    ]
+    .concat();
     [
         if claude_code {
             CLAUDE_CODE_IDENTITY
@@ -239,7 +291,7 @@ pub fn baseline(
         &skills::prompt_index(&skills),
         peer_line,
         plugin_blocks,
-        GUIDANCE,
+        &guidance,
     ]
     .iter()
     .map(|s| s.trim())
@@ -496,5 +548,66 @@ mod tests {
         }
         .request(Transport::Plain, SessionId::new(), None);
         assert_eq!(req.messages[0].content.tool_responses()[0].images.len(), 1);
+    }
+
+    #[test]
+    fn root_only_spans() {
+        let md = "Always.\n<!-- root-only -->\nDraw things.\n<!-- /root-only -->\nStill always.\n\
+                  <!-- root-only -->\nSecond span.\n<!-- /root-only -->\nTail.\n";
+        assert_eq!(
+            root_only(md, true),
+            "Always.\nDraw things.\nStill always.\nSecond span.\nTail.\n"
+        );
+        assert_eq!(root_only(md, false), "Always.\nStill always.\nTail.\n");
+        // Inline markers, and an unclosed opener cuts to the end of the file.
+        let inline = "A <!-- root-only -->B<!-- /root-only --> C\n<!-- root-only -->\nD\nE\n";
+        assert_eq!(root_only(inline, true), "A B C\nD\nE\n");
+        assert_eq!(root_only(inline, false), "A  C\n");
+        // Without markers: identity for both audiences.
+        assert_eq!(root_only("plain\n", true), "plain\n");
+        assert_eq!(root_only("plain\n", false), "plain\n");
+    }
+
+    /// (a)/(b) of the brief: an unattended baseline has neither the surface
+    /// nor the app block and carries the plain-text line; an attended one has
+    /// the surface heading, the app heading and the root-only content.
+    #[test]
+    fn baseline_by_audience() {
+        let data_dir =
+            std::env::temp_dir().join(format!("theuth-audience-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("prompt.md"),
+            "Shared rule.\n<!-- root-only -->\nRoot rule.\n<!-- /root-only -->\n",
+        )
+        .unwrap();
+        let blocks = |attended| {
+            crate::loop_::prompt_blocks(
+                vec![
+                    ("tools", "## Tools\nT".to_owned()),
+                    ("surface", surface::prompt_block()),
+                    ("app", "## Interactive screens: `app`\nP".to_owned()),
+                ],
+                None,
+                attended,
+            )
+        };
+        let attended = baseline(&data_dir, "", &blocks(true), false, None, true);
+        let unattended = baseline(&data_dir, "", &blocks(false), false, None, false);
+        std::fs::remove_dir_all(&data_dir).unwrap();
+
+        assert!(attended.contains("## Show first, then tell\n"));
+        assert!(attended.contains("## Interactive screens: `app`\n"));
+        assert!(attended.contains("Shared rule.\nRoot rule.\n"));
+        assert!(!attended.contains("root-only"));
+        assert!(!attended.contains(UNATTENDED_LINE));
+        assert!(attended.contains(REPORT_VISUALLY));
+
+        assert!(!unattended.contains("Show first, then tell"));
+        assert!(!unattended.contains("## Interactive screens: `app`"));
+        assert!(!unattended.contains("Root rule."));
+        assert!(unattended.contains("Shared rule.\n\n## Tools\nT"));
+        assert!(unattended.contains(&format!("## Tools\nT\n\n{UNATTENDED_LINE}\n\n## Guidance")));
+        assert!(!unattended.contains(REPORT_VISUALLY));
     }
 }

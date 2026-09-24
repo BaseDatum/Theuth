@@ -3,34 +3,66 @@ name: visualize
 description: When and how to draw in a reply — Mermaid diagram types, the json-render catalog with full prop schemas, worked examples, what not to draw. Load before a reply that explains structure, flow or a comparison.
 ---
 
-# Visualize: show, don't tell
+# Visualize: show first, then tell
 
 A picture is read in one glance; the same content as prose is read in ten.
-When the thing you are explaining has a shape, give it the shape.
+When the thing you are explaining has a shape, give it the shape. Default to
+showing; words are for what a picture cannot carry.
 
 ## Choose the block
 
 | The answer is… | Draw | Not |
 |---|---|---|
-| components and what talks to what; dependencies; data flow; a pipeline | `json-render` `Graph` (`direction: "TB"` for a hierarchy) | a bullet list of arrows, or a mermaid flowchart |
-| a request/response order across parties | `sequenceDiagram` | numbered prose steps |
-| a lifecycle, modes, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
-| data model / relationships | `erDiagram` or `classDiagram` | field lists |
-| options compared on criteria | `json-render` `Table` | three paragraphs |
-| where a job/rollout/checklist stands | `Checklist`, `Timeline`, `Progress` | "we have done A and B; C is pending" |
-| numbers that matter | `MetricGrid` or `Bars` | numbers buried in sentences |
-| a plan with phases | `Timeline` (state per item) | headers + bullets |
+| components, dependencies, data flow, a pipeline, a call graph | `json-render` `Graph` (`direction: "TB"` for a hierarchy; a state per node for health/progress) | a bullet list of arrows, or a mermaid flowchart |
+| who calls whom in what order | `sequenceDiagram` | numbered prose steps |
+| a lifecycle, modes, retries, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
+| schema, types, relationships | `erDiagram` or `classDiagram` | field lists |
+| a how-to or an explanation in steps | `openui` `Steps` | "first… then… finally" |
+| options with trade-offs, alternatives | `openui` `Tabs` (one per option), or `json-render` `Table` on shared criteria | three paragraphs |
+| a comparison, before/after, a matrix | `json-render` `Table` (`Badge` for verdict cells) | "A vs B" prose |
+| status of work, checks, tests, a rollout | `MetricGrid` + `Checklist` (or `Progress`) | "we have done A and B; C is pending" |
+| what happened when: incident, history, plan | `Timeline` (state per item) | headers + bullets |
+| numbers, counts, durations, sizes | `MetricGrid` or `Bars`; `openui` `BarChart` / `LineChart` for a series | numbers buried in sentences |
+| a warning, a blocker, the one thing to act on | `openui` `Callout` or `json-render` `Alert` | a bold sentence in the middle of a paragraph |
+| facts about one thing (a config, a host, a PR) | `json-render` `KeyValueList` | a colon-separated list |
+| a schedule, a chronology, a topic map | mermaid `gantt`, `timeline`, `mindmap` | dated bullets |
 
 Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
 json-render block; it draws on every surface and an app can highlight it. Mermaid stays for
-sequence, state, class and ER diagrams, and for anything that needs mermaid's own syntax.
+sequence, state, class and ER diagrams, gantt, timeline and mindmap, and for anything that
+needs mermaid's own syntax.
 
-Do not draw: one fact; two items; code or commands; anything the user will
-copy; a diagram of the diagram you are about to show. Never describe the
-picture in prose — one sentence of takeaway above it, then the block.
+## Shapes for common replies
+
+- **Finished work / a subagent's result:** one sentence on the outcome → `MetricGrid` (files, tests, cost/time) + `Checklist` of what was done and verified → a short prose line per caveat or open item.
+- **Investigation / root cause:** one-sentence verdict → `Graph` or `sequenceDiagram` marking where it breaks (`state: "error"`) → `Timeline` if timing matters → prose for evidence you must quote exactly.
+- **Plan or proposal:** `Steps` or `Timeline` → `Table` of risks/choices → the question for the user in words.
+- **"How does X work":** `Graph` or `sequenceDiagram` first, then prose only for what the arrows don't say.
+- **Status check / "how's it going":** `MetricGrid` + `Checklist`/`Progress`; prose only for what changed or is stuck.
+
+Do not draw: one fact; code or commands; anything the user will copy; a
+diagram of the diagram you are about to show. In a voice-note reply, draw
+nothing. Never describe the picture in prose — one sentence of takeaway above
+it, then the block.
+
+## Mermaid styling: outline, never fill
+Diagrams render on light and dark themes and on phones; filled node backgrounds fight the theme's text color and become unreadable. Encode meaning in the **stroke**, never the fill:
+- Every `classDef` uses `fill:none` (or `fill:transparent`), a colored `stroke`, and `stroke-width:2.5px`. Add `stroke-dasharray:6 3` for a secondary/soft category (e.g. advisory or non-gating).
+- Palette (mid-saturation, legible on both themes): red `#dc2626` = human gate / blocker, blue `#2563eb` = mutating action, amber `#d97706` = warning / non-gating, green `#16a34a` = verified / done, gray `#6b7280` = external or out of scope. Two or three classes per diagram, not five.
+- In `sequenceDiagram`, use `rect rgba(0,0,0,0)` for stage grouping so the band is a boundary, not a tint; notes carry the label.
+- Never rely on color alone: put the category into the node text (PREFLIGHT, HEALTH — shim, exit 2) and finish with a one-line legend: "red outline = gates · blue outline = mutations · amber dashed = non-gating".
+
+Example:
+    classDef gate fill:none,stroke:#dc2626,stroke-width:2.5px;
+    classDef soft fill:none,stroke:#d97706,stroke-width:2.5px,stroke-dasharray:6 3;
+    classDef mut  fill:none,stroke:#2563eb,stroke-width:2.5px;
+    class PRE,CONF gate;
+    class HLT,SMK soft;
+    class AUR,K8S,DNS mut;
 
 ## Mermaid rules that avoid errors
 - Quote labels that contain `(`, `)`, `[`, `]`, `{`, `}`, `:` or `|`: `A["fetch(url)"]`.
+- Syntax traps that break the parser: no double quotes inside `[...]` node labels (write `set 0`, not `"0"`), no `;` inside any label or note (mermaid reads it as end-of-statement), and no `(`/`)` inside `([...])` stadium labels.
 - Node ids are bare words; `end` is reserved — write `End` or `finish`.
 - Edge labels: `A -->|label| B` or `A -- label --> B`, no spaces inside `|…|` delimiters.
 - One diagram, one direction; ≤ 12 nodes; split otherwise.

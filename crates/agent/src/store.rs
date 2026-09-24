@@ -414,6 +414,25 @@ impl Store {
         Ok(())
     }
 
+    /// Mark a root nobody reads directly (the scheduler's): its prompt gets no
+    /// visualization instructions. Set once at creation; never cleared.
+    pub async fn set_unattended(&self, id: SessionId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sessions SET unattended = 1 WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Whether [`Self::set_unattended`] marked this session; `false` for an unknown id.
+    pub async fn unattended(&self, id: SessionId) -> anyhow::Result<bool> {
+        let row = sqlx::query_as::<_, (bool,)>("SELECT unattended FROM sessions WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some_and(|(u,)| u))
+    }
+
     /// Append one message; returns its `seq` (max+1 within the session).
     /// Bumps `sessions.updated_at` (the list order).
     pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64> {

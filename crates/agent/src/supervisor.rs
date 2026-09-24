@@ -4433,11 +4433,18 @@ impl Message<ShowPrompt> for Agents {
             Some(a) => a.ask(GetToolset).await.unwrap_or_default(),
             None => None,
         };
+        // Same audience rule as `Turn::rebase`: a subagent or a scheduler-opened root is unattended.
+        let mut attended = true;
+        if let Some(s) = m.session {
+            let store = self.store_for(s);
+            attended = store.depth(s).await.unwrap_or(0) == 0
+                && !store.unattended(s).await.unwrap_or(false);
+        }
         let mut blocks = String::new();
         if let Some(reg) = &registry
             && let Ok(b) = reg.ask(ListPrompts).await
         {
-            blocks = prompt_blocks(b, toolset.as_ref());
+            blocks = prompt_blocks(b, toolset.as_ref(), attended);
         }
         let subagent_model = self.subagent_model_id();
         let mut prompt = frame::baseline(
@@ -4446,6 +4453,7 @@ impl Message<ShowPrompt> for Agents {
             &blocks,
             self.claude_code(&model),
             subagent_model.as_deref(),
+            attended,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
@@ -5597,6 +5605,12 @@ impl Message<NewSession> for Agents {
         if let Some(cwd) = &m.cwd {
             self.store
                 .set_cwd(id, cwd)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
+        if m.unattended {
+            self.store
+                .set_unattended(id)
                 .await
                 .map_err(|e| format!("{e:#}"))?;
         }
