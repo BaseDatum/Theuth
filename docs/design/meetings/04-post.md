@@ -550,3 +550,70 @@ carries the far end, 01 §9 check 5).
     records the ducked signal: `system.opus` speech sat at −55…−60 dBFS, at
     which the TDT hears nothing (the first system sentence of the 34 s
     recording is missing for that reason alone). Not verified by ear yet.
+15. **Summary settle rule, watchdog, restart recovery, lifecycle strip
+    (2026-09-24, `fix/meeting-summary-settle`).** As built, §6's flow was
+    `SendInput` with `turn_running: false` and a `TurnStarted` whose text
+    starts with `[meeting summary]`. The meeting session is normally
+    mid-turn at `Summarize` (the stop-flush batch, the model still
+    answering), so the form was *injected into that turn* (steer semantics,
+    `loop_.rs` `Shared::steer`), no such `TurnStarted` was ever published,
+    the turn id was never recorded and the meeting sat in `Summarizing`
+    forever with the one-at-a-time slot held for every other meeting.
+    - *Settle rule.* `Summarize` now delivers the form as
+      `agent::Steer { id, delivery: Delivery::NextTurn }`
+      (`session::queue_turn`): an idle session starts the turn now, a busy
+      one holds the form until its turn ends and opens the next one with it
+      (62 §0.3, `split_next`). The actor binds the summary to its turn by
+      the form's `InputId` through `AgentEvent::InputInjected { id, turn }`
+      — published before `TurnStarted` for every identified input, on both
+      paths — and settles on that turn's `TurnFinished`. No text matching:
+      a turn-end batch that coalesces the form with an earlier queued steer
+      would have broken `starts_with`. Chosen over "wait for the in-flight
+      `TurnFinished`, then `SendInput`" because the agent already owns the
+      idle/busy race and the id binding is exact.
+    - *Slot.* `Meeting::summarizing` is a `HashMap<MeetingId, Summarizing
+      { manifest, input, turn }>`: meetings summarize concurrently (their
+      sessions are distinct), the "another meeting is being summarized"
+      refusal is gone; the state gate (`Review` only) stands, so a `Review`
+      with a `failure` is the retry.
+    - *Watchdog.* `SUMMARY_TIMEOUT = 10 min` from the form's delivery
+      (`lib.rs`); a `SummaryTimeout { meeting, input }` `tell` scheduled by
+      `begin_summary` releases the slot if that attempt still holds it →
+      `Review`, `failure: "summary did not complete: <its turn | the
+      session> did not finish within 10 minutes"`, `State` published. An
+      `InputWithdrawn` for the form does the same. Nothing holds the slot
+      without a bound.
+    - *Restart.* A `Summarizing` manifest at start is no longer dropped to
+      `Review` + failure. The plugin `tell`s `Resummarize(m)` after the
+      `AgentEvent` subscription: `summary::finished_turn` loads the last 8
+      history rows; an idle session whose history has a `[meeting summary]`
+      user row followed by a non-empty assistant reply is settled by
+      `summary::spawn` on that reply, no new turn; otherwise the form is
+      re-sent through `begin_summary` (no second `meeting-before-summary`
+      snapshot: the first attempt's stands). A failed re-send → `Review`,
+      `failure: "summary did not complete: the daemon restarted and
+      re-sending the form failed: <why>"`. Deviation 7's restart sentence
+      is superseded.
+    - *UI.* `ControlCenter.tsx` renders one `LifecycleStrip` for a finished
+      recording — `Transcribing → Diarizing → Aligning → Review →
+      Summarizing → Done`, current step bold, spinner on a running one
+      (pipeline stages, `Summarizing`), the post progress bar under it, the
+      failure with its fix inline (*Retry summary* on a `Review` with a
+      failure, *Re-run post pipeline* on `Failed`) — and the meeting under
+      it whatever the step: `Review` (editable) / `Review readOnly`
+      (`Summarizing`, `Done`) once a transcript exists, the note beside it
+      (tabs under `md`, as live), the `Summary` block (actions + `summary.md`
+      when there is no note) once `Done`, the brief log, and the `Recording`
+      manifest while the pipeline runs or after it failed. `lifecycle(state,
+      post, failure, ended)` is the pure mapping (`ControlCenter.test.ts`).
+      The header's *Session* link shows for every state (deviation 12's
+      *Open chat* is gone). §7's `Summarizing → spinner` and deviation 11's
+      `Review({ id, failure })` are superseded.
+    - *Checked.* `cargo test -p meeting`: `summary_settles_on_its_own_turn_
+      after_the_one_in_flight`, `two_meetings_summarize_independently`,
+      `watchdog_and_withdrawal_release_the_slot`,
+      `restart_requeues_and_fails_clean_without_an_agent`,
+      `summarize_again_after_a_failure`, `summary::history_holds_a_summary_
+      only_with_a_reply_after_the_form`. The tests run the actor without an
+      agent, so the `Done` path (`summary::finish`) is exercised only by the
+      existing run-time flow; not re-recorded here.

@@ -186,6 +186,26 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
     }
 }
 
+/// Deliver `text` to `session` as its own turn: now when idle, else after the running
+/// turn ends (`Delivery::NextTurn`, 62 §0.3). `id` is echoed by `AgentEvent::InputInjected`
+/// with the turn it opened — the caller binds to that, not to the turn's text.
+pub async fn queue_turn(session: SessionId, id: InputId, text: String) -> Result<(), String> {
+    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or("agent is not running")?;
+    agents
+        .ask(agent::Steer {
+            session,
+            id,
+            text,
+            files: Vec::new(),
+            delivery: agent::Delivery::NextTurn,
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Steers waiting on `session`; `0` when the agent is unreachable.
 pub async fn queued(session: SessionId) -> usize {
     match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
