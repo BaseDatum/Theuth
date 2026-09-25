@@ -277,7 +277,13 @@ function Editor({ initial, info, section, isNew }: { initial: ScheduleFile; info
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Agent" id="rt-agent" hint="each fire creates a task owned by them">
-              <NativeSelect id="rt-agent" value={f.agent ?? ''} onChange={(v) => set('agent', v || null)} options={agents.map((a) => a.file.name)} none="run in its own session" />
+              <NativeSelect
+                id="rt-agent"
+                value={f.agent ?? ''}
+                onChange={(v) => set('agent', v || null)}
+                options={[...new Set([...(f.agent ? [f.agent] : []), ...agents.map((a) => a.file.name)])]}
+                none="run in its own session"
+              />
             </Field>
             <Field label="Project" id="rt-project" hint="label of the task; optional">
               <Input id="rt-project" list="rt-projects" value={f.project ?? ''} onChange={(e) => set('project', str(e.target.value))} />
@@ -290,7 +296,7 @@ function Editor({ initial, info, section, isNew }: { initial: ScheduleFile; info
             <Field label="Model" id="rt-model" hint="optional">
               <Input id="rt-model" value={f.model ?? ''} placeholder="provider/model" onChange={(e) => set('model', str(e.target.value))} />
             </Field>
-            <Field label="Working directory" id="rt-cwd" hint="where until runs and the session starts">
+            <Field label="Directory" id="rt-cwd" hint="where until runs and the run starts">
               <Input id="rt-cwd" className="font-mono" value={f.cwd ?? ''} placeholder="~/src/app" onChange={(e) => set('cwd', str(e.target.value))} />
             </Field>
           </div>
