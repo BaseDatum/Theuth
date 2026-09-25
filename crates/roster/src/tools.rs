@@ -1,5 +1,5 @@
-//! The `agent_propose` and `agents_list` tools (67 §6.5, §8), registered by
-//! `RosterPlugin::start` once the tool registry is up.
+//! The `agent_propose`, `agent_put` and `agents_list` tools (67 §6.5, §8),
+//! registered by `RosterPlugin::start` once the tool registry is up.
 
 use std::sync::Arc;
 
@@ -10,17 +10,18 @@ use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
 use crate::desk::Shared;
 use crate::types::{AgentFile, AgentName, AgentStatus, Budget};
-use crate::{ListAgents, ProposeAgent};
+use crate::{GetAgent, ListAgents, ProposeAgent, PutAgent};
 
 /// Register the roster tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, shared: Arc<Shared>) {
     let _ = reg
-        .ask(RegisterTool(Arc::new(AgentProposeTool(shared))))
+        .ask(RegisterTool(Arc::new(AgentProposeTool(shared.clone()))))
         .await;
+    let _ = reg.ask(RegisterTool(Arc::new(AgentPutTool(shared)))).await;
     let _ = reg.ask(RegisterTool(Arc::new(AgentsListTool))).await;
 }
 
-/// Arguments for [`AgentProposeTool`].
+/// Arguments for [`AgentProposeTool`]; also the agent part of [`AgentPutArgs`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentProposeArgs {
     /// `[a-z0-9-]{1,32}`; becomes `agents/<name>.md`.
@@ -32,6 +33,12 @@ pub struct AgentProposeArgs {
     pub reports_to: Option<String>,
     /// The charter (markdown): standing instructions, what it owns, what it never does.
     pub charter: String,
+    /// Model for every session it opens; default: the harness default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Effort for every session it opens.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// `none` (default) or `<amount> <CUR>/month`.
     #[serde(default)]
     pub budget: Option<String>,
@@ -44,6 +51,39 @@ pub struct AgentProposeArgs {
     /// One paragraph on when this agent is the right one to hand off to.
     #[serde(default)]
     pub capabilities: Option<String>,
+}
+
+/// The file `a` describes, active and unproposed (the caller sets `paused` /
+/// `proposed_by`). `Err`: a bad budget, or a `reports_to` that is neither
+/// `theuth` nor an agent on the roster.
+fn file_of(a: AgentProposeArgs, default_reports_to: &str, shared: &Shared) -> Result<AgentFile, String> {
+    let budget: Budget = match a.budget.as_deref().map(str::parse) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return Err(e),
+        None => Budget::None,
+    };
+    let reports_to = a
+        .reports_to
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| default_reports_to.to_owned());
+    if reports_to != AgentName::DEFAULT && !shared.files().contains_key(&reports_to) {
+        return Err(format!("reports_to {reports_to:?}: no such agent (see agents_list); use `theuth` or an existing name"));
+    }
+    Ok(AgentFile {
+        name: a.name,
+        title: a.title.trim().to_owned(),
+        reports_to,
+        model: a.model,
+        effort: a.effort,
+        tools: a.tools,
+        mcp: a.mcp,
+        budget,
+        capabilities: a.capabilities,
+        paused: false,
+        proposed_by: None,
+        body: a.charter,
+    })
 }
 
 /// `agent_propose`: write a paused agent file and file a `hire_agent` approval (67 §6.5).
@@ -73,29 +113,12 @@ impl Tool for AgentProposeTool {
             .0
             .agent_of(cx.session)
             .unwrap_or_else(|| AgentName::DEFAULT.to_owned());
-        let budget: Budget = match a.budget.as_deref().map(str::parse) {
-            Some(Ok(b)) => b,
-            Some(Err(e)) => return Ok(ToolOutput::err(e)),
-            None => Budget::None,
+        let name = a.name.clone();
+        let mut file = match file_of(a, &proposer, &self.0) {
+            Ok(f) => f,
+            Err(e) => return Ok(ToolOutput::err(e)),
         };
-        let file = AgentFile {
-            title: a.title.trim().to_owned(),
-            name: a.name.clone(),
-            reports_to: a
-                .reports_to
-                .map(|r| r.trim().to_owned())
-                .filter(|r| !r.is_empty())
-                .unwrap_or_else(|| proposer.clone()),
-            model: None,
-            effort: None,
-            tools: a.tools,
-            mcp: a.mcp,
-            budget,
-            capabilities: a.capabilities,
-            paused: true,
-            proposed_by: None,
-            body: a.charter,
-        };
+        file.paused = true;
         match roster
             .ask(ProposeAgent {
                 file,
@@ -104,8 +127,65 @@ impl Tool for AgentProposeTool {
             .await
         {
             Ok(approval) => Ok(ToolOutput::ok(format!(
-                "proposed agents/{}.md (paused until approved); approval {approval}",
-                a.name
+                "proposed agents/{name}.md (paused until approved); approval {approval}"
+            ))),
+            Err(e) => Ok(ToolOutput::err(e.to_string())),
+        }
+    }
+}
+
+/// Arguments for [`AgentPutTool`]: the agent, plus `paused`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentPutArgs {
+    /// The agent.
+    #[serde(flatten)]
+    pub agent: AgentProposeArgs,
+    /// `true`: hired on hold — takes no wakes until un-paused (Agents view / `agent_pause`).
+    #[serde(default)]
+    pub paused: bool,
+}
+
+/// `agent_put`: write `agents/<name>.md` on the user's approval (create or
+/// replace). Only the user's own sessions and theuth's desk may call it;
+/// a desk proposes with `agent_propose`.
+pub struct AgentPutTool(pub Arc<Shared>);
+
+#[async_trait::async_trait]
+impl Tool for AgentPutTool {
+    const NAME: &'static str = "agent_put";
+    const RISK: Risk = Risk::Mutating;
+    type Args = AgentPutArgs;
+
+    fn description(&self) -> String {
+        "Hire (or replace) an agent the user approved: writes `agents/<name>.md` with the given fields and \
+         `paused: false | true`, active at once (the press on an `agent_draft` card is the approval, so no \
+         `proposed_by`). Call it only after the user chose Hire / Hire paused / Replace on a draft card, with \
+         that draft's fields; an existing name is overwritten. Desks may not call it: they `agent_propose` and \
+         the user decides. `reports_to` must be `theuth` or an agent on the roster."
+            .into()
+    }
+
+    async fn call(&self, a: AgentPutArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let Some(roster) = crate::actor() else {
+            return Ok(ToolOutput::err("roster is not running"));
+        };
+        if let Some(desk) = self.0.agent_of(cx.session).filter(|d| d != AgentName::DEFAULT) {
+            return Ok(ToolOutput::err(format!(
+                "agent_put is the user's approval; as agent {desk}'s desk, propose with agent_propose"
+            )));
+        }
+        let mut file = match file_of(a.agent, AgentName::DEFAULT, &self.0) {
+            Ok(f) => f,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        file.paused = a.paused;
+        let name = file.name.clone();
+        let existed = roster.ask(GetAgent(name.to_string())).await.is_ok();
+        match roster.ask(PutAgent(file)).await {
+            Ok(()) => Ok(ToolOutput::ok(format!(
+                "{} agents/{name}.md ({})",
+                if existed { "replaced" } else { "hired" },
+                if a.paused { "paused: un-pause from the Agents view when ready" } else { "active" }
             ))),
             Err(e) => Ok(ToolOutput::err(e.to_string())),
         }
@@ -195,5 +275,44 @@ impl Tool for AgentsListTool {
             structured: Some(serde_json::Value::Array(rows)),
             ..ToolOutput::ok(s)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::file;
+
+    fn args(name: &str, reports_to: Option<&str>) -> AgentProposeArgs {
+        AgentProposeArgs {
+            name: AgentName::new(name).unwrap(),
+            title: " Ops ".into(),
+            reports_to: reports_to.map(str::to_owned),
+            charter: "You are Ops.".into(),
+            model: Some("gpt-5".into()),
+            effort: None,
+            budget: Some("40 USD/month".into()),
+            tools: Some("mutating".into()),
+            mcp: vec![],
+            capabilities: None,
+        }
+    }
+
+    #[test]
+    fn file_of_checks_reports_to_and_keeps_the_fields() {
+        let shared = Shared::default();
+        let cto = file_of(args("cto", None), AgentName::DEFAULT, &shared).unwrap();
+        assert_eq!((cto.reports_to.as_str(), cto.title.as_str(), cto.model.as_deref()), ("theuth", "Ops", Some("gpt-5")));
+        assert_eq!(cto.budget, Budget::Monthly { amount: 40.0, currency: "USD".into() });
+        assert!(!cto.paused && cto.proposed_by.is_none());
+        // an unknown manager is refused; a roster agent or theuth is fine; blank falls back to the default
+        assert!(file_of(args("ops", Some("cto")), AgentName::DEFAULT, &shared).unwrap_err().contains("no such agent"));
+        shared.set_files(BTreeMap::from([("cto".to_owned(), Ok(cto))]), file::default_agent(std::path::Path::new("/nonexistent")));
+        assert_eq!(file_of(args("ops", Some(" cto ")), AgentName::DEFAULT, &shared).unwrap().reports_to, "cto");
+        assert_eq!(file_of(args("ops", Some("")), "cto", &shared).unwrap().reports_to, "cto");
+        assert!(file_of(args("ops", Some("theuth")), "cto", &shared).is_ok());
+        assert!(file_of(AgentProposeArgs { budget: Some("lots".into()), ..args("ops", None) }, "cto", &shared).is_err());
     }
 }
