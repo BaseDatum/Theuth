@@ -1,6 +1,6 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { Blocks, Circle, PanelLeft, Play, Plus } from 'lucide-react'
-import { useState } from 'react'
+import { type MutableRefObject, type PointerEvent, type SyntheticEvent, useRef, useState } from 'react'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, Sele
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { isMacDesktop } from '@/lib/hotkeys'
+import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
@@ -23,6 +23,68 @@ const route = getRouteApi('/tasks/')
 // Radix Select refuses '' as a value: `any` stands for no filter, `all` for every project, labels get a prefix.
 const ANY = 'any'
 const ALL = 'all'
+/** Pointer travel (px) before a press on a card becomes a drag (`useSessionDrag`'s figure). */
+const SLOP = 6
+
+/** A card drag in flight: the task, the pointer, and the column under it. */
+type Drag = { task: Task; x: number; y: number; over: TaskState | null }
+/** What the board hands a draggable card: the shared drag (ref for handlers, setter for renders) and the drop. */
+type DragProps = { ref: MutableRefObject<Drag | null>; set(d: Drag | null): void; onDrop(to: TaskState): void }
+
+/** The column under the pointer: columns carry `data-state`. */
+function columnAt(x: number, y: number): TaskState | null {
+  const s = document.elementFromPoint(x, y)?.closest('[data-state]')?.getAttribute('data-state')
+  return s ? (s as TaskState) : null
+}
+
+/**
+ * Drag a card onto a column. Pointer events, not HTML5 DnD (same as `useSessionDrag`): the WebKit webview keeps the
+ * native drag handler for file drops, which swallows `dragstart`, so `draggable` cards never moved in the app.
+ * Spread on the card's `<li>`; a press that became a drag never follows the card's link. Without `drag` (a card on a
+ * page that does not move tasks) the handlers do nothing.
+ */
+function useCardDrag(task: Task, drag?: DragProps) {
+  const press = useRef<{ x: number; y: number } | null>(null)
+  const swallow = useRef(false)
+  const finish = (e: PointerEvent<HTMLElement>, drop: boolean) => {
+    press.current = null
+    const d = drag?.ref.current
+    if (!drag || !d) return
+    e.currentTarget.releasePointerCapture(e.pointerId)
+    // The click that follows this pointerup belongs to the drag.
+    swallow.current = true
+    setTimeout(() => (swallow.current = false), 0)
+    drag.set(null)
+    if (drop && d.over && canDrag(d.task.state, d.over)) drag.onDrop(d.over)
+  }
+  return {
+    draggable: false,
+    onPointerDown(e: PointerEvent<HTMLElement>) {
+      if (!drag || e.button !== 0 || touch() || e.metaKey || e.shiftKey) return
+      press.current = { x: e.clientX, y: e.clientY }
+    },
+    onPointerMove(e: PointerEvent<HTMLElement>) {
+      const p = press.current
+      if (!p || !drag) return
+      if (drag.ref.current) drag.set({ ...drag.ref.current, x: e.clientX, y: e.clientY, over: columnAt(e.clientX, e.clientY) })
+      else if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SLOP) {
+        e.currentTarget.setPointerCapture(e.pointerId)
+        drag.set({ task, x: e.clientX, y: e.clientY, over: null })
+      }
+    },
+    onPointerUp(e: PointerEvent<HTMLElement>) {
+      finish(e, true)
+    },
+    onPointerCancel(e: PointerEvent<HTMLElement>) {
+      finish(e, false)
+    },
+    onClickCapture(e: SyntheticEvent) {
+      if (!swallow.current) return
+      e.preventDefault()
+      e.stopPropagation()
+    },
+  }
+}
 
 /**
  * `/tasks` (67 §12, 69): one board per project — the palette picks it, "All projects" is the extra click at the bottom —
@@ -39,7 +101,13 @@ export function Board() {
   const mesh = useMesh()
   const move = useMoveTask()
   const [creating, setCreating] = useState(false)
-  const [dragging, setDragging] = useState<Task | null>(null)
+  const [drag, setDragState] = useState<Drag | null>(null)
+  // Handlers read the latest drag without re-binding per render.
+  const dragRef = useRef<Drag | null>(null)
+  const setDrag = (d: Drag | null) => {
+    dragRef.current = d
+    setDragState(d)
+  }
   // No `?project=` yet: the first known project; '' is the explicit "All projects".
   const project = search.project ?? projects[0] ?? ''
   const tasks = useTasks({
@@ -144,20 +212,16 @@ export function Board() {
         {tasks.data && (
           <div className="flex h-full snap-x gap-3 p-3">
             {columns(tasks.data, search.cancelled === true).map(({ state, tasks: col }) => {
-              const droppable = dragging !== null && canDrag(dragging.state, state)
+              const droppable = drag !== null && canDrag(drag.task.state, state)
               return (
                 <section
                   key={state}
                   data-state={state}
-                  className={cn('flex h-full w-64 shrink-0 snap-start flex-col rounded-[10px] bg-layer-1', droppable && 'ring-2 ring-primary/40')}
-                  onDragOver={(e) => {
-                    if (droppable) e.preventDefault()
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault()
-                    if (dragging && canDrag(dragging.state, state)) move.mutate({ id: dragging.id, state })
-                    setDragging(null)
-                  }}
+                  className={cn(
+                    'flex h-full w-64 shrink-0 snap-start flex-col rounded-[10px] bg-layer-1',
+                    droppable && 'ring-2 ring-primary/40',
+                    droppable && drag.over === state && 'bg-primary/10 ring-primary',
+                  )}
                 >
                   <h3 className="flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-fg-secondary">
                     {state}
@@ -168,8 +232,7 @@ export function Board() {
                       <TaskCard
                         key={t.id}
                         task={t}
-                        onDragStart={DRAG_STATES.includes(t.state) ? () => setDragging(t) : undefined}
-                        onDragEnd={() => setDragging(null)}
+                        drag={DRAG_STATES.includes(t.state) ? { ref: dragRef, set: setDrag, onDrop: (to) => move.mutate({ id: t.id, state: to }) } : undefined}
                         onStart={t.state === 'backlog' ? () => move.mutate({ id: t.id, state: 'todo' }) : undefined}
                       />
                     ))}
@@ -177,6 +240,14 @@ export function Board() {
                 </section>
               )
             })}
+          </div>
+        )}
+        {drag && (
+          <div
+            className="pointer-events-none fixed z-50 max-w-56 truncate rounded-lg border border-border-subtle bg-background px-2.5 py-1.5 text-sm shadow-md"
+            style={{ left: drag.x + 12, top: drag.y + 12 }}
+          >
+            {drag.task.title}
           </div>
         )}
       </div>
@@ -188,12 +259,13 @@ export function Board() {
 /**
  * One card: title, state chip ("not started", "queued for ops's desk", "at ops's desk · open session"), owner and
  * reviewer chips, node, age, blocked/waiting badges, a progress dot while checked out. `onStart` renders the Start
- * button (backlog → todo); `onDragStart` makes the card draggable between Backlog and Todo.
+ * button (backlog → todo, the keyboard's way); `drag` makes the card a pointer-drag source between Backlog and Todo.
  */
-export function TaskCard({ task: t, onStart, onDragStart, onDragEnd }: { task: Task; onStart?: () => void; onDragStart?: () => void; onDragEnd?: () => void }) {
+export function TaskCard({ task: t, onStart, drag }: { task: Task; onStart?: () => void; drag?: DragProps }) {
   const first = t.blockers[0] ? parseBlocker(t.blockers[0]) : null
+  const handlers = useCardDrag(t, drag)
   return (
-    <li draggable={onDragStart !== undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} className={cn(onDragStart && 'cursor-grab active:cursor-grabbing')}>
+    <li {...handlers} className={cn(drag && 'cursor-grab select-none active:cursor-grabbing')}>
       <Link
         to="/tasks/$id"
         params={{ id: t.id }}
