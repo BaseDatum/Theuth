@@ -771,7 +771,7 @@ async fn sharing_links_join_roles_demote_revoke() {
     assert_eq!(&log[log.len() - recs.last().unwrap().1.len() - 4 - 32..log.len() - recs.last().unwrap().1.len() - 4], &guest);
 
     // A viewer link: its member cannot write; `doc_set_name` is a write too.
-    let (vlink, vsecret) = actor
+    let (_vlink, vsecret) = actor
         .ask(LinkCreate { doc: doc.clone(), role: Role::Viewer, name: Some("Reader".into()), expires_ms: None })
         .await
         .unwrap();
@@ -803,7 +803,7 @@ async fn sharing_links_join_roles_demote_revoke() {
     actor.ask(OpenDoc { doc: doc.clone(), sv: None, by: viewer.clone() }).await.unwrap();
 
     // Expired and revoked links refuse joins; existing members stay.
-    let (elink, esecret) = actor
+    let (_elink, esecret) = actor
         .ask(LinkCreate { doc: doc.clone(), role: Role::Editor, name: None, expires_ms: Some(1) })
         .await
         .unwrap();
