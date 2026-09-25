@@ -3047,6 +3047,8 @@ mod tests {
         assert!(log.windows(5).any(|w| w == b"abc\rX"), "{log:?}");
     }
 
+    /// The `\[` in the pattern: zsh reads an unescaped `*[` as a broken glob (`bad pattern`),
+    /// so the test runs under whatever `$SHELL` is.
     #[tokio::test]
     async fn query_responder() {
         let fx = fixture(Duration::from_secs(5), Duration::from_secs(60)).await;
@@ -3054,7 +3056,7 @@ mod tests {
         let out = Tool::call(
             &start,
             start_args(
-                r#"stty -echo; printf '\033[H\033[2J\033[6n'; read -t 2 -rs -d R r; echo "${r#*[}""#,
+                r#"stty -echo; printf '\033[H\033[2J\033[6n'; read -t 2 -rs -d R r; echo "${r#*\[}""#,
             ),
             cx(&fx),
         )
@@ -3344,12 +3346,20 @@ mod tests {
     /// tty is revoked with its leader on some platforms). The job settles on
     /// the reaper's exit with its result; the survivor is its own operation
     /// until it actually exits.
+    /// Pinned to `/bin/sh`: whether a `&` child of a `-c` shell outlives the exit holding the
+    /// tty is the shell's business (zsh's differs), and this test is about the ledger, not the shell.
     #[tokio::test]
     async fn tty_holder_outliving_exit_keeps_an_operation_open() {
         use crate::activity::test_sink::Seen;
         use crate::jobs::tests::{certified, ledger_until};
         let (fx, ledger, seen) = certified(Duration::from_secs(3), Duration::from_secs(60)).await;
-        let (start, ..) = tools(&fx);
+        let start = StartTool::new(
+            fx.jobs.clone(),
+            Arc::default(),
+            Duration::from_secs(30),
+            Arc::new(AtomicU64::new(0)),
+            Some(PathBuf::from("/bin/sh")),
+        );
         let out = Tool::call(
             &start,
             start_args("trap '' HUP; sleep 2 & echo up"),
