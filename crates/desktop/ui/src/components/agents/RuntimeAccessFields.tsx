@@ -1,0 +1,154 @@
+import { Link } from '@tanstack/react-router'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { cn } from '@/lib/utils'
+import { useHarnesses, useMcpServers, useModels } from './queries'
+import { type Draft, EFFORTS, TOOLS } from './wizard'
+
+// Radix Select refuses '' as a value.
+const NONE = '__none'
+
+export type Setter = <K extends keyof Draft>(k: K, v: Draft[K]) => void
+
+export function Field({ label, id, hint, error, children }: { label: string; id: string; hint?: React.ReactNode; error?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id} className="text-[13px]">
+        {label}
+      </Label>
+      {children}
+      {error ? <p className="text-xs text-danger">{error}</p> : hint && <p className="text-xs text-fg-tertiary">{hint}</p>}
+    </div>
+  )
+}
+
+/** Paperclip's "Harness / Runtime" section for a theuth file: model, effort, tools ceiling. Harness is per task, not per agent. */
+export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
+  const models = useModels()
+  const harnesses = useHarnesses()
+  const efforts = models.data?.find((m) => m.id === d.model)?.efforts ?? EFFORTS
+  return (
+    <div className="grid gap-4 sm:grid-cols-2">
+      <Field label="Model" id="rt-model" hint="Every session this agent opens; default = the node's model.">
+        <Select value={d.model ?? NONE} onValueChange={(v) => set('model', v === NONE ? null : v)}>
+          <SelectTrigger id="rt-model" size="sm" className="w-full">
+            <SelectValue placeholder="Node default" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Node default</SelectItem>
+            {models.data?.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {m.name} <span className="text-fg-tertiary">{m.provider}</span>
+              </SelectItem>
+            ))}
+            {d.model && !models.data?.some((m) => m.id === d.model) && <SelectItem value={d.model}>{d.model}</SelectItem>}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="Thinking effort" id="rt-effort" hint="Reasoning depth for its sessions.">
+        <Select value={d.effort ?? NONE} onValueChange={(v) => set('effort', v === NONE ? null : v)}>
+          <SelectTrigger id="rt-effort" size="sm" className="w-full">
+            <SelectValue placeholder="Default" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Default</SelectItem>
+            {efforts.map((e) => (
+              <SelectItem key={e} value={e}>
+                {e}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="Tools ceiling" id="rt-tools" hint="The riskiest tool class it and its children may call; inherited downwards.">
+        <Select value={d.tools ?? NONE} onValueChange={(v) => set('tools', v === NONE ? null : v)}>
+          <SelectTrigger id="rt-tools" size="sm" className="w-full">
+            <SelectValue placeholder="Inherit from manager" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Inherit from manager</SelectItem>
+            {TOOLS.map((t) => (
+              <SelectItem key={t} value={t}>
+                {t.replace('_', ' ')}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[13px] font-medium">Harnesses</span>
+        <p className="text-xs text-fg-tertiary">
+          An agent is not tied to one harness: theuth picks native or an external harness (
+          {harnesses.data?.length ? harnesses.data.map((h) => h.name).join(', ') : 'none configured'}) per task, from what the task needs. Manage them in{' '}
+          <Link to="/settings/$tab" params={{ tab: 'agents' }} className="text-primary hover:underline">
+            Settings › Harnesses
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** Paperclip's Tools tab: which MCP servers the agent's sessions see. Empty allowlist = every server. */
+export function AccessFields({ d, set }: { d: Draft; set: Setter }) {
+  const servers = useMcpServers()
+  const all = d.mcp.length === 0
+  const names = [...new Set([...(servers.data?.map((s) => s.name) ?? []), ...d.mcp.map((m) => m.replace(/\..*$/, ''))])].sort()
+  return (
+    <div className="flex flex-col gap-4">
+      <label className="flex items-center justify-between gap-4 rounded-lg border border-border-subtle p-3">
+        <span>
+          <span className="block text-sm">Every MCP server</span>
+          <span className="block text-xs text-fg-tertiary">Sessions see whatever servers this node has connected. Turn off to pick an allowlist.</span>
+        </span>
+        <Switch checked={all} onCheckedChange={(v) => set('mcp', v ? [] : names.slice(0, 1))} aria-label="Every MCP server" />
+      </label>
+      {!all && (
+        <ul className="flex flex-col gap-1">
+          {names.length === 0 && <li className="text-sm text-fg-tertiary">No MCP servers are configured on this node yet.</li>}
+          {names.map((n) => {
+            const on = d.mcp.some((m) => m === n || m.startsWith(`${n}.`))
+            const s = servers.data?.find((x) => x.name === n)
+            return (
+              <li key={n}>
+                <label className={cn('flex items-center gap-3 rounded-lg border border-border-subtle px-3 py-2 text-sm', on && 'bg-layer-1')}>
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={on}
+                    onChange={(e) => set('mcp', e.target.checked ? [...d.mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)), n] : d.mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)))}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{n}</span>
+                    {s && (
+                      <span className="block truncate text-xs text-fg-tertiary">
+                        {s.tools.length} tools{s.connected ? '' : ' · not connected'}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {!all && (
+        <Field label="Narrow to tools" id="ac-tools" hint="Optional `server.tool` entries, comma-separated; they replace the whole-server grant for that server.">
+          <Input
+            id="ac-tools"
+            value={d.mcp.filter((m) => m.includes('.')).join(', ')}
+            placeholder="grafana.query, slack.read"
+            onChange={(e) => {
+              const fine = e.target.value.split(',').map((s) => s.trim()).filter((s) => s.includes('.'))
+              const servers = fine.map((f) => f.replace(/\..*$/, ''))
+              set('mcp', [...d.mcp.filter((m) => !m.includes('.') && !servers.includes(m)), ...fine])
+            }}
+          />
+        </Field>
+      )}
+    </div>
+  )
+}

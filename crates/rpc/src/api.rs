@@ -1249,6 +1249,9 @@ pub trait Api {
     /// Approve a proposed agent: clears `proposed_by`, unpauses (67 §6.5).
     #[method(name = "agent_approve")]
     async fn agent_approve(&self, name: String) -> RpcResult<()>;
+    /// Delete `agents/<name>.md`; a pending proposal is refused with `note` on its hire task (67 §6.5). `theuth` is refused.
+    #[method(name = "agent_remove")]
+    async fn agent_remove(&self, name: String, note: Option<String>) -> RpcResult<()>;
     /// Tasks matching `filter`, oldest first (67 §12 board).
     #[method(name = "tasks_list")]
     async fn tasks_list(&self, filter: tasks::TaskFilter) -> RpcResult<Vec<tasks::Task>>;
@@ -3857,6 +3860,10 @@ impl ApiServer for Server {
 
     async fn agent_approve(&self, name: String) -> RpcResult<()> {
         send(&roster_actor()?, roster::ApproveAgent(name)).await
+    }
+
+    async fn agent_remove(&self, name: String, note: Option<String>) -> RpcResult<()> {
+        send(&roster_actor()?, roster::RemoveAgent { name, note }).await
     }
 
     async fn tasks_list(&self, filter: tasks::TaskFilter) -> RpcResult<Vec<tasks::Task>> {
