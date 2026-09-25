@@ -55,7 +55,7 @@ const TABS = [
   ['meetings', 'Meetings', Mic],
   ['labs', 'Labs', FlaskConical],
   ['skills', 'Skills', Sparkles],
-  ['agents', 'Agents', Bot],
+  ['agents', 'Harnesses', Bot],
   ['mesh', 'Mesh', Share2],
   ['link', 'Link', Link2],
   ['connections', 'Connections', KeyRound],

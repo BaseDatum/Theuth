@@ -22,6 +22,8 @@ RUN bun install --frozen-lockfile --cwd /src/packages/apps
 COPY packages/documents /src/packages/documents
 COPY crates/desktop/ui/package.json crates/desktop/ui/bun.lock ./
 RUN bun install --frozen-lockfile
+# `tsc -b` type-checks the UI's tests too; attach.test.ts imports a fixture from crates/agent.
+COPY crates/agent/tests/fixtures/attach_markers.json /src/crates/agent/tests/fixtures/attach_markers.json
 COPY crates/desktop/ui/ ./
 RUN bun run build
 
