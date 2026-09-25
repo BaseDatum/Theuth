@@ -1,0 +1,31 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Tags",
+      "props": {
+        "items": [
+          {
+            "text": "rust"
+          },
+          {
+            "text": "reviewed",
+            "variant": "success"
+          },
+          {
+            "text": "flaky",
+            "variant": "warning"
+          },
+          {
+            "text": "blocked",
+            "variant": "destructive"
+          },
+          {
+            "text": "docs",
+            "variant": "secondary"
+          }
+        ]
+      }
+    }
+  }
+}

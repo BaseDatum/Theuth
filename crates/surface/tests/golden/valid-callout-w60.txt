@@ -1,0 +1,9 @@
+▍ Sessions are stored per plugin in sqlite.
+
+▍💡 Faster builds
+▍ Use cargo check while iterating.
+
+▍? Should the cache survive a restart?
+
+▍! Back up first
+▍ The migration rewrites every row.

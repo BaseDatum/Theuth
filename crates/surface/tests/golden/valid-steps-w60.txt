@@ -1,0 +1,5 @@
+1. Install the CLI
+   brew install theuth
+2. Sign in
+   theuth login opens the browser once.
+3. Run the first session

@@ -110,8 +110,8 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's nineteen names, in catalog order.
-    const NAMES: [&str; 19] = [
+    /// The contract's thirty-six names, in catalog order.
+    const NAMES: [&str; 36] = [
         "Card",
         "Stack",
         "Grid",
@@ -131,6 +131,23 @@ mod tests {
         "Tabs",
         "Accordion",
         "Graph",
+        "Steps",
+        "Callout",
+        "Code",
+        "Diff",
+        "Tree",
+        "Glossary",
+        "Quote",
+        "Image",
+        "LinkList",
+        "Tags",
+        "Gauge",
+        "Sparkline",
+        "Heatmap",
+        "Person",
+        "FileList",
+        "Kanban",
+        "Calendar",
     ];
 
     #[test]
@@ -148,19 +165,23 @@ mod tests {
     fn compact_lists_every_component_with_props() {
         let compact = catalog_compact();
         let parts: Vec<&str> = compact.split(" · ").collect();
-        assert_eq!(parts.len(), 19, "{compact}");
+        assert_eq!(parts.len(), 36, "{compact}");
         assert!(compact.starts_with("Card(description?, title?) · Stack(direction?, gap?) · Grid(columns) · Separator() · Heading(text, level?)"), "{compact}");
         assert!(
             compact.contains("KeyValueList(items[{key, value}])"),
             "{compact}"
         );
         assert!(
-            compact.contains("Metric(label, value, delta?, trend?)"),
+            compact.contains("Metric(label, value, delta?, spark?, trend?)"),
             "{compact}"
         );
         assert!(compact.contains("Table(columns, rows)"), "{compact}");
         assert!(
-            compact.ends_with("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?)"),
+            compact.contains("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?) · Steps(items[{title, detail?}]) · Callout(text, title?, variant?)"),
+            "{compact}"
+        );
+        assert!(
+            compact.ends_with("Kanban(columns[{title, cards[{title, detail?, tag?}]}]) · Calendar(days[{day, label?, state?}], title?)"),
             "{compact}"
         );
     }

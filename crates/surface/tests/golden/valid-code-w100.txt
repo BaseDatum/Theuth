@@ -1,0 +1,4 @@
+src/main.rs · rust
+fn main() {
+    println!("hi");
+}

@@ -1,0 +1,3 @@
+v1.2          v1.3
+timeout = 30  timeout = 60
+retries = 3   retries = 3

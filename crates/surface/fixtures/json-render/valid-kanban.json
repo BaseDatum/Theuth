@@ -1,0 +1,42 @@
+{
+  "root": "k",
+  "elements": {
+    "k": {
+      "type": "Kanban",
+      "props": {
+        "columns": [
+          {
+            "title": "Todo",
+            "cards": [
+              {
+                "title": "Golden files",
+                "tag": "tests"
+              }
+            ]
+          },
+          {
+            "title": "Doing",
+            "cards": [
+              {
+                "title": "Renderer arms",
+                "detail": "17 to go",
+                "tag": "rust"
+              },
+              {
+                "title": "Desktop zod"
+              }
+            ]
+          },
+          {
+            "title": "Done",
+            "cards": [
+              {
+                "title": "Spec types"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

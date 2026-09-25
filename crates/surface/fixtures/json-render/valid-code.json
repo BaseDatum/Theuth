@@ -1,0 +1,13 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {
+      "type": "Code",
+      "props": {
+        "lang": "rust",
+        "title": "src/main.rs",
+        "text": "fn main() {\n    println!(\"hi\");\n}"
+      }
+    }
+  }
+}

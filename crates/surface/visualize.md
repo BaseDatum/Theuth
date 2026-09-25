@@ -7,7 +7,10 @@ description: When and how to draw in a reply — Mermaid diagram types, the json
 
 A picture is read in one glance; the same content as prose is read in ten.
 When the thing you are explaining has a shape, give it the shape. Default to
-showing; words are for what a picture cannot carry.
+showing: most substantive replies carry at least one rendered block, and a
+reply of only paragraphs is the exception. Words are for what a picture cannot
+carry. All three fence kinds (`json-render`, `openui`, `mermaid`) render inline
+in the reply, merged with the prose; an `openui` fence is not an app card.
 
 ## Choose the block
 
@@ -17,14 +20,23 @@ showing; words are for what a picture cannot carry.
 | who calls whom in what order | `sequenceDiagram` | numbered prose steps |
 | a lifecycle, modes, retries, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
 | schema, types, relationships | `erDiagram` or `classDiagram` | field lists |
-| a how-to or an explanation in steps | `openui` `Steps` | "first… then… finally" |
+| a how-to or an explanation in steps | `json-render` `Steps`, or `openui` `Steps` | "first… then… finally" |
 | options with trade-offs, alternatives | `openui` `Tabs` (one per option), or `json-render` `Table` on shared criteria | three paragraphs |
-| a comparison, before/after, a matrix | `json-render` `Table` (`Badge` for verdict cells) | "A vs B" prose |
-| status of work, checks, tests, a rollout | `MetricGrid` + `Checklist` (or `Progress`) | "we have done A and B; C is pending" |
-| what happened when: incident, history, plan | `Timeline` (state per item) | headers + bullets |
-| numbers, counts, durations, sizes | `MetricGrid` or `Bars`; `openui` `BarChart` / `LineChart` for a series | numbers buried in sentences |
-| a warning, a blocker, the one thing to act on | `openui` `Callout` or `json-render` `Alert` | a bold sentence in the middle of a paragraph |
+| a comparison, before/after, a matrix | `json-render` `Table` (`Badge` for verdict cells); two versions of text: `Diff`; rows × columns of intensity: `Heatmap` | "A vs B" prose |
+| status of work, checks, tests, a rollout | `MetricGrid` + `Checklist` (or `Progress`); work in stages: `Kanban` | "we have done A and B; C is pending" |
+| what happened when: incident, history, plan | `Timeline` (state per item); a week or month of dates: `Calendar` | headers + bullets |
+| numbers, counts, durations, sizes | `MetricGrid` or `Bars`; one value against a limit: `Gauge`; a trend without axes: `Sparkline` or `Metric.spark`; `openui` `BarChart` / `LineChart` for a series | numbers buried in sentences |
+| a warning, a blocker, the one thing to act on | `json-render` `Alert` (severity) | a bold sentence in the middle of a paragraph |
+| an aside: a tip, a note, a question, a must-know | `json-render` `Callout` (variant) or `openui` `Callout` | a parenthesis |
 | facts about one thing (a config, a host, a PR) | `json-render` `KeyValueList` | a colon-separated list |
+| terms and their meanings | `Glossary` | "X means…; Y means…" |
+| a snippet to read, not run | `Code` (copy button); commands to run stay a plain code block | inline backticks for six lines |
+| files, directories, a repository layout | `FileList` (flat) or `Tree` (nested by `depth`) | a bullet list of paths |
+| labels, categories, states | `Tags` | comma-separated words |
+| references, further reading | `LinkList` | bare URLs in a sentence |
+| a picture you have a URL for | `Image` (`http(s)` or `data:image`) | a link the reader must click |
+| an owner, a contact, a reviewer | `Person` | "talk to Ada (release owner, ada@…)" |
+| something someone said, verbatim | `Quote` | quotation marks inside a paragraph |
 | a schedule, a chronology, a topic map | mermaid `gantt`, `timeline`, `mindmap` | dated bullets |
 
 Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
@@ -76,6 +88,7 @@ Example:
 - Strict JSON: double quotes, no trailing commas, no comments, no `True`/`None`.
 - Prefer flat: a `Card` with a `Table` beats nested `Stack`s. ≤ 256 elements.
 - `Graph`: every `edges[].from`/`to` and `nodes[].group` names an existing `nodes[].id` / `groups[].id`; ids unique; ≤ 120 nodes, ≤ 240 edges, ≤ 12 groups; labels ≤ 80 characters. `from == to` is a self-loop.
+- `Heatmap.cells` has one row per `rows` entry and one value per `cols` entry. `Image.src` is `http(s)://` or `data:image/`; `LinkList` urls are `http(s)://`.
 
 ## Catalog
 <!-- generated from crates/surface: names, props, one example each -->

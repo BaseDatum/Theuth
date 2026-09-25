@@ -1,0 +1,14 @@
+{
+  "root": "d",
+  "elements": {
+    "d": {
+      "type": "Diff",
+      "props": {
+        "from": "v1.2",
+        "to": "v1.3",
+        "before": "timeout = 30\nretries = 3",
+        "after": "timeout = 60\nretries = 3"
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Sparkline",
+      "props": {
+        "label": "p99 ms",
+        "values": [
+          180,
+          175,
+          190,
+          210,
+          160,
+          150,
+          155
+        ]
+      }
+    }
+  }
+}

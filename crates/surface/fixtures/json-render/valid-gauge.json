@@ -1,0 +1,13 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Gauge",
+      "props": {
+        "value": 72,
+        "label": "Disk used",
+        "max": 100
+      }
+    }
+  }
+}

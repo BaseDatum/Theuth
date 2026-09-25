@@ -1,0 +1,35 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {
+      "type": "Calendar",
+      "props": {
+        "title": "Rollout week",
+        "days": [
+          {
+            "day": "Mon 22",
+            "label": "schema",
+            "state": "done"
+          },
+          {
+            "day": "Tue 23",
+            "state": "done"
+          },
+          {
+            "day": "Wed 24",
+            "label": "canary",
+            "state": "active"
+          },
+          {
+            "day": "Thu 25"
+          },
+          {
+            "day": "Fri 26",
+            "label": "full",
+            "state": "pending"
+          }
+        ]
+      }
+    }
+  }
+}

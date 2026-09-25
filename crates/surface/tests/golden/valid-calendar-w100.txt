@@ -1,0 +1,2 @@
+Rollout week
+● Mon 22 schema  ● Tue 23  ◉ Wed 24 canary  · Thu 25  ○ Fri 26 full

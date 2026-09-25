@@ -1,0 +1,12 @@
+{
+  "root": "i",
+  "elements": {
+    "i": {
+      "type": "Image",
+      "props": {
+        "src": "javascript:alert(1)",
+        "alt": "x"
+      }
+    }
+  }
+}

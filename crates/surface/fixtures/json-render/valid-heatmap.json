@@ -1,0 +1,37 @@
+{
+  "root": "h",
+  "elements": {
+    "h": {
+      "type": "Heatmap",
+      "props": {
+        "rows": [
+          "Mon",
+          "Tue",
+          "Wed"
+        ],
+        "cols": [
+          "build",
+          "test",
+          "deploy"
+        ],
+        "cells": [
+          [
+            3,
+            12,
+            1
+          ],
+          [
+            0,
+            8,
+            2
+          ],
+          [
+            5,
+            15,
+            4
+          ]
+        ]
+      }
+    }
+  }
+}

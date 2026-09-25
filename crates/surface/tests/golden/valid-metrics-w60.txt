@@ -1,2 +1,2 @@
-Requests / s  Error rate      p99       Hosts
-1 240 ▲ +12%  0.4% ▼ -0.2 pt  180 ms ▶  12
+Requests / s        Error rate      p99       Hosts
+1 240 ▲ +12% ▁▄▃▆█  0.4% ▼ -0.2 pt  180 ms ▶  12
