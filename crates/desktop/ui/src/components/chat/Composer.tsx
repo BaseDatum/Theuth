@@ -8,6 +8,7 @@ import {
   type DragEvent,
   Fragment,
   type KeyboardEvent,
+  type SyntheticEvent,
   useEffect,
   useRef,
   useState,
@@ -28,8 +29,9 @@ import { ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { interrupt, phase, press } from '@/lib/composer-state'
 import * as speech from '@/lib/speech'
-import { matches as chord } from '@/lib/chord'
+import { label as chordLabel, matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
@@ -65,6 +67,34 @@ const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=op
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
 const BOX =
   'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
+/** A press held this long on Send/Steer is the interrupt gesture (items 7/8): fingers have no ⌘↩. */
+const LONG_PRESS = 500
+
+/** Tap → `onPress`; held ≥ `LONG_PRESS` → `onLong`, and the click that follows the release is swallowed. */
+function useLongPress(onPress: () => void, onLong: () => void) {
+  const timer = useRef<number | undefined>(undefined)
+  const fired = useRef(false)
+  const clear = () => clearTimeout(timer.current)
+  return {
+    onPointerDown: () => {
+      fired.current = false
+      clear()
+      timer.current = window.setTimeout(() => {
+        fired.current = true
+        onLong()
+      }, LONG_PRESS)
+    },
+    onPointerUp: clear,
+    onPointerLeave: clear,
+    onPointerCancel: clear,
+    onClick: () => {
+      if (fired.current) fired.current = false
+      else onPress()
+    },
+    // No callout / context menu under a held finger.
+    onContextMenu: (e: SyntheticEvent) => e.preventDefault(),
+  }
+}
 
 /** The slash popup: commands matching the typed word, one highlighted. */
 function SlashList({
@@ -543,6 +573,41 @@ export function Composer({
     }
   }
 
+  /** Item 8: ⌘↩ / a long press with an empty box while steers are queued — cancel the turn and deliver them now,
+   * in order, as the next input. Withdraw before cancel: cancel's epoch bump would stale them where they stand. */
+  const flush = async () => {
+    if (!session || !queued?.length || busy) return
+    setBusy(true)
+    try {
+      const texts: string[] = []
+      for (const q of queued) texts.push(await api.withdraw(session, q.id))
+      await api.cancel(session)
+      const { applyEvents } = useSessions.getState()
+      for (const body of texts) {
+        const id = crypto.randomUUID()
+        applyEvents([{ type: 'InputQueued', session, id, text: body, defer: false }])
+        await api.steer(session, body, id, [])
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // The composer's phase and its two gestures (`lib/composer-state`): Enter / the button, and ⌘↩ / a long press.
+  const filled = Boolean(text.trim() || skill || held)
+  const at = phase(Boolean(session && running), queued?.length ?? 0)
+  const gesture = (g: 'press' | 'interrupt') => {
+    const a = g === 'press' ? press(at, filled) : interrupt(at, filled)
+    if (a === 'flush') void flush()
+    else if (a) void submit(undefined, a === 'interject')
+  }
+  const steerPress = useLongPress(
+    () => gesture('press'),
+    () => gesture('interrupt'),
+  )
+
   // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
   const stopRecording = (discard: boolean) => {
     const r = recorder.current
@@ -660,10 +725,10 @@ export function Composer({
     if (touch()) return
     if (chord(keys.interject, k)) {
       e.preventDefault()
-      void submit(undefined, true)
+      gesture('interrupt')
     } else if (chord(keys.send, k)) {
       e.preventDefault()
-      void submit(undefined, false)
+      gesture('press')
     }
   }
 
@@ -867,20 +932,44 @@ export function Composer({
                 <TooltipContent>{dictReason ?? 'Dictation (Ctrl+D)'}</TooltipContent>
               </Tooltip>
             ))}
-          {running && session ? (
-            <Button
-              className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
-              aria-label="Stop"
-              onClick={() => void api.cancel(session)}
-            >
-              <Square className="size-4 fill-current" />
-            </Button>
+          {at !== 'idle' && session ? (
+            <>
+              {/* Item 7: a finger's steer. Tap queues the box into the running turn; hold interrupts (with the box,
+                  or the queued steers when it is empty). Not `disabled`: an empty box still takes the hold. */}
+              {(filled || at === 'queued') && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className={cn(
+                        'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
+                        (!filled || busy || dictating) && 'opacity-50',
+                      )}
+                      aria-label="Steer"
+                      aria-disabled={!filled || busy || dictating}
+                      {...steerPress}
+                    >
+                      <ArrowUp className="size-5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              <Button
+                className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
+                aria-label="Stop"
+                onClick={() => void api.cancel(session)}
+              >
+                <Square className="size-4 fill-current" />
+              </Button>
+            </>
           ) : (
             <Button
               className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
               aria-label="Send"
-              disabled={(!text.trim() && !skill && !held) || busy || dictating}
-              onClick={() => void submit()}
+              disabled={!filled || busy || dictating}
+              onClick={() => gesture('press')}
             >
               <ArrowUp className="size-5" />
             </Button>

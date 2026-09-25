@@ -1,8 +1,11 @@
 import { AppWindow, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { parseAppInput } from '@/components/apps/lifecycle'
+import { label as chordLabel } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
+import { touch } from '@/lib/platform'
+import { useShortcuts } from '@/lib/shortcuts'
 import { useSessionField } from '@/store/sessions'
 
 /** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message; anything else `◇ text`. */
@@ -28,10 +31,12 @@ function label(text: string) {
   )
 }
 
-/** Steers waiting for the current tool batch: click edits (withdraws into the composer), × withdraws. */
+/** Steers waiting for the current tool batch: click edits (withdraws into the composer), × withdraws. The last chip
+ * names the interrupt gesture that delivers them now (item 8). */
 export function QueuedChips({ session, onEdit }: { session: string; onEdit(text: string): void }) {
   const api = useApi()
   const queued = useSessionField(session, 'queued')
+  const interject = useShortcuts((s) => s.chords.interject)
   if (!queued?.length) return null
   const withdraw = async (id: string) => {
     try {
@@ -56,6 +61,9 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
           >
             {label(q.text)}
             {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
+            {q === queued[queued.length - 1] && (
+              <span className="ml-1 text-xs text-fg-tertiary">queued · {touch() ? 'hold Steer' : chordLabel(interject)} to interrupt</span>
+            )}
           </button>
           <button
             type="button"
