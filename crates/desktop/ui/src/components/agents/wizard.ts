@@ -101,6 +101,14 @@ export function toFile(d: Draft, paused: boolean): AgentFile {
   }
 }
 
+/**
+ * The draft with the charter document's markdown as `body` — what Hire writes into `agents/<name>.md` and Review
+ * shows. Without a document (the query has not resolved yet) the draft is unchanged.
+ */
+export async function withCharter(d: Draft, doc: string | null, markdown: (doc: string) => Promise<string>): Promise<Draft> {
+  return doc ? { ...d, body: (await markdown(doc)).trim() } : d
+}
+
 /** Resume in place (paperclip keeps its wizard in localStorage): the draft and the step survive a reload. */
 export const DRAFT_KEY = 'theuth.hire-draft'
 export type Saved = { step: Step; draft: Draft }

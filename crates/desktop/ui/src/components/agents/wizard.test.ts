@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type Draft, emptyDraft, firstInvalid, starterCharter, suggestName, toFile, validate } from './wizard'
+import { type Draft, emptyDraft, firstInvalid, starterCharter, suggestName, toFile, validate, withCharter } from './wizard'
 
 const draft = (x: Partial<Draft> = {}): Draft => ({ ...emptyDraft(), name: 'ops', title: 'Ops', body: 'You run prod.', ...x })
 const roster = ['theuth', 'cto', 'sre']
@@ -35,6 +35,24 @@ test('charter cannot be empty; review aggregates every step; firstInvalid points
   expect(firstInvalid(bad, roster)).toBe('identity')
   expect(firstInvalid(draft({ body: '' }), roster)).toBe('charter')
   expect(firstInvalid(draft(), roster)).toBeNull()
+})
+
+test('hire copies the charter document into the body; an empty document fails the charter step', async () => {
+  const seen: string[] = []
+  const md = async (doc: string) => {
+    seen.push(doc)
+    return '# Ops\n\nYou run prod, carefully.\n\n'
+  }
+  const d = await withCharter(draft(), 'doc-1', md)
+  expect(seen).toEqual(['doc-1'])
+  expect(d.body).toBe('# Ops\n\nYou run prod, carefully.')
+  expect(toFile(d, false).body).toBe(d.body)
+  // Nothing resolved yet: the draft is untouched, nothing is fetched.
+  expect(await withCharter(draft(), null, md)).toEqual(draft())
+  expect(seen).toEqual(['doc-1'])
+  // A document the user emptied does not hire.
+  const empty = await withCharter(draft(), 'doc-2', async () => ' \n')
+  expect(firstInvalid(empty, roster)).toBe('charter')
 })
 
 test('toFile trims, nulls empty optionals, and sets paused per the Hire button', () => {
