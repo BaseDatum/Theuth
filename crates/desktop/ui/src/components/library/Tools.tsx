@@ -3,7 +3,8 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { type Action, Dot, Empty, Section, toastSync, useAction } from '@/components/settings/shared'
+import { Column, Page } from '@/components/library/Page'
+import { type Action, Dot, Empty, toastSync, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -123,6 +124,8 @@ function useMcpActions(session: string | null): Actions {
   }
 }
 
+/** `/tools`: the MCP servers (design doc 37 §4) — status, risk gates, login, per-tool overrides. `session`
+ * (`?session=`) is the chat the page was opened from; the "off here" switches need one. */
 export function Tools({ session }: { session: string | null }) {
   const api = useApi()
   const servers = useQuery({
@@ -131,7 +134,7 @@ export function Tools({ session }: { session: string | null }) {
   })
   const act = useMcpActions(session)
   return (
-    <Section
+    <Page
       title="Tools"
       actions={
         <>
@@ -148,13 +151,18 @@ export function Tools({ session }: { session: string | null }) {
         </>
       }
     >
-      {servers.data?.length === 0 && (
-        <Empty>No servers. Add one with a git URL or a JSON entry.</Empty>
-      )}
-      {servers.data?.map((s) => (
-        <ServerRow key={s.name} server={s} session={session} act={act} />
-      ))}
-    </Section>
+      <Column>
+        {servers.data?.length === 0 && (
+          <Empty>
+            No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
+            or a JSON entry.
+          </Empty>
+        )}
+        {servers.data?.map((s) => (
+          <ServerRow key={s.name} server={s} session={session} act={act} />
+        ))}
+      </Column>
+    </Page>
   )
 }
 

@@ -1,6 +1,6 @@
 import { BookOpen, Sparkles } from 'lucide-react'
 import { useState } from 'react'
-import { SkillBody } from '@/components/settings/Skills'
+import { SkillBody } from '@/components/library/Skills'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { ActionButton } from './MessageAssistant'
 

@@ -8,7 +8,6 @@ import {
   KeyRound,
   Keyboard,
   Link2,
-  Lock,
   type LucideIcon,
   MessageSquare,
   Mic,
@@ -18,8 +17,6 @@ import {
   Settings2,
   Share2,
   ShieldCheck,
-  Sparkles,
-  Wrench,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -36,10 +33,7 @@ import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
 import { Mesh } from '@/components/settings/Mesh'
 import { Schedules } from '@/components/settings/Schedules'
-import { Secrets } from '@/components/settings/Secrets'
 import { Shortcuts } from '@/components/settings/Shortcuts'
-import { Skills } from '@/components/settings/Skills'
-import { Tools } from '@/components/settings/Tools'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -49,17 +43,14 @@ const TABS = [
   ['loop', 'Agent loop', RefreshCw],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
-  ['tools', 'Tools', Wrench],
   ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
   ['labs', 'Labs', FlaskConical],
-  ['skills', 'Skills', Sparkles],
   ['agents', 'Harnesses', Bot],
   ['mesh', 'Mesh', Share2],
   ['link', 'Link', Link2],
   ['connections', 'Connections', KeyRound],
-  ['secrets', 'Secrets', Lock],
   ['channels', 'Channels', MessageSquare],
   ['shortcuts', 'Shortcuts', Keyboard],
 ] as const satisfies readonly (readonly [string, string, LucideIcon])[]
@@ -87,17 +78,14 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'loop' && <Loop />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
-      {tab === 'tools' && <Tools session={session} />}
       {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'labs' && <Labs />}
-      {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}
       {tab === 'mesh' && <Mesh />}
       {tab === 'link' && <Link />}
       {tab === 'connections' && <Connections />}
-      {tab === 'secrets' && <Secrets />}
       {tab === 'channels' && <Channels />}
       {tab === 'shortcuts' && <Shortcuts />}
     </>

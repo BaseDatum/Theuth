@@ -181,10 +181,8 @@ export type SettingsTab =
   | 'loop'
   | 'approvals'
   | 'communication'
-  | 'tools'
   | 'schedules'
   | 'computer'
-  | 'skills'
   | 'agents'
   | 'link'
   | 'mesh'
@@ -393,7 +391,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/mcp':
-      if (!arg) return settings(navigate, 'tools', session)
+      if (!arg) return navigate({ to: '/tools', search: session ? { session } : {} })
       if (sub === 'sync') return synced(await api.sync_mcp())
       if (sub === 'add' && rest) {
         if (gitUrl(rest)) {
@@ -421,7 +419,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       }
       throw new Error('usage: /acp [add <registry-id> | remove <name>]')
     case '/skills':
-      if (!arg) return settings(navigate, 'skills', session)
+      if (!arg) return navigate({ to: '/skills', search: session ? { session } : {} })
       if (sub === 'sync') return synced(await api.sync_skills())
       if (sub === 'add' && rest) {
         const added = await api.add_skill_repo(rest, null)
