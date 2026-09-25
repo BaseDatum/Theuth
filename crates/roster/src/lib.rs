@@ -475,6 +475,7 @@ impl Roster {
                 })
                 .await;
         }
+        self.shared.forget(session);
         tracing::info!(agent = %name, %session, %reason, "episode closed");
         if !self.desks.contains_key(name)
             && let Some(f) = self.wanted().into_iter().find(|f| f.name.as_str() == name)
@@ -829,17 +830,9 @@ impl Message<DeliverWake> for Roster {
             .ok()
             .flatten()
             .ok_or_else(|| "agent actor is not running".to_owned())?;
-        let mut text = String::new();
-        if !d.primed {
-            let f = self
-                .shared
-                .file(&m.agent)
-                .ok_or_else(|| "no such agent".to_owned())?;
-            let journal = desk::read_journal(&self.rt.data_dir, &m.agent);
-            text.push_str(&desk::opening(&f, journal.as_deref()));
-            text.push_str("\n\n");
-        }
-        text.push_str(&desk::wake_text(&m.wake, m.task.as_ref()));
+        // The charter, journal and manual lead the desk's system prompt
+        // (`Identities`, 70 DESK-PROTOCOL); the input is the wake alone.
+        let text = desk::wake_text(&m.wake, m.task.as_ref());
         // 68 §4.4: a `Resume` whose checkout session was taken here (the
         // sweep re-pointed its engine at us) continues that session.
         let resumed = m
@@ -1295,6 +1288,50 @@ impl ::tools::McpAccess for Desks {
     }
 }
 
+/// 70 DESK-PROTOCOL: who a session speaks as. A desk session leads its system
+/// prompt with the agent's identity ([`desk::identity`]: charter, capabilities,
+/// journal, manual) in place of theuth's persona and `prompt.md`; a session a
+/// desk spawned works *for* the agent ([`desk::child_identity`], naming the
+/// task the desk has checked out). The user's own sessions get `None`. The
+/// desk is found through the lineage (a child's root), so no spawn event has
+/// to arrive first. `theuth`'s charter is `prompt.md` with its root-only spans cut.
+pub struct Identities {
+    shared: Arc<Shared>,
+    data_dir: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl agent::IdentitySource for Identities {
+    async fn identity(&self, lineage: &[runtime::SessionId]) -> Option<String> {
+        let agent = lineage.iter().find_map(|s| self.shared.agent_of(*s))?;
+        let mut f = self.shared.file(&agent)?;
+        if f.name.is_default() {
+            f.body = agent::frame::root_only(&f.body, false);
+        }
+        if lineage.len() == 1 {
+            let journal = desk::read_journal(&self.data_dir, &agent);
+            return Some(desk::identity(&f, journal.as_deref()));
+        }
+        let desk = lineage.last().map(|s| s.to_string());
+        let task = match tasks::actor() {
+            Some(t) => t
+                .ask(tasks::ListTasks(tasks::TaskFilter {
+                    owner: Some(f.name.peer()),
+                    state: Some(vec![tasks::TaskState::Doing]),
+                    ..Default::default()
+                }))
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.into_iter()
+                        .find(|t| t.checkout.as_ref().is_some_and(|c| Some(&c.session) == desk.as_ref()))
+                }),
+            None => None,
+        };
+        Some(desk::child_identity(&f, task.as_ref()))
+    }
+}
+
 /// 67 §9: a session of agent X reads and writes knowledge as `agent:X`, with
 /// X's reporting line (up and down) for `team` items. The user's sessions
 /// and `theuth`'s carry no scope and see everything.
@@ -1423,6 +1460,19 @@ impl runtime::Plugin for RosterPlugin {
                     .ask(tasks::RegisterDeskRouter(Arc::new(Desks(desks))))
                     .await;
                 let _ = me.tell(TasksUp).await;
+            }
+        });
+        let rt2 = rt.clone();
+        let identities = Identities {
+            shared: shared.clone(),
+            data_dir: rt.data_dir.clone(),
+        };
+        tokio::spawn(async move {
+            if let Some(a) = rt2
+                .lookup_when::<agent::Agents>(agent::AGENT_ACTOR)
+                .await
+            {
+                let _ = a.ask(agent::InstallIdentitySource(Arc::new(identities))).await;
             }
         });
         let rt2 = rt.clone();

@@ -87,7 +87,10 @@ pub use context::{
     ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextOwner, ContextRemoval,
     ContextSnapshot, ContextTarget,
 };
-pub use supervisor::{Agents, Broadcast, ListActivity, RegisterNode, UnregisterNode};
+pub use supervisor::{
+    Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity, RegisterNode,
+    UnregisterNode,
+};
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,

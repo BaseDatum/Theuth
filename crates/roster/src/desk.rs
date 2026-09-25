@@ -62,19 +62,48 @@ your line); the user decides. Your `knowledge_put` writes are private to you by 
     )
 }
 
-/// The head of an episode's first input: charter, journal, manual (67 §6.2:
-/// "the next episode starts from the charter + journal").
-pub fn opening(f: &AgentFile, journal: Option<&str>) -> String {
+/// The desk session's identity block (70 DESK-PROTOCOL; 67 §6.2 "the next
+/// episode starts from the charter + journal"): leads the system prompt in
+/// theuth's place — who the agent is, whom it reports to, its charter,
+/// capabilities, journal and the manual. For `theuth` the charter is
+/// `prompt.md` (67 decision 1), so it never appears for anyone else.
+pub fn identity(f: &AgentFile, journal: Option<&str>) -> String {
     let journal = journal
         .map(str::trim)
         .filter(|j| !j.is_empty())
         .unwrap_or("(first episode: no journal yet)");
-    format!(
-        "<desk agent=\"{name}\">\n<charter>\n{charter}\n</charter>\n<journal>\n{journal}\n</journal>\n{manual}\n</desk>",
+    let mut s = format!(
+        "You are {title} (`{name}`), an agent on this theuth roster; you report to {boss}. Your charter:\n{charter}",
+        title = f.title,
         name = f.name,
+        boss = f.reports_to,
         charter = f.body.trim(),
-        manual = manual(f),
-    )
+    );
+    if let Some(c) = f.capabilities.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        s.push_str(&format!("\n\nCapabilities (when you are the one to hand a task to): {c}"));
+    }
+    s.push_str(&format!("\n\n<journal>\n{journal}\n</journal>\n\n{}", manual(f)));
+    s
+}
+
+/// The identity block of a session a desk spawned for a task (70
+/// DESK-PROTOCOL): it works for the agent, not as theuth; `task` is the
+/// desk's checked-out task when one is known.
+pub fn child_identity(f: &AgentFile, task: Option<&tasks::Task>) -> String {
+    let mut s = format!(
+        "You are working for {title} (`{name}`), an agent on this theuth roster",
+        title = f.title,
+        name = f.name,
+    );
+    match task {
+        Some(t) => s.push_str(&format!(", on task {} — {}.", t.id, t.title.trim())),
+        None => s.push('.'),
+    }
+    s.push_str(
+        " Its desk briefed you in your first message and reads your final message as your report: do the work \
+         it asked for, state what you verified and what you did not, and stop.",
+    );
+    s
 }
 
 /// 67 §7.3's scoped wake, as one input: the header line, then the task
@@ -260,13 +289,12 @@ impl Shared {
         s.sessions.insert(session, agent.to_owned());
     }
 
-    /// A desk closed. Its descendants keep their agent (their work is still
-    /// the agent's).
+    /// A desk closed. The session stays the agent's until it is deleted
+    /// ([`Self::forget`]): its closing turn still speaks and writes knowledge
+    /// as the agent. Its descendants keep their agent too (their work is
+    /// still the agent's).
     pub fn clear_desk(&self, agent: &str) -> Option<SessionId> {
-        let mut s = self.write();
-        let id = s.desks.remove(agent)?;
-        s.sessions.remove(&id);
-        Some(id)
+        self.write().desks.remove(agent)
     }
 
     /// The agent's current desk session.
@@ -408,6 +436,8 @@ mod tests {
         assert_eq!(s.agent_of(child).as_deref(), Some("ops"));
         assert_eq!(s.agent_of(stranger), None);
         assert_eq!(s.clear_desk("ops"), Some(desk));
+        assert_eq!(s.agent_of(desk).as_deref(), Some("ops"), "the closing turn is still the agent's");
+        s.forget(desk);
         assert_eq!(s.agent_of(desk), None);
         assert_eq!(s.agent_of(child).as_deref(), Some("ops"));
     }
@@ -468,14 +498,25 @@ External: https://jira/SRE-1\n</task>"
     }
 
     #[test]
-    fn opening_has_charter_journal_and_disposition_rule() {
-        let f = parse("ops", "---\ntitle: Ops\nmodel: m1\ntools: mutating\n---\nYou are Ops.").unwrap();
-        let text = opening(&f, Some("## Done\n- x\n"));
-        assert!(text.starts_with("<desk agent=\"ops\">\n<charter>\nYou are Ops.\n</charter>\n<journal>\n## Done\n- x\n</journal>\n"));
+    fn identity_leads_with_the_agent_and_has_the_disposition_rule() {
+        let f = parse(
+            "karol",
+            "---\ntitle: Infrastructure\nmodel: m1\ntools: mutating\ncapabilities: k8s, networks\n---\nYou run the clusters.",
+        )
+        .unwrap();
+        let text = identity(&f, Some("## Done\n- x\n"));
+        assert!(text.starts_with(
+            "You are Infrastructure (`karol`), an agent on this theuth roster; you report to theuth. Your charter:\n\
+             You run the clusters.\n\nCapabilities (when you are the one to hand a task to): k8s, networks\n\n\
+             <journal>\n## Done\n- x\n</journal>\n\nYou are the desk of agent `karol`"
+        ), "{text}");
         assert!(text.contains("model m1, tools mutating"));
         assert!(text.contains("`review | blocked | done(by reviewer) | delegated (child task exists) | continuing (a schedule, reminder or live child will wake it)`"));
         assert!(text.contains("`blocked: \"no continuation\"` and the manager is woken"));
-        assert!(opening(&f, None).contains("(first episode: no journal yet)"));
+        assert!(!text.contains("You are theuth"));
+        assert!(identity(&f, None).contains("(first episode: no journal yet)"));
+        let child = child_identity(&f, None);
+        assert!(child.starts_with("You are working for Infrastructure (`karol`), an agent on this theuth roster. Its desk"));
     }
 
     #[test]
