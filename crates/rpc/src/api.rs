@@ -1778,9 +1778,10 @@ impl ApiServer for Server {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, &files, &delivery)).await? {
+        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, forward::ByName(&files), &delivery)).await? {
             return Ok(r);
         }
+        let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             SendInput {
@@ -1804,9 +1805,10 @@ impl ApiServer for Server {
     ) -> RpcResult<InputId> {
         self.authorize(ext, session).await?;
         let id = id.unwrap_or_default();
-        if let Some(r) = forward::route(ext, session, "steer", (session, &text, Some(id), &files, &delivery)).await? {
+        if let Some(r) = forward::route(ext, session, "steer", (session, &text, Some(id), forward::ByName(&files), &delivery)).await? {
             return Ok(r);
         }
+        let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             Steer {
@@ -2174,9 +2176,10 @@ impl ApiServer for Server {
         files: Vec<PathBuf>,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "edit_turn", (session, turn, &text, &files)).await? {
+        if let Some(r) = forward::route(ext, session, "edit_turn", (session, turn, &text, forward::ByName(&files))).await? {
             return Ok(r);
         }
+        let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             EditTurn {

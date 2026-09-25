@@ -118,9 +118,13 @@ pub fn spill_path(data_dir: &Path, session: SessionId, call_id: &str) -> PathBuf
 
 /// Serve `theuth/artifacts/1` until shutdown; waits for the mesh transport first.
 pub async fn serve(rt: Runtime, stores: Arc<Stores>) {
-    let Some(transport) = replica::transport(&rt).await else {
-        return;
-    };
+    if let Some(transport) = replica::transport(&rt).await {
+        serve_on(rt, transport, stores).await;
+    }
+}
+
+/// The accept loop of [`serve`] on a given transport.
+pub async fn serve_on(rt: Runtime, transport: Arc<dyn Transport>, stores: Arc<Stores>) {
     loop {
         let accepted = tokio::select! {
             () = rt.shutdown.cancelled() => return,
@@ -354,15 +358,27 @@ pub async fn fetch_spill(
 /// `attachments/`): the existing file, or the same bytes fetched from a peer
 /// (`prefer` first), verified against the name's sha256 prefix, and cached there.
 pub async fn fetch_attachment(dir: &Path, name: &str, prefer: Option<&PeerId>) -> anyhow::Result<PathBuf> {
+    let dest = dir.join(name);
+    if tokio::fs::try_exists(&dest).await? {
+        return Ok(dest);
+    }
+    let t = transport().await.ok_or_else(nobody)?;
+    fetch_attachment_via(t.as_ref(), dir, name, prefer).await
+}
+
+/// [`fetch_attachment`] over a given transport (the mesh's, or a test's).
+pub async fn fetch_attachment_via(t: &dyn Transport, dir: &Path, name: &str, prefer: Option<&PeerId>) -> anyhow::Result<PathBuf> {
     let sha = hash_prefix(name).filter(|_| plain_name(name)).ok_or_else(|| anyhow::anyhow!("{name}: not an attachment name"))?;
     let dest = dir.join(name);
     if tokio::fs::try_exists(&dest).await? {
         return Ok(dest);
     }
-    let nobody = || anyhow::anyhow!("unavailable: no peer has it");
-    let t = transport().await.ok_or_else(nobody)?;
     let req = Req::GetAttachment { name: name.to_owned() };
-    if fetch_file(t.as_ref(), prefer, &req, &dest, Some(sha)).await? { Ok(dest) } else { Err(nobody()) }
+    if fetch_file(t, prefer, &req, &dest, Some(sha)).await? { Ok(dest) } else { Err(nobody()) }
+}
+
+fn nobody() -> anyhow::Error {
+    anyhow::anyhow!("unavailable: no peer has it")
 }
 
 /// The artifact record of `call_id` from a peer (`prefer` first), its
