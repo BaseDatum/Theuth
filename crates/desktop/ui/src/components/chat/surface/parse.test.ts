@@ -55,6 +55,20 @@ test('element limit', () => {
   expect(err(JSON.stringify({ root: 'r', elements }))).toMatch(/^\/: 301 elements, limit 256/)
 })
 
+test('cross-field rules: Heatmap grid shape, Image src scheme, LinkList url scheme', () => {
+  const heat = (cells: string) => `{"root":"h","elements":{"h":{"type":"Heatmap","props":{"rows":["a","b"],"cols":["x","y","z"],"cells":${cells}}}}}`
+  expect(ok(heat('[[1,2,3],[4,5,6]]')).spec.elements.h?.type).toBe('Heatmap')
+  expect(err(heat('[[1,2,3]]'))).toBe('/elements/h/props/cells: 1 rows of cells, 2 rows')
+  expect(err(heat('[[1,2,3],[4,5]]'))).toBe('/elements/h/props/cells/1: 2 cells, 3 columns')
+  const img = (src: string) => `{"root":"i","elements":{"i":{"type":"Image","props":{"src":"${src}","alt":"a"}}}}`
+  expect(ok(img('https://x.test/a.png')).repaired).toBe(false)
+  expect(ok(img('data:image/png;base64,AA==')).repaired).toBe(false)
+  expect(err(img('file:///etc/passwd'))).toBe('/elements/i/props/src: src must be http(s) or data:image')
+  const links = (url: string) => `{"root":"l","elements":{"l":{"type":"LinkList","props":{"items":[{"title":"t","url":"${url}"}]}}}}`
+  expect(ok(links('http://x.test')).repaired).toBe(false)
+  expect(err(links('javascript:alert(1)'))).toBe('/elements/l/props/items/0/url: url must be http(s)')
+})
+
 test('parsePartial renders the finished elements and drops the half-written one', () => {
   const spec = parsePartial(CARD.slice(0, CARD.indexOf('"trend"') + 4))
   expect(spec?.root).toBe('r')

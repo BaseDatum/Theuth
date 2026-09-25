@@ -50,6 +50,21 @@ function element(id: string, raw: unknown): Element {
   const issue = COMPONENTS[type]!.safeParse(props).error?.issues[0]
   if (issue) throw new SpecError([`${at}/props`, ...issue.path.map(String)].join('/'), issue.message)
   if (type === 'Graph') graph(props as unknown as GraphData, `${at}/props`)
+  if (type === 'Heatmap') {
+    const { rows, cols, cells } = props as { rows: string[]; cols: string[]; cells: number[][] }
+    if (cells.length !== rows.length) throw new SpecError(`${at}/props/cells`, `${cells.length} rows of cells, ${rows.length} rows`)
+    cells.forEach((row, i) => {
+      if (row.length !== cols.length) throw new SpecError(`${at}/props/cells/${i}`, `${row.length} cells, ${cols.length} columns`)
+    })
+  }
+  if (type === 'Image' && !/^(https?:\/\/|data:image\/)/.test(props.src as string)) {
+    throw new SpecError(`${at}/props/src`, 'src must be http(s) or data:image')
+  }
+  if (type === 'LinkList') {
+    ;(props.items as { url: string }[]).forEach((it, i) => {
+      if (!/^https?:\/\//.test(it.url)) throw new SpecError(`${at}/props/items/${i}/url`, 'url must be http(s)')
+    })
+  }
   if (!Array.isArray(children)) throw new SpecError(`${at}/children`, 'expected array')
   if (children.length && !isContainer(type)) throw new SpecError(`${at}/children`, `${type} cannot have children`)
   children.forEach((c, i) => {
