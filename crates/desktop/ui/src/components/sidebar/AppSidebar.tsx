@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, Bot, FolderOpen, ListChecks, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -9,6 +9,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -28,6 +29,13 @@ import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
+
+/** The Library group: what the harness can use (skills), reach (MCP tool servers) and hold (secrets). */
+const LIBRARY = [
+  ['/skills', 'Skills', Sparkles],
+  ['/tools', 'Tools', Wrench],
+  ['/secrets', 'Secrets', Lock],
+] as const
 
 /** ChatGPT's left rail: New chat, Knowledge, Artifacts, the chat list, Settings; Search sits in the header beside the toggle (49 §5.1). */
 export function AppSidebar({ session }: { session: string | undefined }) {
@@ -148,6 +156,16 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <SidebarGroupLabel className="mt-2">Library</SidebarGroupLabel>
+          {LIBRARY.map(([to, name, Icon]) => (
+            <SidebarMenuItem key={to}>
+              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+                <Link to={to}>
+                  <Icon /> {name}
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>
