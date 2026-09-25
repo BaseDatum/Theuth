@@ -86,6 +86,11 @@ pub struct ProposeAgent {
     pub proposed_by: String,
 }
 
+/// `ask` → `Option<String>`: the agent whose desk (or a child of it)
+/// `session` is; `None` for the user's own sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct AgentOf(pub runtime::SessionId);
+
 /// `ask` → `Result<(), String>`: close the agent's current episode (67 §6.2):
 /// one journal turn, the journal file, then a fresh desk. Sent by the mesh
 /// lease handler on a hub move (`reason: "lease"`) or by an operator.
@@ -1029,6 +1034,14 @@ impl Message<GetAgent> for Roster {
     }
 }
 
+impl Message<AgentOf> for Roster {
+    type Reply = Option<String>;
+
+    async fn handle(&mut self, m: AgentOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.shared.agent_of(m.0)
+    }
+}
+
 impl Message<PutAgent> for Roster {
     type Reply = Result<(), String>;
 
@@ -1385,11 +1398,17 @@ impl runtime::Plugin for RosterPlugin {
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
                 .await
             {
-                // 67 §6.3: the allowlist consult, then the two tools.
+                // 67 §6.3: the allowlist consult, then the tools and the hiring prompt block.
                 let _ = reg
                     .ask(::tools::InstallMcpAccess(Arc::new(Desks(shared.clone()))))
                     .await;
                 tools::register(&reg, shared).await;
+                let _ = reg
+                    .ask(::tools::RegisterPrompt {
+                        plugin: "roster",
+                        text: tools::PROMPT.into(),
+                    })
+                    .await;
             }
         });
         Ok(())

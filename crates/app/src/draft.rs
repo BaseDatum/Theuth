@@ -119,7 +119,7 @@ impl Tool for TaskDraftTool {
 }
 
 /// A double-quoted OpenUI string literal: the tokenizer reads it as JSON.
-fn lit(s: &str) -> String {
+pub(crate) fn lit(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 

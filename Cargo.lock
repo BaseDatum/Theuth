@@ -551,6 +551,7 @@ dependencies = [
  "link",
  "parking_lot",
  "platform",
+ "roster",
  "runtime",
  "schemars 1.2.2",
  "serde",
