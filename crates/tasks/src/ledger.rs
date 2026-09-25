@@ -638,10 +638,12 @@ impl Ledger {
     /// `note` goes to the thread as a comment.
     pub async fn move_to(&mut self, id: &TaskId, to: TaskState, note: Option<&str>, actor: &str, session: Option<&str>) -> R<Task> {
         let t = self.load(id).await?;
-        if to != t.state && Self::guard(&t, to, actor, &t.blockers).is_err() {
+        if to != t.state
+            && let Err(why) = Self::guard(&t, to, actor, &t.blockers)
+        {
             let allowed: Vec<_> = Self::allowed_moves(&t, actor).into_iter().map(TaskState::as_str).collect();
             return Err(format!(
-                "{} → {} is not allowed; from {} you may move to: {}",
+                "{} → {} is not allowed ({why}); from {} you may move to: {}",
                 t.state.as_str(),
                 to.as_str(),
                 t.state.as_str(),
@@ -1318,11 +1320,11 @@ pub(crate) mod tests {
         let e = r.ledger.move_to(&t.id, TaskState::Done, None, "user", None).await.unwrap_err();
         assert!(e.contains("backlog → done is not allowed") && e.contains("todo") && e.contains("cancelled"), "{e}");
         assert!(!e.contains("doing"), "{e}");
-        // backlog → todo wakes the owner `assigned`; the note lands in the thread
+        // backlog → todo wakes the owner `assigned` (the note is a comment: its own wake); the note lands in the thread
         let t = r.ledger.move_to(&t.id, TaskState::Todo, Some("go ahead"), "user", None).await.unwrap();
         assert_eq!(t.state, TaskState::Todo);
         let w = r.ledger.wakes().await.unwrap();
-        assert_eq!((w.len(), w[0].agent.as_str(), w[0].reason), (1, "ops", WakeReason::Assigned));
+        assert!(w.iter().any(|w| w.agent == "ops" && w.reason == WakeReason::Assigned), "{w:?}");
         let doc = t.thread.clone().unwrap();
         assert!(r.thread.0.lock().unwrap()[&doc].iter().any(|b| b.ends_with("go ahead")));
         // todo → backlog pulls it back; review → todo is the reviewer's send-back

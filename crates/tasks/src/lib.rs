@@ -820,6 +820,12 @@ impl runtime::Plugin for TasksPlugin {
                 .await
             {
                 tools::register(&reg).await;
+                let _ = reg
+                    .ask(::tools::RegisterPrompt {
+                        plugin: "tasks",
+                        text: tools::PROMPT.into(),
+                    })
+                    .await;
             }
         });
         Ok(())

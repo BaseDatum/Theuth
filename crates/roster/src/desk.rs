@@ -53,7 +53,8 @@ through a child. Handle the task the wake names before any other; write progress
 when you need a decision you may not make yourself, and wait for the answer. Disposition rule: an episode's closing \
 turn must leave every task it checked out in `review | blocked | done(by reviewer) | delegated (child task exists) | \
 continuing (a schedule, reminder or live child will wake it)`. A task left in `doing` with none of these is set \
-`blocked: \"no continuation\"` and the manager is woken. Your `knowledge_put` writes are private to you by default; \
+`blocked: \"no continuation\"` and the manager is woken. Tasks in `backlog` are not dispatched: they are not in \
+your inbox and you do not `task_move` them to `todo` — the user starts them. Your `knowledge_put` writes are private to you by default; \
 `knowledge_share` opens them to your team or everyone. When asked to write your journal, answer with the journal only.",
         title = f.title,
     )

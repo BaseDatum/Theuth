@@ -36,6 +36,18 @@ impl Message<CallerOf> for Tasks {
     }
 }
 
+/// The tasks plugin's system-prompt paragraph (`RegisterPrompt { plugin: "tasks" }`,
+/// 69 TASKS): the board is primarily for observation; tasks are made in chat.
+pub const PROMPT: &str = "## Tasks\n\
+The board is for observation; work is filed from chat. When the user describes work to be done (a request \
+with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft` with \
+the proposed tasks and wait for the user's approval, which arrives as their next message (`[app task-drafts …]` \
+naming a draft id and a choice). Then `task_create` with `state: backlog` for \"add to backlog\", `state: todo` \
+for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". A task created in `backlog` \
+runs nothing until it is started. When the user asks to start, pull back, drop, approve or send back a task, \
+use `task_move` (it refuses illegal moves and lists what is allowed from the task's state). Your own work on a \
+task is `task_checkout`; finishing it is `task_update` with a disposition.";
+
 /// Register the nine tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
@@ -95,6 +107,14 @@ fn out<T: Serialize>(r: Result<T, String>) -> anyhow::Result<ToolOutput> {
 fn parse_owner(s: Option<&str>) -> anyhow::Result<Option<Owner>> {
     s.map(|s| s.parse::<Owner>().map_err(anyhow::Error::msg))
         .transpose()
+}
+
+/// `task_create`'s `state`: `backlog` unless the caller passed `todo`; anything else is refused.
+fn create_state(s: Option<TaskState>) -> Result<TaskState, String> {
+    match s.unwrap_or(TaskState::Backlog) {
+        s @ (TaskState::Backlog | TaskState::Todo) => Ok(s),
+        s => Err(format!("state is backlog or todo, not {}", s.as_str())),
+    }
 }
 
 /// Arguments for [`TaskCreateTool`].
@@ -164,9 +184,9 @@ impl Tool for TaskCreateTool {
             Some(p) => Some(p),
             None => session_project(&cx).await,
         };
-        let state = match a.state.unwrap_or(TaskState::Backlog) {
-            s @ (TaskState::Backlog | TaskState::Todo) => s,
-            s => return Ok(ToolOutput::err(format!("state is backlog or todo, not {}", s.as_str()))),
+        let state = match create_state(a.state) {
+            Ok(s) => s,
+            Err(e) => return Ok(ToolOutput::err(e)),
         };
         let input = TaskCreate {
             state,
@@ -911,5 +931,19 @@ impl Tool for DecideTool {
             Ok(()) => ToolOutput::ok(format!("decided `{}` on task {}; the owner is re-woken.", a.decision, a.task)),
             Err(e) => ToolOutput::err(e),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_create_defaults_to_backlog_and_refuses_other_states() {
+        assert_eq!(create_state(None), Ok(TaskState::Backlog));
+        assert_eq!(create_state(Some(TaskState::Todo)), Ok(TaskState::Todo));
+        assert!(create_state(Some(TaskState::Doing)).unwrap_err().contains("backlog or todo"));
+        let a: TaskCreateArgs = serde_json::from_value(serde_json::json!({ "title": "t", "brief": "b" })).unwrap();
+        assert_eq!(a.state, None, "the schema does not force a state; the default is backlog");
     }
 }
