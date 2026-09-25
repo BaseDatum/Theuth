@@ -1219,6 +1219,19 @@ pub trait Api {
     #[method(name = "schedule_history")]
     async fn schedule_history(&self, name: String, limit: u32)
     -> RpcResult<Vec<schedule::RunInfo>>;
+    /// A schedule file's front matter and body for the editor. `Err` when unknown.
+    #[method(name = "get_schedule")]
+    async fn get_schedule(&self, name: String) -> RpcResult<schedule::file::ScheduleFile>;
+    /// Validate and write a schedule file (create or replace); returns its live row.
+    /// `Err` with the name rule, the parse error, or the io error.
+    #[method(name = "put_schedule")]
+    async fn put_schedule(
+        &self,
+        file: schedule::file::ScheduleFile,
+    ) -> RpcResult<schedule::ScheduleInfo>;
+    /// Remove a schedule file; its history gets a `removed` row. `Err` when unknown.
+    #[method(name = "delete_schedule")]
+    async fn delete_schedule(&self, name: String) -> RpcResult<()>;
     /// This engine, its peers and the hub lease (67 §4, §12).
     #[method(name = "mesh_status")]
     async fn mesh_status(&self) -> RpcResult<mesh::MeshStatus>;
@@ -3814,6 +3827,21 @@ impl ApiServer for Server {
         limit: u32,
     ) -> RpcResult<Vec<schedule::RunInfo>> {
         send(&schedule()?, schedule::History { name, limit }).await
+    }
+
+    async fn get_schedule(&self, name: String) -> RpcResult<schedule::file::ScheduleFile> {
+        send(&schedule()?, schedule::Get { name }).await
+    }
+
+    async fn put_schedule(
+        &self,
+        file: schedule::file::ScheduleFile,
+    ) -> RpcResult<schedule::ScheduleInfo> {
+        send(&schedule()?, schedule::Put(file)).await
+    }
+
+    async fn delete_schedule(&self, name: String) -> RpcResult<()> {
+        send(&schedule()?, schedule::Delete { name }).await
     }
 
     // 67: every method is one `ask`; the actors answer `not built` until
