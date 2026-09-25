@@ -1,4 +1,5 @@
 import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
+import { movedSettingsTab } from '@/components/routines/helpers'
 import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
 import { isMacDesktop } from '@/lib/hotkeys'
 
@@ -11,6 +12,8 @@ export const Route = createFileRoute('/settings/$tab')({
     ...(typeof s.peer === 'string' && { peer: s.peer }),
   }),
   beforeLoad: ({ params, search }) => {
+    const moved = movedSettingsTab(params.tab)
+    if (moved) throw redirect({ to: moved, replace: true })
     if (!isTab(params.tab))
       throw redirect({
         to: '/settings/$tab',

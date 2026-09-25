@@ -182,7 +182,6 @@ export type SettingsTab =
   | 'approvals'
   | 'communication'
   | 'tools'
-  | 'schedules'
   | 'computer'
   | 'skills'
   | 'agents'
