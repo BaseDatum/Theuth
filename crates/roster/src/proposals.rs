@@ -21,6 +21,7 @@ pub fn hire_task(file: &AgentFile, proposed_by: &str, manager: tasks::Owner) -> 
         "Approve with `agent_approve` (Agents view / RPC); refuse by deleting `agents/{name}.md`."
     ));
     tasks::TaskCreate {
+        state: tasks::TaskState::Todo,
         title: format!("Hire agent {name} ({})", file.title),
         brief,
         owner: manager,

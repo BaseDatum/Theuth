@@ -696,6 +696,7 @@ impl Roster {
         let before = after - delta;
         let owner = self.manager_owner(&name);
         let task = move |title: String, brief: String| tasks::TaskCreate {
+            state: tasks::TaskState::Todo,
             title,
             brief,
             owner: owner.clone(),

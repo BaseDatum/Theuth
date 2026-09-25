@@ -72,6 +72,7 @@ struct Row {
 
 fn state_of(s: &str) -> TaskState {
     match s {
+        "backlog" => TaskState::Backlog,
         "doing" => TaskState::Doing,
         "review" => TaskState::Review,
         "blocked" => TaskState::Blocked,

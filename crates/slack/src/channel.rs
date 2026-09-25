@@ -1369,6 +1369,7 @@ impl Channel {
                 let task = tasks
                     .ask(tasks::CreateTask {
                         input: tasks::TaskCreate {
+                            state: tasks::TaskState::Todo,
                             title: input.lines().next().unwrap_or("").chars().take(80).collect(),
                             brief: input,
                             owner: tasks::Owner::Agent(agent),

@@ -289,8 +289,12 @@ impl Ledger {
     }
 
     /// Create (67 §7.1): reviewer defaults to the owner's manager (the user
-    /// when none), project to the parent's; a thread document; `wake` to the owner.
+    /// when none), project to the parent's; a thread document. `todo` wakes
+    /// the owner with `wake`; `backlog` wakes nobody (not dispatched).
     pub async fn create(&self, input: TaskCreate, created_by: &str, session: Option<&str>, wake: WakeReason) -> R<Task> {
+        if !matches!(input.state, TaskState::Backlog | TaskState::Todo) {
+            return Err(format!("a task is created in backlog or todo, not {}", input.state.as_str()));
+        }
         let now = self.now();
         let parent = match &input.parent {
             Some(p) => Some(self.load(p).await.map_err(|_| format!("parent {p}: no such task"))?),
@@ -305,7 +309,7 @@ impl Ledger {
             title: input.title,
             brief: input.brief,
             owner: input.owner,
-            state: TaskState::Todo,
+            state: input.state,
             reviewer,
             blockers: vec![],
             blocks: vec![],
@@ -330,7 +334,9 @@ impl Ledger {
             .await;
         self.save(&t).await?;
         self.event(&t, created_by, session, "created", None, Some(format!("owner {}", t.owner))).await;
-        self.wake(&t.owner, Some(&t.id), wake).await;
+        if t.state == TaskState::Todo {
+            self.wake(&t.owner, Some(&t.id), wake).await;
+        }
         Ok(t)
     }
 
@@ -346,6 +352,7 @@ impl Ledger {
             return Ok(t);
         }
         let input = TaskCreate {
+            state: TaskState::Todo,
             title: format!("{schedule} @ {}", stamp(fire_ms)),
             brief: prompt.to_owned(),
             owner: Owner::Agent(agent.to_owned()),
@@ -461,8 +468,10 @@ impl Ledger {
         }
         match (from, to) {
             (_, Cancelled) => Ok(()),
+            (Backlog, Todo) | (Todo, Backlog) => Ok(()),
+            (Backlog, _) => Err("a backlog task is started first (todo), then checked out".into()),
             (Todo, Doing) => Err("todo → doing is task_checkout".into()),
-            (Review, Doing) => {
+            (Review, Doing | Todo) => {
                 let r = t.reviewer.clone().unwrap_or(Owner::User);
                 if acts_for(actor, &r) { Ok(()) } else { Err(format!("send back is the reviewer's ({r})")) }
             }
@@ -599,8 +608,11 @@ impl Ledger {
                         self.wake(r, Some(&t.id), WakeReason::Review).await;
                     }
                 }
-                TaskState::Doing if before.state == TaskState::Review => {
+                TaskState::Doing | TaskState::Todo if before.state == TaskState::Review => {
                     self.wake(&t.owner, Some(&t.id), WakeReason::Comment).await;
+                }
+                TaskState::Todo if before.state == TaskState::Backlog => {
+                    self.wake(&t.owner, Some(&t.id), WakeReason::Assigned).await;
                 }
                 TaskState::Done | TaskState::Cancelled => self.on_closed(&t).await?,
                 _ => {}
@@ -610,6 +622,37 @@ impl Ledger {
             self.unblock(&mut t, actor, WakeReason::Answer).await?;
         }
         self.with_blocks(t).await
+    }
+
+    /// The states `actor` may move `t` to right now (67 §7.2 guards, current blockers).
+    pub fn allowed_moves(t: &Task, actor: &str) -> Vec<TaskState> {
+        use TaskState::*;
+        [Backlog, Todo, Doing, Review, Blocked, Done, Cancelled]
+            .into_iter()
+            .filter(|&to| to != t.state && Self::guard(t, to, actor, &t.blockers).is_ok())
+            .collect()
+    }
+
+    /// `task_move`: a state change on `actor`'s intent (backlog ↔ todo, → cancelled,
+    /// review → done | todo, blocked → todo …). Refuses with the allowed list;
+    /// `note` goes to the thread as a comment.
+    pub async fn move_to(&mut self, id: &TaskId, to: TaskState, note: Option<&str>, actor: &str, session: Option<&str>) -> R<Task> {
+        let t = self.load(id).await?;
+        if to != t.state && Self::guard(&t, to, actor, &t.blockers).is_err() {
+            let allowed: Vec<_> = Self::allowed_moves(&t, actor).into_iter().map(TaskState::as_str).collect();
+            return Err(format!(
+                "{} → {} is not allowed; from {} you may move to: {}",
+                t.state.as_str(),
+                to.as_str(),
+                t.state.as_str(),
+                if allowed.is_empty() { "nothing".to_owned() } else { allowed.join(", ") }
+            ));
+        }
+        let t = self.update(id, TaskPatch { state: Some(to), ..Default::default() }, actor, session).await?;
+        if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
+            self.comment(id, n, false, actor, session).await?;
+        }
+        Ok(t)
     }
 
     /// `task_checkout`: `todo`/`blocked`/unheld `doing` → `doing` under
@@ -1138,6 +1181,7 @@ pub(crate) mod tests {
             self.ledger
                 .create(
                     TaskCreate {
+                        state: TaskState::Todo,
                         title: "fix deploy".into(),
                         brief: "the flaky one".into(),
                         owner: owner.parse().unwrap(),
@@ -1246,6 +1290,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn backlog_is_not_dispatched_and_moves_by_intent() {
+        let mut r = rig().await;
+        let mut input = TaskCreate {
+            state: TaskState::Backlog,
+            title: "later".into(),
+            brief: String::new(),
+            owner: Owner::Agent("ops".into()),
+            reviewer: None,
+            parent: None,
+            project: None,
+            where_: None,
+            harness: None,
+            external: vec![],
+        };
+        let t = r.ledger.create(input.clone(), "user", None, WakeReason::Assigned).await.unwrap();
+        assert_eq!(t.state, TaskState::Backlog);
+        assert!(r.ledger.wakes().await.unwrap().is_empty(), "backlog wakes nobody");
+        // only backlog | todo at creation
+        input.state = TaskState::Doing;
+        assert!(r.ledger.create(input, "user", None, WakeReason::Assigned).await.unwrap_err().contains("backlog or todo"));
+        // backlog → doing / review / blocked refused; checkout refused
+        assert!(r.set_state(&t.id, TaskState::Doing, "agent:ops").await.unwrap_err().contains("started first"));
+        assert!(r.set_state(&t.id, TaskState::Review, "agent:ops").await.is_err());
+        assert!(r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap_err().contains("is backlog"));
+        // task_move refusal names the allowed list
+        let e = r.ledger.move_to(&t.id, TaskState::Done, None, "user", None).await.unwrap_err();
+        assert!(e.contains("backlog → done is not allowed") && e.contains("todo") && e.contains("cancelled"), "{e}");
+        assert!(!e.contains("doing"), "{e}");
+        // backlog → todo wakes the owner `assigned`; the note lands in the thread
+        let t = r.ledger.move_to(&t.id, TaskState::Todo, Some("go ahead"), "user", None).await.unwrap();
+        assert_eq!(t.state, TaskState::Todo);
+        let w = r.ledger.wakes().await.unwrap();
+        assert_eq!((w.len(), w[0].agent.as_str(), w[0].reason), (1, "ops", WakeReason::Assigned));
+        let doc = t.thread.clone().unwrap();
+        assert!(r.thread.0.lock().unwrap()[&doc].iter().any(|b| b.ends_with("go ahead")));
+        // todo → backlog pulls it back; review → todo is the reviewer's send-back
+        assert_eq!(r.ledger.move_to(&t.id, TaskState::Backlog, None, "user", None).await.unwrap().state, TaskState::Backlog);
+        r.ledger.move_to(&t.id, TaskState::Todo, None, "user", None).await.unwrap();
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
+        assert!(r.ledger.move_to(&t.id, TaskState::Todo, None, "agent:ops", None).await.unwrap_err().contains("reviewer"));
+        assert_eq!(r.ledger.move_to(&t.id, TaskState::Todo, None, "agent:lead", None).await.unwrap().state, TaskState::Todo);
+        assert!(Ledger::allowed_moves(&r.ledger.get(&t.id).await.unwrap(), "user").contains(&TaskState::Backlog));
+    }
+
+    #[tokio::test]
     async fn reviewer_must_differ_from_owner_unless_user() {
         let mut r = rig().await;
         let t = r.task("agent:ops").await;
@@ -1288,6 +1378,7 @@ pub(crate) mod tests {
             .ledger
             .create(
                 TaskCreate {
+                    state: TaskState::Todo,
                     title: "parent".into(),
                     brief: String::new(),
                     owner: Owner::User,
@@ -1308,6 +1399,7 @@ pub(crate) mod tests {
             .ledger
             .create(
                 TaskCreate {
+                    state: TaskState::Todo,
                     title: "child".into(),
                     brief: String::new(),
                     owner: Owner::Agent("ops".into()),

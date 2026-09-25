@@ -38,7 +38,9 @@ impl fmt::Display for TaskId {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
-    /// Created, not checked out.
+    /// Created, not dispatched: no wake, no placement, not in any desk inbox.
+    Backlog,
+    /// Queued for the owner: woken, placed, in the desk inbox; not checked out.
     Todo,
     /// Checked out by the owner's session.
     Doing,
@@ -56,6 +58,7 @@ impl TaskState {
     /// The serde name (`todo`, `doing`, …), also the `tasks.state` column value.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Backlog => "backlog",
             Self::Todo => "todo",
             Self::Doing => "doing",
             Self::Review => "review",
@@ -319,10 +322,14 @@ pub struct TaskFilter {
     pub project: Option<String>,
 }
 
-/// `task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1.
+/// `task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1;
+/// `state` (`backlog` | `todo`) defaults to `backlog` on the wire.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct TaskCreate {
+    /// `backlog` (default: created, not dispatched) or `todo` (the owner is woken).
+    #[serde(default = "TaskCreate::default_state")]
+    pub state: TaskState,
     /// One line.
     pub title: String,
     /// Markdown.
@@ -347,6 +354,12 @@ pub struct TaskCreate {
     /// External ticket URLs.
     #[serde(default)]
     pub external: Vec<String>,
+}
+
+impl TaskCreate {
+    const fn default_state() -> TaskState {
+        TaskState::Backlog
+    }
 }
 
 /// `task_update` patch: `Some` = set, `None` = leave. Guarded transitions
@@ -403,6 +416,7 @@ mod tests {
     #[test]
     fn where_is_renamed_on_the_wire() {
         let t = TaskCreate {
+            state: TaskState::Todo,
             title: "t".into(),
             brief: String::new(),
             owner: Owner::User,
@@ -416,5 +430,13 @@ mod tests {
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");
         assert!(v.get("where_").is_none());
+    }
+
+    #[test]
+    fn create_state_defaults_to_backlog_on_the_wire() {
+        let t: TaskCreate =
+            serde_json::from_value(serde_json::json!({ "title": "t", "brief": "", "owner": { "type": "user" } })).unwrap();
+        assert_eq!(t.state, TaskState::Backlog);
+        assert_eq!(serde_json::to_value(TaskState::Backlog).unwrap(), "backlog");
     }
 }
