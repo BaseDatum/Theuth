@@ -48,5 +48,11 @@
 	<string>theuth records voice notes you send to your harness.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>theuth records the audio of the meeting app you choose while a meeting is recording.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>theuth finds your other computers on this network so the app can reach them directly.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_irohv1._udp</string>
+	</array>
 </dict>
 </plist>
