@@ -55,6 +55,22 @@ pub const DB: &str = "mesh.sqlite";
 /// Directory under `data_dir` holding the endpoint identity (67 §4.1).
 pub const DIR: &str = "mesh";
 
+/// This engine holds the hub lease (67 §4.4). `true` until the mesh actor
+/// says otherwise, so a single engine without the mesh plugin does every hub
+/// duty. Set on every [`MeshEvent::Lease`]; read by plugins whose work is a
+/// hub duty (schedule ticks).
+static HUB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The mesh actor calls this on every lease change.
+pub fn set_hub(hub: bool) {
+    HUB.store(hub, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is this engine the hub? `true` when no mesh is running.
+pub fn is_hub() -> bool {
+    HUB.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `ask` → `Result<MeshStatus, String>`: this engine, its peers, the lease.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Status;
@@ -159,8 +175,10 @@ impl Ctx {
 
     async fn emit(&self, ev: MeshEvent) {
         if let MeshEvent::Lease(l) = &ev {
-            // Only the hub refreshes OAuth grants (67 §4.4).
-            oauth::set_hub(l.holder.as_ref() == Some(&self.net.id));
+            // Hub duties (67 §4.4): OAuth refresh, schedule ticks.
+            let hub = l.holder.as_ref() == Some(&self.net.id);
+            oauth::set_hub(hub);
+            set_hub(hub);
         }
         let _ = self.events.send(ev.clone());
         self.rt.publish(ev).await;
