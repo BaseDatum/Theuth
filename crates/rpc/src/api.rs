@@ -1677,7 +1677,7 @@ pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Re
 }
 
 /// An `ASK_FAILED` (`-32000`) error with `msg`.
-fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
+pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
 }
 
@@ -3904,15 +3904,22 @@ impl ApiServer for Server {
         };
         let real = match std::fs::canonicalize(&path) {
             Ok(p) => p,
-            // 68 §7: a blob (`…/artifacts/<hash>.<ext>`) or spill file
-            // (`…/spill/<session>/<call_id>.txt`) this engine never wrote is
-            // fetched from a peer and cached under ours.
+            // 68 §7: a blob (`…/artifacts/<hash>.<ext>`), spill file
+            // (`…/spill/<session>/<call_id>.txt`) or attachment
+            // (`…/attachments/<sha16>.<ext>`) this engine never wrote is fetched
+            // from a peer — the session's owner first — and cached under ours.
             Err(e) => {
+                let prefer = match session {
+                    Some(s) => forward::owner_peer(s).await,
+                    None => None,
+                };
+                let prefer = prefer.as_ref();
                 let dir = |n: usize| path.ancestors().nth(n).and_then(Path::file_name).and_then(|d| d.to_str());
                 let fetched = match (path.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
-                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name, None).await,
+                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name, prefer).await,
+                    (Some(name), Some("attachments"), _) => artifact::mesh::fetch_attachment(&root.join("attachments"), name, prefer).await,
                     (Some(_), Some(session), Some("spill")) => match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
-                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id, None).await,
+                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id, prefer).await,
                         _ => return Err(failed(format!("{}: {e}", path.display()))),
                     },
                     _ => return Err(failed(format!("{}: {e}", path.display()))),

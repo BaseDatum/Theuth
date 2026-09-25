@@ -69,6 +69,15 @@ pub enum Route {
 #[derive(Clone, Copy, Debug)]
 pub struct Forwarded;
 
+/// The mesh peer owning `session`, when it is another engine and the
+/// sessions plugin is running: the first peer to ask for its files.
+pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
+    sessionsync::actor()?;
+    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await.ok()?;
+    let (owner, _) = store.owner(session).await.ok().flatten()?;
+    (!owner.is_empty() && owner != store.engine()).then_some(PeerId(owner))
+}
+
 /// Classify `session` from its row: `Here` when unknown, unowned or ours;
 /// `Forward(owner)` for an agent desk — an external harness (`agent` set) or
 /// a roster desk: a pinned root the roster titled `agent:<name>`
