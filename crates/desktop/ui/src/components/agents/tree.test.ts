@@ -20,6 +20,12 @@ test('unknown manager and cycles fall back to the root', () => {
   expect(t.children.every((c) => c.children.length === 0)).toBe(true)
 })
 
+test('the built-in theuth on the roster is the root, never its own child', () => {
+  const t = tree([s('theuth', ''), s('ops', 'theuth')])
+  expect(names(t)).toEqual(['theuth', [['ops', []]]])
+  expect(t.agent?.file.name).toBe('theuth')
+})
+
 test('budget fraction is capped and absent for none', () => {
   expect(budgetUsed(s('a', 'theuth'))).toBeNull()
   expect(budgetUsed(s('a', 'theuth', { spent_month: 20, file: { ...s('a', 'theuth').file, budget: { type: 'monthly', amount: 40, currency: 'USD' } } }))).toBe(0.5)

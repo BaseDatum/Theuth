@@ -22,6 +22,8 @@ export function tree(agents: readonly AgentSummary[]): Node {
   }
   const root = node(THEUTH)
   for (const a of agents) {
+    // The built-in root is on the roster too; hanging it under itself makes a cycle (stack overflow on sort/render).
+    if (a.file.name === THEUTH) continue
     const rt = a.file.reports_to
     node(byName[rt] && !loops(rt, a.file.name) ? rt : THEUTH).children.push(node(a.file.name))
   }

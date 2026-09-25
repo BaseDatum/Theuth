@@ -634,7 +634,9 @@ async fn notes_create_list_rename_delete() {
     let b_md = dir.path().join(format!("documents/{}/note.md", b.id));
     assert_eq!(wait_for(&b_md, |s| s.contains("body"), Duration::from_secs(3)).await, "# Own heading\n\nbody\n");
 
-    // Newest update first; an update to `a` moves it to the top.
+    // Newest update first; an update to `a` moves it to the top. The export writes the file and then stamps
+    // `updated_ms`; give `b`'s export the same beat so the two stamps are ordered the way the file writes were.
+    tokio::time::sleep(Duration::from_millis(150)).await;
     let ids = |v: Vec<document::DocSummary>| v.into_iter().map(|d| d.id).collect::<Vec<_>>();
     let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
     assert!(list.iter().all(|d| d.created_ms > 0 && d.updated_ms >= d.created_ms));
@@ -644,7 +646,15 @@ async fn notes_create_list_rename_delete() {
         .ask(ApplyUpdate { doc: a.id.clone(), update: scratch_update("x"), by: owner.clone() })
         .await
         .unwrap();
-    let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+    // 69: the index row moves at snapshot/export (debounced), not per keystroke — wait for the export.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let list = loop {
+        let list = actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap();
+        if list.first().map(|d| &d.id) == Some(&a.id) || Instant::now() > deadline {
+            break list;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(ids(list), vec![a.id.clone(), b.id.clone()]);
 
     // Rename: meta/index title and the heading block; `b`'s own heading is rewritten too (it is an h1).

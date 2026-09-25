@@ -707,7 +707,7 @@ impl Store {
         let rows: Vec<(String, String, String, String, i64, i64, i64)> = match kind {
             Some(k) => {
                 sqlx::query_as(
-                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC LIMIT ?",
+                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL AND kind = ? ORDER BY updated_ms DESC, rowid DESC LIMIT ?",
                 )
                 .bind(k.to_string())
                 .bind(limit)
@@ -716,7 +716,7 @@ impl Store {
             }
             None => {
                 sqlx::query_as(
-                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC LIMIT ?",
+                    "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE deleted_ms IS NULL ORDER BY updated_ms DESC, rowid DESC LIMIT ?",
                 )
                 .bind(limit)
                 .fetch_all(&self.db)
