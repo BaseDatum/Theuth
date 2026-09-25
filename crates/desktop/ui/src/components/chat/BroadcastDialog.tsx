@@ -8,10 +8,11 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { Delivery } from '@/rpc/bindings/Delivery'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
 import { allRoots, busy, counts, groupRows, outcomeLines, runningRoots, summarize, title } from './broadcast'
 
@@ -79,6 +80,7 @@ function Form({
 }) {
   const api = useApi()
   const { data: rows, error: loadError } = useQuery({ queryKey: ['activity'], queryFn: () => api.list_activity() })
+  const { data: sessions } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [picked, setPicked] = useState<Set<string> | null>(null)
   const [text, setText] = useState(req.text ?? '')
   const [delivery, setDelivery] = useState<Delivery>('steer')
@@ -130,7 +132,7 @@ function Form({
         dry_run: false,
       })
       const failed = receipt.rows.filter((r) => r.outcome.outcome === 'failed').length
-      const lines = outcomeLines(receipt)
+      const lines = outcomeLines(receipt, sessions)
       ;(failed > 0 ? toast.warning : toast.success)(
         failed > 0 ? `Sent to ${receipt.rows.length - failed} of ${receipt.rows.length} sessions` : `Sent to ${receipt.rows.length} sessions`,
         { description: <pre className="whitespace-pre-wrap font-sans">{lines.join('\n')}</pre> },
@@ -162,12 +164,12 @@ function Form({
           <ul aria-label="Sessions">
             {groups.map((g) => (
               <li key={g.root.id}>
-                <Row row={g.root} checked={ids.has(g.root.id)} now={now} onToggle={toggle} />
+                <Row row={g.root} checked={ids.has(g.root.id)} now={now} sessions={sessions} onToggle={toggle} />
                 {g.children.length > 0 && (
                   <ul>
                     {g.children.map((c) => (
                       <li key={c.id}>
-                        <Row row={c} checked={ids.has(c.id)} now={now} onToggle={toggle} />
+                        <Row row={c} checked={ids.has(c.id)} now={now} sessions={sessions} onToggle={toggle} />
                       </li>
                     ))}
                   </ul>
@@ -227,7 +229,19 @@ function Chip({ onClick, children }: { onClick(): void; children: string }) {
 }
 
 /** Checkbox row, 44 px tall for fingers (48 §2.3); children indent by depth like `AgentTree`. */
-function Row({ row, checked, now, onToggle }: { row: AgentInfo; checked: boolean; now: number; onToggle(id: string): void }) {
+function Row({
+  row,
+  checked,
+  now,
+  sessions,
+  onToggle,
+}: {
+  row: AgentInfo
+  checked: boolean
+  now: number
+  sessions: SessionSummary[] | undefined
+  onToggle(id: string): void
+}) {
   const a = row.activity
   const state = a?.state.state ?? row.state.state
   const extra = a && counts(a)
@@ -238,7 +252,7 @@ function Row({ row, checked, now, onToggle }: { row: AgentInfo; checked: boolean
       style={{ paddingLeft: 8 + row.depth * 16 }}
     >
       <input type="checkbox" className="size-4 shrink-0 accent-foreground" checked={checked} onChange={() => onToggle(row.id)} />
-      <span className="min-w-0 flex-1 truncate">{title(row)}</span>
+      <span className="min-w-0 flex-1 truncate">{title(row.id, sessions, row.name)}</span>
       <span
         className={cn('shrink-0 rounded-md bg-layer-2 px-1.5 text-xs text-fg-secondary', busy(a) && 'text-foreground')}
         title={state}

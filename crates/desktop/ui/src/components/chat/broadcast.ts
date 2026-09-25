@@ -1,12 +1,20 @@
+import { chatName } from '@/lib/attach'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
 
 /** `list_activity` rows carry their depth from their own root: 0 is a root (62 §3.2). */
 export const isRoot = (r: AgentInfo) => r.depth === 0
 
-/** Display title: the roster name, else the id's first 8 chars. */
-export const title = (r: { name: string; id: string }) => r.name || r.id.slice(0, 8)
+/**
+ * What a recipient is called, from the session list (66 §8): a subagent's peer name, else `chatName`. `fallback`
+ * (the picker row's roster name, a receipt row's own title) stands in while the list lacks the session; never the id.
+ */
+export function title(id: string, sessions: readonly SessionSummary[] | undefined, fallback = ''): string {
+  const s = sessions?.find((x) => x.id === id)
+  return s ? s.name || chatName(s) : fallback || 'Untitled chat'
+}
 
 /** Mid-turn by state alone: `Running | Awaiting | Approval` (62 §0.2); a pre-62 engine reports nothing. */
 export const busy = (a: SessionActivity | undefined) =>
@@ -60,7 +68,7 @@ export function summarize(receipt: BroadcastReceipt): string {
 }
 
 /** Toast lines, one per row (`title — started | queued | skipped: reason | failed: error`), failures first. */
-export function outcomeLines(receipt: BroadcastReceipt): string[] {
+export function outcomeLines(receipt: BroadcastReceipt, sessions: readonly SessionSummary[] | undefined): string[] {
   const line = (r: BroadcastReceipt['rows'][number]) => {
     const o = r.outcome
     const what =
@@ -73,7 +81,7 @@ export function outcomeLines(receipt: BroadcastReceipt): string[] {
           : o.outcome === 'skipped'
             ? `skipped: ${o.reason}`
             : `failed: ${o.error}`
-    return `${title({ name: r.title, id: r.session })} — ${what}`
+    return `${title(r.session, sessions, r.title)} — ${what}`
   }
   const failed = receipt.rows.filter((r) => r.outcome.outcome === 'failed')
   const rest = receipt.rows.filter((r) => r.outcome.outcome !== 'failed')
