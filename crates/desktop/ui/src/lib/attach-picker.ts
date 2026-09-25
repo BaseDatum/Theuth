@@ -89,20 +89,20 @@ export function pushRecents(recents: readonly AttachRef[], sent: readonly Attach
   return dedupe([...sent, ...recents]).slice(0, RECENTS_MAX)
 }
 
-const recentsKey = (harness: string) => `attach-recents:${harness}`
+const recentsKey = (engine: string) => `attach-recents:${engine}`
 
-export function loadRecents(harness: string): AttachRef[] {
+export function loadRecents(engine: string): AttachRef[] {
   try {
-    const raw = localStorage.getItem(recentsKey(harness))
+    const raw = localStorage.getItem(recentsKey(engine))
     return raw ? (JSON.parse(raw) as AttachRef[]) : []
   } catch {
     return []
   }
 }
 
-export function saveRecents(harness: string, refs: readonly AttachRef[]): void {
+export function saveRecents(engine: string, refs: readonly AttachRef[]): void {
   try {
-    localStorage.setItem(recentsKey(harness), JSON.stringify(refs))
+    localStorage.setItem(recentsKey(engine), JSON.stringify(refs))
   } catch {
     // Storage full or disabled: recents are a convenience.
   }

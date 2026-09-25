@@ -10,10 +10,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
-import { type Harness, LOCAL, LOCAL_NAME, type Presence, hasLocal, useHarnessTree, useHarnesses } from '@/link/harnesses'
+import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngineTree, useEngines } from '@/link/engines'
 import { retryPair } from '@/link/nodes'
 import { useConnection } from '@/store/connection'
-import { scope } from '@/store/harness-scope'
+import { scope } from '@/store/engine-scope'
 
 const DOT: Record<Presence, string> = {
   online: 'bg-success',
@@ -22,8 +22,8 @@ const DOT: Record<Presence, string> = {
   refused: 'bg-danger',
 }
 
-/** Paired harnesses plus the local daemon when this container has one. */
-export const useHarnessCount = (): number => useHarnesses((s) => s.harnesses.length) + (hasLocal() ? 1 : 0)
+/** Paired engines plus the local daemon when this container has one. */
+export const useEngineCount = (): number => useEngines((s) => s.engines.length) + (hasLocal() ? 1 : 0)
 
 /** The local daemon has no relay PRESENCE; its dot follows its socket state. */
 function useLocalPresence(): Presence {
@@ -37,7 +37,7 @@ export function Dot({ presence }: { presence: Presence }) {
 }
 
 /** A mesh row's label: the mesh's name once its hub told us, the pairing name before. */
-export const harnessLabel = (h: Harness): string => (h.kind === 'mesh' && h.meshName) || h.name
+export const engineLabel = (h: Engine): string => (h.kind === 'mesh' && h.meshName) || h.name
 
 /**
  * The chip beside a mesh row (69 decision 6): a hub failover is `PRESENCE 0` / `CLOSE 4|5` and the
@@ -48,32 +48,32 @@ export const meshChip = (p: Presence): string | null => (p === 'online' ? null :
 
 /** `2 of 3 engines online` for a mesh row; `null` before its hub answered `mesh_status`. */
 export function useMembersLine(id: string): string | null {
-  const m = useHarnesses((s) => s.members[id])
+  const m = useEngines((s) => s.members[id])
   return m ? `${m.online} of ${m.total} engine${m.total === 1 ? '' : 's'} online` : null
 }
 
 /**
- * 31 §7.5 `● Studio Mac ▾`: every harness with its presence dot, nodes nested one step
- * under their parent (32 §8.1), "Add harness…", "Manage…". Hidden when the local
- * daemon is the only harness — today's desktop UI unchanged. Nodes include their
+ * 31 §7.5 `● Studio Mac ▾`: every engine with its presence dot, nodes nested one step
+ * under their parent (32 §8.1), "Add engine…", "Manage…". Hidden when the local
+ * daemon is the only engine — today's desktop UI unchanged. Nodes include their
  * parent: `build-box · via Studio Mac`.
  */
-export function HarnessSwitcher({ className }: { className?: string }) {
+export function EngineSwitcher({ className }: { className?: string }) {
   const navigate = useNavigate()
-  const harnesses = useHarnesses((s) => s.harnesses)
-  const rows = useHarnessTree()
-  const active = useHarnesses((s) => s.active)
-  const presence = useHarnesses((s) => s.presence)
-  const pairError = useHarnesses((s) => s.pairError)
-  const setActive = useHarnesses((s) => s.setActive)
+  const engines = useEngines((s) => s.engines)
+  const rows = useEngineTree()
+  const active = useEngines((s) => s.active)
+  const presence = useEngines((s) => s.presence)
+  const pairError = useEngines((s) => s.pairError)
+  const setActive = useEngines((s) => s.setActive)
   const info = useConnection((s) => s.info)
   const localPresence = useLocalPresence()
-  if (harnesses.length === 0 && hasLocal()) return null
+  if (engines.length === 0 && hasLocal()) return null
 
   const presenceOf = (id: string): Presence => (id === LOCAL ? localPresence : (presence[id] ?? 'offline'))
-  const current = harnesses.find((h) => h.id === active)
-  const activeName = current?.kind === 'mesh' ? harnessLabel(current) : (info?.name ?? (active === LOCAL ? LOCAL_NAME : (current?.name ?? 'Harness')))
-  const via = current?.parent && (current.parent === LOCAL ? LOCAL_NAME : harnesses.find((h) => h.id === current.parent)?.name)
+  const current = engines.find((h) => h.id === active)
+  const activeName = current?.kind === 'mesh' ? engineLabel(current) : (info?.name ?? (active === LOCAL ? LOCAL_NAME : (current?.name ?? 'Engine')))
+  const via = current?.parent && (current.parent === LOCAL ? LOCAL_NAME : engines.find((h) => h.id === current.parent)?.name)
   const chip = current?.kind === 'mesh' ? meshChip(presenceOf(active)) : null
 
   return (
@@ -90,7 +90,7 @@ export function HarnessSwitcher({ className }: { className?: string }) {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
-        {rows.map(({ harness: h, depth }) => {
+        {rows.map(({ engine: h, depth }) => {
           const p = presenceOf(h.id)
           const failed = pairError[h.id]
           return (
@@ -100,7 +100,7 @@ export function HarnessSwitcher({ className }: { className?: string }) {
               onSelect={(e) => (failed ? e.preventDefault() : setActive(h.id))}
             >
               <Dot presence={p} />
-              <span className="min-w-0 truncate">{h.id === LOCAL && active === LOCAL ? activeName : harnessLabel(h)}</span>
+              <span className="min-w-0 truncate">{h.id === LOCAL && active === LOCAL ? activeName : engineLabel(h)}</span>
               {h.kind === 'mesh' && <Members id={h.id} presence={p} />}
               {failed ? (
                 <Button
@@ -125,9 +125,9 @@ export function HarnessSwitcher({ className }: { className?: string }) {
         })}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
-          <Plus /> Add harness…
+          <Plus /> Add engine…
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'harnesses' }, search: {} })}>
+        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'engines' }, search: {} })}>
           <Settings2 /> Manage…
         </DropdownMenuItem>
       </DropdownMenuContent>

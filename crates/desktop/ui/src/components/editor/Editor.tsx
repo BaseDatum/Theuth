@@ -19,7 +19,7 @@ import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
-import type { AgentPresence, DocStatus, HarnessProvider } from '@/lib/doc/provider'
+import type { AgentPresence, DocStatus, EngineProvider } from '@/lib/doc/provider'
 import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
 import { subscribeDark } from '@/lib/theme'
@@ -70,7 +70,7 @@ function DocSideMenu(props: SideMenuProps) {
 const CANVAS = 'min-h-0 flex-1 overflow-y-auto bg-background'
 
 /**
- * BlockNote over a live `HarnessProvider` (59 §3.3); the status line of §9.4 sits under it.
+ * BlockNote over a live `EngineProvider` (59 §3.3); the status line of §9.4 sits under it.
  * `onAsk(block)` is the "Ask theuth…" slash item (§9.3): the host opens a chat about this document and block.
  */
 export function Editor({
@@ -80,7 +80,7 @@ export function Editor({
   onAsk,
   dense,
 }: {
-  provider: HarnessProvider
+  provider: EngineProvider
   status: DocStatus
   className?: string
   onAsk?: (block: string) => void
@@ -198,7 +198,7 @@ export function Editor({
 }
 
 /** The agent's awareness state (59 §6.4, §9.4), re-read on every awareness change. */
-function useAgentPresence(provider: HarnessProvider): AgentPresence | null {
+function useAgentPresence(provider: EngineProvider): AgentPresence | null {
   const [agent, setAgent] = useState<AgentPresence | null>(() => provider.agentPresence())
   useEffect(() => {
     const read = () => setAgent(provider.agentPresence())

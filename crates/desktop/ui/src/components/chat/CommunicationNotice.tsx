@@ -10,7 +10,7 @@ const NONE: A2aExportStatus[] = []
 
 /**
  * Authoritative switch state for `session` (`null` = the global default) and the A2A exports publishing
- * it (50 §10). The harness computes effective/inherited; the UI only renders. Exports are listed even
+ * it (50 §10). The engine computes effective/inherited; the UI only renders. Exports are listed even
  * while communication is off, so a session that is one toggle away from being reachable still says so.
  */
 export function useCommunication(session: string | null) {
@@ -28,7 +28,7 @@ export function useCommunication(session: string | null) {
   return { state, exports }
 }
 
-/** The blocker as the harness ranked it (50 §2.1): global off beats a session opt-out, which beats an ancestor's. */
+/** The blocker as the engine ranked it (50 §2.1): global off beats a session opt-out, which beats an ancestor's. */
 function offReason(s: CommunicationState): string {
   if (!s.global) return `off for every session${s.source === 'default' ? '' : ` (${s.source})`}`
   if (s.opted_out) return 'off for this session'

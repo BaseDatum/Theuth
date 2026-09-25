@@ -17,12 +17,12 @@ export type Runtime = NonNullable<
 
 /** `RpcError.code` of a transport failure (`rpc/client.ts` `TRANSPORT`). */
 const TRANSPORT = -32300;
-/** `RpcError.code` the harness answers with while the app plugin is off. */
+/** `RpcError.code` the engine answers with while the app plugin is off. */
 export const APP_DISABLED = -32001;
-/** `RpcError.code` of JSON-RPC method-not-found: a harness older than apps. */
+/** `RpcError.code` of JSON-RPC method-not-found: an engine older than apps. */
 const METHOD_NOT_FOUND = -32601;
 
-/** Poll interval for a call the harness reports `running`. */
+/** Poll interval for a call the engine reports `running`. */
 const POLL_MS = 500;
 
 /** Why a provider call failed, beyond the wire statuses: host-side outcomes the status strip must name. */
@@ -77,19 +77,19 @@ function wrap(e: unknown): AppCallError {
     if (e.code === APP_DISABLED)
       return new AppCallError(
         "unavailable",
-        "apps are disabled on this harness",
+        "apps are disabled on this engine",
       );
     if (e.code === METHOD_NOT_FOUND)
       return new AppCallError(
         "unavailable",
-        "this harness does not support apps",
+        "this engine does not support apps",
       );
     return new AppCallError("failed", e.message);
   }
   return new AppCallError("failed", e instanceof Error ? e.message : String(e));
 }
 
-/** `p`, or an `aborted` rejection as soon as `signal` fires. Aborting never cancels the harness's work (46 §7). */
+/** `p`, or an `aborted` rejection as soon as `signal` fires. Aborting never cancels the engine's work (46 §7). */
 function abortable<T>(
   p: Promise<T>,
   signal: AbortSignal | undefined,
@@ -99,7 +99,7 @@ function abortable<T>(
   const abort = () => reject(new AppCallError("aborted", "superseded"));
   if (signal.aborted) {
     abort();
-    // The superseded call still settles on its own; nobody listens, and the harness's work is not cancelled.
+    // The superseded call still settles on its own; nobody listens, and the engine's work is not cancelled.
     p.catch(() => undefined);
   } else {
     signal.addEventListener("abort", abort, { once: true });
@@ -114,11 +114,11 @@ function abortable<T>(
 const PARKED_POLL_MS = 2_000;
 
 /**
- * Pressed calls whose reply was lost to a transport failure (46 §6.4). The press already happened; the harness
+ * Pressed calls whose reply was lost to a transport failure (46 §6.4). The press already happened; the engine
  * keeps its outcome under the request id, so the promise the renderer awaits is settled from `app_call_status`
  * instead of by repeating the mutation. While any call is parked and the transport is open, one timer re-reads
  * status; while disconnected nothing is scheduled (46 §7), and `resume` settles at once before polling again.
- * An `AppCallChanged` for a parked id settles it at once through `settle`. A call the harness keeps reporting
+ * An `AppCallChanged` for a parked id settles it at once through `settle`. A call the engine keeps reporting
  * `running` stays parked as long as the view lives; `abandon` clears the timer. Reads are not parked: the runtime
  * refreshes them once after reconnect.
  */
@@ -208,14 +208,14 @@ export class PendingPresses {
     return this.#settling;
   }
 
-  /** The view is going away: stop polling; nothing will read these, their outcome stays discoverable on the harness. */
+  /** The view is going away: stop polling; nothing will read these, their outcome stays discoverable on the engine. */
   abandon(): void {
     this.#stopped = true;
     clearTimeout(this.#timer);
     this.#timer = undefined;
     for (const p of this.#calls.values())
       p.reject(
-        new AppCallError("unknown", "view closed before the harness answered"),
+        new AppCallError("unknown", "view closed before the engine answered"),
       );
     this.#calls.clear();
   }
@@ -231,7 +231,7 @@ export type Target = {
   committed: boolean;
 };
 
-/** A press the harness answered (directly, by polling, or after a reconnect): what the view records for it. */
+/** A press the engine answered (directly, by polling, or after a reconnect): what the view records for it. */
 export type SettledPress = {
   statement_id: string;
   request_id: string;
@@ -247,7 +247,7 @@ export type ProviderOptions = {
 
 /**
  * The renderer's provider over `app_call_tool` (46 §6.3). One invocation = one request id; a transport retry never
- * mints another. The tool name the runtime passes is ignored: the harness resolves it from the pinned statement.
+ * mints another. The tool name the runtime passes is ignored: the engine resolves it from the pinned statement.
  * `running` replies are polled through `app_call_status`; a lost reply to a press is parked (see `PendingPresses`).
  */
 export function createProvider(

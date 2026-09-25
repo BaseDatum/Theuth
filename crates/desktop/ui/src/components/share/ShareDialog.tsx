@@ -8,7 +8,7 @@ import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import type { HarnessProvider } from '@/lib/doc/provider'
+import type { EngineProvider } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
 import type { LinkCreated } from '@/rpc/bindings/LinkCreated'
 import type { Members } from '@/rpc/bindings/Members'
@@ -27,7 +27,7 @@ const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.me
 const at = (ms: bigint | number) => ago(new Date(Number(ms)).toISOString())
 
 /** The "Share…" action of a document page (59 §8.2): opens `ShareDialog` for the live document. */
-export function ShareAction({ provider }: { provider: HarnessProvider }) {
+export function ShareAction({ provider }: { provider: EngineProvider }) {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -42,7 +42,7 @@ export function ShareAction({ provider }: { provider: HarnessProvider }) {
  * see its URL once with copy + QR; revoke links; rename, re-role and remove members. The lists are
  * live through the subscription's `Members` events.
  */
-export function ShareDialog({ provider, open, onOpenChange }: { provider: HarnessProvider; open: boolean; onOpenChange: (o: boolean) => void }) {
+export function ShareDialog({ provider, open, onOpenChange }: { provider: EngineProvider; open: boolean; onOpenChange: (o: boolean) => void }) {
   const api = useApi()
   const qc = useQueryClient()
   const doc = provider.id

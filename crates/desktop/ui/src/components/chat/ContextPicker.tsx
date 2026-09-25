@@ -9,14 +9,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { ContextItem } from '@/rpc/bindings/ContextItem'
 import type { ContextKind } from '@/rpc/bindings/ContextKind'
 import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import { RpcError } from '@/rpc/client'
-import { scope } from '@/store/harness-scope'
+import { scope } from '@/store/engine-scope'
 
 /** `/shake <category>` (48 §2.1): literal categories, not a selector language. */
 export type ShakeCategory = 'images' | 'documents' | 'messages' | 'tools' | 'summary'
@@ -124,18 +124,18 @@ type Phase =
  * a destructive RPC by itself.
  */
 export function ContextPicker({ session }: { session: string }) {
-  const [req, setReq] = useState<(Request & { api: Api; harness: string }) | null>(null)
+  const [req, setReq] = useState<(Request & { api: Api; engine: string }) | null>(null)
   const [phase, setPhase] = useState<Phase>({ at: 'loading' })
 
   useEffect(() => {
     const on = (e: Event) => {
       const d = (e as CustomEvent<Request>).detail
       if (d.session !== session) return
-      // Capture the initiating harness: a reply after a harness switch must not touch the other harness (48 §5).
-      const harness = useHarnesses.getState().active
-      const api = scope(harness).connection.getState().api
+      // Capture the initiating engine: a reply after an engine switch must not touch the other engine (48 §5).
+      const engine = useEngines.getState().active
+      const api = scope(engine).connection.getState().api
       if (!api) return toast.error('Not connected')
-      setReq({ ...d, api, harness })
+      setReq({ ...d, api, engine })
     }
     window.addEventListener('theuth:shake', on)
     return () => window.removeEventListener('theuth:shake', on)
@@ -193,7 +193,7 @@ export function ContextPicker({ session }: { session: string }) {
     const { targets } = expand(snap.items, selected)
     // Local gate before the destructive call: the server rechecks, but a session that went busy, a slice marked stale
     // or a newer revision while the dialog sat open means the reviewed set no longer describes the context.
-    const st = scope(req.harness)
+    const st = scope(req.engine)
     const slice = st.sessions.getState().sessions[req.session]
     if (st.connection.getState().state !== 'open') {
       setPhase({ at: 'error', message: 'Not connected. Review again once reconnected.', retry: true })
@@ -217,8 +217,8 @@ export function ContextPicker({ session }: { session: string }) {
         r.heads > 0 && `${r.heads} summar${r.heads === 1 ? 'y' : 'ies'}`,
       ].filter((p): p is string => typeof p === 'string')
       toast(parts.length ? `Removed from context: ${parts.join(', ')} · ~${r.estimated_tokens} tokens now` : 'Nothing changed')
-      // `ContextChanged` marks the slice stale; the settled reload here only targets the harness still on screen.
-      if (useHarnesses.getState().active === req.harness)
+      // `ContextChanged` marks the slice stale; the settled reload here only targets the engine still on screen.
+      if (useEngines.getState().active === req.engine)
         window.dispatchEvent(
           new CustomEvent('theuth:reload-session', { detail: { session: req.session, settled: true } }),
         )

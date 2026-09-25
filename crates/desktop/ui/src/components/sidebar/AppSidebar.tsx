@@ -2,7 +2,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { BookOpen, Bot, FolderOpen, ListChecks, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
-import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
+import { EngineSwitcher } from '@/components/link/EngineSwitcher'
 import { Button } from '@/components/ui/button'
 import {
   Sidebar,
@@ -58,7 +58,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
         data-tauri-drag-region={isMacDesktop() || undefined}
         className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
       >
-        <HarnessSwitcher className="min-w-0 flex-1 justify-start" />
+        <EngineSwitcher className="min-w-0 flex-1 justify-start" />
         <div className="ml-auto flex shrink-0 items-center">
           <SearchTrigger />
           <Button

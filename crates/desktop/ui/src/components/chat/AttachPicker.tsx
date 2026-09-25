@@ -32,7 +32,7 @@ import { isPrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LIMITS } from '@/lib/search'
 import { cn } from '@/lib/utils'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import { useEntries } from '@/store/sessions'
@@ -105,7 +105,7 @@ export function AttachPicker({
   onEmpty?(): void
 }) {
   const api = useApi()
-  const harness = useHarnesses((s) => s.active)
+  const engine = useEngines((s) => s.active)
   const isMobile = useIsMobile()
   const wide = useWide()
   const openRef = useOpenRef()
@@ -171,7 +171,7 @@ export function AttachPicker({
     enabled: open && (tab === 'all' || tab === 'meeting') && browsing,
   })
   const entries = useEntries(session ?? '')
-  const recents = useMemo(() => (open ? loadRecents(harness) : []), [open, harness])
+  const recents = useMemo(() => (open ? loadRecents(engine) : []), [open, engine])
 
   // ---- Query path: one `search` per tab selection, per-category Show more pages, a poll while a group indexes (49 §4.5).
   const cats = categoriesFor(tab)

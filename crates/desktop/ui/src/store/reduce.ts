@@ -209,7 +209,7 @@ function hhmm(iso: string): string {
     : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** Transcript entries for one user input: the skill chip plus words, one card per harness wrapper, or `you`. `turn` stamps
+/** Transcript entries for one user input: the skill chip plus words, one card per engine wrapper, or `you`. `turn` stamps
  * the `you` row (29 §5.1); every card of one stored row shares its `context` (48 §3.2). */
 function userEntries(
   text: string,
@@ -283,7 +283,7 @@ function userEntries(
           text: c.text,
           context,
         };
-      case "harness":
+      case "engine":
         return { id: nextId(), ...c, context };
     }
   });
@@ -400,7 +400,7 @@ function signature(e: Entry): string {
       return `c${e.epoch}`;
     case "peer":
       return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`;
-    case "harness":
+    case "engine":
       return `h${e.notice}\n${e.text}`;
     case "vision":
       return e.seq === undefined ? `v${e.model}\n${e.text}` : `v${e.seq}`;
@@ -662,7 +662,7 @@ function turn(
   const idle = s.running ? "thinking" : "idle";
   switch (e.type) {
     // Echo the turn's input unless we sent it, it was a steer whose card
-    // moved up on `InputInjected`, or the harness injected it
+    // moved up on `InputInjected`, or the engine injected it
     // (`MessageDelivered`/`PeerDelivered` show those; a wrapper never renders
     // as a plain `you` row). Own sends and injected steers are already on
     // screen: stamp them with the turn instead.

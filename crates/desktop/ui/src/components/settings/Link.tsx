@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useApi } from '@/lib/rpc'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useNodes } from '@/link/nodes'
 import type { Device } from '@/rpc/bindings/Device'
 import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
@@ -38,12 +38,12 @@ const PLATFORM: Record<string, string> = { ios: 'iOS', macos: 'macOS', web: 'Web
 
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
 
-/** 31 §7.5 harness side: toggle, relay, name, pairing QR and the paired devices. */
+/** 31 §7.5 engine side: toggle, relay, name, pairing QR and the paired devices. */
 export function Link() {
   const api = useApi()
   const qc = useQueryClient()
-  const active = useHarnesses((s) => s.active)
-  const harnessName = useConnection((s) => s.info?.name)
+  const active = useEngines((s) => s.active)
+  const engineName = useConnection((s) => s.info?.name)
   const status = useQuery({ queryKey: KEY, queryFn: () => api.link_status(), retry: false })
   const keys = [KEY]
 
@@ -56,7 +56,7 @@ export function Link() {
   const cancelPair = useAction((_: void) => api.link_cancel_pair(), { keys })
   const renameDevice = useAction((v: { id: string; name: string }) => api.link_rename_device(v.id, v.name), { keys })
   const revoke = useAction((id: string) => api.link_revoke_device(id), { keys })
-  // The revoke cascades to the harness's nodes (32 §8.4); the copy says so.
+  // The revoke cascades to the engine's nodes (32 §8.4); the copy says so.
   const nodes = useNodes().data?.length ?? 0
 
   useEffect(() => {
@@ -80,7 +80,7 @@ export function Link() {
     const off = err instanceof RpcError && (err.code === -32001 || /link is disabled/i.test(err.message))
     return (
       <Section title="Link">
-        <Empty>{off ? 'Link is not available on this harness' : errorText(err)}</Empty>
+        <Empty>{off ? 'Link is not available on this engine' : errorText(err)}</Empty>
       </Section>
     )
   }
@@ -90,7 +90,7 @@ export function Link() {
   return (
     <>
       <Section title="Link" actions={<Switch checked={s.enabled} disabled={enable.isPending} onCheckedChange={(v) => enable.mutate({ enabled: v, relay: null })} />}>
-        {active !== LOCAL && <p className="pb-2 text-[13px] text-fg-secondary">Managing devices of {harnessName ?? s.name}</p>}
+        {active !== LOCAL && <p className="pb-2 text-[13px] text-fg-secondary">Managing devices of {engineName ?? s.name}</p>}
         <Row
           label="Relay"
           description={
@@ -106,9 +106,9 @@ export function Link() {
           <Editable value={s.name} width="w-56" disabled={rename.isPending} onSave={(name) => rename.mutate(name)} />
         </Row>
         {s.harness_id && (
-          <Row label="Harness id">
+          <Row label="Engine id">
             <span className="font-mono text-[13px] text-fg-tertiary">{s.harness_id.slice(0, 8)}…</span>
-            <Button variant="ghost" size="icon-sm" aria-label="Copy harness id" onClick={() => void copy(s.harness_id ?? '')}>
+            <Button variant="ghost" size="icon-sm" aria-label="Copy engine id" onClick={() => void copy(s.harness_id ?? '')}>
               <Copy />
             </Button>
           </Row>
@@ -175,7 +175,7 @@ export function Link() {
         ))}
       </Section>
       <p className="text-[13px] text-fg-tertiary">
-        The relay carries encrypted traffic between your devices and this harness. It can see that they are connected, not
+        The relay carries encrypted traffic between your devices and this engine. It can see that they are connected, not
         what they say. Share links connect the other person to this Mac through the relay the same way your devices
         connect; the document is never stored on the relay, so it is available while this Mac is.
       </p>

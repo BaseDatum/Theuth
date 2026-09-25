@@ -1,14 +1,14 @@
-// Per-harness state (31 §7.4): every event-fed store and the React Query cache
-// are created per harness and held here. `HarnessProvider` puts one harness's
+// Per-engine state (31 §7.4): every event-fed store and the React Query cache
+// are created per engine and held here. `EngineProvider` puts one engine's
 // set in context; the store hooks (`useSessions`, `useConnection`, …) read from
 // it, and their static `getState`/`setState`/`subscribe` address the active
-// harness — components are only ever mounted under the active provider.
+// engine — components are only ever mounted under the active provider.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, createContext, useContext } from 'react'
 import { type StoreApi, useStore } from 'zustand'
 import { type SearchApi, createSearchState } from '@/lib/search'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import {
   type ApprovalsApi,
   type AsksApi,
@@ -20,7 +20,7 @@ import {
 import { type ConnectionApi, createConnection } from './connection'
 import { type SessionsApi, createSessions } from './sessions'
 
-/** One harness's stores and query cache. */
+/** One engine's stores and query cache. */
 export type Stores = {
   id: string
   sessions: SessionsApi
@@ -31,13 +31,13 @@ export type Stores = {
   qc: QueryClient
   /** Transient search state: remembered categories, last view, origin of a search-opened screen (49 §7). */
   search: SearchApi
-  /** The live `subscribe_events` unsubscribe, while this harness is the active one. */
+  /** The live `subscribe_events` unsubscribe, while this engine is the active one. */
   attached: Promise<() => Promise<void>> | null
 }
 
 const scopes = new Map<string, Stores>()
 
-/** The stores for `id` (`'local'` or a harness id), created on first use. */
+/** The stores for `id` (`'local'` or an engine id), created on first use. */
 export function scope(id: string): Stores {
   let st = scopes.get(id)
   if (!st) {
@@ -57,35 +57,35 @@ export function scope(id: string): Stores {
   return st
 }
 
-/** Forget a removed harness's state; its client must already be closed. */
+/** Forget a removed engine's state; its client must already be closed. */
 export function dropScope(id: string): void {
   scopes.get(id)?.qc.clear()
   scopes.delete(id)
 }
 
-/** The active harness's stores (what the static store methods address). */
+/** The active engine's stores (what the static store methods address). */
 export function active(): Stores {
-  return scope(useHarnesses.getState().active)
+  return scope(useEngines.getState().active)
 }
 
-const HarnessContext = createContext<Stores | null>(null)
+const EngineContext = createContext<Stores | null>(null)
 
-/** The enclosing harness's stores; outside a provider, the active harness's. */
+/** The enclosing engine's stores; outside a provider, the active engine's. */
 export function useScope(): Stores {
-  return useContext(HarnessContext) ?? active()
+  return useContext(EngineContext) ?? active()
 }
 
-/** Mount with `key={harness}` so a switch remounts the tree with the other harness's stores and query cache. */
-export function HarnessProvider({ harness, children }: { harness: string; children: ReactNode }) {
-  const st = scope(harness)
+/** Mount with `key={engine}` so a switch remounts the tree with the other engine's stores and query cache. */
+export function EngineProvider({ engine, children }: { engine: string; children: ReactNode }) {
+  const st = scope(engine)
   return (
-    <HarnessContext value={st}>
+    <EngineContext value={st}>
       <QueryClientProvider client={st.qc}>{children}</QueryClientProvider>
-    </HarnessContext>
+    </EngineContext>
   )
 }
 
-/** A `create()`-shaped hook whose store is picked from the enclosing (or active) harness's `Stores`. */
+/** A `create()`-shaped hook whose store is picked from the enclosing (or active) engine's `Stores`. */
 export type ScopedStore<T> = {
   (): T
   <U>(selector: (state: T) => U): U
@@ -94,7 +94,7 @@ export type ScopedStore<T> = {
 /** Bind a hook + static store API to `pick(scope)` — the seam that keeps component imports unchanged. */
 export function scoped<T>(pick: (st: Stores) => StoreApi<T>): ScopedStore<T> {
   const hook = <U,>(selector: (s: T) => U = (s) => s as unknown as U) => useStore(pick(useScope()), selector)
-  // Live getters: `useSessions.getState()` always addresses the active harness's store. (Store modules
+  // Live getters: `useSessions.getState()` always addresses the active engine's store. (Store modules
   // call `scoped` while this module may still be evaluating, so nothing here reads a module-level `const`.)
   for (const k of ['getState', 'getInitialState', 'setState', 'subscribe'] as const) {
     Object.defineProperty(hook, k, { get: () => pick(active())[k] })

@@ -4,7 +4,7 @@ import type { ApprovalRequested } from '@/rpc/bindings/ApprovalRequested'
 import type { AskId } from '@/rpc/bindings/AskId'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
-import { scoped } from './harness-scope'
+import { scoped } from './engine-scope'
 
 /** `SecretsEvent.SecretRequested`: the model asked the user to type a secret (37 §3.3). */
 export type SecretRequested = Extract<SecretsEvent, { type: 'SecretRequested' }>
@@ -37,11 +37,11 @@ export type ApprovalsApi = StoreApi<PendingStore<ApprovalRequested, ApprovalId>>
 export type AsksApi = StoreApi<PendingStore<AskRequested, AskId>>
 export type SecretRequestsApi = StoreApi<PendingStore<SecretRequested, SecretRequested['id']>>
 
-/** Per-harness approvals (31 §7.4). */
+/** Per-engine approvals (31 §7.4). */
 export const createApprovals = (): ApprovalsApi => createPending()
-/** Per-harness `ask_user` calls, same lifecycle as approvals. */
+/** Per-engine `ask_user` calls, same lifecycle as approvals. */
 export const createAsks = (): AsksApi => createPending()
-/** Per-harness `secret_request` calls; `Resolved` drops the card and the tool row's result is the receipt. */
+/** Per-engine `secret_request` calls; `Resolved` drops the card and the tool row's result is the receipt. */
 export const createSecretRequests = (): SecretRequestsApi => createPending()
 
 export const useApprovals = scoped((st) => st.approvals)

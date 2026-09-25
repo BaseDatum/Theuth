@@ -1,11 +1,11 @@
 // Session-mode device socket (31 §4.3, §7.1): relay `PRESENCE`/`CLOSE`, one IK
 // handshake per (re)connect, FIN records in and out. Reconnect timing is the
 // `RpcClient`'s; this class only reports `reconnecting` and lets `connect()` be
-// called again (a parked socket is reused until the harness comes back).
+// called again (a parked socket is reused until the engine comes back).
 
 import type { ConnState, Transport } from '@/rpc/transport'
 import { CLOSE_REFUSED, Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
-import { type Harness, useHarnesses } from './harnesses'
+import { type Engine, useEngines } from './engines'
 import { getIdentity, unb64url } from './keys'
 import { type Initiator, type Session, handshakeIK, prologue } from './noise'
 import { type LinkOptions, SUBPROTOCOL, wsUrl } from './pairing'
@@ -18,7 +18,7 @@ const text = new TextDecoder()
 export type SessionHello = { name: string; version: string }
 
 export class LinkTransport implements Transport {
-  readonly harness: Harness
+  readonly engine: Engine
   #opts: LinkOptions
   #ws: WebSocket | null = null
   #hs: Initiator | null = null
@@ -31,7 +31,7 @@ export class LinkTransport implements Transport {
   #closed = false
   /** Last socket closed before `open`: the upgrade was refused (relay-origin cookie stale after a relay restart). */
   #refused = false
-  /** The harness answered our handshake with `CLOSE refused`: it no longer knows this device's key. Sticky until a handshake succeeds. */
+  /** The engine answered our handshake with `CLOSE refused`: it no longer knows this device's key. Sticky until a handshake succeeds. */
   #rejected = false
   #message: (t: string) => void = () => {}
   #state: (s: ConnState) => void = () => {}
@@ -43,8 +43,8 @@ export class LinkTransport implements Transport {
     return this.#session?.handshakeHash ?? null
   }
 
-  constructor(harness: Harness, opts: LinkOptions = {}) {
-    this.harness = harness
+  constructor(engine: Engine, opts: LinkOptions = {}) {
+    this.engine = engine
     this.#opts = opts
   }
 
@@ -109,7 +109,7 @@ export class LinkTransport implements Transport {
   #presence(p: 'online' | 'offline' | 'connecting' | 'refused'): void {
     // A refusal outlives the retry loop's `connecting` flickers; only a successful handshake clears it.
     if (this.#rejected && p === 'connecting') return
-    useHarnesses.getState().setPresence(this.harness.id, p)
+    useEngines.getState().setPresence(this.engine.id, p)
   }
 
   #drop(): void {
@@ -123,13 +123,13 @@ export class LinkTransport implements Transport {
     this.#presence('connecting')
     // Served by the relay (31 §7.6) the upgrade needs its `__Host-link` cookie, which a relay
     // restart invalidates (secret random per start → 403 forever). Any page fetch re-issues it.
-    if (this.#refused && globalThis.location?.host === this.harness.relayHost) {
+    if (this.#refused && globalThis.location?.host === this.engine.relayHost) {
       const attempt = this.#pending
       await fetch('/', { cache: 'no-store' }).catch(() => undefined)
       if (this.#pending !== attempt || this.#ws) return // closed (and maybe re-opened) meanwhile
     }
     const WS = this.#opts.ws ?? globalThis.WebSocket
-    const ws = new WS(wsUrl(this.harness), [SUBPROTOCOL])
+    const ws = new WS(wsUrl(this.engine), [SUBPROTOCOL])
     ws.binaryType = 'arraybuffer'
     this.#ws = ws
     let opened = false
@@ -151,9 +151,9 @@ export class LinkTransport implements Transport {
     if (f.op === 'presence') {
       if (f.online) {
         this.#presence('connecting')
-        const identity = await (this.#opts.identity ?? getIdentity)(this.harness.kind === 'mesh' ? this.harness.id : undefined)
+        const identity = await (this.#opts.identity ?? getIdentity)(this.engine.kind === 'mesh' ? this.engine.id : undefined)
         this.#drop()
-        this.#hs = await handshakeIK({ s: identity, rs: unb64url(this.harness.id) as Uint8Array<ArrayBuffer>, prologue: prologue(this.harness.id) })
+        this.#hs = await handshakeIK({ s: identity, rs: unb64url(this.engine.id) as Uint8Array<ArrayBuffer>, prologue: prologue(this.engine.id) })
         ws.send(encodeData(this.#hs.message))
       } else {
         this.#drop()
@@ -161,8 +161,8 @@ export class LinkTransport implements Transport {
         this.#state('reconnecting')
       }
     } else if (f.op === 'close') {
-      // `refused` while our handshake is out = the harness does not know this device (revoked, or its
-      // devices.yaml is gone). Every other reason — idle, harness gone (4), hub moved (5, 69 decision 6) —
+      // `refused` while our handshake is out = the engine does not know this device (revoked, or its
+      // devices.yaml is gone). Every other reason — idle, engine gone (4), hub moved (5, 69 decision 6) —
       // is transient; the client retries against the same id and the new hub answers.
       if (f.reason === CLOSE_REFUSED && this.#hs) {
         this.#rejected = true
@@ -178,9 +178,9 @@ export class LinkTransport implements Transport {
       this.#hs = null
       this.#session = await hs.finish(f.payload)
       this.hello = JSON.parse(text.decode(this.#session.payload)) as SessionHello
-      const { harnesses, add } = useHarnesses.getState()
-      const cur = harnesses.find((h) => h.id === this.harness.id) ?? this.harness
-      // `name` is the user's local label (Settings › Harnesses); the live name
+      const { engines, add } = useEngines.getState()
+      const cur = engines.find((h) => h.id === this.engine.id) ?? this.engine
+      // `name` is the user's local label (Settings › Engines); the live name
       // is `hello.name` / `info.name`, shown by the switcher. Never overwrite.
       add({ ...cur, lastSeen: Date.now() })
       this.#rejected = false

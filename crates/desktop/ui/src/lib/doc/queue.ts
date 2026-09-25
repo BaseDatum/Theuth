@@ -1,13 +1,13 @@
-// Per-(harness, document) offline store for link devices (59 §6.3, 31 §0.8: IndexedDB, never
+// Per-(engine, document) offline store for link devices (59 §6.3, 31 §0.8: IndexedDB, never
 // localStorage). Two object stores in db `documents`: `state` holds the whole Y.Doc as one
-// `encodeStateAsUpdate` blob per document; `pending` holds the FIFO of local updates the harness
-// has not acknowledged, one row per update keyed `[harness, doc, seq]` so a single row is written
+// `encodeStateAsUpdate` blob per document; `pending` holds the FIFO of local updates the engine
+// has not acknowledged, one row per update keyed `[engine, doc, seq]` so a single row is written
 // per keystroke and deleted per ack.
 
 const DB = 'documents'
 const STATE = 'state'
 const PENDING = 'pending'
-/** Per document: state blob plus pending rows. Beyond it the state blob is dropped (the harness has it); pending never is. */
+/** Per document: state blob plus pending rows. Beyond it the state blob is dropped (the engine has it); pending never is. */
 export const MAX_BYTES = 4 * 1024 * 1024
 
 export type Pending = { seq: number; update: Uint8Array }
@@ -47,18 +47,18 @@ export function resetDb(): void {
 export class DocStore {
   readonly #key: string
   readonly #range: IDBKeyRange
-  readonly #harness: string
+  readonly #engine: string
   readonly #doc: string
   /** Row keys: `Date.now() × 4096` at construction, then +1 per update — two tabs on the same document (one origin,
    *  one IndexedDB) never write the same key, and rows from an earlier run sort before this run's. */
   #seq = Date.now() * 4096
   #pendingBytes = 0
 
-  constructor(harness: string, doc: string) {
-    this.#harness = harness
+  constructor(engine: string, doc: string) {
+    this.#engine = engine
     this.#doc = doc
-    this.#key = `${harness}/${doc}`
-    this.#range = IDBKeyRange.bound([harness, doc, 0], [harness, doc, Number.MAX_SAFE_INTEGER])
+    this.#key = `${engine}/${doc}`
+    this.#range = IDBKeyRange.bound([engine, doc, 0], [engine, doc, Number.MAX_SAFE_INTEGER])
   }
 
   /** The persisted state (if any) and the pending FIFO in seq order; later `enqueue`s sort after every loaded row. */
@@ -82,19 +82,19 @@ export class DocStore {
     this.#pendingBytes += update.length
     void open().then((d) => {
       const tx = d.transaction(PENDING, 'readwrite')
-      tx.objectStore(PENDING).put(update, [this.#harness, this.#doc, p.seq])
+      tx.objectStore(PENDING).put(update, [this.#engine, this.#doc, p.seq])
       return done(tx)
     })
     return p
   }
 
-  /** The harness applied these: forget them. */
+  /** The engine applied these: forget them. */
   async ack(items: Pending[]): Promise<void> {
     if (items.length === 0) return
     for (const p of items) this.#pendingBytes -= p.update.length
     const d = await open()
     const tx = d.transaction(PENDING, 'readwrite')
-    for (const p of items) tx.objectStore(PENDING).delete([this.#harness, this.#doc, p.seq])
+    for (const p of items) tx.objectStore(PENDING).delete([this.#engine, this.#doc, p.seq])
     await done(tx)
   }
 

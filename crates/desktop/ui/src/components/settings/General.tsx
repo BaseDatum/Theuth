@@ -18,7 +18,7 @@ import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
 import { useUpdate } from '@/lib/update'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { type Theme, currentTheme, setTheme } from '@/lib/theme'
 import { useConnection } from '@/store/connection'
 
@@ -36,7 +36,7 @@ export function General() {
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
   // Autostart and the window hotkey belong to the desktop shell with its own daemon (31 §9).
-  const desktop = useHarnesses((s) => s.active) === LOCAL && isDesktop()
+  const desktop = useEngines((s) => s.active) === LOCAL && isDesktop()
   const [theme, setThemeState] = useState(currentTheme)
   const autostart = useQuery({
     queryKey: AUTOSTART,
@@ -50,7 +50,7 @@ export function General() {
     queryFn: getVersion,
     enabled: desktop && isTauri(),
   })
-  // 39 §4.3: the daemon's own updater; `theuth` on a terminal harness is not the bundled sidecar.
+  // 39 §4.3: the daemon's own updater; `theuth` on a terminal engine is not the bundled sidecar.
   const update = useQuery({
     queryKey: queryKeys.updateStatus,
     queryFn: () => api.update_status(),
@@ -132,7 +132,7 @@ export function General() {
         )}
       </Section>
       {info && (
-        <Section title="Harness">
+        <Section title="Engine">
           <Row label="Name" description={`theuth ${info.version}`}>
             <span className="text-sm">{info.name}</span>
           </Row>
@@ -156,7 +156,7 @@ export function General() {
           {update.data && (
             <Row
               label="Update"
-              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `t --update` on the harness'}`}
+              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `t --update` on the engine'}`}
             />
           )}
         </Section>

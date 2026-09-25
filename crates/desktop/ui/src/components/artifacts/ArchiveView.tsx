@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { fmtBytes, isLocal } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { ArchiveEntry } from '@/rpc/bindings/ArchiveEntry'
 import type { Artifact } from '@/rpc/extra'
 
@@ -98,7 +98,7 @@ function Rows({ node, depth, closed, toggle }: { node: Node; depth: number; clos
 /** An `archive` artifact (35 §3.2): totals, a filter, the member tree from the listing sidecar, and the download. */
 export function ArchiveView({ a }: { a: Artifact }) {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
+  const active = useEngines((s) => s.active)
   const listing = useQuery({ queryKey: ['artifact-listing', a.call_id], queryFn: () => api.get_artifact_listing(a.call_id), retry: false })
   const [q, setQ] = useState('')
   const [closed, setClosed] = useState<Set<string>>(new Set())

@@ -33,7 +33,7 @@ import { matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
@@ -60,7 +60,7 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 export function prefillDraft(session: string | null, text: string, refs: AttachRef[] = [], panel = false): void {
   drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
 }
-/** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the harness decodes all. */
+/** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
 const BOX =
@@ -133,7 +133,7 @@ export function Composer({
   compact?: boolean
 }) {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
+  const active = useEngines((s) => s.active)
   // Host paths (native drop / dialog) only mean something to the daemon on this machine.
   const hostFiles = isDesktop() && active === LOCAL
   const fileInput = useRef<HTMLInputElement>(null)
@@ -222,7 +222,7 @@ export function Composer({
   }, [focused])
 
   // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
-  // relay-linked harness this browser's mic streams to it instead (§4.5). Both voice buttons stay while a turn
+  // relay-linked engine this browser's mic streams to it instead (§4.5). Both voice buttons stay while a turn
   // runs — a note or dictated text queues as a steer through `submit()`, exactly like a typed one.
   const canDictate = voice && !priv
   const dictate = () => {
@@ -240,7 +240,7 @@ export function Composer({
     const ta = ref.current
     const at = ta?.selectionStart ?? text.length
     setOwner(true)
-    void dictation.start(api, text.slice(0, at), text.slice(at), useHarnesses.getState().active !== LOCAL)
+    void dictation.start(api, text.slice(0, at), text.slice(at), useEngines.getState().active !== LOCAL)
   }
   const dictateRef = useRef(dictate)
   dictateRef.current = dictate
@@ -359,7 +359,7 @@ export function Composer({
     ref.current?.focus()
   }
 
-  // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the harness paths; image dims for the first image.
+  // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the engine paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
     if (blobs.length === 0) return
     if (noUpload) {

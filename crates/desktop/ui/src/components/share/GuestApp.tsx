@@ -5,10 +5,10 @@ import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Toaster } from '@/components/ui/sonner'
-import { type DocStatus, type GuestUser, HarnessProvider } from '@/lib/doc/provider'
+import { type DocStatus, type GuestUser, EngineProvider } from '@/lib/doc/provider'
 import { CLOSE_REFUSED } from '@/link/frames'
 import { type ShareTarget, joinProof, parseShareLink } from '@/link/guest'
-import type { Harness } from '@/link/harnesses'
+import type { Engine } from '@/link/engines'
 import { idbGet, idbPut } from '@/link/idb'
 import { getIdentity } from '@/link/keys'
 import { LinkTransport } from '@/link/transport'
@@ -21,7 +21,7 @@ const NAME_KEY = 'guest-name'
 
 type GuestState =
   | { kind: 'connecting' }
-  | { kind: 'open'; provider: HarnessProvider; user: GuestUser; owner: string }
+  | { kind: 'open'; provider: EngineProvider; user: GuestUser; owner: string }
   /** Terminal: the connection is closed and the page says why. */
   | { kind: 'gone'; message: string }
 
@@ -37,7 +37,7 @@ function goneMessage(code: string): string {
 /**
  * The `/d` guest container (59 §8.6): one document, over the same Noise channel a paired phone uses.
  * Parse the fragment, ask a name once, connect as a guest (31 §4.3 mode 2), `doc_join` with the
- * connection-bound proof, then the ordinary `HarnessProvider` on the document.
+ * connection-bound proof, then the ordinary `EngineProvider` on the document.
  */
 export function GuestApp() {
   const [target] = useState(() => parseShareLink(location.hash))
@@ -118,8 +118,8 @@ function NamePrompt({ onSubmit }: { onSubmit: (name: string) => void }) {
 function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
   const [state, setState] = useState<GuestState>({ kind: 'connecting' })
   useEffect(() => {
-    const harness: Harness = { id: target.harnessId, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0, kind: 'engine' }
-    let provider: HarnessProvider | null = null
+    const engine: Engine = { id: target.engineId, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0, kind: 'engine' }
+    let provider: EngineProvider | null = null
     let ended = false
     const end = (message: string) => {
       if (ended) return
@@ -129,9 +129,9 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
       client.close()
       setState({ kind: 'gone', message })
     }
-    const transport = new LinkTransport(harness, {
+    const transport = new LinkTransport(engine, {
       onClose: (reason) => {
-        // The harness refused us after the handshake (not admitted in time, or three refusals): stop retrying.
+        // The engine refused us after the handshake (not admitted in time, or three refusals): stop retrying.
         if (reason === CLOSE_REFUSED) end(provider ? 'Your access was removed.' : 'This link no longer works.')
       },
     })
@@ -139,7 +139,7 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
     const api = makeApi(client)
     const open = (user: GuestUser) => {
       provider?.destroy()
-      const p = new HarnessProvider(client, api, target.doc, target.harnessId, user)
+      const p = new EngineProvider(client, api, target.doc, target.engineId, user)
       provider = p
       p.onStatus((s) => {
         if (s.kind !== 'closed' || p !== provider) return
@@ -181,7 +181,7 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
   return <GuestDocument key={state.provider.doc.clientID} provider={state.provider} user={state.user} owner={state.owner} />
 }
 
-function GuestDocument({ provider, user, owner }: { provider: HarnessProvider; user: GuestUser; owner: string }) {
+function GuestDocument({ provider, user, owner }: { provider: EngineProvider; user: GuestUser; owner: string }) {
   const [status, setStatus] = useState<DocStatus>(provider.status)
   const [title, setTitle] = useState(provider.meta?.title ?? '')
   useEffect(() => {

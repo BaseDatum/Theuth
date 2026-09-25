@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { container, deviceName } from '@/lib/platform'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { adopt } from '@/link/nodes'
 import { pair, parsePairingKey } from '@/link/pairing'
 import { useConnection } from '@/store/connection'
@@ -22,9 +22,9 @@ function takeHashKey(): string | null {
 /**
  * 31 §7.5 device side: "Scan QR" (iOS) and "Paste key", both through `pair()`.
  * Rendered by `/link` and, when nothing is paired, by `App` outside the router —
- * so navigation is the caller's (`onPaired`); the harness switch itself routes to `/`.
- * With an active harness that answers `list_nodes`, a key first asks: pair here, or
- * add the harness as a node of the active one and auto-pair with it (32 §8.3).
+ * so navigation is the caller's (`onPaired`); the engine switch itself routes to `/`.
+ * With an active engine that answers `list_nodes`, a key first asks: pair here, or
+ * add the engine as a node of the active one and auto-pair with it (32 §8.3).
  */
 export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack?: () => void }) {
   const [key, setKey] = useState('')
@@ -32,10 +32,10 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
   const [scanning, setScanning] = useState(false)
   const [choice, setChoice] = useState<{ key: string; name: string } | null>(null)
   const ios = container() === 'ios'
-  const parent = useHarnesses((s) => (s.nodes[s.active] ? s.active : null))
+  const parent = useEngines((s) => (s.nodes[s.active] ? s.active : null))
   const infoName = useConnection((s) => s.info?.name)
-  const storedName = useHarnesses((s) => s.harnesses.find((h) => h.id === s.active)?.name)
-  const parentName = infoName ?? storedName ?? (parent === LOCAL ? 'this Mac' : 'the active harness')
+  const storedName = useEngines((s) => s.engines.find((h) => h.id === s.active)?.name)
+  const parentName = infoName ?? storedName ?? (parent === LOCAL ? 'this Mac' : 'the active engine')
   const api = useConnection((s) => s.api)
 
   const start = async (raw: string) => {
@@ -54,7 +54,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
     try {
       const h = await pair(k, deviceName())
       toast.success(h.kind === 'mesh' ? `Paired with mesh ${h.meshName ?? h.name}` : `Paired ${h.name}`)
-      useHarnesses.getState().setActive(h.id)
+      useEngines.getState().setActive(h.id)
       onPaired?.()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -144,7 +144,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
             <ChevronLeft className="size-5" /> Back
           </Button>
         )}
-        <h1 className="text-2xl font-semibold">Connect to a harness</h1>
+        <h1 className="text-2xl font-semibold">Connect to an engine</h1>
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">
             <Loader2 className="size-4 animate-spin" /> Pairing with {pairingWith}…
@@ -176,7 +176,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
         )}
       </div>
       <p className="mb-auto max-w-sm text-center text-xs text-fg-tertiary">
-        The relay carries encrypted traffic between your devices and this harness. It can see that they are connected, not what they say.
+        The relay carries encrypted traffic between your devices and this engine. It can see that they are connected, not what they say.
       </p>
       <Dialog open={choice !== null} onOpenChange={(o) => !o && setChoice(null)}>
         <DialogContent className="max-w-sm">
@@ -204,7 +204,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
                 if (c) void pairHere(c.key, c.name)
               }}
             >
-              as a harness on this {ios ? 'phone' : 'device'}
+              as an engine on this {ios ? 'phone' : 'device'}
             </Button>
           </div>
         </DialogContent>

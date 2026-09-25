@@ -10,7 +10,7 @@ import { isLocal, putAttachment } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 
 // Design 30 §8.3, 65 §3.4: the frame every diagram card shares — pan/zoom surface, hover toolbar (Copy PNG · Save PNG… ·
@@ -171,7 +171,7 @@ async function saveBlob(api: Api, blob: Blob, name: string, ext: string) {
 /** Copy PNG · Save PNG… · Save SVG… (the latter two only where `saveBlob` has a sink), then `extra`. */
 function Tools({ markup, name, size, extra }: { markup: () => string; name: string; size?: 'icon-sm' | 'icon'; extra?: ReactNode }) {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
+  const active = useEngines((s) => s.active)
   const png = () => rasterize(standalone(markup()))
   const copy = () =>
     // The blob is promised, not awaited: Safari only honours a write that is still inside the click's user activation.

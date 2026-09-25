@@ -16,7 +16,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { type AttachRef, toRef } from '@/lib/attach'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 
@@ -52,12 +52,12 @@ export function MeetingHeader({ title, children }: { title: ReactNode; children?
 }
 
 /**
- * Recording is the local desktop daemon's: not iOS, not a browser, not a harness reached over the relay — and only
+ * Recording is the local desktop daemon's: not iOS, not a browser, not an engine reached over the relay — and only
  * when its capture backend answers (`MeetingStatus.supported`, 58 §3.3; `None` = no PipeWire / no render device).
  */
 export function useCanRecord(): boolean {
   const api = useApi()
-  const local = useHarnesses((s) => s.active) === LOCAL && isDesktop()
+  const local = useEngines((s) => s.active) === LOCAL && isDesktop()
   const status = useQuery({ queryKey: queryKeys.meetingStatus, queryFn: () => api.meeting_status(), enabled: local })
   return local && status.data?.supported.kind !== 'None'
 }

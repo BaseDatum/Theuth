@@ -1,4 +1,4 @@
-import type { HarnessProvider } from '@/lib/doc/provider'
+import type { EngineProvider } from '@/lib/doc/provider'
 import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
 
 /**
@@ -6,7 +6,7 @@ import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
  * row or another device — reaches the UI as `DocumentChanged` on the bus, not on the document stream. Writes it
  * into `meta` too (what `docRef` reads). `null` when `e` is another document's or a trash move.
  */
-export function titleAfter(provider: Pick<HarnessProvider, 'id' | 'meta'>, e: DocumentChanged): string | null {
+export function titleAfter(provider: Pick<EngineProvider, 'id' | 'meta'>, e: DocumentChanged): string | null {
   if (e.doc !== provider.id || e.deleted) return null
   if (provider.meta) provider.meta.title = e.title
   return e.title

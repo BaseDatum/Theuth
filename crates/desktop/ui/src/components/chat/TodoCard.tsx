@@ -5,7 +5,7 @@ import { usePanes } from '@/lib/panes'
 import { cn } from '@/lib/utils'
 import type { Todo } from '@/rpc/bindings/Todo'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
-import { useScope } from '@/store/harness-scope'
+import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
 import { surfaceOf } from './slash'
 

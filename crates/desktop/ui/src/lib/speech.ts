@@ -1,4 +1,4 @@
-// 43 §7: read a reply aloud. The harness synthesizes and streams one Opus packet per
+// 43 §7: read a reply aloud. The engine synthesizes and streams one Opus packet per
 // `SpeechAudio` event; this module decodes (libopus as wasm) and schedules each packet
 // back-to-back on one `AudioContext`, gapless as long as packets arrive before `next`.
 
@@ -190,7 +190,7 @@ function idle(): Promise<void> {
 }
 
 /**
- * Utterances this client asked for. The harness publishes every `Speech*` event to every subscriber
+ * Utterances this client asked for. The engine publishes every `Speech*` event to every subscriber
  * (desktop and phone alike); only the requester plays them, or a phone's tap comes out of the laptop.
  */
 const mine = new Set<string>()
@@ -329,7 +329,7 @@ export function installSpeechListeners(): () => void {
   }
 }
 
-/** Whether this harness reads aloud: `voice_status` answered. `-32001` (plugin disabled) is final; other failures retry. */
+/** Whether this engine reads aloud: `voice_status` answered. `-32001` (plugin disabled) is final; other failures retry. */
 export function useVoice(): boolean {
   const api = useApi()
   return useQuery({

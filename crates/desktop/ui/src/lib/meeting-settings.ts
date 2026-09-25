@@ -19,7 +19,7 @@ type Saved = {
   positions: Record<string, [number, number]>
   /** `island_place` key → logical size the user dragged; absent = auto-fit. */
   sizes: Record<string, [number, number]>
-  /** `StartMeeting.session_model`; `null` = the harness default. */
+  /** `StartMeeting.session_model`; `null` = the engine default. */
   model: string | null
 }
 

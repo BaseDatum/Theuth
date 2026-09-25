@@ -1,21 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { type DocStatus, type HarnessProvider, acquire, release } from '@/lib/doc/provider'
+import { type DocStatus, type EngineProvider, acquire, release } from '@/lib/doc/provider'
 import { useApi } from '@/lib/rpc'
 import type { Binding } from '@/rpc/bindings/Binding'
 import type { DocId } from '@/rpc/bindings/DocId'
 import { useConnection } from '@/store/connection'
-import { useScope } from '@/store/harness-scope'
+import { useScope } from '@/store/engine-scope'
 
 const CONNECTING: DocStatus = { kind: 'connecting' }
 const noop = () => () => {}
 
 /**
  * Resolve `target` — a binding (created on demand for knowledge, 59 §7.1) or a known `{ doc }` id (a note) — and
- * hold one shared provider for it while mounted (§6.5). `provider` is `null` until resolved; `error` when the harness refused.
+ * hold one shared provider for it while mounted (§6.5). `provider` is `null` until resolved; `error` when the engine refused.
  */
 export type LiveDocument = {
-  provider: HarnessProvider | null
+  provider: EngineProvider | null
   status: DocStatus
   error: Error | null
 }
@@ -25,7 +25,7 @@ export type DocTarget = Binding | { doc: DocId }
 export function useDocument(target: DocTarget): LiveDocument {
   const api = useApi()
   const client = useConnection((s) => s.client)
-  const harness = useScope().id
+  const engine = useScope().id
   const known = typeof target === 'object' && 'doc' in target ? target.doc : null
   const resolved = useQuery({
     queryKey: ['doc', target],
@@ -34,16 +34,16 @@ export function useDocument(target: DocTarget): LiveDocument {
     enabled: known === null,
   })
   const id = known ?? resolved.data ?? null
-  const [provider, setProvider] = useState<HarnessProvider | null>(null)
+  const [provider, setProvider] = useState<EngineProvider | null>(null)
   useEffect(() => {
     if (!id || !client) return
-    const p = acquire(client, api, id, harness)
+    const p = acquire(client, api, id, engine)
     setProvider(p)
     return () => {
       setProvider(null)
       release(p)
     }
-  }, [id, client, api, harness])
+  }, [id, client, api, engine])
   const status = useSyncExternalStore(provider ? (cb) => provider.onStatus(cb) : noop, () => provider?.status ?? CONNECTING)
   const error = resolved.error ?? (resolved.isSuccess && id === null ? new Error('no document for this binding') : null)
   return { provider, status, error }

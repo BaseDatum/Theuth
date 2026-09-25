@@ -48,7 +48,7 @@ function answeredBy(r: PeerRecord | undefined): string | undefined {
 }
 
 /**
- * Typed provenance of a peer card (50 §9): the exchange id, sender, reply target and A2A scope the harness
+ * Typed provenance of a peer card (50 §9): the exchange id, sender, reply target and A2A scope the engine
  * authenticated, the durable record on demand, and the answer affordance for a request this session still owes
  * a reply to. Every fact here is a `PeerOrigin` field or a `peer_message`/`list_peer_messages` reply, never
  * parsed from the body.

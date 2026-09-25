@@ -22,25 +22,25 @@ test('context summaries and runtime wrappers do not duplicate existing surfaces'
 
 test('surface_error notes are hidden, with or without attributes, and still compose with visible notices', () => {
   expect(classify('<surface_error>\nfix the diagram\n</surface_error>')).toEqual([])
-  expect(classify('<surface_error final="true">\ngave up\n</surface_error>\n<todo>x</todo>')).toEqual([{ kind: 'harness', notice: 'todo', text: 'x' }])
+  expect(classify('<surface_error final="true">\ngave up\n</surface_error>\n<todo>x</todo>')).toEqual([{ kind: 'engine', notice: 'todo', text: 'x' }])
   expect(classify('Explain <surface_error final="true">x</surface_error>')).toBeNull()
 })
 
-test('todo nudges compose with harness blocks but never swallow surrounding human text', () => {
+test('todo nudges compose with engine blocks but never swallow surrounding human text', () => {
   expect(classify('<todo>x</todo>\n<todo_continue>\nContinue working\n</todo_continue>')).toEqual([
-    { kind: 'harness', notice: 'todo', text: 'x' },
-    { kind: 'harness', notice: 'todo_continue', text: 'Continue working' },
+    { kind: 'engine', notice: 'todo', text: 'x' },
+    { kind: 'engine', notice: 'todo_continue', text: 'Continue working' },
   ])
   expect(classify('Explain this: <todo_continue>work</todo_continue>')).toBeNull()
   expect(classify('<todo_continue>work</todo_continue> is what I saw')).toBeNull()
   expect(classify('<todo_continue>unterminated')).toBeNull()
 })
 
-test('harness notices compose without losing their type or literal body', () => {
+test('engine notices compose without losing their type or literal body', () => {
   const notices = ['rounds', 'context_pressure', 'recovery', 'continue', 'steer', 'todo', 'knowledge']
   const body = 'Check <button> &lt;literal&gt; &amp; text.'
   expect(classify(notices.map((notice) => `<${notice}>\n${body}\n</${notice}>`).join('\n'))).toEqual(
-    notices.map((notice) => ({ kind: 'harness', notice, text: body })),
+    notices.map((notice) => ({ kind: 'engine', notice, text: body })),
   )
 })
 

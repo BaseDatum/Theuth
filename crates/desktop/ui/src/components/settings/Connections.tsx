@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -31,8 +31,8 @@ export function Connections() {
 /** OAuth providers and OAuth MCP servers in one list, as the TUI's `/login` menu. */
 function Logins() {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
-  const harnessName = useConnection((s) => s.info?.name)
+  const active = useEngines((s) => s.active)
+  const engineName = useConnection((s) => s.info?.name)
   const logins = useQuery({
     queryKey: queryKeys.logins,
     queryFn: () => api.list_logins(),
@@ -43,7 +43,7 @@ function Logins() {
   })
   // A logout changes which providers `list_models` may offer (52 §3.2); a login refreshes via `LoginFinished`.
   const keys = [queryKeys.logins, queryKeys.mcp(null), queryKeys.models]
-  // Over link the daemon opens its own browser on the harness (31 §9): the URL is only shown here, as text.
+  // Over link the daemon opens its own browser on the engine (31 §9): the URL is only shown here, as text.
   const [remote, setRemote] = useState<{ name: string; url: string } | null>(null)
   const login = useAction(async (v: { name: string; mcp: boolean }) => {
     const url = await (v.mcp ? api.mcp_login(v.name) : api.login(v.name))
@@ -104,7 +104,7 @@ function Logins() {
           description={
             remote?.name === r.name ? (
               <>
-                Sign in from the harness ({harnessName ?? 'harness'}):{' '}
+                Sign in from the engine ({engineName ?? 'engine'}):{' '}
                 <code className="select-all break-all font-mono text-xs">{remote.url}</code>
               </>
             ) : (
@@ -215,10 +215,10 @@ function Gateways() {
 /** `Select` value of the default credential chain; profiles are `p:<name>` so no profile name can collide. */
 const CHAIN = 'chain'
 
-/** The AWS profile Bedrock signs with, harness-wide (the TUI's `/aws`); credentials never leave the harness. */
+/** The AWS profile Bedrock signs with, engine-wide (the TUI's `/aws`); credentials never leave the engine. */
 function Bedrock() {
   const api = useApi()
-  const harnessName = useConnection((s) => s.info?.name)
+  const engineName = useConnection((s) => s.info?.name)
   const aws = useQuery({
     queryKey: queryKeys.awsProfiles,
     queryFn: () => api.list_aws_profiles(),
@@ -242,10 +242,10 @@ function Bedrock() {
               ? `Could not list profiles: ${aws.error.message}`
               : 'Listing profiles…'
             : stale
-              ? `Profile ${d.selected} is selected but not found on ${harnessName ?? 'the harness'}; pick another or the default chain.`
+              ? `Profile ${d.selected} is selected but not found on ${engineName ?? 'the engine'}; pick another or the default chain.`
               : d.selected
-                ? `Every Bedrock model on ${harnessName ?? 'this harness'} signs with profile ${d.selected}.`
-                : `Bedrock on ${harnessName ?? 'this harness'} uses a configured API key, otherwise the AWS default credential chain (${d.default_profile}). Select a profile to use its credentials from the next request.`
+                ? `Every Bedrock model on ${engineName ?? 'this engine'} signs with profile ${d.selected}.`
+                : `Bedrock on ${engineName ?? 'this engine'} uses a configured API key, otherwise the AWS default credential chain (${d.default_profile}). Select a profile to use its credentials from the next request.`
         }
       >
         {pick && (

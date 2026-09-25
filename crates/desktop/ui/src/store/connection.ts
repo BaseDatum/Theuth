@@ -2,7 +2,7 @@ import { type StoreApi, createStore } from 'zustand'
 import type { Api } from '@/rpc/api'
 import type { ConnState, RpcClient } from '@/rpc/client'
 import type { Info } from '@/rpc/extra'
-import { scoped } from './harness-scope'
+import { scoped } from './engine-scope'
 
 type ConnectionStore = {
   state: ConnState
@@ -20,7 +20,7 @@ type ConnectionStore = {
 
 export type ConnectionApi = StoreApi<ConnectionStore>
 
-/** One harness's connection (31 §7.4); `useConnection` reads the enclosing harness's. */
+/** One engine's connection (31 §7.4); `useConnection` reads the enclosing engine's. */
 export const createConnection = (): ConnectionApi =>
   createStore<ConnectionStore>()((set) => ({
     state: 'connecting',

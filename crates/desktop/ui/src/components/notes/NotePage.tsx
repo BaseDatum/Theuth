@@ -15,7 +15,7 @@ import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { type AttachRef, subtitle } from '@/lib/attach'
-import type { HarnessProvider } from '@/lib/doc/provider'
+import type { EngineProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
@@ -34,7 +34,7 @@ export function NotePage() {
  * list row's, another device's — arrives as `DocumentChanged` on the bus, not on the document stream, so the page
  * follows that too. The local rename result sets it first so the bar never flickers back.
  */
-function useTitle(provider: HarnessProvider | null): [string, (t: string) => void] {
+function useTitle(provider: EngineProvider | null): [string, (t: string) => void] {
   const [title, setTitle] = useState(provider?.meta?.title ?? '')
   useEffect(() => {
     if (!provider) return

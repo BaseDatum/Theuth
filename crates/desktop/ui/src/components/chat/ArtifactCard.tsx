@@ -40,7 +40,7 @@ import { fmtBytes, isLocal, readText, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
-import { useHarnesses } from "@/link/harnesses";
+import { useEngines } from "@/link/engines";
 import type { Api } from "@/rpc/api";
 import type { Artifact, Kind } from "@/rpc/extra";
 import { useConnection } from "@/store/connection";
@@ -84,7 +84,7 @@ export const GLYPH: Record<Kind, typeof File> = {
 const fail = (e: unknown) =>
   toast.error(e instanceof Error ? e.message : String(e));
 
-/** Text of a harness file, `null` while loading, `''` on failure. */
+/** Text of an engine file, `null` while loading, `''` on failure. */
 export function useText(path: string | null): string | null {
   const api = useApi();
   const [text, setText] = useState<string | null>(null);
@@ -121,7 +121,7 @@ export async function saveAs(api: Api, a: Artifact, local: boolean) {
     toast.success(`Saved ${a.name}`);
     return;
   }
-  const url = await resolveFile(api, a.path, useHarnesses.getState().active);
+  const url = await resolveFile(api, a.path, useEngines.getState().active);
   const el = document.createElement("a");
   el.href = url;
   el.download = a.name;
@@ -140,7 +140,7 @@ export function ArtifactMenu({
 }) {
   const api = useApi();
   const navigate = useNavigate();
-  const active = useHarnesses((s) => s.active);
+  const active = useEngines((s) => s.active);
   const local = isLocal(active);
   // 66 §7.8: the card's artifact as a reference, into this session's composer or a picked chat.
   const [attaching, setAttaching] = useState(false);
@@ -208,9 +208,9 @@ export function ArtifactMenu({
   );
 }
 
-/** Reveal the blob in the OS file manager; local harness only (35 §7.4). */
+/** Reveal the blob in the OS file manager; local engine only (35 §7.4). */
 export function RevealButton({ artifact: a }: { artifact: Artifact }) {
-  const active = useHarnesses((s) => s.active);
+  const active = useEngines((s) => s.active);
   const platform = useConnection((s) => s.info?.platform);
   if (!isLocal(active)) return null;
   const label =

@@ -4,7 +4,7 @@ import { Plugin, PluginKey, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet } from 'prosemirror-view'
 import { ySyncPluginKey, yUndoPluginKey } from 'y-prosemirror'
 import type { UndoManager } from 'yjs'
-import type { Authored, HarnessProvider } from '@/lib/doc/provider'
+import type { Authored, EngineProvider } from '@/lib/doc/provider'
 
 /** 59 §6.4: unmask at `max(24 chars/s, len / 1.5 s)`. */
 export const MIN_CHARS_PER_S = 24
@@ -265,7 +265,7 @@ function reviveUndo(editor: BlockNoteEditor<any, any, any>): void {
 }
 
 /** BlockNote extension: the plugin plus the `Authored` subscription that feeds it. `createExtension` returns a creator; called once here. */
-export function revealExtension(provider: HarnessProvider, color: string) {
+export function revealExtension(provider: EngineProvider, color: string) {
   return createExtension(({ editor }: { editor: BlockNoteEditor<any, any, any> }) => {
     const plugin = revealPlugin(color)
     return {

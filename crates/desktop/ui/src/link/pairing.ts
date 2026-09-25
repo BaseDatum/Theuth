@@ -1,9 +1,9 @@
 // Pairing string parsing (31 §4.4) and the pairing handshake (§4.3): IKpsk2
-// with the one-time secret, then one transport record so the harness enrols us.
+// with the one-time secret, then one transport record so the engine enrols us.
 
 import { container } from '@/lib/platform'
 import { CLOSE_REASON, Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
-import { type Harness, useHarnesses } from './harnesses'
+import { type Engine, useEngines } from './engines'
 import { type Identity, b64url, getIdentity, unb64url } from './keys'
 import { type Session, handshakeIKpsk2, prologue } from './noise'
 
@@ -11,9 +11,9 @@ import { type Session, handshakeIKpsk2, prologue } from './noise'
 export type PairingKey = {
   relayHost: string
   secure: boolean
-  harnessPub: Uint8Array<ArrayBuffer>
+  enginePub: Uint8Array<ArrayBuffer>
   /** What we dial: an engine id, or the mesh device id when `pending` is set. */
-  harnessId: string
+  engineId: string
   secret: Uint8Array<ArrayBuffer>
   name: string
   /** The `pending` row id of a mesh pairing (69 decision 4): the string's 4th part; sent in `PairHello`. */
@@ -30,8 +30,8 @@ export type LinkOptions = {
   onClose?: (reason: number) => void
 }
 
-/** `wss|ws://<relayHost>/h/<harness id>`. */
-export const wsUrl = (h: Pick<Harness, 'relayHost' | 'secure' | 'id'>): string => `${h.secure ? 'wss' : 'ws'}://${h.relayHost}/h/${h.id}`
+/** `wss|ws://<relayHost>/h/<engine id>`. */
+export const wsUrl = (h: Pick<Engine, 'relayHost' | 'secure' | 'id'>): string => `${h.secure ? 'wss' : 'ws'}://${h.relayHost}/h/${h.id}`
 
 /**
  * `https://host[:port]/link#1.<b64url(pub ‖ secret)>.<b64url(name)>[.<b64url(pending id)>]`
@@ -63,8 +63,8 @@ export function parsePairingKey(s: string): PairingKey | null {
   const keys = unb64url(parts[1] as string)
   const name = unb64url(parts[2] as string)
   if (!keys || keys.length !== 64 || !name) return null
-  const harnessPub = keys.slice(0, 32)
-  const k: PairingKey = { relayHost, secure, harnessPub, harnessId: b64url(harnessPub), secret: keys.slice(32), name: new TextDecoder().decode(name) }
+  const enginePub = keys.slice(0, 32)
+  const k: PairingKey = { relayHost, secure, enginePub, engineId: b64url(enginePub), secret: keys.slice(32), name: new TextDecoder().decode(name) }
   if (parts.length === 4) {
     const pending = unb64url(parts[3] as string)
     if (!pending || pending.length === 0) return null
@@ -131,22 +131,22 @@ const REPLY_WAIT_MS = 15_000
 const FIRST_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"info","params":[]}'
 
 /**
- * Pair with the harness in `key`: wait for it to be online, run IKpsk2 with
+ * Pair with the engine in `key`: wait for it to be online, run IKpsk2 with
  * `{ name, platform, pending? }`, read `PairAccept`, send one `info` request (the
- * record that enrols us) and await its reply. Adds the harness to the store and
+ * record that enrols us) and await its reply. Adds the engine to the store and
  * returns it. A 4-part key pairs this device's per-mesh identity with a mesh (69 §4).
- * Throws `Error('expired or used key' | 'harness offline' | 'relay unreachable')`.
+ * Throws `Error('expired or used key' | 'engine offline' | 'relay unreachable')`.
  */
-export async function pair(key: string, deviceName: string, opts: LinkOptions = {}): Promise<Harness> {
+export async function pair(key: string, deviceName: string, opts: LinkOptions = {}): Promise<Engine> {
   const k = parsePairingKey(key)
   if (!k) throw new Error('expired or used key')
-  const identity = await (opts.identity ?? getIdentity)(k.pending === undefined ? undefined : k.harnessId)
-  const ws = await openSocket(wsUrl({ relayHost: k.relayHost, secure: k.secure, id: k.harnessId }), opts.ws)
+  const identity = await (opts.identity ?? getIdentity)(k.pending === undefined ? undefined : k.engineId)
+  const ws = await openSocket(wsUrl({ relayHost: k.relayHost, secure: k.secure, id: k.engineId }), opts.ws)
   const frames = new FrameQueue(ws)
   try {
-    // Relay sends PRESENCE on connect; parked while the harness is offline.
+    // Relay sends PRESENCE on connect; parked while the engine is offline.
     for (;;) {
-      const f = await frames.next(PRESENCE_WAIT_MS, 'harness offline')
+      const f = await frames.next(PRESENCE_WAIT_MS, 'engine offline')
       if (!f) throw new Error('relay unreachable')
       const d = decodeFrame(f)
       if (d?.op === 'presence' && d.online) break
@@ -155,8 +155,8 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
     const hs = await handshakeIKpsk2(
       {
         s: identity,
-        rs: k.harnessPub,
-        prologue: prologue(k.harnessId),
+        rs: k.enginePub,
+        prologue: prologue(k.engineId),
         payload: new TextEncoder().encode(JSON.stringify({ name: deviceName, platform: container(), pending: k.pending })),
       },
       k.secret,
@@ -170,22 +170,22 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
       throw new Error('expired or used key')
     }
     const accept = JSON.parse(new TextDecoder().decode(session.payload)) as { name?: string }
-    // First transport record proves we hold the secret; the harness enrols us on decrypt.
+    // First transport record proves we hold the secret; the engine enrols us on decrypt.
     const [record] = splitRecords(new TextEncoder().encode(FIRST_REQUEST))
     ws.send(encodeData(await session.send.encrypt(new Uint8Array(), record as Uint8Array<ArrayBuffer>)))
-    const reply = new Reassembler().push(await session.recv.decrypt(new Uint8Array(), await nextData(frames, 'harness offline')))
+    const reply = new Reassembler().push(await session.recv.decrypt(new Uint8Array(), await nextData(frames, 'engine offline')))
     const parsed = JSON.parse(new TextDecoder().decode(reply ?? new Uint8Array())) as { error?: { message: string } }
     if (parsed.error) throw new Error(parsed.error.message)
     const now = Date.now()
-    const { harnesses, add } = useHarnesses.getState()
-    const h: Harness = {
-      id: k.harnessId,
+    const { engines, add } = useEngines.getState()
+    const h: Engine = {
+      id: k.engineId,
       name: accept.name || k.name,
       relayHost: k.relayHost,
       secure: k.secure,
       pairedAt: now,
       lastSeen: now,
-      order: harnesses.reduce((m, x) => Math.max(m, x.order + 1), 0),
+      order: engines.reduce((m, x) => Math.max(m, x.order + 1), 0),
       kind: k.pending === undefined ? 'engine' : 'mesh',
     }
     if (h.kind === 'mesh') h.meshName = k.name
@@ -196,7 +196,7 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
   }
 }
 
-/** The next `DATA` payload; `CLOSE` (the harness refused us) or socket loss → `Error(refusedError)`. */
+/** The next `DATA` payload; `CLOSE` (the engine refused us) or socket loss → `Error(refusedError)`. */
 async function nextData(frames: FrameQueue, refusedError: string): Promise<Uint8Array<ArrayBuffer>> {
   for (;;) {
     const f = await frames.next(REPLY_WAIT_MS, refusedError)
@@ -204,6 +204,6 @@ async function nextData(frames: FrameQueue, refusedError: string): Promise<Uint8
     const d = decodeFrame(f)
     if (d?.op === 'data') return d.payload
     if (d?.op === 'close') throw new Error(refusedError)
-    if (d?.op === 'presence' && !d.online) throw new Error('harness offline')
+    if (d?.op === 'presence' && !d.online) throw new Error('engine offline')
   }
 }

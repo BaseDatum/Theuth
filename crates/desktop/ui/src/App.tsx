@@ -31,7 +31,7 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { startUpdateListener } from '@/lib/update'
-import { LOCAL, applyMeshStatus, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
+import { LOCAL, applyMeshStatus, hasLocal, hydrateEngines, useEngines, useNeedsPairing } from '@/link/engines'
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
 import { type Api, makeApi } from '@/rpc/api'
@@ -40,7 +40,7 @@ import { RpcClient, RpcError } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
 import { routeTree } from '@/routeTree.gen'
 import { useConnection } from '@/store/connection'
-import { HarnessProvider, type Stores, dropScope, scope } from '@/store/harness-scope'
+import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
 
@@ -72,14 +72,14 @@ async function quit(): Promise<void> {
 }
 
 /**
- * `info` into the connection store, then the harness's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent).
+ * `info` into the connection store, then the engine's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent).
  * A mesh row also re-reads `mesh_status` (69 §4): whichever engine is the hub now names the mesh and its members.
  */
 function loadInfo(st: Stores, api: Api): Promise<void> {
   return api.info().then((info) => {
     st.connection.getState().setInfo(info)
     void autoPair(st.id, api)
-    if (useHarnesses.getState().harnesses.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
+    if (useEngines.getState().engines.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
     void api.dictation_prewarm().then(setModel).catch(() => undefined)
     void refreshStatus(api).catch(() => undefined)
     // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
@@ -109,12 +109,12 @@ function reload(st: Stores): void {
   void st.qc.invalidateQueries({ queryKey: ['terminals'] })
   const api = st.connection.getState().api
   if (api) void loadInfo(st, api).catch(() => undefined)
-  if (useHarnesses.getState().active === st.id)
+  if (useEngines.getState().active === st.id)
     window.dispatchEvent(new Event('theuth:reload-session'))
 }
 
 /**
- * `subscribe_events(null, null)` for the active harness (25 §6.1, 31 §7.3). Events
+ * `subscribe_events(null, null)` for the active engine (25 §6.1, 31 §7.3). Events
  * are queued and drained into one `dispatch` per frame; this is the only place
  * they enter the stores. Issued on `open` when the client is not connected yet.
  */
@@ -146,10 +146,10 @@ function detach(st: Stores): void {
 }
 
 /**
- * Connect one harness: build its client, mirror its state into its connection
+ * Connect one engine: build its client, mirror its state into its connection
  * store, subscribe if it is the active one and load `info` on every `open` (a
- * link harness may be offline for a while first). `signal` aborts (StrictMode
- * remount, relaunch, harness removed) and closes the client.
+ * link engine may be offline for a while first). `signal` aborts (StrictMode
+ * remount, relaunch, engine removed) and closes the client.
  */
 function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): void {
   const conn = st.connection.getState()
@@ -183,10 +183,10 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
       let lost = false
       client.onState((s) => {
         conn.setConnState(s)
-        // Toasts for the harness on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
+        // Toasts for the engine on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
         // "reconnecting…" chip instead — the new hub answers on the same id within seconds.
-        const { active, harnesses } = useHarnesses.getState()
-        const shown = active === st.id && harnesses.find((h) => h.id === st.id)?.kind !== 'mesh'
+        const { active, engines } = useEngines.getState()
+        const shown = active === st.id && engines.find((h) => h.id === st.id)?.kind !== 'mesh'
         if (s === 'reconnecting' && !lost) {
           lost = true
           if (shown) toast('Connection lost, reconnecting…')
@@ -200,7 +200,7 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
         }
       })
       conn.setClient(client, api)
-      if (useHarnesses.getState().active === st.id) attach(st)
+      if (useEngines.getState().active === st.id) attach(st)
       await client.connect()
     } catch (e) {
       fail(e)
@@ -285,7 +285,7 @@ function visible(session: string): boolean {
   return root !== null && leaves(root).includes(session)
 }
 
-/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active harness. The island only reloads. */
+/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
@@ -329,18 +329,18 @@ function useEventSideEffects(st: Stores): void {
 }
 
 /**
- * Everything under the active harness's provider: the router once connected, the startup screen before.
- * A link harness stays on the router through a reconnect: iOS kills the socket on every background,
+ * Everything under the active engine's provider: the router once connected, the startup screen before.
+ * A link engine stays on the router through a reconnect: iOS kills the socket on every background,
  * so a resume would otherwise swap in the startup screen and remount the router each time (31 §7.3).
  * `refused` needs the user (re-pair or forget), so that still gets the screen.
  */
-function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void }) {
-  const refused = useHarnesses((s) => s.presence[harness] === 'refused')
+function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
+  const refused = useEngines((s) => s.presence[engine] === 'refused')
   const ready = useConnection(
-    (s) => s.info !== null && (s.state === 'open' || (harness !== LOCAL && !refused)),
+    (s) => s.info !== null && (s.state === 'open' || (engine !== LOCAL && !refused)),
   )
   useInvalidateOn()
-  useEventSideEffects(scope(harness))
+  useEventSideEffects(scope(engine))
   return ready ? (
     <RouterProvider router={router} />
   ) : (
@@ -348,22 +348,22 @@ function Shell({ harness, onRelaunch }: { harness: string; onRelaunch(): void })
   )
 }
 
-/** Link clients by harness id; `AbortController` closes one when the harness is removed. */
+/** Link clients by engine id; `AbortController` closes one when the engine is removed. */
 const links = new Map<string, AbortController>()
 
-/** The chat each harness was showing when the user switched away, restored on the way back (`/` otherwise). */
+/** The chat each engine was showing when the user switched away, restored on the way back (`/` otherwise). */
 const lastChat = new Map<string, string>()
 
 export function App() {
   const [attempt, setAttempt] = useState(0)
-  const hydrated = useHarnesses((s) => s.hydrated)
-  const harnesses = useHarnesses((s) => s.harnesses)
-  const active = useHarnesses((s) => s.active)
+  const hydrated = useEngines((s) => s.hydrated)
+  const engines = useEngines((s) => s.engines)
+  const active = useEngines((s) => s.active)
   const needsPairing = useNeedsPairing()
   /** The `active` last shown once IndexedDB was read; `null` before, so the stored value does not count as a switch. */
   const shown = useRef<string | null>(null)
 
-  useEffect(() => void hydrateHarnesses(), [])
+  useEffect(() => void hydrateEngines(), [])
   useEffect(watchNodes, [])
   useEffect(installSpeechListeners, [])
   useEffect(() => (ISLAND ? undefined : installDictationListeners()), [])
@@ -391,25 +391,25 @@ export function App() {
     return () => ctl.abort()
   }, [attempt])
 
-  // One LinkTransport client per paired harness; all connect (presence), only the active one subscribes.
+  // One LinkTransport client per paired engine; all connect (presence), only the active one subscribes.
   // A node its parent introduced while offline (`pairedAt: 0`, 32 §8.2) has no client until it pairs.
   useEffect(() => {
     if (!hydrated) return
-    for (const h of harnesses) {
+    for (const h of engines) {
       if (links.has(h.id) || h.pairedAt === 0) continue
       const ctl = new AbortController()
       links.set(h.id, ctl)
       boot(scope(h.id), async () => new RpcClient(new LinkTransport(h)), ctl.signal)
     }
     for (const [id, ctl] of links) {
-      if (harnesses.some((h) => h.id === id)) continue
+      if (engines.some((h) => h.id === id)) continue
       ctl.abort()
       links.delete(id)
       dropScope(id)
     }
-  }, [hydrated, harnesses])
+  }, [hydrated, engines])
 
-  // Switching moves the subscription; the tree below remounts under the new provider. The harness left
+  // Switching moves the subscription; the tree below remounts under the new provider. The engine left
   // behind misses every event from here, so its transcripts go stale until it is shown again (48 §5)
   // — on a real switch only, not a StrictMode re-run of this effect.
   useEffect(() => {
@@ -417,11 +417,11 @@ export function App() {
     attach(st)
     return () => {
       detach(st)
-      if (useHarnesses.getState().active !== st.id) st.sessions.getState().unload()
+      if (useEngines.getState().active !== st.id) st.sessions.getState().unload()
     }
   }, [active])
 
-  // A switch restores that harness's last chat, else `/` (the tree below remounts under the new provider);
+  // A switch restores that engine's last chat, else `/` (the tree below remounts under the new provider);
   // the hydration read keeps deep links like `/link#…`.
   useEffect(() => {
     if (!hydrated) return
@@ -429,7 +429,7 @@ export function App() {
       const { pathname, href } = router.state.location
       if (pathname.startsWith('/c/')) lastChat.set(shown.current, href)
       else lastChat.delete(shown.current)
-      // Panes name sessions of the harness being left.
+      // Panes name sessions of the engine being left.
       usePanes.setState({ root: null, focused: null, drag: null })
       router.history.push(lastChat.get(active) ?? '/')
     }
@@ -446,9 +446,9 @@ export function App() {
       {needsPairing ? (
         <PairScreen />
       ) : (
-        <HarnessProvider key={active} harness={active}>
-          <Shell harness={active} onRelaunch={() => setAttempt((n) => n + 1)} />
-        </HarnessProvider>
+        <EngineProvider key={active} engine={active}>
+          <Shell engine={active} onRelaunch={() => setAttempt((n) => n + 1)} />
+        </EngineProvider>
       )}
       <Toaster />
     </>

@@ -1,18 +1,18 @@
-/** Mid-turn harness notes share one transcript presentation; context summaries already have their own card. */
-export const HARNESS_NOTICES = {
-  todo_continue: { title: 'Nudge', description: 'The harness asked the model to continue unfinished todos.' },
-  rounds: { title: 'Tool rounds', description: 'The harness asked the model to wrap up within the tool-round limit.' },
-  context_pressure: { title: 'Context pressure', description: 'The harness warned the model that context compaction is near.' },
-  recovery: { title: 'Recovery', description: 'The harness asked the model to resume an interrupted reply.' },
-  continue: { title: 'Continuation', description: 'The harness asked the model to continue a reply cut off by the output limit.' },
-  steer: { title: 'Tool correction', description: 'The harness asked the model to change a repeatedly failing tool call.' },
-  surface_error: { title: 'Display correction', description: 'The harness asked the model to fix content that could not be rendered.' },
-  todo: { title: 'Todo reminder', description: 'The harness reminded the model of its current plan.' },
-  knowledge: { title: 'Knowledge reminder', description: 'The harness suggested relevant knowledge for the model to consult.' },
-  vision: { title: 'Images unseen', description: 'The harness told the model no vision model is configured, so the pending images were not looked at.' },
+/** Mid-turn engine notes share one transcript presentation; context summaries already have their own card. */
+export const ENGINE_NOTICES = {
+  todo_continue: { title: 'Nudge', description: 'The engine asked the model to continue unfinished todos.' },
+  rounds: { title: 'Tool rounds', description: 'The engine asked the model to wrap up within the tool-round limit.' },
+  context_pressure: { title: 'Context pressure', description: 'The engine warned the model that context compaction is near.' },
+  recovery: { title: 'Recovery', description: 'The engine asked the model to resume an interrupted reply.' },
+  continue: { title: 'Continuation', description: 'The engine asked the model to continue a reply cut off by the output limit.' },
+  steer: { title: 'Tool correction', description: 'The engine asked the model to change a repeatedly failing tool call.' },
+  surface_error: { title: 'Display correction', description: 'The engine asked the model to fix content that could not be rendered.' },
+  todo: { title: 'Todo reminder', description: 'The engine reminded the model of its current plan.' },
+  knowledge: { title: 'Knowledge reminder', description: 'The engine suggested relevant knowledge for the model to consult.' },
+  vision: { title: 'Images unseen', description: 'The engine told the model no vision model is configured, so the pending images were not looked at.' },
 }
 
-/** One card a harness-wrapped input renders as. */
+/** One card an engine-wrapped input renders as. */
 export type Injected =
   | { kind: 'skill'; name: string; words: string }
   | { kind: 'peer'; from: string; text: string }
@@ -23,7 +23,7 @@ export type Injected =
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
   /** A fired `remind_me_in` timer (14 as-built): `after` is the requested seconds, `late` when re-armed past due after a restart. */
   | { kind: 'reminder'; id: string; after: string; late: boolean; text: string }
-  | { kind: 'harness'; notice: keyof typeof HARNESS_NOTICES; text: string }
+  | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
 const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="' }
@@ -52,9 +52,9 @@ export function humanSecs(secs: string | number): string {
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`
- * plus the user's words) is one card; an input made entirely of harness
+ * plus the user's words) is one card; an input made entirely of engine
  * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<job_idle>`, `<schedule>` blocks joined
- * by newlines, harness notes such as `<context_summary>`) is one card per
+ * by newlines, engine notes such as `<context_summary>`) is one card per
  * block: mid-turn notices are visible; context summaries and runtime wrappers yield none.
  * `null` for human text (or anything not entirely made of wrappers).
  */
@@ -74,7 +74,7 @@ export function classify(text: string): Injected[] | null {
     const open = rest.slice(1, gt)
     const name = open.split(' ', 1)[0] as string
     const key = CARD[name]
-    const notice = Object.hasOwn(HARNESS_NOTICES, open) ? open as keyof typeof HARNESS_NOTICES : undefined
+    const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : undefined
     if (key === undefined && !HIDDEN[name] && notice === undefined) return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
@@ -88,7 +88,7 @@ export function classify(text: string): Injected[] | null {
       let body = rest.slice(gt + 1, end).trim()
       // Only todo continuations escape their body at emission; other notes are already literal text.
       if (notice === 'todo_continue') body = body.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
-      out.push({ kind: 'harness', notice, text: body })
+      out.push({ kind: 'engine', notice, text: body })
     } else if (key !== undefined) {
       const from = attr(open, key)
       if (from === undefined) return null

@@ -1,6 +1,6 @@
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness'
 import * as Y from 'yjs'
-import { LOCAL } from '@/link/harnesses'
+import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
 import type { DocId } from '@/rpc/bindings/DocId'
@@ -10,15 +10,15 @@ import type { Who } from '@/rpc/bindings/Who'
 import type { RpcClient } from '@/rpc/client'
 import { DocStore, type Pending } from './queue'
 
-/** Origin tag of every change the harness sent us; never echoed back. */
-const HARNESS = 'harness'
-/** Origin of the IndexedDB state applied at start: already ours, already (or pending to be) the harness's. */
+/** Origin tag of every change the engine sent us; never echoed back. */
+const ENGINE = 'engine'
+/** Origin of the IndexedDB state applied at start: already ours, already (or pending to be) the engine's. */
 const RESTORE = 'restore'
 /** The whole Y.Doc is written to IndexedDB this long after the last change (link devices only). */
 const SAVE_MS = 1000
 /** One `doc_update` over the link, base64 (59 §4.7; `document::MAX_UPDATE_B64`). The replay merges the queue in batches under it. */
 export const MAX_UPDATE_B64 = 48 * 1024
-/** The harness refused an update for good (59 §11 limits): retrying cannot help, the local copy has forked. */
+/** The engine refused an update for good (59 §11 limits): retrying cannot help, the local copy has forked. */
 const REFUSED = /^(UpdateTooLarge|DocTooLarge)\b/
 
 export type DocStatus =
@@ -41,7 +41,7 @@ type AgentState = { name?: unknown; color?: unknown; agent: { doc: string; block
 
 /**
  * Awareness whose `user` field is pinned (59 §8.5): BlockNote writes `user` from the host's
- * `deviceName()` when the editor is created; a guest's name and colour are the harness's
+ * `deviceName()` when the editor is created; a guest's name and colour are the engine's
  * (`Joined`), so every write of `user` lands as those. `role` rides beside it.
  */
 class PinnedUserAwareness extends Awareness {
@@ -83,16 +83,16 @@ function b64(bytes: Uint8Array): string {
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 
 /**
- * A Yjs provider over the harness RPC (59 §6.5): local updates go out as `doc_update`, the
- * `doc_subscribe` stream comes in as `Y.applyUpdate(doc, u, 'harness')`, awareness both ways.
+ * A Yjs provider over the engine RPC (59 §6.5): local updates go out as `doc_update`, the
+ * `doc_subscribe` stream comes in as `Y.applyUpdate(doc, u, 'engine')`, awareness both ways.
  * The subscription is opened before `doc_open` so nothing accepted in between is missed; a
  * dropped connection or a `Closed{slow}` re-syncs from the state vector and flushes the queue.
  *
- * On a link device (`harness !== LOCAL`, 31 §7.3) the document and the FIFO of unacknowledged
+ * On a link device (`engine !== LOCAL`, 31 §7.3) the document and the FIFO of unacknowledged
  * local updates live in IndexedDB (§6.3): a killed app comes back with its offline edits and
  * replays them on the next `open`. In-process on the Mac the queue stays in memory.
  */
-export class HarnessProvider {
+export class EngineProvider {
   readonly id: DocId
   readonly doc = new Y.Doc()
   readonly awareness: Awareness
@@ -107,7 +107,7 @@ export class HarnessProvider {
   #ready: Promise<void>
   #loaded = false
   #connected = false
-  /** Local updates the harness has not acknowledged, oldest first. */
+  /** Local updates the engine has not acknowledged, oldest first. */
   #queue: Pending[] = []
   #save: ReturnType<typeof setTimeout> | undefined
   #unsub: (() => Promise<void>) | null = null
@@ -120,13 +120,13 @@ export class HarnessProvider {
   agentEdits = 0
 
   /** `guest`: a share-link member's identity (59 §8.3) — pins the awareness `user`, and a viewer never goes `live`. */
-  constructor(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL, guest?: GuestUser) {
+  constructor(client: RpcClient, api: Api, id: DocId, engine: string = LOCAL, guest?: GuestUser) {
     this.#client = client
     this.#api = api
     this.id = id
     this.awareness = guest ? new PinnedUserAwareness(this.doc, guest) : new Awareness(this.doc)
     this.viewer = guest?.role === 'viewer'
-    this.#store = harness === LOCAL ? null : new DocStore(harness, id)
+    this.#store = engine === LOCAL ? null : new DocStore(engine, id)
     this.#loaded = this.#store === null
     this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve()
     this.doc.on('update', this.#local)
@@ -196,7 +196,7 @@ export class HarnessProvider {
       console.warn('doc store unavailable', this.id, e)
     }
     this.#loaded = true
-    // Opened while the harness is unreachable: what IndexedDB had is editable now, not on the next reconnect.
+    // Opened while the engine is unreachable: what IndexedDB had is editable now, not on the next reconnect.
     if (!this.#connected && this.status.kind === 'connecting') this.#set({ kind: 'offline', queued: this.#queue.length })
   }
 
@@ -216,7 +216,7 @@ export class HarnessProvider {
   #local = (update: Uint8Array, origin: unknown): void => {
     if (origin === RESTORE) return
     this.#scheduleSave()
-    if (origin === HARNESS) return
+    if (origin === ENGINE) return
     if (!this.#loaded) {
       // Nothing can be typed before the store is read (the editor is read-only while `connecting`); keep order anyway.
       void this.#ready.then(() => this.#local(update, origin))
@@ -240,8 +240,8 @@ export class HarnessProvider {
 
   /**
    * A limit refusal (`UpdateTooLarge`, `DocTooLarge`): the update is dropped here and in IndexedDB and the
-   * provider closes with the reason — this copy now holds text the harness never accepted, a reload shows
-   * the harness's state. Not an offline condition: a retry would fail the same way forever.
+   * provider closes with the reason — this copy now holds text the engine never accepted, a reload shows
+   * the engine's state. Not an offline condition: a retry would fail the same way forever.
    */
   #refused(e: unknown, dropped: Pending[]): boolean {
     const message = e instanceof Error ? e.message : String(e)
@@ -272,7 +272,7 @@ export class HarnessProvider {
     { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
     origin: unknown,
   ): void => {
-    if (origin === HARNESS || (this.status.kind !== 'live' && this.status.kind !== 'readonly')) return
+    if (origin === ENGINE || (this.status.kind !== 'live' && this.status.kind !== 'readonly')) return
     const changed = [...added, ...updated, ...removed]
     void this.#api.doc_awareness(this.id, b64(encodeAwarenessUpdate(this.awareness, changed))).catch(() => undefined)
   }
@@ -280,7 +280,7 @@ export class HarnessProvider {
   #item = (e: DocEvent): void => {
     switch (e.type) {
       case 'Update':
-        Y.applyUpdate(this.doc, unb64(e.update), HARNESS)
+        Y.applyUpdate(this.doc, unb64(e.update), ENGINE)
         if (e.by.who === 'file') for (const cb of this.#events) cb(e)
         return
       case 'Authored': {
@@ -290,7 +290,7 @@ export class HarnessProvider {
         return
       }
       case 'Awareness':
-        applyAwarenessUpdate(this.awareness, unb64(e.state), HARNESS)
+        applyAwarenessUpdate(this.awareness, unb64(e.state), ENGINE)
         return
       case 'Meta':
         // A rename (59 §7.3): `meta` follows so the page chrome and `docRef` read the new title.
@@ -299,7 +299,7 @@ export class HarnessProvider {
         return
       case 'Closed':
         this.#unsub = null
-        // `slow`: the harness dropped our queue; the state vector recovers what we missed.
+        // `slow`: the engine dropped our queue; the state vector recovers what we missed.
         if (e.reason === 'slow' && !this.#destroyed) void this.#sync()
         else this.#set({ kind: 'closed', reason: e.reason })
         return
@@ -329,8 +329,8 @@ export class HarnessProvider {
         state.set(c, at)
         at += c.length
       }
-      if (state.length > 0) Y.applyUpdate(this.doc, state, HARNESS)
-      if (opened.awareness !== '') applyAwarenessUpdate(this.awareness, unb64(opened.awareness), HARNESS)
+      if (state.length > 0) Y.applyUpdate(this.doc, state, ENGINE)
+      if (opened.awareness !== '') applyAwarenessUpdate(this.awareness, unb64(opened.awareness), ENGINE)
       // Merged batches under the 48 KiB cap stand for everything typed while offline; another round picks
       // up what was typed while one was in flight, so nothing waits for the next reconnect.
       while (this.#queue.length > 0) {
@@ -355,23 +355,23 @@ export class HarnessProvider {
   }
 }
 
-const providers = new Map<string, { provider: HarnessProvider; refs: number }>()
+const providers = new Map<string, { provider: EngineProvider; refs: number }>()
 
 /**
  * One provider per open document (§6.5): a document open in two panes shares it; `release` drops the last
- * reference. `harness` is the scope id (`'local'` or a link harness id, 31 §7.4) and keys the IndexedDB store.
+ * reference. `engine` is the scope id (`'local'` or a link engine id, 31 §7.4) and keys the IndexedDB store.
  */
-export function acquire(client: RpcClient, api: Api, id: DocId, harness: string = LOCAL): HarnessProvider {
+export function acquire(client: RpcClient, api: Api, id: DocId, engine: string = LOCAL): EngineProvider {
   let entry = providers.get(id)
   if (!entry) {
-    entry = { provider: new HarnessProvider(client, api, id, harness), refs: 0 }
+    entry = { provider: new EngineProvider(client, api, id, engine), refs: 0 }
     providers.set(id, entry)
   }
   entry.refs++
   return entry.provider
 }
 
-export function release(provider: HarnessProvider): void {
+export function release(provider: EngineProvider): void {
   const entry = providers.get(provider.id)
   if (!entry || --entry.refs > 0) return
   providers.delete(provider.id)

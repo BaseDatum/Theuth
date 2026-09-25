@@ -1,4 +1,4 @@
-// Raw IndexedDB, promisified: one db `link` with the `identity` and `harnesses`
+// Raw IndexedDB, promisified: one db `link` with the `identity` and `harnesses` (paired engines; on-disk name kept)
 // object stores (31 §7.2). Nothing here touches localStorage/sessionStorage.
 
 const DB = 'link'

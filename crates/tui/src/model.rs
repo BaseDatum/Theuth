@@ -612,7 +612,7 @@ pub enum Command {
     LinkPair,
     /// `link_cancel_pair`.
     LinkCancelPair,
-    /// `link_rename` (harness display name), then `link_status`.
+    /// `link_rename` (engine display name), then `link_status`.
     LinkRename(String),
     /// `link_rename_device(id, name)`, then `link_status`.
     LinkRenameDevice(String, String),
@@ -2611,7 +2611,7 @@ impl Prompt {
             Prompt::LinkDeviceName { name, .. } => {
                 format!("link  rename {name}  new name  (esc cancel)")
             }
-            Prompt::LinkName => "link  harness name  (esc cancel)".into(),
+            Prompt::LinkName => "link  engine name  (esc cancel)".into(),
             Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
             Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
             Prompt::NodeName { name, .. } => {
@@ -8758,7 +8758,7 @@ impl Model {
             .as_deref()
             .map_or_else(|| "no identity".into(), |id| id.chars().take(8).collect());
         format!(
-            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n harness name  e {}  esc",
+            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n engine name  e {}  esc",
             relay_host(&s.relay),
             s.name,
             if s.enabled { "disable" } else { "enable" }

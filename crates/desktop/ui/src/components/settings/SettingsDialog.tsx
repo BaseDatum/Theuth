@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import { useState } from 'react'
-import { Harnesses } from '@/components/link/Harnesses'
+import { Engines } from '@/components/link/Engines'
 import { Agents } from '@/components/settings/Agents'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
@@ -61,7 +61,7 @@ const TABS = [
   ['labs', 'Labs', FlaskConical],
   ['skills', 'Skills', Sparkles],
   ['agents', 'Agents', Bot],
-  ['harnesses', 'Harnesses', Server],
+  ['engines', 'Engines', Server],
   ['link', 'Link', Link2],
   ['nodes', 'Nodes', Network],
   ['mesh', 'Mesh', Share2],
@@ -101,7 +101,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'labs' && <Labs />}
       {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}
-      {tab === 'harnesses' && <Harnesses />}
+      {tab === 'engines' && <Engines />}
       {tab === 'link' && <Link />}
       {tab === 'nodes' && <Nodes />}
       {tab === 'mesh' && <Mesh />}
@@ -121,7 +121,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
 export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
-  // Settings › Nodes only where the harness answers `list_nodes` (32 §8.3); Labs only while `decision.enabled` (57 §7.1).
+  // Settings › Nodes only where the engine answers `list_nodes` (32 §8.3); Labs only while `decision.enabled` (57 §7.1).
   const hasNodes = useHasNodes()
   const hasLabs = useLabsVisible()
   const tabs = TABS.filter(([id]) => (id !== 'nodes' || hasNodes) && (id !== 'labs' || hasLabs))

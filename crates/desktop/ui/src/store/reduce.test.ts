@@ -70,11 +70,11 @@ test('tool-only turns omit whitespace assistant rows', () => {
   expect(fromHistory({ role: 'assistant', text: ' \n', turn: 1 })).toEqual([])
 })
 
-test('stored todo continuation renders as a harness nudge with literal task text, not a user or tool', () => {
+test('stored todo continuation renders as an engine nudge with literal task text, not a user or tool', () => {
   const body = 'Unfinished work:\n- Check &lt;button&gt; &amp; &amp;lt;literal&amp;gt;\nContinue working.'
   const [entry] = fromHistory({ role: 'user', text: `<todo_continue>\n${body}\n</todo_continue>`, turn: null, context: msg(3) })
   expect(entry).toMatchObject({
-    kind: 'harness',
+    kind: 'engine',
     notice: 'todo_continue',
     text: 'Unfinished work:\n- Check <button> & &lt;literal&gt;\nContinue working.',
     context: msg(3),
@@ -251,7 +251,7 @@ test('InputInjected moves the steer into the transcript and suppresses its echo'
   expect(s.lastInjected).toBeUndefined()
 })
 
-test('TurnStarted echo: skipped for our own send (once) and harness wrappers, skill shows a chip', () => {
+test('TurnStarted echo: skipped for our own send (once) and engine wrappers, skill shows a chip', () => {
   const c = ctx()
   c.sent.add('mine')
   let s = apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: 'mine', model: 'm', turn_seq: 1 }, c)
@@ -701,7 +701,7 @@ test('store: an access error mid-turn outlives the turn end and the settled relo
   expect(fromHistory({ role: 'error', text: message })).toMatchObject([{ kind: 'error', text: message }])
 })
 
-test('store: unload invalidates loaded slices for the reconnect/harness-switch reload; a superseded full page is dropped', () => {
+test('store: unload invalidates loaded slices for the reconnect/engine-switch reload; a superseded full page is dropped', () => {
   const id = 'unloaded'
   const st = useSessions.getState()
   st.loadHistory(id, { ...loaded('1'), history: [], first_seq: null, more: false }, 'replace')

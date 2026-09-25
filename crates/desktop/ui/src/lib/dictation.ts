@@ -293,7 +293,7 @@ export function onFinish(cb: (r: Splice) => void): () => void {
 
 /**
  * Anchor the caret (`before`/`after`) and start dictating; a refusal toasts and returns to idle. `mic`:
- * stream this browser's microphone to the daemon (a relay peer; 54 §4.5) instead of using the harness mic.
+ * stream this browser's microphone to the daemon (a relay peer; 54 §4.5) instead of using the engine mic.
  */
 export async function start(api: Api, before: string, after: string, mic: boolean): Promise<void> {
   if (state.active) return

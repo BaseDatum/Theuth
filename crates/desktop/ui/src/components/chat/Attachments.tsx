@@ -4,16 +4,16 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveFile } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { ContextAttachment } from '@/rpc/bindings/ContextAttachment'
 import { RemoveButton } from './MessageAssistant'
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
-/** A URL for a harness path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure. */
+/** A URL for an engine path via `resolveFile` (31 §9): immediate on macOS local; elsewhere `null` until the bytes arrive, `''` on failure. */
 export function useFileUrl(path: string): string | null {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
+  const active = useEngines((s) => s.active)
   // The local case is synchronous, so the first paint already has the URL; the RPC case is cached, so the effect's call is the same promise.
   const [src, setSrc] = useState<string | null>(() => {
     const r = resolveFile(api, path, active)
@@ -38,7 +38,7 @@ export function useFileUrl(path: string): string | null {
   return src
 }
 
-/** `<img>` for a harness path: a dim block until the URL resolves, nothing on failure. */
+/** `<img>` for an engine path: a dim block until the URL resolves, nothing on failure. */
 export function Img({ path, className }: { path: string; className: string }) {
   const src = useFileUrl(path)
   if (src === null) return <div className={cn('h-24 w-32 animate-pulse bg-layer-2', className)} />
