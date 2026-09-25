@@ -26,7 +26,7 @@ import {
   shareState,
 } from '@/lib/labs'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { Mode } from '@/rpc/bindings/Mode'
 
 /** The design doc every card links to. */
@@ -156,7 +156,7 @@ function ModeRow({ prefix, label, counters }: { prefix: Prefix; label: string; c
 /** One family's Capture and Share rows on `decision_training(prefix)`. */
 function TrainingRows({ prefix, title }: { prefix: Prefix; title: string }) {
   const api = useApi()
-  const local = isLocal(useHarnesses((s) => s.active))
+  const local = isLocal(useEngines((s) => s.active))
   const key = queryKeys.decisionTraining(prefix)
   const info = useQuery({ queryKey: key, queryFn: () => api.decision_training(prefix) })
   const capture = useAction((on: boolean) => api.set_decision_training(prefix, on), { keys: [key] })

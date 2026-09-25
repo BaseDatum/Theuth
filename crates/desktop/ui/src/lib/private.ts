@@ -1,29 +1,29 @@
 // The desktop's private-session owner (51 §4.2–4.3, §8.3): one memory-only record of
 // the private tree this page owns, and one router-level coordinator that releases it.
 // Nothing here — ids, lease secret, view id — may reach localStorage, IndexedDB,
-// sessionStorage or the Cache API; a reload forgets the tree and the harness's 30 s
+// sessionStorage or the Cache API; a reload forgets the tree and the engine's 30 s
 // reconnect deadline closes it.
 
 import type { AnyRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { queryKeys } from '@/lib/rpc'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { AgentEvent } from '@/rpc/bindings/AgentEvent'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 import type { ConnState } from '@/rpc/client'
-import { type Stores, scope } from '@/store/harness-scope'
+import { type Stores, scope } from '@/store/engine-scope'
 import type { SessionSlice } from '@/store/sessions'
 import { create } from 'zustand'
 
 /** The owning view id (51 §4.1): minted once per page load, memory only. */
 export const VIEW = crypto.randomUUID()
-/** The harness's fixed reconnect deadline after the owning peer closes (51 §4.3). */
+/** The engine's fixed reconnect deadline after the owning peer closes (51 §4.3). */
 export const GRACE_MS = 30_000
 
 export type Private = {
-  /** Harness the tree lives on (`scope` id). */
-  harness: string
+  /** Engine the tree lives on (`scope` id). */
+  engine: string
   root: string
   session: string
   /** Reconnect lease; rotated by every `resume_private`. */
@@ -50,7 +50,7 @@ export const usePrivate = create<PrivateStore>()((set) => ({
   open: (o) =>
     set({
       current: {
-        harness: useHarnesses.getState().active,
+        engine: useEngines.getState().active,
         root: o.root,
         session: o.session,
         secret: o.lease_secret ?? '',
@@ -94,7 +94,7 @@ export type Transition = 'none' | 'lost' | 'resume'
 export const transition = (disconnectedAt: number | undefined, state: ConnState): Transition =>
   state === 'open' ? (disconnectedAt === undefined ? 'none' : 'resume') : disconnectedAt === undefined ? 'lost' : 'none'
 
-/** Whole seconds left of the reconnect window; `0` once it has elapsed (the harness may already have closed the tree). */
+/** Whole seconds left of the reconnect window; `0` once it has elapsed (the engine may already have closed the tree). */
 export const remaining = (disconnectedAt: number, now: number): number =>
   Math.max(0, Math.ceil((disconnectedAt + GRACE_MS - now) / 1000))
 
@@ -102,21 +102,21 @@ export const remaining = (disconnectedAt: number, now: number): number =>
 export const disconnectText = (secs: number): string =>
   secs > 0
     ? `Disconnected — reconnect within ${secs} s or the private session closes`
-    : 'Disconnected — the 30 s reconnect window has elapsed; the harness may already have closed this private session'
+    : 'Disconnected — the 30 s reconnect window has elapsed; the engine may already have closed this private session'
 
 const current = () => usePrivate.getState().current
 
 /** The tree's session ids as this client knows them: root + `list_agents` / `SubagentSpawned` rows. */
 export function members(p: Private): Set<string> {
   const ids = new Set([p.root])
-  for (const id of Object.keys(scope(p.harness).sessions.getState().sessions[p.root]?.children ?? {})) ids.add(id)
+  for (const id of Object.keys(scope(p.engine).sessions.getState().sessions[p.root]?.children ?? {})) ids.add(id)
   return ids
 }
 
 /** Is `session` in the tree this page owns? */
 export const isPrivate = (session: string): boolean => {
   const p = current()
-  return p !== null && inTree(p.root, session, scope(p.harness).sessions.getState().sessions)
+  return p !== null && inTree(p.root, session, scope(p.engine).sessions.getState().sessions)
 }
 
 /** Forget the tree locally (51 §4.2): every slice, query and the owner record; children before root. */
@@ -144,9 +144,9 @@ let router: AnyRouter | null = null
 /** Root whose `SessionClosing` was seen; its `SessionDeleted` reports cleanup complete. */
 let closing: string | null = null
 
-/** Local state clears at once; the harness reply names the cleanup status, and its absence names the fallback. */
+/** Local state clears at once; the engine reply names the cleanup status, and its absence names the fallback. */
 async function leave(p: Private): Promise<void> {
-  const st = scope(p.harness)
+  const st = scope(p.engine)
   discard(st, p)
   closing = p.root
   const api = st.connection.getState().api
@@ -156,7 +156,7 @@ async function leave(p: Private): Promise<void> {
     toast(`Private session closed (cleanup ${r.cleanup})`)
   } catch {
     toast.warning(
-      'Could not reach the harness to close the private session; it closes on its own once the 30 s reconnect window expires',
+      'Could not reach the engine to close the private session; it closes on its own once the 30 s reconnect window expires',
     )
   }
 }
@@ -164,7 +164,7 @@ async function leave(p: Private): Promise<void> {
 /** Leave the chat if it is (was) in the tree. */
 function exitChat(p: Private): void {
   const chat = chatOf(router?.state.location.pathname ?? '')
-  if (chat && inTree(p.root, chat, scope(p.harness).sessions.getState().sessions)) router?.history.push('/')
+  if (chat && inTree(p.root, chat, scope(p.engine).sessions.getState().sessions)) router?.history.push('/')
 }
 
 function onTransport(state: ConnState): void {
@@ -175,7 +175,7 @@ function onTransport(state: ConnState): void {
       usePrivate.setState({ current: { ...p, disconnectedAt: Date.now() } })
       return
     case 'resume': {
-      const api = scope(p.harness).connection.getState().api
+      const api = scope(p.engine).connection.getState().api
       if (!api) return
       const job = api.resume_private(p.root, VIEW, p.secret).then(
         (o) => {
@@ -187,7 +187,7 @@ function onTransport(state: ConnState): void {
         },
         () => {
           if (current()?.root !== p.root) return
-          discard(scope(p.harness), p)
+          discard(scope(p.engine), p)
           toast.error('Private session expired')
           exitChat(p)
         },
@@ -205,8 +205,8 @@ export const resumed = (): Promise<void> => usePrivate.getState().resuming ?? Pr
 
 /**
  * The router-level owner coordinator (51 §8.3): mounted once, so a late route unmount can never close a newly
- * opened tree. Releases on navigation out of the tree, harness switch, `SessionClosing`, failed resume and
- * (best effort) page hide; tracks the transport of the owning harness for the 30 s window.
+ * opened tree. Releases on navigation out of the tree, engine switch, `SessionClosing`, failed resume and
+ * (best effort) page hide; tracks the transport of the owning engine for the 30 s window.
  */
 export function usePrivateOwner(r: AnyRouter): void {
   useEffect(() => {
@@ -215,7 +215,7 @@ export function usePrivateOwner(r: AnyRouter): void {
     const watch = (p: Private | null) => {
       offConn?.()
       offConn = p
-        ? scope(p.harness).connection.subscribe((c, prev) => {
+        ? scope(p.engine).connection.subscribe((c, prev) => {
             if (c.state !== prev.state) onTransport(c.state)
           })
         : undefined
@@ -227,9 +227,9 @@ export function usePrivateOwner(r: AnyRouter): void {
         if (p && shouldLeave(fromLocation?.pathname ?? toLocation.pathname, toLocation.pathname, members(p)))
           void leave(p)
       }),
-      useHarnesses.subscribe((s, prev) => {
+      useEngines.subscribe((s, prev) => {
         const p = current()
-        if (p && s.active !== prev.active && p.harness !== s.active) void leave(p)
+        if (p && s.active !== prev.active && p.engine !== s.active) void leave(p)
       }),
       usePrivate.subscribe((s, prev) => {
         if (s.current?.root !== prev.current?.root) watch(s.current)
@@ -240,7 +240,7 @@ export function usePrivateOwner(r: AnyRouter): void {
       const p = current()
       if (e.type === 'SessionClosing' && p && e.session === p.root) {
         closing = p.root
-        discard(scope(p.harness), p)
+        discard(scope(p.engine), p)
         toast('Private session closed (cleanup pending)')
         exitChat(p)
       } else if (e.type === 'SessionDeleted' && e.session === closing) {
@@ -248,10 +248,10 @@ export function usePrivateOwner(r: AnyRouter): void {
         toast('Private session closed (cleanup complete)')
       }
     }
-    // The socket is going with the page: the call may not arrive, and then the harness's deadline closes the tree.
+    // The socket is going with the page: the call may not arrive, and then the engine's deadline closes the tree.
     const onHide = () => {
       const p = current()
-      if (p) void scope(p.harness).connection.getState().api?.leave_session(p.root, p.secret).catch(() => undefined)
+      if (p) void scope(p.engine).connection.getState().api?.leave_session(p.root, p.secret).catch(() => undefined)
     }
     window.addEventListener('theuth:session-closing', onClosing)
     window.addEventListener('pagehide', onHide)

@@ -1,6 +1,6 @@
 // 53 §4.4: the `[meeting …]` lines in a meeting's session get their own card — a left-aligned notice with a
 // chip naming what it is (transcript batch, request, tap, dismissal, deeper, start) instead of a user bubble,
-// as harness nudges do. The text stays literal; nothing is hidden from the record. 57 §3.4: a transcript
+// as engine nudges do. The text stays literal; nothing is hidden from the record. 57 §3.4: a transcript
 // batch the decision oracle handled gets one dim `⚡` status row under it (expandable to the probabilities),
 // from the live meeting store — batches of past meetings show none.
 

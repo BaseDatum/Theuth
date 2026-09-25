@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { AppWindow, BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
 import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
-import { HARNESS_NOTICES } from '@/lib/injected'
+import { ENGINE_NOTICES } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Prompt } from '@/store/approvals'
@@ -40,8 +40,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessageTool tool={entry} session={session} readOnly={readOnly} />
     case 'peer':
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
-    case 'harness':
-      return <HarnessNotice notice={entry.notice} text={entry.text} />
+    case 'engine':
+      return <EngineNotice notice={entry.notice} text={entry.text} />
     case 'vision':
       return <MessageVision entry={entry} />
     case 'info':
@@ -53,9 +53,9 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
   }
 }
 
-/** A harness notice, not a user request or a model tool call. Its body stays literal. */
-function HarnessNotice({ notice, text }: Pick<Extract<Entry, { kind: 'harness' }>, 'notice' | 'text'>) {
-  const { title, description } = HARNESS_NOTICES[notice]
+/** An engine notice, not a user request or a model tool call. Its body stays literal. */
+function EngineNotice({ notice, text }: Pick<Extract<Entry, { kind: 'engine' }>, 'notice' | 'text'>) {
+  const { title, description } = ENGINE_NOTICES[notice]
   return (
     <details className="group/notice my-2 min-w-0 rounded-xl border border-info-border/30 bg-info-bg/40 px-4 py-3 text-sm">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden">
@@ -116,8 +116,8 @@ function describe(entry: Entry): string {
       return `tool ${entry.name}`
     case 'peer':
       return `message from ${entry.from}`
-    case 'harness':
-      return HARNESS_NOTICES[entry.notice].title;
+    case 'engine':
+      return ENGINE_NOTICES[entry.notice].title;
     case 'compacted':
       return 'summary'
     case 'vision':
@@ -156,7 +156,7 @@ function Tombstone({ entry, session, readOnly, reveal }: { entry: Entry; session
   )
 }
 
-/** Tool, peer and harness cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
+/** Tool, peer and engine cards keep their own layout (`show`/scrape cards included); the remove control sits over the card's
  * top-right corner as a sibling, with the card padded so no text hides under it. Cards without stored membership
  * (live, unsaved rows) get nothing: a button without an authoritative target would only be guessing. */
 function Card({ entry, session, children }: { entry: Entry; session: string; children: ReactNode }) {
@@ -204,7 +204,7 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
 }
 
 /** One transcript row: the entry's card plus the prompts waiting on it. Entries are immutable and `session` is stable, so `memo` skips untouched rows.
- * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/harness cards get it from `Card`.
+ * A row removed from context (48 §2.2) collapses to a tombstone; user/assistant cards own their remove action, tool/peer/engine cards get it from `Card`.
  * `readOnly` drops every control that would edit the session or its context; `reveal` opens a removed row's archive at once. */
 export const Message = memo(function Message({
   entry,
@@ -222,7 +222,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'harness' || entry.kind === 'vision') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

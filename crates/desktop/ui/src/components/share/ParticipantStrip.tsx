@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import type { HarnessProvider } from '@/lib/doc/provider'
+import type { EngineProvider } from '@/lib/doc/provider'
 import { cn } from 'cn'
 
 /** One awareness client with a `user` (59 §8.5): the owner's devices, members and, while it edits, the agent. */
 export type Participant = { id: number; name: string; color: string; role?: string; me: boolean }
 
 /** Every awareness state of `provider` that names a user, this client first, agent states excluded (the footer chip has those). */
-export function participants(provider: HarnessProvider): Participant[] {
+export function participants(provider: EngineProvider): Participant[] {
   const out: Participant[] = []
   for (const [id, state] of provider.awareness.getStates()) {
     if (!state || typeof state !== 'object' || 'agent' in state || !('user' in state)) continue
@@ -20,7 +20,7 @@ export function participants(provider: HarnessProvider): Participant[] {
 }
 
 /** `participants(provider)`, re-read on every awareness change. */
-export function useParticipants(provider: HarnessProvider): Participant[] {
+export function useParticipants(provider: EngineProvider): Participant[] {
   const [list, setList] = useState<Participant[]>(() => participants(provider))
   useEffect(() => {
     const read = () => setList(participants(provider))
@@ -32,7 +32,7 @@ export function useParticipants(provider: HarnessProvider): Participant[] {
 }
 
 /** Colour dots + names of everyone in the document (59 §8.5), in the editor's header bar. */
-export function ParticipantStrip({ provider, className }: { provider: HarnessProvider; className?: string }) {
+export function ParticipantStrip({ provider, className }: { provider: EngineProvider; className?: string }) {
   const list = useParticipants(provider)
   if (list.length === 0) return null
   return (

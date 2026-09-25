@@ -174,7 +174,7 @@ export interface Api {
   /** `/a2a`: listener, configured peers and exports (50 §10); `enabled: false` with an empty status when `a2a.enabled` is off. */
   a2a_status(): Promise<A2aStatus>
   add_acp(id: string): Promise<EntryInfo>
-  /** Pair this harness with a node from the key `t --install-service` printed (32 §6.6); `NodeAdded` follows. */
+  /** Pair this engine with a node from the key `t --install-service` printed (32 §6.6); `NodeAdded` follows. */
   add_node(key: string, name: string | null): Promise<Node>
   add_mcp_repo(url: string, name: string | null): Promise<RepoInfo>
   add_mcp_server(name: string, entry: JsonValue): Promise<McpServer>
@@ -220,7 +220,7 @@ export interface Api {
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
   /** Load the dictation model if not loaded (54 §4.3); never opens the mic. Answers the current state; `-32001` when voice is disabled. */
   dictation_prewarm(): Promise<ModelState>
-  /** Start dictating (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. `sample_rate === null` opens the harness mic (local peers only; a relay peer gets `microphone is on the harness host`); a rate streams this client's mic as mono i16 PCM via `dictation_audio`. Rejects with `already dictating` or model missing. */
+  /** Start dictating (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. `sample_rate === null` opens the engine mic (local peers only; a relay peer gets `microphone is on the engine host`); a rate streams this client's mic as mono i16 PCM via `dictation_audio`. Rejects with `already dictating` or model missing. */
   dictation_start(sample_rate: number | null): Promise<DictationId>
   /** Push mono little-endian i16 PCM (base64) at the rate given to `dictation_start`; rejects with `not dictating` or `not a remote dictation`. */
   dictation_audio(id: DictationId, pcm: string): Promise<null>
@@ -342,7 +342,7 @@ export interface Api {
     limit: number | null,
     pending_only: boolean,
   ): Promise<PeerMessagePage>
-  /** AWS profiles the SDK finds on the harness and the one Bedrock signs with. */
+  /** AWS profiles the SDK finds on the engine and the one Bedrock signs with. */
   list_aws_profiles(): Promise<AwsProfiles>
   list_logins(): Promise<LoginInfo[]>
   list_mcp(session: SessionId | null): Promise<McpServer[]>
@@ -378,7 +378,7 @@ export interface Api {
   device_rename(id: string, name: string): Promise<null>
   /** Start a 5-minute pairing against the mesh identity; `string` is the 4-part QR payload (69 decision 4). `name: null` → the mesh's name. */
   device_pair_start(name: string | null): Promise<PairingPayload>
-  /** Nodes of this harness (32 §6.6); method-not-found (-32601) on a harness without the `nodes` plugin. */
+  /** Nodes of this engine (32 §6.6); method-not-found (-32601) on an engine without the `nodes` plugin. */
   list_nodes(): Promise<Node[]>
   /** Every file in `~/.theuth/schedules/`, parsed or not (34 §8). */
   list_schedules(): Promise<ScheduleInfo[]>
@@ -574,7 +574,7 @@ export interface Api {
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
   send_input(session: SessionId | null, text: string, files: string[], delivery?: Delivery | null): Promise<SessionId>
-  /** Sign every Bedrock call on the harness as `profile` from the next request on; `null` restores the default credential chain. */
+  /** Sign every Bedrock call on the engine as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
   /** Global switch (`session: null`, persisted) or one session's memory-only opt-out (50 §2.1); `enabled: true` on a session lifts its own opt-out only, never an ancestor's or the global ceiling. */

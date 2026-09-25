@@ -3,25 +3,25 @@ import { describe, expect, test } from 'vitest'
 import { joinProof, parseShareLink } from './guest'
 import { b64url, unb64url } from './keys'
 
-const HARNESS = b64url(new Uint8Array(32).fill(1))
+const ENGINE = b64url(new Uint8Array(32).fill(1))
 const DOC = 'agqmmam62fzpdi5jaiikh63n44'
 const SECRET = new Uint8Array(32).fill(7)
 
 describe('share links (59 §8.2)', () => {
   test('parses the fragment; the relay is the page origin', () => {
-    const t = parseShareLink(`#1.${HARNESS}.${DOC}.${b64url(SECRET)}`, 'relay.example:8461', true)
-    expect(t).toMatchObject({ relayHost: 'relay.example:8461', secure: true, harnessId: HARNESS, doc: DOC })
+    const t = parseShareLink(`#1.${ENGINE}.${DOC}.${b64url(SECRET)}`, 'relay.example:8461', true)
+    expect(t).toMatchObject({ relayHost: 'relay.example:8461', secure: true, engineId: ENGINE, doc: DOC })
     expect(t?.secret).toEqual(SECRET)
-    expect(parseShareLink(`1.${HARNESS}.${DOC}.${b64url(SECRET)}`, 'h', false)?.doc).toBe(DOC)
+    expect(parseShareLink(`1.${ENGINE}.${DOC}.${b64url(SECRET)}`, 'h', false)?.doc).toBe(DOC)
   })
 
   test('refuses malformed fragments', () => {
     for (const bad of [
       '',
-      `2.${HARNESS}.${DOC}.${b64url(SECRET)}`,
-      `1.${HARNESS}.${DOC}`,
-      `1.${HARNESS}.${DOC}.${b64url(SECRET.subarray(1))}`,
-      `1.${HARNESS}.NOT-A-DOC.${b64url(SECRET)}`,
+      `2.${ENGINE}.${DOC}.${b64url(SECRET)}`,
+      `1.${ENGINE}.${DOC}`,
+      `1.${ENGINE}.${DOC}.${b64url(SECRET.subarray(1))}`,
+      `1.${ENGINE}.NOT-A-DOC.${b64url(SECRET)}`,
       `1.short.${DOC}.${b64url(SECRET)}`,
     ]) {
       expect(parseShareLink(bad, 'h', true), bad).toBeNull()

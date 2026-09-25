@@ -34,7 +34,7 @@ import {
   patch,
   useSearchState,
 } from '@/lib/search'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import { cn } from '@/lib/utils'
 import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
 import type { ConceptSearchHit } from '@/rpc/bindings/ConceptSearchHit'
@@ -163,7 +163,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const activated = useRef(false)
   // Dictation into the query (54; `dictation.useBox`): the finished text lands through `setTyped` like typing.
   const voice = speech.useVoice()
-  const mic = useHarnesses((s) => s.active) !== LOCAL
+  const mic = useEngines((s) => s.active) !== LOCAL
   const dict = dictation.useBox(api, typed, setTyped, inputRef, mic)
   const wasOpen = useRef(false)
   const pendingScroll = useRef<number | null>(null)
@@ -402,7 +402,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
         <div className="flex h-11 shrink-0 items-center gap-1 border-b pr-1 pl-4">
           <DialogTitle className="mr-auto text-sm font-medium">Search</DialogTitle>
           <DialogDescription className="sr-only">
-            Search sessions, artifacts, knowledge and knowledge history on this harness. Arrow keys move
+            Search sessions, artifacts, knowledge and knowledge history on this engine. Arrow keys move
             between results; Enter opens the selected result.
           </DialogDescription>
           {/* Mobile: the footer is hidden, so Refresh and help live here as icons. */}

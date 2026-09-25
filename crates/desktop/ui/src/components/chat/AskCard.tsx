@@ -8,7 +8,7 @@ import { cn } from 'cn'
 import * as dictation from '@/lib/dictation'
 import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { Question } from '@/rpc/bindings/Question'
@@ -53,7 +53,7 @@ function ReadAloud({ session, entryKey, text }: { session: string; entryKey: str
 function OwnAnswer({ value, active, onChange, voice }: { value: string; active: boolean; onChange: (v: string) => void; voice: boolean }) {
   const api = useApi()
   const ref = useRef<HTMLInputElement>(null)
-  const mic = useHarnesses((s) => s.active) !== LOCAL
+  const mic = useEngines((s) => s.active) !== LOCAL
   const { dict, dictating, reason, toggle, shown } = dictation.useBox(api, value, onChange, ref, mic)
   return (
     <div className="relative min-w-0 flex-1">

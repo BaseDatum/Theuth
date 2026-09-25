@@ -5,7 +5,7 @@ export type Identity = { priv: CryptoKey; pub: Uint8Array<ArrayBuffer> }
 
 const subtle = globalThis.crypto.subtle
 
-/** base64url without padding (harness ids, pairing strings). */
+/** base64url without padding (engine ids, pairing strings). */
 export function b64url(bytes: Uint8Array<ArrayBuffer>): string {
   let s = ''
   for (const b of bytes) s += String.fromCharCode(b)
@@ -23,7 +23,7 @@ export function unb64url(s: string): Uint8Array<ArrayBuffer> | null {
   }
 }
 
-/** `Device.id` as the harness shows it: the first 8 chars of the base64url public key. */
+/** `Device.id` as the engine shows it: the first 8 chars of the base64url public key. */
 export const deviceId = (pub: Uint8Array<ArrayBuffer>): string => b64url(pub).slice(0, 8)
 
 /** A fresh X25519 keypair; `extractable` is `false` unless a script needs to persist it as raw bytes. */

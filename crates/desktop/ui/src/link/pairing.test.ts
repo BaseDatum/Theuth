@@ -1,10 +1,10 @@
 // `parsePairingKey` cases, then pairing and a session over an in-process fake
-// relay + harness (Noise responder built from the same primitives, so this is a
+// relay + engine (Noise responder built from the same primitives, so this is a
 // protocol-flow check; the byte-level check against published vectors is noise.test.ts).
 import { expect, test, vi } from 'vitest'
 import { RpcClient } from '@/rpc/client'
 import { OP_PRESENCE, RECORD_MAX, Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
-import { useHarnesses } from './harnesses'
+import { useEngines } from './engines'
 import { type Identity, b64url, generateIdentity, unb64url } from './keys'
 import { type CipherState, SymmetricState, concat, dh, prologue } from './noise'
 import { pair, parsePairingKey } from './pairing'
@@ -19,8 +19,8 @@ test('parsePairingKey: full URL, scheme → secure, bare form needs an origin, j
   const secret = new Uint8Array(32).fill(2)
   const frag = `1.${b64url(concat(pub, secret))}.${b64url(utf8.encode('Studio Mac'))}`
   const k = parsePairingKey(`https://relay.example.com:8787/link#${frag}`)
-  expect(k).toMatchObject({ relayHost: 'relay.example.com:8787', secure: true, name: 'Studio Mac', harnessId: b64url(pub) })
-  expect(k?.harnessPub).toEqual(pub)
+  expect(k).toMatchObject({ relayHost: 'relay.example.com:8787', secure: true, name: 'Studio Mac', engineId: b64url(pub) })
+  expect(k?.enginePub).toEqual(pub)
   expect(k?.secret).toEqual(secret)
   expect(k?.pending).toBeUndefined()
   expect(parsePairingKey(`http://localhost:8787/link#${frag}`)).toMatchObject({ relayHost: 'localhost:8787', secure: false })
@@ -37,16 +37,16 @@ test('parsePairingKey: a 4th part is the pending id of a mesh pairing (69 §5); 
   const secret = new Uint8Array(32).fill(2)
   // The contract's example: name `work`, pending `AbC-_123`.
   const s = `https://relay.example/link#1.${b64url(concat(pub, secret))}.d29yaw.QWJDLV8xMjM`
-  expect(parsePairingKey(s)).toMatchObject({ relayHost: 'relay.example', secure: true, name: 'work', harnessId: b64url(pub), pending: 'AbC-_123' })
+  expect(parsePairingKey(s)).toMatchObject({ relayHost: 'relay.example', secure: true, name: 'work', engineId: b64url(pub), pending: 'AbC-_123' })
   expect(parsePairingKey(`${s}.QQ`)).toBeNull()
   expect(parsePairingKey(`${s.slice(0, -'QWJDLV8xMjM'.length)}not/base64url`)).toBeNull()
   expect(parsePairingKey(`${s.slice(0, -'QWJDLV8xMjM'.length)}`)).toBeNull() // empty 4th part
 })
 
 /** Noise IK / IKpsk2 responder: `msg1 → { payload, rs, reply(payload) → { msg2, send, recv } }`. */
-async function respond(s: Identity, harnessId: string, msg1: Uint8Array<ArrayBuffer>, psk?: Uint8Array<ArrayBuffer>) {
+async function respond(s: Identity, engineId: string, msg1: Uint8Array<ArrayBuffer>, psk?: Uint8Array<ArrayBuffer>) {
   const ss = await SymmetricState.init(psk ? 'Noise_IKpsk2_25519_AESGCM_SHA256' : 'Noise_IK_25519_AESGCM_SHA256')
-  await ss.mixHash(prologue(harnessId))
+  await ss.mixHash(prologue(engineId))
   await ss.mixHash(s.pub)
   const re = msg1.subarray(0, 32)
   await ss.mixHash(re)
@@ -74,8 +74,8 @@ async function respond(s: Identity, harnessId: string, msg1: Uint8Array<ArrayBuf
 
 type Conn = { keys?: { send: CipherState; recv: CipherState }; asm: Reassembler; subs: number; enrol?: string }
 
-/** One harness behind one relay, driving fake device sockets. */
-class FakeHarness {
+/** One engine behind one relay, driving fake device sockets. */
+class FakeEngine {
   static: Promise<Identity> = generateIdentity()
   id = ''
   psk: Uint8Array<ArrayBuffer> | null = null
@@ -128,13 +128,13 @@ class FakeHarness {
         expect(JSON.parse(text.decode(r.payload))).toEqual({ name: 'Test phone', platform: 'web' })
         conn.enrol = b64url(r.rs)
       } else expect(r.payload).toEqual(EMPTY)
-      const { msg2, send, recv } = await r.reply(utf8.encode(JSON.stringify(pairing ? { name: 'Fake harness' } : { name: 'Fake harness', version: '0.0' })))
+      const { msg2, send, recv } = await r.reply(utf8.encode(JSON.stringify(pairing ? { name: 'Fake engine' } : { name: 'Fake engine', version: '0.0' })))
       conn.keys = { send, recv }
       ws.deliver(encodeData(msg2))
       return
     }
     const whole = conn.asm.push(await conn.keys.recv.decrypt(EMPTY, f.payload))
-    // Like the real harness: the device row is written (and the secret consumed) only once a transport record decrypts.
+    // Like the real engine: the device row is written (and the secret consumed) only once a transport record decrypts.
     if (conn.enrol) {
       this.enrolled.push(conn.enrol)
       this.psk = null
@@ -146,7 +146,7 @@ class FakeHarness {
     const reply = async (msg: unknown) => {
       for (const rec of splitRecords(utf8.encode(JSON.stringify(msg)))) ws.deliver(encodeData(await conn.keys!.send.encrypt(EMPTY, rec)))
     }
-    if (req.method === 'info') await reply({ jsonrpc: '2.0', id: req.id, result: { name: 'Fake harness', version: '0.0' } })
+    if (req.method === 'info') await reply({ jsonrpc: '2.0', id: req.id, result: { name: 'Fake engine', version: '0.0' } })
     else if (req.method === 'list_sessions') await reply({ jsonrpc: '2.0', id: req.id, result: [] })
     else if (req.method === 'echo') await reply({ jsonrpc: '2.0', id: req.id, result: req.params[0] })
     else if (req.method === 'subscribe_events') {
@@ -157,9 +157,9 @@ class FakeHarness {
   }
 }
 
-/** The subset of `WebSocket` the link code touches, wired to one `FakeHarness`. */
+/** The subset of `WebSocket` the link code touches, wired to one `FakeEngine`. */
 class FakeSocket {
-  static harness: FakeHarness
+  static engine: FakeEngine
   readyState = 0
   binaryType = 'blob'
   onopen: (() => void) | null = null
@@ -171,10 +171,10 @@ class FakeSocket {
   constructor(url: string, protocols: string[]) {
     this.url = url
     expect(protocols).toEqual(['theuth-link-1'])
-    expect(url).toBe(`ws://relay.test/h/${FakeSocket.harness.id}`)
-    FakeSocket.harness.attempts++
+    expect(url).toBe(`ws://relay.test/h/${FakeSocket.engine.id}`)
+    FakeSocket.engine.attempts++
     queueMicrotask(() => {
-      if (!FakeSocket.harness.reachable) {
+      if (!FakeSocket.engine.reachable) {
         this.readyState = 3
         this.onerror?.()
         this.onclose?.()
@@ -183,12 +183,12 @@ class FakeSocket {
       this.readyState = 1
       this.onopen?.()
       // PRESENCE arrives as its own task, after the `open` continuation ran.
-      setTimeout(() => FakeSocket.harness.attach(this), 0)
+      setTimeout(() => FakeSocket.engine.attach(this), 0)
     })
   }
 
   send(bytes: Uint8Array<ArrayBuffer>) {
-    void FakeSocket.harness.fromDevice(this, bytes)
+    void FakeSocket.engine.fromDevice(this, bytes)
   }
 
   deliver(bytes: Uint8Array<ArrayBuffer>) {
@@ -199,41 +199,41 @@ class FakeSocket {
   close() {
     if (this.readyState === 3) return
     this.readyState = 3
-    FakeSocket.harness.sockets.delete(this)
+    FakeSocket.engine.sockets.delete(this)
     queueMicrotask(() => this.onclose?.())
   }
 }
 
 const WS = FakeSocket as unknown as typeof WebSocket
-const key = (h: FakeHarness, secret: Uint8Array<ArrayBuffer>) => `http://relay.test/link#1.${b64url(concat(unb64url(h.id) as Uint8Array<ArrayBuffer>, secret))}.${b64url(utf8.encode('Fake'))}`
+const key = (h: FakeEngine, secret: Uint8Array<ArrayBuffer>) => `http://relay.test/link#1.${b64url(concat(unb64url(h.id) as Uint8Array<ArrayBuffer>, secret))}.${b64url(utf8.encode('Fake'))}`
 const until = (cond: () => boolean, timeout = 1000) => vi.waitFor(() => expect(cond()).toBe(true), { timeout })
 
 test('pair: IKpsk2, PairAccept name, first record enrols the device; wrong secret is rejected', async () => {
-  const h = await new FakeHarness().ready()
-  FakeSocket.harness = h
+  const h = await new FakeEngine().ready()
+  FakeSocket.engine = h
   const device = await generateIdentity()
   const identity = () => Promise.resolve(device)
   h.psk = crypto.getRandomValues(new Uint8Array(32))
   await expect(pair(key(h, new Uint8Array(32).fill(9)), 'Test phone', { ws: WS, identity })).rejects.toThrow('expired or used key')
   expect(h.enrolled).toEqual([])
-  const harness = await pair(key(h, h.psk), 'Test phone', { ws: WS, identity })
-  expect(harness).toMatchObject({ id: h.id, name: 'Fake harness', relayHost: 'relay.test', secure: false })
+  const engine = await pair(key(h, h.psk), 'Test phone', { ws: WS, identity })
+  expect(engine).toMatchObject({ id: h.id, name: 'Fake engine', relayHost: 'relay.test', secure: false })
   expect(h.enrolled).toEqual([b64url(device.pub)])
   expect(h.requests).toEqual(['info'])
-  expect(useHarnesses.getState().harnesses.map((x) => x.id)).toContain(h.id)
+  expect(useEngines.getState().engines.map((x) => x.id)).toContain(h.id)
   expect(h.sockets.size).toBe(0)
-  // the key is single use: no pending secret → the harness refuses
+  // the key is single use: no pending secret → the engine refuses
   await expect(pair(key(h, new Uint8Array(32)), 'Test phone', { ws: WS, identity })).rejects.toThrow('expired or used key')
 })
 
 test('session: IK over the relay, RPC round trips, large records split/reassemble, presence flips reconnect', async () => {
-  const h = await new FakeHarness().ready()
-  FakeSocket.harness = h
+  const h = await new FakeEngine().ready()
+  FakeSocket.engine = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'old name', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
-  useHarnesses.getState().add(harness)
-  const t = new LinkTransport(harness, { ws: WS, identity: () => Promise.resolve(device) })
+  const engine = { id: h.id, name: 'old name', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
+  useEngines.getState().add(engine)
+  const t = new LinkTransport(engine, { ws: WS, identity: () => Promise.resolve(device) })
   const client = new RpcClient(t)
   const states: string[] = []
   client.onState((s) => states.push(s))
@@ -241,10 +241,10 @@ test('session: IK over the relay, RPC round trips, large records split/reassembl
   void client.subscribe(null, null, (e) => events.push(e))
   await client.connect()
   expect(states).toEqual(['closed', 'connecting', 'open'])
-  expect(useHarnesses.getState().presence[h.id]).toBe('online')
+  expect(useEngines.getState().presence[h.id]).toBe('online')
   // the local label is the user's; the live name arrives in the hello
-  expect(useHarnesses.getState().harnesses.find((x) => x.id === h.id)?.name).toBe('old name')
-  expect(t.hello?.name).toBe('Fake harness')
+  expect(useEngines.getState().engines.find((x) => x.id === h.id)?.name).toBe('old name')
+  expect(t.hello?.name).toBe('Fake engine')
   expect(await client.call('list_sessions', [])).toEqual([])
   await until(() => events.length === 1)
   const big = 'x'.repeat(RECORD_MAX * 2 + 7)
@@ -252,7 +252,7 @@ test('session: IK over the relay, RPC round trips, large records split/reassembl
 
   h.setOnline(false)
   await until(() => states.at(-1) === 'reconnecting')
-  expect(useHarnesses.getState().presence[h.id]).toBe('offline')
+  expect(useEngines.getState().presence[h.id]).toBe('offline')
   await expect(client.call('list_sessions', [])).rejects.toThrow('not connected')
   h.setOnline(true)
   await until(() => states.at(-1) === 'open')
@@ -264,13 +264,13 @@ test('session: IK over the relay, RPC round trips, large records split/reassembl
 })
 
 test('session: raw socket close (relay restart) → reconnecting → new socket → open', async () => {
-  const h = await new FakeHarness().ready()
-  FakeSocket.harness = h
+  const h = await new FakeEngine().ready()
+  FakeSocket.engine = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
-  useHarnesses.getState().add(harness)
-  const client = new RpcClient(new LinkTransport(harness, { ws: WS, identity: () => Promise.resolve(device) }))
+  const engine = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
+  useEngines.getState().add(engine)
+  const client = new RpcClient(new LinkTransport(engine, { ws: WS, identity: () => Promise.resolve(device) }))
   const states: string[] = []
   client.onState((s) => states.push(s))
   await client.connect()
@@ -289,19 +289,19 @@ test('session: raw socket close (relay restart) → reconnecting → new socket 
 })
 
 test('session: relay refuses two upgrades, then accepts → open; served from the relay origin the cookie is refetched first', async () => {
-  const h = await new FakeHarness().ready()
-  FakeSocket.harness = h
+  const h = await new FakeEngine().ready()
+  FakeSocket.engine = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
-  useHarnesses.getState().add(harness)
+  const engine = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
+  useEngines.getState().add(engine)
   // The web build: page origin = relay; a relay restart rotates the `__Host-link` secret → every upgrade is 403 until a page fetch.
   vi.stubGlobal('location', { host: 'relay.test' })
   const fetchMock = vi.fn(() => Promise.resolve(new Response('')))
   vi.stubGlobal('fetch', fetchMock)
   try {
     h.reachable = false
-    const client = new RpcClient(new LinkTransport(harness, { ws: WS, identity: () => Promise.resolve(device) }))
+    const client = new RpcClient(new LinkTransport(engine, { ws: WS, identity: () => Promise.resolve(device) }))
     const states: string[] = []
     client.onState((s) => states.push(s))
     await expect(client.connect()).rejects.toThrow('socket closed')

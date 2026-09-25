@@ -166,7 +166,7 @@ export class RpcClient {
   #foreground = (): void => {
     if (this.#closed || document.visibilityState !== 'visible') return
     if (this.#state === 'reconnecting') {
-      // A socket parked on the relay (harness offline) may have died in the sleep too; a fresh one costs one upgrade.
+      // A socket parked on the relay (engine offline) may have died in the sleep too; a fresh one costs one upgrade.
       this.#t.reset()
       clearTimeout(this.#timer)
       this.#timer = undefined

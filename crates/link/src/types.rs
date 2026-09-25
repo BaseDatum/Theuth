@@ -123,6 +123,7 @@ pub struct LinkStatus {
     /// Effective display name (`link.name` or hostname).
     pub name: String,
     /// `base64url(static pub)`, 43 chars; `None` until an identity exists.
+    /// The engine's link id (historically 'harness'); the field name is kept for wire compatibility.
     pub harness_id: Option<String>,
     /// The uplink is registered with the relay.
     pub connected: bool,

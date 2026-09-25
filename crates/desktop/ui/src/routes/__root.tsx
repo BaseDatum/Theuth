@@ -54,7 +54,7 @@ function Root() {
 /**
  * The one search instance (49 §5.1): every trigger, ⌘K, `/search` and `/sessions` open it through `theuth:search`;
  * a `CustomEvent` carries the `openSearch` request, a plain `Event` means an ordinary open. Lives inside
- * `HarnessProvider` (App mounts the router under it) but outside the sidebar's mobile Sheet, so opening can
+ * `EngineProvider` (App mounts the router under it) but outside the sidebar's mobile Sheet, so opening can
  * dismiss the drawer without unmounting the dialog — one modal, one focus trap. Focus return is the dialog's.
  */
 function SearchHost() {

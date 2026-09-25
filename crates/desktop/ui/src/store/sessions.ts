@@ -26,7 +26,7 @@ import {
   reconcileTodos,
   route,
 } from "./reduce";
-import { type Stores, active, scoped } from "./harness-scope";
+import { type Stores, active, scoped } from "./engine-scope";
 
 /** Live tail of a `shell` card's background job. */
 export type JobTail = {
@@ -72,7 +72,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
       skill?: string;
       /** Attachment paths sent with the text: optimistic, our own sends only; `context.attachments` supersedes it once stored. */
       files?: string[];
-      /** Seq of this row when it opens a turn (29 §5.1); steers and harness notes have none. */
+      /** Seq of this row when it opens a turn (29 §5.1); steers and engine notes have none. */
       turn?: number;
     }
   | {
@@ -96,7 +96,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
       result?: ToolResult;
       job?: JobTail;
     }
-  /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the harness-authenticated
+  /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
    * parsed from a legacy `<message>` wrapper has none and renders a label only, never inspect/answer controls.
    * `seq` is the stored row the live delivery became. */
@@ -107,7 +107,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'harness' }>
+  | Extract<Injected, { kind: 'engine' }>
   /** A vision consultation note (52 §6): a stored user-role row, never a `you` bubble. `text` is the row body
    * (`<vision_observation>…`), empty for a live card until the settled reload; `note` is the typed metadata,
    * absent live. `failed` marks a live `VisionProgress` failure whose per-source statuses are not known yet. */
@@ -171,7 +171,7 @@ export type SessionSlice = {
   contextReason?: string | null;
   /** A `ContextChanged` arrived (or a settled reload was refused) and the display predates it: controls disable until the reload lands. */
   contextStale: boolean;
-  /** Bumped by every invalidation (context edit, reconnect, harness switch, snapshot install); a page or snapshot requested under an older value is discarded. */
+  /** Bumped by every invalidation (context edit, reconnect, engine switch, snapshot install); a page or snapshot requested under an older value is discarded. */
   historyGeneration: number;
   /** Bumped by turn/edit activity (deltas, tool calls, interjections, context changes); a settled snapshot requested under an older value is discarded. */
   live: number;
@@ -181,7 +181,7 @@ export type SessionSlice = {
   name?: string | null;
   parent?: string | null;
   agent?: string | null;
-  /** Model the external harness reports for its session (06 §8.2); the header shows `agent · harnessModel`. */
+  /** Model the external engine reports for its session (06 §8.2); the header shows `agent · harnessModel`. */
   harnessModel?: string | null;
   undone: number;
   /** `load_session` has run at least once. */
@@ -224,7 +224,7 @@ export type SessionSlice = {
   artifactPanel: string | null;
   /** The plan (47 §5): the newest snapshot seen from any source; `null` before one arrives (unavailable, not empty). */
   todos: TodoSnapshot | null;
-  /** A reconnect, `Lagged` or harness switch may have dropped a `TodoChanged`: the list is labelled stale until
+  /** A reconnect, `Lagged` or engine switch may have dropped a `TodoChanged`: the list is labelled stale until
    * an authoritative snapshot (event, `get_todos`, a reload read after the gap) confirms or replaces it. */
   todosStale: boolean;
   /** The todo card is expanded (47 §6.1); survives snapshots and session switches within this client. */
@@ -289,7 +289,7 @@ type SessionsStore = {
 
 export type SessionsApi = StoreApi<SessionsStore>;
 
-/** One harness's sessions (31 §7.4); `useSessions` reads the enclosing harness's. */
+/** One engine's sessions (31 §7.4); `useSessions` reads the enclosing engine's. */
 export const createSessions = (): SessionsApi =>
   createStore<SessionsStore>()(
     subscribeWithSelector((set, get) => ({
@@ -569,7 +569,7 @@ export function on<T extends WireEvent["type"]>(
   };
 }
 
-/** Route one frame's events into `st` (the harness they came from): session slices, approvals, asks, secret requests, then `on` listeners. */
+/** Route one frame's events into `st` (the engine they came from): session slices, approvals, asks, secret requests, then `on` listeners. */
 export function dispatch(events: WireEvent[], st: Stores = active()): void {
   st.sessions.getState().applyEvents(events);
   const approvals = st.approvals.getState();

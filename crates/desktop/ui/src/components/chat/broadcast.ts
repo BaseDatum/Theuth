@@ -8,7 +8,7 @@ export const isRoot = (r: AgentInfo) => r.depth === 0
 /** Display title: the roster name, else the id's first 8 chars. */
 export const title = (r: { name: string; id: string }) => r.name || r.id.slice(0, 8)
 
-/** Mid-turn by state alone: `Running | Awaiting | Approval` (62 §0.2); a pre-62 harness reports nothing. */
+/** Mid-turn by state alone: `Running | Awaiting | Approval` (62 §0.2); a pre-62 engine reports nothing. */
 export const busy = (a: SessionActivity | undefined) =>
   a?.state.state === 'running' || a?.state.state === 'awaiting' || a?.state.state === 'approval'
 

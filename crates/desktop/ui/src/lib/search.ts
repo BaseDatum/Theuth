@@ -1,12 +1,12 @@
 // Search's shared frontend contract (49 §2, §5, §7): how anything opens the one
-// root-mounted dialog, and the transient per-harness state a search-opened
+// root-mounted dialog, and the transient per-engine state a search-opened
 // destination reads to offer Back to results. No corpora live here; results are
-// cached per harness by TanStack Query under `queryKeys.search`.
+// cached per engine by TanStack Query under `queryKeys.search`.
 
 import { type StoreApi, createStore } from 'zustand'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
-import { scoped } from '@/store/harness-scope'
+import { scoped } from '@/store/engine-scope'
 
 /** Display and wire order of the six categories; also the canonical order of a selection. */
 export const CATEGORIES: readonly SearchCategory[] = [
@@ -117,7 +117,7 @@ export type SearchState = {
 
 export type SearchApi = StoreApi<SearchState>
 
-/** One harness's search state (31 §7.4); `useSearchState` reads the enclosing harness's. */
+/** One engine's search state (31 §7.4); `useSearchState` reads the enclosing engine's. */
 export const createSearchState = (): SearchApi =>
   createStore<SearchState>()((set) => ({
     categories: [...CATEGORIES],

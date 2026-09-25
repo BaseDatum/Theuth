@@ -139,7 +139,7 @@ function Requests({ session, focus }: { session: string; focus: string | null })
     getNextPageParam: (last) => last.cursor,
   })
   const pages = page.data?.pages ?? []
-  // Exact ids the harness says a human may resolve now, gathered over the loaded pages.
+  // Exact ids the engine says a human may resolve now, gathered over the loaded pages.
   const answer = pages.flatMap((p) => p.awaiting_answer)
   const reply = pages.flatMap((p) => p.awaiting_reply)
   const records = pages.flatMap((p) => p.messages)
@@ -167,7 +167,7 @@ function Requests({ session, focus }: { session: string; focus: string | null })
       {page.isSuccess && records.length === 0 && (
         <Empty>
           {pendingOnly
-            ? 'No request is waiting on this chat or its peers. Pending waits do not survive a harness restart; their durable outcome is in the full list.'
+            ? 'No request is waiting on this chat or its peers. Pending waits do not survive an engine restart; their durable outcome is in the full list.'
             : 'No peer exchange recorded for this chat.'}
         </Empty>
       )}

@@ -16,7 +16,7 @@ import { isDraft, usePanes } from '@/lib/panes'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
-import { useScope } from '@/store/harness-scope'
+import { useScope } from '@/store/engine-scope'
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped. */
@@ -62,7 +62,7 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
   const split = usePanes((s) => s.root !== null)
-  // The harness this route mounted under: an RPC landing after a switch writes to its own stores, never the new harness's (48 §5).
+  // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')
   const running = useSessionField(session, 'running')
@@ -75,9 +75,9 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
     if (focused) document.title = `${title ?? ''}${running ? ' ·' : ''}`
   }, [title, running, focused])
 
-  // The plan (47 §5.4): one `get_todos` when the page carried none (an older harness, a refused read) or a gap
+  // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
-  // list labelled stale (the card says so) rather than silently reading as empty. Bound to this route's harness
+  // list labelled stale (the card says so) rather than silently reading as empty. Bound to this route's engine
   // and session, so a late reply after a switch still lands in the right slice.
   const refreshTodos = useCallback(() => {
     api.get_todos(session).then(
@@ -97,7 +97,7 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
     const [page, agents, artifacts] = await Promise.all([
       api.load_session(session, null, PAGE),
       api.list_agents(session),
-      // A harness without the artifact plugin has no such method.
+      // An engine without the artifact plugin has no such method.
       api.list_artifacts(session, null).catch(() => []),
     ])
     const { loadHistory, setChildren, setArtifacts } = store.getState()

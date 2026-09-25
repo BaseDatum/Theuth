@@ -3,14 +3,14 @@ import { toast } from 'sonner'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
-import { active } from '@/store/harness-scope'
+import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { drafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
@@ -109,7 +109,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/communication',
     hint: '[on|off] [always]',
-    desc: 'model-to-model messaging; `always` persists the harness-wide switch',
+    desc: 'model-to-model messaging; `always` persists the engine-wide switch',
   },
   { name: '/peers', hint: '', desc: 'peers this session may message (picker) and pending requests' },
   { name: '/broadcast', hint: '[running|roots] [text]', desc: 'send one message to many sessions' },
@@ -142,7 +142,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/aws',
     hint: '[profile|clear]',
-    desc: 'AWS profile Bedrock signs with, harness-wide (picker without arg)',
+    desc: 'AWS profile Bedrock signs with, engine-wide (picker without arg)',
   },
   { name: '/exit', hint: '', desc: 'same as /quit' },
 ]
@@ -186,7 +186,7 @@ export type SettingsTab =
   | 'computer'
   | 'skills'
   | 'agents'
-  | 'harnesses'
+  | 'engines'
   | 'link'
   | 'nodes'
   | 'mesh'
@@ -465,10 +465,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!arg) return settings(navigate, 'connections', session)
       // A provider name first, else an MCP server.
       const url = await api.login(arg).catch(() => api.mcp_login(arg))
-      // Over link the daemon opens its own browser on the harness (31 §9); here the URL is only shown.
-      if (useHarnesses.getState().active !== LOCAL) {
+      // Over link the daemon opens its own browser on the engine (31 §9); here the URL is only shown.
+      if (useEngines.getState().active !== LOCAL) {
         toast.message(
-          `Sign in from the harness (${useConnection.getState().info?.name ?? 'harness'})`,
+          `Sign in from the engine (${useConnection.getState().info?.name ?? 'engine'})`,
           { description: url },
         )
       } else {

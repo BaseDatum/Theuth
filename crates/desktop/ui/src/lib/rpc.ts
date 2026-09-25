@@ -25,7 +25,7 @@ export const queryKeys = {
   /** Prefix of every unified-search page (49 §4.2); invalidated by `useInvalidateOn` and the reconnect/`Lagged` reload. */
   searchAll: ['search'] as const,
   /**
-   * One `search` request (49 §5.3): harness scope comes from the per-harness QueryClient; `categories` is the
+   * One `search` request (49 §5.3): engine scope comes from the per-engine QueryClient; `categories` is the
    * canonical selected set; `gen` is the dialog-open generation, so a reopen never adopts a prior open's fetch.
    */
   search: (q: string, categories: readonly SearchCategory[], limit: number, gen = 0) =>

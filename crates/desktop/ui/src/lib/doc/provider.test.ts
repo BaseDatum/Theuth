@@ -1,11 +1,11 @@
-// The offline queue of 59 §6.3 against a fake harness (a real Y.Doc) and fake-indexeddb.
+// The offline queue of 59 §6.3 against a fake engine (a real Y.Doc) and fake-indexeddb.
 import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 import type { Api } from '@/rpc/api'
 import type { ConnState, RpcClient } from '@/rpc/client'
-import { HarnessProvider, MAX_UPDATE_B64 } from './provider'
+import { EngineProvider, MAX_UPDATE_B64 } from './provider'
 import { DocStore, MAX_BYTES, resetDb } from './queue'
 
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
@@ -21,7 +21,7 @@ const settle = async () => {
 }
 
 /** The authority: a Y.Doc, `doc_open(sv)` answers the diff in two chunks, `doc_update` applies. */
-class Harness {
+class Engine {
   doc = new Y.Doc()
   updates: Uint8Array[] = []
   /** Resolve the pending `doc_update`s by hand when set. */
@@ -73,7 +73,7 @@ class Client {
   as = () => this as unknown as RpcClient
 }
 
-const type = (p: HarnessProvider, s: string) => p.doc.getText('t').insert(p.doc.getText('t').length, s)
+const type = (p: EngineProvider, s: string) => p.doc.getText('t').insert(p.doc.getText('t').length, s)
 
 beforeEach(() => {
   indexedDB = new IDBFactory()
@@ -98,7 +98,7 @@ describe('DocStore', () => {
     ])
     // A later instance sorts after every persisted row, so a new row never collides with or precedes an old one.
     expect(again.enqueue(Uint8Array.of(4)).seq).toBeGreaterThan(c.seq)
-    // Another document on the same harness is not visible here.
+    // Another document on the same engine is not visible here.
     expect((await new DocStore('h', 'other').load()).pending).toEqual([])
   })
 
@@ -117,9 +117,9 @@ describe('DocStore', () => {
   })
 })
 
-describe('HarnessProvider offline queue', () => {
+describe('EngineProvider offline queue', () => {
   test('sv round-trip: only the diff comes back, chunked, applied once', async () => {
-    const h = new Harness()
+    const h = new Engine()
     h.doc.getText('t').insert(0, 'shared ')
     const shared = Y.encodeStateAsUpdate(h.doc)
     h.doc.getText('t').insert(7, 'new')
@@ -129,9 +129,9 @@ describe('HarnessProvider offline queue', () => {
     await s.saveState(shared)
     const open = vi.spyOn(h.api, 'doc_open')
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     const applied: number[] = []
-    p.doc.on('update', (u: Uint8Array, origin: unknown) => origin === 'harness' && applied.push(u.length))
+    p.doc.on('update', (u: Uint8Array, origin: unknown) => origin === 'engine' && applied.push(u.length))
     await settle()
     expect(p.status).toEqual({ kind: 'live' })
     expect(p.doc.getText('t').toString()).toBe('shared new')
@@ -144,9 +144,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('a Meta event renames meta and reaches onEvent (59 §24.9: the guest header follows a rename)', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     expect(p.meta?.title).toBe('t')
     const seen: string[] = []
@@ -158,9 +158,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('offline edits queue in IndexedDB, replay in order on reconnect as one update, then ack', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     type(p, 'a')
     await settle()
@@ -186,9 +186,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('a killed app replays its persisted FIFO on the next open', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     client.set('reconnecting')
     type(p, 'offline')
@@ -197,7 +197,7 @@ describe('HarnessProvider offline queue', () => {
     await settle()
     expect(h.text()).toBe('')
 
-    const p2 = new HarnessProvider(new Client().as(), h.api, 'd', 'h')
+    const p2 = new EngineProvider(new Client().as(), h.api, 'd', 'h')
     await settle()
     expect(p2.status).toEqual({ kind: 'live' })
     expect(p2.doc.getText('t').toString()).toBe('offline')
@@ -207,9 +207,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('typed while the flush is in flight: sent once, after the flush, never twice', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     client.set('reconnecting')
     type(p, 'x')
@@ -235,9 +235,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('a failed flush keeps the FIFO for the next attempt', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     client.set('reconnecting')
     type(p, 'q')
@@ -256,9 +256,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('in-process (local) providers touch no IndexedDB', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd') // harness omitted = local
+    const p = new EngineProvider(client.as(), h.api, 'd') // engine omitted = local
     await settle()
     client.set('reconnecting')
     type(p, 'm')
@@ -271,9 +271,9 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('a long offline queue replays in merged batches under 48 KiB, each accepted', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     client.set('reconnecting')
     // 40 × 3000 chars ≈ 120 KB of text: far over one update's cap, well under the document's.
@@ -291,7 +291,7 @@ describe('HarnessProvider offline queue', () => {
   })
 
   test('a refused update (UpdateTooLarge / DocTooLarge) closes the provider with the reason instead of retrying', async () => {
-    const h = new Harness()
+    const h = new Engine()
     const cap = 1000
     h.api.doc_update = async (_id: string, update: string) => {
       if (update.length > cap) throw new Error(`UpdateTooLarge: one update may be ${cap} bytes at most, not ${update.length}`)
@@ -301,23 +301,23 @@ describe('HarnessProvider offline queue', () => {
       return null
     }
     const client = new Client()
-    const p = new HarnessProvider(client.as(), h.api, 'd', 'h')
+    const p = new EngineProvider(client.as(), h.api, 'd', 'h')
     await settle()
     type(p, 'ok')
     await settle()
     expect(h.text()).toBe('ok')
-    type(p, 'p'.repeat(5000)) // one paste the harness will not take
+    type(p, 'p'.repeat(5000)) // one paste the engine will not take
     await settle()
     expect(p.status).toEqual({ kind: 'closed', reason: 'update too large (48 KiB); reload' })
     expect(h.text()).toBe('ok')
     expect((await new DocStore('h', 'd').load()).pending).toEqual([]) // nothing left to replay on the next open
     // The same on the replay path, with the document cap.
-    const h2 = new Harness()
+    const h2 = new Engine()
     h2.api.doc_update = async () => {
       throw new Error('DocTooLarge: document would exceed 8388608 bytes')
     }
     const c2 = new Client()
-    const p2 = new HarnessProvider(c2.as(), h2.api, 'e', 'h')
+    const p2 = new EngineProvider(c2.as(), h2.api, 'e', 'h')
     await settle()
     c2.set('reconnecting')
     type(p2, 'z')

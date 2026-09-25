@@ -27,7 +27,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
-import { useHarnesses } from '@/link/harnesses'
+import { useEngines } from '@/link/engines'
 import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { Artifact } from '@/rpc/extra'
 import type { PDFDocumentLoadingTask, PDFPageProxy, RenderTask } from 'pdfjs-dist'
@@ -286,7 +286,7 @@ export function ArtifactView({ artifact, className }: { artifact: Artifact; clas
 
 function Body({ a }: { a: Artifact }) {
   const api = useApi()
-  const active = useHarnesses((s) => s.active)
+  const active = useEngines((s) => s.active)
   const text = useText(TEXT_KINDS[a.kind] && a.kind !== 'app' ? a.path : null)
   // The explorer addresses one version: the view is pinned to it (46 §3.3), unlike the chat panel's latest mode.
   if (a.kind === 'app') return <AppView session={a.session} artifact={a} className="h-full" />

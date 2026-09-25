@@ -16,7 +16,7 @@ function New() {
           <StartForm />
         ) : (
           <div className="px-6">
-            <Empty>Meetings are recorded from the Mac running the harness. Start one there.</Empty>
+            <Empty>Meetings are recorded from the Mac running the engine. Start one there.</Empty>
           </div>
         )}
       </div>

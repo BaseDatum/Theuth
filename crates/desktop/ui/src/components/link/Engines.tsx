@@ -15,18 +15,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Empty, Row, Section } from '@/components/settings/shared'
-import { type Harness, LOCAL, LOCAL_NAME, type Presence, useHarnesses } from '@/link/harnesses'
-import { Dot, meshChip, useMembersLine } from './HarnessSwitcher'
+import { type Engine, LOCAL, LOCAL_NAME, type Presence, useEngines } from '@/link/engines'
+import { Dot, meshChip, useMembersLine } from './EngineSwitcher'
 
 /** Local label; Enter/blur saves, Escape restores. */
-function Name({ harness }: { harness: Harness }) {
-  const rename = useHarnesses((s) => s.rename)
+function Name({ engine }: { engine: Engine }) {
+  const rename = useEngines((s) => s.rename)
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(harness.name)
+  const [draft, setDraft] = useState(engine.name)
   const save = () => {
     const name = draft.trim()
-    if (name && name !== harness.name) rename(harness.id, name)
-    else setDraft(harness.name)
+    if (name && name !== engine.name) rename(engine.id, name)
+    else setDraft(engine.name)
     setEditing(false)
   }
   if (editing) {
@@ -39,7 +39,7 @@ function Name({ harness }: { harness: Harness }) {
         onKeyDown={(e) => {
           if (e.key === 'Enter') save()
           if (e.key === 'Escape') {
-            setDraft(harness.name)
+            setDraft(engine.name)
             setEditing(false)
           }
         }}
@@ -49,27 +49,27 @@ function Name({ harness }: { harness: Harness }) {
   }
   return (
     <button type="button" className="group flex items-center gap-1.5 text-left" onClick={() => setEditing(true)} aria-label="Rename">
-      <span className="truncate">{harness.name}</span>
+      <span className="truncate">{engine.name}</span>
       <Pencil className="size-3 text-fg-tertiary opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100" />
     </button>
   )
 }
 
 /**
- * Settings › Harnesses (31 §7.5 "Manage"): paired harnesses with presence, local
+ * Settings › Engines (31 §7.5 "Manage"): paired engines with presence, local
  * rename, reorder and Forget. Forgetting the active one falls back to the local
  * daemon or the first remaining; with none left `App` shows the pair screen.
  * A mesh row (69 §4) shows its mesh name, `n of m engines online` and the failover chip.
  */
-export function Harnesses() {
+export function Engines() {
   const navigate = useNavigate()
-  const harnesses = useHarnesses((s) => s.harnesses)
-  const presence = useHarnesses((s) => s.presence)
-  const { remove, reorder } = useHarnesses.getState()
-  const [forget, setForget] = useState<Harness | null>(null)
+  const engines = useEngines((s) => s.engines)
+  const presence = useEngines((s) => s.presence)
+  const { remove, reorder } = useEngines.getState()
+  const [forget, setForget] = useState<Engine | null>(null)
 
   const move = (i: number, by: -1 | 1) => {
-    const ids = harnesses.map((h) => h.id)
+    const ids = engines.map((h) => h.id)
     const [id] = ids.splice(i, 1)
     ids.splice(i + by, 0, id!)
     reorder(ids)
@@ -78,17 +78,17 @@ export function Harnesses() {
   return (
     <>
       <Section
-        title="Harnesses"
+        title="Engines"
         actions={
           <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/link' })}>
-            <Plus /> Add harness…
+            <Plus /> Add engine…
           </Button>
         }
       >
-        {harnesses.length === 0 && <Empty>No harnesses paired.</Empty>}
-        {harnesses.map((h, i) => {
+        {engines.length === 0 && <Empty>No engines paired.</Empty>}
+        {engines.map((h, i) => {
           const p = presence[h.id] ?? 'offline'
-          const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : harnesses.find((x) => x.id === h.parent)?.name)
+          const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : engines.find((x) => x.id === h.parent)?.name)
           const paired = h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'
           return (
             <Row
@@ -96,17 +96,17 @@ export function Harnesses() {
               label={
                 <span className="flex items-center gap-2">
                   <Dot presence={p} />
-                  <Name harness={h} />
+                  <Name engine={h} />
                   {via && <span className="text-[13px] text-fg-tertiary">via {via}</span>}
                   {h.kind === 'mesh' && <span className="text-[13px] text-fg-tertiary">mesh{h.meshName && h.meshName !== h.name ? ` · ${h.meshName}` : ''}</span>}
                 </span>
               }
-              description={h.kind === 'mesh' ? <MeshLine harness={h} presence={p} paired={paired} /> : `${h.relayHost} · ${paired} · ${p}`}
+              description={h.kind === 'mesh' ? <MeshLine engine={h} presence={p} paired={paired} /> : `${h.relayHost} · ${paired} · ${p}`}
             >
               <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp />
               </Button>
-              <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === harnesses.length - 1} onClick={() => move(i, 1)}>
+              <Button variant="ghost" size="icon-sm" aria-label="Move down" disabled={i === engines.length - 1} onClick={() => move(i, 1)}>
                 <ArrowDown />
               </Button>
               <Button variant="outline" size="sm" onClick={() => setForget(h)}>
@@ -142,7 +142,7 @@ export function Harnesses() {
 }
 
 /** `relay · paired … · 2 of 3 engines online · relay connected` — or the failover chip instead of the last two. */
-function MeshLine({ harness: h, presence, paired }: { harness: Harness; presence: Presence; paired: string }) {
+function MeshLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
   const members = useMembersLine(h.id)
   const chip = meshChip(presence)
   return <>{[h.relayHost, paired, chip ?? members, chip ? null : 'relay connected'].filter(Boolean).join(' · ')}</>

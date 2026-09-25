@@ -17,7 +17,7 @@ async function load(ua: string, tauri = true) {
   vi.stubEnv('VITE_THEUTH_URL', undefined)
   vi.stubEnv('VITE_THEUTH_TOKEN', undefined)
   vi.resetModules()
-  return import('./harnesses')
+  return import('./engines')
 }
 
 afterEach(() => {
@@ -33,19 +33,19 @@ test.each([
   const m = await load(UA[os])
   expect(m.hasLocal()).toBe(true)
   expect(m.LOCAL_NAME).toBe(label)
-  await m.hydrateHarnesses()
-  const s = m.useHarnesses.getState()
-  expect(s).toMatchObject({ hydrated: true, harnesses: [], active: m.LOCAL })
-  // `useNeedsPairing` = hydrated && no harnesses && !hasLocal(): the last term keeps the pair screen away.
-  expect(s.hydrated && s.harnesses.length === 0 && !m.hasLocal()).toBe(false)
+  await m.hydrateEngines()
+  const s = m.useEngines.getState()
+  expect(s).toMatchObject({ hydrated: true, engines: [], active: m.LOCAL })
+  // `useNeedsPairing` = hydrated && no engines && !hasLocal(): the last term keeps the pair screen away.
+  expect(s.hydrated && s.engines.length === 0 && !m.hasLocal()).toBe(false)
 })
 
 test('browser without a dev daemon: no local row, pairing needed once hydrated empty', async () => {
   const m = await load(UA.linux, false)
   expect(m.hasLocal()).toBe(false)
-  await m.hydrateHarnesses()
-  const s = m.useHarnesses.getState()
-  expect(s.hydrated && s.harnesses.length === 0 && !m.hasLocal()).toBe(true)
+  await m.hydrateEngines()
+  const s = m.useEngines.getState()
+  expect(s.hydrated && s.engines.length === 0 && !m.hasLocal()).toBe(true)
 })
 
 test('hydrate: rows persisted before 69 get kind engine; a mesh row keeps its kind and name', async () => {
@@ -54,17 +54,17 @@ test('hydrate: rows persisted before 69 get kind engine; a mesh row keeps its ki
   vi.doMock('./idb', () => ({ idbGet: () => Promise.resolve({ harnesses: [old, mesh], active: 'm1' }), idbPut: () => Promise.resolve() }))
   try {
     const m = await load(UA.linux, false)
-    await m.hydrateHarnesses()
-    const s = m.useHarnesses.getState()
-    expect(s.harnesses.map((h) => [h.id, h.kind, h.meshName])).toEqual([
+    await m.hydrateEngines()
+    const s = m.useEngines.getState()
+    expect(s.engines.map((h) => [h.id, h.kind, h.meshName])).toEqual([
       ['e1', 'engine', undefined],
       ['m1', 'mesh', 'work'],
     ])
     expect(s.active).toBe('m1')
     // `setMesh` refreshes the name from `mesh_status` and keeps the member count beside the row.
     s.setMesh('m1', 'work (renamed)', { online: 2, total: 3 })
-    expect(m.useHarnesses.getState().harnesses[1]).toMatchObject({ meshName: 'work (renamed)' })
-    expect(m.useHarnesses.getState().members.m1).toEqual({ online: 2, total: 3 })
+    expect(m.useEngines.getState().engines[1]).toMatchObject({ meshName: 'work (renamed)' })
+    expect(m.useEngines.getState().members.m1).toEqual({ online: 2, total: 3 })
   } finally {
     vi.doUnmock('./idb')
   }

@@ -1,12 +1,13 @@
-// Settings › Agent loop › Show harness nudges: a client-only display preference, persisted like the
-// theme. Nothing here changes what the harness sends; hidden nudges stay in the session and its context.
+// Settings › Agent loop › Show engine nudges: a client-only display preference, persisted like the
+// theme. Nothing here changes what the engine sends; hidden nudges stay in the session and its context.
 
 import { create } from 'zustand'
 
+// localStorage key keeps its pre-rename name so the saved preference survives.
 const KEY = 'show-harness-nudges'
 
 type NudgeStore = {
-  /** Whether `harness` transcript entries render; off unless the user opted in. */
+  /** Whether `engine` transcript entries render; off unless the user opted in. */
   show: boolean
   setShow(on: boolean): void
 }

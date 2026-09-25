@@ -56,7 +56,7 @@ export function SearchSession({ session, seq }: { session: string; seq: number }
     document.title = `Earlier messages · ${title ?? session}`
   }, [title, session])
 
-  // Fenced: a reply landing after the route (or harness) moved on is dropped, never shown for another target.
+  // Fenced: a reply landing after the route (or engine) moved on is dropped, never shown for another target.
   useEffect(() => {
     let live = true
     setView({ status: 'loading' })

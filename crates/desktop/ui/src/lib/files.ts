@@ -3,7 +3,7 @@
 // Mac (local daemon), otherwise `get_attachment` → blob URL, 50 cached.
 
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { LOCAL } from '@/link/harnesses'
+import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import { isDesktop } from './platform'
 
@@ -47,7 +47,7 @@ const toBase64 = (bytes: Uint8Array): string => {
   return btoa(s)
 }
 
-/** Upload `file` and get back the harness-side path for `send_input.files`; a private `session` routes it to its scratch root (51 §4.5). */
+/** Upload `file` and get back the engine-side path for `send_input.files`; a private `session` routes it to its scratch root (51 §4.5). */
 export async function putAttachment(api: Api, file: Blob, ext: string, session?: string): Promise<string> {
   const b64 = toBase64(new Uint8Array(await file.arrayBuffer()))
   return session ? api.put_session_attachment(session, b64, ext) : api.put_attachment(b64, ext)
@@ -57,11 +57,11 @@ export async function putAttachment(api: Api, file: Blob, ext: string, session?:
 export const isLocal = (active: string): boolean => isDesktop() && active === LOCAL
 
 const LRU_MAX = 50
-/** Blob URLs by harness path, insertion-ordered; re-inserted on hit so the oldest is first. */
+/** Blob URLs by engine path, insertion-ordered; re-inserted on hit so the oldest is first. */
 const lru = new Map<string, Promise<string>>()
 
 /**
- * A URL an `<img>` can load for `path` on the harness: `asset://` (synchronous)
+ * A URL an `<img>` can load for `path` on the engine: `asset://` (synchronous)
  * when the file is on this machine (macOS shell, local daemon), else the bytes
  * come over RPC and live in a blob URL. Failures are not cached.
  */
@@ -87,13 +87,13 @@ export function resolveFile(api: Api, path: string, active: string): string | Pr
   return p
 }
 
-/** Bytes of a harness file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */
+/** Bytes of an engine file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */
 export const readBytes = (api: Api, path: string): Promise<Uint8Array> =>
   api.get_attachment(path).then((b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
 
 const texts = new Map<string, Promise<string>>()
 
-/** UTF-8 text of a harness file via `get_attachment` (works locally and through the relay); cached, failures are not. */
+/** UTF-8 text of an engine file via `get_attachment` (works locally and through the relay); cached, failures are not. */
 export function readText(api: Api, path: string): Promise<string> {
   const hit = texts.get(path)
   if (hit) return hit

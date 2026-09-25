@@ -25,19 +25,19 @@ export type Info = {
   compact_style: CompactStyle
   subagent_timeout_secs: number
   max_tool_rounds: number
-  /** `agent.stream_idle_secs`; absent on an older harness. */
+  /** `agent.stream_idle_secs`; absent on an older engine. */
   stream_idle_secs?: number
-  /** `agent.max_salvages`; absent on an older harness. */
+  /** `agent.max_salvages`; absent on an older engine. */
   max_salvages?: number
-  /** `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model; `0` = never. Absent on an older harness. */
+  /** `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model; `0` = never. Absent on an older engine. */
   pty_idle_secs?: number
-  /** Harness display name (`link.name`, else the hostname; 31 §6.4). */
+  /** Engine display name (`link.name`, else the hostname; 31 §6.4). */
   name: string
   /** `std::env::consts::OS`: `macos`, `linux`, … (32 §15 row 2). */
   platform: string
   /** The global communication switch (50 §2.1): `session: null`, `scope: isolated`; the startup snapshot before any session query. */
   communication: CommunicationState
-  /** The app plugin is running (46 §9): apps render interactively; `false`/absent (older harness) → source view only. */
+  /** The app plugin is running (46 §9): apps render interactively; `false`/absent (older engine) → source view only. */
   app_enabled?: boolean
 }
 
@@ -96,7 +96,7 @@ export type AgentInfo = {
   project?: string | null
   /** Storage class of the root (51 §4); `#[serde(default)]` = durable. */
   retention?: Retention
-  /** Live facts (62 §3.2); `#[serde(default)]`, absent from harnesses older than 62. */
+  /** Live facts (62 §3.2); `#[serde(default)]`, absent from engines older than 62. */
   activity?: SessionActivity
   /** `spawn_subagent(tools=…)` risk ceiling (12 §5); `#[serde(default)]`, absent when uncapped. */
   cap?: Risk | null

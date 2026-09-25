@@ -216,7 +216,7 @@ test("a lost read is not parked: it fails as disconnected for the runtime to ref
   expect(pending.size).toBe(0);
 });
 
-test("abandoning parked presses reports unknown; a disabled harness reads as unavailable", async () => {
+test("abandoning parked presses reports unknown; a disabled engine reads as unavailable", async () => {
   const { api, as, pending: make } = mockApi();
   const pending = make();
   const parked = pending.park("r1");

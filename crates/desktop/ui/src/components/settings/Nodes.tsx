@@ -31,11 +31,11 @@ import { on } from '@/store/sessions'
 /** Every nodes bus event; any of them means the list is stale. */
 const NODE_EVENTS = ['NodeAdded', 'NodeOnline', 'NodeRemoved', 'NodeRevoked'] as const satisfies readonly NodeEvent['type'][]
 
-/** 32 §8.3 parent side: the harness's nodes with invite QR, rename, remove, and "Add node". */
+/** 32 §8.3 parent side: the engine's nodes with invite QR, rename, remove, and "Add node". */
 export function Nodes() {
   const api = useApi()
   const qc = useQueryClient()
-  const harnessName = useConnection((s) => s.info?.name)
+  const engineName = useConnection((s) => s.info?.name)
   const nodes = useNodes()
   const keys = [NODES_KEY]
   const [key, setKey] = useState('')
@@ -62,7 +62,7 @@ export function Nodes() {
   return (
     <>
       <Section title="Nodes">
-        <p className="pb-2 text-[13px] text-fg-secondary">Machines this harness and your devices can run sessions on.</p>
+        <p className="pb-2 text-[13px] text-fg-secondary">Machines this engine and your devices can run sessions on.</p>
         {list?.length === 0 && <Empty>No node yet. Run `t --install-service` on the machine and paste the key below.</Empty>}
         {list?.map((n) => (
           <NodeRow key={n.id} node={n} onRename={(name) => rename.mutate({ id: n.id, name })} onRemove={() => remove.mutate(n.id)} />
@@ -89,7 +89,7 @@ export function Nodes() {
         </div>
       </Section>
       <p className="text-[13px] text-fg-tertiary">
-        A node trusts {harnessName ?? 'this harness'} as a device: anything this harness can do, it can do there.
+        A node trusts {engineName ?? 'this engine'} as a device: anything this engine can do, it can do there.
       </p>
     </>
   )
@@ -154,7 +154,7 @@ function NodeRow({ node: n, onRename, onRemove }: { node: Node; onRename: (name:
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {n.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This harness stops running sessions there. Your devices stay paired with {n.name}; revoke them in its own Link settings if you want that too.
+              This engine stops running sessions there. Your devices stay paired with {n.name}; revoke them in its own Link settings if you want that too.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

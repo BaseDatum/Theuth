@@ -1,5 +1,5 @@
 // 45 §4.4: the `[voice note, N s]` marker is the whole "this was spoken" convention;
-// mirrors `voice::note_text` / `voice::is_note` on the harness.
+// mirrors `voice::note_text` / `voice::is_note` on the engine.
 
 /** The user line for a transcript: `[voice note, 12 s] …`; at least one second. */
 export const noteText = (text: string, ms: number): string =>

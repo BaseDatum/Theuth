@@ -30,7 +30,7 @@ export function AgentDetail({ name }: { name: string }) {
       <div className="mx-auto w-full max-w-[720px] p-4 text-sm">
         <h3 className="text-base font-semibold">theuth</h3>
         <p className="mt-2 text-fg-secondary">
-          The built-in default agent (67 decision 1): the harness's own voice, charter <code>prompt.md</code>, reports to you, tools{' '}
+          The built-in default agent (67 decision 1): the engine's own voice, charter <code>prompt.md</code>, reports to you, tools{' '}
           <code>destructive</code>, no MCP limit, no budget. It answers anything unaddressed, owns delegation, and is the root of every
           reporting line. Not a roster entry; edit its charter in <code>prompt.md</code>.
         </p>

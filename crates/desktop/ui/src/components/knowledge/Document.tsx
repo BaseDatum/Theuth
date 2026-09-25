@@ -33,7 +33,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from '@/components/ui/skeleton'
 import { useSearchFocus } from '@/hooks/use-search-focus'
 import { type AttachRef, toRef } from '@/lib/attach'
-import type { HarnessProvider } from '@/lib/doc/provider'
+import type { EngineProvider } from '@/lib/doc/provider'
 import { classify, resolveLink } from '@/lib/resolveLink'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin, useSearchState } from '@/lib/search'
@@ -270,7 +270,7 @@ function Doc({
 const UNAVAILABLE_AFTER_MS = 3000
 
 /**
- * Why the live document cannot be shown (59 §24.y), or `null` to show the editor: the harness refused the binding
+ * Why the live document cannot be shown (59 §24.y), or `null` to show the editor: the engine refused the binding
  * (`doc_resolve` error — the documents helper missing, `documents.enabled = false`), the stream closed, or
  * `UNAVAILABLE_AFTER_MS` passed since the provider was acquired and the document holds no text — either not live
  * (a link device offline with a cached copy keeps its editor) or live but empty while the file has a body: a
@@ -299,9 +299,9 @@ function useUnavailable(live: LiveDocument, fileHasBody: boolean): string | null
   switch (live.status.kind) {
     case 'live':
     case 'readonly':
-      return fileHasBody ? 'the document is empty although the file has a body — its import failed (documents helper missing? see the harness log)' : null
+      return fileHasBody ? 'the document is empty although the file has a body — its import failed (documents helper missing? see the engine log)' : null
     case 'offline':
-      return 'the harness could not open the document (documents helper missing? see its log)'
+      return 'the engine could not open the document (documents helper missing? see its log)'
     default:
       return 'still connecting'
   }
@@ -398,7 +398,7 @@ function Actions({
   onAttach,
 }: {
   concept: Concept
-  provider: HarnessProvider | null
+  provider: EngineProvider | null
   railOpen: boolean
   onRaw: () => void
   onHistory: () => void
@@ -474,7 +474,7 @@ function Actions({
 }
 
 /** 59 §5.5 "Undo last agent edit": enabled once the agent has edited this document while it was open. */
-export function UndoAgentAction({ provider }: { provider: HarnessProvider | null }) {
+export function UndoAgentAction({ provider }: { provider: EngineProvider | null }) {
   const api = useApi()
   const [agentEdits, setAgentEdits] = useState(provider?.agentEdits ?? 0)
   useEffect(() => {

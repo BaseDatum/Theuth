@@ -90,9 +90,9 @@ function useAppDoc(callId: string | undefined, enabled: boolean) {
 /** Why a record cannot run here, from its `get_app` failure. */
 function reasonOf(e: unknown): string {
   if (e instanceof RpcError && e.code === APP_DISABLED)
-    return "Apps are disabled on this harness; the source stays readable.";
+    return "Apps are disabled on this engine; the source stays readable.";
   if (e instanceof RpcError && e.code === -32601)
-    return "This harness predates apps: update it to run this app. The source stays readable.";
+    return "This engine predates apps: update it to run this app. The source stays readable.";
   return `Could not load the app: ${e instanceof Error ? e.message : String(e)}`;
 }
 
@@ -141,7 +141,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
       program = {
         kind: "source",
         source: fileText,
-        reason: "Apps are disabled on this harness; the source stays readable.",
+        reason: "Apps are disabled on this engine; the source stays readable.",
       };
     else if (docQ.isPending) program = { kind: "loading" };
     else if (docQ.isError)
@@ -191,7 +191,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
           kind: "source",
           source: draft.source,
           reason:
-            "Apps are disabled on this harness; the patch stays readable.",
+            "Apps are disabled on this engine; the patch stays readable.",
         };
       else if (baseQ.isPending) program = { kind: "loading" };
       else if (baseQ.isError)
@@ -250,7 +250,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
   lastView.current = view;
   const live = view !== null;
 
-  // One instance per mounted view (the harness binds it to a record lineage; an adopted version is generation+1 on the
+  // One instance per mounted view (the engine binds it to a record lineage; an adopted version is generation+1 on the
   // same instance, 46 §3.3, §6.3). A reconnect is a new server peer: the old instance died with the old one, so the
   // view continues under a fresh id; parked presses are found by request id regardless.
   const [instance, setInstance] = useState(() => crypto.randomUUID());
@@ -308,7 +308,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
     [recordId, instance, generation, committed, presses, bindings, session],
   );
 
-  // Closing cleans the instance; the harness keeps any accepted mutation's outcome under its request id (46 §6.4).
+  // Closing cleans the instance; the engine keeps any accepted mutation's outcome under its request id (46 §6.4).
   // The close is deferred one tick and cancelled by a re-run setup, so StrictMode's replayed mount does not close
   // the instance the live view keeps using.
   const instanceRef = useRef(instance);
@@ -660,7 +660,7 @@ function Strip({
   bindings: AppBinding[];
   runtime: Runtime | null;
   calls: ReadonlyMap<string, AppCallChanged>;
-  /** The harness's stored pressed invocations for this record (`get_app`), for a view opened after the events passed. */
+  /** The engine's stored pressed invocations for this record (`get_app`), for a view opened after the events passed. */
   recent: AppDoc["recent_calls"];
   streaming: boolean;
   active: { action_id: string; steps: number } | null;
@@ -688,7 +688,7 @@ function Strip({
         : active
           ? "running…"
           : status === "busy"
-            ? "harness busy — press again later"
+            ? "engine busy — press again later"
             : status === "unknown"
               ? "outcome unknown — check before repeating"
               : status !== null
@@ -743,7 +743,7 @@ function Strip({
           action = press(st.has_data ? "Refresh" : "Load");
           break;
         case "busy":
-          text = "harness busy";
+          text = "engine busy";
           action = press("Retry");
           break;
         case "unavailable":

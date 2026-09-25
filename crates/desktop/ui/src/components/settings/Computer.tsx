@@ -5,7 +5,7 @@ import { Dot, Empty, Row, Section, errorText } from '@/components/settings/share
 import { Button } from '@/components/ui/button'
 import { container } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { LOCAL, useHarnesses } from '@/link/harnesses'
+import { LOCAL, useEngines } from '@/link/engines'
 
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 
@@ -62,8 +62,8 @@ export function Computer() {
 }
 
 function Permission({ label, granted, pane }: { label: string; granted: boolean; pane: string }) {
-  // The deep link opens *this* Mac's System Settings; over link the permissions are the harness's (31 §9).
-  const local = useHarnesses((s) => s.active) === LOCAL && container() === 'macos'
+  // The deep link opens *this* Mac's System Settings; over link the permissions are the engine's (31 §9).
+  const local = useEngines((s) => s.active) === LOCAL && container() === 'macos'
   return (
     <Row
       label={

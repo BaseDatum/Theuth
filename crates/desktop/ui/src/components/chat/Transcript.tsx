@@ -8,7 +8,7 @@ import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { AgentInfo } from '@/rpc/extra'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
-import { useScope } from '@/store/harness-scope'
+import { useScope } from '@/store/engine-scope'
 import {
   type Activity,
   type Entry,
@@ -140,7 +140,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const all = useEntries(session)
   const showNudges = useNudges((s) => s.show)
   // Display-only: hidden nudges remain in the session and its context.
-  const entries = useMemo(() => (showNudges ? all : all.filter((e) => e.kind !== 'harness')), [all, showNudges])
+  const entries = useMemo(() => (showNudges ? all : all.filter((e) => e.kind !== 'engine')), [all, showNudges])
   const approvals = useApprovals((s) => s.pending)
   const asks = useAsks((s) => s.pending)
   const secrets = useSecretRequests((s) => s.pending)
@@ -151,7 +151,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const activity = shownActivity(useSessionField(session, 'activity'), useSessionField(session, 'harvesting'))
   const visionStatus = useSessionField(session, 'visionStatus')
   const children = useSessionField(session, 'children')
-  // This harness's store, read after the await: a page landing after a switch must not touch another harness's slice.
+  // This engine's store, read after the await: a page landing after a switch must not touch another engine's slice.
   const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
   const stuck = useRef(true)
