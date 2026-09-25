@@ -92,3 +92,59 @@ test('reminder carries id, after, late and the message', () => {
     { kind: 'reminder', id: 'r1', after: '5', late: true, text: '' },
   ])
 })
+
+const MANUAL = 'You are the desk of agent `ops` (Operations). You take wakes, read your inbox with `task_inbox`, then set the disposition with `task_update`.'
+const DESK = `<desk agent="ops">\n<charter>\n# Ops\n\nKeep the relay up.\n</charter>\n<journal>\n(first episode: no journal yet)\n</journal>\n${MANUAL}\n</desk>`
+const WAKE_HEAD = 'Wake: task 12 — Rotate the relay certificate. Reason: comment. (Raised 2 times.) Do not switch to another task until this wake is handled.'
+const WAKE_TASK =
+  '<task id="12" state="todo" owner="agent:ops" reviewer="agent:cto" project="relay" where="build-A" harness="omp" thread="doc-7">\nThe wildcard cert expires Friday.\nRenew and reload.\n\nExternal: https://jira/SRE-1\n</task>'
+
+test('desk opening carries agent, charter, journal and manual', () => {
+  expect(classify(DESK)).toEqual([{ kind: 'desk', agent: 'ops', charter: '# Ops\n\nKeep the relay up.', journal: '(first episode: no journal yet)', manual: MANUAL }])
+})
+
+test('wake carries the task header and record', () => {
+  expect(classify(`${WAKE_HEAD}\n\n${WAKE_TASK}`)).toEqual([
+    {
+      kind: 'wake',
+      id: '12',
+      title: 'Rotate the relay certificate',
+      reason: 'comment',
+      count: 2,
+      state: 'todo',
+      owner: 'agent:ops',
+      reviewer: 'agent:cto',
+      thread: 'doc-7',
+      body: 'The wildcard cert expires Friday.\nRenew and reload.\n\nExternal: https://jira/SRE-1',
+    },
+  ])
+})
+
+test('wake without a loaded task keeps the id or names no task', () => {
+  expect(classify('Wake: task 7. Reason: schedule. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', id: '7', reason: 'schedule' }])
+  expect(classify('Wake: no task. Reason: manual. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', reason: 'manual' }])
+})
+
+test('wake accepts every reason and a title with periods', () => {
+  for (const reason of ['assigned', 'comment', 'mention', 'schedule', 'answer', 'review', 'resume', 'resumed', 'manual']) {
+    expect(classify(`Wake: task a1 — Ship v2.1. Really. Reason: ${reason}. Do not switch to another task until this wake is handled.`)).toEqual([
+      { kind: 'wake', id: 'a1', title: 'Ship v2.1. Really', reason },
+    ])
+  }
+})
+
+test('desk opening followed by a wake is two cards', () => {
+  expect(classify(`${DESK}\n\n${WAKE_HEAD}\n\n${WAKE_TASK}`)?.map((c) => c.kind)).toEqual(['desk', 'wake'])
+})
+
+test('task attributes are taken verbatim and the record body may hold tags and quotes', () => {
+  const body = 'Say "hi" to <everyone> & log it.'
+  expect(classify(`Wake: task x. Reason: review. Do not switch to another task until this wake is handled.\n\n<task id="x" state="review" owner="user" thread="a &amp; b">\n${body}\n</task>`)).toEqual([
+    { kind: 'wake', id: 'x', reason: 'review', state: 'review', owner: 'user', thread: 'a &amp; b', body },
+  ])
+})
+
+test('a human line starting with Wake: stays a user message', () => {
+  expect(classify('Wake: me up at seven')).toBeNull()
+  expect(classify(`${DESK}\n\nWake: me up`)).toBeNull()
+})

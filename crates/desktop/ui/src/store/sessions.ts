@@ -107,7 +107,7 @@ export type Entry = { id: string; context?: ContextEntry } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' }>
   /** A vision consultation note (52 §6): a stored user-role row, never a `you` bubble. `text` is the row body
    * (`<vision_observation>…`), empty for a live card until the settled reload; `note` is the typed metadata,
    * absent live. `failed` marks a live `VisionProgress` failure whose per-source statuses are not known yet. */

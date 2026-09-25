@@ -23,10 +23,15 @@ export type Injected =
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
   /** A fired `remind_me_in` timer (14 as-built): `after` is the requested seconds, `late` when re-armed past due after a restart. */
   | { kind: 'reminder'; id: string; after: string; late: boolean; text: string }
+  /** A desk episode's opening block (roster 67 §6.2): the agent's charter, its journal and the operating manual. */
+  | { kind: 'desk'; agent: string; charter: string; journal: string; manual: string }
+  /** A scoped wake (roster 67 §7.3). `id`/`title` name the task when there is one; `state`…`body` come from the
+   * `<task>` record that follows when the task was loaded; `count` when the wake was raised more than once. */
+  | { kind: 'wake'; id?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string }
   | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="' }
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 const HIDDEN: Record<string, true> = { context_summary: true, runtime: true, surface_error: true }
@@ -36,6 +41,37 @@ const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)
 
 /** Undo the wrappers' XML attribute escape. */
 const unescape = (s: string) => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+
+/** Trimmed text between `<tag>` and `</tag>`; `''` when absent. */
+function inner(s: string, tag: string): string {
+  const a = s.indexOf(`<${tag}>`)
+  const b = s.indexOf(`</${tag}>`, a)
+  return a < 0 || b < 0 ? '' : s.slice(a + tag.length + 2, b).trim()
+}
+
+/** `roster::desk::wake_text`: the header line, then the task record when the task was loaded. */
+const WAKE =
+  /^Wake: (?:task (\S+)(?: — (.*?))?|no task)\. Reason: ([a-z]+)\.(?: \(Raised (\d+) times\.\))? Do not switch to another task until this wake is handled\.(?:\n\n<task ([^\n]*?)>\n([\s\S]*)\n<\/task>)?$/
+
+function wake(text: string): Extract<Injected, { kind: 'wake' }> | null {
+  const m = WAKE.exec(text)
+  if (!m) return null
+  const [, id, title, reason = '', count, open = '', body] = m
+  const w: Extract<Injected, { kind: 'wake' }> = { kind: 'wake', reason }
+  if (id !== undefined) w.id = id
+  if (title !== undefined) w.title = title
+  if (count !== undefined) w.count = Number(count)
+  if (body !== undefined) {
+    w.state = attr(open, 'state="') ?? ''
+    w.owner = attr(open, 'owner="') ?? ''
+    const reviewer = attr(open, 'reviewer="')
+    const thread = attr(open, 'thread="')
+    if (reviewer !== undefined) w.reviewer = reviewer
+    if (thread !== undefined) w.thread = thread
+    w.body = body
+  }
+  return w
+}
 
 /** `<reminder id="r3" after="600" set_at="…" late="false">` (14 as-built); the id names the sender. */
 CARD.reminder = 'id="'
@@ -55,7 +91,8 @@ export function humanSecs(secs: string | number): string {
  * plus the user's words) is one card; an input made entirely of engine
  * wrappers (`<subagent_result>`, `<message>`, `<job_result>`, `<job_idle>`, `<schedule>` blocks joined
  * by newlines, engine notes such as `<context_summary>`) is one card per
- * block: mid-turn notices are visible; context summaries and runtime wrappers yield none.
+ * block: mid-turn notices are visible; context summaries and runtime wrappers yield none. A desk's
+ * input (`<desk>` opening, then/or a `Wake: …` line with its `<task>` record) is a card per block too.
  * `null` for human text (or anything not entirely made of wrappers).
  */
 export function classify(text: string): Injected[] | null {
@@ -69,6 +106,13 @@ export function classify(text: string): Injected[] | null {
   }
   const out: Injected[] = []
   while (rest) {
+    // A desk's wake (roster 67 §7.3) is the last block of its input and the only one not tag-wrapped.
+    if (rest.startsWith('Wake: ')) {
+      const w = wake(rest.trimEnd())
+      if (w === null) return null
+      out.push(w)
+      break
+    }
     const gt = rest.indexOf('>')
     if (!rest.startsWith('<') || gt < 0) return null
     const open = rest.slice(1, gt)
@@ -124,6 +168,9 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'reminder', id: from, after: attr(open, 'after="') ?? '', late: attr(open, 'late="') === 'true', text: body })
       } else if (name === 'message') {
         out.push({ kind: 'peer', from, text: body })
+      } else if (name === 'desk') {
+        const j = body.indexOf('</journal>')
+        out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })
       } else {
         out.push({ kind: 'subagent', name: from, text: body })
       }

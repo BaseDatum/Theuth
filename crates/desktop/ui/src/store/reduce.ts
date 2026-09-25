@@ -284,6 +284,8 @@ function userEntries(
           context,
         };
       case "engine":
+      case "desk":
+      case "wake":
         return { id: nextId(), ...c, context };
     }
   });
@@ -402,6 +404,10 @@ function signature(e: Entry): string {
       return e.origin ? `p${e.origin.id}` : `p${e.from}\n${e.text}`;
     case "engine":
       return `h${e.notice}\n${e.text}`;
+    case "desk":
+      return `d${e.agent}\n${e.journal}`;
+    case "wake":
+      return `w${e.id ?? ""}\n${e.reason}\n${e.body ?? ""}`;
     case "vision":
       return e.seq === undefined ? `v${e.model}\n${e.text}` : `v${e.seq}`;
     case "user":
