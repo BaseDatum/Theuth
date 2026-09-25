@@ -4,7 +4,9 @@
 //! - [`callback`]: one-shot loopback redirect listener.
 //! - [`pkce`]: S256 verifier/challenge + CSRF state.
 //! - [`Provider`] / [`PROVIDERS`]: authorization-code providers as data.
-//! - [`Store`]: `<data_dir>/oauth/<ns>.json` token files, login and refresh.
+//! - [`Store`]: grants as vault rows `oauth/<ns>` through [`Grants`] (67 §5.4;
+//!   `<data_dir>/oauth/<ns>.json` files when no vault is wired), login and
+//!   refresh — the refresh runs only on the hub engine ([`set_hub`]).
 //!
 //! No UI, no genai, no rmcp: callers map [`Tokens`] onto their own request
 //! types.
@@ -16,6 +18,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -30,6 +33,29 @@ use tokio::net::TcpListener;
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Refresh when this close to expiry.
 const REFRESH_MARGIN_SECS: u64 = 60;
+
+/// Where grants live when a vault is wired (67 §5.4): `secrets` implements
+/// it on its `Vault`; the agent hands it to [`Store::with_grants`].
+#[async_trait::async_trait]
+pub trait Grants: Send + Sync {
+    /// The grant JSON for `ns` and its version.
+    fn load(&self, ns: &str) -> Option<(u32, String)>;
+    /// Write `json` as the next version only if the current version is
+    /// `expected` (`None` = no grant yet): `Ok(false)` when it is not.
+    async fn store(&self, ns: &str, json: &str, expected: Option<u32>) -> Result<bool, String>;
+    /// Remove every version; fine if absent.
+    async fn remove(&self, ns: &str) -> Result<(), String>;
+}
+
+/// Whether this engine holds the hub lease (67 §4.4): the mesh sets it on
+/// every `MeshEvent::Lease`; `true` until a mesh says otherwise, so a lone
+/// engine refreshes as before.
+static HUB: AtomicBool = AtomicBool::new(true);
+
+/// The mesh calls this on every lease change; only the hub refreshes grants.
+pub fn set_hub(hub: bool) {
+    HUB.store(hub, Ordering::Relaxed);
+}
 
 /// Bind `127.0.0.1:port` (0 = ephemeral), serve exactly one redirect, reply
 /// with a "you can close this tab" page. Returns the bound port and a future
@@ -377,22 +403,68 @@ impl Tokens {
     }
 }
 
-/// `<data_dir>/oauth/`: one token file per provider namespace.
+/// Grants per provider namespace: vault rows through [`Grants`], else
+/// `<data_dir>/oauth/<ns>.json` files.
 #[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
     http: reqwest::Client,
     /// One refresh at a time; concurrent model calls wait for it.
     refresh: Arc<tokio::sync::Mutex<()>>,
+    grants: Option<Arc<dyn Grants>>,
+    /// `None` = the process-wide [`HUB`]; tests pin their own.
+    hub: Option<Arc<AtomicBool>>,
 }
 
 impl Store {
-    /// Store under `<data_dir>/oauth`.
+    /// File store under `<data_dir>/oauth`.
     pub fn new(data_dir: &Path) -> Store {
         Store {
             dir: data_dir.join("oauth"),
             http: reqwest::Client::new(),
             refresh: Arc::default(),
+            grants: None,
+            hub: None,
+        }
+    }
+
+    /// Read and write grants through `grants` (the vault) instead of files.
+    pub fn with_grants(mut self, grants: Option<Arc<dyn Grants>>) -> Store {
+        self.grants = grants;
+        self
+    }
+
+    /// First start after 67: every `<data_dir>/oauth/<ns>.json` becomes a
+    /// vault row (when none exists for `ns` yet) and is renamed `.migrated`.
+    /// No-op without grants.
+    pub async fn migrate_files(&self) {
+        let Some(g) = &self.grants else { return };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Some(ns) = path.file_name().and_then(|f| f.to_str()).and_then(|f| f.strip_suffix(".json")) else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if serde_json::from_str::<Tokens>(&text).is_err() {
+                continue;
+            }
+            let stored = match g.load(ns) {
+                Some(_) => Ok(true),
+                None => g.store(ns, &text, None).await,
+            };
+            match stored {
+                Ok(_) => {
+                    let mut moved = path.as_os_str().to_owned();
+                    moved.push(".migrated");
+                    if let Err(e) = std::fs::rename(&path, &moved) {
+                        tracing::warn!("{}: rename after migration: {e}", path.display());
+                    } else {
+                        tracing::info!("oauth: {ns} grant moved into the vault");
+                    }
+                }
+                Err(e) => tracing::warn!("oauth: migrating {ns}: {e}"),
+            }
         }
     }
 
@@ -405,30 +477,74 @@ impl Store {
         self.dir.join(format!("{ns}.json"))
     }
 
-    /// Tokens on disk for `ns`; unreadable or invalid → warn + `None`.
-    pub fn load(&self, ns: &str) -> Option<Tokens> {
-        let path = self.path(ns);
-        let text = std::fs::read_to_string(&path).ok()?;
+    fn is_hub(&self) -> bool {
+        self.hub.as_ref().map_or_else(|| HUB.load(Ordering::Relaxed), |h| h.load(Ordering::Relaxed))
+    }
+
+    /// Tokens for `ns` with their version (files: version 0); unreadable or
+    /// invalid → warn + `None`.
+    fn load_versioned(&self, ns: &str) -> Option<(u32, Tokens)> {
+        let (version, text, what) = match &self.grants {
+            Some(g) => {
+                let (v, text) = g.load(ns)?;
+                (v, text, format!("oauth/{ns}"))
+            }
+            None => {
+                let path = self.path(ns);
+                (0, std::fs::read_to_string(&path).ok()?, path.display().to_string())
+            }
+        };
         match serde_json::from_str(&text) {
-            Ok(t) => Some(t),
+            Ok(t) => Some((version, t)),
             Err(e) => {
-                tracing::warn!("{}: {e}; ignoring", path.display());
+                tracing::warn!("{what}: {e}; ignoring");
                 None
             }
         }
     }
 
-    /// Write-then-rename, owner-only.
-    pub fn save(&self, ns: &str, t: &Tokens) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        platform::files::write_private(&self.path(ns), serde_json::to_string_pretty(t)?.as_bytes())
+    /// Tokens for `ns`; unreadable or invalid → warn + `None`.
+    pub fn load(&self, ns: &str) -> Option<Tokens> {
+        self.load_versioned(ns).map(|(_, t)| t)
     }
 
-    /// Delete the token file; fine if absent.
-    pub fn remove(&self, ns: &str) -> std::io::Result<()> {
-        match std::fs::remove_file(self.path(ns)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
+    /// Write `t` as the next version of `ns`, conditional on `expected`
+    /// (`None` = whatever is current now). `Ok(false)` = the version moved
+    /// underneath (67 §4.4): the caller re-reads. Files always succeed.
+    async fn save_if(&self, ns: &str, t: &Tokens, expected: Option<Option<u32>>) -> Result<bool, String> {
+        let json = serde_json::to_string_pretty(t).map_err(|e| e.to_string())?;
+        match &self.grants {
+            Some(g) => {
+                let expected = expected.unwrap_or_else(|| g.load(ns).map(|(v, _)| v));
+                g.store(ns, &json, expected).await
+            }
+            None => {
+                std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+                platform::files::write_private(&self.path(ns), json.as_bytes()).map_err(|e| e.to_string())?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Store a login's tokens (any engine may log in, 67 §5.4).
+    pub async fn save(&self, ns: &str, t: &Tokens) -> Result<(), String> {
+        // A login racing another login on the same name: the second try sees the new version.
+        for _ in 0..2 {
+            if self.save_if(ns, t, None).await? {
+                return Ok(());
+            }
+        }
+        Err(format!("{ns}: the grant changed twice while saving; retry"))
+    }
+
+    /// Remove the grant; fine if absent.
+    pub async fn remove(&self, ns: &str) -> Result<(), String> {
+        match &self.grants {
+            Some(g) => g.remove(ns).await,
+            None => match std::fs::remove_file(self.path(ns)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            },
         }
     }
 
@@ -490,9 +606,7 @@ impl Store {
                         ("state", &k.state),
                     ];
                     let t = store.token_request(&p, &form, &[], None).await?;
-                    store
-                        .save(&p.ns, &t)
-                        .map_err(|e| format!("{}: saving tokens: {e}", p.ns))?;
+                    store.save(&p.ns, &t).await?;
                     Ok(t)
                 };
                 Ok((url.into(), Box::pin(finish)))
@@ -509,9 +623,7 @@ impl Store {
                         .map_err(|_| {
                             format!("{}: browser login not completed within 5 minutes", p.ns)
                         })??;
-                    store
-                        .save(&p.ns, &t)
-                        .map_err(|e| format!("{}: saving tokens: {e}", p.ns))?;
+                    store.save(&p.ns, &t).await?;
                     Ok(t)
                 };
                 Ok((url.into(), Box::pin(finish)))
@@ -546,9 +658,7 @@ impl Store {
                     .map_err(|_| {
                         format!("{}: browser login not completed within 5 minutes", p.ns)
                     })??;
-                    store
-                        .save(&p.ns, &t)
-                        .map_err(|e| format!("{}: saving tokens: {e}", p.ns))?;
+                    store.save(&p.ns, &t).await?;
                     Ok(t)
                 };
                 Ok((url, Box::pin(finish)))
@@ -638,11 +748,15 @@ impl Store {
     }
 
     /// Tokens for `p`, refreshed and re-saved when within a minute of expiry.
-    /// Errors name `/login` so a UI can show them verbatim.
+    /// Only the hub refreshes (67 §4.4): elsewhere an expiring grant is an
+    /// error until the hub's refresh replicates in. The new grant is written
+    /// with the old version as a precondition; if that fails the grant was
+    /// refreshed elsewhere and is re-read. Errors name `/login` so a UI can
+    /// show them verbatim.
     pub async fn access(&self, p: &Provider) -> Result<Tokens, String> {
         let _one_at_a_time = self.refresh.lock().await;
-        let t = self
-            .load(&p.ns)
+        let (version, t) = self
+            .load_versioned(&p.ns)
             .ok_or_else(|| format!("{}: not logged in; run /login {}", p.ns, p.ns))?;
         if t.expires_at > now() + REFRESH_MARGIN_SECS {
             return Ok(t);
@@ -650,6 +764,9 @@ impl Store {
         let Some(refresh) = t.refresh_token.as_deref() else {
             return Err(format!("{}: login expired; run /login {}", p.ns, p.ns));
         };
+        if !self.is_hub() {
+            return Err(format!("{}: token expiring; the hub engine refreshes it — retry shortly", p.ns));
+        }
         let fresh = match &p.flow {
             Flow::Code { .. } | Flow::Device => {
                 let headers: &[(&str, &str)] = match &p.flow {
@@ -690,9 +807,14 @@ impl Store {
             }
         }
         .map_err(|e| format!("{e}; run /login {}", p.ns))?;
-        self.save(&p.ns, &fresh)
-            .map_err(|e| format!("{}: saving tokens: {e}", p.ns))?;
-        Ok(fresh)
+        if self.save_if(&p.ns, &fresh, Some(Some(version))).await? {
+            return Ok(fresh);
+        }
+        // Someone else refreshed first: theirs is the grant now.
+        match self.load_versioned(&p.ns) {
+            Some((v, other)) if v != version && other.expires_at > now() + REFRESH_MARGIN_SECS => Ok(other),
+            _ => Err(format!("{}: grant refreshed elsewhere; retry", p.ns)),
+        }
     }
 
     /// POST the token endpoint, form or JSON per the flow. The body is never
@@ -859,9 +981,9 @@ mod tests {
         assert!(t2.expires_at > now() + 7000);
         // Fresh tokens are returned as-is.
         assert_eq!(store.access(&p2).await.unwrap(), t2);
-        store.remove("test").unwrap();
+        store.remove("test").await.unwrap();
         assert!(store.load("test").is_none());
-        store.remove("test").unwrap();
+        store.remove("test").await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -909,5 +1031,120 @@ mod tests {
         assert_eq!(t.account_id.as_deref(), Some("user_42"));
         assert_eq!(store.load("cursor").unwrap(), t);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// In-memory [`Grants`]: one version per `ns`, `store` conditional like
+    /// the vault. `race` is applied just before the next `store`'s check:
+    /// another writer winning between the caller's read and its write.
+    #[derive(Default)]
+    struct MemGrants {
+        rows: parking_lot::Mutex<HashMap<String, (u32, String)>>,
+        race: parking_lot::Mutex<Option<(String, u32, Tokens)>>,
+        stores: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Grants for MemGrants {
+        fn load(&self, ns: &str) -> Option<(u32, String)> {
+            self.rows.lock().get(ns).cloned()
+        }
+        async fn store(&self, ns: &str, json: &str, expected: Option<u32>) -> Result<bool, String> {
+            self.stores.fetch_add(1, Ordering::Relaxed);
+            let mut rows = self.rows.lock();
+            if let Some((ns, v, t)) = self.race.lock().take() {
+                rows.insert(ns, (v, serde_json::to_string(&t).unwrap()));
+            }
+            let cur = rows.get(ns).map(|(v, _)| *v);
+            if cur != expected {
+                return Ok(false);
+            }
+            rows.insert(ns.to_owned(), (cur.map_or(1, |v| v + 1), json.to_owned()));
+            Ok(true)
+        }
+        async fn remove(&self, ns: &str) -> Result<(), String> {
+            self.rows.lock().remove(ns);
+            Ok(())
+        }
+    }
+
+    fn code_provider(token_url: String) -> Provider {
+        Provider {
+            ns: Cow::Borrowed("test"),
+            auth_url: Cow::Borrowed("https://example.com/authorize"),
+            token_url: Cow::Owned(token_url),
+            client_id: Cow::Borrowed("cid"),
+            scopes: Cow::Borrowed("openid"),
+            port: 0,
+            redirect_host: Cow::Borrowed("127.0.0.1"),
+            redirect_path: Cow::Borrowed("/cb"),
+            extra_query: &[],
+            flow: Flow::Code {
+                token_body: Body::Form,
+                refresh_headers: &[],
+            },
+        }
+    }
+
+    fn expiring(refresh: &str) -> Tokens {
+        Tokens {
+            access_token: "old".into(),
+            refresh_token: Some(refresh.into()),
+            expires_at: now() + 10,
+            account_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn non_hub_never_refreshes() {
+        let grants = Arc::new(MemGrants::default());
+        let mut store = Store::new(Path::new("/unused")).with_grants(Some(grants.clone()));
+        store.hub = Some(Arc::new(AtomicBool::new(false)));
+        store.save("test", &expiring("r1")).await.unwrap();
+        // A token endpoint that would fail loudly if it were ever asked.
+        let p = code_provider("http://127.0.0.1:9/token".into());
+        let err = store.access(&p).await.unwrap_err();
+        assert!(err.contains("hub"), "{err}");
+        assert!(!err.contains("token endpoint"), "{err}");
+        assert_eq!(grants.stores.load(Ordering::Relaxed), 1, "only the save");
+        assert_eq!(store.load("test").unwrap().access_token, "old");
+        // A fresh grant is served without the hub.
+        let mut fresh = expiring("r1");
+        fresh.expires_at = now() + 7200;
+        store.save("test", &fresh).await.unwrap();
+        assert_eq!(store.access(&p).await.unwrap(), fresh);
+    }
+
+    #[tokio::test]
+    async fn hub_refresh_with_stale_precondition_re_reads() {
+        let grants = Arc::new(MemGrants::default());
+        let mut store = Store::new(Path::new("/unused")).with_grants(Some(grants.clone()));
+        store.hub = Some(Arc::new(AtomicBool::new(true)));
+        store.save("test", &expiring("r1")).await.unwrap();
+        let mine = jwt(serde_json::json!({ "exp": now() + 7200 }));
+        let p = code_provider(
+            fake_token_endpoint(serde_json::json!({ "access_token": mine, "expires_in": 7200 }).to_string()).await,
+        );
+        // Another hub wins version 2 between this engine's read and its write.
+        let theirs = Tokens {
+            access_token: "theirs".into(),
+            refresh_token: Some("r2".into()),
+            expires_at: now() + 7000,
+            account_id: None,
+        };
+        *grants.race.lock() = Some(("test".into(), 2, theirs.clone()));
+        let got = store.access(&p).await.unwrap();
+        assert_eq!(got, theirs, "the loser re-reads the winner's grant");
+        assert_eq!(grants.load("test").unwrap().0, 2, "no version 3 was written");
+        assert_eq!(grants.stores.load(Ordering::Relaxed), 2, "save + one refused write");
+
+        // Still fresh: served as is.
+        assert_eq!(store.access(&p).await.unwrap(), theirs);
+
+        // Hub, no race: the refresh lands as the next version.
+        grants.rows.lock().insert("test".into(), (2, serde_json::to_string(&expiring("r2")).unwrap()));
+        let got = store.access(&p).await.unwrap();
+        assert_eq!(got.access_token, mine);
+        assert_eq!(got.refresh_token.as_deref(), Some("r2"), "refresh token survives an omitting endpoint");
+        assert_eq!(grants.load("test").unwrap().0, 3);
     }
 }

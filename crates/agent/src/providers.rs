@@ -301,7 +301,7 @@ mod tests {
         use std::sync::Arc;
         let dir = std::env::temp_dir().join(format!("theuth-prov-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let vault = Arc::new(secrets::Vault::open(&dir, secrets::KeyStore::File).unwrap());
+        let vault = Arc::new(secrets::Vault::open(&dir, secrets::KeyStore::File).await.unwrap());
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let actor = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
             vault.clone(),

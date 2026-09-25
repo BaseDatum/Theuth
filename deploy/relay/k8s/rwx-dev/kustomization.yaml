@@ -6,6 +6,7 @@ namespace: theuth
 resources:
   - ../base
   - ingress.yaml
+  - ingress-iroh.yaml
   - secret.yaml
 
 images:
@@ -13,6 +14,14 @@ images:
     newTag: c2c09dd
 
 patches:
+  - target:
+      kind: Deployment
+      name: iroh-relay
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-secret
   - target:
       kind: Deployment
       name: theuth-relay

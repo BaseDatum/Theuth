@@ -1172,6 +1172,57 @@ pub trait Api {
     #[method(name = "schedule_history")]
     async fn schedule_history(&self, name: String, limit: u32)
     -> RpcResult<Vec<schedule::RunInfo>>;
+    /// This engine, its peers and the hub lease (67 §4, §12).
+    #[method(name = "mesh_status")]
+    async fn mesh_status(&self) -> RpcResult<mesh::MeshStatus>;
+    /// A pairing string another engine can `t mesh add` (67 §4.1).
+    #[method(name = "mesh_pairing_string")]
+    async fn mesh_pairing_string(&self) -> RpcResult<String>;
+    /// Pair with the engine behind `pairing`; mutual and transitive (67 §4.1).
+    #[method(name = "mesh_add")]
+    async fn mesh_add(&self, pairing: String) -> RpcResult<mesh::Peer>;
+    /// Leave an engine out of the mesh (67 §4.1).
+    #[method(name = "mesh_remove")]
+    async fn mesh_remove(&self, id: String) -> RpcResult<()>;
+    /// This engine's hub lease preference (67 §4.5); written to `mesh.hub`.
+    #[method(name = "mesh_set_hub")]
+    async fn mesh_set_hub(&self, pref: mesh::HubPref) -> RpcResult<()>;
+    /// Every roster agent with status, desk, open tasks and month spend (67 §12).
+    #[method(name = "agents_list")]
+    async fn agents_list(&self) -> RpcResult<Vec<roster::AgentSummary>>;
+    /// One agent file (67 §6.1). `Err` when unknown.
+    #[method(name = "agent_get")]
+    async fn agent_get(&self, name: String) -> RpcResult<roster::AgentFile>;
+    /// Write `agents/<name>.md` from `file` (create or replace) — the file editor's save (67 §12).
+    #[method(name = "agent_put")]
+    async fn agent_put(&self, file: roster::AgentFile) -> RpcResult<()>;
+    /// Flip an agent's `paused:` line; paused agents receive no wakes (67 §6.4).
+    #[method(name = "agent_pause")]
+    async fn agent_pause(&self, name: String, paused: bool) -> RpcResult<()>;
+    /// Approve a proposed agent: clears `proposed_by`, unpauses (67 §6.5).
+    #[method(name = "agent_approve")]
+    async fn agent_approve(&self, name: String) -> RpcResult<()>;
+    /// Tasks matching `filter`, oldest first (67 §12 board).
+    #[method(name = "tasks_list")]
+    async fn tasks_list(&self, filter: tasks::TaskFilter) -> RpcResult<Vec<tasks::Task>>;
+    /// One task (67 §7.1). `Err` when unknown.
+    #[method(name = "task_get")]
+    async fn task_get(&self, id: String) -> RpcResult<tasks::Task>;
+    /// Create a task as the user (`created_by: user`); the owner is woken (67 §7).
+    #[method(name = "task_create")]
+    async fn task_create(&self, input: tasks::TaskCreate) -> RpcResult<tasks::Task>;
+    /// Patch a task as the user: assign, set state, blockers, placement (67 §7.2, §12).
+    #[method(name = "task_update")]
+    async fn task_update(&self, id: String, patch: tasks::TaskPatch) -> RpcResult<tasks::Task>;
+    /// Append a comment to a task's thread as the user; wakes the owner (67 §7.3).
+    #[method(name = "task_comment")]
+    async fn task_comment(&self, id: String, text: String) -> RpcResult<()>;
+    /// The task's field-level event log, oldest first (67 §7.2).
+    #[method(name = "task_events")]
+    async fn task_events(&self, id: String) -> RpcResult<Vec<tasks::TaskEvent>>;
+    /// Tasks whose `blockers` name `id` (the inverse link, computed; 67 §7.1).
+    #[method(name = "task_blocks")]
+    async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>>;
     /// Every artifact shown in `session` (`null` = every session), newest
     /// first; `descendants: true` (default `false`) widens to the session's
     /// subtree (35 §3.5).
@@ -1390,6 +1441,21 @@ fn schedule() -> RpcResult<ActorRef<schedule::Schedule>> {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "schedule is disabled", None::<()>),
         _ => e,
     })
+}
+
+/// The mesh actor; absent when the plugin is not loaded or its store failed (67 §4).
+fn mesh_actor() -> RpcResult<ActorRef<mesh::Mesh>> {
+    lookup::<mesh::Mesh>(mesh::MESH_ACTOR)
+}
+
+/// The roster actor; absent when the plugin is not loaded or its store failed (67 §6).
+fn roster_actor() -> RpcResult<ActorRef<roster::Roster>> {
+    lookup::<roster::Roster>(roster::ROSTER_ACTOR)
+}
+
+/// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
+fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
+    lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
 }
 
 /// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
@@ -3451,6 +3517,95 @@ impl ApiServer for Server {
         limit: u32,
     ) -> RpcResult<Vec<schedule::RunInfo>> {
         send(&schedule()?, schedule::History { name, limit }).await
+    }
+
+    // 67: every method is one `ask`; the actors answer `not built` until
+    // their workers fill them (docs/design/67-contract.md).
+
+    async fn mesh_status(&self) -> RpcResult<mesh::MeshStatus> {
+        send(&mesh_actor()?, mesh::Status).await
+    }
+
+    async fn mesh_pairing_string(&self) -> RpcResult<String> {
+        send(&mesh_actor()?, mesh::PairingString).await
+    }
+
+    async fn mesh_add(&self, pairing: String) -> RpcResult<mesh::Peer> {
+        send(&mesh_actor()?, mesh::AddPeer(pairing)).await
+    }
+
+    async fn mesh_remove(&self, id: String) -> RpcResult<()> {
+        send(&mesh_actor()?, mesh::RemovePeer(mesh::EngineId(id))).await
+    }
+
+    async fn mesh_set_hub(&self, pref: mesh::HubPref) -> RpcResult<()> {
+        send(&mesh_actor()?, mesh::SetHubPref(pref)).await
+    }
+
+    async fn agents_list(&self) -> RpcResult<Vec<roster::AgentSummary>> {
+        send(&roster_actor()?, roster::ListAgents).await
+    }
+
+    async fn agent_get(&self, name: String) -> RpcResult<roster::AgentFile> {
+        send(&roster_actor()?, roster::GetAgent(name)).await
+    }
+
+    async fn agent_put(&self, file: roster::AgentFile) -> RpcResult<()> {
+        send(&roster_actor()?, roster::PutAgent(file)).await
+    }
+
+    async fn agent_pause(&self, name: String, paused: bool) -> RpcResult<()> {
+        send(&roster_actor()?, roster::PauseAgent { name, paused }).await
+    }
+
+    async fn agent_approve(&self, name: String) -> RpcResult<()> {
+        send(&roster_actor()?, roster::ApproveAgent(name)).await
+    }
+
+    async fn tasks_list(&self, filter: tasks::TaskFilter) -> RpcResult<Vec<tasks::Task>> {
+        send(&tasks_actor()?, tasks::ListTasks(filter)).await
+    }
+
+    async fn task_get(&self, id: String) -> RpcResult<tasks::Task> {
+        send(&tasks_actor()?, tasks::GetTask(tasks::TaskId(id))).await
+    }
+
+    async fn task_create(&self, input: tasks::TaskCreate) -> RpcResult<tasks::Task> {
+        let m = tasks::CreateTask {
+            input,
+            created_by: "user".into(),
+            session: None,
+        };
+        send(&tasks_actor()?, m).await
+    }
+
+    async fn task_update(&self, id: String, patch: tasks::TaskPatch) -> RpcResult<tasks::Task> {
+        let m = tasks::UpdateTask {
+            id: tasks::TaskId(id),
+            patch,
+            actor: "user".into(),
+            session: None,
+        };
+        send(&tasks_actor()?, m).await
+    }
+
+    async fn task_comment(&self, id: String, text: String) -> RpcResult<()> {
+        let m = tasks::CommentTask {
+            id: tasks::TaskId(id),
+            text,
+            progress: false,
+            actor: "user".into(),
+            session: None,
+        };
+        send(&tasks_actor()?, m).await
+    }
+
+    async fn task_events(&self, id: String) -> RpcResult<Vec<tasks::TaskEvent>> {
+        send(&tasks_actor()?, tasks::TaskEvents(tasks::TaskId(id))).await
+    }
+
+    async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>> {
+        send(&tasks_actor()?, tasks::TaskBlocks(tasks::TaskId(id))).await
     }
 
     async fn list_artifacts(

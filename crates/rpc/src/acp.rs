@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use agent::cost::{Coverage, NANOS_PER_UNIT, SessionCost};
 use agent::todo::{Status, Todo};
-use agent::{AgentEvent, CreateSessionOptions, HistoryEntry, PeerDelivered};
+use agent::{
+    AgentEvent, CreateSessionOptions, HistoryEntry, PeerDelivered, PeerUplink, RegisterNode, UnregisterNode,
+};
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Cost,
     EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
@@ -41,7 +43,7 @@ use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tools::{ApprovalRequested, Decision, Risk};
 
 use crate::api::{self, ApiClient};
@@ -118,6 +120,7 @@ pub async fn relay(rt: &Runtime, api: Option<Arc<Engine>>) -> ActorRef<Relay> {
     rt.subscribe::<Relay, ApprovalRequested>(&relay).await;
     rt.subscribe::<Relay, ArtifactShown>(&relay).await;
     rt.subscribe::<Relay, PeerDelivered>(&relay).await;
+    rt.subscribe::<Relay, PeerUplink>(&relay).await;
     relay
 }
 
@@ -147,6 +150,112 @@ pub async fn serve_records(
     if let Err(e) = serve(Lines::new(outgoing, incoming), relay, api, rt.data_dir.clone()).await {
         tracing::debug!(error = %e, "acp conn ended with error");
     }
+}
+
+/// 67 §4.2, decision 4: the same ACP over the mesh. Two loops until
+/// shutdown, once the mesh has registered its transport: every inbound
+/// `theuth/acp/1` stream is one [`serve`] connection (as a link mode-1 conn
+/// is), and every paired engine is registered with `agent` as a node
+/// ([`RegisterNode`] with an [`acp::MeshDialer`]), so `agent: "build-A"` /
+/// `"omp@build-A"` and the tool description work as for a 32 node. A peer
+/// is re-registered on every connect/disconnect (`· offline` while away,
+/// like a node); one removed from the mesh is unregistered.
+pub async fn serve_mesh(rt: Runtime) {
+    let Some(transport) = replica::transport(&rt).await else {
+        return;
+    };
+    let relay = relay(&rt, None).await;
+    let api = relay.ask(Api).await.unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    let (t, data_dir, shutdown) = (transport.clone(), rt.data_dir.clone(), rt.shutdown.clone());
+    tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                () = shutdown.cancelled() => return,
+                a = t.accept(replica::ALPN_ACP) => a,
+            };
+            match accepted {
+                Ok((peer, stream)) => {
+                    let (relay, api, data_dir) = (relay.clone(), api.clone(), data_dir.clone());
+                    tokio::spawn(async move {
+                        let d = acp::line_duplex(stream);
+                        if let Err(e) = serve(Lines::new(d.outgoing, d.incoming), relay, api, data_dir).await {
+                            tracing::debug!(%peer, error = %e, "acp mesh conn ended with error");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "acp mesh accept");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+    let (Some(mesh), Some(agents)) = tokio::join!(
+        rt.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR),
+        rt.lookup_when::<agent::Agents>(agent::AGENT_ACTOR),
+    ) else {
+        return;
+    };
+    let Ok(mut events) = mesh.ask(mesh::Subscribe).await else {
+        return;
+    };
+    let mut registered: HashMap<String, String> = HashMap::new(); // id → node name
+    loop {
+        if let Ok(status) = mesh.ask(mesh::Status).await {
+            let stats = mesh.ask(mesh::ListStats).await.unwrap_or_default();
+            let mut seen = HashMap::new();
+            for p in status.peers {
+                let name = node_name(&p, &seen);
+                seen.insert(p.id.0.clone(), name.clone());
+                let describe = match stats.iter().find(|s| s.id == p.id) {
+                    _ if !p.reachable => "mesh · offline".to_owned(),
+                    Some(s) => format!(
+                        "mesh · {} · harnesses: {}",
+                        format!("{:?}", s.class).to_lowercase(),
+                        s.harnesses.join(", ")
+                    ),
+                    None => "mesh".to_owned(),
+                };
+                let _ = agents
+                    .ask(RegisterNode {
+                        name: name.clone(),
+                        describe,
+                        dialer: Arc::new(acp::MeshDialer {
+                            name,
+                            peer: p.id.into(),
+                            self_id: status.self_id.0.clone(),
+                            transport: transport.clone(),
+                        }),
+                    })
+                    .await;
+            }
+            for (id, name) in &registered {
+                if !seen.contains_key(id) {
+                    let _ = agents.ask(UnregisterNode { name: name.clone() }).await;
+                }
+            }
+            registered = seen;
+        }
+        loop {
+            match events.recv().await {
+                Ok(mesh::MeshEvent::Peer(_)) | Err(broadcast::error::RecvError::Lagged(_)) => break,
+                Ok(mesh::MeshEvent::Lease(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
+
+/// The node name a mesh peer registers under: its `mesh.name`, or its id
+/// prefix when it has none; suffixed with the id prefix when another peer
+/// already took that name this pass (two engines with one hostname).
+fn node_name(p: &mesh::Peer, taken: &HashMap<String, String>) -> String {
+    let short = p.id.0.get(..8).unwrap_or(&p.id.0);
+    let name = p.name.trim();
+    if name.is_empty() {
+        return short.to_owned();
+    }
+    if taken.values().any(|n| n == name) { format!("{name}-{short}") } else { name.to_owned() }
 }
 
 /// Ids handed to each [`serve`] connection so the [`Relay`] can tell them
@@ -190,13 +299,20 @@ async fn serve(
         )
         .on_receive_request(
             async move |req: NewSessionRequest, responder, cx| {
+                let options = new_session_options(&req)?;
+                let remote_harness = options.harness.is_some();
                 let session = api_new
-                    .create_session(CreateSessionOptions {
-                        cwd: Some(req.cwd.to_string_lossy().into_owned()),
-                        ..Default::default()
-                    })
+                    .create_session(options)
                     .await
-                    .map_err(rpc_error)?
+                    .map_err(|e| {
+                        let mut e = rpc_error(e);
+                        // 67 §8: the parent asked for *this* node's harness;
+                        // say which node is answering and what it has.
+                        if remote_harness {
+                            e.message = format!("{}: {}", platform::process::hostname(), e.message);
+                        }
+                        e
+                    })?
                     .session;
                 let _ = for_new.tell(Bind { session, id, cx }).await;
                 responder.respond(NewSessionResponse::new(session.to_string()))
@@ -283,6 +399,27 @@ fn rpc_error(e: ClientError) -> Error {
         ClientError::Call(e) => Error::new(e.code(), e.message()),
         e => Error::new(-32000, e.to_string()),
     }
+}
+
+/// `session/new` as a `create_session`: the client's cwd, plus what a parent
+/// theuth put under `_meta.theuth` (67 §8) — its model and effort pick for
+/// this root, its `tools` ceiling, who it is, and the `harness` of ours to
+/// run instead of a native session. No `_meta` → exactly the plain create.
+/// A malformed `theuth` entry is an invalid-params error, not a silent default.
+fn new_session_options(req: &NewSessionRequest) -> Result<CreateSessionOptions, Error> {
+    let meta = acp::SessionMeta::from_meta(req.meta.as_ref())
+        .map_err(|e| Error::invalid_params().data(e))?
+        .unwrap_or_default();
+    Ok(CreateSessionOptions {
+        cwd: Some(req.cwd.to_string_lossy().into_owned()),
+        model: meta.model,
+        effort: meta.effort,
+        cap: meta.tools.filter(|r| *r != Risk::Destructive),
+        parent_session: meta.parent,
+        parent_engine: meta.parent_engine,
+        harness: meta.harness,
+        ..Default::default()
+    })
 }
 
 /// The theuth session behind an ACP session id.
@@ -669,6 +806,29 @@ impl Message<PeerDelivered> for Relay {
     }
 }
 
+/// 67 §8: a root a remote theuth opened sent `send_message{to: "parent"}`;
+/// out it goes on the conn that owns the session, as the
+/// [`acp::PEER_MESSAGE_METHOD`] extension notification. No owner (the conn
+/// ended) → dropped, like any other event for an unowned session.
+impl Message<PeerUplink> for Relay {
+    type Reply = ();
+    async fn handle(&mut self, m: PeerUplink, _: &mut Context<Self, ()>) {
+        let Some(cx) = self.connection(&m.session) else {
+            return;
+        };
+        let n = acp::PeerMessage {
+            session_id: m.session.to_string(),
+            id: m.id,
+            reply_to: m.reply_to,
+            text: m.text,
+        }
+        .notification();
+        if let Err(e) = n.and_then(|n| cx.send_notification(n)) {
+            tracing::warn!(error = %e, "acp peer_message failed");
+        }
+    }
+}
+
 impl Message<ApprovalRequested> for Relay {
     type Reply = ();
     async fn handle(&mut self, a: ApprovalRequested, _: &mut Context<Self, ()>) {
@@ -721,6 +881,60 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    /// 67 §8: `_meta.theuth` picks the root's model/effort and installs its
+    /// `tools` ceiling; no `_meta` is the plain create; a bad entry is refused.
+    #[test]
+    fn session_new_meta_becomes_create_options() {
+        let plain = NewSessionRequest::new("/work");
+        let o = new_session_options(&plain).unwrap();
+        assert_eq!(o.cwd.as_deref(), Some("/work"));
+        assert_eq!((o.model, o.effort, o.cap), (None, None, None));
+
+        let meta = acp::SessionMeta {
+            model: Some("anthropic/claude-opus-4-8".into()),
+            effort: Some("high".into()),
+            tools: Some(Risk::ReadOnly),
+            parent: Some("p".into()),
+            parent_engine: Some("e".into()),
+            harness: None,
+        }
+        .to_meta();
+        let o = new_session_options(&NewSessionRequest::new("/work").meta(meta)).unwrap();
+        assert_eq!(o.model.as_deref(), Some("anthropic/claude-opus-4-8"));
+        assert_eq!(o.effort.as_deref(), Some("high"));
+        assert_eq!(o.cap, Some(Risk::ReadOnly));
+
+        // `agent: "omp@<this node>"`: the node runs its own `omp` for this root.
+        let remote = acp::SessionMeta {
+            harness: Some("omp".into()),
+            model: Some("anthropic/claude-opus-4-8".into()),
+            ..Default::default()
+        }
+        .to_meta();
+        let o = new_session_options(&NewSessionRequest::new("/work").meta(remote)).unwrap();
+        assert_eq!(o.harness.as_deref(), Some("omp"));
+        assert_eq!(o.model.as_deref(), Some("anthropic/claude-opus-4-8"));
+        assert_eq!(o.cap, None);
+
+        // `destructive` is "no ceiling", as for a local subagent.
+        let loose = acp::SessionMeta {
+            tools: Some(Risk::Destructive),
+            ..Default::default()
+        }
+        .to_meta();
+        assert_eq!(
+            new_session_options(&NewSessionRequest::new("/work").meta(loose))
+                .unwrap()
+                .cap,
+            None
+        );
+
+        let bad: agent_client_protocol::schema::v1::Meta =
+            serde_json::from_str(r#"{"theuth":{"tools":"all"}}"#).unwrap();
+        let e = new_session_options(&NewSessionRequest::new("/work").meta(bad)).unwrap_err();
+        assert_eq!(e.code, agent_client_protocol::ErrorCode::InvalidParams);
+    }
 
     /// 51 §8.3: cost goes out only when one currency covers everything.
     #[test]
@@ -834,5 +1048,126 @@ mod tests {
             "{text}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 67 §4.2: two mesh endpoints on loopback (relay off, no discovery); the
+    /// child side accepts an `ALPN_ACP` stream and speaks ACP over
+    /// [`acp::line_duplex`] exactly as [`serve_mesh`] does; the parent side
+    /// dials with an [`acp::MeshDialer`] through [`acp::Harness::connect`],
+    /// opens a session with `_meta.theuth` and receives one `session/update`.
+    /// Only the byte stream differs from a link conn, so the ACP agent here
+    /// is a two-method stand-in for [`serve`] (a full engine is not needed to
+    /// prove the transport).
+    #[tokio::test]
+    async fn child_session_over_the_mesh_loopback() {
+        use agent_client_protocol::schema::v1::NewSessionResponse;
+        use replica::{PeerId, Transport};
+        use std::time::Duration;
+
+        async fn engine(name: &str) -> (Arc<mesh::net::Net>, PathBuf) {
+            let dir = std::env::temp_dir().join(format!("theuth-acp-mesh-{}-{}", name, uuid::Uuid::now_v7()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let identity = mesh::identity::Identity::load_or_create(&dir).unwrap();
+            let store = mesh::store::Store::open(&dir.join("mesh.sqlite"), mesh::EngineId(identity.secret.public().to_string())).await.unwrap();
+            let net = mesh::net::Net::bind(
+                mesh::net::BindOpts {
+                    secret: identity.secret,
+                    relay: String::new(),
+                    discovery: false,
+                    bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                },
+                store,
+                name.into(),
+                mesh::HubPref::Eligible,
+            )
+            .await
+            .unwrap();
+            (net, dir)
+        }
+        let (parent, dir_p) = engine("parent").await;
+        let (child, dir_c) = engine("child").await;
+        let mut events = parent.subscribe_peers();
+        parent.add_peer(&child.pairing_string().await).await.unwrap();
+        let connected = tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
+        assert_eq!(connected, replica::PeerEvent::Connected(PeerId(child.id.0.clone())));
+
+        // The child engine: one accepted stream, one ACP agent on it.
+        let seen_meta = Arc::new(parking_lot::Mutex::new(None));
+        let (c, meta_slot) = (child.clone(), seen_meta.clone());
+        let server = tokio::spawn(async move {
+            let (from, stream) = c.accept(replica::ALPN_ACP).await.unwrap();
+            let d = acp::line_duplex(stream);
+            Agent
+                .builder()
+                .on_receive_request(
+                    async move |req: InitializeRequest, responder, _cx| {
+                        responder.respond(InitializeResponse::new(req.protocol_version))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |req: NewSessionRequest, responder, cx| {
+                        *meta_slot.lock() = acp::SessionMeta::from_meta(req.meta.as_ref()).ok().flatten();
+                        let id = AcpSessionId::new("child-1");
+                        cx.send_notification(SessionNotification::new(
+                            id.clone(),
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new("hello from the child".into())),
+                        ))?;
+                        responder.respond(NewSessionResponse::new(id))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(Lines::new(d.outgoing, d.incoming), async move |cx: ConnectionTo<Client>| {
+                    cx.incoming_closed().await;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            from
+        });
+
+        // The parent engine: `spawn_subagent{agent:"child"}` as the supervisor does it.
+        let dialer = acp::MeshDialer {
+            name: "child".into(),
+            peer: PeerId(child.id.0.clone()),
+            self_id: parent.id.0.clone(),
+            transport: parent.clone(),
+        };
+        assert_eq!(acp::Dialer::engine_id(&dialer), Some(child.id.0.as_str()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let harness = acp::Harness::connect(
+            acp::Connect {
+                transport: acp::Transport::Dial(Arc::new(dialer)),
+                cwd: dir_p.clone(),
+                resume: None,
+                stderr_log: dir_p.join("acp.log"),
+                meta: Some(acp::SessionMeta {
+                    tools: Some(Risk::ReadOnly),
+                    parent: Some("parent-session".into()),
+                    ..Default::default()
+                }),
+                model: None,
+            },
+            tx,
+        )
+        .await
+        .unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+        match update {
+            acp::Update::Session(SessionUpdate::AgentMessageChunk(c)) => {
+                assert_eq!(acp::content_block_text(&c.content), "hello from the child");
+            }
+            other => panic!("expected a message chunk, got {other:?}"),
+        }
+        harness.close();
+        let from = tokio::time::timeout(Duration::from_secs(10), server).await.unwrap().unwrap();
+        assert_eq!(from, PeerId(parent.id.0.clone()));
+        let meta = seen_meta.lock().take().expect("_meta.theuth reached the child");
+        assert_eq!((meta.tools, meta.parent.as_deref()), (Some(Risk::ReadOnly), Some("parent-session")));
+
+        parent.shutdown().await;
+        child.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir_p);
+        let _ = std::fs::remove_dir_all(&dir_c);
     }
 }

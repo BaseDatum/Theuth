@@ -143,7 +143,7 @@ async fn run_with(
 
     // 2. Bot token.
     let config = data_dir.join("config.yaml");
-    let vault = open_vault(data_dir, &config)?;
+    let vault = open_vault(data_dir, &config).await?;
     let bot = match vault.get("slack_bot", 0) {
         Some(t) if api.call("auth.test", &t, json!({})).await.is_ok() => {
             io.say("2. bot token ok (existing)");
@@ -212,6 +212,7 @@ async fn run_with(
         if let Some(v) = value {
             vault
                 .set(key, &v, Some("Slack token"), "slack setup")
+                .await
                 .map_err(anyhow::Error::msg)?;
         }
     }
@@ -248,7 +249,7 @@ fn owner_id(s: &str) -> Option<&str> {
 
 /// The vault as the daemon would open it: `secrets.key_store` from the same
 /// Figment `main` builds (`config.yaml` + `THEUTH_*` env).
-fn open_vault(data_dir: &Path, config: &Path) -> anyhow::Result<secrets::Vault> {
+async fn open_vault(data_dir: &Path, config: &Path) -> anyhow::Result<secrets::Vault> {
     let figment = Figment::new()
         .merge(Yaml::file(config))
         .merge(Env::prefixed("THEUTH_").split("__"));
@@ -257,7 +258,7 @@ fn open_vault(data_dir: &Path, config: &Path) -> anyhow::Result<secrets::Vault> 
     } else {
         secrets::SecretsConfig::default()
     };
-    secrets::Vault::open(data_dir, cfg.key_store)
+    secrets::Vault::open(data_dir, cfg.key_store).await
 }
 
 /// `slack.owner` from config.yaml when set and non-empty.
@@ -358,8 +359,8 @@ mod tests {
         dir
     }
 
-    fn vault(dir: &tempfile::TempDir) -> secrets::Vault {
-        secrets::Vault::open(dir.path(), secrets::KeyStore::File).unwrap()
+    async fn vault(dir: &tempfile::TempDir) -> secrets::Vault {
+        secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap()
     }
 
     #[tokio::test]
@@ -376,7 +377,7 @@ mod tests {
         run_with(dir.path(), None, &mut io, &api).await.unwrap();
 
         assert!(!dir.path().join("credentials.yaml").exists());
-        let vault = vault(&dir);
+        let vault = vault(&dir).await;
         assert_eq!(vault.get("anthropic", 0).unwrap().as_str(), "sk-1");
         assert_eq!(vault.get("slack_bot", 0).unwrap().as_str(), "xoxb-bot");
         assert_eq!(vault.get("slack_app", 0).unwrap().as_str(), "xapp-app");
@@ -415,7 +416,9 @@ mod tests {
     async fn existing_valid_bot_token_is_skipped() {
         let dir = data_dir("");
         vault(&dir)
+            .await
             .set("slack_bot", "xoxb-old", None, "test")
+            .await
             .unwrap();
         let api = FakeApi::new(vec![
             ("apps.manifest.create", Ok(created())),
@@ -431,7 +434,7 @@ mod tests {
         );
         assert!(!io.out.iter().any(|l| l == "bot token: "));
         assert_eq!(lock(&api.calls)[1].1, "xoxb-old");
-        let vault = vault(&dir);
+        let vault = vault(&dir).await;
         assert_eq!(vault.get("slack_bot", 0).unwrap().as_str(), "xoxb-old");
         assert_eq!(vault.get("slack_app", 0).unwrap().as_str(), "xapp-new");
     }

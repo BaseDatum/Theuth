@@ -146,6 +146,8 @@ mod tests {
             scope: None,
             source: None,
             timestamp: None,
+            owner: crate::types::USER_OWNER.into(),
+            visibility: Default::default(),
         }
     }
 

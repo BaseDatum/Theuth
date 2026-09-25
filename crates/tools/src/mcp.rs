@@ -1687,6 +1687,8 @@ pub async fn start(
 ) -> anyhow::Result<()> {
     let dir = rt.data_dir.join("mcp");
     std::fs::create_dir_all(&dir)?;
+    // 67 §5.1: `mcp/*.json` and `mcp/config.yaml` replicate; `repos/` does not (a directory).
+    tokio::spawn(::replica::files::mirror_at(rt.data_dir.join("mcp.sqlite"), dir.clone(), "mcp", std::time::Duration::from_secs(120)));
     let sources: [DynTool; 4] = [
         Arc::new(tools::AddMcpServer),
         Arc::new(tools::RemoveMcpServer),

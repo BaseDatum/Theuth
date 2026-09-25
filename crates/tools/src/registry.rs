@@ -91,6 +91,9 @@ pub struct ToolRegistry {
     /// fail-closed for every session. Not a permission input: `policy`
     /// still runs for every call this lets through.
     communication: Option<Arc<dyn CommunicationAccess>>,
+    /// The MCP allowlist source (67 §6.3), from [`InstallMcpAccess`]. `None`:
+    /// every MCP tool is offered to every session.
+    mcp_access: Option<Arc<dyn McpAccess>>,
     /// The caller's execution bound (50 §8), from [`InstallExecutionGate`];
     /// `None`: waits are not reported to anyone.
     gate: Option<Arc<dyn ExecutionGate>>,
@@ -273,6 +276,27 @@ pub struct ActivityRecipient;
 /// replaces the source for new calls; calls already admitted keep the token
 /// they were admitted under.
 pub struct InstallCommunicationAccess(pub Arc<dyn CommunicationAccess>);
+
+/// Per-session MCP allowlist (67 §6.3): the roster plugin installs it; the
+/// registry asks it, for the session that lists or calls, whether an MCP
+/// tool of `server` named `tool` (the server's own name) is offered. A tool
+/// it refuses is hidden exactly like a [`SetHidden`] one. Sessions the
+/// source does not know are unaffected (`true`).
+pub trait McpAccess: Send + Sync {
+    /// May `session` see `server`'s `tool`?
+    fn allows(&self, session: SessionId, server: &str, tool: &str) -> bool;
+}
+
+/// `ask` → `()`: install the [`McpAccess`] source; installing again replaces it.
+pub struct InstallMcpAccess(pub Arc<dyn McpAccess>);
+
+impl Message<InstallMcpAccess> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InstallMcpAccess, _: &mut Context<Self, Self::Reply>) {
+        self.mcp_access = Some(m.0);
+    }
+}
 
 /// The caller's execution bound (50 §8), consulted by [`Invoke`]: once when
 /// an invocation starts executing and around the points where it stops to
@@ -774,8 +798,12 @@ impl ToolRegistry {
         }
     }
 
-    /// `name` is hidden for the session or an ancestor.
+    /// `name` is hidden for the session or an ancestor, or is an MCP tool the
+    /// session's agent may not see (67 §6.3).
     fn is_hidden(&self, mut id: SessionId, name: &str) -> bool {
+        if self.mcp_hidden(id, name) {
+            return true;
+        }
         loop {
             if self.hidden.get(&id).is_some_and(|h| h.contains(name)) {
                 return true;
@@ -785,6 +813,27 @@ impl ToolRegistry {
                 None => return false,
             }
         }
+    }
+
+    /// 67 §6.3: an MCP tool outside the allowlist of the agent `id` works for.
+    /// The source resolves descendants itself (it learns of every child), so
+    /// one question per session suffices. The registered name is the server's
+    /// tool name, or `<server>__<name>` after a clash (`mcp.rs`).
+    fn mcp_hidden(&self, id: SessionId, name: &str) -> bool {
+        let Some(access) = &self.mcp_access else {
+            return false;
+        };
+        let Some(tool) = self.tools.get(name) else {
+            return false;
+        };
+        let ToolSource::Mcp { server, .. } = tool.source() else {
+            return false;
+        };
+        let remote = name
+            .strip_prefix(server.as_str())
+            .and_then(|rest| rest.strip_prefix("__"))
+            .unwrap_or(name);
+        !access.allows(id, &server, remote)
     }
 
     /// The tightest [`SetCap`] on the session or an ancestor: a child never
@@ -1633,6 +1682,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             activity: None,
             untracked: Arc::default(),
             communication: None,
+            mcp_access: None,
             gate: None,
             participants: Vec::new(),
             expected: Vec::new(),
@@ -1698,6 +1748,7 @@ mod tests {
             activity,
             untracked: Arc::default(),
             communication: None,
+            mcp_access: None,
             gate: None,
             participants: Vec::new(),
             expected: Vec::new(),

@@ -68,7 +68,7 @@ pub use pty::{
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, CheckFence, DescribeTools,
     ExternalApproval, FenceChecker, FenceError, GetApprovals, GetPtyIdle, HiddenTools,
-    InspectTool, InstallCommunicationAccess, Invoke, ListPrompts, ListTools, RegisterActivity,
+    InspectTool, InstallCommunicationAccess, InstallMcpAccess, Invoke, ListPrompts, ListTools, McpAccess, RegisterActivity,
     RegisterFenceChecker, RegisterPrompt, RegisterTool, SetApprovals, SetCap, SetHidden,
     SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt, UnregisterTool,
     UserActivation,

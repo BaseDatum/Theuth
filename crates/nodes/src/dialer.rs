@@ -41,6 +41,11 @@ impl fmt::Debug for NodeDialer {
 
 #[async_trait::async_trait]
 impl acp::Dialer for NodeDialer {
+    /// The parent's device id on the node (32 §4.1: `base64url(pub)[..8]`).
+    fn caller_id(&self) -> Option<String> {
+        self.identity.id.get(..8).map(str::to_owned)
+    }
+
     async fn dial(&self) -> Result<LineDuplex, String> {
         if !self.online.load(Ordering::Relaxed) {
             return Err(format!("{} is offline", self.name));

@@ -32,6 +32,32 @@ pub struct Thread {
     /// [`Threads::latest_for`].
     #[serde(default)]
     pub updated_at: i64,
+    /// 67 §10: the roster agent this thread is addressed to; `None` = theuth.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The agent's title, prefixed to each turn (`Title — …`).
+    #[serde(default)]
+    pub agent_title: Option<String>,
+    /// The task the bound agent works from (`TaskId` as string).
+    #[serde(default)]
+    pub task: Option<String>,
+}
+
+impl Thread {
+    /// A fresh theuth-bound thread; `bind` stamps `updated_at`.
+    #[must_use]
+    pub fn new(session: SessionId, user: String, team: String) -> Self {
+        Self {
+            session,
+            user,
+            team,
+            title: None,
+            updated_at: 0,
+            agent: None,
+            agent_title: None,
+            task: None,
+        }
+    }
 }
 
 /// A stream left open by a live turn; stopped on boot (21 §11).
@@ -96,18 +122,25 @@ impl Threads {
         self.file.threads.get(key)
     }
 
-    /// The thread rendering `session`.
+    /// The thread rendering `session`; the most recently active one when
+    /// several share it (an agent's desk, 67 §10).
+    // ponytail: desk replies go to the agent's most recently active thread; per-turn attribution if it misroutes.
     #[must_use]
     pub fn by_session(&self, session: SessionId) -> Option<(&ThreadKey, &Thread)> {
-        self.file.threads.iter().find(|(_, t)| t.session == session)
+        self.file
+            .threads
+            .iter()
+            .filter(|(_, t)| t.session == session)
+            .max_by_key(|(_, t)| t.updated_at)
     }
 
     /// Binds `key` to `t`, dropping any other key bound to the same session
-    /// (one session ↔ one thread); saves.
+    /// (one session ↔ one thread) unless either side is agent-bound (a desk
+    /// session is shared by its threads); saves.
     pub fn bind(&mut self, key: ThreadKey, mut t: Thread) {
-        self.file
-            .threads
-            .retain(|k, v| *k == key || v.session != t.session);
+        self.file.threads.retain(|k, v| {
+            *k == key || v.session != t.session || v.agent.is_some() || t.agent.is_some()
+        });
         t.updated_at = now_ms();
         self.file.threads.insert(key, t);
         self.save();
@@ -215,13 +248,7 @@ mod tests {
     }
 
     fn thread(user: &str) -> Thread {
-        Thread {
-            session: SessionId(uuid::Uuid::new_v4()),
-            user: user.into(),
-            team: "T1".into(),
-            title: None,
-            updated_at: 0,
-        }
+        Thread::new(SessionId(uuid::Uuid::new_v4()), user.into(), "T1".into())
     }
 
     #[test]
@@ -277,6 +304,43 @@ mod tests {
         // Rebinding the same key keeps it.
         th.bind(thread_key("C1", "2.000"), t.clone());
         assert_eq!(th.all().len(), 1);
+    }
+
+    #[test]
+    fn agent_binding_persists() {
+        let path = tmp();
+        let desk = SessionId(uuid::Uuid::new_v4());
+        let mut a = Thread::new(desk, "U1".into(), "T1".into());
+        a.agent = Some("ops".into());
+        a.agent_title = Some("Ops".into());
+        a.task = Some("t-1".into());
+        let mut b = a.clone();
+        b.task = Some("t-2".into());
+        {
+            let mut th = Threads::load(&path);
+            th.bind(thread_key("C1", "1.000"), a.clone());
+            th.bind(thread_key("C1", "2.000"), b);
+            // Two agent threads share the desk session: neither evicts the other.
+            assert_eq!(th.all().len(), 2);
+            th.touch("C1:1.000");
+            let newest = th.file.threads["C1:1.000"].updated_at;
+            th.file.threads.get_mut("C1:2.000").unwrap().updated_at = newest - 1;
+        }
+        let th = Threads::load(&path);
+        let got = th.get("C1:1.000").expect("bound");
+        assert_eq!(got.agent.as_deref(), Some("ops"));
+        assert_eq!(got.agent_title.as_deref(), Some("Ops"));
+        assert_eq!(got.task.as_deref(), Some("t-1"));
+        assert_eq!(
+            th.by_session(desk).map(|(k, _)| k.as_str()),
+            Some("C1:1.000")
+        );
+        // A theuth thread still evicts an older theuth thread of the same session.
+        let mut th = th;
+        let t = thread("U1");
+        th.bind(thread_key("C2", "1.000"), t.clone());
+        th.bind(thread_key("C2", "2.000"), t);
+        assert!(th.get("C2:1.000").is_none());
     }
 
     #[test]

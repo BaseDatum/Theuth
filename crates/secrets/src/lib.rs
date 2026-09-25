@@ -17,6 +17,7 @@
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
 mod key;
+pub mod store;
 pub mod tools;
 pub mod vault;
 
@@ -31,7 +32,11 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-pub use vault::{KEEP, KeyStore, SecretInfo, SecretsList, Vault, VersionInfo};
+pub use vault::{KEEP, KeyStore, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo};
+
+/// How often the plugin looks for rows written by others (a peer's batch
+/// applied by the replica, `t --secret-set`) and refreshes the in-memory copy.
+const REFRESH_POLL: Duration = Duration::from_secs(1);
 
 /// Registry name of the [`SecretsActor`].
 pub const SECRETS_ACTOR: &str = "secrets";
@@ -139,6 +144,16 @@ pub struct Answer {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Handle;
 
+/// `ask` → `[u8; 32]`: the mesh data key (67 §5.4). The mesh puts it in the
+/// pairing string it prints. Never exposed over RPC.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GetMeshKey;
+
+/// `ask` → `Result<(), String>`: take the mesh key a pairing string carried
+/// (`t mesh add`); local rows are re-sealed under it.
+#[derive(Clone, Copy, Debug)]
+pub struct AdoptMeshKey(pub [u8; 32]);
+
 /// Bus events (37 §3.3).
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -218,7 +233,8 @@ impl Message<Set> for SecretsActor {
     async fn handle(&mut self, m: Set, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let info = self
             .vault
-            .set(&m.name, &m.value, m.note.as_deref(), &m.source)?;
+            .set(&m.name, &m.value, m.note.as_deref(), &m.source)
+            .await?;
         self.rt.publish(SecretsEvent::Changed).await;
         Ok(info)
     }
@@ -228,7 +244,7 @@ impl Message<Restore> for SecretsActor {
     type Reply = Result<SecretInfo, String>;
 
     async fn handle(&mut self, m: Restore, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let info = self.vault.restore(&m.name, m.back)?;
+        let info = self.vault.restore(&m.name, m.back).await?;
         self.rt.publish(SecretsEvent::Changed).await;
         Ok(info)
     }
@@ -238,7 +254,7 @@ impl Message<Delete> for SecretsActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Delete, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.vault.delete(&m.name)?;
+        self.vault.delete(&m.name).await?;
         self.rt.publish(SecretsEvent::Changed).await;
         Ok(())
     }
@@ -297,6 +313,7 @@ impl Message<Request> for SecretsActor {
                         (!m.note.is_empty()).then_some(m.note.as_str()),
                         "user",
                     )
+                    .await
                     .map(|info| Some(info.current)),
                 None => Ok(None),
             };
@@ -346,6 +363,24 @@ impl Message<Handle> for SecretsActor {
     }
 }
 
+impl Message<GetMeshKey> for SecretsActor {
+    type Reply = [u8; 32];
+
+    async fn handle(&mut self, _: GetMeshKey, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        *self.vault.mesh_key()
+    }
+}
+
+impl Message<AdoptMeshKey> for SecretsActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: AdoptMeshKey, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.vault.adopt_mesh_key(m.0).await.map_err(|e| format!("{e:#}"))?;
+        self.rt.publish(SecretsEvent::Changed).await;
+        Ok(())
+    }
+}
+
 /// How long [`handle`] waits for the [`SECRETS_ACTOR`] to appear.
 pub const HANDLE_WAIT: Duration = Duration::from_secs(10);
 
@@ -388,10 +423,35 @@ impl ::tools::secrets::Secrets for Vault {
     }
 }
 
-/// The plugin (37 §3.3): reads `secrets`, opens the vault (importing
-/// `credentials.yaml`), spawns [`SecretsActor`] as [`SECRETS_ACTOR`], installs
-/// the `tools::secrets` hook and registers the `secret_*` tools once the
-/// registry is up.
+/// OAuth grants are vault rows `oauth/<ns>` (67 §5.4): the JSON is the
+/// value, written under the [`Vault::set_if_version`] precondition.
+#[async_trait::async_trait]
+impl ::oauth::Grants for Vault {
+    fn load(&self, ns: &str) -> Option<(u32, String)> {
+        let (v, json) = Vault::get_versioned(self, &format!("{OAUTH_PREFIX}{ns}"))?;
+        Some((v, json.to_string()))
+    }
+
+    async fn store(&self, ns: &str, json: &str, expected: Option<u32>) -> Result<bool, String> {
+        Vault::set_if_version(self, &format!("{OAUTH_PREFIX}{ns}"), json, "oauth", expected)
+            .await
+            .map(|written| written.is_some())
+    }
+
+    async fn remove(&self, ns: &str) -> Result<(), String> {
+        match Vault::delete(self, &format!("{OAUTH_PREFIX}{ns}")).await {
+            Err(e) if e.starts_with("unknown secret") => Ok(()),
+            r => r,
+        }
+    }
+}
+
+/// The plugin (37 §3.3, 67 §5.4): reads `secrets`, opens the vault (migrating
+/// `secrets.vault`, importing `credentials.yaml`), spawns [`SecretsActor`] as
+/// [`SECRETS_ACTOR`], attaches `vault` + `vault_current` to replication once
+/// the replica is up, refreshes the in-memory copy whenever the file moves,
+/// installs the `tools::secrets` hook and registers the `secret_*` tools
+/// once the registry is up.
 pub struct SecretsPlugin;
 
 #[async_trait::async_trait]
@@ -406,7 +466,7 @@ impl runtime::Plugin for SecretsPlugin {
         } else {
             SecretsConfig::default()
         };
-        let vault = match Vault::open(&rt.data_dir, cfg.key_store) {
+        let vault = match Vault::open(&rt.data_dir, cfg.key_store).await {
             Ok(v) => Arc::new(v),
             Err(e) => {
                 tracing::error!("secrets vault unavailable: {e:#}");
@@ -419,6 +479,7 @@ impl runtime::Plugin for SecretsPlugin {
             Duration::from_secs(cfg.request_timeout_secs),
         ));
         actor.register(SECRETS_ACTOR)?;
+        tokio::spawn(replicate(rt.clone(), vault.clone()));
         if !cfg.tools {
             return Ok(());
         }
@@ -434,5 +495,38 @@ impl runtime::Plugin for SecretsPlugin {
             }
         });
         Ok(())
+    }
+}
+
+/// Attach the vault tables once the replica plugin is up (`Err` = local
+/// only), then refresh the in-memory copy every [`REFRESH_POLL`] the file
+/// moved, publishing [`SecretsEvent::Changed`] so lists redraw.
+async fn replicate(rt: Runtime, vault: Arc<Vault>) {
+    // The replica may never start (a slimmer plugin set): do not hold the
+    // refresh loop on it.
+    let (rt2, v2) = (rt.clone(), vault.clone());
+    tokio::spawn(async move {
+        if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+            return;
+        }
+        match replica::attach(v2.pool(), store::TABLES).await {
+            Ok(_) => tracing::info!("secrets: vault replicates"),
+            Err(e) => tracing::warn!("secrets: vault is local only: {e:#}"),
+        }
+    });
+    let mut seen = vault.disk_stamp();
+    let mut tick = tokio::time::interval(REFRESH_POLL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let now = vault.disk_stamp();
+        if now == seen {
+            continue;
+        }
+        seen = now;
+        match vault.refresh().await {
+            Ok(()) => rt.publish(SecretsEvent::Changed).await,
+            Err(e) => tracing::warn!("secrets: refresh: {e:#}"),
+        }
     }
 }

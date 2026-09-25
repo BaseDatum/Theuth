@@ -43,8 +43,9 @@ use crate::loop_::{
 };
 use crate::store::Store;
 use crate::store::communication::CommError;
+use crate::supervisor::Deliver;
 use crate::todo::{Status, Todo, TodoSource};
-use crate::{AgentEvent, Usage, attach};
+use crate::{AGENT_ACTOR, AgentEvent, Agents, Usage, attach};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
@@ -310,8 +311,10 @@ struct Quiet(TurnId);
 impl AcpChild {
     /// Bind session `id` to harness `name` reached over `transport`, prompting
     /// in `cwd`; `resume` is the stored ACP session id to `session/load`;
-    /// `fallback_model` is the entry's `model:` label (06 §8.2); `deadline`
-    /// is how long a prompt the harness refuses as busy is retried.
+    /// `fallback_model` is the entry's `model:` label (06 §8.2); `meta` is
+    /// what a remote theuth reads from `session/new` `_meta` and `model` the
+    /// pick a local harness switches to through its model option (67 §8);
+    /// `deadline` is how long a prompt the harness refuses as busy is retried.
     #[allow(clippy::too_many_arguments)] // one call site (the supervisor); a builder would only rename the fields
     pub fn new(
         id: SessionId,
@@ -320,6 +323,8 @@ impl AcpChild {
         cwd: PathBuf,
         resume: Option<String>,
         fallback_model: Option<String>,
+        meta: Option<acp::SessionMeta>,
+        model: Option<String>,
         deadline: Duration,
         store: Store,
         rt: Runtime,
@@ -330,6 +335,8 @@ impl AcpChild {
             cwd,
             resume,
             stderr_log: rt.data_dir.join("logs").join(format!("acp-{name}.log")),
+            meta,
+            model,
         };
         Self {
             id,
@@ -374,6 +381,37 @@ impl AcpChild {
         })
         .await;
         self.harness_model = Some(model);
+    }
+
+    /// 67 §8: the remote child's `send_message{to: "parent"}` arrives as a
+    /// `_theuth/peer_message` notification; it enters the parent through the
+    /// ordinary peer route ([`Deliver`] from this session to `parent`), so the
+    /// communication switch, redaction, the size bound and reply matching
+    /// apply exactly as for a local child. The child's own id is the
+    /// idempotency key: a re-sent notification is not delivered twice. A
+    /// message for a session other than ours on this conn is dropped.
+    async fn uplink(&self, m: acp::PeerMessage) {
+        if self.harness.as_ref().map(Harness::session_id) != Some(m.session_id.as_str()) {
+            tracing::warn!(session = %self.id, "peer_message for another session dropped");
+            return;
+        }
+        let Ok(Some(agents)) = ActorRef::<Agents>::lookup(AGENT_ACTOR) else {
+            return;
+        };
+        let r = agents
+            .ask(Deliver {
+                from: self.id,
+                to: "parent".to_owned(),
+                text: m.text,
+                await_reply: false,
+                reply_to: m.reply_to,
+                request_id: Some(format!("uplink:{}", m.id)),
+                admitted: CancellationToken::new(),
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::info!(session = %self.id, "peer_message not delivered: {e}");
+        }
     }
 
     /// 51 §6.3: one `usage_update.cost` observation → the ledger. An
@@ -1288,8 +1326,8 @@ impl Message<UserInput> for AcpChild {
 /// an exportable A2A backend — native request ownership and cancellation
 /// cannot be imposed on an opaque harness loop — so a task input
 /// (`isolated`) is refused at the ask and never accepted into its queue; the
-/// supervisor fails the exchange visibly. It also has no reverse peer tools:
-/// nothing here pretends it can answer.
+/// supervisor fails the exchange visibly. An external harness has no reverse
+/// peer tools; a remote theuth child answers through [`Self::uplink`] (67 §8).
 impl Message<PeerInput> for AcpChild {
     type Reply = Result<(), String>;
 
@@ -1395,6 +1433,7 @@ impl Message<Update> for AcpChild {
                 }
             }
             Update::Permission(p) => self.permission(p),
+            Update::Peer(m) => self.uplink(m).await,
             Update::Closed(why) => self.closed(why, ctx).await,
         }
     }
@@ -2247,6 +2286,8 @@ mod tests {
                 "omp".into(),
                 Transport::Dial(dialer),
                 dir,
+                None,
+                None,
                 None,
                 None,
                 deadline,

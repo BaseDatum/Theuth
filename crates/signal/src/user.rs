@@ -16,7 +16,8 @@ impl UserSink for Handle {
 
     /// Bound pass: the first session of `m.sessions` with a thread
     /// (`threads.recipient_for`, 09 §6). Fallback: `signal.owner`, text
-    /// prefixed with `m.origin` on its own line (24 §2, §6).
+    /// prefixed with `m.origin` on its own line (24 §2, §6). Not gated by the
+    /// hub lease (67 decision 22): a session running here reaches its user.
     async fn deliver(&self, m: &Outbound, fallback: bool) -> Result<Option<String>, String> {
         let chan = &self.chan;
         let (to, text) = if fallback {

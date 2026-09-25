@@ -11,7 +11,7 @@ use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::store::Knowledge;
-use crate::types::{Meta, Put, Source};
+use crate::types::{Meta, Put, Source, Visibility};
 
 /// Name of [`GetTool`]; the loop counts its calls for harvest cadence (10 §5.1).
 pub const GET: &str = "knowledge_get";
@@ -34,6 +34,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
     let _ = reg.ask(RegisterTool(Arc::new(GetTool(k.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(ListTool(k.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(PutTool(k.clone())))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(ShareTool(k.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(DeleteTool(k.clone())))).await;
     let _ = reg
         .ask(RegisterTool(Arc::new(HistoryTool(k.clone()))))
@@ -98,9 +99,9 @@ impl Tool for SearchTool {
             .into()
     }
 
-    async fn call(&self, a: SearchArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: SearchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let limit = a.limit.unwrap_or(10).clamp(1, 50);
-        let hits = self.0.search(&a.query, &cwd(), limit).await?;
+        let hits = self.0.search_for(&a.query, &cwd(), limit, Some(cx.session)).await?;
         let mut s = String::new();
         let mut rows = Vec::with_capacity(hits.len());
         for h in &hits {
@@ -214,14 +215,15 @@ impl Tool for ListTool {
             .into()
     }
 
-    async fn call(&self, a: ListArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: ListArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let metas = self
             .0
-            .list(
+            .list_for(
                 a.prefix.as_deref(),
                 a.type_.as_deref(),
                 a.tag.as_deref(),
                 a.limit.unwrap_or(50),
+                Some(cx.session),
             )
             .await?;
         let mut s = String::new();
@@ -259,9 +261,42 @@ impl Tool for PutTool {
 
     async fn call(&self, p: Put, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         writable(&cx)?;
-        let (meta, created) = self.0.put(p, Source::Model).await?;
+        let (meta, created) = self.0.put_for(p, Source::Model, Some(cx.session)).await?;
         let how = if created { "new" } else { "updated" };
         Ok(ToolOutput::ok(format!("put {} ({how})", meta.id)))
+    }
+}
+
+/// Arguments for [`ShareTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ShareArgs {
+    /// Concept id.
+    pub id: String,
+    /// `private` (owner only) | `team` (owner's reporting line) | `shared` (everyone).
+    pub visibility: Visibility,
+}
+
+/// `knowledge_share`: change who may read a concept (67 §9).
+pub struct ShareTool(pub Arc<Knowledge>);
+
+#[async_trait::async_trait]
+impl Tool for ShareTool {
+    const NAME: &'static str = "knowledge_share";
+    // ReadOnly like `knowledge_put`: the closing turn of a `read_only` desk must be able to share.
+    const RISK: Risk = Risk::ReadOnly;
+    type Args = ShareArgs;
+
+    fn description(&self) -> String {
+        "Change who may read a knowledge concept: `private` (you alone), `team` (you, your managers and the \
+         agents reporting to you) or `shared` (everyone). Concepts you record are private by default; share \
+         what your team or everyone should know. Only the owner or someone in its reporting line may change it."
+            .into()
+    }
+
+    async fn call(&self, a: ShareArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        writable(&cx)?;
+        let meta = self.0.share(&a.id, a.visibility, Some(cx.session)).await?;
+        Ok(ToolOutput::ok(format!("{} is now {}", meta.id, meta.visibility.as_str())))
     }
 }
 
@@ -426,6 +461,7 @@ mod tests {
             tags: Vec::new(),
             scope: None,
             body: "body".into(),
+            visibility: None,
         }
     }
 

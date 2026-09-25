@@ -1,0 +1,18 @@
+# iroh-relay for the engine mesh (design doc 67 §4.2). Upstream binary, no
+# theuth code: `cargo install iroh-relay --features server`, pinned to the
+# iroh line the `mesh` crate builds against (workspace Cargo.toml).
+#   docker build -f deploy/relay/Dockerfile.iroh-relay -t theuth-iroh-relay .
+FROM rust:1-bookworm AS build
+ARG IROH_RELAY_VERSION=1.2.0
+RUN cargo install iroh-relay --version ${IROH_RELAY_VERSION} --features server --locked --root /out
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/bin/iroh-relay /usr/local/bin/iroh-relay
+COPY deploy/relay/iroh-relay.toml /etc/iroh-relay.toml
+USER 65532:65532
+# 8080 http (portal/health), 8443 relay HTTPS+WS, 7842/udp QUIC probe, 9090 metrics
+EXPOSE 8080 8443 9090
+EXPOSE 7842/udp
+ENTRYPOINT ["/usr/local/bin/iroh-relay"]
+CMD ["--config-path", "/etc/iroh-relay.toml"]

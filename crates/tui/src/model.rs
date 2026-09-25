@@ -201,6 +201,10 @@ pub enum UiEvent {
         Option<schedule::ScheduleInfo>,
         Vec<schedule::RunInfo>,
     ),
+    /// Reply to [`Command::ListTasks`]: the project asked for and its tasks (67 §12).
+    Tasks(Option<String>, Vec<tasks::Task>),
+    /// Reply to [`Command::ListRoster`] (67 §12).
+    Roster(Vec<roster::AgentSummary>),
     /// Reply to [`Command::ComputerStatus`].
     Computer(computer::PermissionStatus),
     /// Reply to [`Command::LinkStatus`] and the link commands that change it.
@@ -373,6 +377,10 @@ pub enum Command {
     ScheduleHistory(String),
     /// `enable_schedule`: `/schedules pause|resume <name>` (33 §3.5).
     EnableSchedule(String, bool),
+    /// `tasks_list` for one project (`None` = every project) (67 §12).
+    ListTasks(Option<String>),
+    /// `agents_list`: the roster (67 §12).
+    ListRoster,
     /// `computer_permissions`.
     ComputerStatus,
     /// `compact`.
@@ -1299,6 +1307,12 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[run <name>|history <name>|pause <name>|resume <name>]",
         "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
     ),
+    (
+        "/tasks",
+        "",
+        "this project's tasks: id, state, owner, title (67)",
+    ),
+    ("/roster", "", "the agent roster: name, status, open tasks (67)"),
     (
         "/computer",
         "",
@@ -4583,6 +4597,10 @@ impl Model {
             }
             UiEvent::Jobs(jobs) => self.entries.push(Entry::Info(tools::jobs::table(&jobs))),
             UiEvent::Schedules(rows) => self.entries.push(Entry::Info(schedules_table(&rows))),
+            UiEvent::Tasks(project, rows) => self
+                .entries
+                .push(Entry::Info(tasks_table(project.as_deref(), &rows))),
+            UiEvent::Roster(rows) => self.entries.push(Entry::Info(agents_table(&rows))),
             UiEvent::ScheduleHistory(name, info, rows) => self
                 .entries
                 .push(Entry::Info(schedule_history_table(&name, info.as_ref(), &rows))),
@@ -5853,6 +5871,8 @@ impl Model {
                 }
                 _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
             },
+            "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
+            "/roster" => send(tx, Command::ListRoster),
             "/computer" => send(tx, Command::ComputerStatus),
             "/compact" => self.compact_cmd(arg, tx),
             "/shake" => self.shake_cmd(arg, tx),
@@ -9769,6 +9789,38 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
     out.join("\n")
 }
 
+/// `/tasks`: `id · state · owner · title`, oldest first as the engine lists them (67 §12).
+/// The heading names the project, or `all projects` when the session has none.
+pub fn tasks_table(project: Option<&str>, rows: &[tasks::Task]) -> String {
+    let scope = project.unwrap_or("all projects");
+    if rows.is_empty() {
+        return format!("no tasks ({scope})");
+    }
+    let mut out = vec![format!("tasks · {scope}"), "id · state · owner · title".to_owned()];
+    out.extend(rows.iter().map(|t| {
+        let id = &t.id.0;
+        let short = &id[id.len().saturating_sub(6)..];
+        format!("{short} · {} · {} · {}", t.state.as_str(), t.owner, t.title)
+    }));
+    out.join("\n")
+}
+
+/// `/roster`: `name · status · open` per roster agent (67 §12; `/agents` is the subagent picker).
+pub fn agents_table(rows: &[roster::AgentSummary]) -> String {
+    if rows.is_empty() {
+        return "no agents".into();
+    }
+    let mut out = vec!["name · status · open".to_owned()];
+    out.extend(rows.iter().map(|a| {
+        let status = serde_json::to_value(a.status)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        format!("{} · {status} · {}", a.file.name.as_str(), a.open_tasks)
+    }));
+    out.join("\n")
+}
+
 /// `/schedules history <name>`: `fired · took · result · session · report` rows,
 /// newest first; `took` is `…` while the run is still going, `report` is the
 /// run's first line cut at 60 chars. A loop with `until` or `approvals: false`
@@ -10139,7 +10191,7 @@ impl Model {
                 cwd: std::env::current_dir()
                     .ok()
                     .map(|p| p.display().to_string()),
-                model: None,
+                ..Default::default()
             }),
         );
     }
@@ -12456,6 +12508,62 @@ mod tests {
     }
 
     #[test]
+    fn tasks_and_agents_slash_use_the_session_project_and_render_tables() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/tasks", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListTasks(None))));
+        m.project = Some("sre".into());
+        m.submit("/tasks", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListTasks(Some(p))) if p == "sre"));
+        m.submit("/roster", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListRoster)));
+
+        assert_eq!(tasks_table(None, &[]), "no tasks (all projects)");
+        let task = tasks::Task {
+            id: tasks::TaskId("0192a000-0000-7000-8000-00000000abcdef".into()),
+            title: "Fix the deploy".into(),
+            brief: String::new(),
+            owner: tasks::Owner::Agent("ops".into()),
+            state: tasks::TaskState::Doing,
+            reviewer: None,
+            blockers: vec![],
+            blocks: vec![],
+            parent: None,
+            project: Some("sre".into()),
+            where_: None,
+            harness: None,
+            external: vec![],
+            thread: None,
+            checkout: None,
+            schedule: None,
+            created_by: "user".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            no_progress_count: 0,
+            next_wake_after_ms: None,
+        };
+        assert_eq!(
+            tasks_table(Some("sre"), &[task]),
+            "tasks · sre\nid · state · owner · title\nabcdef · doing · agent:ops · Fix the deploy"
+        );
+
+        assert_eq!(agents_table(&[]), "no agents");
+        let file = roster::file::parse("ops", "---\ntitle: Ops\n---\nYou are Ops.").unwrap();
+        let agent = roster::AgentSummary {
+            file,
+            status: roster::AgentStatus::Working,
+            desk: None,
+            open_tasks: 2,
+            spent_month: 0.0,
+            error: None,
+        };
+        assert_eq!(agents_table(&[agent]), "name · status · open\nops · working · 2");
+        m.apply(UiEvent::Roster(vec![]));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no agents"));
+    }
+
+    #[test]
     fn schedules_slash_args_and_loop_columns() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
@@ -12750,6 +12858,8 @@ mod tests {
             scope: None,
             source: None,
             timestamp: None,
+            owner: "user".into(),
+            visibility: Default::default(),
         }]));
         assert!(matches!(m.menu, Some(Menu::Knowledge { .. })) && !m.input_focused());
         m.menu_key(KeyCode::Char('h'), "", &tx);

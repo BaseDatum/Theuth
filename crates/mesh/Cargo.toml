@@ -1,0 +1,43 @@
+[package]
+name = "mesh"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Leaderless engine mesh: iroh endpoint, pairing, peer set, stability-elected hub lease, engine stats (design doc 67 §4)"
+
+[dependencies]
+replica = { workspace = true }
+runtime = { workspace = true }
+tools = { workspace = true }
+platform = { workspace = true }
+secrets = { workspace = true }
+oauth = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+iroh-mdns-address-lookup = { workspace = true }
+data-encoding = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "replica/ts"]
+
+[lints]
+workspace = true

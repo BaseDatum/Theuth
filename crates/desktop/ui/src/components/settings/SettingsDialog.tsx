@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Server,
   Settings2,
+  Share2,
   ShieldCheck,
   Sparkles,
   Wrench,
@@ -36,6 +37,7 @@ import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
+import { Mesh } from '@/components/settings/Mesh'
 import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
 import { Secrets } from '@/components/settings/Secrets'
@@ -62,6 +64,7 @@ const TABS = [
   ['harnesses', 'Harnesses', Server],
   ['link', 'Link', Link2],
   ['nodes', 'Nodes', Network],
+  ['mesh', 'Mesh', Share2],
   ['connections', 'Connections', KeyRound],
   ['secrets', 'Secrets', Lock],
   ['channels', 'Channels', MessageSquare],
@@ -101,6 +104,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'harnesses' && <Harnesses />}
       {tab === 'link' && <Link />}
       {tab === 'nodes' && <Nodes />}
+      {tab === 'mesh' && <Mesh />}
       {tab === 'connections' && <Connections />}
       {tab === 'secrets' && <Secrets />}
       {tab === 'channels' && <Channels />}

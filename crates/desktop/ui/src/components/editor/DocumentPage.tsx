@@ -24,7 +24,7 @@ export function Frame({
   actions,
   children,
 }: {
-  backTo: '/knowledge' | '/notes'
+  backTo: '/knowledge' | '/notes' | '/tasks' | '/agents'
   backLabel: string
   title: ReactNode
   actions?: ReactNode

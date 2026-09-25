@@ -1,0 +1,25 @@
+# Development path (64 §4.3): the same image with a locally built Linux `t`
+# (build-A/build-B, `just release-linux`, or deploy/update/Dockerfile's output)
+# copied in instead of downloaded. The build context holds `t` beside this file.
+#
+#   docker build -f deploy/computer/Dockerfile.dev -t theuth-engine:dev <dir with t>
+#
+# `t mesh add --docker --local-t PATH` builds it.
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git python3 ripgrep tar zstd \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY t /usr/local/bin/t
+RUN chmod 755 /usr/local/bin/t
+
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    useradd -m -u 1000 engine \
+ && mkdir -p /data /workspace \
+ && chown engine:engine /data /workspace
+
+USER engine
+ENV THEUTH_DATA_DIR=/data
+VOLUME ["/data", "/workspace"]
+ENTRYPOINT ["t", "--headless", "--data-dir", "/data"]

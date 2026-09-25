@@ -11,12 +11,15 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use okf::{ConceptId, Document, RESERVED_FILENAMES, Value};
-use runtime::Runtime;
+use runtime::{Runtime, SessionId};
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 use crate::repo::Repo;
-use crate::types::{Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Source, Sync};
+use crate::types::{
+    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Scoper, Source, Sync,
+    USER_OWNER, Visibility,
+};
 use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
 
 const LOG_FILE: &str = "log.md";
@@ -38,8 +41,11 @@ const STOPWORDS: &[&str] = &[
 const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING fts5(\
     id UNINDEXED, type, title, description, tags, body, \
     scope UNINDEXED, source UNINDEXED, timestamp UNINDEXED, \
+    owner UNINDEXED, visibility UNINDEXED, \
     path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
     tokenize = 'porter unicode61 remove_diacritics 2')";
+/// Columns of [`MetaRow`], in `SELECT` order.
+pub(crate) const META_COLS: &str = "id, type, title, description, tags, scope, source, timestamp, owner, visibility";
 const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
 const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
 
@@ -59,9 +65,12 @@ pub struct Knowledge {
     pub(crate) stale: Mutex<HashMap<String, String>>,
     /// Human search snapshots (49 §4.3); invalidated at every index mutation.
     pub(crate) search: crate::search::Caches,
+    /// Which agent a session is (67 §9), from [`Knowledge::set_scoper`]; `None`
+    /// = every session is the user's.
+    scoper: std::sync::RwLock<Option<Arc<dyn Scoper>>>,
 }
 
-/// Frontmatter columns of a row, as `list`/`search`/`get` read them.
+/// Frontmatter columns of a row, as `list`/`search`/`get` read them ([`META_COLS`]).
 #[derive(FromRow)]
 pub(crate) struct MetaRow {
     id: String,
@@ -73,6 +82,8 @@ pub(crate) struct MetaRow {
     scope: Option<String>,
     source: Option<String>,
     timestamp: Option<String>,
+    owner: String,
+    visibility: String,
 }
 
 impl From<MetaRow> for Meta {
@@ -86,6 +97,8 @@ impl From<MetaRow> for Meta {
             scope: r.scope.map(PathBuf::from),
             source: r.source.as_deref().and_then(Source::parse),
             timestamp: r.timestamp,
+            owner: r.owner,
+            visibility: Visibility::parse(&r.visibility).unwrap_or_default(),
         }
     }
 }
@@ -133,6 +146,18 @@ impl Indexed {
                 .and_then(Value::as_display_string)
                 .and_then(|s| Source::parse(&s)),
             timestamp: fm.timestamp(),
+            // 67 §9 defaults for files nobody stamped: the user's, shared.
+            owner: fm
+                .get("owner")
+                .and_then(Value::as_display_string)
+                .map(|o| o.trim().to_owned())
+                .filter(|o| !o.is_empty())
+                .unwrap_or_else(|| USER_OWNER.to_owned()),
+            visibility: fm
+                .get("visibility")
+                .and_then(Value::as_display_string)
+                .and_then(|v| Visibility::parse(&v))
+                .unwrap_or_default(),
             id,
         };
         let links: BTreeSet<String> = doc
@@ -414,6 +439,15 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
         .max_connections(4)
         .connect_with(opts)
         .await?;
+    // 67 §9 added `owner`/`visibility`: an index from before lacks them. It
+    // is derived, so drop it and let `sync` rebuild.
+    if sqlx::query("SELECT owner, visibility FROM concepts LIMIT 0")
+        .execute(&pool)
+        .await
+        .is_err()
+    {
+        sqlx::query("DROP TABLE IF EXISTS concepts").execute(&pool).await?;
+    }
     for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST] {
         sqlx::query(sql).execute(&pool).await?;
     }
@@ -475,6 +509,7 @@ impl Knowledge {
             warned: Mutex::new(HashSet::new()),
             stale: Mutex::new(HashMap::new()),
             search: crate::search::Caches::default(),
+            scoper: std::sync::RwLock::new(None),
         });
         let s = k.sync().await?;
         if !s.is_empty() {
@@ -579,9 +614,10 @@ impl Knowledge {
         let text = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("no such concept: {id}"))?;
-        let row: Option<MetaRow> = sqlx::query_as(
-            "SELECT id, type, title, description, tags, scope, source, timestamp FROM concepts WHERE id = ?",
-        )
+        // Only `META_COLS` (a const) is interpolated; the id is bound.
+        let row: Option<MetaRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {META_COLS} FROM concepts WHERE id = ?"
+        )))
         .bind(&id)
         .fetch_optional(&self.db)
         .await?;
@@ -614,9 +650,31 @@ impl Knowledge {
         })
     }
 
-    /// Validate, write atomically, index, `index.md`, `log.md`, commit, and
-    /// report whether the concept was created (10 §2.3).
+    /// Install the session → agent source (67 §9). Called once by the roster plugin.
+    pub fn set_scoper(&self, s: Arc<dyn Scoper>) {
+        *self.scoper.write().unwrap_or_else(|p| p.into_inner()) = Some(s);
+    }
+
+    /// The scope `session` reads and writes as; `None` = the user's (sees everything).
+    fn scope_for(&self, session: Option<SessionId>) -> Option<AgentScope> {
+        let s = session?;
+        self.scoper
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .and_then(|sc| sc.scope_for(s))
+    }
+
+    /// `put_for` from the user's side: `owner: user`, `visibility` as given or `shared`.
     pub async fn put(&self, p: Put, source: Source) -> anyhow::Result<(Meta, bool)> {
+        self.put_for(p, source, None).await
+    }
+
+    /// Validate, write atomically, index, `index.md`, `log.md`, commit, and
+    /// report whether the concept was created (10 §2.3). From an agent's
+    /// session the file is stamped `owner: agent:<name>` and, unless the put
+    /// says otherwise, `visibility: private` (67 §9).
+    pub async fn put_for(&self, p: Put, source: Source, session: Option<SessionId>) -> anyhow::Result<(Meta, bool)> {
         let cid = concept_id(&p.id)?;
         let id = cid.to_string();
         let type_ = p.type_.trim();
@@ -650,6 +708,15 @@ impl Knowledge {
         if let Some(scope) = &p.scope {
             fm.set("scope", Value::String(scope.to_string_lossy().into_owned()));
         }
+        let scope = self.scope_for(session);
+        let owner = scope.as_ref().map_or(USER_OWNER, |s| s.owner.as_str());
+        let visibility = p.visibility.unwrap_or(if scope.is_some() {
+            Visibility::Private
+        } else {
+            Visibility::Shared
+        });
+        fm.set("owner", Value::String(owner.to_owned()));
+        fm.set("visibility", Value::String(visibility.as_str().to_owned()));
         stamp(&mut fm, source);
         let text = Document::new(fm, p.body).serialize();
 
@@ -664,6 +731,43 @@ impl Knowledge {
             })
             .await;
         Ok((w.meta, w.created))
+    }
+
+    /// `knowledge_share` (67 §9): flip a concept's `visibility`. Allowed for
+    /// the owner and its reporting line; the user's sessions always may.
+    pub async fn share(&self, id: &str, visibility: Visibility, session: Option<SessionId>) -> anyhow::Result<Meta> {
+        let cid = concept_id(id)?;
+        let id = cid.to_string();
+        let text = tokio::fs::read_to_string(cid.to_path(&self.root))
+            .await
+            .with_context(|| format!("no such concept: {id}"))?;
+        let mut doc = Document::parse(&text)?;
+        let owner = doc
+            .frontmatter
+            .get("owner")
+            .and_then(Value::as_display_string)
+            .map(|o| o.trim().to_owned())
+            .filter(|o| !o.is_empty())
+            .unwrap_or_else(|| USER_OWNER.to_owned());
+        let scope = self.scope_for(session);
+        if !AgentScope::may_share(scope.as_ref(), &owner) {
+            bail!("{id} belongs to {owner}, outside your reporting line; ask them to share it");
+        }
+        doc.frontmatter
+            .set("visibility", Value::String(visibility.as_str().to_owned()));
+        let text = doc.serialize();
+
+        let _g = self.write.lock().await;
+        let entry = format!("share {id} {}", visibility.as_str());
+        let w = self.write_concept(&cid, text, &entry, &entry).await?;
+        self.rt
+            .publish(KnowledgeChanged {
+                id,
+                op: KnowledgeOp::Put,
+                source: Source::Model,
+            })
+            .await;
+        Ok(w.meta)
     }
 
     /// Write a concept from raw OKF text (the editor path, 10 §2.3): the
@@ -754,7 +858,7 @@ impl Knowledge {
         Ok(())
     }
 
-    /// Metas sorted by id, filtered by id prefix, type and tag.
+    /// `list_for` from the user's side: every concept.
     pub async fn list(
         &self,
         prefix: Option<&str>,
@@ -762,15 +866,31 @@ impl Knowledge {
         tag: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<Vec<Meta>> {
+        self.list_for(prefix, type_, tag, limit, None).await
+    }
+
+    /// Metas sorted by id, filtered by id prefix, type and tag; from an
+    /// agent's session only what it may read (67 §9).
+    pub async fn list_for(
+        &self,
+        prefix: Option<&str>,
+        type_: Option<&str>,
+        tag: Option<&str>,
+        limit: u32,
+        session: Option<SessionId>,
+    ) -> anyhow::Result<Vec<Meta>> {
+        let scope = self.scope_for(session);
         // ponytail: filters run in Rust over every row; the catalog is hundreds of concepts.
-        let rows: Vec<MetaRow> = sqlx::query_as(
-            "SELECT id, type, title, description, tags, scope, source, timestamp FROM concepts ORDER BY id",
-        )
+        // Only `META_COLS` (a const) is interpolated.
+        let rows: Vec<MetaRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {META_COLS} FROM concepts ORDER BY id"
+        )))
         .fetch_all(&self.db)
         .await?;
         Ok(rows
             .into_iter()
             .map(Meta::from)
+            .filter(|m| AgentScope::sees(scope.as_ref(), &m.owner, m.visibility))
             .filter(|m| prefix.is_none_or(|p| m.id.starts_with(p)))
             .filter(|m| type_.is_none_or(|t| m.type_ == t))
             .filter(|m| tag.is_none_or(|t| m.tags.iter().any(|x| x == t)))
@@ -778,17 +898,32 @@ impl Knowledge {
             .collect())
     }
 
-    /// bm25 + scope boost, best first (10 §3.3).
+    /// `search_for` from the user's side: everything, no stubs.
     pub async fn search(&self, query: &str, cwd: &Path, limit: u32) -> anyhow::Result<Vec<Hit>> {
+        self.search_for(query, cwd, limit, None).await
+    }
+
+    /// bm25 + scope boost, best first (10 §3.3). From an agent's session
+    /// (67 §9): its own items first, then what it may read; a match on
+    /// another agent's private item is a stub — id, owner, a title saying whom
+    /// to ask — with no body or snippet.
+    pub async fn search_for(
+        &self,
+        query: &str,
+        cwd: &Path,
+        limit: u32,
+        session: Option<SessionId>,
+    ) -> anyhow::Result<Vec<Hit>> {
+        let scope = self.scope_for(session);
         Ok(self
-            .ranked(&terms(query), cwd, limit)
+            .ranked(&terms(query), cwd, limit, scope.as_ref(), true)
             .await?
             .into_iter()
             .map(|(hit, _)| hit)
             .collect())
     }
 
-    /// `search` with the ≥2-term rule, minus `exclude`, metas only (10 §3.3).
+    /// `hint_for` from the user's side.
     pub async fn hint(
         &self,
         text: &str,
@@ -796,10 +931,24 @@ impl Knowledge {
         exclude: &BTreeSet<String>,
         limit: u32,
     ) -> anyhow::Result<Vec<Meta>> {
+        self.hint_for(text, cwd, exclude, limit, None).await
+    }
+
+    /// `search` with the ≥2-term rule, minus `exclude`, metas only (10 §3.3);
+    /// from an agent's session only what it may read, own items first (67 §9).
+    pub async fn hint_for(
+        &self,
+        text: &str,
+        cwd: &Path,
+        exclude: &BTreeSet<String>,
+        limit: u32,
+        session: Option<SessionId>,
+    ) -> anyhow::Result<Vec<Meta>> {
+        let scope = self.scope_for(session);
         let terms = terms(text);
         let need = terms.len().min(2);
         let hits = self
-            .ranked(&terms, cwd, limit + exclude.len() as u32)
+            .ranked(&terms, cwd, limit + exclude.len() as u32, scope.as_ref(), false)
             .await?;
         let mut out = Vec::new();
         for (hit, body) in hits {
@@ -981,8 +1130,8 @@ impl Knowledge {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, path, mtime, size) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO concepts (id, type, title, description, tags, body, scope, source, timestamp, owner, visibility, path, mtime, size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.type_)
@@ -993,6 +1142,8 @@ impl Knowledge {
         .bind(m.scope.as_ref().map(|p| p.to_string_lossy().into_owned()))
         .bind(m.source.map(Source::as_str))
         .bind(&m.timestamp)
+        .bind(&m.owner)
+        .bind(m.visibility.as_str())
         .bind(&ix.path)
         .bind(ix.mtime)
         .bind(ix.size)
@@ -1034,12 +1185,16 @@ impl Knowledge {
     }
 
     /// FTS query for `terms`, scope-adjusted and sorted, with each hit's body
-    /// (the ≥2-term rule needs it). Empty terms → nothing.
+    /// (the ≥2-term rule needs it). Empty terms → nothing. With an agent
+    /// `scope` (67 §9): its own items rank first; items it may not read are
+    /// replaced by a stub (`stubs`) or dropped.
     async fn ranked(
         &self,
         terms: &[String],
         cwd: &Path,
         limit: u32,
+        scope: Option<&AgentScope>,
+        stubs: bool,
     ) -> anyhow::Result<Vec<(Hit, String)>> {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -1049,37 +1204,71 @@ impl Knowledge {
             .map(|t| format!("\"{t}\""))
             .collect::<Vec<_>>()
             .join(" OR ");
-        let rows: Vec<HitRow> = sqlx::query_as(
-            "SELECT id, type, title, description, tags, scope, source, timestamp, body, \
+        // Only `META_COLS` (a const) is interpolated; the MATCH query and limit are bound.
+        let rows: Vec<HitRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {META_COLS}, body, \
              bm25(concepts, 0, 3.0, 10.0, 5.0, 4.0, 1.0) AS s, snippet(concepts, 5, '', '', '…', 12) AS snip \
-             FROM concepts WHERE concepts MATCH ? ORDER BY s LIMIT ?",
-        )
+             FROM concepts WHERE concepts MATCH ? ORDER BY s LIMIT ?"
+        )))
         .bind(query)
         .bind(i64::from(limit) * 4)
         .fetch_all(&self.db)
         .await?;
         let mut hits: Vec<(Hit, String)> = rows
             .into_iter()
-            .map(|r| {
+            .filter_map(|r| {
                 let meta: Meta = r.meta.into();
                 let boost = match &meta.scope {
                     Some(scope) if cwd.starts_with(scope) => 1.5,
                     Some(_) => 0.5,
                     None => 1.0,
                 };
-                (
-                    Hit {
-                        meta,
-                        score: (-r.s * boost) as f32,
-                        snippet: r.snip,
-                    },
-                    r.body,
-                )
+                let score = (-r.s * boost) as f32;
+                if AgentScope::sees(scope, &meta.owner, meta.visibility) {
+                    Some((
+                        Hit {
+                            meta,
+                            score,
+                            snippet: r.snip,
+                        },
+                        r.body,
+                    ))
+                } else if stubs {
+                    Some((
+                        Hit {
+                            meta: stub(meta),
+                            score,
+                            snippet: String::new(),
+                        },
+                        String::new(),
+                    ))
+                } else {
+                    None
+                }
             })
             .collect();
-        hits.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
+        let own = |h: &Hit| scope.is_some_and(|s| s.owner == h.meta.owner);
+        hits.sort_by(|a, b| {
+            own(&b.0)
+                .cmp(&own(&a.0))
+                .then_with(|| b.0.score.total_cmp(&a.0.score))
+        });
         hits.truncate(limit as usize);
         Ok(hits)
+    }
+}
+
+/// What a search reports about an item the caller may not read (67 §9):
+/// that it exists and whom to ask, nothing of its content.
+fn stub(m: Meta) -> Meta {
+    Meta {
+        title: format!("private — ask {}", m.owner),
+        description: String::new(),
+        tags: Vec::new(),
+        scope: None,
+        source: None,
+        timestamp: None,
+        ..m
     }
 }
 
@@ -1173,7 +1362,109 @@ mod tests {
             tags: vec!["rust".into()],
             scope: None,
             body: body.into(),
+            visibility: None,
         }
+    }
+
+    /// A fixed session → scope table standing in for the roster (67 §9).
+    struct Table(HashMap<SessionId, AgentScope>);
+
+    impl Scoper for Table {
+        fn scope_for(&self, session: SessionId) -> Option<AgentScope> {
+            self.0.get(&session).cloned()
+        }
+    }
+
+    fn scope(owner: &str, line: &[&str]) -> AgentScope {
+        AgentScope {
+            owner: owner.into(),
+            line: line.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    /// `ops` reports to `cto`; `mkt` is another line. Sessions: ops, cto, mkt.
+    async fn scoped() -> (Arc<Knowledge>, PathBuf, SessionId, SessionId, SessionId) {
+        let (k, dir) = open().await;
+        let (ops, cto, mkt) = (SessionId::new(), SessionId::new(), SessionId::new());
+        let mut t = HashMap::new();
+        t.insert(ops, scope("agent:ops", &["agent:ops", "agent:cto", "agent:theuth", "user"]));
+        t.insert(cto, scope("agent:cto", &["agent:cto", "agent:ops", "agent:theuth", "user"]));
+        t.insert(mkt, scope("agent:mkt", &["agent:mkt", "agent:theuth", "user"]));
+        k.set_scoper(Arc::new(Table(t)));
+        (k, dir, ops, cto, mkt)
+    }
+
+    #[tokio::test]
+    async fn existing_concepts_default_to_user_and_shared() {
+        let (k, dir) = open().await;
+        // A hand-written file without the 67 §9 keys.
+        let path = dir.join(DIR).join("facts").join("old.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "---\ntype: fact\ntitle: Old\n---\nold body\n").unwrap();
+        k.sync().await.unwrap();
+        let m = k.get("facts/old").await.unwrap().meta;
+        assert_eq!(m.owner, "user");
+        assert_eq!(m.visibility, Visibility::Shared);
+        // A user-side put is the user's and shared; the file carries both keys.
+        let (m, _) = k.put(put("facts/new", "New", "body"), Source::User).await.unwrap();
+        assert_eq!((m.owner.as_str(), m.visibility), ("user", Visibility::Shared));
+        let text = k.get("facts/new").await.unwrap().text;
+        assert!(text.contains("owner: user") && text.contains("visibility: shared"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn agent_put_is_private_to_it_and_search_is_scoped() {
+        let (k, _dir, ops, cto, mkt) = scoped().await;
+        let (m, _) = k
+            .put_for(put("ops/runbook", "Relay runbook", "pelican restart steps"), Source::Model, Some(ops))
+            .await
+            .unwrap();
+        assert_eq!((m.owner.as_str(), m.visibility), ("agent:ops", Visibility::Private));
+        let mut team = put("ops/oncall", "Oncall pelican", "who is on call");
+        team.visibility = Some(Visibility::Team);
+        k.put_for(team, Source::Model, Some(ops)).await.unwrap();
+        k.put(put("user/pelican", "Pelican shared", "everyone knows"), Source::User)
+            .await
+            .unwrap();
+
+        let cwd = Path::new("/tmp");
+        let ids = |hits: &[Hit]| hits.iter().map(|h| h.meta.id.clone()).collect::<Vec<_>>();
+        // Own items first, then team, then shared.
+        let own = k.search_for("pelican", cwd, 10, Some(ops)).await.unwrap();
+        assert_eq!(ids(&own), ["ops/oncall", "ops/runbook", "user/pelican"]);
+        // The manager sees the team item in full, the private one as a stub.
+        let boss = k.search_for("pelican", cwd, 10, Some(cto)).await.unwrap();
+        let stub = boss.iter().find(|h| h.meta.id == "ops/runbook").unwrap();
+        assert_eq!(stub.meta.title, "private — ask agent:ops");
+        assert_eq!((stub.meta.owner.as_str(), stub.snippet.as_str(), stub.meta.description.as_str()), ("agent:ops", "", ""));
+        assert!(boss.iter().any(|h| h.meta.id == "ops/oncall" && h.meta.title == "Oncall pelican"));
+        // Another line: team and private items are both stubs; shared is full.
+        let other = k.search_for("pelican", cwd, 10, Some(mkt)).await.unwrap();
+        assert!(other.iter().filter(|h| h.meta.title.starts_with("private — ask")).count() == 2);
+        assert!(other.iter().any(|h| h.meta.id == "user/pelican" && h.meta.title == "Pelican shared"));
+        // Hints never carry stubs; the user's side sees everything, no stubs.
+        let hints = k.hint_for("pelican shared", cwd, &BTreeSet::new(), 10, Some(mkt)).await.unwrap();
+        assert_eq!(hints.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["user/pelican"]);
+        let all = k.search("pelican", cwd, 10).await.unwrap();
+        assert!(all.iter().all(|h| !h.meta.title.starts_with("private — ask")));
+        assert_eq!(all.len(), 3);
+        assert_eq!(k.list_for(None, None, None, 10, Some(mkt)).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn share_is_for_the_owner_and_its_line() {
+        let (k, _dir, ops, cto, mkt) = scoped().await;
+        k.put_for(put("ops/secret", "Secret", "body"), Source::Model, Some(ops))
+            .await
+            .unwrap();
+        assert!(k.share("ops/secret", Visibility::Team, Some(mkt)).await.is_err(), "another line may not");
+        let m = k.share("ops/secret", Visibility::Team, Some(cto)).await.unwrap();
+        assert_eq!(m.visibility, Visibility::Team);
+        let m = k.share("ops/secret", Visibility::Shared, Some(ops)).await.unwrap();
+        assert_eq!(m.visibility, Visibility::Shared);
+        assert!(k.search_for("secret", Path::new("/tmp"), 10, Some(mkt)).await.unwrap()[0].meta.title == "Secret");
+        let m = k.share("ops/secret", Visibility::Private, None).await.unwrap();
+        assert_eq!((m.owner.as_str(), m.visibility), ("agent:ops", Visibility::Private), "the user may; owner is kept");
     }
 
     #[tokio::test]

@@ -110,11 +110,12 @@ impl Store {
     }
 
     /// Fires of `name` since its last loop end row (33 §3.2): rows with a
-    /// session that are not skips, newer than the newest `done…` / `max_runs…` /
-    /// `until broken…` / `removed` row. No end row = all its fires.
+    /// session (or a `task <id>` result, 67 §7.4) that are not skips, newer
+    /// than the newest `done…` / `max_runs…` / `until broken…` / `removed`
+    /// row. No end row = all its fires.
     pub async fn count_since_end(&self, name: &str) -> anyhow::Result<u32> {
         let (n,): (u32,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM runs WHERE name = ?1 AND session IS NOT NULL \
+            "SELECT COUNT(*) FROM runs WHERE name = ?1 AND (session IS NOT NULL OR result LIKE 'task %') \
              AND (result IS NULL OR result NOT LIKE 'skipped:%') \
              AND id > COALESCE((SELECT MAX(id) FROM runs WHERE name = ?1 \
                  AND (result LIKE 'done%' OR result LIKE 'max_runs%' \

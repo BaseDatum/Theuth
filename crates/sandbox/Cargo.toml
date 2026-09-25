@@ -1,0 +1,36 @@
+[package]
+name = "sandbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Make an engine: bring `t` up on new compute (ssh host, docker container) and join it to the mesh (design doc 67 §13, 64 §4)"
+
+[dependencies]
+runtime = { workspace = true }
+secrets = { workspace = true }
+mesh = { workspace = true }
+update = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+dirs = { workspace = true }
+russh = { workspace = true }
+bollard = { workspace = true }
+reqwest = { workspace = true }
+minisign-verify = { workspace = true }
+base64 = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true

@@ -132,6 +132,233 @@ struct Cli {
     /// --bench-models: override `models.accelerator` (`auto` | `cpu` | `webgpu` | `directml` | `cuda`).
     #[arg(long, requires = "bench_models", value_name = "ACCEL")]
     accelerator: Option<models::accelerator::Accelerator>,
+    /// 67: `t mesh …` / `t tasks …` — RPC clients of the running engine.
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+/// Subcommands (67 §4.1, §12). Each connects to the running engine and calls
+/// one RPC method; every one answers `not built` until its worker lands.
+#[derive(clap::Subcommand, Debug)]
+enum Cmd {
+    /// The engine mesh: peers, pairing, the hub lease (design doc 67 §4).
+    Mesh {
+        #[command(subcommand)]
+        cmd: MeshCmd,
+    },
+    /// The task board (design doc 67 §7).
+    Tasks {
+        #[command(subcommand)]
+        cmd: TasksCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum MeshCmd {
+    /// This engine, its peers and who holds the hub lease.
+    Status,
+    /// Print a pairing string for `t mesh add` on another engine.
+    Pair,
+    /// Pair with the engine behind a pairing string (mutual and transitive) —
+    /// or make one first: `--ssh user@host [--key NAME | --system-ssh]` installs
+    /// `t` over SSH, `--docker [--name N] [--image I | --local-t PATH]` runs it
+    /// in a container here; both end paired (design doc 67 §13).
+    Add {
+        /// The string `t mesh pair` printed on the other engine.
+        #[arg(required_unless_present_any = ["ssh", "docker"])]
+        pairing: Option<String>,
+        /// Make an engine on this SSH host (`[user@]host[:port]`, or an `~/.ssh/config` alias with --system-ssh).
+        #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker"])]
+        ssh: Option<String>,
+        /// Vault name of the private key for the built-in SSH client (store it with `t --secret-set NAME < key`).
+        #[arg(long, value_name = "NAME", requires = "ssh", conflicts_with = "system_ssh")]
+        key: Option<String>,
+        /// Use the system `ssh` binary (your `~/.ssh/config`, agent, ProxyJump) instead of the built-in client.
+        #[arg(long, requires = "ssh")]
+        system_ssh: bool,
+        /// Make an engine in a Docker container on this machine.
+        #[arg(long, conflicts_with_all = ["pairing", "ssh"])]
+        docker: bool,
+        /// Engine and record name; default: the SSH host, or `engine` for docker.
+        #[arg(long, value_name = "N")]
+        name: Option<String>,
+        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile.
+        #[arg(long, value_name = "I", requires = "docker", conflicts_with = "local_t")]
+        image: Option<String>,
+        /// --docker: a locally built Linux `t`, baked in with deploy/computer/Dockerfile.dev.
+        #[arg(long, value_name = "PATH", requires = "docker")]
+        local_t: Option<PathBuf>,
+    },
+    /// Leave an engine out of the mesh.
+    Remove {
+        /// Engine id (see `t mesh status`).
+        id: String,
+    },
+    /// This engine's willingness to hold the hub lease.
+    Hub {
+        /// prefer | eligible | never
+        pref: String,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum TasksCmd {
+    /// Every task, oldest first; `--owner agent:<name>|user`, `--state todo,doing,…`, `--engine`, `--project`.
+    List {
+        /// `agent:<name>` | `user`.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Comma-separated states.
+        #[arg(long, value_delimiter = ',')]
+        state: Option<Vec<String>>,
+        /// Engine name (`where`).
+        #[arg(long)]
+        engine: Option<String>,
+        /// Project label.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+/// `t mesh …` / `t tasks …`: one RPC call on the running engine, its JSON
+/// reply pretty-printed; the server's error message (today `not built`) on
+/// stderr, exit 1. No daemon → the `t --link` hint, exit 1.
+async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<()> {
+    use jsonrpsee::core::ClientError;
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::rpc_params;
+
+    let listen = rpc::engine::discover(data_dir)
+        .and_then(|r| r.record.listen)
+        .unwrap_or_else(|| link_cli::listen(config));
+    let Ok(client) = link_cli::connect(data_dir, &listen).await else {
+        eprintln!("no harness on {listen}; start `t --headless` first");
+        std::process::exit(1);
+    };
+    let r: Result<serde_json::Value, ClientError> = match cmd {
+        Cmd::Mesh { cmd } => match cmd {
+            MeshCmd::Status => client.request("mesh_status", rpc_params![]).await,
+            MeshCmd::Pair => client.request("mesh_pairing_string", rpc_params![]).await,
+            MeshCmd::Add {
+                pairing: Some(pairing),
+                ..
+            } => client.request("mesh_add", rpc_params![pairing]).await,
+            MeshCmd::Add {
+                pairing: None,
+                ssh,
+                key,
+                system_ssh,
+                docker: _,
+                name,
+                image,
+                local_t,
+            } => {
+                let target = match ssh {
+                    Some(target) => sandbox::Target::Ssh {
+                        target,
+                        key,
+                        system: system_ssh,
+                        name,
+                    },
+                    None => sandbox::Target::Docker {
+                        name: name.unwrap_or_else(|| "engine".into()),
+                        image,
+                        local_t,
+                    },
+                };
+                return make_engine(data_dir, config, client, target).await;
+            }
+            MeshCmd::Remove { id } => client.request("mesh_remove", rpc_params![id]).await,
+            MeshCmd::Hub { pref } => {
+                let pref: mesh::HubPref = serde_json::from_value(serde_json::Value::String(pref))
+                    .map_err(|_| anyhow::anyhow!("hub: expected prefer|eligible|never"))?;
+                client.request("mesh_set_hub", rpc_params![pref]).await
+            }
+        },
+        Cmd::Tasks { cmd } => match cmd {
+            TasksCmd::List {
+                owner,
+                state,
+                engine,
+                project,
+            } => {
+                let state = state
+                    .map(|s| {
+                        s.iter()
+                            .map(|v| serde_json::from_value(serde_json::Value::String(v.clone())))
+                            .collect::<Result<Vec<tasks::TaskState>, _>>()
+                    })
+                    .transpose()
+                    .map_err(|_| anyhow::anyhow!("state: expected todo|doing|review|blocked|done|cancelled"))?;
+                let filter = tasks::TaskFilter {
+                    owner,
+                    state,
+                    engine,
+                    project,
+                };
+                client.request("tasks_list", rpc_params![filter]).await
+            }
+        },
+    };
+    match r {
+        Ok(v) => {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        Err(ClientError::Call(e)) => {
+            eprintln!("{}", e.message());
+            std::process::exit(1);
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `t mesh add --ssh|--docker`: bring-up runs in this process (progress on
+/// stdout, the SSH key read from the vault here — the same in-process open
+/// `--secret-set` uses), and the two mesh steps go to the running engine over
+/// RPC like every other `t mesh` call.
+async fn make_engine(
+    data_dir: &Path,
+    config: &Figment,
+    client: jsonrpsee::ws_client::WsClient,
+    target: sandbox::Target,
+) -> anyhow::Result<()> {
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::rpc_params;
+
+    struct RpcJoin(jsonrpsee::ws_client::WsClient);
+
+    #[async_trait::async_trait]
+    impl sandbox::MeshJoin for RpcJoin {
+        async fn add_peer(&self, pairing: String) -> anyhow::Result<mesh::Peer> {
+            Ok(self.0.request("mesh_add", rpc_params![pairing]).await?)
+        }
+        async fn status(&self) -> anyhow::Result<mesh::MeshStatus> {
+            Ok(self.0.request("mesh_status", rpc_params![]).await?)
+        }
+    }
+
+    let cfg: secrets::SecretsConfig = if config.contains("secrets") {
+        config.extract_inner("secrets")?
+    } else {
+        secrets::SecretsConfig::default()
+    };
+    let secret = move |name: String| async move {
+        let vault = secrets::Vault::open(data_dir, cfg.key_store).await.map_err(|e| format!("vault: {e:#}"))?;
+        vault
+            .get(&name, 0)
+            .ok_or_else(|| format!("no secret named {name}; store the key with `t --secret-set {name} < key`"))
+    };
+    match sandbox::make_engine(data_dir, target, secret, &RpcJoin(client), &sandbox::Progress::stdout()).await {
+        Ok(peer) => {
+            println!("engine {} ({}) joined the mesh", peer.name, peer.id);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
 }
 
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
@@ -244,6 +471,32 @@ agent:
 # schedule:                  # scheduled runs from <data_dir>/schedules/*.md files (design doc 34); `/schedules` lists them
 #   enabled: true            # false: no watcher, no actor, no tool, no prompt block
 #   run_timeout_secs: 1800   # a run still going after this is cancelled and reported as `timeout`
+
+# mesh:                      # engines form a leaderless mesh over iroh; hub duties are a lease won by stability (design doc 67 §4). `t mesh status|pair|add|remove|hub`
+#   relay: https://iroh.relay.theuth.io   # iroh relay when hole punching fails; self-host: your `iroh-relay` URL; `none` → bind locally, never dial a relay
+#   discovery: true          # DNS/pkarr + mDNS peer lookup; false → dial remembered addresses only (one laptop, no network)
+#   name: \"\"                 # display name other engines see; \"\" → hostname
+#   hub: eligible            # prefer | eligible | never — this engine's willingness to hold the hub lease
+#   probation_secs: 21600    # a newly joined engine cannot take the lease from an incumbent for this long
+#   handover_secs: 600       # an incumbent keeps the lease this long after a better engine appears, then hands over
+#   heartbeat_secs: 10       # lease heartbeat over gossip
+#   lapse_secs: 30           # heartbeats missed for this long = the lease lapsed
+#   capabilities_secs: 300   # how often harnesses / repos / display / gpu are re-advertised
+#   workspaces: []           # repo roots this engine advertises for task placement
+
+# roster:                    # agents as files in <data_dir>/agents/*.md, one desk each on the hub (design doc 67 §6)
+#   decision_wait_secs: 120  # `escalate` waits this long for a live answer before parking the task
+#   episode_idle_secs: 21600 # a desk idle this long closes its episode and writes its journal
+#   episode_context_pct: 60  # … or at this percent of its context window
+#   journal_max_bytes: 8192  # ceiling on roster/journal/<name>.md
+
+# tasks:                     # task records, wakes, checkout, disposition (design doc 67 §7); `t tasks list`
+#   orphan_secs: 120         # a checkout whose engine is unreachable this long is orphaned and the owner re-woken
+#   stale_secs: 900          # a `doing` task with no progress note this long is stale on the board
+#   note_secs: 300           # work sessions write a progress note at least this often
+#   cross_task_write_cap: 20 # tasks one session may write to that it does not own
+#   backoff_min_secs: 120    # no-progress back-off start, doubling …
+#   backoff_max_secs: 1800   # … to this ceiling; a human comment resets it
 
 # update:                    # self-update (design doc 39): check the release bucket, verify the signature, replace this
 #                            # binary on disk; takes effect at the next start. Nothing is ever asked. `t --update` forces a check.
@@ -466,6 +719,9 @@ async fn run() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("THEUTH_").split("__"));
+    if let Some(cmd) = cli.cmd {
+        return cmd_67(&data_dir, &config, cmd).await;
+    }
     // 58 step 12: one process-wide knob every model loader reads; set before any plugin starts.
     let models_cfg: models::accelerator::ModelsConfig =
         config.extract_inner("models").unwrap_or_default();
@@ -512,13 +768,13 @@ async fn run() -> anyhow::Result<()> {
             name,
             note: cli.secret_note,
         };
-        return secret_cli::run(&data_dir, &config, op);
+        return secret_cli::run(&data_dir, &config, op).await;
     }
     if let Some(name) = cli.secret_rm {
-        return secret_cli::run(&data_dir, &config, secret_cli::Op::Rm(name));
+        return secret_cli::run(&data_dir, &config, secret_cli::Op::Rm(name)).await;
     }
     if cli.secret_list {
-        return secret_cli::run(&data_dir, &config, secret_cli::Op::List);
+        return secret_cli::run(&data_dir, &config, secret_cli::Op::List).await;
     }
     if cli.slack_setup {
         return slack::setup::run(&data_dir, cli.app, &mut slack::setup::Terminal).await;
@@ -777,6 +1033,12 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(link::LinkPlugin),
         Box::new(nodes::NodesPlugin),
         Box::new(schedule::SchedulePlugin),
+        // 67: mesh → replica → roster → tasks, in that order (contract doc).
+        Box::new(mesh::MeshPlugin),
+        Box::new(replica::ReplicaPlugin),
+        Box::new(roster::RosterPlugin),
+        Box::new(tasks::TasksPlugin),
+        Box::new(sandbox::SandboxPlugin),
         // Off unless `a2a.enabled: true`: then it registers its actor and
         // finishes in the background once `agent` and `secrets` answer, so
         // its place in this list carries no ordering promise (50 §11 row 3).

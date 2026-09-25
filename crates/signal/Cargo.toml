@@ -30,6 +30,9 @@ presage = { workspace = true }
 presage-store-sqlite = { workspace = true }
 link = { workspace = true }
 voice = { workspace = true }
+roster = { workspace = true }
+tasks = { workspace = true }
+mesh = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

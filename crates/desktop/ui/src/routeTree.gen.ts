@@ -15,6 +15,8 @@ import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
 import { Route as NotesRouteImport } from './routes/notes'
+import { Route as AgentsIndexRouteImport } from './routes/agents.index'
+import { Route as AgentsNameRouteImport } from './routes/agents.$name'
 import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
@@ -24,6 +26,8 @@ import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
 import { Route as NotesIdRouteImport } from './routes/notes_.$id'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
+import { Route as TasksIndexRouteImport } from './routes/tasks.index'
+import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -53,6 +57,16 @@ const LinkRoute = LinkRouteImport.update({
 const NotesRoute = NotesRouteImport.update({
   id: '/notes',
   path: '/notes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsIndexRoute = AgentsIndexRouteImport.update({
+  id: '/agents/',
+  path: '/agents/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsNameRoute = AgentsNameRouteImport.update({
+  id: '/agents/$name',
+  path: '/agents/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ArtifactsCallIdRoute = ArtifactsCallIdRouteImport.update({
@@ -100,6 +114,16 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
   path: '/settings/$tab',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TasksIndexRoute = TasksIndexRouteImport.update({
+  id: '/tasks/',
+  path: '/tasks/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TasksIdRoute = TasksIdRouteImport.update({
+  id: '/tasks/$id',
+  path: '/tasks/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -108,6 +132,7 @@ export interface FileRoutesByFullPath {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
+  '/agents/$name': typeof AgentsNameRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -116,7 +141,10 @@ export interface FileRoutesByFullPath {
   '/meetings/new': typeof MeetingsNewRoute
   '/notes/$id': typeof NotesIdRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/tasks/$id': typeof TasksIdRoute
+  '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/tasks/': typeof TasksIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -125,6 +153,7 @@ export interface FileRoutesByTo {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
+  '/agents/$name': typeof AgentsNameRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -133,7 +162,10 @@ export interface FileRoutesByTo {
   '/meetings/new': typeof MeetingsNewRoute
   '/notes/$id': typeof NotesIdRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/tasks/$id': typeof TasksIdRoute
+  '/agents': typeof AgentsIndexRoute
   '/meetings': typeof MeetingsIndexRoute
+  '/tasks': typeof TasksIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -143,6 +175,7 @@ export interface FileRoutesById {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
+  '/agents/$name': typeof AgentsNameRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -151,7 +184,10 @@ export interface FileRoutesById {
   '/meetings/new': typeof MeetingsNewRoute
   '/notes_/$id': typeof NotesIdRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/tasks/$id': typeof TasksIdRoute
+  '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/tasks/': typeof TasksIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -162,6 +198,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
+    | '/agents/$name'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -170,7 +207,10 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notes/$id'
     | '/settings/$tab'
+    | '/tasks/$id'
+    | '/agents/'
     | '/meetings/'
+    | '/tasks/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -179,6 +219,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
+    | '/agents/$name'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -187,7 +228,10 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notes/$id'
     | '/settings/$tab'
+    | '/tasks/$id'
+    | '/agents'
     | '/meetings'
+    | '/tasks'
   id:
     | '__root__'
     | '/'
@@ -196,6 +240,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
+    | '/agents/$name'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -204,7 +249,10 @@ export interface FileRouteTypes {
     | '/meetings/new'
     | '/notes_/$id'
     | '/settings/$tab'
+    | '/tasks/$id'
+    | '/agents/'
     | '/meetings/'
+    | '/tasks/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -214,13 +262,17 @@ export interface RootRouteChildren {
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
   NotesRoute: typeof NotesRoute
+  AgentsNameRoute: typeof AgentsNameRoute
   CSessionRoute: typeof CSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
   MeetingsNewRoute: typeof MeetingsNewRoute
   NotesIdRoute: typeof NotesIdRoute
   SettingsTabRoute: typeof SettingsTabRoute
+  TasksIdRoute: typeof TasksIdRoute
+  AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
+  TasksIndexRoute: typeof TasksIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -265,6 +317,20 @@ declare module '@tanstack/react-router' {
       path: '/notes'
       fullPath: '/notes'
       preLoaderRoute: typeof NotesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/': {
+      id: '/agents/'
+      path: '/agents'
+      fullPath: '/agents/'
+      preLoaderRoute: typeof AgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/$name': {
+      id: '/agents/$name'
+      path: '/agents/$name'
+      fullPath: '/agents/$name'
+      preLoaderRoute: typeof AgentsNameRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/artifacts/$callId': {
@@ -330,6 +396,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsTabRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tasks/': {
+      id: '/tasks/'
+      path: '/tasks'
+      fullPath: '/tasks/'
+      preLoaderRoute: typeof TasksIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tasks/$id': {
+      id: '/tasks/$id'
+      path: '/tasks/$id'
+      fullPath: '/tasks/$id'
+      preLoaderRoute: typeof TasksIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -364,13 +444,17 @@ const rootRouteChildren: RootRouteChildren = {
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
   NotesRoute: NotesRoute,
+  AgentsNameRoute: AgentsNameRoute,
   CSessionRoute: CSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,
   MeetingsBriefsRoute: MeetingsBriefsRoute,
   MeetingsNewRoute: MeetingsNewRoute,
   NotesIdRoute: NotesIdRoute,
   SettingsTabRoute: SettingsTabRoute,
+  TasksIdRoute: TasksIdRoute,
+  AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
+  TasksIndexRoute: TasksIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

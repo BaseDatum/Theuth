@@ -7,6 +7,9 @@
 
 pub mod agents;
 pub mod harness;
+pub mod mesh;
+pub mod meta;
+pub mod peer;
 pub mod registry;
 pub mod render;
 
@@ -15,4 +18,7 @@ pub use harness::{
     Connect, Dialer, Harness, LineDuplex, Permission, ProbeResult, Transport, Turn, Update,
     current_model, probe,
 };
+pub use mesh::{MeshDialer, line_duplex};
+pub use meta::{META_KEY, SessionMeta};
+pub use peer::{PEER_MESSAGE_METHOD, PeerMessage};
 pub use render::{content_block_text, kind, render_content, render_diff, risk};

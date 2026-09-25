@@ -20,6 +20,8 @@ computer = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+tasks = { workspace = true }
+roster = { workspace = true }
 artifact = { workspace = true }
 document = { workspace = true }
 meeting = { workspace = true }

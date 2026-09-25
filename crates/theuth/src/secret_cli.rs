@@ -1,7 +1,7 @@
 //! `t --secret-set NAME [--secret-note …]`, `--secret-rm NAME`,
 //! `--secret-list` (design doc 37 §3.9): the vault for boxes without a TUI.
-//! One-shot like `--slack-setup`: opens `<data_dir>/secrets.vault` as a
-//! library; a running daemon sees the change on its next read (37 §3.5).
+//! One-shot like `--slack-setup`: opens `<data_dir>/secrets.sqlite` as a
+//! library; a running daemon sees the change within a second (67 §5.4).
 //! Nothing is printed but the receipt; the value never reaches stdout.
 
 use std::io::IsTerminal;
@@ -28,23 +28,24 @@ pub enum Op {
 /// Open the vault with the `secrets:` section of `config` (defaults when
 /// absent) and run `op`, printing its receipt. Vault errors become the exit
 /// message.
-pub fn run(data_dir: &Path, config: &Figment, op: Op) -> anyhow::Result<()> {
+pub async fn run(data_dir: &Path, config: &Figment, op: Op) -> anyhow::Result<()> {
     let cfg: secrets::SecretsConfig = if config.contains("secrets") {
         config.extract_inner("secrets")?
     } else {
         secrets::SecretsConfig::default()
     };
-    let vault = secrets::Vault::open(data_dir, cfg.key_store)?;
+    let vault = secrets::Vault::open(data_dir, cfg.key_store).await?;
     match op {
         Op::Set { name, note } => {
             let value = read_value(&name)?;
             let info = vault
                 .set(&name, &value, note.as_deref(), "cli")
+                .await
                 .map_err(anyhow::Error::msg)?;
             println!("stored {name} v{}", info.current);
         }
         Op::Rm(name) => {
-            vault.delete(&name).map_err(anyhow::Error::msg)?;
+            vault.delete(&name).await.map_err(anyhow::Error::msg)?;
             println!("removed {name}");
         }
         Op::List => {

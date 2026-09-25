@@ -9,6 +9,7 @@ description = "Knowledge bundle: OKF files, FTS index, gix history, knowledge_* 
 okf = { workspace = true }
 gix = { workspace = true }
 runtime = { workspace = true }
+replica = { workspace = true }
 tools = { workspace = true }
 document = { workspace = true }
 search = { workspace = true }

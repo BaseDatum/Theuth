@@ -1,0 +1,89 @@
+# 67 — as built, worker T (`crates/tasks`, schedule `agent:` fire path)
+
+*Branch `feature/67-agents-tasks`, 2026-09-24. Everything below compiles under `cargo check -p tasks -p schedule -p rpc --tests`; nothing was run (the orchestrator builds and tests).*
+
+## What was built, per commit
+
+The tasks side is one module (`crates/tasks/src/ledger.rs`) that the brief's commits 1–3 all cut through, so those three landed as **one commit** (`feat(tasks): store, transitions, events, thread documents` carries the wake, back-off, orphan-sweep and disposition code too — see Deviations). Commit 4 is the schedule side; commit 5 this report.
+
+### Commit 1 (+2, +3) — `crates/tasks`
+- `store.rs`: `tasks`/`wakes`/`task_events`/`write_budget` row access over the contract migration. `put` rewrites the whole row and stamps `hlc` from a process-wide HLC (`store::hlc(now_ms)` → `"{wall_ms:013}:{counter:05}:{origin}"`, text order = HLC order; `set_hlc_origin` is called with the mesh `self_id` once `mesh::Status` answers, else the origin is `local`). `raise` coalesces on `key` with `INSERT … ON CONFLICT(key) DO UPDATE SET count = count + 1`. `blocked_on(id)` is the inverse link (a `LIKE` over `blockers_json`, filtered exactly in Rust — `ponytail:` comment names the upgrade). `replica::attach(pool, &["tasks","wakes"])` is called at start; `Err("not built")` is logged at debug and the store is local-only.
+- `thread.rs`: `Thread` trait (`create`, `append`, `read`) with `DocThread` over the document actor — `CreateNote` titled `Task <8-char id>: <title>` with the brief as body, `Edit { Insert { at: "end" } }` for every block, `Markdown` for `task_checkout`'s output. The document plugin missing = no thread, task still created.
+- `ledger.rs` (`Ledger`): the rules, actor-free, driven by an injectable clock/router/thread so the unit tests run against a temp sqlite.
+  - §7.2 guards in `Ledger::guard`: `todo→doing` only by `checkout`; `doing→review` by owner; `review→done` by reviewer (or user/system), refused when `reviewer == owner` unless owner is `user`; `review→doing` send-back by reviewer (checkout cleared → the next checkout starts a fresh epoch); `doing|todo→blocked` needs a blockers entry; `blocked→doing|todo` only with empty blockers by the owner; `*→cancelled`; `done`/`cancelled` terminal.
+  - Every changed field → `task_events` row (actor, session, field, before, after) **and** a one-line thread block `- <time> **<actor>** <field>: <before> → <after>`. Comments are blocks `**<actor>** (<time>): text`; progress notes the same under `_progress note_`.
+  - Blockers as a graph: `check_cycle` walks task-id entries (`decision:` / `person:` entries and `parent` never count) and refuses with `blockers would form a cycle: a1b2c3d4 → … → a1b2c3d4`. `on_closed` (task reached `done` **or** `cancelled`) removes it from every blockers list; a blocked task left with none returns to `doing` when it holds a live checkout, else `todo`, and its owner is woken with `resume`. Clearing blockers by hand on a blocked task does the same with reason `answer` (that is how an answered `decision:<id>` re-wakes the agent: remove the blocker).
+  - `checkout`: owner (or user) only; from `todo`, `blocked` (with empty blockers), or `doing` whose checkout is absent/orphaned; a held checkout → `conflict: checked out by <session> on <engine> (epoch n)`; `epoch = prev + 1`, `engine` = mesh self id (hostname until the mesh answers).
+  - Wakes: sources — create (`assigned`; `schedule` for schedule tasks), owner change (`assigned`), comment by a non-owner (`comment`; also the reviewer under review), `@`-less mention of a roster name (`mention`, names from `DeskRouter::agents`), send-back (`comment` to the owner), state→review (`review` to the reviewer), escalate (`review` to the manager), blockers cleared (`resume`/`answer`), orphan (`resume`), episode closing without disposition (`review` to the manager), schedule fire (`schedule`).
+  - `dispatch()`: per agent with no claimed wake, the oldest unclaimed wake whose task is not in back-off and not in delivery-retry hold; claimed with `desk_for(agent)` or the placeholder `dispatching`; `updated_ms` snapshotted for the no-progress check. The actor delivers off the mailbox and reports `Delivered`; success replaces the placeholder with the desk id, failure unclaims and holds 5 s doubling to 5 min.
+  - Wake completion = the owner agent's next `update` on a task with a delivery snapshot: unchanged `updated_ms` → `no_progress_count += 1`, at ≥ 2 `next_wake_after = now + backoff_min · 2^(n−2)` capped at `backoff_max`; a field change resets both; a `user` comment resets both. Claimed wakes of `(agent, task)` are deleted on completion; `EpisodeClosing` deletes every wake claimed by the closing session.
+  - Cross-task write cap: `charge(session, task)` — a session that neither holds the checkout nor belongs to the owner agent inserts into `write_budget`; over `cross_task_write_cap` distinct tasks → `tasks.cross_task_write_cap: this session has written to N tasks it does not own; delegate with task_create instead`.
+  - `sweep(reachable)`: over `doing` tasks with a live checkout — engine not in the connected set for `orphan_secs` (first sighting starts the timer, a reappearance resets it), or `progress_at` older than `stale_secs` when the engine is reachable / the mesh is down → `checkout.orphaned = true`, `epoch += 1`, event `checkout: <old> → <new> (orphaned)`, thread note, owner woken `resume`. Wakes whose `claimed_by` is not the agent's current desk are un-claimed.
+  - `check_epoch`: a session that once held the checkout (a `checkout` event names it) but no longer does gets `superseded: task … is now checked out by <session> on <engine> (epoch n)` from `task_note`/`task_update`.
+  - `episode_closing(agent, sessions)`: `doing` tasks checked out by one of the sessions (the desk plus its `agent::ListAgents` subtree) with no `continuing:` disposition event → `blocked: no continuation`, manager woken `review`.
+  - `create_for_schedule` / `close_for_schedule` (§7.4): upsert on `(schedule, fire_ms)`; a repeat adds a thread note `schedule … fired again (n×)` and re-raises the coalesced `schedule` wake; `until` passed → every open task of the schedule `done` with reviewer `system`.
+- `lib.rs`: the actor delegates; messages added beyond the contract are listed under Deviations. Ticks: `Dispatch` every 5 s, `Sweep` every 30 s, both gated by `SetDispatching(bool)` (default on). `DeskRouter` gained three defaulted methods. Plugin start: store → `replica::attach` → spawn → tick loop → mesh self id → `RegisterTaskCreator` → tools, each behind `lookup_when`.
+- `tools.rs`: the seven tools, one message each; identity via `CallerOf(session)` (`agent:<name>` when the roster knows the session, else `user`). `task_create` defaults owner to the caller's agent, project to the calling session's project (`agent::ListSessions`), reviewer to the manager (`DeskRouter::manager_of`) or `user`. `task_inbox` filters by caller/states/project, hides tasks in back-off, groups by project (none last). `task_checkout` returns the record plus the thread markdown. `task_update` takes a `disposition` (`done` / `review{reviewer}` / `blocked{on}` / `delegated{to}` → blocked on the child, checked to exist / `continuing{by}` → event only) and accepts raw `state` only for `cancelled` and `doing` (send-back). `task_place` records `where`/`harness`/`reason` (see Deviations). `escalate` writes the question + options to the thread, blocks on `decision:<uuid>`, wakes the manager (`review`), tells the model to end its turn.
+
+### Commit 4 — `crates/schedule`
+- `file.rs`: `project:` front-matter key beside `agent:` (trimmed, empty = none).
+- `lib.rs`: `Schedule::fire` returns `Fired::{Session, Task}`. After the `until`/`max_runs` stop and the wrapper is built, `spec.agent` set → `task_creator.create_for_schedule(name, fire_ms, agent, wrapped prompt, project, cwd)`; a one-shot file is removed; a **finished** run row `task <id>` (session `NULL`) is written; `entry.last`/`next` advance; `ScheduleEvent::Changed`. `end()` with a `done…` reason on an `agent:` schedule calls `close_for_schedule`. `Fire` (manual run) of an `agent:` schedule answers `Err("created task <id>")` — there is no session for the desktop to open. Schedules without `agent:` are byte-for-byte the old path.
+- `store.rs` (one-line, outside the allow-list): `count_since_end` also counts `result LIKE 'task %'` rows so `max_runs` caps task fires.
+
+### Commit 5 — this report (`docs/design/67-as-built-T.md`).
+
+## Tool schemas as registered
+| Tool | Risk | Args |
+|---|---|---|
+| `task_create` | Mutating | `{ title, brief, owner?, reviewer?, parent?, project?, where?, harness?, external?: string[] }` |
+| `task_inbox` | ReadOnly | `{ state?: TaskState[], project? }` |
+| `task_checkout` | Mutating | `{ id }` |
+| `task_update` | Mutating | `{ id, disposition?: Disposition, state?: "cancelled" \| "doing", owner?, reviewer?, blockers?: string[], title?, brief?, external?: string[] }` |
+| `task_note` | Mutating | `{ id, text, progress?: bool }` |
+| `task_place` | Mutating | `{ id, needs?, where?, harness?, reason? }` |
+| `escalate` | Mutating | `{ task, question, options?: string[] }` |
+
+## Cadence and knobs
+`DISPATCH_EVERY = 5 s`, `SWEEP_EVERY = 30 s` (consts in `tasks::lib`), both off when `SetDispatching(false)`. Config `tasks:` unchanged: `orphan_secs 120`, `stale_secs 900`, `note_secs 300` (advisory; the desk brief is the roster's), `cross_task_write_cap 20`, `backoff_min_secs 120`, `backoff_max_secs 1800`. Delivery retry: 5 s · 2^(attempt−1), capped 300 s, in-memory.
+
+## Deviations
+1. **Commits 1–3 folded into one.** The ledger is one module; splitting it into three compiling commits would have meant three rewrites. Commit messages: `feat(tasks): store, transitions, events, thread documents` (all of 1–3), `feat(schedule): agent: creates a task and wakes the agent`, `docs(67): as-built T`.
+2. **Contract additions (all additive, disclosed in `67-contract.md`):** `Owner::System`; `Checkout.orphaned`; `Task.blocks` (computed inverse, per the mid-flight instruction); `DeskRouter::{manager_of, agent_for, agents}` with defaults; messages `TaskBlocks`, `CheckoutTask`, `PlaceTask`, `Escalate`, `NoteDisposition`, `EpisodeClosing`, `SetDispatching`, `CreateForSchedule`, `CloseForSchedule`, `tools::CallerOf`; `schedule::TaskCreator::create_for_schedule` gained `project`/`cwd` and the trait gained `close_for_schedule`; `Spec.project`.
+3. **Files touched outside the allow-list:** `crates/rpc/src/api.rs` (`task_blocks` method + handler), `crates/desktop/ui/src/rpc/api.ts` (`task_blocks` entry, requested), `crates/schedule/src/store.rs` (one line in `count_since_end`), `crates/schedule/Cargo.toml` (`figment` dev-dependency for the fire test), `crates/tasks/Cargo.toml` (deps `mesh`, `replica`, `platform`, `chrono`; dev-dep `tempfile`; `mesh/ts` in the `ts` feature), `docs/design/67-contract.md`.
+4. **`DeskRouter::deliver` signature kept.** The brief wanted "the new thread entries since the desk's last wake" passed along; the frozen trait has no slot and the roster implements it concurrently, so the desk reads `task.thread` (the whole document) itself. No delta is computed.
+5. **Wake completion** is detected as "the owner agent's next `task_update` on a task that has a delivery snapshot" (the tool's `continuing`/`delegated` path is an `UpdateTask` with no field change plus `NoteDisposition`), and by `EpisodeClosing`. A wake completed without any owner write and without an episode close keeps its snapshot until one happens.
+6. **`Disposition::Delegated { to }`** sets the task `blocked` on the child (so the child reaching `done`/`cancelled` frees it automatically) rather than leaving it `doing`; `EpisodeClosing` therefore only exempts `continuing:`.
+7. **`escalate`** returns at once with the `decision:<id>`; the 120 s live wait (`roster.decision_wait_secs`) and the channels/approval card are the roster's and a later worker's. The manager wake reason is `review` (no `decision` variant in `WakeReason`); an answer is "remove the blocker" (`task_update { blockers }`), which re-wakes the owner with `answer`. When the manager is the user no wake row is written (the queue UI is later).
+8. **`task_place`** records explicit `where`/`harness`/`reason`; without both it answers `no placement yet: pass where and harness …`. Placement reasoning is the wave-2 delegation worker's.
+9. **Un-claiming wakes of a lost hub**: without a desk→engine map, the sweep un-claims a wake whose `claimed_by` differs from `desk_for(agent)` (a new hub opens a new desk). Wakes claimed with the `dispatching` placeholder are left alone.
+10. **Stale-session orphaning** uses `progress_at` (bumped by progress notes from the checkout session) — the "coalesced replicated write every 10 s" of §7.5 is not implemented; `task_note { progress: true }` is the bump.
+11. **Mentions** need the roster's `agents()`; with the default (empty) nothing is matched. Words are split on non-`[a-z0-9-]`, compared lowercase.
+12. **Session project** and **cwd → project** come from `agent::ListSessions` (a linear scan), not a dedicated message; `ponytail:` — fine at session-list sizes.
+13. `cargo check` was run three times on the tasks crate before the first commit (the brief allows one per commit): the first two surfaced sqlx 0.9's `AssertSqlSafe` requirement and kameo's `SendError<M, E>` reply shape.
+
+## Not built
+- Live 120 s decision wait in `escalate`; the user-facing queue/approval card (roster / UI workers).
+- The "new thread entries since last wake" delta on delivery (deviation 4).
+- Placement reasoning in `task_place` (delegation worker).
+- A `t tasks blocks <id>` CLI subcommand (not asked; RPC exists).
+
+## Tests written (not run)
+`crates/tasks/src/ledger.rs::tests` (temp sqlite, mock clock/router/thread): `create_defaults_reviewer_thread_and_events`, `transition_table`, `reviewer_must_differ_from_owner_unless_user`, `checkout_conflict_and_epoch`, `project_defaults_and_filter`, `blocker_cycle_refused`, `closing_a_blocker_unblocks_to_previous_state` (inverse list included), `wakes_coalesce_on_key`, `dispatch_claims_oldest_per_agent_and_retries`, `no_progress_backoff_and_human_reset`, `cross_task_write_cap`, `comment_wakes_owner_reviewer_and_mentions`, `orphan_by_unreachable_engine_then_superseded`, `orphan_by_staleness`, `episode_closing_blocks_leftover_tasks`, `schedule_fire_creates_coalesces_and_closes`. `crates/tasks/src/types.rs::tests` unchanged (3). `crates/schedule/src/lib.rs::fire_tests` (recorder `TaskCreator`): `agent_fire_creates_a_task_not_a_session`, `max_runs_stops_new_tasks_and_until_closes_them` (runs `until: "true"` through the login shell), `plain_schedule_path_is_untouched`; existing `file.rs`/`store.rs` tests untouched.
+
+## `cargo check` result
+`cargo check -p tasks -p schedule -p rpc --tests --message-format=short` (after the last fix, before commit): **0 errors**; one warning (`variable does not need to be mutable`, a test closure) fixed in the committed tree. `Cargo.lock` gained the new `tasks` dependency edges and `figment` under `schedule` dev-deps; committed with the report.
+
+`bunx tsc --noEmit` (desktop UI, for the `task_blocks` entry in `api.ts`): could not run in this worktree — `node_modules` is not installed (`TS2688: Cannot find type definition file for 'node'`/`'vite/client'`), unrelated to the change. The change is one interface method (`task_blocks(id: string): Promise<string[]>`) and one string in the `METHODS` const array, mirrored on `task_events`.
+
+DONE T
+
+## Fix round T2 — `ledger::tests` (11 of 16 failing → 16 of 16 passing)
+Commit `e1db3fc fix(tasks): ledger tests — …`. The fixture was not the cause: `rig()` already opens a temp *file* per test (WAL, pool of 4) and every read saw the migrated schema. Three code bugs, no assertion weakened:
+
+1. **`Store::wakes()` never returned a row** (9 failures: `wakes[0]` out of bounds, resume/review/mention wakes "missing", dispatch picking nothing, coalesce count 0). `wakes_where("1 = ?", "1")` binds `"1"` as TEXT; with no column on either side sqlite applies no affinity, so `1 = '1'` is false. Now `"? = '1'"` (same one-`?` helper, text on both sides). `raise()` read its own row back through `wakes_where("key = ?", …)`, which is why the coalesce test's first two asserts passed while `wakes()` was empty.
+2. **Cross-task cap charged before the check** (`cross_task_write_cap`: the `update` after a refused `comment` succeeded). `charge()` inserted the `(session, task)` row and then compared the count, so the refused write still reserved its task and the next write to it was "already charged" and free. `Store::budget_write(session, task, cap) -> bool` now inserts only while `COUNT(*) < cap` and answers whether the row exists afterwards; `budget_has` folded into it.
+3. **A completing write with field changes counted as no progress** (`no_progress_backoff_and_human_reset`, last assert: count 2, expected 1). `complete_wake` compared `updated_ms` before the write with the delivery snapshot only, so the owner's `task_update { title }` after a wake incremented `no_progress_count`. It now takes `no_progress = at == before.updated_ms && changes.is_empty()` — 67 §7.3 "wakes that end with no field change".
+
+`cargo test -p tasks`: 19/19; `cargo test -p schedule`: 19/19. One run of `-p tasks -p schedule` under the 300 s deadline saw `closing_a_blocker_unblocks_to_previous_state` and `no_progress_backoff_and_human_reset` still running after 60 s; ten further `-p tasks --lib` runs (each ≈ 0.09 s) all passed and the two pass alone, so it was not reproduced and is not explained. Nothing in the crate is shared across tests except the process-wide `HLC` mutex, which is never held across an `await`.
+
+DONE T2

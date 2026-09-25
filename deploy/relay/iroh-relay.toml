@@ -1,0 +1,32 @@
+# iroh-relay for the engine mesh (design doc 67 §4.2), beside the 31 relay.
+# Engines reach it as `mesh.relay: https://iroh.relay.theuth.io` (the default).
+#
+# Ports (container side):
+#   8080/tcp  captive-portal / health HTTP (only this when TLS is off)
+#   8443/tcp  the relay itself: HTTPS + WebSocket, TLS terminated *here* — the
+#             front proxy must pass TCP through by SNI, not terminate, because
+#             the QUIC probe below needs the same certificate in-process
+#   7842/udp  QUIC address discovery (hole punching); cannot ride an HTTP ingress
+#   9090/tcp  Prometheus metrics (cluster-internal)
+#
+# The certificate is the same one the 31 relay serves for *.theuth.io
+# (cert-manager secret `theuth-io-cert-tls` in k8s; Caddy's store in compose),
+# mounted at /certs and re-read on rotation (`cert_mode = "Reloading"`).
+
+enable_relay = true
+enable_quic_addr_discovery = true
+enable_metrics = true
+http_bind_addr = "[::]:8080"
+metrics_bind_addr = "[::]:9090"
+# Anyone with a paired engine key may relay; the mesh itself is pairwise
+# authenticated (67 §15). Tighten to `access.allowlist = ["<endpoint id>", …]`
+# if the relay is abused.
+access = "everyone"
+
+[tls]
+https_bind_addr = "[::]:8443"
+quic_bind_addr = "[::]:7842"
+hostname = ["iroh.relay.theuth.io"]
+cert_mode = "Reloading"
+manual_cert_path = "/certs/tls.crt"
+manual_key_path = "/certs/tls.key"

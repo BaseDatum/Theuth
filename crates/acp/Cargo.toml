@@ -9,12 +9,14 @@ description = "Agent Client Protocol client half: agents.yaml, the registry, one
 agent-client-protocol = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
+replica = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+uuid = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }

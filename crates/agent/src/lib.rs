@@ -79,7 +79,7 @@ pub use communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
     ListPeerMessages, ListPeers, PeerConsumed, PeerDelivered, PeerInfo, PeerIntakeFailed,
     PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerScope, PeerTurnFinished, SetCommunication, SetPeerScope,
+    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
 };
 pub use compact::CompactStyle;
 pub use context::{

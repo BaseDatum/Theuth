@@ -19,6 +19,7 @@ pub mod tools;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
@@ -100,6 +101,32 @@ pub struct Done {
     /// The model's reason; recorded and delivered.
     pub why: String,
 }
+
+/// How a fire with `agent:` becomes a task (67 §7.4): the tasks plugin
+/// implements this and registers it with [`RegisterTaskCreator`];
+/// [`Schedule::fire`] consults it when `Spec.agent` is set.
+#[async_trait::async_trait]
+pub trait TaskCreator: Send + Sync {
+    /// Upsert the task for `(schedule, fire_ms)` owned by `agent` with
+    /// `prompt` as its brief, wake the agent (`schedule`), return the task id.
+    /// `project` is the file's `project:` key; `cwd` its `cwd:`, from which
+    /// the tasks side may infer a project when `project` is `None`.
+    async fn create_for_schedule(
+        &self,
+        schedule: &str,
+        fire_ms: u64,
+        agent: &str,
+        prompt: &str,
+        project: Option<&str>,
+        cwd: Option<&str>,
+    ) -> anyhow::Result<String>;
+    /// The schedule's `until` passed (`why` = the end row text): its open
+    /// tasks are `done` with reviewer `system`.
+    async fn close_for_schedule(&self, schedule: &str, why: &str) -> anyhow::Result<()>;
+}
+
+/// `ask` → `()`: the tasks plugin hands over its [`TaskCreator`]. Replaces any earlier one.
+pub struct RegisterTaskCreator(pub Arc<dyn TaskCreator>);
 
 /// One schedule as `/schedules` and Settings › Schedules show it.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
@@ -279,6 +306,15 @@ struct Run {
     last_stop: String,
 }
 
+/// What a fire produced.
+#[derive(Debug)]
+enum Fired {
+    /// The schedule's session took the prompt (34 §4).
+    Session(SessionId),
+    /// A task was created for the schedule's agent (67 §7.4); its id.
+    Task(String),
+}
+
 /// Internal `tell`: the directory changed (watcher) — re-read it (34 §2.3).
 #[derive(Clone, Copy, Debug)]
 struct Reconcile;
@@ -312,6 +348,16 @@ pub struct Schedule {
     /// Files the actor removed itself by ending a loop (33 §3.3); the
     /// reconcile that notices writes no `removed` row for these.
     consumed: HashSet<String>,
+    /// Turns `agent:` fires into tasks (67 §7.4); `None` until the tasks plugin registers.
+    task_creator: Option<Arc<dyn TaskCreator>>,
+}
+
+impl Message<RegisterTaskCreator> for Schedule {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterTaskCreator, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.task_creator = Some(m.0);
+    }
 }
 
 impl Schedule {
@@ -352,6 +398,7 @@ impl Schedule {
             entries,
             running: HashMap::new(),
             consumed: HashSet::new(),
+            task_creator: None,
         }
     }
 
@@ -369,13 +416,15 @@ impl Schedule {
 
     /// 34 §4 steps 1–5 with 33 §3.1–3.2's stop before them. `forced`
     /// (`/schedules run`) skips the stop: *run* means run. The caller has
-    /// checked the entry exists and parsed.
+    /// checked the entry exists and parsed. With `agent:` (67 §7.4) the
+    /// wrapped prompt becomes a task through the registered [`TaskCreator`]
+    /// instead of a session input.
     async fn fire(
         &mut self,
         name: &str,
         now: DateTime<Local>,
         forced: bool,
-    ) -> Result<SessionId, String> {
+    ) -> Result<Fired, String> {
         let entry = self.entries.get(name).ok_or("no such schedule")?;
         let spec = entry.spec.as_ref().map_err(Clone::clone)?;
         let session = entry.session;
@@ -386,8 +435,10 @@ impl Schedule {
             spec.cwd.clone(),
             spec.approvals,
         );
+        let (agent, project) = (spec.agent.clone(), spec.project.clone());
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
+
 
         if self.is_running(entry) {
             if let Err(e) = self
@@ -436,6 +487,60 @@ impl Schedule {
                 self.end(name, why.clone()).await;
                 return Err(why);
             }
+        }
+
+        // The wrapper (34 §1.5, 33 §4).
+        let mut text = format!(
+            "<schedule name=\"{name}\" at=\"{}\" quiet=\"{quiet}\"",
+            now.to_rfc3339()
+        );
+        if is_loop {
+            let _ = write!(text, " run=\"{}\"", runs + 1);
+        }
+        if let Some(max) = max_runs {
+            let _ = write!(text, " of=\"{max}\"");
+        }
+        text.push_str(">\n");
+        if let Some(tail) = &until_tail {
+            let _ = write!(text, "<until exit=\"1\">\n{}\n</until>\n", tail.trim_end());
+        }
+        let _ = write!(text, "{prompt}\n</schedule>");
+
+        if let Some(agent) = agent {
+            let creator = self.task_creator.clone().ok_or("tasks is not running")?;
+            let fire_ms = now.timestamp_millis().max(0) as u64;
+            let task = creator
+                .create_for_schedule(
+                    name,
+                    fire_ms,
+                    &agent,
+                    &text,
+                    project.as_deref(),
+                    cwd.as_deref().and_then(Path::to_str),
+                )
+                .await
+                .map_err(|e| format!("tasks: {e:#}"))?;
+            if one_shot {
+                let path = self.dir.join(format!("{name}.md"));
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!("{}: not removed after firing: {e}", path.display());
+                }
+            }
+            // A finished row: the task, not a session, carries the run (counts toward `max_runs`).
+            if let Err(e) = self
+                .store
+                .insert_run(name, None, now, Some(&format!("task {task}")))
+                .await
+            {
+                tracing::error!(%name, "run not recorded: {e:#}");
+            }
+            if let Some(e) = self.entries.get_mut(name) {
+                e.last = Some(now);
+                e.last_result = Some(format!("task {task}"));
+                e.next = if one_shot { None } else { next_of(&e.spec, now, Some(now)) };
+            }
+            self.rt.publish(ScheduleEvent::Changed).await;
+            return Ok(Fired::Task(task));
         }
 
         let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -512,22 +617,6 @@ impl Schedule {
             }
         }
 
-        // The wrapper (34 §1.5, 33 §4).
-        let mut text = format!(
-            "<schedule name=\"{name}\" at=\"{}\" quiet=\"{quiet}\"",
-            now.to_rfc3339()
-        );
-        if is_loop {
-            let _ = write!(text, " run=\"{}\"", runs + 1);
-        }
-        if let Some(max) = max_runs {
-            let _ = write!(text, " of=\"{max}\"");
-        }
-        text.push_str(">\n");
-        if let Some(tail) = &until_tail {
-            let _ = write!(text, "<until exit=\"1\">\n{}\n</until>\n", tail.trim_end());
-        }
-        let _ = write!(text, "{prompt}\n</schedule>");
         agents
             .ask(agent::SendInput {
                 session: Some(session),
@@ -585,7 +674,7 @@ impl Schedule {
                 at: now,
             })
             .await;
-        Ok(session)
+        Ok(Fired::Session(session))
     }
 
     /// End a loop (33 §3.3): an end row, the file removed (remembered in
@@ -612,6 +701,15 @@ impl Schedule {
             e.last_result = Some(why.clone());
         }
         tracing::info!(%name, "ended: {why}");
+        // 67 §7.4: `until` passing closes the agent's open tasks for this schedule.
+        if why.starts_with("done")
+            && let Some(e) = self.entries.get(name)
+            && e.spec.as_ref().is_ok_and(|s| s.agent.is_some())
+            && let Some(creator) = self.task_creator.clone()
+            && let Err(err) = creator.close_for_schedule(name, &why).await
+        {
+            tracing::warn!(%name, "schedule tasks not closed: {err:#}");
+        }
         deliver(session, name.to_owned(), format!("schedule {name} {why}"));
     }
 }
@@ -1006,7 +1104,11 @@ impl Message<Fire> for Schedule {
         if !spec.enabled {
             return Err("disabled".to_owned());
         }
-        self.fire(&m.name, Local::now(), true).await
+        match self.fire(&m.name, Local::now(), true).await? {
+            Fired::Session(s) => Ok(s),
+            // No session to open: the reply names the task instead (67 §7.4).
+            Fired::Task(id) => Err(format!("created task {id}")),
+        }
     }
 }
 
@@ -1084,6 +1186,8 @@ impl runtime::Plugin for SchedulePlugin {
             tracing::warn!("schedule unavailable: {}: {e}", dir.display());
             return Ok(());
         }
+        // 67 §5.1: the directory is a replicated table; a hand edit anywhere lands everywhere.
+        tokio::spawn(replica::files::mirror_at(rt.data_dir.join(DB), dir.clone(), DIR, std::time::Duration::from_secs(120)));
         let store = match store::Store::open(&rt.data_dir.join(DB)).await {
             Ok(s) => s,
             Err(e) => {
@@ -1158,5 +1262,126 @@ impl runtime::Plugin for SchedulePlugin {
             }
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fire_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Records every call; answers a fixed task id.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Mutex<Vec<(String, u64, String, String, Option<String>, Option<String>)>>,
+        closed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskCreator for Recorder {
+        async fn create_for_schedule(
+            &self,
+            schedule: &str,
+            fire_ms: u64,
+            agent: &str,
+            prompt: &str,
+            project: Option<&str>,
+            cwd: Option<&str>,
+        ) -> anyhow::Result<String> {
+            self.calls.lock().unwrap().push((
+                schedule.to_owned(),
+                fire_ms,
+                agent.to_owned(),
+                prompt.to_owned(),
+                project.map(str::to_owned),
+                cwd.map(str::to_owned),
+            ));
+            Ok("task-1".to_owned())
+        }
+        async fn close_for_schedule(&self, schedule: &str, _: &str) -> anyhow::Result<()> {
+            self.closed.lock().unwrap().push(schedule.to_owned());
+            Ok(())
+        }
+    }
+
+    async fn actor(dir: &Path, files: &[(&str, &str)]) -> (Schedule, Arc<Recorder>) {
+        let sched = dir.join(DIR);
+        std::fs::create_dir_all(&sched).unwrap();
+        for (name, text) in files {
+            std::fs::write(sched.join(format!("{name}.md")), text).unwrap();
+        }
+        let store = store::Store::open(&dir.join(DB)).await.unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
+        let mut s = Schedule::load(rt, sched, store, Duration::from_secs(60)).await;
+        let rec = Arc::new(Recorder::default());
+        s.task_creator = Some(rec.clone());
+        (s, rec)
+    }
+
+    #[tokio::test]
+    async fn agent_fire_creates_a_task_not_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[("nightly", "---\nevery: 1h\nagent: ops\nproject: argo\n---\ncheck the deploy\n")],
+        )
+        .await;
+        let now = Local::now();
+        let Fired::Task(id) = s.fire("nightly", now, true).await.unwrap() else {
+            panic!("expected a task")
+        };
+        assert_eq!(id, "task-1");
+        let calls = rec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let (name, fire_ms, agent, prompt, project, cwd) = &calls[0];
+        assert_eq!((name.as_str(), agent.as_str()), ("nightly", "ops"));
+        assert_eq!(*fire_ms, now.timestamp_millis() as u64);
+        assert!(prompt.starts_with("<schedule name=\"nightly\"") && prompt.contains("check the deploy"));
+        assert_eq!((project.as_deref(), cwd.as_deref()), (Some("argo"), None));
+        // the run row carries the task, and counts toward the loop cap
+        let h = s.store.history("nightly", 5).await.unwrap();
+        assert_eq!(h[0].result.as_deref(), Some("task task-1"));
+        assert!(h[0].session.is_none());
+        assert_eq!(s.runs_of("nightly").await, 1);
+        let e = &s.entries["nightly"];
+        assert!(e.session.is_none() && e.last.is_some() && e.next.is_some());
+        // the same instant fires again with the same key (tasks coalesces on it)
+        let Fired::Task(_) = s.fire("nightly", now, true).await.unwrap() else { panic!() };
+        assert_eq!(rec.calls.lock().unwrap()[1].1, now.timestamp_millis() as u64);
+    }
+
+    #[tokio::test]
+    async fn max_runs_stops_new_tasks_and_until_closes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[("once", "---\nevery: 1h\nagent: ops\nmax_runs: 1\n---\ngo\n")],
+        )
+        .await;
+        s.fire("once", Local::now(), false).await.unwrap();
+        let e = s.fire("once", Local::now(), false).await.unwrap_err();
+        assert!(e.starts_with("max_runs 1 reached"), "{e}");
+        assert_eq!(rec.calls.lock().unwrap().len(), 1, "no task past the cap");
+        assert!(rec.closed.lock().unwrap().is_empty(), "a cap is not `until` passing");
+        // `until` passing ends the loop and closes the agent's tasks
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[("loop", "---\nevery: 1h\nagent: ops\nuntil: \"true\"\n---\ngo\n")],
+        )
+        .await;
+        let e = s.fire("loop", Local::now(), false).await.unwrap_err();
+        assert!(e.starts_with("done: until passed"), "{e}");
+        assert_eq!(rec.closed.lock().unwrap().as_slice(), ["loop"]);
+        assert!(rec.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plain_schedule_path_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("plain", "---\nevery: 1h\n---\ngo\n")]).await;
+        // No agent actor in a unit test: the session path is the one taken, and it says so.
+        assert_eq!(s.fire("plain", Local::now(), true).await.unwrap_err(), "agent is not running");
+        assert!(rec.calls.lock().unwrap().is_empty());
     }
 }

@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, FolderOpen, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, FolderOpen, ListChecks, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { HarnessSwitcher } from '@/components/link/HarnessSwitcher'
@@ -103,6 +103,20 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               >
                 <SquarePen /> New chat
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/tasks">
+                <ListChecks /> Tasks
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link to="/agents">
+                <Bot /> Agents
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

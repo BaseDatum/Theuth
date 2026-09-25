@@ -26,6 +26,7 @@ use runtime::{InputId, Runtime, SessionId};
 use slack_morphism::prelude::*;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tools::{
     APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
     AskRequested, AskResolved, Decision, Resolve,
@@ -119,6 +120,17 @@ trait Port: Send + Sync {
 
 /// [`Port`] over the registered `agent` and `approval` actors.
 struct Actors;
+
+/// 67 §10: the agents a message may be addressed to; empty without the roster.
+async fn routable() -> Vec<roster::Routable> {
+    let Some(roster) = roster::actor() else {
+        return Vec::new();
+    };
+    roster
+        .ask(roster::RoutableAgents)
+        .await
+        .unwrap_or_default()
+}
 
 fn agents() -> Result<ActorRef<Agents>, String> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)
@@ -216,6 +228,8 @@ enum Event {
     AskDone(AskResolved),
     Artifact(ArtifactShown),
     Secret(secrets::SecretsEvent),
+    /// 67 §4.4: the hub lease moved.
+    Lease(mesh::LeaseState),
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -270,6 +284,15 @@ impl Message<secrets::SecretsEvent> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: secrets::SecretsEvent, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Secret(m));
+    }
+}
+
+impl Message<mesh::MeshEvent> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: mesh::MeshEvent, _: &mut Context<Self, ()>) {
+        if let mesh::MeshEvent::Lease(l) = m {
+            let _ = self.tx.send(Event::Lease(l));
+        }
     }
 }
 
@@ -375,6 +398,12 @@ struct State {
     parent_of: HashMap<SessionId, (SessionId, String)>,
     /// `chat.getPermalink` results by thread key.
     permalinks: HashMap<ThreadKey, String>,
+    /// 67 §4.4: the socket is a hub duty; it follows the lease.
+    follower: roster::lease::Follower,
+    /// The open socket's token; `None` while closed.
+    socket: Option<CancellationToken>,
+    /// Set once identity resolved: the socket may open.
+    app_token: Option<String>,
 }
 
 /// Everything shared by the listener callbacks, the inbound worker, the
@@ -486,6 +515,20 @@ async fn run(
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
+    // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
+    let me = {
+        let chan = Arc::clone(&chan);
+        tokio::spawn(async move {
+            let Some(mesh) = chan.rt.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else {
+                return;
+            };
+            if let Ok(st) = mesh.ask(mesh::Status).await {
+                chan.lock().follower.set_self(st.self_id.0);
+                chan.sync_socket().await;
+            }
+        })
+    };
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -549,9 +592,14 @@ async fn run(
                     tracing::debug!(%channel, %ts, error = %e, "stale slack stream not stopped");
                 }
             }
-            socket::run(Arc::clone(&chan), app_token, shutdown).await;
+            // 67 §4.4: the socket opens while this engine holds the lease
+            // (an engine without a mesh holds it by default).
+            chan.lock().app_token = Some(app_token);
+            chan.sync_socket().await;
+            shutdown.cancelled().await;
         }
     }
+    me.abort();
     inbound.abort();
     router.abort();
     bus.kill();
@@ -603,6 +651,9 @@ impl Channel {
                 asks: HashMap::new(),
                 parent_of: HashMap::new(),
                 permalinks: HashMap::new(),
+                follower: roster::lease::Follower::default(),
+                socket: None,
+                app_token: None,
             }),
             inbound_tx,
             rt,
@@ -617,6 +668,40 @@ impl Channel {
     pub async fn publish(&self, ev: SlackEvent) {
         self.lock().last_event = Some(ev.clone());
         self.rt.publish(ev).await;
+    }
+
+    /// 67 §4.4: opens the socket when this engine holds the lease and
+    /// identity is up; closes it when the lease went elsewhere. Idempotent.
+    async fn sync_socket(self: &Arc<Self>) {
+        let closed = {
+            let mut s = self.lock();
+            let want = s.follower.holding && s.app_token.is_some();
+            match (want, s.socket.take()) {
+                (true, Some(tok)) => {
+                    s.socket = Some(tok);
+                    false
+                }
+                (true, None) => {
+                    let tok = self.rt.shutdown.child_token();
+                    let app = s.app_token.clone().unwrap_or_default();
+                    tokio::spawn(socket::run(Arc::clone(self), app, tok.clone()));
+                    s.socket = Some(tok);
+                    false
+                }
+                (false, Some(tok)) => {
+                    tok.cancel();
+                    true
+                }
+                (false, None) => false,
+            }
+        };
+        if closed {
+            tracing::info!("slack socket closed: another engine holds the hub lease");
+            self.publish(SlackEvent::Disconnected {
+                reason: "hub lease held elsewhere".into(),
+            })
+            .await;
+        }
     }
 
     /// The 21 §13 snapshot.
@@ -726,13 +811,7 @@ impl Channel {
                 match self.api.post_markdown(channel, None, &reply.text).await {
                     Ok(ts) => self.lock().threads.bind(
                         thread_key(channel, &ts),
-                        Thread {
-                            session,
-                            user: user.to_owned(),
-                            team: team.to_owned(),
-                            title: None,
-                            updated_at: 0,
-                        },
+                        Thread::new(session, user.to_owned(), team.to_owned()),
                     ),
                     Err(e) => tracing::warn!(error = %e, "slack resume root post failed"),
                 }
@@ -1153,9 +1232,25 @@ impl Channel {
     }
 
     /// A user message in a DM or a listed channel: files, 👀, ask, bind (21 §7).
+    /// `<name>: …` addresses a roster agent, `theuth: …` the default (67 §10);
+    /// a thread stays with the agent it was last addressed to.
     async fn handle_message(self: &Arc<Self>, m: Msg) {
         let mut lines: Vec<String> = Vec::new();
+        let thread_ts = m.thread_ts.clone().unwrap_or_else(|| m.ts.clone());
+        let key = thread_key(&m.channel, &thread_ts);
+        let bound = self.lock().threads.get(&key).cloned();
+        let agents = routable().await;
+        let names: Vec<String> = agents
+            .iter()
+            .map(|a| a.name.clone())
+            .chain(std::iter::once("theuth".to_owned()))
+            .collect();
         let text = strip_mentions(&m.text).trim().to_owned();
+        let (text, agent) = match roster::routing::route(&text, &names) {
+            Some(r) if r.agent == "theuth" => (r.rest.to_owned(), None),
+            Some(r) => (r.rest.to_owned(), Some(r.agent)),
+            None => (text, bound.as_ref().and_then(|t| t.agent.clone())),
+        };
         if !text.is_empty() {
             lines.push(text);
         }
@@ -1165,9 +1260,32 @@ impl Channel {
             return;
         }
         let input = lines.join("\n");
-        let thread_ts = m.thread_ts.clone().unwrap_or_else(|| m.ts.clone());
-        let key = thread_key(&m.channel, &thread_ts);
         self.react(&m.channel, &m.ts, EYES).await;
+        if let Some(agent) = agent {
+            let info = agents.into_iter().find(|a| a.name == agent);
+            let before = bound.as_ref().map(|t| (t.session, t.agent_title.clone()));
+            match self.to_agent(&m, bound, agent, info, input).await {
+                Ok(thread) => {
+                    {
+                        let mut s = self.lock();
+                        // A new title or session: the worker holds both; respawn it.
+                        if before != Some((thread.session, thread.agent_title.clone())) {
+                            s.workers.remove(&key);
+                        }
+                        s.threads.bind(key.clone(), thread.clone());
+                    }
+                    let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
+                }
+                Err(e) => self.failed(&m, &thread_ts, &e).await,
+            }
+            return;
+        }
+        if bound.as_ref().is_some_and(|t| t.agent.is_some()) {
+            // `theuth: …` in an agent's thread: back to a theuth root of its own.
+            let mut s = self.lock();
+            s.threads.unbind(&key);
+            s.workers.remove(&key);
+        }
         let (session, running) = {
             let s = self.lock();
             let session = s.threads.get(&key).map(|t| t.session);
@@ -1191,13 +1309,7 @@ impl Channel {
         };
         match result {
             Ok(id) => {
-                let thread = Thread {
-                    session: id,
-                    user: m.user,
-                    team: m.team,
-                    title: None,
-                    updated_at: 0,
-                };
+                let thread = Thread::new(id, m.user.clone(), m.team.clone());
                 {
                     let mut s = self.lock();
                     if session == Some(id) {
@@ -1208,13 +1320,83 @@ impl Channel {
                 }
                 let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "agent ask failed");
-                self.post_markdown(&m.channel, &thread_ts, &format!("⚠️ {e}"))
-                    .await;
-                self.react(&m.channel, &m.ts, FAILED).await;
-            }
+            Err(e) => self.failed(&m, &thread_ts, &e).await,
         }
+    }
+
+    /// The ⚠️ line and ❌ for a message no agent took.
+    async fn failed(&self, m: &Msg, thread_ts: &str, e: &str) {
+        tracing::warn!(error = %e, "agent ask failed");
+        self.post_markdown(&m.channel, thread_ts, &format!("⚠️ {e}"))
+            .await;
+        self.react(&m.channel, &m.ts, FAILED).await;
+    }
+
+    /// 67 §10: `input` for `agent` — a task on the first message of the
+    /// thread, a mention on its thread afterwards; the thread record now
+    /// renders the agent's desk (`info.desk`) so its replies land here.
+    async fn to_agent(
+        &self,
+        m: &Msg,
+        bound: Option<Thread>,
+        agent: String,
+        info: Option<roster::Routable>,
+        input: String,
+    ) -> Result<Thread, String> {
+        let desk: Option<SessionId> = info
+            .as_ref()
+            .and_then(|a| a.desk.as_deref())
+            .and_then(|d| d.parse().ok());
+        // ponytail: no desk and no prior thread → a placeholder session nobody
+        // emits for; the next message in the thread re-reads the desk.
+        let mut thread = bound.unwrap_or_else(|| {
+            Thread::new(
+                desk.unwrap_or_else(SessionId::new),
+                m.user.clone(),
+                m.team.clone(),
+            )
+        });
+        if let Some(d) = desk {
+            thread.session = d;
+        }
+        if let Some(a) = &info {
+            thread.agent_title = Some(a.title.clone());
+        }
+        thread.agent = Some(agent.clone());
+        let tasks = tasks::actor().ok_or("tasks actor is not running")?;
+        match &thread.task {
+            None => {
+                let task = tasks
+                    .ask(tasks::CreateTask {
+                        input: tasks::TaskCreate {
+                            title: input.lines().next().unwrap_or("").chars().take(80).collect(),
+                            brief: input,
+                            owner: tasks::Owner::Agent(agent),
+                            reviewer: None,
+                            parent: None,
+                            project: None,
+                            where_: None,
+                            harness: None,
+                            external: vec![],
+                        },
+                        created_by: "user".into(),
+                        session: None,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                thread.task = Some(task.id.0);
+            }
+            Some(id) => tasks
+                .ask(tasks::Mention {
+                    id: tasks::TaskId(id.clone()),
+                    text: input,
+                    actor: "user".into(),
+                    session: None,
+                })
+                .await
+                .map_err(|e| e.to_string())?,
+        }
+        Ok(thread)
     }
 
     /// Downloads `files` to `<data_dir>/slack/inbox/<ts>-<name>`; one
@@ -1489,6 +1671,10 @@ impl Channel {
                 }
             }
             Event::Secret(_) => {}
+            Event::Lease(lease) => {
+                self.lock().follower.observe(&lease);
+                self.sync_socket().await;
+            }
         }
     }
 
@@ -1586,13 +1772,7 @@ impl Channel {
             }
         };
         let key = thread_key(channel, &ts);
-        let thread = Thread {
-            session: child,
-            user: pthread.user.clone(),
-            team: pthread.team.clone(),
-            title: None,
-            updated_at: 0,
-        };
+        let thread = Thread::new(child, pthread.user.clone(), pthread.team.clone());
         {
             let mut s = self.lock();
             s.parent_of.insert(child, (parent, name.clone()));
@@ -1650,6 +1830,7 @@ impl Channel {
             team: thread.team.clone(),
             session: thread.session,
             name: s.parent_of.get(&thread.session).map(|(_, n)| n.clone()),
+            agent_title: thread.agent_title.clone(),
             task_posted: false,
             turn: None,
             started: Instant::now(),
@@ -1741,6 +1922,8 @@ struct Worker {
     open_stream: Option<String>,
     /// The subagent's name when this thread renders a child (21 §9.1).
     name: Option<String>,
+    /// The roster agent's title when this thread is addressed to one (67 §10).
+    agent_title: Option<String>,
     /// The child's `▸ **task**` line went out.
     task_posted: bool,
     /// Approval cards posted here: id → `(ts, body)` (21 §10.1).
@@ -2060,6 +2243,11 @@ impl Worker {
                     self.chan.rt.clone(),
                     session,
                 ));
+                if let Some(title) = &self.agent_title
+                    && let Some(t) = &mut self.turn
+                {
+                    t.text(&format!("{title} — ")).await;
+                }
                 self.set_status("processing").await;
             }
             AgentEvent::TextDelta { text, .. } => {
@@ -2443,6 +2631,16 @@ pub(crate) mod tests {
         pub(crate) fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
+        /// The `Chunk::Text`s of a stream call, joined.
+        fn texts(chunks: &[crate::api::Chunk]) -> String {
+            chunks
+                .iter()
+                .filter_map(|c| match c {
+                    crate::api::Chunk::Text(s) => Some(s.as_str()),
+                    crate::api::Chunk::Task { .. } => None,
+                })
+                .collect()
+        }
         fn record(&self, line: String) {
             self.calls.lock().unwrap().push(line);
         }
@@ -2456,9 +2654,12 @@ pub(crate) mod tests {
             thread_ts: &str,
             _: &str,
             _: &str,
-            _: Vec<crate::api::Chunk>,
+            chunks: Vec<crate::api::Chunk>,
         ) -> Result<String, ApiError> {
-            self.record(format!("start_stream {channel} {thread_ts}"));
+            self.record(format!(
+                "start_stream {channel} {thread_ts} {}",
+                Self::texts(&chunks)
+            ));
             Ok("9.9".into())
         }
         async fn append_stream(
@@ -2474,11 +2675,14 @@ pub(crate) mod tests {
             &self,
             channel: &str,
             ts: &str,
-            _: Vec<crate::api::Chunk>,
+            chunks: Vec<crate::api::Chunk>,
             _: Option<String>,
             _: Option<&str>,
         ) -> Result<(), ApiError> {
-            self.record(format!("stop_stream {channel} {ts}"));
+            self.record(format!(
+                "stop_stream {channel} {ts} {}",
+                Self::texts(&chunks)
+            ));
             Ok(())
         }
         async fn post_markdown(
@@ -2675,13 +2879,7 @@ pub(crate) mod tests {
             let key = thread_key(DM, "100.1");
             self.chan.lock().threads.bind(
                 key.clone(),
-                Thread {
-                    session: self.stub.session,
-                    user: user.into(),
-                    team: "T1".into(),
-                    title: None,
-                    updated_at: 0,
-                },
+                Thread::new(self.stub.session, user.into(), "T1".into()),
             );
             key
         }
@@ -2877,13 +3075,7 @@ pub(crate) mod tests {
             let mut s = f.chan.lock();
             s.threads.bind(
                 key.clone(),
-                Thread {
-                    session: f.stub.session,
-                    user: OWNER.into(),
-                    team: "T1".into(),
-                    title: None,
-                    updated_at: 0,
-                },
+                Thread::new(f.stub.session, OWNER.into(), "T1".into()),
             );
             s.running.insert(f.stub.session);
         }
@@ -2962,6 +3154,68 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn agent_names_fall_back_to_theuth_without_the_roster_and_theuth_prefix_is_stripped() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(dm(OWNER, "100.1", None, "ops: hi"))))
+            .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(f.stub.session), "ops: hi".into())
+            ]
+        );
+        let t = f.chan.lock().threads.get(&thread_key(DM, "100.1")).cloned().expect("bound");
+        assert_eq!(t.agent, None);
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(dm(
+                OWNER,
+                "100.2",
+                Some("100.1"),
+                "theuth: also this",
+            ))))
+            .await;
+        assert_eq!(
+            f.stub.calls(),
+            vec![Call::SendInput(Some(f.stub.session), "also this".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_thread_prefixes_each_turn_with_the_title() {
+        let f = fixture();
+        let key = thread_key(DM, "100.1");
+        let mut t = Thread::new(f.stub.session, OWNER.into(), "T1".into());
+        t.agent = Some("ops".into());
+        t.agent_title = Some("Ops".into());
+        f.chan.lock().threads.bind(key, t);
+        f.chan
+            .route(Event::Agent(turn_started(f.stub.session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::TextDelta {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                text: "hello".into(),
+            }))
+            .await;
+        f.chan
+            .route(Event::Agent(AgentEvent::TurnFinished {
+                session: f.stub.session,
+                turn: TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: agent::Usage::default(),
+                context: 0,
+            }))
+            .await;
+        let start = format!("start_stream {DM} 100.1 Ops — ");
+        let stop = format!("stop_stream {DM} 9.9 Ops — ");
+        f.until(|calls| calls.iter().any(|c| c.starts_with(&start) || c.starts_with(&stop)))
+            .await;
+    }
+
+    #[tokio::test]
     async fn cancelled_turn_gets_the_stop_reaction_on_the_mark() {
         let f = fixture();
         f.chan
@@ -2986,13 +3240,7 @@ pub(crate) mod tests {
         let key = thread_key(DM, "100.1");
         f.chan.lock().threads.bind(
             key,
-            Thread {
-                session: f.stub.session,
-                user: OWNER.into(),
-                team: "T1".into(),
-                title: None,
-                updated_at: 0,
-            },
+            Thread::new(f.stub.session, OWNER.into(), "T1".into()),
         );
         f.chan
             .handle_inbound(Inbound::Push(Box::new(push(json!({

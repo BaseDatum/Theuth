@@ -87,13 +87,26 @@ pub fn normalize_number(s: &str) -> String {
 
 /// One bound thread: the session plus the contact's ACI once a message from
 /// it has been seen, so replies never depend on the presage contact store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// 67 §10: `agent` is who the contact is talking to; a Signal thread is per
+/// contact (not per message), so the binding holds — every message goes to
+/// that agent's task — until an explicit `theuth …` message.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Thread {
-    /// The live session.
-    pub session: SessionId,
+    /// The live session; `None` when bound to an agent that has no desk yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionId>,
     /// The contact's Signal account UUID, from the last inbound envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aci: Option<Uuid>,
+    /// The roster agent this contact addressed (67 §10); `None` = theuth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// `agent`'s title, the outbound prefix (`"<Title> — "`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    /// The task the thread's messages are appended to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// On-disk value; files written before ACIs were kept hold the bare session id.
@@ -124,7 +137,10 @@ impl Threads {
             .into_iter()
             .map(|(n, t)| {
                 let t = match t {
-                    StoredThread::Session(session) => Thread { session, aci: None },
+                    StoredThread::Session(session) => Thread {
+                        session: Some(session),
+                        ..Thread::default()
+                    },
                     StoredThread::Thread(t) => t,
                 };
                 (n, t)
@@ -148,13 +164,13 @@ impl Threads {
     /// The session bound to `number`.
     #[must_use]
     pub fn get(&self, number: &str) -> Option<SessionId> {
-        self.map.get(&normalize_number(number)).map(|t| t.session)
+        self.map.get(&normalize_number(number)).and_then(|t| t.session)
     }
 
     /// Whether some number's thread is `session`.
     #[must_use]
     pub fn is_bound(&self, session: SessionId) -> bool {
-        self.map.values().any(|t| t.session == session)
+        self.map.values().any(|t| t.session == Some(session))
     }
 
     /// Whom to send to for `session`: its number plus the ACI when known.
@@ -162,7 +178,7 @@ impl Threads {
     pub fn recipient_for(&self, session: SessionId) -> Option<Recipient> {
         self.map
             .iter()
-            .find(|(_, t)| t.session == session)
+            .find(|(_, t)| t.session == Some(session))
             .map(|(n, t)| Recipient {
                 number: n.clone(),
                 uuid: t.aci,
@@ -178,15 +194,71 @@ impl Threads {
         }
     }
 
-    /// Binds `who` to `session`, keeps a previously learned ACI when `who`
-    /// has none, and saves if anything changed.
+    /// Binds `who` to `session` for theuth (any agent binding is dropped),
+    /// keeps a previously learned ACI when `who` has none, and saves if
+    /// anything changed.
     pub fn bind(&mut self, who: &Recipient, session: SessionId) {
         let key = normalize_number(&who.number);
         let aci = who.uuid.or_else(|| self.map.get(&key).and_then(|t| t.aci));
-        let thread = Thread { session, aci };
-        if self.map.insert(key, thread) != Some(thread) {
+        let thread = Thread {
+            session: Some(session),
+            aci,
+            ..Thread::default()
+        };
+        if self.map.get(&key) != Some(&thread) {
+            self.map.insert(key, thread);
             self.save();
         }
+    }
+
+    /// Binds `who` to `agent` (67 §10): `session` = the agent's desk when
+    /// given, else the thread keeps the one it had; `task` replaces the old.
+    pub fn bind_agent(
+        &mut self,
+        who: &Recipient,
+        session: Option<SessionId>,
+        agent: String,
+        title: String,
+        task: Option<String>,
+    ) {
+        let key = normalize_number(&who.number);
+        let old = self.map.get(&key);
+        let thread = Thread {
+            session: session.or_else(|| old.and_then(|t| t.session)),
+            aci: who.uuid.or_else(|| old.and_then(|t| t.aci)),
+            agent: Some(agent),
+            agent_title: Some(title),
+            task,
+        };
+        if old != Some(&thread) {
+            self.map.insert(key, thread);
+            self.save();
+        }
+    }
+
+    /// Back to theuth: drops `number`'s agent, title and task; the session
+    /// stays (today's path rebinds it on the next reply).
+    pub fn clear_agent(&mut self, number: &str) {
+        if let Some(t) = self.map.get_mut(&normalize_number(number))
+            && t.agent.is_some()
+        {
+            t.agent = None;
+            t.agent_title = None;
+            t.task = None;
+            self.save();
+        }
+    }
+
+    /// `number`'s agent binding: `(agent, title, task)`; title = agent when unset.
+    #[must_use]
+    pub fn agent_of(&self, number: &str) -> Option<(&str, &str, Option<&str>)> {
+        let t = self.map.get(&normalize_number(number))?;
+        let agent = t.agent.as_deref()?;
+        Some((
+            agent,
+            t.agent_title.as_deref().unwrap_or(agent),
+            t.task.as_deref(),
+        ))
     }
 
     /// Drops `number`'s binding and saves.
@@ -196,12 +268,12 @@ impl Threads {
         }
     }
 
-    /// Every binding.
+    /// Every session binding.
     #[must_use]
     pub fn all(&self) -> Vec<(String, SessionId)> {
         self.map
             .iter()
-            .map(|(n, t)| (n.clone(), t.session))
+            .filter_map(|(n, t)| Some((n.clone(), t.session?)))
             .collect()
     }
 }
@@ -321,12 +393,23 @@ enum Event {
     AskResolved(AskResolved),
     Artifact(ArtifactShown),
     Secret(secrets::SecretsEvent),
+    /// 67 §4.7: the hub lease moved; answering follows it.
+    Lease(mesh::LeaseState),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
 #[derive(Actor)]
 struct Bus {
     tx: mpsc::UnboundedSender<Event>,
+}
+
+impl Message<mesh::MeshEvent> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: mesh::MeshEvent, _: &mut Context<Self, ()>) {
+        if let mesh::MeshEvent::Lease(lease) = m {
+            let _ = self.tx.send(Event::Lease(lease));
+        }
+    }
 }
 
 impl Message<AgentEvent> for Bus {
@@ -404,6 +487,8 @@ struct Turn {
     voice: bool,
     /// The previous block's clip send; the next clip waits for it (45 §4.5.4).
     clip_tail: Option<JoinHandle<()>>,
+    /// The turn's first block already carries the agent's `"<Title> — "` (67 §10).
+    prefixed: bool,
 }
 
 pub(crate) struct State {
@@ -413,6 +498,8 @@ pub(crate) struct State {
     turns: HashMap<SessionId, Turn>,
     last_event: Option<SignalEvent>,
     link_url: Option<String>,
+    /// 67 decision 22: only the hub answers; the lease says who that is.
+    pub(crate) lease: roster::lease::Follower,
 }
 
 pub(crate) struct Channel {
@@ -535,6 +622,20 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, AskResolved>(&bus).await;
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
+    chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
+    // 67 §4.7: who "we" are, once the mesh is up; the follower re-reads the
+    // last lease it saw against that id.
+    let identity = {
+        let chan = Arc::clone(&chan);
+        tokio::spawn(async move {
+            if let Some(mesh) = chan.rt.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await
+                && let Ok(s) = mesh.ask(mesh::Status).await
+                && let Some(holding) = chan.lock().lease.set_self(s.self_id.0)
+            {
+                tracing::info!(holding, "signal: hub duties re-evaluated for this engine");
+            }
+        })
+    };
     let inbound = {
         let chan = Arc::clone(&chan);
         tokio::spawn(async move {
@@ -564,6 +665,7 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     drop(env_tx);
     inbound.abort();
     events.abort();
+    identity.abort();
     bus.kill();
 }
 
@@ -595,6 +697,7 @@ impl Channel {
                 turns: HashMap::new(),
                 last_event: None,
                 link_url: None,
+                lease: roster::lease::Follower::default(),
             }),
             approvals: tokio::sync::Mutex::new(approvals::Pending::default()),
             asks: tokio::sync::Mutex::new(asks::Pending::default()),
@@ -1028,6 +1131,26 @@ impl Channel {
             );
             return;
         }
+        // 67 decision 22: every engine stays linked and listening; only the
+        // lease holder answers. Outbound (`UserSink::deliver`) is not gated: a
+        // session running here that calls `message_user` still reaches the user.
+        if !self.lock().lease.holding {
+            tracing::debug!(sender = %sender.number, ts = env.timestamp, "not the hub; recorded, silent");
+            return;
+        }
+        // 67 §4.7 answered markers: the first hub to mark it answers. Tasks
+        // down (`None` / `Err`) must not mute Signal, so only `Ok(false)` stops.
+        if let Some(tasks) = tasks::actor()
+            && let Ok(false) = tasks
+                .ask(tasks::MarkAnswered {
+                    sender: sender.number.clone(),
+                    timestamp: env.timestamp,
+                })
+                .await
+        {
+            tracing::debug!(sender = %sender.number, ts = env.timestamp, "already answered by another hub");
+            return;
+        }
         if let Err(e) = self.transport.send_receipt(&sender, env.timestamp).await {
             tracing::debug!(error = %e, "failed to send read receipt");
         }
@@ -1073,6 +1196,9 @@ impl Channel {
                 return;
             }
         }
+        // 67 §10: `<agent>: …` (or a thread already bound to one) goes to that
+        // agent's task; `theuth …` (or nothing) is today's path.
+        let (addressee, body) = self.addressee(&sender.number, body).await;
         let mut lines: Vec<String> = Vec::new();
         if let Some(quoted) = env
             .quote_text
@@ -1093,6 +1219,12 @@ impl Channel {
         }
         let input = lines.join("\n");
         self.react(&sender, "👀", &sender, env.timestamp).await;
+        if let Addressee::Agent(who) = addressee {
+            // The desk answers through the outbound path (its session is the
+            // thread's); image paths ride in the attachment lines.
+            self.tell_agent(&sender, env.timestamp, who, input).await;
+            return;
+        }
         let (session, in_flight) = {
             let s = self.lock();
             let session = s.threads.get(&sender.number);
@@ -1137,6 +1269,115 @@ impl Channel {
                 tracing::warn!(error = %e, "agent ask failed");
                 self.send_chunks(&sender, &format!("⚠️ {e}")).await;
                 self.react(&sender, "❌", &sender, env.timestamp).await;
+            }
+        }
+    }
+
+    /// Who `body` is for (67 §10): the named agent, the agent the thread is
+    /// already bound to, or theuth. `theuth: …` rebinds the thread to theuth.
+    /// Returns the text minus the address. Roster down → everything is theuth's.
+    async fn addressee<'a>(&self, number: &str, body: &'a str) -> (Addressee, &'a str) {
+        let agents = match roster::actor() {
+            Some(r) => r.ask(roster::RoutableAgents).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let mut names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+        names.push("theuth".into());
+        let bound = self
+            .lock()
+            .threads
+            .agent_of(number)
+            .map(|(a, t, k)| (a.to_owned(), t.to_owned(), k.map(str::to_owned)));
+        let (name, rest) = match roster::routing::route(body, &names) {
+            Some(r) if r.agent == "theuth" => {
+                self.lock().threads.clear_agent(number);
+                return (Addressee::Theuth, r.rest);
+            }
+            Some(r) => (r.agent, r.rest),
+            None => match &bound {
+                Some((a, ..)) => (a.clone(), body),
+                None => return (Addressee::Theuth, body),
+            },
+        };
+        let task = bound
+            .as_ref()
+            .filter(|(a, ..)| *a == name)
+            .and_then(|(_, _, k)| k.clone());
+        // A bound agent no longer routable (paused, gone) keeps its title and
+        // task; its desk is whatever the thread still has.
+        let (title, desk) = match agents.into_iter().find(|a| a.name == name) {
+            Some(a) => (a.title, a.desk.and_then(|d| d.parse().ok())),
+            None => (bound.map_or_else(|| name.clone(), |(_, t, _)| t), None),
+        };
+        (
+            Addressee::Agent(Named {
+                name,
+                title,
+                desk,
+                task,
+            }),
+            rest,
+        )
+    }
+
+    /// `text` to `name`'s task: the first message files it (the `assigned`
+    /// wake carries the brief), later ones are mentions. Then the thread is
+    /// bound to the agent and its desk; the desk's next turn closes the 👀.
+    async fn tell_agent(&self, sender: &Recipient, ts: u64, who: Named, text: String) {
+        let Named {
+            name,
+            title,
+            desk,
+            task,
+        } = who;
+        let result = match (tasks::actor(), task) {
+            (None, _) => Err("tasks plugin is not running".to_owned()),
+            (Some(tasks), Some(id)) => tasks
+                .ask(tasks::Mention {
+                    id: tasks::TaskId(id.clone()),
+                    text,
+                    actor: "user".into(),
+                    session: None,
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .map(|()| Some(id)),
+            (Some(tasks), None) => tasks
+                .ask(tasks::CreateTask {
+                    input: tasks::TaskCreate {
+                        title: first_line(&text),
+                        brief: text,
+                        owner: tasks::Owner::Agent(name.clone()),
+                        reviewer: None,
+                        parent: None,
+                        project: None,
+                        where_: None,
+                        harness: None,
+                        external: vec![],
+                    },
+                    created_by: "user".into(),
+                    session: None,
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .map(|t| Some(t.id.0)),
+        };
+        match result {
+            Ok(task) => {
+                let mut s = self.lock();
+                s.threads.bind_agent(sender, desk, name, title, task);
+                if let Some(desk) = desk {
+                    s.turns
+                        .entry(desk)
+                        .or_default()
+                        .marks
+                        .push((sender.clone(), ts));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, agent = %name, "task for the agent failed");
+                self.send_chunks(sender, &format!("⚠️ {e}")).await;
+                self.react(sender, "❌", sender, ts).await;
             }
         }
     }
@@ -1384,6 +1625,11 @@ impl Channel {
                 self.send_chunks(&to, &secret_notice(&name, &note)).await;
             }
             Event::Secret(_) => {}
+            Event::Lease(lease) => {
+                if let Some(holding) = self.lock().lease.observe(&lease) {
+                    tracing::info!(holding, holder = ?lease.holder, reason = %lease.reason, "signal: hub duties follow the lease");
+                }
+            }
         }
     }
 
@@ -1494,21 +1740,30 @@ impl Channel {
     /// and, on a voice turn, as a voice message once synthesized — after the
     /// previous block's clip, never before it.
     async fn flush(self: &Arc<Self>, to: &Recipient, session: SessionId) {
-        let (md, voice) = {
+        let (md, voice, prefix) = {
             let mut s = self.lock();
-            let Some(turn) = s.turns.get_mut(&session) else {
+            let State { turns, threads, .. } = &mut *s;
+            let Some(turn) = turns.get_mut(&session) else {
                 return;
             };
             if turn.text.trim().is_empty() {
                 return;
             }
-            (std::mem::take(&mut turn.text), turn.voice)
+            // 67 §10: an agent's thread hears `"<Title> — "` once per turn.
+            let prefix = (!turn.prefixed)
+                .then(|| threads.agent_of(&to.number).map(|(_, t, _)| format!("{t} — ")))
+                .flatten();
+            turn.prefixed = true;
+            (std::mem::take(&mut turn.text), turn.voice, prefix)
         };
         // 30 §9: json-render fences as their rendering; `markdown_to_plain`
         // keeps the ``` lines, so the box arrives monospace-readable.
         let plain = text::markdown_to_plain(&surface::flatten(&md, 60));
         if !plain.trim().is_empty() {
-            self.send_chunks(to, &plain).await;
+            match prefix {
+                Some(p) => self.send_chunks(to, &(p + &plain)).await,
+                None => self.send_chunks(to, &plain).await,
+            };
         }
         if !voice {
             return;
@@ -1623,6 +1878,30 @@ fn extension_for(mime: &str) -> String {
                 .collect();
             if sub.is_empty() { "bin".into() } else { sub }
         }
+    }
+}
+
+/// Where an inbound message goes (67 §10).
+enum Addressee {
+    Theuth,
+    Agent(Named),
+}
+
+/// The roster agent addressed: `desk` and `title` from the roster, `task`
+/// from the thread when it is already bound to this agent.
+struct Named {
+    name: String,
+    title: String,
+    desk: Option<SessionId>,
+    task: Option<String>,
+}
+
+/// A task title from a brief: its first line, at most 80 chars (char-safe).
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    match line.char_indices().nth(80) {
+        Some((i, _)) => line[..i].to_owned(),
+        None => line.to_owned(),
     }
 }
 
@@ -1926,6 +2205,44 @@ mod tests {
         assert!(Threads::load(dir.path()).all().is_empty());
     }
 
+    #[test]
+    fn threads_agent_binding_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = Threads::load(dir.path());
+        let first = SessionId::new();
+        t.bind(&Recipient::new(OWNER), first);
+        // No desk: the session it had stays; the agent, title and task land.
+        t.bind_agent(&Recipient::new(OWNER), None, "ops".into(), "Ops".into(), None);
+        assert_eq!(t.get(OWNER), Some(first));
+        assert_eq!(t.agent_of(OWNER), Some(("ops", "Ops", None)));
+        let desk = SessionId::new();
+        t.bind_agent(
+            &Recipient::new(OWNER),
+            Some(desk),
+            "ops".into(),
+            "Ops".into(),
+            Some("t1".into()),
+        );
+        let t2 = Threads::load(dir.path());
+        assert_eq!(t2.get(OWNER), Some(desk));
+        assert_eq!(t2.agent_of(OWNER), Some(("ops", "Ops", Some("t1"))));
+        assert_eq!(t2.recipient_for(desk), Some(Recipient::new(OWNER)));
+        t.clear_agent(OWNER);
+        let t3 = Threads::load(dir.path());
+        assert_eq!(t3.agent_of(OWNER), None);
+        assert_eq!(t3.get(OWNER), Some(desk));
+        // A theuth bind drops any agent binding.
+        t.bind_agent(&Recipient::new(OWNER), None, "ops".into(), "Ops".into(), None);
+        t.bind(&Recipient::new(OWNER), first);
+        assert_eq!(Threads::load(dir.path()).agent_of(OWNER), None);
+        // Agent-only thread with no session yet is not a session binding.
+        t.bind_agent(&Recipient::new(FRIEND), None, "dev".into(), "Dev".into(), None);
+        assert_eq!(t.get(FRIEND), None);
+        assert_eq!(t.all().len(), 1);
+        assert_eq!(first_line("  fix prod\nmore"), "fix prod");
+        assert_eq!(first_line(&"é".repeat(100)).chars().count(), 80);
+    }
+
     // -- supervisor (09 §15.2) ------------------------------------------
 
     #[tokio::test(start_paused = true)]
@@ -2011,6 +2328,64 @@ mod tests {
         f.chan.handle_envelope(env("+19998887777", 1, "hi")).await;
         assert!(f.transport.sent().is_empty());
         assert!(f.stub.calls().is_empty());
+    }
+
+    // -- hub duties (67 decision 22) -------------------------------------
+
+    #[tokio::test]
+    async fn non_hub_is_silent() {
+        let f = fixture().await;
+        {
+            let mut s = f.chan.lock();
+            s.lease.set_self("me".into());
+            s.lease.observe(&mesh::LeaseState {
+                holder: Some(mesh::EngineId("other".into())),
+                since_ms: 0,
+                reason: String::new(),
+            });
+            assert!(!s.lease.holding);
+        }
+        f.chan.handle_envelope(env(OWNER, 1, "hi")).await;
+        assert!(f.transport.sent().is_empty());
+        assert!(f.stub.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hub_answers_by_default() {
+        let f = fixture().await;
+        assert!(f.chan.lock().lease.holding);
+        f.chan.handle_envelope(env(OWNER, 1, "hi")).await;
+        assert_eq!(
+            f.stub.calls(),
+            [
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(f.stub.session), "hi".into(), vec![])
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn name_route_without_roster_falls_back_to_theuth() {
+        let f = fixture().await;
+        f.chan.handle_envelope(env(OWNER, 1, "ops: hi")).await;
+        assert_eq!(
+            f.stub.calls(),
+            [
+                Call::NewRoot(PeerScope::Owner),
+                Call::SendInput(Some(f.stub.session), "ops: hi".into(), vec![])
+            ]
+        );
+        assert_eq!(f.chan.lock().threads.agent_of(OWNER), None);
+        // `theuth:` is always a name: the address is stripped.
+        f.chan.handle_envelope(env(OWNER, 2, "theuth: hello")).await;
+        assert_eq!(
+            f.stub.calls(),
+            [Call::SendInput(
+                Some(f.stub.session),
+                "hello".into(),
+                vec![]
+            )]
+        );
     }
 
     #[tokio::test]

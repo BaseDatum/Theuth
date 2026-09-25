@@ -1,7 +1,16 @@
-# theuth-relay behind Caddy with automatic TLS (design doc 31 §5.4).
+# theuth-relay behind Caddy with automatic TLS (design doc 31 §5.4), plus the
+# iroh-relay for the engine mesh (design doc 67 §4.2) on a sibling hostname.
 #   RELAY_HOST=relay.example.com docker compose -f deploy/relay/compose.yaml up -d
 # Optional: COOKIE_SECRET=<64 hex chars> keeps browser cookies valid across restarts.
 # The UI bundle is baked into the image at /web.
+#
+# iroh-relay terminates its own TLS (the QUIC probe on 7842/udp needs the
+# certificate in-process), so Caddy does not front it: put the certificate and
+# key for IROH_RELAY_HOST in ./certs as tls.crt / tls.key (Caddy's own copy
+# lives under caddy_data/caddy/certificates/…/<host>/<host>.crt|.key — a cron
+# `cp` there is enough; iroh-relay reloads them on change). Public ports:
+# 443/tcp is Caddy's, so iroh-relay publishes 8443/tcp — point the
+# `iroh.relay` DNS name at a second IP, or run the k8s layout, to serve it on 443.
 services:
   relay:
     build:
@@ -28,6 +37,18 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+
+  iroh-relay:
+    build:
+      context: ../..
+      dockerfile: deploy/relay/Dockerfile.iroh-relay
+    image: theuth-iroh-relay
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+      - "7842:7842/udp"
+    volumes:
+      - ./certs:/certs:ro
 
 volumes:
   caddy_data:

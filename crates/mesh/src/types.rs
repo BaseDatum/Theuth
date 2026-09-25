@@ -1,0 +1,143 @@
+//! Public types of the mesh (67 §4). Everything here crosses the RPC surface
+//! (`mesh_*` methods) and so is exported to TypeScript.
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+pub use replica::{PeerEvent, PeerId};
+
+/// An engine's identity: its iroh endpoint id (an Ed25519 public key) as text.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct EngineId(pub String);
+
+impl fmt::Display for EngineId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<EngineId> for replica::PeerId {
+    fn from(id: EngineId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl From<replica::PeerId> for EngineId {
+    fn from(id: replica::PeerId) -> Self {
+        Self(id.0)
+    }
+}
+
+/// How willing an engine is to hold the hub lease (67 §4.5, decision 5).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum HubPref {
+    /// Wins the lease whenever connected.
+    Prefer,
+    /// Competes on stability (the default).
+    #[default]
+    Eligible,
+    /// Never holds it.
+    Never,
+}
+
+/// What kind of machine an engine runs on; feeds the stability score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum EngineClass {
+    /// Always on, no battery, no sleep.
+    Server,
+    /// Mains-powered, may sleep.
+    Desktop,
+    /// Battery, sleeps, roams.
+    Laptop,
+    /// Container on a server (as `Server` for the score, but marked).
+    Container,
+}
+
+/// One row of the peer set (`peers` table) with live reachability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Peer {
+    /// Endpoint id.
+    pub id: EngineId,
+    /// Display name (hostname unless renamed).
+    pub name: String,
+    /// Last known direct/relay addresses, as iroh prints them.
+    pub addrs: Vec<String>,
+    /// A connection is up right now.
+    pub reachable: bool,
+    /// Last time this engine heard from it (ms since epoch; 0 = never).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub last_seen_ms: u64,
+    /// Its lease preference.
+    pub hub_pref: HubPref,
+}
+
+/// What an engine advertises (67 §8 placement, §4.5 election).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EngineStats {
+    /// Endpoint id.
+    pub id: EngineId,
+    /// Process start (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub uptime_since_ms: u64,
+    /// Machine class.
+    pub class: EngineClass,
+    /// Fraction of the last 30 days peers saw it reachable, 0..=1.
+    pub availability_30d: f32,
+    /// Harnesses installed (`native`, `omp`, `opencode`, `claude`, …).
+    pub harnesses: Vec<String>,
+    /// Repo paths it can open.
+    pub repos: Vec<String>,
+    /// Has a display (browser, screenshots).
+    pub display: bool,
+    /// Has a usable GPU.
+    pub gpu: bool,
+}
+
+/// Who holds the hub lease (67 §4.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LeaseState {
+    /// The hub; `None` while no engine qualifies or during a handover.
+    pub holder: Option<EngineId>,
+    /// When `holder` took it (ms since epoch).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub since_ms: u64,
+    /// Why (`elected`, `prefer`, `release`, `lapse`, …), for `lease_log`.
+    pub reason: String,
+}
+
+/// Bus events (67 §4). Also delivered to [`crate::Subscribe`] receivers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum MeshEvent {
+    /// A peer connected or disconnected.
+    Peer(PeerEvent),
+    /// The lease changed hands (or was released).
+    Lease(LeaseState),
+}
+
+/// Reply to [`crate::Status`] / `mesh_status`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct MeshStatus {
+    /// This engine.
+    pub self_id: EngineId,
+    /// Every paired engine, this one excluded.
+    pub peers: Vec<Peer>,
+    /// The lease.
+    pub lease: LeaseState,
+}

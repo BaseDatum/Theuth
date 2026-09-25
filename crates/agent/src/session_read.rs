@@ -466,8 +466,7 @@ mod tests {
                     retention: tools::Retention::Private,
                     project: Some("ops".into()),
                     view: Some("v1".into()),
-                    cwd: None,
-                    model: None,
+                    ..Default::default()
                 },
                 peer: Some((7, tokio_util::sync::CancellationToken::new())),
             })

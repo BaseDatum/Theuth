@@ -112,6 +112,16 @@ import type { Key } from '@/rpc/bindings/Key'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
+import type { AgentFile } from '@/rpc/bindings/AgentFile'
+import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { HubPref } from '@/rpc/bindings/HubPref'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { Peer } from '@/rpc/bindings/Peer'
+import type { Task } from '@/rpc/bindings/Task'
+import type { TaskCreate } from '@/rpc/bindings/TaskCreate'
+import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
+import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
+import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
@@ -341,6 +351,40 @@ export interface Api {
   list_nodes(): Promise<Node[]>
   /** Every file in `~/.theuth/schedules/`, parsed or not (34 §8). */
   list_schedules(): Promise<ScheduleInfo[]>
+  /** This engine, its peers and the hub lease (67 §4, §12). */
+  mesh_status(): Promise<MeshStatus>
+  /** A pairing string another engine can `t mesh add` (67 §4.1). */
+  mesh_pairing_string(): Promise<string>
+  /** Pair with the engine behind `pairing` (67 §4.1). */
+  mesh_add(pairing: string): Promise<Peer>
+  /** Leave an engine out of the mesh (67 §4.1). */
+  mesh_remove(id: string): Promise<null>
+  /** This engine's hub lease preference (67 §4.5). */
+  mesh_set_hub(pref: HubPref): Promise<null>
+  /** Every roster agent with status, desk, open tasks and month spend (67 §12). */
+  agents_list(): Promise<AgentSummary[]>
+  /** One agent file (67 §6.1). */
+  agent_get(name: string): Promise<AgentFile>
+  /** Write `agents/<name>.md` from `file` (67 §12). */
+  agent_put(file: AgentFile): Promise<null>
+  /** Flip an agent's `paused:` line (67 §6.4). */
+  agent_pause(name: string, paused: boolean): Promise<null>
+  /** Approve a proposed agent (67 §6.5). */
+  agent_approve(name: string): Promise<null>
+  /** Tasks matching `filter`, oldest first (67 §12). */
+  tasks_list(filter: TaskFilter): Promise<Task[]>
+  /** One task (67 §7.1). */
+  task_get(id: string): Promise<Task>
+  /** Create a task as the user (67 §7). */
+  task_create(input: TaskCreate): Promise<Task>
+  /** Patch a task as the user (67 §7.2). */
+  task_update(id: string, patch: TaskPatch): Promise<Task>
+  /** Comment on a task's thread as the user (67 §7.3). */
+  task_comment(id: string, text: string): Promise<null>
+  /** The task's field-level event log (67 §7.2). */
+  task_events(id: string): Promise<TaskEvent[]>
+  /** Tasks whose `blockers` name `id` — the inverse link, computed (67 §7.1). */
+  task_blocks(id: string): Promise<string[]>
   /** A fresh 31 §4.4 pairing string issued by the node, so a device pairs with it directly (32 §4.4). */
   invite_node(id: string): Promise<Pairing>
   /** Drop a node; the user's devices stay paired with it (32 §8.4). */
@@ -568,6 +612,11 @@ export const METHODS = [
   'add_provider',
   'add_skill',
   'add_skill_repo',
+  'agent_approve',
+  'agent_get',
+  'agent_pause',
+  'agent_put',
+  'agents_list',
   'answer_ask',
   'answer_peer_request',
   'answer_secret',
@@ -716,6 +765,11 @@ export const METHODS = [
   'meeting_tap',
   'meeting_topics',
   'meeting_transcript',
+  'mesh_add',
+  'mesh_pairing_string',
+  'mesh_remove',
+  'mesh_set_hub',
+  'mesh_status',
   'new_session',
   'peer_message',
   'pin_session',
@@ -788,6 +842,13 @@ export const METHODS = [
   'subagent_model',
   'sync_mcp',
   'sync_skills',
+  'task_blocks',
+  'task_comment',
+  'task_create',
+  'task_events',
+  'task_get',
+  'task_update',
+  'tasks_list',
   'title_model',
   'transcribe',
   'undo',

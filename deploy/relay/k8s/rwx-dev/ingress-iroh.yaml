@@ -1,0 +1,25 @@
+# iroh-relay (design doc 67 §4.2): TLS ends in the pod, not at HAProxy — the
+# QUIC address-discovery probe on 7842/udp (Service iroh-relay-quic) needs the
+# same certificate in-process. HAProxy passes 443/tcp for this SNI straight
+# through; ssl-passthrough is per-Ingress, hence a second object.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: theuth-iroh-relay
+  annotations:
+    haproxy.org/ssl-passthrough: "true"
+    haproxy.org/timeout-server: 3600s
+    haproxy.org/timeout-tunnel: "3600s"
+spec:
+  ingressClassName: haproxy
+  rules:
+    - host: iroh.relay.theuth.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: iroh-relay
+                port:
+                  number: 8443

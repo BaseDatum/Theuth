@@ -147,13 +147,15 @@ are rewritten on every start.
   user sets (`/communication on always`); with it off `spawn_subagent`,
   `discover_peers` and `send_message` are not offered and nothing is
   delivered - say so, do not retry addresses from memory.
-- `spawn_subagent{task, name?, agent?, cwd?, model?, effort?}` returns
+- `spawn_subagent{task, name?, agent?, cwd?, model?, effort?, tools?}` returns
   immediately; the child's final message arrives later as a
   `<message from="session:<id>" id="…">` input. Children see only `task`.
-  `agent: <name>` runs an ACP harness from `acp/agents.yaml` in `cwd` (it
-  picks its own model); without it a theuth subagent runs on `model`/`effort`
+  `agent: <name>` runs an ACP harness from `acp/agents.yaml` in `cwd`,
+  `agent: <node>` a theuth on that node, `agent: <harness>@<node>` that
+  node's own harness; without it a theuth subagent runs on `model`/`effort`
   you choose (`list_models` shows the ids; unset =
-  `agent.subagents.model`/`effort`, then `agent.model`).
+  `agent.subagents.model`/`effort`, then `agent.model`). `model` reaches a
+  node and a harness that offers a model option; `effort` only theuth.
 - `discover_peers{query?, cursor?, limit?}` lists who you may message with
   their canonical address (`session:<uuid>`, `peer:<name>`);
   `send_message{to, message, await_reply?, reply_to?}` routes directly to one

@@ -41,8 +41,8 @@ use crate::communication::{
     PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed, PeerDelivered, PeerInfo,
     PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged, PeerMessagePage,
     PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerRelationship, PeerScope,
-    PeerState, PeerTurnFinished, Policy, PolicyError, SetCommunication, SetPeerScope, SharedPolicy,
-    WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
+    PeerState, PeerTurnFinished, PeerUplink, Policy, PolicyError, SetCommunication, SetPeerScope,
+    SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
 };
 
 use crate::acp_child::AcpChild;
@@ -178,6 +178,10 @@ pub struct Agents {
     /// Children spawned with a `tools` ceiling ([`SpawnChild::cap`]), for
     /// the board row; the registry enforces it ([`SetCap`]).
     caps: HashMap<SessionId, Risk>,
+    /// Roots a theuth on another engine opened over the node conn (67 §8):
+    /// the parent's session id and engine id from `session/new` `_meta`.
+    /// `parent` for such a root is that session, reached by [`PeerUplink`].
+    remote_parent: HashMap<SessionId, RemoteParent>,
     /// Children spawned by a turn an A2A request scope owns (50 §6.3): the
     /// child's first turn and its result are that scope's work (the durable
     /// `child:<id>` row) until [`Self::child_finished`] hands it off. A
@@ -485,7 +489,7 @@ impl Agents {
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
-        acp: Option<(String, Option<PathBuf>)>,
+        acp: Option<(String, Option<PathBuf>, Option<Risk>)>,
         pick: (Option<&str>, Option<&str>),
     ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();
@@ -517,8 +521,9 @@ impl Agents {
             if private_root.is_some() {
                 anyhow::bail!("remote agents are unavailable in a private session");
             }
+            let (cwd, cap) = acp.map_or((None, None), |a| (a.1, a.2));
             let actor = self
-                .acp_session(id, row, parent, name, acp.and_then(|a| a.1))
+                .acp_session(id, row, parent, name, cwd, pick, cap)
                 .await?;
             return Ok((id, actor));
         }
@@ -561,7 +566,9 @@ impl Agents {
                     ),
                     None => (
                         pick.0.unwrap_or(self.default_model.as_str()),
-                        self.default_effort.clone(),
+                        pick.1
+                            .map(str::to_owned)
+                            .or_else(|| self.default_effort.clone()),
                     ),
                 };
                 let model = self.resolve_model(model);
@@ -669,7 +676,10 @@ impl Agents {
     /// Spawn an [`AcpChild`] for `id` on harness `name` — an `agents.yaml`
     /// entry, else a registered node (32 §6.5) — a new row (model column = the
     /// harness name) or a resume of `row` with its stored ACP session id
-    /// (design doc 06 §3.2, §3.6).
+    /// (design doc 06 §3.2, §3.6). For a node, `pick` (model, effort) and
+    /// `cap` travel in `session/new` `_meta` with the parent's identity (67
+    /// §8); a local harness picks its own.
+    #[allow(clippy::too_many_arguments)]
     async fn acp_session(
         &mut self,
         id: SessionId,
@@ -677,23 +687,41 @@ impl Agents {
         parent: Option<(SessionId, &str)>,
         name: String,
         cwd: Option<PathBuf>,
+        pick: (Option<&str>, Option<&str>),
+        cap: Option<Risk>,
     ) -> anyhow::Result<LiveActor> {
         let entries = acp::load(&self.rt.data_dir)?;
+        let (harness, engine) = crate::peers::parse_agent(&name).map_err(anyhow::Error::msg)?;
         let node = self
             .nodes
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&name)
+            .get(engine)
             .map(|(_, d)| d.clone());
-        let (transport, fallback_model) = match (entries.get(&name), node) {
-            (Some(entry), _) => (
+        let (transport, fallback_model, meta, model) = match (harness, entries.get(engine), node) {
+            // A local harness: `model` through its model option after `session/new`.
+            (None, Some(entry), _) => (
                 acp::Transport::Process(entry.config()),
                 entry.model.clone(),
+                None,
+                pick.0.map(str::to_owned),
             ),
-            (None, Some(dialer)) => (acp::Transport::Dial(dialer), None),
-            (None, None) => anyhow::bail!(
+            // A node: native there, or its own `harness`; either way the
+            // instructions ride in `session/new` `_meta`.
+            (_, _, Some(dialer)) => {
+                let meta = acp::SessionMeta {
+                    model: pick.0.map(str::to_owned),
+                    effort: pick.1.map(str::to_owned),
+                    tools: cap,
+                    parent: parent.map(|p| p.0.to_string()),
+                    parent_engine: dialer.caller_id(),
+                    harness: harness.map(str::to_owned),
+                };
+                (acp::Transport::Dial(dialer), None, Some(meta), None)
+            }
+            _ => anyhow::bail!(
                 "{}",
-                crate::peers::unknown(&name, &entries, &node_lines(&self.nodes))
+                crate::peers::unknown(engine, &entries, &node_lines(&self.nodes))
             ),
         };
         // An existing row belonged to an earlier process (see `Agents::ledger`).
@@ -722,6 +750,8 @@ impl Agents {
             cwd,
             resume,
             fallback_model,
+            meta,
+            model,
             self.request_deadline(),
             self.store.clone(),
             self.rt.clone(),
@@ -946,6 +976,9 @@ impl Agents {
                     None => Err(unknown()),
                 }
             }
+            PeerAddress::Relative(name) if name == "parent" && self.remote_parent.contains_key(&from) => {
+                Ok(Target::Uplink)
+            }
             PeerAddress::Relative(name) if name == "parent" => {
                 let parent = match self.sessions.get(&from).and_then(|l| l.parent.as_ref()) {
                     Some((p, _)) => Some(*p),
@@ -976,6 +1009,7 @@ impl Agents {
             out.push(self.resolve(from, a).await.map(|t| match t {
                 Target::Local(id) => format!("session:{id}"),
                 Target::Remote(name) => format!("peer:{name}"),
+                Target::Uplink => "parent".to_owned(),
             }));
         }
         out
@@ -1549,6 +1583,17 @@ impl Agents {
 enum Target {
     Local(SessionId),
     Remote(String),
+    /// `parent` of a root a remote theuth opened (67 §8): out over its conn.
+    Uplink,
+}
+
+/// Who opened a root over the node conn (`_meta.theuth.parent*`, 67 §8).
+#[derive(Clone, Debug)]
+struct RemoteParent {
+    /// The parent session id on the calling engine.
+    session: String,
+    /// The calling engine's id as this one knows it (its device id).
+    engine: Option<String>,
 }
 
 impl LiveActor {
@@ -2878,12 +2923,29 @@ impl Message<SpawnChild> for Agents {
         if depth >= sub.max_depth {
             return Err(format!("subagents are not available at depth {depth}"));
         }
-        if m.agent.is_some() && (m.model.is_some() || m.effort.is_some()) {
-            return Err(
-                "`model`/`effort` do not apply to an external harness; it picks its own".into(),
-            );
+        // 67 §8: `agent` is `[<harness>@]<engine>`; a mesh engine may be
+        // named by its id prefix and is stored under its node name. A node
+        // resolves `model` against its own catalog and enforces `tools`
+        // itself; an external harness (here or on a node) takes `model`
+        // through its model option, picks its own effort, and reads the
+        // ceiling only as the first line of its brief.
+        let m = SpawnChild {
+            agent: m.agent.and_then(|a| crate::peers::canonical_agent(&self.nodes, &a)),
+            ..m
+        };
+        let (harness, engine) = match m.agent.as_deref() {
+            Some(a) => crate::peers::parse_agent(a)?,
+            None => (None, ""),
+        };
+        let node = m.agent.is_some()
+            && self.nodes.read().is_ok_and(|n| n.contains_key(engine));
+        let external = harness.is_some() || (m.agent.is_some() && !node);
+        if external && m.effort.is_some() {
+            return Err("`effort` does not apply to an external harness; it picks its own".into());
         }
-        if let Some(model) = &m.model {
+        if let Some(model) = &m.model
+            && m.agent.is_none()
+        {
             let r = self.catalog.resolve(model, &*self.configured)?;
             if let Some(p) = &r.provider
                 && !(self.configured)(Catalog::adapter(p))
@@ -2925,24 +2987,15 @@ impl Message<SpawnChild> for Agents {
         self.session(
             Some(id),
             Some((m.parent, &name)),
-            m.agent.map(|a| (a, m.cwd)),
+            m.agent.map(|a| (a, m.cwd, m.cap)),
             (m.model.as_deref(), m.effort.as_deref()),
         )
         .await
         .map_err(|e| format!("{e:#}"))?;
         // Next to `inherit_approvals` in spirit: the ceiling is on the
-        // registry before the child's first `ListTools`, and `cap_for` takes
-        // the minimum down the tree, so a capped child cannot spawn a looser one.
+        // registry before the child's first `ListTools`.
         if let Some(cap) = m.cap {
-            self.caps.insert(id, cap);
-            if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
-                let _ = reg
-                    .tell(SetCap {
-                        session: id,
-                        cap: Some(cap),
-                    })
-                    .await;
-            }
+            self.install_cap(id, cap).await;
         }
         self.rt
             .publish(AgentEvent::SubagentSpawned {
@@ -2972,7 +3025,12 @@ impl Message<SpawnChild> for Agents {
         let ticket = self.ledger.admit(id, InputOrigin::External, None);
         let me = ctx.actor_ref().clone();
         let permits = self.permits.clone();
-        let text = m.task;
+        // Not enforceable on an external harness: the ceiling is the first
+        // line of its brief instead (67 §8).
+        let text = match m.cap.filter(|_| external) {
+            Some(cap) => format!("Limits: tools {cap}\n{}", m.task),
+            None => m.task,
+        };
         tokio::spawn(async move {
             let Ok(permit) = permits.acquire_owned().await else {
                 return;
@@ -3056,6 +3114,50 @@ fn comm_err(e: anyhow::Error) -> String {
     }
 }
 
+impl Agents {
+    /// `send_message{to: "parent"}` from a root a remote theuth opened (67
+    /// §8): out over the node conn its parent holds, as a [`PeerUplink`] the
+    /// ACP relay carries. The exchange is recorded on the parent (its
+    /// `Deliver` from the child's row); here only the sender's own switch is
+    /// checked, and a reply cannot be awaited — the parent's answer arrives
+    /// as an ordinary prompt.
+    async fn uplink(&mut self, m: &Deliver, body: String) -> Result<Delivered, String> {
+        self.communication
+            .0
+            .read()
+            .enabled(m.from)
+            .map_err(|e| format!("send_message: {}: {e}", tools::communication::DISABLED))?;
+        if m.await_reply {
+            return Err(
+                "await_reply is not available for a remote parent; its answer arrives as a <message>"
+                    .into(),
+            );
+        }
+        let id = Uuid::now_v7();
+        self.rt
+            .publish(PeerUplink {
+                session: m.from,
+                id,
+                reply_to: m.reply_to,
+                text: body,
+            })
+            .await;
+        Ok(Delivered {
+            receipt: PeerReceipt {
+                id,
+                to: "parent".to_owned(),
+                state: PeerMessageState::Accepted,
+                reply_to: m.reply_to,
+                reply: None,
+                task_id: None,
+                error: None,
+                answered_by: None,
+            },
+            reply: None,
+        })
+    }
+}
+
 impl Message<Deliver> for Agents {
     type Reply = Result<Delivered, String>;
 
@@ -3075,6 +3177,7 @@ impl Message<Deliver> for Agents {
             return Err(format!("message exceeds {PEER_TEXT_MAX} bytes"));
         }
         let to = match self.resolve(m.from, &m.to).await? {
+            Target::Uplink => return self.uplink(&m, body).await,
             Target::Remote(alias) => {
                 let generation = self
                     .communication
@@ -3533,7 +3636,15 @@ impl Agents {
                 };
                 let kind = match &r.agent {
                     None => PeerKind::Native,
-                    Some(a) if self.nodes.read().is_ok_and(|n| n.contains_key(a)) => PeerKind::Node,
+                    // `"<node>"` is a theuth there and answers back over its
+                    // conn (67 §8); `"<harness>@<node>"` is that harness, which
+                    // has no peer tools, like a local one.
+                    Some(a) if crate::peers::parse_agent(a).is_ok_and(|(h, e)| {
+                        h.is_none() && self.nodes.read().is_ok_and(|n| n.contains_key(e))
+                    }) =>
+                    {
+                        PeerKind::Node
+                    }
                     Some(_) => PeerKind::Acp,
                 };
                 let state = if self.approvals.contains_key(&r.id) || self.running.contains(&r.id) {
@@ -3556,8 +3667,9 @@ impl Agents {
                     relationship,
                     state,
                     send: true,
-                    // An external harness cannot call theuth peer tools (50 §6.4).
-                    reply: kind == PeerKind::Native,
+                    // An external harness cannot call theuth peer tools (50
+                    // §6.4); a node child can, back over its conn (67 §8).
+                    reply: kind != PeerKind::Acp,
                     stream: false,
                     activity: None,
                     title,
@@ -3580,8 +3692,34 @@ impl Agents {
                 info
             })
             .collect();
+        // 67 §8: the session on another engine that opened this root, first —
+        // it is the only peer `parent` names here, and nothing else lists it.
+        if let Some(p) = self.remote_parent.get(&session) {
+            out.insert(0, remote_parent_row(p));
+        }
         out.extend(self.network.remote_peers(root));
         Ok(out)
+    }
+}
+
+/// The `parent` row of a root a remote theuth opened (67 §8): addressed as
+/// `parent`, answerable, never dormant or woken by listing.
+fn remote_parent_row(p: &RemoteParent) -> PeerInfo {
+    PeerInfo {
+        address: "parent".to_owned(),
+        name: match &p.engine {
+            Some(e) => format!("parent (session {} on {e})", p.session),
+            None => format!("parent (session {})", p.session),
+        },
+        kind: PeerKind::Parent,
+        relationship: PeerRelationship::Parent,
+        state: PeerState::Idle,
+        send: true,
+        reply: true,
+        stream: false,
+        activity: None,
+        title: None,
+        tags: Vec::new(),
     }
 }
 
@@ -3896,21 +4034,22 @@ impl Message<NewRootSession> for Agents {
         m: NewRootSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.new_root(m.cwd.as_deref(), m.scope, None).await
+        self.new_root(m.cwd.as_deref(), m.scope, None, None).await
     }
 }
 
 impl Agents {
     /// A durable root: created, `cwd` recorded, scope declared (50 §2.1).
-    /// `model` is the root's own model (`CreateSessionOptions.model`); `None` = the default.
+    /// `model`/`effort` are the root's own (`CreateSessionOptions`); `None` = the default.
     async fn new_root(
         &mut self,
         cwd: Option<&Path>,
         scope: PeerScope,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<SessionId, String> {
         let (id, _) = self
-            .session(None, None, None, (model, None))
+            .session(None, None, None, (model, effort))
             .await
             .map_err(|e| format!("{e:#}"))?;
         if let Some(cwd) = cwd {
@@ -3933,6 +4072,52 @@ impl Agents {
         }
         Ok(id)
     }
+
+    /// The durable half of [`CreateSession`]: a root with its own model and
+    /// effort, its project label, and — for a remote parent's `tools` (67 §8)
+    /// — a ceiling installed exactly as [`SpawnChild`] installs a subagent's.
+    /// This root tops its own chain, so `cap_for` is simply `cap` for it and
+    /// its descendants.
+    async fn create_durable(
+        &mut self,
+        cwd: Option<&Path>,
+        project: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        cap: Option<Risk>,
+        remote: Option<RemoteParent>,
+    ) -> Result<SessionId, String> {
+        let id = self.new_root(cwd, PeerScope::Owner, model, effort).await?;
+        if project.is_some() {
+            self.store
+                .set_project(id, project)
+                .await
+                .map_err(|e| e.to_string())?;
+            self.search.invalidate();
+        }
+        if let Some(cap) = cap {
+            self.install_cap(id, cap).await;
+        }
+        if let Some(remote) = remote {
+            self.remote_parent.insert(id, remote);
+        }
+        Ok(id)
+    }
+
+    /// Remember `cap` for the board row and put it on the registry before the
+    /// session's first `ListTools`; `cap_for` takes the minimum down the tree,
+    /// so a capped session cannot spawn a looser one.
+    async fn install_cap(&mut self, id: SessionId, cap: Risk) {
+        self.caps.insert(id, cap);
+        if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+            let _ = reg
+                .tell(SetCap {
+                    session: id,
+                    cap: Some(cap),
+                })
+                .await;
+        }
+    }
 }
 
 /// [`runtime::write_config_value`] with an atomic replace: the edit lands
@@ -3953,8 +4138,16 @@ fn write_config_atomic(path: &Path, section: &str, key: &str, value: &str) -> st
 }
 
 impl Agents {
-    /// Identity lines of a subagent (design doc 07 §10); `""` for a root session.
+    /// Identity lines of a subagent (design doc 07 §10), or of a root a
+    /// remote theuth opened (67 §8); `""` for any other root session.
     fn peer_context(&self, session: SessionId) -> String {
+        if let Some(p) = self.remote_parent.get(&session) {
+            let engine = p.engine.as_deref().unwrap_or("another engine");
+            return format!(
+                "## Peers\nYou were opened by session {} on engine {engine} (address it as `parent`; send_message to it, its messages reach you as <message> inputs).\nYour final message is delivered to it when your turn ends.",
+                p.session
+            );
+        }
         match self.sessions.get(&session).and_then(|l| l.parent.as_ref()) {
             Some((parent, name)) => format!(
                 "## Peers\nYou are `{name}`, a subagent of session {parent} (address it as `parent`).\nYour final message is delivered to the parent when your turn ends."
@@ -5229,6 +5422,7 @@ impl Message<DeleteSession> for Agents {
             self.turn_text.retain(|(s, _), _| s != id);
             self.owned_children.remove(id);
             self.caps.remove(id);
+            self.remote_parent.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -5520,7 +5714,7 @@ impl Message<Logout> for Agents {
 
     async fn handle(&mut self, m: Logout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let p = login_provider(&m.provider)?;
-        self.auth.oauth.remove(&p.ns).map_err(|e| e.to_string())
+        self.auth.oauth.remove(&p.ns).await
     }
 }
 
@@ -6299,11 +6493,13 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     }
     let gateways = crate::providers::load(&rt.data_dir, vault.as_deref());
     let auth = Auth {
+        oauth: oauth::Store::new(&rt.data_dir)
+            .with_grants(vault.clone().map(|v| v as Arc<dyn oauth::Grants>)),
         vault,
-        oauth: oauth::Store::new(&rt.data_dir),
         gateways: Arc::new(RwLock::new(gateways)),
         aws_profile: Arc::new(parking_lot::RwLock::new(cfg.aws_profile.clone())),
     };
+    auth.oauth.migrate_files().await;
     // One worker per concurrent child turn plus the root session (design doc 08 §9).
     // The worker is this binary (08 §9).
     let pool = match std::env::current_exe() {
@@ -6408,6 +6604,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
+            remote_parent: HashMap::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
@@ -6499,6 +6696,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 .await;
         }
         let dir = skills::dir(&data_dir);
+        // 67 §5.1: flat skill files replicate; `skills/<repo>/` clones sync by `sync_skills`.
+        tokio::spawn(replica::files::mirror_at(data_dir.join("skills.sqlite"), dir.clone(), "skills", std::time::Duration::from_secs(120)));
         let _ = reg
             .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))
             .await;
@@ -6850,6 +7049,7 @@ impl Agents {
             self.last_input.remove(&id);
             self.owned_children.remove(&id);
             self.caps.remove(&id);
+            self.remote_parent.remove(&id);
             self.bound.retain(|(s, _), _| *s != id);
             self.delivered.retain(|(s, _), _| *s != id);
             self.turn_text.retain(|(s, _), _| *s != id);
@@ -6935,15 +7135,29 @@ impl Message<CreateSession> for Agents {
 
     async fn handle(&mut self, m: CreateSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let project = project::normalize_project(m.options.project.as_deref())?;
-        // Session-only model (`meetings/02-live.md` §0.2): resolved now so a typo
-        // fails the create, not the first turn; the default and config.yaml stay.
-        let model = match &m.options.model {
-            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?.id),
-            None => None,
-        };
-        if m.options.retention == Retention::Durable {
-            let cwd = m.options.cwd.as_deref().map(Path::new);
-            let id = self.new_root(cwd, PeerScope::Owner, model.as_deref()).await?;
+        // 67 §8: `agent: "<harness>@<engine>"` landed here — the root is a
+        // child of our own `acp/agents.yaml` entry, `model` goes to it through
+        // its model option (unresolved: it is the harness's id, not ours) and
+        // the durable path below is not taken.
+        if let Some(harness) = &m.options.harness {
+            if m.options.retention != Retention::Durable {
+                return Err("an external harness cannot open a private session".into());
+            }
+            // Ours only: a node's harness never chains on to another node.
+            let entries = acp::load(&self.rt.data_dir).map_err(|e| format!("{e:#}"))?;
+            if !entries.contains_key(harness) {
+                return Err(acp::unknown(harness, &entries));
+            }
+            let cwd = m.options.cwd.as_deref().map(PathBuf::from);
+            let (id, _) = self
+                .session(
+                    None,
+                    None,
+                    Some((harness.clone(), cwd, None)),
+                    (m.options.model.as_deref(), None),
+                )
+                .await
+                .map_err(|e| format!("{e:#}"))?;
             if project.is_some() {
                 self.store
                     .set_project(id, project.as_deref())
@@ -6951,6 +7165,44 @@ impl Message<CreateSession> for Agents {
                     .map_err(|e| e.to_string())?;
                 self.search.invalidate();
             }
+            return Ok(SessionOpen {
+                session: id,
+                root: id,
+                retention: Retention::Durable,
+                lease_secret: None,
+            });
+        }
+        // Session-only model (`meetings/02-live.md` §0.2): resolved now so a typo
+        // fails the create, not the first turn; the default and config.yaml stay.
+        let model = match &m.options.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?.id),
+            None => None,
+        };
+        // Session-only effort, checked against that model like `SetEffort`.
+        let effort = m.options.effort.as_deref().filter(|e| *e != "default");
+        if let Some(e) = effort {
+            let target = model.as_deref().unwrap_or(&self.default_model);
+            let known = self.catalog.resolve(target, &*self.configured).ok();
+            match known.and_then(|r| r.model) {
+                Some(model) => model.validate_effort(e)?,
+                None if effort_of(e).is_none() => return Err(format!("unknown effort {e}")),
+                None => {}
+            }
+        }
+        if m.options.retention == Retention::Durable {
+            let id = self
+                .create_durable(
+                    m.options.cwd.as_deref().map(Path::new),
+                    project.as_deref(),
+                    model.as_deref(),
+                    effort,
+                    m.options.cap,
+                    m.options.parent_session.clone().map(|session| RemoteParent {
+                        session,
+                        engine: m.options.parent_engine.clone(),
+                    }),
+                )
+                .await?;
             return Ok(SessionOpen {
                 session: id,
                 root: id,
@@ -7889,6 +8141,7 @@ pub(crate) mod tests {
             child_turns: HashMap::new(),
             timed_out: HashSet::new(),
             caps: HashMap::new(),
+            remote_parent: HashMap::new(),
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
@@ -9085,13 +9338,74 @@ pub(crate) mod tests {
                     retention: Retention::Private,
                     project: Some("ops".into()),
                     view: Some("v1".into()),
-                    cwd: None,
-                    model: None,
+                    ..Default::default()
                 },
                 peer: Some((peer, closed)),
             })
             .await
             .unwrap()
+    }
+
+    /// 67 §8: a root opened for a remote parent carries its `tools` ceiling
+    /// and effort like a local subagent; a plain create carries neither.
+    #[tokio::test]
+    async fn remote_root_gets_cap_and_effort() {
+        let mut a = agents_with(true).await;
+        let remote = RemoteParent {
+            session: "parent-1".into(),
+            engine: Some("Ab3dEf9h".into()),
+        };
+        let capped = a
+            .create_durable(
+                None,
+                None,
+                None,
+                Some("high"),
+                Some(Risk::ReadOnly),
+                Some(remote),
+            )
+            .await
+            .unwrap();
+        assert_eq!(a.caps.get(&capped), Some(&Risk::ReadOnly));
+        let row = a.store.session(capped).await.unwrap().unwrap();
+        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert!(row.parent.is_none(), "a remote child is a root here");
+        // 67 §8 / 32 §13.1 amended: it is no longer a leaf — `parent` resolves
+        // to the conn, and the directory lists that parent first.
+        assert_eq!(
+            a.resolve_all(capped, &["parent".to_owned()]).await,
+            vec![Ok("parent".to_owned())]
+        );
+        let rows = a.directory(capped).await.unwrap();
+        let p = &rows[0];
+        assert_eq!((p.address.as_str(), p.kind, p.reply), ("parent", PeerKind::Parent, true));
+        assert!(p.name.contains("parent-1") && p.name.contains("Ab3dEf9h"), "{}", p.name);
+        assert!(a.peer_context(capped).contains("address it as `parent`"));
+        // Its `send_message{to: "parent"}` is accepted as an uplink; a reply
+        // cannot be awaited across the conn.
+        let deliver = |await_reply| Deliver {
+            from: capped,
+            to: "parent".into(),
+            text: "done".into(),
+            await_reply,
+            reply_to: None,
+            request_id: None,
+            admitted: CancellationToken::new(),
+        };
+        let d = a.uplink(&deliver(false), "done".into()).await.unwrap();
+        assert_eq!((d.receipt.to.as_str(), d.receipt.state), ("parent", PeerMessageState::Accepted));
+        assert!(d.reply.is_none());
+        assert!(a.uplink(&deliver(true), "done".into()).await.unwrap_err().contains("await_reply"));
+
+        let plain = a
+            .create_durable(None, None, None, None, None, None)
+            .await
+            .unwrap();
+        assert!(!a.caps.contains_key(&plain));
+        let row = a.store.session(plain).await.unwrap().unwrap();
+        assert_eq!(row.effort, a.default_effort);
+        assert!(a.resolve_all(plain, &["parent".to_owned()]).await[0].is_err());
+        assert!(a.directory(plain).await.unwrap().iter().all(|p| p.address != "parent"));
     }
 
     /// 51 §4.1–§4.2: a private root needs a view and an owning peer; once
@@ -9104,8 +9418,7 @@ pub(crate) mod tests {
             retention: Retention::Private,
             project: None,
             view: view.map(str::to_owned),
-            cwd: None,
-            model: None,
+            ..Default::default()
         };
         let no_peer = agents
             .ask(CreateSession {

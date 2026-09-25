@@ -1,0 +1,39 @@
+[package]
+name = "roster"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Agents as files: agents/ directory, desks and episodes, journal, budgets, proposals; delivers wakes to desks (design doc 67 §6)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }
+tasks = { workspace = true }
+agent = { workspace = true }
+knowledge = { workspace = true }
+mesh = { workspace = true }
+replica = { workspace = true }
+platform = { workspace = true }
+chrono = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+gray_matter = { workspace = true }
+notify = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "tasks/ts", "agent/ts", "knowledge/ts"]
+
+[lints]
+workspace = true

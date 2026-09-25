@@ -282,7 +282,7 @@ impl Tool for SecretCaptureTool {
         if value.is_empty() {
             return Ok(ToolOutput::err("empty output"));
         }
-        let info = match vault.set(&a.name, value, a.note.as_deref(), &a.tool) {
+        let info = match vault.set(&a.name, value, a.note.as_deref(), &a.tool).await {
             Ok(i) => i,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
@@ -336,7 +336,7 @@ impl Tool for SecretRestoreTool {
         let vault = &self.0;
         let from =
             find(vault, &a.name).and_then(|s| s.versions.get(usize::from(a.back)).map(|v| v.v));
-        let info = match vault.restore(&a.name, a.back) {
+        let info = match vault.restore(&a.name, a.back).await {
             Ok(i) => i,
             Err(e) => return Ok(ToolOutput::err(e)),
         };

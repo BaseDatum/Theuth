@@ -28,6 +28,12 @@ rpc = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+replica = { workspace = true }
+mesh = { workspace = true }
+tasks = { workspace = true }
+roster = { workspace = true }
+sandbox = { workspace = true }
+async-trait = { workspace = true }
 a2a = { workspace = true }
 update = { workspace = true }
 artifact = { workspace = true }

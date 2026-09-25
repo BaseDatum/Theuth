@@ -164,6 +164,14 @@ fn repo_root() -> PathBuf {
         .unwrap()
 }
 
+/// Line of `async fn open_db` in the knowledge store — the file grows with
+/// every design; the test follows the symbol, not a number.
+fn open_db_ref(root: &std::path::Path) -> String {
+    let src = std::fs::read_to_string(root.join("crates/knowledge/src/store.rs")).unwrap();
+    let line = src.lines().position(|l| l.contains("fn open_db(")).unwrap() + 1;
+    format!("crates/knowledge/src/store.rs:{line}")
+}
+
 struct TempDir(PathBuf);
 impl Drop for TempDir {
     fn drop(&mut self) {
@@ -733,12 +741,12 @@ async fn map_and_symbol() {
 
     // code_symbol on the knowledge `open_db` (60 §16 row 3).
     let out = CodeSymbolTool(ix.clone())
-        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:407".into(), sections: None, root: root.clone(), budget: None }, cx())
+        .call(CodeSymbolArgs { symbol: open_db_ref(&repo_root()), sections: None, root: root.clone(), budget: None }, cx())
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
     let v = out.structured.unwrap();
-    eprintln!("code_symbol(\"crates/knowledge/src/store.rs:407\"):\n{}", out.content);
+    eprintln!("code_symbol(open_db):\n{}", out.content);
     assert_eq!(v["definition"]["name"], "open_db");
     assert!(v["body"].as_str().unwrap().contains("fn open_db"), "{v}");
     assert!(!v["callers"].as_array().unwrap().is_empty(), "{v}");
@@ -754,7 +762,7 @@ async fn map_and_symbol() {
     let v = out.structured.unwrap();
     assert!(v["candidates"].as_array().unwrap().len() >= 2, "several open_db → candidates: {v}");
     let out = CodeSymbolTool(ix.clone())
-        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:407".into(), sections: Some(vec!["cochange".into(), "bogus".into()]), root: root.clone(), budget: None }, cx())
+        .call(CodeSymbolArgs { symbol: open_db_ref(&repo_root()), sections: Some(vec!["cochange".into(), "bogus".into()]), root: root.clone(), budget: None }, cx())
         .await
         .unwrap();
     assert!(out.is_error && out.content.contains("unknown section"), "{}", out.content);
@@ -1062,12 +1070,13 @@ async fn impact_on_this_repository() {
     eprintln!("cochanges: {pairs} pairs; top 5: {top:?}");
     assert!(pairs > 0);
     let out = CodeSymbolTool(ix.clone())
-        .call(CodeSymbolArgs { symbol: "crates/knowledge/src/store.rs:407".into(), sections: Some(vec!["cochange".into()]), root: Some(root.clone()), budget: None }, cx(&data))
+        .call(CodeSymbolArgs { symbol: open_db_ref(&root), sections: Some(vec!["cochange".into()]), root: Some(root.clone()), budget: None }, cx(&data))
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
     let v = out.structured.unwrap();
-    eprintln!("code_symbol(\"crates/knowledge/src/store.rs:407\", cochange):\n{}", out.content);
+    eprintln!("code_symbol(open_db, cochange):\n{}", out.content);
     assert!(!v["cochange"].as_array().unwrap().is_empty(), "{v}");
     assert!(v.get("note").is_none());
+
 }

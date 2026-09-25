@@ -188,6 +188,7 @@ export type SettingsTab =
   | 'harnesses'
   | 'link'
   | 'nodes'
+  | 'mesh'
   | 'connections'
   | 'channels'
   | 'shortcuts'

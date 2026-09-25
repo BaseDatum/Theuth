@@ -111,10 +111,13 @@ pub struct AnswerAsk {
 }
 
 /// Tool → actor: publish [`AskRequested`] and wait. `ask` → the answers
-/// (`None` = dismissed) and whether it timed out.
-struct Request {
-    session: SessionId,
-    questions: Vec<Question>,
+/// (`None` = dismissed) and whether it timed out. Public for the tasks
+/// plugin's `escalate`, which asks the user the same way (67 §11).
+pub struct Request {
+    /// The session the card belongs to.
+    pub session: SessionId,
+    /// What to ask.
+    pub questions: Vec<Question>,
 }
 
 /// Internal: drop a pending entry whose waiter gave up.
@@ -148,9 +151,11 @@ impl AskUser {
 
 /// What the tool gets back from the actor.
 #[derive(kameo::Reply)]
-struct Outcome {
-    answers: Option<Vec<Answer>>,
-    timed_out: bool,
+pub struct Outcome {
+    /// The answers, one per question; `None` = dismissed.
+    pub answers: Option<Vec<Answer>>,
+    /// No answer within the human timeout.
+    pub timed_out: bool,
 }
 
 impl Message<Request> for AskUser {

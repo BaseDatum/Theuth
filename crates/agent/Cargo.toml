@@ -10,6 +10,7 @@ platform = { workspace = true }
 knowledge = { workspace = true }
 search = { workspace = true }
 runtime = { workspace = true }
+replica = { workspace = true }
 models = { workspace = true }
 tools = { workspace = true }
 oauth = { workspace = true }

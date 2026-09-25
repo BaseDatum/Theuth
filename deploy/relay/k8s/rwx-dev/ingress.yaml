@@ -20,6 +20,9 @@ spec:
         - theuth.io
         - relay.theuth.io
         - app.theuth.io
+        # 67 §4.2: the mesh relay; served by ingress-iroh.yaml (SNI passthrough),
+        # listed here so cert-manager puts it on the shared certificate.
+        - iroh.relay.theuth.io
       secretName: theuth-io-cert-tls
   rules:
     - host: relay.theuth.io

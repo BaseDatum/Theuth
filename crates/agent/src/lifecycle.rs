@@ -38,6 +38,28 @@ pub struct CreateSessionOptions {
     /// (`meetings/02-live.md` §0.2).
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort for this session only; `None` = `agent.effort`. Like
+    /// `model`, never the default (a remote parent's pick, 67 §8).
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Risk ceiling for this root and its descendants (67 §8: a remote
+    /// parent's `tools`); installed on the registry like a subagent's cap.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cap: Option<tools::Risk>,
+    /// The session on another engine that opens this root over the node conn
+    /// (67 §8, `_meta.theuth.parent`): it becomes this root's `parent` peer.
+    #[serde(default)]
+    pub parent_session: Option<String>,
+    /// That engine's id as this one knows it (`_meta.theuth.parent_engine`).
+    #[serde(default)]
+    pub parent_engine: Option<String>,
+    /// Open the root as a child of this `acp/agents.yaml` harness of ours
+    /// instead of a native session (67 §8, `agent: "<harness>@<engine>"`
+    /// arriving as `_meta.theuth.harness`). `model` then goes through the
+    /// harness's model option; `effort` and `cap` do not apply.
+    #[serde(default)]
+    pub harness: Option<String>,
 }
 
 /// Reply to `create_session` / `resume_private`: the opened session, its

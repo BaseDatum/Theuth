@@ -477,6 +477,14 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.leave_session(session, Some(secret)).await)?,
         ),
         Command::ListSchedules => UiEvent::Schedules(msg(api.list_schedules().await)?),
+        Command::ListTasks(project) => {
+            let filter = tasks::TaskFilter {
+                project: project.clone(),
+                ..Default::default()
+            };
+            UiEvent::Tasks(project, msg(api.tasks_list(filter).await)?)
+        }
+        Command::ListRoster => UiEvent::Roster(msg(api.agents_list().await)?),
         Command::FireSchedule(name) => {
             let id = msg(api.fire_schedule(name.clone()).await)?;
             UiEvent::Info(format!("fired {name} → session {id}"))
@@ -1245,6 +1253,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Prompt(text) | UiEvent::Info(text) => writeln!(out, "{text}"),
         UiEvent::Jobs(jobs) => writeln!(out, "{}", tools::jobs::table(jobs)),
         UiEvent::Schedules(rows) => writeln!(out, "{}", model::schedules_table(rows)),
+        UiEvent::Tasks(project, rows) => {
+            writeln!(out, "{}", model::tasks_table(project.as_deref(), rows))
+        }
+        UiEvent::Roster(rows) => writeln!(out, "{}", model::agents_table(rows)),
         UiEvent::ScheduleHistory(name, info, rows) => {
             writeln!(
                 out,

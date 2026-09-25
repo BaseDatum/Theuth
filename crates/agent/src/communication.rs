@@ -247,6 +247,9 @@ pub enum PeerKind {
     Node,
     /// A configured remote A2A peer.
     A2a,
+    /// The theuth session on another engine that opened this one over the
+    /// node conn (67 §8); reached only as `parent`.
+    Parent,
 }
 
 /// The candidate's place relative to the asking session (§5.1).
@@ -610,6 +613,23 @@ pub struct PeerDelivered {
     pub seq: i64,
     /// The turn that consumed it.
     pub turn: TurnId,
+}
+
+/// Bus message: a session opened by a remote parent (67 §8) sent
+/// `send_message{to: "parent"}`. The ACP relay that owns the session's conn
+/// carries it out as a `_theuth/peer_message` notification; nothing else
+/// consumes it. Minted here, never stored: the parent's exchange is the
+/// durable record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerUplink {
+    /// Sending session (the remote child, a root on this engine).
+    pub session: SessionId,
+    /// This engine's id for the message; the parent's idempotency key.
+    pub id: Uuid,
+    /// The parent-side message it answers, when it is a reply.
+    pub reply_to: Option<Uuid>,
+    /// Redacted, bounded body.
+    pub text: String,
 }
 
 /// A parsed `to` argument (§5.1). Only canonical forms carry identity;

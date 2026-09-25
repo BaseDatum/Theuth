@@ -101,6 +101,9 @@ impl runtime::Plugin for RpcPlugin {
                 let _ = link.tell(link::SetDispatch { methods, acp }).await;
             }
         });
+        // 67 §4.2: the same ACP over the mesh's `theuth/acp/1` streams, and
+        // mesh engines registered with `agent` as nodes.
+        tokio::spawn(acp::serve_mesh(rt.clone()));
         // 39 §3.4: how many frontends hold a receiver; the updater only
         // restarts a service daemon when this is 0.
         let rt = rt.clone();

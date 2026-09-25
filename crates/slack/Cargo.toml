@@ -16,6 +16,9 @@ figment = { workspace = true }
 markdown = { workspace = true }
 surface = { workspace = true }
 voice = { workspace = true }
+roster = { workspace = true }
+tasks = { workspace = true }
+mesh = { workspace = true }
 slack-morphism = { workspace = true }
 reqwest = { workspace = true }
 # Both `ring` (reqwest) and `aws-lc-rs` (morphism's hyper-rustls) are linked; rustls

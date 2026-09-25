@@ -22,30 +22,36 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentRequest, AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
     ClientCapabilities, ContentBlock, Error, ErrorCode, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, NewSessionRequest, PermissionOption, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionId,
-    SessionNotification, SessionUpdate, StopReason, ToolCallUpdate,
+    InitializeResponse, LoadSessionRequest, Meta, NewSessionRequest, PermissionOption,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigValueId, SessionId, SessionNotification,
+    SessionUpdate, SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
-    Responder, is_incoming_transport_closed,
+    Responder, UntypedMessage, is_incoming_transport_closed,
 };
 use futures::future::BoxFuture;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use crate::PeerMessage;
+
 /// [`probe`] gives up on `initialize` + `session/new` after this long.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What the caller gets from the connection: `session/update` notifications
-/// and `session/request_permission` requests, in wire order.
+/// What the caller gets from the connection: `session/update` notifications,
+/// `session/request_permission` requests and `_theuth/peer_message`
+/// extension notifications (67 §8), in wire order.
 pub enum Update {
     /// A `session/update` notification's payload.
     Session(SessionUpdate),
     /// A `session/request_permission` request; answer it exactly once.
     Permission(Permission),
+    /// A remote theuth child's `send_message{to: "parent"}` ([`crate::PEER_MESSAGE_METHOD`]).
+    Peer(PeerMessage),
     /// stdout EOF / process exit: the exit error text (with the stderr tail on
     /// a non-zero status) or `process exited`.
     Closed(String),
@@ -56,6 +62,7 @@ impl fmt::Debug for Update {
         match self {
             Update::Session(u) => f.debug_tuple("Session").field(u).finish(),
             Update::Permission(p) => f.debug_tuple("Permission").field(&p.tool_call).finish(),
+            Update::Peer(m) => f.debug_tuple("Peer").field(&m.id).finish(),
             Update::Closed(why) => f.debug_tuple("Closed").field(why).finish(),
         }
     }
@@ -102,6 +109,16 @@ pub struct LineDuplex {
 pub trait Dialer: Send + Sync + fmt::Debug {
     /// Open a new connection.
     async fn dial(&self) -> Result<LineDuplex, String>;
+    /// How the dialled side names this caller (a node's view of the parent:
+    /// its device id, 32 §4.1); `None` when the transport has no such notion.
+    fn caller_id(&self) -> Option<String> {
+        None
+    }
+    /// The dialled engine's mesh id (67 §4.1), so `agent: "<id prefix>"`
+    /// resolves too; `None` for a transport without one (a 32 node).
+    fn engine_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// How the harness is reached (32 §6.5).
@@ -136,6 +153,14 @@ pub struct Connect {
     /// Where a child process's stderr lines are appended (created and left
     /// empty for a dial transport).
     pub stderr_log: PathBuf,
+    /// theuth-to-theuth instructions for `session/new` `_meta` (67 §8);
+    /// `None` for a harness that is not theuth. Not sent on `session/load`.
+    pub meta: Option<crate::SessionMeta>,
+    /// Switch the harness to this model after `session/new` through its
+    /// `category: "model"` config option (67 §8; omp and opencode announce
+    /// one). Not applied on `session/load`; a harness without the option
+    /// keeps its own and the pick is logged.
+    pub model: Option<String>,
 }
 
 /// One in-flight `session/prompt`: resolves with the stop reason (serde name,
@@ -206,12 +231,24 @@ impl Link {
         let (cx_tx, cx_rx) = oneshot::channel::<ConnectionTo<Agent>>();
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let notify_tx = tx.clone();
+        let peer_tx = tx.clone();
         let permission_tx = tx;
         let builder = Client
             .builder()
             .on_receive_notification(
                 async move |n: SessionNotification, _cx| {
                     let _ = notify_tx.send(Update::Session(n.update));
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            // Every other notification: the peer-message extension is ours
+            // (67 §8); anything else is dropped, as the SDK would drop it.
+            .on_receive_notification(
+                async move |n: UntypedMessage, _cx| {
+                    if let Some(m) = PeerMessage::parse(&n) {
+                        let _ = peer_tx.send(Update::Peer(m));
+                    }
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -308,8 +345,9 @@ impl Link {
         config: Option<&AcpAgentConfig>,
         cwd: &Path,
         resume: Option<String>,
+        meta: Option<Meta>,
         authenticate: bool,
-    ) -> Result<(SessionId, bool, Option<String>), Fail> {
+    ) -> Result<(SessionId, bool, Vec<SessionConfigOption>), Fail> {
         let init: InitializeResponse = match self.request(initialize_request()).await {
             Ok(i) => i,
             Err(e) => return Err(Fail::Other(self.explain(e).await)),
@@ -322,16 +360,12 @@ impl Link {
                     .request(LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd))
                     .await
                     .map(|r| {
-                        let model = r.config_options.as_deref().and_then(current_model);
-                        (SessionId::new(sid.as_str()), true, model)
+                        (SessionId::new(sid.as_str()), true, r.config_options.unwrap_or_default())
                     }),
                 None => self
-                    .request(NewSessionRequest::new(cwd))
+                    .request(NewSessionRequest::new(cwd).meta(meta.clone()))
                     .await
-                    .map(|r| {
-                        let model = r.config_options.as_deref().and_then(current_model);
-                        (r.session_id, false, model)
-                    }),
+                    .map(|r| (r.session_id, false, r.config_options.unwrap_or_default())),
             };
             match opened {
                 Ok(session) => return Ok(session),
@@ -381,18 +415,41 @@ impl Harness {
             cwd,
             resume,
             stderr_log,
+            meta,
+            model: want,
         } = c;
         let config = transport.config().cloned();
+        let meta = meta.as_ref().and_then(crate::SessionMeta::to_meta);
         let mut link = Link::spawn(transport, &stderr_log, tx.clone()).await?;
-        let (session, resumed, model) = match link.open(config.as_ref(), &cwd, resume, true).await {
-            Ok(s) => s,
-            Err(Fail::Login(cmd)) => {
-                return Err(format!(
-                    "not logged in — run `{cmd}` in a terminal, then retry"
-                ));
+        let (session, resumed, mut options) =
+            match link.open(config.as_ref(), &cwd, resume, meta, true).await {
+                Ok(s) => s,
+                Err(Fail::Login(cmd)) => {
+                    return Err(format!(
+                        "not logged in — run `{cmd}` in a terminal, then retry"
+                    ));
+                }
+                Err(Fail::Other(why)) => return Err(why),
+            };
+        if let Some(want) = want.filter(|_| !resumed)
+            && current_model(&options).as_deref() != Some(want.as_str())
+        {
+            match model_option(&options) {
+                Some(id) => match link
+                    .request(SetSessionConfigOptionRequest::new(
+                        session.clone(),
+                        id,
+                        SessionConfigOptionValue::value_id(SessionConfigValueId::new(want.clone())),
+                    ))
+                    .await
+                {
+                    Ok(r) => options = r.config_options,
+                    Err(e) => tracing::warn!("acp set_config_option model={want}: {}", error_text(&e)),
+                },
+                None => tracing::warn!("acp harness offers no model option; `{want}` not applied"),
             }
-            Err(Fail::Other(why)) => return Err(why),
-        };
+        }
+        let model = current_model(&options);
         let Link {
             cx,
             shutdown,
@@ -474,6 +531,11 @@ pub fn current_model(options: &[SessionConfigOption]) -> Option<String> {
         SessionConfigKind::Select(s) => Some(s.current_value.0.to_string()),
         _ => None,
     };
+    model_select(options).and_then(select)
+}
+
+/// The model select itself (see [`current_model`]).
+fn model_select(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
     options
         .iter()
         .find(|o| o.category == Some(SessionConfigOptionCategory::Model))
@@ -483,7 +545,13 @@ pub fn current_model(options: &[SessionConfigOption]) -> Option<String> {
                     || o.name.to_ascii_lowercase().contains("model")
             })
         })
-        .and_then(select)
+}
+
+/// The config id to `session/set_config_option` a model with (67 §8), when
+/// the harness announces a model select.
+#[must_use]
+pub fn model_option(options: &[SessionConfigOption]) -> Option<SessionConfigId> {
+    model_select(options).map(|o| o.id.clone())
 }
 
 /// Open, `initialize`, `session/new`, report, close. Never authenticates.
@@ -494,7 +562,7 @@ pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
     let attempt = async {
         let config = transport.config().cloned();
         let mut link = Link::spawn(transport, &stderr_log, tx).await?;
-        link.open(config.as_ref(), &cwd, None, false)
+        link.open(config.as_ref(), &cwd, None, None, false)
             .await
             .map_err(|f| match f {
                 Fail::Login(cmd) => format!("login required: {cmd}"),
@@ -676,6 +744,8 @@ mod tests {
                 cwd: dir.clone(),
                 resume: None,
                 stderr_log: dir.join("acp-offline.log"),
+                meta: None,
+                model: None,
             },
             tx,
         )

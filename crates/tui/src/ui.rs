@@ -1979,6 +1979,8 @@ mod tests {
                 scope: None,
                 source: None,
                 timestamp: None,
+                owner: "user".into(),
+                visibility: Default::default(),
             },
             r#match: TextMatch {
                 field: "body".into(),

@@ -3446,7 +3446,7 @@ impl Turn {
             // A retried round 0 or a text-less span has nothing to match.
             if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
                 match knowledge
-                    .hint(&query, &self.cwd, &self.state.hinted, cfg.hint_limit)
+                    .hint_for(&query, &self.cwd, &self.state.hinted, cfg.hint_limit, Some(self.shared.id))
                     .await
                 {
                     Ok(metas) if !metas.is_empty() => {
@@ -4529,11 +4529,12 @@ impl Turn {
         }
         let session = self.shared.id;
         let related = knowledge
-            .hint(
+            .hint_for(
                 &hint_query(&self.state.history),
                 &self.cwd,
                 &BTreeSet::new(),
                 10,
+                Some(session),
             )
             .await
             .unwrap_or_else(|e| {
@@ -4573,8 +4574,9 @@ impl Turn {
                     .map(PathBuf::from),
                 body: doc.body,
                 id,
+                visibility: None,
             };
-            match knowledge.put(put, Source::Harvest).await {
+            match knowledge.put_for(put, Source::Harvest, Some(session)).await {
                 Ok((_, true)) => result.added += 1,
                 Ok((_, false)) => result.updated += 1,
                 Err(e) => {

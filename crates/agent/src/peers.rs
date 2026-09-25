@@ -38,19 +38,19 @@ pub struct SpawnSubagentArgs {
     /// Stable peer name (used to address it with send_message); generated when omitted.
     #[serde(default)]
     pub name: Option<String>,
-    /// An external harness from ~/.theuth/acp/agents.yaml or a node (another machine running theuth); default: a theuth subagent.
+    /// An external harness from ~/.theuth/acp/agents.yaml, a node (another machine running theuth), or `<harness>@<node>` (that node's own external harness); default: a theuth subagent.
     #[serde(default)]
     pub agent: Option<String>,
     /// Absolute working directory for an external harness; default: theuth's cwd.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Model for a theuth subagent as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. Not for external harnesses.
+    /// Model as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. On a node it is resolved there; an external harness switches to it when it offers a model option.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning effort for a theuth subagent: low|medium|high|off|default or a token budget; default: the configured one.
+    /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. Not for an external harness.
     #[serde(default)]
     pub effort: Option<String>,
-    /// Risk ceiling for a theuth subagent: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk; not enforceable for an external harness — an error when combined with `agent`.
+    /// Risk ceiling: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk — enforced for theuth children here and on a node; an external harness only reads it as a first line of its brief.
     #[serde(default)]
     pub tools: Option<String>,
 }
@@ -86,14 +86,15 @@ pub(crate) fn node_lines(nodes: &Nodes) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The tool description's node line (32 §7); empty with no nodes.
+/// The tool description's node line (32 §7, 67 §8); empty with no nodes.
 pub(crate) fn describe_nodes(nodes: &BTreeMap<String, String>) -> String {
     if nodes.is_empty() {
         return String::new();
     }
     let items: Vec<String> = nodes.iter().map(|(n, d)| format!("{n} — {d}")).collect();
     format!(
-        "Nodes (theuth on other machines, same tools, their own cwd and credentials): {}",
+        "Nodes (theuth on other machines, same tools, their own cwd and credentials; `agent: \"<harness>@<node>\"` runs that node's own external harness, e.g. `omp@{}`): {}",
+        nodes.keys().next().map_or("build-A", String::as_str),
         items.join("; ")
     )
 }
@@ -113,6 +114,55 @@ pub(crate) fn unknown(
     s
 }
 
+/// `agent` as `[<harness>@]<engine>` (67 §8): `"build-A"` → `(None,
+/// "build-A")`, a node or a local harness by that name; `"omp@build-A"` →
+/// `(Some("omp"), "build-A")`, the node's own harness `omp`. Empty parts and
+/// a second `@` are the error the model reads.
+pub(crate) fn parse_agent(s: &str) -> Result<(Option<&str>, &str), String> {
+    let bad = || format!("`agent`: `{s}` is not `<name>` or `<harness>@<node>`");
+    match s.rsplit_once('@') {
+        None if s.is_empty() => Err(bad()),
+        None => Ok((None, s)),
+        Some((h, e)) if h.is_empty() || e.is_empty() || h.contains('@') => Err(bad()),
+        Some((h, e)) => Ok((Some(h), e)),
+    }
+}
+
+/// The registered node `engine` names (67 §8): by name, else the one node
+/// whose mesh id starts with it ([`acp::Dialer::engine_id`]; a 32 node has
+/// none). Two id matches are no match.
+pub(crate) fn resolve_node(nodes: &Nodes, engine: &str) -> Option<String> {
+    let nodes = nodes.read().unwrap_or_else(|p| p.into_inner());
+    if nodes.contains_key(engine) {
+        return Some(engine.to_owned());
+    }
+    let mut hits = nodes
+        .iter()
+        .filter(|(_, (_, d))| d.engine_id().is_some_and(|id| id.starts_with(engine)))
+        .map(|(n, _)| n.clone());
+    match (hits.next(), hits.next()) {
+        (Some(one), None) => Some(one),
+        _ => None,
+    }
+}
+
+/// `agent` with its engine part replaced by the registered node name
+/// ([`resolve_node`]); unchanged when it names no node (a local harness).
+/// `None`: the engine is *this* one (its hostname, as the mesh's peers and a
+/// task's `where` name it) and no node — a local child, native or the named
+/// local harness (`omp@<this host>` → `omp`).
+pub(crate) fn canonical_agent(nodes: &Nodes, agent: &str) -> Option<String> {
+    match parse_agent(agent) {
+        Ok((harness, engine)) => match (harness, resolve_node(nodes, engine)) {
+            (Some(h), Some(node)) => Some(format!("{h}@{node}")),
+            (None, Some(node)) => Some(node),
+            (h, None) if engine == platform::process::hostname() => h.map(str::to_owned),
+            (_, None) => Some(agent.to_owned()),
+        },
+        Err(_) => Some(agent.to_owned()),
+    }
+}
+
 /// The supervisor, or the text the model reads when it is not running.
 pub(crate) fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
     ActorRef::<Agents>::lookup(AGENT_ACTOR)
@@ -122,15 +172,12 @@ pub(crate) fn supervisor() -> Result<ActorRef<Agents>, &'static str> {
 }
 
 /// `tools` as a [`Risk`] ceiling: `None` (no cap) when absent or
-/// `destructive`; an unknown value or one paired with `agent` is the error
-/// the model reads. `destructive` is `None` so the argument reads naturally.
+/// `destructive`; an unknown value is the error the model reads.
+/// `destructive` is `None` so the argument reads naturally.
 fn cap_of(args: &SpawnSubagentArgs) -> Result<Option<Risk>, String> {
     let Some(tools) = &args.tools else {
         return Ok(None);
     };
-    if args.agent.is_some() {
-        return Err("`tools` cannot be enforced for an external harness".into());
-    }
     let risk: Risk = tools
         .parse()
         .map_err(|e| format!("`tools`: {e}"))?;
@@ -174,11 +221,21 @@ impl Tool for SpawnSubagentTool {
             Ok(c) => c,
             Err(e) => return Ok(ToolOutput::err(e)),
         };
-        if let Some(agent) = &args.agent {
+        let agent = args.agent.and_then(|a| canonical_agent(&self.nodes, &a));
+        if let Some(agent) = &agent {
             let known = harnesses(&self.data_dir);
             let nodes = node_lines(&self.nodes);
-            if !known.contains_key(agent) && !nodes.contains_key(agent) {
-                return Ok(ToolOutput::err(unknown(agent, &known, &nodes)));
+            let (harness, engine) = match parse_agent(agent) {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            };
+            // A remote harness is checked on its node; the node must be one of ours.
+            let ok = match harness {
+                Some(_) => nodes.contains_key(engine),
+                None => known.contains_key(engine) || nodes.contains_key(engine),
+            };
+            if !ok {
+                return Ok(ToolOutput::err(unknown(engine, &known, &nodes)));
             }
         }
         Ok(
@@ -187,7 +244,7 @@ impl Tool for SpawnSubagentTool {
                     parent: cx.session,
                     name: args.name,
                     task: args.task,
-                    agent: args.agent,
+                    agent,
                     cwd: args.cwd,
                     model: args.model,
                     effort: args.effort,
@@ -684,8 +741,51 @@ mod tests {
         }
     }
 
+    /// A mesh engine for the resolution test: known by id, never dialled.
+    #[derive(Debug)]
+    struct MeshId(&'static str);
+
+    #[async_trait::async_trait]
+    impl acp::Dialer for MeshId {
+        async fn dial(&self) -> Result<acp::LineDuplex, String> {
+            Err("not dialled".to_owned())
+        }
+        fn engine_id(&self) -> Option<&str> {
+            Some(self.0)
+        }
+    }
+
+    /// 67 §8: `agent: "<harness>@<engine>"` resolves the engine by node name
+    /// first, then by a unique mesh id prefix; a 32 node has no id; the
+    /// spawn stores the canonical `<harness>@<node name>`.
+    #[test]
+    fn engine_resolves_by_name_then_unique_id_prefix() {
+        let nodes = Nodes::default();
+        {
+            let mut w = nodes.write().unwrap_or_else(|p| p.into_inner());
+            let d = |d: Arc<dyn acp::Dialer>| (String::new(), d);
+            w.insert("build-A".into(), d(Arc::new(MeshId("abcdef0123456789"))));
+            w.insert("build-B".into(), d(Arc::new(MeshId("abcdff9876543210"))));
+            w.insert("mac-mini".into(), d(Arc::new(NoDial)));
+        }
+        assert_eq!(resolve_node(&nodes, "build-A").as_deref(), Some("build-A"));
+        assert_eq!(resolve_node(&nodes, "mac-mini").as_deref(), Some("mac-mini"));
+        assert_eq!(resolve_node(&nodes, "abcdef01").as_deref(), Some("build-A"));
+        assert_eq!(resolve_node(&nodes, "abcdff").as_deref(), Some("build-B"));
+        assert_eq!(resolve_node(&nodes, "abcd"), None, "two matches are no match");
+        assert_eq!(resolve_node(&nodes, "mac"), None, "a 32 node has no id");
+        assert_eq!(canonical_agent(&nodes, "omp@abcdef01").as_deref(), Some("omp@build-A"));
+        assert_eq!(canonical_agent(&nodes, "abcdff98").as_deref(), Some("build-B"));
+        assert_eq!(canonical_agent(&nodes, "omp").as_deref(), Some("omp"), "a local harness passes through");
+        assert_eq!(canonical_agent(&nodes, "a@b@c").as_deref(), Some("a@b@c"), "bad input is the spawn's error");
+        let me = platform::process::hostname();
+        assert_eq!(canonical_agent(&nodes, me), None, "this engine → a local native child");
+        assert_eq!(canonical_agent(&nodes, &format!("omp@{me}")).as_deref(), Some("omp"));
+    }
+
     /// `tools` parses to a cap, `destructive` and absence are no cap, an
-    /// unknown value or an external harness is an error before any spawn.
+    /// unknown value is an error before any spawn; `agent` no longer refuses
+    /// it (67 §8: enforced on a node, a brief line for an external harness).
     #[test]
     fn spawn_tools_arg_parses_to_a_cap_or_a_clear_error() {
         let args = |tools: Option<&str>, agent: Option<&str>| SpawnSubagentArgs {
@@ -704,10 +804,9 @@ mod tests {
         let e = cap_of(&args(Some("readonly"), None)).unwrap_err();
         assert!(e.contains("unknown risk `readonly`") && e.contains("read_only"), "{e}");
         assert_eq!(
-            cap_of(&args(Some("read_only"), Some("codex"))).unwrap_err(),
-            "`tools` cannot be enforced for an external harness"
+            cap_of(&args(Some("read_only"), Some("build-A"))),
+            Ok(Some(Risk::ReadOnly))
         );
-        // An external harness without `tools` is still fine.
         assert_eq!(cap_of(&args(None, Some("codex"))), Ok(None));
     }
 
@@ -774,8 +873,7 @@ mod tests {
             nodes: nodes.clone(),
         }
         .description();
-        let line = "Nodes (theuth on other machines, same tools, their own cwd and credentials): \
-                    build-box — linux · theuth 0.4.1; mac-mini — macos · offline";
+        let line = "e.g. `omp@build-box`): build-box — linux · theuth 0.4.1; mac-mini — macos · offline";
         assert!(desc.contains(line), "{desc}");
         assert!(desc.find("External harnesses").unwrap() < desc.find("Nodes (").unwrap());
 
@@ -783,6 +881,18 @@ mod tests {
         assert!(err.starts_with("unknown agent `box`"), "{err}");
         assert!(err.ends_with("nodes: build-box, mac-mini"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 67 §8: `agent` is `<name>` or `<harness>@<node>`; nothing else.
+    #[test]
+    fn agent_parses_as_optional_harness_at_engine() {
+        assert_eq!(parse_agent("omp@build-A"), Ok((Some("omp"), "build-A")));
+        assert_eq!(parse_agent("build-A"), Ok((None, "build-A")));
+        assert_eq!(parse_agent("omp"), Ok((None, "omp")));
+        for bad in ["@x", "x@", "@", "", "a@b@c"] {
+            let e = parse_agent(bad).unwrap_err();
+            assert!(e.contains("<harness>@<node>"), "{bad}: {e}");
+        }
     }
 
     /// 62 §3.5: `to` is one address or a list; the list is deduplicated in

@@ -490,9 +490,11 @@ pub(crate) struct CurrentIndex {
 
 impl CurrentIndex {
     async fn build(db: &SqlitePool, stale: HashMap<String, String>) -> anyhow::Result<Self> {
-        let rows: Vec<CurrentRow> = sqlx::query_as(
-            "SELECT id, type, title, description, tags, scope, source, timestamp, body, path FROM concepts",
-        )
+        // Only `META_COLS` (a const) is interpolated.
+        let rows: Vec<CurrentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {}, body, path FROM concepts",
+            crate::store::META_COLS
+        )))
         .fetch_all(db)
         .await?;
         Ok(tokio::task::spawn_blocking(move || {
@@ -784,6 +786,7 @@ mod tests {
             tags: vec!["rust".into()],
             scope: None,
             body: body.into(),
+            visibility: None,
         }
     }
 

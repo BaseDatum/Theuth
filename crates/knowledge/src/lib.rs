@@ -13,7 +13,7 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`KNOWLEDGE_ACTOR`] actor ([`KnowledgeActor`]): [`Handle`],
 //!   [`Search`], [`Get`], [`List`], [`PutConcept`], [`Write`], [`Delete`], [`HistoryOf`],
-//!   [`RevisionOf`], [`Restore`], [`SyncNow`], [`search::SearchConcepts`],
+//!   [`RevisionOf`], [`Restore`], [`SyncNow`], [`RegisterScoper`], [`search::SearchConcepts`],
 //!   [`search::SearchHistory`], [`search::ReadRevision`], [`search::RefreshSearch`]
 //! - event: [`KnowledgeChanged`], published by the store after every write
 //!
@@ -36,6 +36,7 @@ pub mod harvest;
 pub mod repo;
 pub mod search;
 pub mod store;
+pub mod sync;
 pub mod tools;
 pub mod types;
 
@@ -62,11 +63,17 @@ pub const HINT_DESCRIPTION_CHARS: usize = 120;
 pub struct KnowledgeConfig {
     /// `false`: no actor, no tools; the agent's lookup finds nothing and hints/harvest are off.
     pub enabled: bool,
+    /// Seconds between bundle syncs with every connected engine (67 §5.2);
+    /// a sync also runs on each connect.
+    pub sync_secs: u64,
 }
 
 impl Default for KnowledgeConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            sync_secs: 300,
+        }
     }
 }
 
@@ -143,6 +150,19 @@ pub struct Write {
     pub id: String,
     /// The whole document: frontmatter and body.
     pub text: String,
+}
+
+/// `ask` → `()`: install the [`Scoper`] that says which agent a session is
+/// (67 §9); the roster plugin sends it once. Until then every session reads
+/// everything and writes as the user.
+pub struct RegisterScoper(pub Arc<dyn Scoper>);
+
+impl Message<RegisterScoper> for KnowledgeActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RegisterScoper, _: &mut Context<Self, Self::Reply>) {
+        self.k.set_scoper(m.0);
+    }
 }
 
 /// `ask` → `Result<(), String>`.
@@ -353,6 +373,7 @@ impl runtime::Plugin for KnowledgePlugin {
         actor.register(KNOWLEDGE_ACTOR)?;
         rt.subscribe::<KnowledgeActor, document::Exported>(&actor)
             .await;
+        sync::start(k.clone(), cfg.sync_secs);
 
         // First use of the registry (00 §4, 12 §2).
         let rt = rt.clone();

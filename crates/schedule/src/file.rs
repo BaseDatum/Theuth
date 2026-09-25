@@ -83,6 +83,13 @@ pub struct Spec {
     pub cwd: Option<PathBuf>,
     /// `approvals:` — default true; false maps to the per-session switch on every fire (33 §0.8).
     pub approvals: bool,
+    /// `agent:` — a roster agent name; each fire creates a task owned by it
+    /// instead of running in the schedule's own session (67 §7.4). Absent =
+    /// today's behaviour.
+    pub agent: Option<String>,
+    /// `project:` — the project label of the task an `agent:` fire creates
+    /// (67 §7.1); absent = inferred from `cwd`, else none.
+    pub project: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -99,6 +106,8 @@ struct FrontMatter {
     max_runs: Option<u32>,
     cwd: Option<String>,
     approvals: Option<bool>,
+    agent: Option<String>,
+    project: Option<String>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
@@ -195,6 +204,14 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         max_runs: fm.max_runs,
         cwd,
         approvals: fm.approvals.unwrap_or(true),
+        agent: fm
+            .agent
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty()),
+        project: fm
+            .project
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty()),
     })
 }
 
