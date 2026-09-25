@@ -1398,11 +1398,17 @@ impl runtime::Plugin for RosterPlugin {
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
                 .await
             {
-                // 67 §6.3: the allowlist consult, then the two tools.
+                // 67 §6.3: the allowlist consult, then the tools and the hiring prompt block.
                 let _ = reg
                     .ask(::tools::InstallMcpAccess(Arc::new(Desks(shared.clone()))))
                     .await;
                 tools::register(&reg, shared).await;
+                let _ = reg
+                    .ask(::tools::RegisterPrompt {
+                        plugin: "roster",
+                        text: tools::PROMPT.into(),
+                    })
+                    .await;
             }
         });
         Ok(())
