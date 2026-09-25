@@ -120,6 +120,9 @@ const session: SessionSummary = {
   project: 'theuth',
   retention: 'durable',
   running: false,
+  owner: '',
+  epoch: 1,
+  here: true,
 }
 const meeting: MeetingSummary = {
   id: '0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44',

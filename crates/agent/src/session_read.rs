@@ -298,6 +298,9 @@ mod tests {
             project: Some("theuth".into()),
             retention: tools::Retention::Durable,
             running: false,
+            owner: String::new(),
+            epoch: 1,
+            here: true,
         }
     }
 

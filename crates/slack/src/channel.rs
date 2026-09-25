@@ -2353,6 +2353,7 @@ impl Worker {
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::ToolCallProgress { .. }
             | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
             | AgentEvent::VisionProgress { .. }

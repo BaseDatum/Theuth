@@ -822,9 +822,17 @@ impl Message<DeliverWake> for Roster {
             text.push_str("\n\n");
         }
         text.push_str(&desk::wake_text(&m.wake, m.task.as_ref()));
+        // 68 §4.4: a `Resume` whose checkout session was taken here (the
+        // sweep re-pointed its engine at us) continues that session.
+        let resumed = m
+            .task
+            .as_ref()
+            .and_then(|t| t.checkout.as_ref())
+            .filter(|c| m.wake.reason == tasks::WakeReason::Resume && c.taken)
+            .and_then(|c| c.session.parse().ok());
         agents
             .ask(agent::SendInput {
-                session: Some(d.session),
+                session: Some(resumed.unwrap_or(d.session)),
                 text,
                 files: vec![],
                 delivery: agent::Delivery::default(),

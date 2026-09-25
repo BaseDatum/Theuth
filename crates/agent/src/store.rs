@@ -28,14 +28,19 @@
 //! contexts/tasks, peer bindings) lives in [`communication`] on the same pool.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context as _;
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use runtime::SessionId;
+use parking_lot::Mutex;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
-use sqlx::{FromRow, SqliteConnection};
+use sqlx::{FromRow, Sqlite, SqliteConnection, Transaction};
 
 use crate::{ProjectStyle, SessionSummary};
 use crate::context::{
@@ -48,11 +53,255 @@ use crate::vision::{VisionImage, VisionNote};
 
 pub mod communication;
 pub mod accounting;
+mod capture;
+pub use capture::ATTACHED;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
-#[derive(Clone)]
+#[derive(Clone, kameo::Reply)]
 pub struct Store {
-    pool: SqlitePool,
+    /// Capture session on the write connection (68 §3); `None` on a private
+    /// store. Declared first so it is deleted before the pools drop.
+    session: Arc<Mutex<Option<capture::Session>>>,
+    /// A `:memory:` private store: one pool, no capture, no log.
+    private: bool,
+    /// This engine's mesh id as `sessions.owner` spells it; `""` when opened
+    /// without one (a lone engine: every `''` row is ours).
+    me: Arc<str>,
+    /// Column layout of every attached table, for splitting changesets.
+    tables: Arc<Vec<capture::TableMeta>>,
+    /// Last `session_log.seq` this engine wrote (`MAX(seq)` at open).
+    seq: Arc<AtomicI64>,
+    /// Stamps log rows; origin = `me`.
+    clock: Arc<replica::Clock>,
+    /// Last logged `seq`, for shippers waiting on new rows (68 §6; `log_watch`).
+    log_tx: Arc<tokio::sync::watch::Sender<i64>>,
+    /// Exactly one connection; every mutating statement runs on it.
+    write: SqlitePool,
+    /// Readers (four connections; the write pool itself on a private store).
+    read: SqlitePool,
+}
+
+/// Why the store refused a write (68 §3: writes on a non-owner are refused
+/// at the store; the only way past is forwarding or a take).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoreError {
+    /// The session is owned by another engine.
+    NotOwner {
+        /// The session the write touched.
+        session: SessionId,
+        /// Its owner (a mesh `EngineId` as text).
+        owner: String,
+        /// Its current epoch.
+        epoch: u32,
+    },
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotOwner {
+                session,
+                owner,
+                epoch,
+            } => write!(f, "session {session} is owned by {owner} (epoch {epoch})"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+/// One `session_log` row: the changeset of one committed transaction,
+/// restricted to one session (68 §2).
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct LogRow {
+    /// This engine's log position.
+    pub seq: i64,
+    /// The session every row of `changeset` belongs to.
+    pub session_id: String,
+    /// The session's epoch when the row was written.
+    pub epoch: i64,
+    /// A `sqlite3session` changeset.
+    pub changeset: Vec<u8>,
+    /// [`replica::Hlc::to_text`] of the writing engine's clock.
+    pub hlc: String,
+    /// Written by a demoted owner; never shipped (68 §4.3).
+    pub orphaned: bool,
+}
+
+/// One `session_cursors` row.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct Cursor {
+    /// Whose log.
+    pub origin: String,
+    /// Who applied up to `seq` (`""` = this engine's own applied cursor).
+    pub peer: String,
+    /// Last applied seq.
+    pub seq: i64,
+}
+
+/// The one write transaction (see [`Store::begin_write`]). Dereferences to
+/// the connection so statements and the `*_in` helpers use it unchanged.
+pub(crate) struct WriteTx<'a> {
+    tx: Transaction<'static, Sqlite>,
+    store: &'a Store,
+}
+
+impl Deref for WriteTx<'_> {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &SqliteConnection {
+        &self.tx
+    }
+}
+
+impl DerefMut for WriteTx<'_> {
+    fn deref_mut(&mut self) -> &mut SqliteConnection {
+        &mut self.tx
+    }
+}
+
+impl WriteTx<'_> {
+    /// Log what this transaction changed, then commit; dropping without
+    /// committing rolls back. On a durable store (68 §3): take the capture
+    /// session's changeset (uncommitted changes of this connection), split
+    /// it by session, refuse the whole transaction with
+    /// [`StoreError::NotOwner`] if any touched session is owned elsewhere,
+    /// and append one `session_log` row per session inside the same
+    /// transaction (`session_log` is not attached, so the row is not
+    /// recaptured).
+    pub(crate) async fn commit(mut self) -> anyhow::Result<()> {
+        let store = self.store;
+        let changeset = {
+            // Lock the handle out from the worker thread first; the session
+            // reads current row values through it.
+            let _handle = self.tx.lock_handle().await?;
+            let mut guard = store.session.lock();
+            match guard.as_mut() {
+                Some(session) => {
+                    let bytes = session.changeset()?;
+                    session.reset()?;
+                    bytes
+                }
+                None => Vec::new(),
+            }
+        };
+        if !changeset.is_empty() {
+            let mut ops = capture::scan(&changeset, &store.tables)?;
+            // An UPDATE on a table whose session column is not in the key
+            // (`model_calls`, `remote_meters`) carries no session: ask the
+            // row, which still exists with its owner unchanged.
+            for op in ops.iter_mut().filter(|o| o.session.is_none()) {
+                let t = &store.tables[op.table];
+                let sql = format!(
+                    "SELECT {} FROM {} WHERE {} = ?",
+                    t.cols[t.session_col],
+                    t.name,
+                    t.cols[t.pk_col()]
+                );
+                // Names come from `capture::ATTACHED` and `PRAGMA table_info`, never from input.
+                let row: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(&op.pk)
+                    .fetch_optional(&mut *self.tx)
+                    .await?;
+                op.session = Some(row.map(|(s,)| s).unwrap_or_default());
+            }
+            let deleted: HashMap<&str, (String, i64)> = ops
+                .iter()
+                .filter_map(|o| Some((o.session.as_deref()?, o.deleted_session.clone()?)))
+                .collect();
+            let sessions: Vec<String> = ops.iter().map(|o| o.session.clone().unwrap_or_default()).collect();
+            let groups = capture::split(&changeset, &sessions)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            for (sid, bytes) in groups {
+                // The fence after this transaction: the highest `(epoch,
+                // owner)` of `session_epochs` and the post-state session row.
+                // A take (`owner = me`) passes; a foreign owner refuses the
+                // whole transaction.
+                let row: Option<(String, i64)> = sqlx::query_as(
+                    "SELECT owner, epoch FROM (SELECT owner, epoch FROM session_epochs WHERE session_id = ?1 \
+                     UNION ALL SELECT owner, epoch FROM sessions WHERE id = ?1) ORDER BY epoch DESC LIMIT 1",
+                )
+                .bind(&sid)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                let (owner, epoch) = match row.or_else(|| deleted.get(sid.as_str()).cloned()) {
+                    Some(v) => v,
+                    // Rows of a session that has no row (accounting for an
+                    // owner whose session row is gone): ours, epoch 1.
+                    None => (String::new(), 1),
+                };
+                if !(owner.is_empty() || *owner == *store.me) {
+                    anyhow::bail!(StoreError::NotOwner {
+                        session: sid.parse().with_context(|| format!("bad session id {sid}"))?,
+                        owner,
+                        epoch: u32::try_from(epoch).unwrap_or(u32::MAX),
+                    });
+                }
+                let seq = store.seq.fetch_add(1, Ordering::SeqCst) + 1;
+                sqlx::query(
+                    "INSERT INTO session_log (seq, session_id, epoch, changeset, hlc) VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(seq)
+                .bind(&sid)
+                .bind(epoch)
+                .bind(bytes)
+                .bind(store.clock.tick(now).to_text())
+                .execute(&mut *self.tx)
+                .await?;
+            }
+        }
+        self.tx.commit().await?;
+        store.log_tx.send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
+        Ok(())
+    }
+}
+
+/// A write transaction with capture **disabled** (68 §6 "apply with the
+/// session detached"): what a remote changeset is applied through, so the
+/// replica's copy never echoes into its own log. No owner guard: the rows
+/// belong to whoever wrote them. Re-enables capture on commit or drop.
+pub struct ApplyTx<'a> {
+    /// `None` only after `commit` took it (the `Drop` re-enables capture either way).
+    tx: Option<Transaction<'static, Sqlite>>,
+    store: &'a Store,
+}
+
+impl Deref for ApplyTx<'_> {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &SqliteConnection {
+        self.tx.as_ref().expect("open apply transaction")
+    }
+}
+
+impl DerefMut for ApplyTx<'_> {
+    fn deref_mut(&mut self) -> &mut SqliteConnection {
+        self.tx.as_mut().expect("open apply transaction")
+    }
+}
+
+impl ApplyTx<'_> {
+    /// Run `f` with the raw `sqlite3*` of the write connection (for
+    /// `sqlite3changeset_apply`), the worker thread locked out meanwhile.
+    pub async fn with_raw<R>(&mut self, f: impl FnOnce(std::ptr::NonNull<libsqlite3_sys::sqlite3>) -> R) -> anyhow::Result<R> {
+        let mut handle = self.deref_mut().lock_handle().await?;
+        Ok(f(handle.as_raw_handle()))
+    }
+
+    /// Commit without logging; `Drop` turns capture back on.
+    pub async fn commit(mut self) -> anyhow::Result<()> {
+        let tx = self.tx.take().expect("open apply transaction");
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Drop for ApplyTx<'_> {
+    fn drop(&mut self) {
+        self.store.set_capture(true);
+    }
 }
 
 /// One compaction (07 §8.4); epoch 0 has no row.
@@ -118,6 +367,8 @@ struct SessionRow {
     pinned: bool,
     archived: bool,
     project: Option<String>,
+    owner: String,
+    epoch: i64,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -150,16 +401,17 @@ macro_rules! session_cols {
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
-            " AS project"
+            " AS project, sessions.owner, sessions.epoch"
         )
     };
 }
 
-impl TryFrom<SessionRow> for SessionSummary {
-    type Error = anyhow::Error;
-
-    fn try_from(r: SessionRow) -> anyhow::Result<Self> {
-        Ok(Self {
+impl SessionRow {
+    /// The summary as readers return it; `me` is this engine's id (`""` on a
+    /// lone engine), which decides `here` (68 §5).
+    fn summary(self, me: &str) -> anyhow::Result<SessionSummary> {
+        let r = self;
+        Ok(SessionSummary {
             id: r.id.parse().context("bad session id")?,
             created_at: r.created_at.parse().context("bad created_at")?,
             updated_at: r.updated_at.parse().context("bad updated_at")?,
@@ -182,6 +434,9 @@ impl TryFrom<SessionRow> for SessionSummary {
             project: r.project,
             retention: tools::Retention::Durable,
             running: false,
+            here: r.owner.is_empty() || r.owner == me,
+            owner: r.owner,
+            epoch: u32::try_from(r.epoch).context("bad epoch")?,
         })
     }
 }
@@ -227,30 +482,92 @@ pub fn inner_call_id(call_id: &str) -> Option<(&str, u32)> {
 }
 
 impl Store {
-    /// Open (creating) the database in WAL mode and run migrations.
-    pub async fn open(path: &Path) -> anyhow::Result<Self> {
+    /// Open (creating) the database in WAL mode and run migrations. Two
+    /// pools on one file (68 §3): `write` holds exactly one connection that
+    /// never expires, with a `sqlite3session` attached to the transcript
+    /// tables; `read` holds four. `engine` is this engine's mesh id: rows
+    /// still owned by `''` (pre-68, or created while unknown) are backfilled
+    /// to it; `None` keeps `''` and treats it as self.
+    pub async fn open(path: &Path, engine: Option<mesh::EngineId>) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
+        // Migrations (and any backfill) run before the capture session exists:
+        // DDL on an attached table would leave the session unusable.
+        let read = SqlitePoolOptions::new()
             .max_connections(4)
-            .connect_with(opts)
+            .connect_with(opts.clone())
             .await
             .with_context(|| format!("open {}", path.display()))?;
         sqlx::migrate!("./migrations")
-            .run(&pool)
+            .run(&read)
             .await
             .context("run migrations")?;
-        Ok(Self { pool })
+        let me: Arc<str> = engine.map(|e| e.0).unwrap_or_default().into();
+        if !me.is_empty() {
+            sqlx::query("UPDATE sessions SET owner = ? WHERE owner = ''")
+                .bind(&*me)
+                .execute(&read)
+                .await
+                .context("backfill sessions.owner")?;
+        }
+        let session: Arc<Mutex<Option<capture::Session>>> = Arc::new(Mutex::new(None));
+        let slot = session.clone();
+        let write = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .after_connect(move |conn, _| {
+                let slot = slot.clone();
+                Box::pin(async move {
+                    let db = conn.lock_handle().await?.as_raw_handle();
+                    let fresh = unsafe { capture::Session::create(db) }
+                        .map_err(|e| sqlx::Error::Configuration(e.into()))?;
+                    if let Some(stale) = slot.lock().replace(fresh) {
+                        // Its connection is gone (sqlx replaced it); deleting a
+                        // session on a closed handle is undefined, so leak it.
+                        tracing::warn!("store: write connection replaced; leaking its capture session");
+                        std::mem::forget(stale);
+                    }
+                    Ok(())
+                })
+            })
+            .connect_with(opts)
+            .await
+            .with_context(|| format!("open {} (writer)", path.display()))?;
+        let tables = table_meta(&read).await?;
+        let (last_seq,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log")
+            .fetch_one(&read)
+            .await?;
+        let (last_hlc,): (Option<String>,) = sqlx::query_as("SELECT MAX(hlc) FROM session_log")
+            .fetch_one(&read)
+            .await?;
+        let last = last_hlc
+            .as_deref()
+            .and_then(replica::Hlc::parse)
+            .map_or((0, 0), |h| (h.wall_ms, h.counter));
+        Ok(Self {
+            session,
+            private: false,
+            clock: Arc::new(replica::Clock::new(hlc_origin(&me), last)),
+            me,
+            tables: Arc::new(tables),
+            seq: Arc::new(AtomicI64::new(last_seq.unwrap_or(0))),
+            log_tx: Arc::new(tokio::sync::watch::Sender::new(last_seq.unwrap_or(0))),
+            write,
+            read,
+        })
     }
 
     /// An in-memory database with the same schema, for a private root tree
     /// (51 §4.5): no file, no journal, `temp_store=MEMORY` so sorts and
     /// temp tables never spill to disk. Exactly one pooled connection:
     /// every SQLite `:memory:` connection is its own database, so a second
-    /// one would see an empty, unmigrated store.
+    /// one would see an empty, unmigrated store. No capture session and no
+    /// log: private trees never replicate (68 decision 6).
     pub async fn open_memory() -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .in_memory(true)
@@ -266,12 +583,301 @@ impl Store {
             .run(&pool)
             .await
             .context("run migrations")?;
-        Ok(Self { pool })
+        Ok(Self {
+            session: Arc::new(Mutex::new(None)),
+            private: true,
+            me: Arc::from(""),
+            tables: Arc::new(Vec::new()),
+            seq: Arc::new(AtomicI64::new(0)),
+            log_tx: Arc::new(tokio::sync::watch::Sender::new(0)),
+            clock: Arc::new(replica::Clock::new(hlc_origin(""), (0, 0))),
+            write: pool.clone(),
+            read: pool,
+        })
     }
 
-    /// The pool, for crate-internal probes (tests of pragmas and the like).
+    /// Whether this is a private `:memory:` store (one pool, nothing captured).
+    pub fn is_private(&self) -> bool {
+        self.private
+    }
+
+    /// The read pool, for crate-internal probes (tests of pragmas and the like).
+    #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
-        &self.pool
+        &self.read
+    }
+
+    /// Close both pools. The capture session goes first: deleting it after
+    /// its connection closed is undefined behaviour.
+    pub async fn close(&self) {
+        drop(self.session.lock().take());
+        self.write.close().await;
+        self.read.close().await;
+    }
+
+    /// Begin the one write transaction (`BEGIN IMMEDIATE` on the single
+    /// write connection). Every mutating statement in this module and its
+    /// children runs inside one of these; a write anywhere else escapes
+    /// capture.
+    pub(crate) async fn begin_write(&self) -> anyhow::Result<WriteTx<'_>> {
+        Ok(WriteTx {
+            tx: self.write.begin_with("BEGIN IMMEDIATE").await?,
+            store: self,
+        })
+    }
+
+    /// Begin a transaction with capture disabled, for applying a remote
+    /// changeset (68 §6). Serialized with every local write by the single
+    /// connection; capture resumes when the returned value commits or drops.
+    pub async fn begin_apply(&self) -> anyhow::Result<ApplyTx<'_>> {
+        anyhow::ensure!(!self.private, "a private store never applies remote changes");
+        let tx = self.write.begin_with("BEGIN IMMEDIATE").await?;
+        self.set_capture(false);
+        Ok(ApplyTx { tx: Some(tx), store: self })
+    }
+
+    fn set_capture(&self, on: bool) {
+        if let Some(session) = self.session.lock().as_ref() {
+            session.enable(on);
+        }
+    }
+
+    /// This engine's id as `sessions.owner` spells it (`""` on a lone engine).
+    pub fn engine(&self) -> &str {
+        &self.me
+    }
+
+    /// 68 decision 8: `projects` and `cost_owners` are global records, not
+    /// session rows — they join the stage-1 record replica (per-column LWW)
+    /// on the write connection, so a replica that takes a session already
+    /// holds the accounting owner its `model_calls` rows reference. Neither
+    /// table is in the capture session, so replicated rows never echo into
+    /// the session log. Rows the replica has not stamped yet (every row of a
+    /// pre-68 store; rows written since the last start — the accounting
+    /// writers never stamp) are announced and stamped once. Returns how many
+    /// were. Errors on a private store or without the replica plugin.
+    pub async fn replicate_records(&self) -> anyhow::Result<u64> {
+        anyhow::ensure!(!self.private, "a private store never replicates");
+        let handle = replica::attach(&self.write, &["projects", "cost_owners"]).await?;
+        handle.announce_unstamped().await
+    }
+
+    /// Log rows above `seq` that are not orphaned, in seq order: what a peer
+    /// behind `seq` still needs.
+    pub async fn log_after(&self, seq: i64) -> anyhow::Result<Vec<LogRow>> {
+        Ok(sqlx::query_as(
+            "SELECT seq, session_id, epoch, changeset, hlc, orphaned FROM session_log \
+             WHERE seq > ? AND orphaned = 0 ORDER BY seq",
+        )
+        .bind(seq)
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// Orphaned rows of `session` (68 §4.3), in seq order: the turns a
+    /// demoted owner never delivered.
+    pub async fn log_orphans(&self, session: SessionId) -> anyhow::Result<Vec<LogRow>> {
+        Ok(sqlx::query_as(
+            "SELECT seq, session_id, epoch, changeset, hlc, orphaned FROM session_log \
+             WHERE session_id = ? AND orphaned = 1 ORDER BY seq",
+        )
+        .bind(session.to_string())
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// Mark every row of `(session, epoch)` orphaned: written by this engine
+    /// as an owner that has since been superseded; never shipped. Returns
+    /// how many rows were marked.
+    pub async fn log_orphan(&self, session: SessionId, epoch: u32) -> anyhow::Result<u64> {
+        self.log_orphan_after(session, epoch, 0).await
+    }
+
+    /// [`Store::log_orphan`] for the rows above `after` only: what the new
+    /// owner had not applied when it took over (68 §4.3).
+    pub async fn log_orphan_after(&self, session: SessionId, epoch: u32, after: i64) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "UPDATE session_log SET orphaned = 1 WHERE session_id = ? AND epoch = ? AND seq > ? AND orphaned = 0",
+        )
+        .bind(session.to_string())
+        .bind(i64::from(epoch))
+        .bind(after)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n)
+    }
+
+    /// `MAX(seq)` of the log rows of `session` (orphaned or not); `0` when none.
+    pub async fn session_log_seq(&self, session: SessionId) -> anyhow::Result<i64> {
+        let (seq,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log WHERE session_id = ?")
+            .bind(session.to_string())
+            .fetch_one(&self.read)
+            .await?;
+        Ok(seq.unwrap_or(0))
+    }
+
+    /// Wait for every write ahead of this one: an empty transaction on the
+    /// single write connection (68 §4.2 "flush"). Logs nothing.
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        self.begin_write().await?.commit().await
+    }
+
+    /// Append `message` to `id` **without** logging it (capture off): a note
+    /// meant for this engine's copy only, such as the demoted owner's
+    /// "N turns were not delivered" (68 §4.3). No owner guard.
+    pub async fn append_local_note(&self, id: SessionId, text: &str) -> anyhow::Result<i64> {
+        let mut tx = self.begin_apply().await?;
+        let seq = append_in(&mut tx, &id.to_string(), &ChatMessage::system(text)).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// Delete shipped rows below `seq` (every known peer is past them, or a
+    /// snapshot supersedes them). Orphans stay; see [`Store::prune_orphans_before`].
+    pub async fn prune_log_below(&self, seq: i64) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("DELETE FROM session_log WHERE seq < ? AND orphaned = 0")
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n)
+    }
+
+    /// Delete orphaned rows stamped before `wall_ms` (`sessions.orphan_keep_days`).
+    pub async fn prune_orphans_before(&self, wall_ms: u64) -> anyhow::Result<u64> {
+        let bound = format!("{wall_ms:016x}");
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("DELETE FROM session_log WHERE orphaned = 1 AND substr(hlc, 1, 16) < ?")
+            .bind(bound)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n)
+    }
+
+    /// `MAX(seq)` of this engine's log; `0` when empty.
+    pub fn log_seq(&self) -> i64 {
+        self.seq.load(Ordering::SeqCst)
+    }
+
+    /// Wakes with the new [`Store::log_seq`] after every commit that logged a row.
+    pub fn log_watch(&self) -> tokio::sync::watch::Receiver<i64> {
+        self.log_tx.subscribe()
+    }
+
+    /// Does this engine own at least one session? What a peer can
+    /// bootstrap from us even when the log is empty (a migrated store).
+    pub async fn owns_sessions(&self) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE owner = ?)")
+            .bind(&*self.me)
+            .fetch_one(&self.read)
+            .await?)
+    }
+
+    /// Every `(origin, peer) → seq` cursor.
+    pub async fn cursors(&self) -> anyhow::Result<Vec<Cursor>> {
+        Ok(sqlx::query_as("SELECT origin, peer, seq FROM session_cursors ORDER BY origin, peer")
+            .fetch_all(&self.read)
+            .await?)
+    }
+
+    /// Record that `peer` has applied `origin`'s log through `seq`
+    /// (`peer = ""`: this engine's own applied cursor for a remote origin).
+    pub async fn set_cursor(&self, origin: &str, peer: &str, seq: i64) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO session_cursors (origin, peer, seq) VALUES (?, ?, ?) \
+             ON CONFLICT(origin, peer) DO UPDATE SET seq = excluded.seq",
+        )
+        .bind(origin)
+        .bind(peer)
+        .bind(seq)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The epoch fence of `session`: highest `(epoch, owner)` seen, from
+    /// `session_epochs`, falling back to the session row itself.
+    pub async fn fence(&self, session: SessionId) -> anyhow::Result<Option<(u32, String)>> {
+        let sid = session.to_string();
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT epoch, owner FROM session_epochs WHERE session_id = ?1 \
+             UNION ALL SELECT epoch, owner FROM sessions WHERE id = ?1 \
+             ORDER BY epoch DESC LIMIT 1",
+        )
+        .bind(&sid)
+        .fetch_optional(&self.read)
+        .await?;
+        row.map(|(e, o)| Ok((u32::try_from(e).context("bad epoch")?, o))).transpose()
+    }
+
+    /// Raise the fence of `session` to `(epoch, owner)`; a lower epoch is
+    /// ignored. Returns whether it moved.
+    pub async fn set_fence(&self, session: SessionId, epoch: u32, owner: &str) -> anyhow::Result<bool> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "INSERT INTO session_epochs (session_id, epoch, owner) VALUES (?, ?, ?) \
+             ON CONFLICT(session_id) DO UPDATE SET epoch = excluded.epoch, owner = excluded.owner \
+             WHERE excluded.epoch > session_epochs.epoch",
+        )
+        .bind(session.to_string())
+        .bind(i64::from(epoch))
+        .bind(owner)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n == 1)
+    }
+
+    /// `(owner, epoch)` of the session row; `None` for an unknown id.
+    pub async fn owner(&self, session: SessionId) -> anyhow::Result<Option<(String, u32)>> {
+        let row: Option<(String, i64)> = sqlx::query_as("SELECT owner, epoch FROM sessions WHERE id = ?")
+            .bind(session.to_string())
+            .fetch_optional(&self.read)
+            .await?;
+        row.map(|(o, e)| Ok((o, u32::try_from(e).context("bad epoch")?))).transpose()
+    }
+
+    /// Write `owner`/`epoch` on the session row (68 §4.2 step 2): the take
+    /// itself, logged like any write so it is the first row of the new epoch
+    /// on every replica. Passes the owner guard only when `owner` is this
+    /// engine (or the session is already ours). `Err("no such session")` when
+    /// the row is missing.
+    pub async fn set_owner(&self, session: SessionId, owner: &str, epoch: u32) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query("UPDATE sessions SET owner = ?, epoch = ? WHERE id = ?")
+            .bind(owner)
+            .bind(i64::from(epoch))
+            .bind(session.to_string())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        anyhow::ensure!(n == 1, "no such session");
+        tx.commit().await
+    }
+
+    /// Test probe: the log rows written since `*since` (which moves to the
+    /// newest seq). Panics when there are none — the last mutating call ran
+    /// outside the write pool or touched no attached table. Empty, without
+    /// panicking, on a private store.
+    #[cfg(test)]
+    pub(crate) async fn assert_write_pool(&self, what: &str, since: &mut i64) -> Vec<LogRow> {
+        if self.private {
+            return Vec::new();
+        }
+        let rows = self.log_after(*since).await.unwrap();
+        assert!(!rows.is_empty(), "{what}: no session_log row from the write connection");
+        *since = rows.last().map_or(*since, |r| r.seq);
+        rows
     }
 
     /// Insert a session row and its accounting owner in one transaction.
@@ -286,9 +892,10 @@ impl Store {
         project: Option<&str>,
     ) -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, project) VALUES (?, ?, ?, '', ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, created_at, updated_at, title, model, parent, name, project, owner, epoch) \
+             VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 1)",
         )
         .bind(id.to_string())
         .bind(&now)
@@ -297,6 +904,7 @@ impl Store {
         .bind(parent.map(|p| p.to_string()))
         .bind(name)
         .bind(parent.is_none().then_some(project).flatten())
+        .bind(&*self.me)
         .execute(&mut *tx)
         .await?;
         accounting::ensure_owner_in(&mut tx, id, parent).await?;
@@ -306,21 +914,25 @@ impl Store {
 
     /// Set the display title (first user message, truncated by the caller).
     pub async fn set_title(&self, id: SessionId, title: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
             .bind(title)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Pin (or unpin) a session: pinned rows sort first in `list_sessions`.
     pub async fn set_pinned(&self, id: SessionId, pinned: bool) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
             .bind(pinned)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -328,31 +940,37 @@ impl Store {
     /// the sidebar but stay searchable (51 §3). Stored on the row; readers
     /// resolve the root's value, so call this on the root.
     pub async fn set_archived(&self, id: SessionId, archived: bool) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET archived = ? WHERE id = ?")
             .bind(archived)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Record a model switch (canonical `provider/model` id).
     pub async fn set_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
             .bind(model)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Record the reasoning effort; `None` clears it (provider default).
     pub async fn set_effort(&self, id: SessionId, effort: Option<&str>) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET effort = ? WHERE id = ?")
             .bind(effort)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -364,22 +982,26 @@ impl Store {
         agent: &str,
         cwd: Option<&Path>,
     ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET agent = ?, cwd = COALESCE(?, cwd) WHERE id = ?")
             .bind(agent)
             .bind(cwd.map(|p| p.to_string_lossy().into_owned()))
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Record the harness's own session id, for `session/load` on resume.
     pub async fn set_acp_session(&self, id: SessionId, sid: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET acp_session = ? WHERE id = ?")
             .bind(sid)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -388,7 +1010,7 @@ impl Store {
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT acp_session FROM sessions WHERE id = ?")
                 .bind(id.to_string())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&self.read)
                 .await?;
         Ok(row.and_then(|(s,)| s))
     }
@@ -396,31 +1018,37 @@ impl Store {
     /// Record the model an external harness reports for this session
     /// (design doc 06 §8.2); published as [`crate::AgentEvent::HarnessModelChanged`].
     pub async fn set_harness_model(&self, id: SessionId, model: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET harness_model = ? WHERE id = ?")
             .bind(model)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Record the working directory an ACP client gave `session/new` (design doc 06 §4.1).
     pub async fn set_cwd(&self, id: SessionId, cwd: &Path) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET cwd = ? WHERE id = ?")
             .bind(cwd.to_string_lossy().into_owned())
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Mark a root nobody reads directly (the scheduler's): its prompt gets no
     /// visualization instructions. Set once at creation; never cleared.
     pub async fn set_unattended(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET unattended = 1 WHERE id = ?")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -428,7 +1056,7 @@ impl Store {
     pub async fn unattended(&self, id: SessionId) -> anyhow::Result<bool> {
         let row = sqlx::query_as::<_, (bool,)>("SELECT unattended FROM sessions WHERE id = ?")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.read)
             .await?;
         Ok(row.is_some_and(|(u,)| u))
     }
@@ -436,7 +1064,7 @@ impl Store {
     /// Append one message; returns its `seq` (max+1 within the session).
     /// Bumps `sessions.updated_at` (the list order).
     pub async fn append(&self, id: SessionId, message: &ChatMessage) -> anyhow::Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let seq = append_in(&mut tx, &id.to_string(), message).await?;
         tx.commit().await?;
         Ok(seq)
@@ -452,7 +1080,7 @@ impl Store {
         note: &VisionNote,
     ) -> anyhow::Result<i64> {
         let vision = serde_json::to_string(note)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let seq = insert_in(&mut tx, &id.to_string(), message, Some(&vision)).await?;
         tx.commit().await?;
         Ok(seq)
@@ -462,7 +1090,7 @@ impl Store {
     /// Masks and the epoch boundary are not applied; malformed metadata is
     /// an error, never a plain message.
     pub async fn vision_notes(&self, id: SessionId) -> anyhow::Result<BTreeMap<i64, VisionNote>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         rows_in(&mut conn, id, 0)
             .await?
             .iter()
@@ -478,7 +1106,7 @@ impl Store {
     /// counts only while its row is visible, in the tail and not removed.
     pub async fn vision_frame(&self, id: SessionId) -> anyhow::Result<VisionFrame> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read.begin().await?;
         let revision = revision_in(&mut tx, &sid).await?.to_string();
         let latest = epochs_in(&mut tx, &sid).await?.pop();
         let (epoch, tail_from, head) = match latest {
@@ -530,7 +1158,7 @@ impl Store {
         items: &[Todo],
     ) -> anyhow::Result<(i64, TodoSnapshot)> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let seq = append_in(&mut tx, &sid, message).await?;
         let snapshot = put_todos(&mut tx, &sid, seq, source, items).await?;
         tx.commit().await?;
@@ -546,7 +1174,7 @@ impl Store {
         items: &[Todo],
     ) -> anyhow::Result<TodoSnapshot> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let (at_seq,): (i64,) = sqlx::query_as(
             "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
@@ -563,22 +1191,25 @@ impl Store {
     /// describe one committed state. Empty (never backfilled) when no snapshot
     /// is visible; `Err` for an unknown session or a failed read.
     pub async fn todos(&self, id: SessionId) -> anyhow::Result<TodoSnapshot> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         todos_in(&mut conn, &id.to_string()).await
     }
 
     /// Record a UI-only failure behind the last visible message (`-1` in an
     /// empty session). Not a context change: no revision or `updated_at` bump.
     pub async fn record_error(&self, id: SessionId, text: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query(
-            "INSERT INTO errors (session_id, at_seq, text) \
-             SELECT ?1, COALESCE(MAX(seq), -1), ?2 FROM messages WHERE session_id = ?1 \
+            "INSERT INTO errors (id, session_id, at_seq, text) \
+             SELECT ?3, ?1, COALESCE(MAX(seq), -1), ?2 FROM messages WHERE session_id = ?1 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807)",
         )
         .bind(id.to_string())
         .bind(text)
-        .execute(&self.pool)
+        .bind(uuid::Uuid::now_v7().to_string())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -590,7 +1221,7 @@ impl Store {
              ORDER BY at_seq, id",
         )
         .bind(id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?)
     }
 
@@ -606,6 +1237,7 @@ impl Store {
         let Some((parent, n)) = inner_call_id(call_id) else {
             anyhow::bail!("not an inner call id: {call_id:?}");
         };
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT OR REPLACE INTO inner_calls (session_id, parent_id, n, at_seq, name, args, at) \
              SELECT ?1, ?2, ?3, COALESCE(MAX(seq), -1), ?4, ?5, ?6 FROM messages WHERE session_id = ?1 \
@@ -617,8 +1249,9 @@ impl Store {
         .bind(name)
         .bind(args.to_string())
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -635,6 +1268,7 @@ impl Store {
         let Some((parent, n)) = inner_call_id(call_id) else {
             anyhow::bail!("not an inner call id: {call_id:?}");
         };
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO inner_calls (session_id, parent_id, n, at_seq, name, args, output, is_error, files, at) \
              SELECT ?1, ?2, ?3, COALESCE(MAX(seq), -1), '?', 'null', ?4, ?5, ?6, ?7 FROM messages WHERE session_id = ?1 \
@@ -649,8 +1283,9 @@ impl Store {
         .bind(is_error)
         .bind(serde_json::to_string(files)?)
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -676,7 +1311,7 @@ impl Store {
              WHERE session_id = ? ORDER BY parent_id, n",
         )
         .bind(id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         let mut out: HashMap<String, Vec<InnerCall>> = HashMap::new();
         for r in rows {
@@ -694,7 +1329,7 @@ impl Store {
     /// All visible messages with their seq, in `seq` order. Raw: exclusion
     /// masks are not applied (turn identity, undo/redo, archive).
     pub async fn messages(&self, id: SessionId) -> anyhow::Result<Vec<(i64, ChatMessage)>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         Ok(rows_in(&mut conn, id, 0)
             .await?
             .into_iter()
@@ -709,7 +1344,7 @@ impl Store {
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         decode_masked(id, rows)
     }
@@ -722,7 +1357,7 @@ impl Store {
             root_col!("archived"),
             " FROM sessions"
         ))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter()
             .map(|(id, title, created_at, updated_at, archived)| {
@@ -744,7 +1379,7 @@ impl Store {
              AND json_extract(m.body, '$.role') IN ('User', 'Assistant') \
              ORDER BY m.session_id, m.seq",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         Ok(rows
             .into_iter()
@@ -762,7 +1397,7 @@ impl Store {
     /// changes the visible context, so `context_revision` bumps (48 §3.1).
     async fn set_cut(&self, id: SessionId, cut: Option<i64>) -> anyhow::Result<()> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let before = todos_in(&mut tx, &sid).await?;
         sqlx::query(
             "UPDATE sessions SET cut_at = ?, context_revision = context_revision + 1 WHERE id = ?",
@@ -785,7 +1420,7 @@ impl Store {
     /// Hide the last visible turn (its user message and everything after).
     /// `None` when nothing is left to hide; `Some` is the hidden turn's user text.
     pub async fn undo(&self, id: SessionId) -> anyhow::Result<Option<String>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         let visible = rows_in(&mut conn, id, 0).await?;
         drop(conn);
         let Some(&i) = turn_starts(&visible).last() else {
@@ -813,7 +1448,7 @@ impl Store {
     /// (design doc 29 §4.1). `Err("not a turn start")` when `turn` is not a
     /// visible turn start; the marker is untouched then.
     pub async fn cut_to(&self, id: SessionId, turn: i64) -> anyhow::Result<ChatMessage> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         let visible = rows_in(&mut conn, id, 0).await?;
         drop(conn);
         let i = turn_starts(&visible)
@@ -831,7 +1466,7 @@ impl Store {
     /// deleted seqs can now be reused (48 §3.1).
     pub async fn commit_cut(&self, id: SessionId) -> anyhow::Result<()> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "DELETE FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1)",
@@ -893,7 +1528,7 @@ impl Store {
         through: Option<i64>,
         reply: Option<u32>,
     ) -> anyhow::Result<SessionId> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let rows = rows_in(&mut tx, src, 0).await?;
         let mut starts = turn_starts(&rows)
             .into_iter()
@@ -956,14 +1591,15 @@ impl Store {
         let (new, old) = (id.to_string(), src.to_string());
         let now = chrono::Utc::now().to_rfc3339();
         let inserted = sqlx::query(concat!(
-            "INSERT INTO sessions (id, created_at, updated_at, title, tags, model, parent, name, effort, cwd, context_revision, project) \
+            "INSERT INTO sessions (id, created_at, updated_at, title, tags, model, parent, name, effort, cwd, context_revision, project, owner, epoch) \
              SELECT ?, ?, ?, title, tags, model, NULL, NULL, effort, cwd, context_revision, ",
             root_col!("project"),
-            " FROM sessions WHERE id = ?"
+            ", ?, 1 FROM sessions WHERE id = ?"
         ))
         .bind(&new)
         .bind(&now)
         .bind(&now)
+        .bind(&*self.me)
         .bind(&old)
         .execute(&mut *tx)
         .await?
@@ -1019,8 +1655,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO errors (session_id, at_seq, text) \
-             SELECT ?1, at_seq, text FROM errors WHERE session_id = ?2 \
+            "INSERT INTO errors (id, session_id, at_seq, text) \
+             SELECT id || ':' || ?1, ?1, at_seq, text FROM errors WHERE session_id = ?2 \
              AND at_seq < ?3 \
              AND at_seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807) \
              ORDER BY at_seq, id",
@@ -1060,7 +1696,7 @@ impl Store {
 
     /// All visible epochs of a session, by `n` ascending. Raw heads (masks not applied).
     pub async fn epochs(&self, id: SessionId) -> anyhow::Result<Vec<Epoch>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         Ok(epochs_in(&mut conn, &id.to_string())
             .await?
             .into_iter()
@@ -1077,7 +1713,7 @@ impl Store {
         tail_from: i64,
         head: &ChatMessage,
     ) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         compact_in(&mut tx, &id.to_string(), n, at_seq, tail_from, head).await?;
         tx.commit().await?;
         Ok(())
@@ -1096,7 +1732,7 @@ impl Store {
         (source, items): (TodoSource, &[Todo]),
     ) -> anyhow::Result<TodoSnapshot> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let snapshot = put_todos(&mut tx, &sid, at_seq, source, items).await?;
         compact_in(&mut tx, &sid, n, at_seq, tail_from, head).await?;
         tx.commit().await?;
@@ -1112,7 +1748,7 @@ impl Store {
         &self,
         id: SessionId,
     ) -> anyhow::Result<(u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         let active = active_in(&mut conn, id).await?;
         let (head, tail) = active.effective();
         Ok((active.epoch, head, tail))
@@ -1120,14 +1756,14 @@ impl Store {
 
     /// Decimal `sessions.context_revision`; `Err` for an unknown session.
     pub async fn context_revision(&self, id: SessionId) -> anyhow::Result<String> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         Ok(revision_in(&mut conn, &id.to_string()).await?.to_string())
     }
 
     /// Active-context inventory at the current revision (48 §3.2), read in one
     /// snapshot. `editable`/`reason` are left for the session actor.
     pub async fn context_items(&self, id: SessionId) -> anyhow::Result<ContextSnapshot> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read.begin().await?;
         let revision = revision_in(&mut tx, &id.to_string()).await?;
         let active = active_in(&mut tx, id).await?;
         let groups = active.groups();
@@ -1147,7 +1783,7 @@ impl Store {
         )
         .bind(id.to_string())
         .bind(seq)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         let Some((body, excluded)) = row else {
             return Ok(None);
@@ -1172,6 +1808,7 @@ impl Store {
             .trim()
             .parse()
             .map_err(|_| anyhow::anyhow!("bad revision {revision:?}"))?;
+        let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE sessions SET title = ?, tags = ? WHERE id = ? AND context_revision = ?",
         )
@@ -1179,9 +1816,10 @@ impl Store {
         .bind(tags.join(","))
         .bind(id.to_string())
         .bind(revision)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         Ok(n == 1)
     }
 
@@ -1209,7 +1847,7 @@ impl Store {
             .map_err(|_| anyhow::anyhow!("bad revision {expected_revision:?}"))?;
         let sid = id.to_string();
         // IMMEDIATE: writers serialize, so the revision check and the write see one state.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let current = revision_in(&mut tx, &sid).await?;
         if current != expected {
             anyhow::bail!(
@@ -1291,7 +1929,7 @@ impl Store {
     /// is an error rather than a plain message.
     pub async fn context_history(&self, id: SessionId) -> anyhow::Result<ContextHistory> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read.begin().await?;
         let revision = revision_in(&mut tx, &sid).await?.to_string();
         let rows = rows_in(&mut tx, id, 0).await?;
         let epochs = epochs_in(&mut tx, &sid).await?;
@@ -1365,9 +2003,9 @@ impl Store {
             " FROM sessions WHERE id = ?"
         ))
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
-        row.map(SessionSummary::try_from).transpose()
+        row.map(|r| r.summary(&self.me)).transpose()
     }
 
     /// Every session, pinned first, then most recently active first.
@@ -1377,9 +2015,9 @@ impl Store {
             session_cols!(),
             " FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC"
         ))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
-        rows.into_iter().map(SessionSummary::try_from).collect()
+        rows.into_iter().map(|r| r.summary(&self.me)).collect()
     }
 
     /// The subtree under `root` (children, grandchildren, …) with each row's
@@ -1405,13 +2043,13 @@ impl Store {
             ", t.depth FROM sessions JOIN tree t ON sessions.id = t.id ORDER BY t.path"
         ))
         .bind(root.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter()
             .map(|r| {
                 Ok((
                     u8::try_from(r.depth).context("bad depth")?,
-                    SessionSummary::try_from(r.row)?,
+                    r.row.summary(&self.me)?,
                 ))
             })
             .collect()
@@ -1431,7 +2069,7 @@ impl Store {
             .map(|(_, s)| s.id)
             .collect();
         ids.push(root);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let is_root: bool = sqlx::query_scalar("SELECT parent IS NULL FROM sessions WHERE id = ?")
             .bind(root.to_string())
             .fetch_optional(&mut *tx)
@@ -1486,7 +2124,7 @@ impl Store {
             sqlx::query_as("SELECT id FROM sessions WHERE parent = ? AND name = ?")
                 .bind(parent.to_string())
                 .bind(name)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&self.read)
                 .await?;
         id.map(|(s,)| s.parse().context("bad session id"))
             .transpose()
@@ -1498,7 +2136,7 @@ impl Store {
         while let Some((Some(parent),)) =
             sqlx::query_as::<_, (Option<String>,)>("SELECT parent FROM sessions WHERE id = ?")
                 .bind(id.to_string())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&self.read)
                 .await?
         {
             id = parent.parse().context("bad parent id")?;
@@ -1511,7 +2149,7 @@ impl Store {
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
     pub async fn last_turn_text(&self, id: SessionId) -> anyhow::Result<String> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         let rows = rows_in(&mut conn, id, 0).await?;
         let start = rows
             .iter()
@@ -1534,6 +2172,7 @@ impl Store {
         session: SessionId,
         project: Option<&str>,
     ) -> anyhow::Result<SessionId> {
+        let mut tx = self.begin_write().await?;
         let root: Option<(String,)> = sqlx::query_as(
             "UPDATE sessions SET project = ? WHERE id = ( \
                  WITH RECURSIVE up(id, parent) AS ( \
@@ -1545,8 +2184,9 @@ impl Store {
         )
         .bind(project)
         .bind(session.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         root.map(|(id,)| id.parse().context("bad session id"))
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("no such session"))
@@ -1560,7 +2200,7 @@ impl Store {
             " FROM sessions WHERE id = ?"
         ))
         .bind(session.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(|(p,)| p)
             .ok_or_else(|| anyhow::anyhow!("no such session"))
@@ -1572,7 +2212,7 @@ impl Store {
             "SELECT name, icon, color FROM projects WHERE name = ?",
         )
         .bind(name)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?
         .map(|(name, icon, color)| ProjectStyle { name, icon, color }))
     }
@@ -1582,7 +2222,7 @@ impl Store {
         Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT name, icon, color FROM projects ORDER BY name",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?
         .into_iter()
         .map(|(name, icon, color)| ProjectStyle { name, icon, color })
@@ -1600,12 +2240,15 @@ impl Store {
     ) -> anyhow::Result<()> {
         crate::project::validate_style(icon, color).map_err(anyhow::Error::msg)?;
         if icon.is_none() && color.is_none() {
+            let mut tx = self.begin_write().await?;
             sqlx::query("DELETE FROM projects WHERE name = ?")
                 .bind(name)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+            tx.commit().await?;
             return Ok(());
         }
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO projects (name, icon, color, updated_at) VALUES (?, ?, ?, ?) \
              ON CONFLICT(name) DO UPDATE SET icon = excluded.icon, color = excluded.color, \
@@ -1615,13 +2258,15 @@ impl Store {
         .bind(icon)
         .bind(color)
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Record a pending reminder (14 as-built 2026-09-23).
     pub async fn insert_reminder(&self, r: &ReminderRow) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT OR REPLACE INTO reminders (id, session, message, set_at, fires_at, seconds) \
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -1632,18 +2277,21 @@ impl Store {
         .bind(r.set_at)
         .bind(r.fires_at)
         .bind(i64::try_from(r.seconds).unwrap_or(i64::MAX))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Forget a reminder that fired or was cancelled.
     pub async fn delete_reminder(&self, session: SessionId, id: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         sqlx::query("DELETE FROM reminders WHERE session = ? AND id = ?")
             .bind(session.to_string())
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1652,7 +2300,7 @@ impl Store {
         Ok(sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
             "SELECT id, session, message, set_at, fires_at, seconds FROM reminders ORDER BY fires_at",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?
         .into_iter()
         .filter_map(|(id, session, message, set_at, fires_at, seconds)| {
@@ -1667,6 +2315,37 @@ impl Store {
         })
         .collect())
     }
+}
+
+/// Column layout of every attached table (`PRAGMA table_info`), in
+/// [`capture::ATTACHED`] order; the session column must exist.
+async fn table_meta(pool: &SqlitePool) -> anyhow::Result<Vec<capture::TableMeta>> {
+    let mut out = Vec::with_capacity(capture::ATTACHED.len());
+    for (table, session_col) in capture::ATTACHED {
+        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
+                .fetch_all(pool)
+                .await?;
+        let cols: Vec<String> = rows.iter().map(|r| r.1.clone()).collect();
+        let pk: Vec<bool> = rows.iter().map(|r| r.5 > 0).collect();
+        let session_col = cols
+            .iter()
+            .position(|c| c == session_col)
+            .ok_or_else(|| anyhow::anyhow!("{table} has no column {session_col}"))?;
+        out.push(capture::TableMeta {
+            name: table.to_owned(),
+            cols,
+            pk,
+            session_col,
+        });
+    }
+    Ok(out)
+}
+
+/// The HLC origin of this engine's log rows: its id, or `local` before it
+/// has one (such rows never ship; [`replica::Hlc::parse`] needs a non-empty origin).
+fn hlc_origin(me: &str) -> replica::PeerId {
+    replica::PeerId(if me.is_empty() { "local".to_owned() } else { me.to_owned() })
 }
 
 /// A user message that opens a turn: first in the session or right after an
@@ -1976,7 +2655,7 @@ mod tests {
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("theuth-store-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store.create_session(id, "m", None, None, None).await.unwrap();
         (store, id, dir)
@@ -2443,7 +3122,7 @@ mod tests {
             [(0, "u1".into()), (1, "a1".into()), (2, "u2".into())]
         );
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         assert_eq!(store.errors(id).await.unwrap(), all);
 
         assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
@@ -2463,7 +3142,7 @@ mod tests {
         store.delete_session(id).await.unwrap();
         let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM errors WHERE session_id = ?")
             .bind(id.to_string())
-            .fetch_one(&store.pool)
+            .fetch_one(&store.read)
             .await
             .unwrap();
         assert_eq!(left.0, 0);
@@ -2548,7 +3227,7 @@ mod tests {
         store.delete_session(whole).await.unwrap();
         let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM inner_calls WHERE session_id = ?")
             .bind(whole.to_string())
-            .fetch_one(&store.pool)
+            .fetch_one(&store.read)
             .await
             .unwrap();
         assert_eq!(left.0, 0);
@@ -2780,7 +3459,7 @@ mod tests {
     async fn snapshot_rows(store: &Store, id: SessionId) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM todo_snapshots WHERE session_id = ?")
             .bind(id.to_string())
-            .fetch_one(&store.pool)
+            .fetch_one(&store.read)
             .await
             .unwrap()
     }
@@ -3427,7 +4106,7 @@ mod tests {
         sqlx::query("UPDATE messages SET excluded = ? WHERE session_id = ? AND seq = 1")
             .bind(r#"{"whole":false,"binaries":[{"part":1}]}"#)
             .bind(src.to_string())
-            .execute(&store.pool)
+            .execute(&store.write)
             .await
             .unwrap();
 
@@ -3549,7 +4228,7 @@ mod tests {
             "CREATE TRIGGER fail_rev BEFORE UPDATE OF context_revision ON sessions \
              BEGIN SELECT RAISE(ABORT, 'injected'); END",
         )
-        .execute(&store.pool)
+        .execute(&store.write)
         .await
         .unwrap();
         let targets = [msg(1), msg(2), bin(0, 1, None)];
@@ -3572,7 +4251,7 @@ mod tests {
         assert!(store.effective_message(id, 1).await.unwrap().is_some());
         // Same request without the fault: the edit was valid all along.
         sqlx::query("DROP TRIGGER fail_rev")
-            .execute(&store.pool)
+            .execute(&store.write)
             .await
             .unwrap();
         let (removal, _, _, tail) = store.remove_context(id, "4", &targets).await.unwrap();
@@ -3599,10 +4278,10 @@ mod tests {
             .unwrap();
         assert_eq!(removal.revision, "5");
         let committed = serde_json::to_string(&(epoch, head, tail)).unwrap();
-        store.pool.close().await;
+        store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         assert_eq!(store.context_revision(id).await.unwrap(), "5");
         assert_eq!(
             serde_json::to_string(&store.frame(id).await.unwrap()).unwrap(),
@@ -3878,7 +4557,7 @@ mod tests {
         // turn readers still see the row and never treat it as a plain message.
         sqlx::query("UPDATE messages SET vision = '{nope' WHERE session_id = ? AND seq = 5")
             .bind(id.to_string())
-            .execute(&store.pool)
+            .execute(&store.write)
             .await
             .unwrap();
         store.compact(id, 2, 5, 5, &head).await.unwrap();
@@ -4063,9 +4742,9 @@ mod tests {
         store.append(id, &asst("a2")).await.unwrap();
 
         // Resume: a fresh handle reloads the committed note, no inference implied.
-        store.pool.close().await;
+        store.close().await;
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let frame = store.vision_frame(id).await.unwrap();
         assert_eq!(frame.notes, BTreeMap::from([(3, n.clone())]));
         assert_eq!(coords(&frame), [(bin(0, 1, None), 1, None)]);
@@ -4100,7 +4779,7 @@ mod tests {
             "SELECT COUNT(*) FROM messages WHERE session_id = ? AND vision IS NOT NULL",
         )
         .bind(id.to_string())
-        .fetch_one(&store.pool)
+        .fetch_one(&store.read)
         .await
         .unwrap();
         assert_eq!(left.0, 0);
@@ -4109,4 +4788,513 @@ mod tests {
     }
 
     // endregion: --- Vision notes (52)
+
+    // region: --- Capture (68 §3)
+
+    /// Every public mutating method that touches a replicated table leaves at
+    /// least one `session_log` row: a statement that slipped onto the read
+    /// pool would leave none.
+    #[tokio::test]
+    async fn every_mutation_is_captured_on_the_write_connection() {
+        use crate::communication::PeerScope;
+        use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
+        use crate::todo::Status;
+
+        let dir = std::env::temp_dir().join(format!("theuth-capture-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        assert!(!store.is_private());
+        let id = SessionId::new();
+        let mut since = store.log_seq();
+        // Log rows per mutating call; the contract doc reports the share of
+        // calls that produced exactly one (one session touched).
+        let mut rows: Vec<usize> = Vec::new();
+        let plan = [Todo {
+            text: "t".into(),
+            status: Status::Pending,
+            reason: None,
+        }];
+
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        rows.push(store.assert_write_pool("create_session", &mut since).await.len());
+        store.set_title(id, "t").await.unwrap();
+        rows.push(store.assert_write_pool("set_title", &mut since).await.len());
+        store.set_pinned(id, true).await.unwrap();
+        rows.push(store.assert_write_pool("set_pinned", &mut since).await.len());
+        store.set_archived(id, true).await.unwrap();
+        rows.push(store.assert_write_pool("set_archived", &mut since).await.len());
+        store.set_model(id, "m2").await.unwrap();
+        rows.push(store.assert_write_pool("set_model", &mut since).await.len());
+        store.set_effort(id, Some("high")).await.unwrap();
+        rows.push(store.assert_write_pool("set_effort", &mut since).await.len());
+        store.set_acp(id, "codex", Some(Path::new("/tmp"))).await.unwrap();
+        rows.push(store.assert_write_pool("set_acp", &mut since).await.len());
+        store.set_acp_session(id, "x").await.unwrap();
+        rows.push(store.assert_write_pool("set_acp_session", &mut since).await.len());
+        store.set_harness_model(id, "hm").await.unwrap();
+        rows.push(store.assert_write_pool("set_harness_model", &mut since).await.len());
+        store.set_cwd(id, Path::new("/tmp/elsewhere")).await.unwrap();
+        rows.push(store.assert_write_pool("set_cwd", &mut since).await.len());
+        store.set_unattended(id).await.unwrap();
+        rows.push(store.assert_write_pool("set_unattended", &mut since).await.len());
+        store.set_project(id, Some("p")).await.unwrap();
+        rows.push(store.assert_write_pool("set_project", &mut since).await.len());
+        store.set_root_scope(id, PeerScope::Owner, Some("alias")).await.unwrap();
+        rows.push(store.assert_write_pool("set_root_scope", &mut since).await.len());
+        store.append(id, &ChatMessage::user("hi")).await.unwrap();
+        rows.push(store.assert_write_pool("append", &mut since).await.len());
+        store.append(id, &asst("a")).await.unwrap();
+        rows.push(store.assert_write_pool("append", &mut since).await.len());
+        store.append_with_todos(id, &resp("c1"), TodoSource::Native, &plan).await.unwrap();
+        rows.push(store.assert_write_pool("append_with_todos", &mut since).await.len());
+        store.save_todos(id, TodoSource::Native, &[]).await.unwrap();
+        rows.push(store.assert_write_pool("save_todos", &mut since).await.len());
+        store.record_error(id, "boom").await.unwrap();
+        rows.push(store.assert_write_pool("record_error", &mut since).await.len());
+        store.inner_call_started(id, "c1.1", "read", &serde_json::json!({})).await.unwrap();
+        rows.push(store.assert_write_pool("inner_call_started", &mut since).await.len());
+        store.inner_call_finished(id, "c1.1", "ok", false, &[]).await.unwrap();
+        rows.push(store.assert_write_pool("inner_call_finished", &mut since).await.len());
+        let reminder = ReminderRow {
+            id: "r1".into(),
+            session: id,
+            message: "m".into(),
+            set_at: 1,
+            fires_at: 2,
+            seconds: 1,
+        };
+        store.insert_reminder(&reminder).await.unwrap();
+        rows.push(store.assert_write_pool("insert_reminder", &mut since).await.len());
+        store.delete_reminder(id, "r1").await.unwrap();
+        rows.push(store.assert_write_pool("delete_reminder", &mut since).await.len());
+        let revision = store.context_revision(id).await.unwrap();
+        store.set_title_at_revision(id, "t2", &[], &revision).await.unwrap();
+        rows.push(store.assert_write_pool("set_title_at_revision", &mut since).await.len());
+        store.compact(id, 1, 2, 3, &ChatMessage::system("head")).await.unwrap();
+        rows.push(store.assert_write_pool("compact", &mut since).await.len());
+        store.append(id, &ChatMessage::user("u2")).await.unwrap();
+        rows.push(store.assert_write_pool("append", &mut since).await.len());
+        store.append(id, &asst("a2")).await.unwrap();
+        rows.push(store.assert_write_pool("append", &mut since).await.len());
+        store.compact_with_todos(id, 2, 4, 5, &ChatMessage::system("head2"), (TodoSource::Native, &plan))
+            .await
+            .unwrap();
+        rows.push(store.assert_write_pool("compact_with_todos", &mut since).await.len());
+        store.append(id, &ChatMessage::user("u3")).await.unwrap();
+        rows.push(store.assert_write_pool("append", &mut since).await.len());
+        store.undo(id).await.unwrap();
+        rows.push(store.assert_write_pool("undo", &mut since).await.len());
+        store.redo(id).await.unwrap();
+        rows.push(store.assert_write_pool("redo", &mut since).await.len());
+        store.cut_to(id, 5).await.unwrap();
+        rows.push(store.assert_write_pool("cut_to", &mut since).await.len());
+        store.commit_cut(id).await.unwrap();
+        rows.push(store.assert_write_pool("commit_cut", &mut since).await.len());
+        let forked = store.fork(id, None, None).await.unwrap();
+        rows.push(store.assert_write_pool("fork", &mut since).await.len());
+
+        let call = store
+            .reserve_call(id, "req", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        store.mark_dispatched(&call).await.unwrap();
+        rows.push(store.assert_write_pool("mark_dispatched", &mut since).await.len());
+        let obs = CostObservation {
+            returned: Some(Money::from_f64(0.1, "USD").unwrap()),
+            ..Default::default()
+        };
+        store.settle_call(&call, CallStatus::Settled, obs).await.unwrap();
+        rows.push(store.assert_write_pool("settle_call", &mut since).await.len());
+        let call = store
+            .reserve_call(id, "req2", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        store.mark_not_dispatched(&call, "no").await.unwrap();
+        rows.push(store.assert_write_pool("mark_not_dispatched", &mut since).await.len());
+        store
+            .reserve_call(id, "req3", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        store.unresolve_open_calls().await.unwrap();
+        rows.push(store.assert_write_pool("unresolve_open_calls", &mut since).await.len());
+        store
+            .apply_meter(
+                id,
+                MeterUpdate {
+                    origin: "h".into(),
+                    external_session: "e".into(),
+                    cumulative: Money::from_f64(0.2, "USD").unwrap(),
+                    confirmed_new_session: true,
+                    report_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        rows.push(store.assert_write_pool("apply_meter", &mut since).await.len());
+
+        store.delete_session(forked).await.unwrap();
+        rows.push(store.assert_write_pool("delete_session(fork)", &mut since).await.len());
+        store.delete_session(id).await.unwrap();
+        rows.push(store.assert_write_pool("delete_session", &mut since).await.len());
+
+        let single = rows.iter().filter(|&&n| n == 1).count();
+        eprintln!(
+            "single-session changesets: {single}/{} ({:.1} %)",
+            rows.len(),
+            100.0 * single as f64 / rows.len() as f64
+        );
+        // Only `fork` (source + new session) and `delete_session` of a fork's
+        // parent tree touch two sessions in one transaction.
+        assert!(rows.iter().all(|&n| n <= 2), "{rows:?}");
+        for row in store.log_after(0).await.unwrap() {
+            assert!(replica::Hlc::parse(&row.hlc).is_some(), "{}", row.hlc);
+            assert!(!row.changeset.is_empty());
+            assert_eq!(row.epoch, 1);
+        }
+
+        // A private store captures nothing and never panics here.
+        let private = Store::open_memory().await.unwrap();
+        assert!(private.is_private());
+        private.create_session(id, "m", None, None, None).await.unwrap();
+        assert!(private.assert_write_pool("private", &mut 0).await.is_empty());
+
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `owner` starts as the opening engine's id (`''` when unknown), is
+    /// backfilled on the next open that knows one, and decides `here`.
+    #[tokio::test]
+    async fn owner_is_set_at_creation_backfilled_at_open_and_decides_here() {
+        let dir = std::env::temp_dir().join(format!("theuth-owner-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.sqlite");
+        let store = Store::open(&path, None).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        let s = store.session(id).await.unwrap().unwrap();
+        assert_eq!((s.owner.as_str(), s.epoch, s.here), ("", 1, true));
+        store.close().await;
+
+        let a = mesh::EngineId("engine-a".into());
+        let store = Store::open(&path, Some(a.clone())).await.unwrap();
+        let s = store.session(id).await.unwrap().unwrap();
+        assert_eq!((s.owner.as_str(), s.here), ("engine-a", true));
+        store.create_session(SessionId::new(), "m", Some(id), None, None).await.unwrap();
+        store.append(id, &ChatMessage::user("u")).await.unwrap();
+        let forked = store.fork(id, None, None).await.unwrap();
+        for s in store.list_sessions().await.unwrap() {
+            assert_eq!((s.owner.as_str(), s.epoch, s.here), ("engine-a", 1, true), "{}", s.id);
+        }
+        store.close().await;
+
+        let store = Store::open(&path, Some(mesh::EngineId("engine-b".into()))).await.unwrap();
+        let s = store.session(forked).await.unwrap().unwrap();
+        assert_eq!((s.owner.as_str(), s.here), ("engine-a", false));
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `errors.id` is text: fresh rows mint uuid v7, a fork's copies keep the
+    /// source order behind one anchor and never collide with the originals.
+    #[tokio::test]
+    async fn error_ids_are_text_and_unique_across_fork() {
+        let (store, id, dir) = fresh().await;
+        store.append(id, &ChatMessage::user("u")).await.unwrap();
+        store.record_error(id, "first").await.unwrap();
+        store.record_error(id, "second").await.unwrap();
+        let forked = store.fork(id, None, None).await.unwrap();
+        let ids: Vec<(String, String)> = sqlx::query_as("SELECT id, session_id FROM errors ORDER BY id")
+            .fetch_all(&store.read)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 4);
+        assert!(ids.iter().all(|(i, _)| uuid::Uuid::parse_str(i.split(':').next().unwrap()).is_ok()));
+        assert_eq!(
+            store.errors(forked).await.unwrap().iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session owned elsewhere refuses every local write with `NotOwner`
+    /// and rolls the transaction back; a take (`owner = me`) is the one write
+    /// that passes, and it is logged under the new epoch.
+    #[tokio::test]
+    async fn writes_on_a_foreign_session_are_refused_until_taken() {
+        let dir = std::env::temp_dir().join(format!("theuth-guard-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.sqlite");
+        let store = Store::open(&path, Some(mesh::EngineId("a".into()))).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        store.append(id, &ChatMessage::user("u")).await.unwrap();
+        store.close().await;
+
+        let store = Store::open(&path, Some(mesh::EngineId("b".into()))).await.unwrap();
+        let before = store.log_seq();
+        let err = store.append(id, &ChatMessage::user("nope")).await.unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<StoreError>(),
+            Some(&StoreError::NotOwner {
+                session: id,
+                owner: "a".into(),
+                epoch: 1,
+            })
+        );
+        assert_eq!(store.messages(id).await.unwrap().len(), 1, "rolled back");
+        assert_eq!(store.log_seq(), before, "nothing logged");
+        assert!(store.set_owner(id, "c", 2).await.is_err(), "only a take by this engine passes");
+        store.set_owner(id, "b", 2).await.unwrap();
+        let rows = store.log_after(before).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].session_id.as_str(), rows[0].epoch), (id.to_string().as_str(), 2));
+        store.append(id, &ChatMessage::user("mine now")).await.unwrap();
+        assert_eq!(store.log_after(before).await.unwrap().last().unwrap().epoch, 2);
+        assert_eq!(store.owner(id).await.unwrap(), Some(("b".into(), 2)));
+        assert_eq!(store.fence(id).await.unwrap(), Some((2, "b".into())));
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fence (`session_epochs` ∪ the session row) decides the guard:
+    /// with it raised to a foreign owner, every public mutating method that
+    /// touches the session is refused with `NotOwner` and writes nothing.
+    #[tokio::test]
+    async fn every_mutator_is_refused_behind_a_foreign_fence() {
+        use crate::communication::PeerScope;
+        use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
+        use crate::todo::Status;
+
+        let dir = std::env::temp_dir().join(format!("theuth-fence-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into()))).await.unwrap();
+        let id = SessionId::new();
+        let plan = [Todo {
+            text: "t".into(),
+            status: Status::Pending,
+            reason: None,
+        }];
+        // State every conditional write needs: two turns, a reminder, an
+        // inner call, two reserved model calls.
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        store.append(id, &ChatMessage::user("u1")).await.unwrap();
+        store.append(id, &asst("a1")).await.unwrap();
+        store.append(id, &ChatMessage::user("u2")).await.unwrap();
+        store.append(id, &asst("a2")).await.unwrap();
+        let reminder = ReminderRow {
+            id: "r1".into(),
+            session: id,
+            message: "m".into(),
+            set_at: 1,
+            fires_at: 2,
+            seconds: 1,
+        };
+        store.insert_reminder(&reminder).await.unwrap();
+        store.inner_call_started(id, "c1.1", "read", &serde_json::json!({})).await.unwrap();
+        let call = store.reserve_call(id, "req", 0, None, CallKind::Round, Some("p"), Some("m")).await.unwrap();
+        let call2 = store.reserve_call(id, "req2", 0, None, CallKind::Round, Some("p"), Some("m")).await.unwrap();
+        let revision = store.context_revision(id).await.unwrap();
+        let messages = store.messages(id).await.unwrap().len();
+
+        // Another engine took it: the fence moves, the row is still ours until its log row lands.
+        assert!(store.set_fence(id, 2, "x").await.unwrap());
+        assert_eq!(store.owner(id).await.unwrap(), Some(("a".into(), 1)));
+        let before = store.log_seq();
+
+        macro_rules! refused {
+            ($what:expr, $call:expr) => {{
+                let err = $call.await.err().unwrap_or_else(|| panic!("{} passed behind a foreign fence", $what));
+                match err.downcast_ref::<StoreError>() {
+                    Some(StoreError::NotOwner { session, owner, epoch }) => {
+                        assert_eq!((*session, owner.as_str(), *epoch), (id, "x", 2), "{}", $what);
+                    }
+                    _ => panic!("{}: {err:#}", $what),
+                }
+            }};
+        }
+        refused!("set_title", store.set_title(id, "t"));
+        refused!("set_pinned", store.set_pinned(id, true));
+        refused!("set_archived", store.set_archived(id, true));
+        refused!("set_model", store.set_model(id, "m2"));
+        refused!("set_effort", store.set_effort(id, Some("high")));
+        refused!("set_acp", store.set_acp(id, "codex", Some(Path::new("/tmp"))));
+        refused!("set_acp_session", store.set_acp_session(id, "x"));
+        refused!("set_harness_model", store.set_harness_model(id, "hm"));
+        refused!("set_cwd", store.set_cwd(id, Path::new("/tmp/elsewhere")));
+        refused!("set_unattended", store.set_unattended(id));
+        refused!("set_project", store.set_project(id, Some("p")));
+        refused!("set_root_scope", store.set_root_scope(id, PeerScope::Owner, Some("alias")));
+        refused!("append", store.append(id, &ChatMessage::user("nope")));
+        refused!("append_with_todos", store.append_with_todos(id, &resp("c1"), TodoSource::Native, &plan));
+        refused!("save_todos", store.save_todos(id, TodoSource::Native, &plan));
+        refused!("record_error", store.record_error(id, "boom"));
+        refused!("inner_call_started", store.inner_call_started(id, "c1.2", "read", &serde_json::json!({})));
+        refused!("inner_call_finished", store.inner_call_finished(id, "c1.1", "ok", false, &[]));
+        let r2 = ReminderRow { id: "r2".into(), ..reminder.clone() };
+        refused!("insert_reminder", store.insert_reminder(&r2));
+        refused!("delete_reminder", store.delete_reminder(id, "r1"));
+        refused!("set_title_at_revision", store.set_title_at_revision(id, "t2", &[], &revision));
+        refused!("compact", store.compact(id, 1, 2, 3, &ChatMessage::system("head")));
+        refused!(
+            "compact_with_todos",
+            store.compact_with_todos(id, 2, 4, 5, &ChatMessage::system("head2"), (TodoSource::Native, &plan))
+        );
+        refused!("undo", store.undo(id));
+        refused!("cut_to", store.cut_to(id, 2));
+        refused!("mark_dispatched", store.mark_dispatched(&call));
+        refused!("mark_not_dispatched", store.mark_not_dispatched(&call2, "no"));
+        refused!(
+            "settle_call",
+            store.settle_call(
+                &call,
+                CallStatus::Settled,
+                CostObservation {
+                    returned: Some(Money::from_f64(0.1, "USD").unwrap()),
+                    ..Default::default()
+                },
+            )
+        );
+        refused!(
+            "apply_meter",
+            store.apply_meter(
+                id,
+                MeterUpdate {
+                    origin: "h".into(),
+                    external_session: "e".into(),
+                    cumulative: Money::from_f64(0.2, "USD").unwrap(),
+                    confirmed_new_session: true,
+                    report_id: None,
+                },
+            )
+        );
+        // A take for someone else is judged on its post-state: refused as `y`'s.
+        let err = store.set_owner(id, "y", 3).await.unwrap_err();
+        assert!(matches!(err.downcast_ref::<StoreError>(), Some(StoreError::NotOwner { owner, epoch: 3, .. }) if owner == "y"), "{err:#}");
+        refused!("delete_session", store.delete_session(id));
+
+        assert_eq!(store.log_seq(), before, "nothing logged");
+        assert_eq!(store.messages(id).await.unwrap().len(), messages, "everything rolled back");
+        assert!(store.session(id).await.unwrap().is_some());
+        // A fork reads the foreign session and writes only the new one, which is ours.
+        let forked = store.fork(id, None, None).await.unwrap();
+        assert_eq!(store.owner(forked).await.unwrap(), Some(("a".into(), 1)));
+        assert_eq!(store.owner(id).await.unwrap(), Some(("a".into(), 1)), "the source row is untouched");
+
+        // Taking it back here (epoch 3 > fence) is the one write that passes.
+        store.set_owner(id, "a", 3).await.unwrap();
+        store.append(id, &ChatMessage::user("mine again")).await.unwrap();
+        assert_eq!(store.log_after(before).await.unwrap().last().unwrap().epoch, 3);
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Demote bookkeeping (68 §4.3): only rows above what the taker had
+    /// applied are orphaned; a local note is not logged and never guarded;
+    /// `session_log_seq` follows the session's own rows; `flush` logs nothing.
+    #[tokio::test]
+    async fn orphans_above_the_shipped_cursor_and_local_notes_are_not_logged() {
+        let dir = std::env::temp_dir().join(format!("theuth-orphan-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into()))).await.unwrap();
+        let id = SessionId::new();
+        store.create_session(id, "m", None, None, None).await.unwrap();
+        store.append(id, &ChatMessage::user("u1")).await.unwrap();
+        let shipped = store.log_seq();
+        assert_eq!(store.session_log_seq(id).await.unwrap(), shipped);
+        store.append(id, &ChatMessage::user("u2")).await.unwrap();
+        store.append(id, &ChatMessage::user("u3")).await.unwrap();
+        store.flush().await.unwrap();
+        assert_eq!(store.log_seq(), shipped + 2, "flush logs nothing");
+        assert_eq!(store.session_log_seq(id).await.unwrap(), shipped + 2);
+
+        assert_eq!(store.log_orphan_after(id, 1, shipped).await.unwrap(), 2);
+        let orphans = store.log_orphans(id).await.unwrap();
+        assert_eq!(orphans.iter().map(|r| r.seq).collect::<Vec<_>>(), [shipped + 1, shipped + 2]);
+        assert_eq!(store.log_after(0).await.unwrap().len(), shipped as usize, "orphans left the shipping view");
+
+        // The taker's row landed: the fence is theirs; the local note still writes and is not logged.
+        assert!(store.set_fence(id, 2, "b").await.unwrap());
+        let before = store.log_seq();
+        let seq = store.append_local_note(id, "2 turns were not delivered").await.unwrap();
+        assert_eq!(store.log_seq(), before);
+        let last = store.messages(id).await.unwrap().pop().unwrap();
+        assert_eq!((last.0, last.1.role), (seq, ChatRole::System));
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Log rows split per session, seqs are contiguous per engine, orphans
+    /// leave `log_after`, pruning keeps orphans, cursors and fences upsert,
+    /// and an apply transaction leaves no echo.
+    #[tokio::test]
+    async fn log_api_round_trip() {
+        let (store, id, dir) = fresh().await;
+        let first = store.log_seq();
+        store.append(id, &ChatMessage::user("u")).await.unwrap();
+        let other = store.fork(id, None, None).await.unwrap();
+        let rows = store.log_after(first).await.unwrap();
+        // append → one row; fork → one row per session touched (the source
+        // row's revision is untouched, so the new session alone).
+        let per_session: HashMap<&str, usize> = rows.iter().fold(HashMap::new(), |mut m, r| {
+            *m.entry(r.session_id.as_str()).or_default() += 1;
+            m
+        });
+        assert!(per_session.contains_key(id.to_string().as_str()));
+        assert!(per_session.contains_key(other.to_string().as_str()));
+        assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), (first + 1..=store.log_seq()).collect::<Vec<_>>());
+
+        // Orphans: marked rows leave the shipping view and appear in the orphan view.
+        let n = store.log_orphan(other, 1).await.unwrap();
+        assert!(n >= 1);
+        assert!(store.log_after(first).await.unwrap().iter().all(|r| r.session_id != other.to_string()));
+        assert_eq!(store.log_orphans(other).await.unwrap().len(), n as usize);
+        // Prune keeps orphans; pruning orphans by time removes them.
+        let top = store.log_seq();
+        store.prune_log_below(top + 1).await.unwrap();
+        assert!(store.log_after(0).await.unwrap().is_empty());
+        assert_eq!(store.log_orphans(other).await.unwrap().len(), n as usize);
+        store.prune_orphans_before(u64::MAX).await.unwrap();
+        assert!(store.log_orphans(other).await.unwrap().is_empty());
+
+        // Cursors and fences upsert; a lower fence is ignored.
+        store.set_cursor("o", "", 5).await.unwrap();
+        store.set_cursor("o", "", 7).await.unwrap();
+        store.set_cursor("o", "p", 3).await.unwrap();
+        assert_eq!(
+            store.cursors().await.unwrap(),
+            [
+                Cursor { origin: "o".into(), peer: "".into(), seq: 7 },
+                Cursor { origin: "o".into(), peer: "p".into(), seq: 3 },
+            ]
+        );
+        // (On `other`: a fence raised to a foreign owner also guards writes, see
+        // `every_mutator_is_refused_behind_a_foreign_fence`.)
+        assert!(store.set_fence(other, 3, "x").await.unwrap());
+        assert!(!store.set_fence(other, 2, "y").await.unwrap());
+        assert_eq!(store.fence(other).await.unwrap(), Some((3, "x".into())));
+
+        // Apply: a write through `begin_apply` is not logged.
+        let before = store.log_seq();
+        let mut tx = store.begin_apply().await.unwrap();
+        sqlx::query("UPDATE sessions SET title = 'applied' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(store.log_seq(), before);
+        assert_eq!(store.session(id).await.unwrap().unwrap().title, "applied");
+        // …and capture is back on for the next ordinary write.
+        store.set_title(id, "again").await.unwrap();
+        assert_eq!(store.log_seq(), before + 1);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // endregion: --- Capture (68 §3)
 }

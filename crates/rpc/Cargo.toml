@@ -25,6 +25,7 @@ nodes = { workspace = true }
 a2a = { workspace = true }
 schedule = { workspace = true }
 mesh = { workspace = true }
+sessionsync = { workspace = true }
 replica = { workspace = true }
 roster = { workspace = true }
 tasks = { workspace = true }
@@ -64,9 +65,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 figment = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "roster/ts", "tasks/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts", "meeting/ts", "decision/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "document/ts", "knowledge/ts", "codeindex/ts", "search/ts", "agent/ts", "signal/ts", "slack/ts", "acp/ts", "browser/ts", "computer/ts", "surface/ts", "link/ts", "nodes/ts", "a2a/ts", "schedule/ts", "mesh/ts", "sessionsync/ts", "roster/ts", "tasks/ts", "artifact/ts", "app/ts", "secrets/ts", "web/ts", "update/ts", "voice/ts", "meeting/ts", "decision/ts"]
 
 [lints]
 workspace = true

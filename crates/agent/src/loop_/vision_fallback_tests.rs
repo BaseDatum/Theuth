@@ -321,7 +321,7 @@ impl Harness {
             .build()
             .unwrap();
 
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store
             .create_session(id, "openai/textonly", None, None, None)

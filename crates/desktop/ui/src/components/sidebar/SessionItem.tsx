@@ -36,6 +36,7 @@ import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
+import { useEngineLabel } from '@/lib/owner'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
 const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
@@ -104,6 +105,19 @@ function ProjectItems({ current, onPick, onNew }: { current: string | null; onPi
   )
 }
 
+/** Engine chip (68 §5): the owner's mesh name, muted, on a session owned elsewhere; hover names owner and epoch. */
+export function EngineChip({ owner, epoch, className }: { owner: string; epoch: number; className?: string }) {
+  const label = useEngineLabel(owner)
+  return (
+    <span
+      title={`owned by ${owner || '?'} · epoch ${epoch}`}
+      className={cn('shrink-0 rounded-[4px] bg-sidebar-accent px-1 text-[10px] leading-4 text-fg-tertiary', className)}
+    >
+      {label}
+    </span>
+  )
+}
+
 /**
  * One chat in the list: title (live from `TitleChanged`; the tooltip adds its tags), project pill (51 §3), active
  * highlight, hover `…` menu with pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click /
@@ -117,6 +131,9 @@ export const SessionItem = memo(function SessionItem({
   pinned,
   archived,
   project,
+  owner,
+  epoch,
+  here,
   subagents,
   active,
   selected,
@@ -130,6 +147,10 @@ export const SessionItem = memo(function SessionItem({
   pinned: boolean
   archived: boolean
   project: string | null
+  /** Owner engine id, its epoch and whether that is this engine (68 §5). */
+  owner: string
+  epoch: number
+  here: boolean
   /** Its subtree from `list_sessions` (all depths); absent when it has none. */
   subagents: readonly SessionSummary[] | undefined
   active: boolean
@@ -208,6 +229,15 @@ export const SessionItem = memo(function SessionItem({
     }
   }
 
+  const take = async () => {
+    try {
+      await api.session_take(id, 'user')
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   return (
     <div className="group/menu-item relative">
       {editing !== null ? (
@@ -265,6 +295,7 @@ export const SessionItem = memo(function SessionItem({
               <SessionJobs id={id} />
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
+              {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
             </Link>
           </SidebarMenuButton>
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -277,6 +308,13 @@ export const SessionItem = memo(function SessionItem({
               <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={here}
+                title={here ? 'This session already runs on this engine' : undefined}
+                onSelect={() => void take()}
+              >
+                Continue here
+              </DropdownMenuItem>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-48">

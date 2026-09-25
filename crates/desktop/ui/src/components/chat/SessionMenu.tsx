@@ -198,10 +198,12 @@ export function SessionMenu({ session }: { session: string }) {
   const navigate = useNavigate()
   const parent = useSessionField(session, 'parent')
   const undone = useSessionField(session, 'undone') ?? 0
-  // Tags: live from `TitleChanged`, else the stored set from the session list.
   const liveTags = useSessionField(session, 'tags')
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !liveTags })
-  const tags = liveTags ?? sessions.data?.find((s) => s.id === session)?.tags ?? []
+  // Tags: live from `TitleChanged`, else the stored set from the session list; the owner row (68 §5) is always the list's.
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const row = sessions.data?.find((s) => s.id === session)
+  const tags = liveTags ?? row?.tags ?? []
+  const here = row?.here ?? true
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
 
@@ -262,6 +264,13 @@ export function SessionMenu({ session }: { session: string }) {
             Copy id
           </DropdownMenuItem>
           {parent && <DropdownMenuItem onSelect={cmd('/parent')}>Open parent</DropdownMenuItem>}
+          <DropdownMenuItem
+            disabled={here}
+            title={here ? 'This session already runs on this engine' : undefined}
+            onSelect={cmd('/take')}
+          >
+            Continue here
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>Compact</DropdownMenuSubTrigger>

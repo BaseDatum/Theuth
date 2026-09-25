@@ -56,6 +56,7 @@ use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
 use knowledge::search::HistoricalConcept;
+use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
@@ -87,6 +88,7 @@ use uuid::Uuid;
 use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
+use crate::forward;
 use crate::search::SearchResponse;
 
 /// `ask` failed (handler error, actor stopped mid-call).
@@ -404,6 +406,23 @@ pub trait Api {
     /// follows on the stream. Refused while any of them is mid-turn.
     #[method(name = "delete_session", with_extensions)]
     async fn delete_session(&self, session: SessionId) -> RpcResult<()>;
+    /// Take `session` here (68 §4.2): `reason` is `user` (continue here, at
+    /// once), `orphan` (a resumed checkout) or `write` (owner unreachable ≥
+    /// `sessions.takeover_secs`). Returns the new owner/epoch;
+    /// `SessionOwnerChanged` follows on the stream.
+    #[method(name = "session_take", with_extensions)]
+    async fn session_take(&self, session: SessionId, reason: String) -> RpcResult<SessionOwner>;
+    /// Who owns `session` and whether that is this engine (68 §5).
+    #[method(name = "session_owner", with_extensions)]
+    async fn session_owner(&self, session: SessionId) -> RpcResult<SessionOwner>;
+    /// Turns this engine wrote as a superseded owner and never delivered
+    /// (68 §4.3), one entry per epoch; empty when none.
+    #[method(name = "session_orphans", with_extensions)]
+    async fn session_orphans(&self, session: SessionId) -> RpcResult<Vec<SessionOrphan>>;
+    /// This engine's replication summary (68 §10): id, sessions owned here
+    /// / elsewhere, log head, last snapshot.
+    #[method(name = "sessions_status")]
+    async fn sessions_status(&self) -> RpcResult<SessionsStatus>;
     /// Open a root with explicit storage (51 §4.1): `retention: durable`
     /// (default) is `new_session` plus `project`; `private` needs `view` and
     /// binds the tree to the calling connection, returning the lease secret
@@ -1759,6 +1778,9 @@ impl ApiServer for Server {
             Some(s) => s,
             None => owner_root().await?,
         };
+        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, &files, &delivery)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             SendInput {
@@ -1782,6 +1804,9 @@ impl ApiServer for Server {
     ) -> RpcResult<InputId> {
         self.authorize(ext, session).await?;
         let id = id.unwrap_or_default();
+        if let Some(r) = forward::route(ext, session, "steer", (session, &text, Some(id), &files, &delivery)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             Steer {
@@ -1868,6 +1893,9 @@ impl ApiServer for Server {
         id: InputId,
     ) -> RpcResult<String> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "withdraw", (session, id)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Withdraw { session, id }).await
     }
 
@@ -1882,6 +1910,9 @@ impl ApiServer for Server {
 
     async fn cancel(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "cancel", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
     }
 
@@ -2065,6 +2096,9 @@ impl ApiServer for Server {
         style: Option<CompactStyle>,
     ) -> RpcResult<u32> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "compact", (session, &style)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             Compact {
@@ -2078,11 +2112,17 @@ impl ApiServer for Server {
 
     async fn undo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "undo", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Undo { session }).await
     }
 
     async fn redo(&self, ext: &Extensions, session: SessionId) -> RpcResult<String> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "redo", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Redo { session }).await
     }
 
@@ -2103,6 +2143,9 @@ impl ApiServer for Server {
         targets: Vec<ContextTarget>,
     ) -> RpcResult<ContextRemoval> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "remove_context", (session, &expected_revision, &targets)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             RemoveContext {
@@ -2116,6 +2159,9 @@ impl ApiServer for Server {
 
     async fn regenerate(&self, ext: &Extensions, session: SessionId, turn: i64) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "regenerate", (session, turn)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Regenerate { session, turn }).await
     }
 
@@ -2128,6 +2174,9 @@ impl ApiServer for Server {
         files: Vec<PathBuf>,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "edit_turn", (session, turn, &text, &files)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             EditTurn {
@@ -2268,6 +2317,55 @@ impl ApiServer for Server {
             .ok_or_else(|| failed(format!("{session}: no accounting owner")))
     }
 
+    async fn session_take(&self, ext: &Extensions, session: SessionId, reason: String) -> RpcResult<SessionOwner> {
+        self.authorize(ext, session).await?;
+        let reason = sessionsync::TakeReason::parse(&reason)
+            .ok_or_else(|| {
+                ErrorObjectOwned::owned(
+                    jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                    format!("reason {reason:?}: expected user | orphan | write"),
+                    None::<()>,
+                )
+            })?;
+        let (owner, epoch) =
+            ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::TakeSession { id: session, reason })
+                .await?;
+        Ok(SessionOwner {
+            owner,
+            epoch,
+            here: true,
+        })
+    }
+
+    async fn session_owner(&self, ext: &Extensions, session: SessionId) -> RpcResult<SessionOwner> {
+        self.authorize(ext, session).await?;
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        sessionsync::owner(&store, session)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?
+            .ok_or_else(|| failed(format!("{session}: no such session")))
+    }
+
+    async fn session_orphans(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<SessionOrphan>> {
+        self.authorize(ext, session).await?;
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        sessionsync::orphans(&store, session).await.map_err(|e| failed(format!("{e:#}")))
+    }
+
+    async fn sessions_status(&self) -> RpcResult<SessionsStatus> {
+        let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+        let sessions = ask::<Agents, _>(agent::AGENT_ACTOR, ListSessions).await?;
+        let here = sessions.iter().filter(|s| s.here).count();
+        Ok(SessionsStatus {
+            engine: store.engine().to_owned(),
+            here: u32::try_from(here).unwrap_or(u32::MAX),
+            elsewhere: u32::try_from(sessions.len() - here).unwrap_or(u32::MAX),
+            log_seq: u64::try_from(store.log_seq()).unwrap_or_default(),
+            // ponytail: worker L owns snapshots; surface its timestamp here once it records one.
+            last_snapshot: None,
+        })
+    }
+
     async fn rename_session(
         &self,
         ext: &Extensions,
@@ -2275,6 +2373,9 @@ impl ApiServer for Server {
         title: String,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "rename_session", (session, &title)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
     }
 
@@ -2285,6 +2386,9 @@ impl ApiServer for Server {
         pinned: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "pin_session", (session, pinned)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, PinSession { session, pinned }).await
     }
 
@@ -2295,11 +2399,17 @@ impl ApiServer for Server {
         archived: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "archive_session", (session, archived)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, ArchiveSession { session, archived }).await
     }
 
     async fn delete_session(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "delete_session", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, DeleteSession { session }).await
     }
 
@@ -2368,6 +2478,9 @@ impl ApiServer for Server {
         project: Option<String>,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "set_session_project", (session, &project)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSessionProject { session, project }).await
     }
 
@@ -2450,6 +2563,11 @@ impl ApiServer for Server {
         model: String,
     ) -> RpcResult<ModelInfo> {
         self.authorize_opt(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "set_model", (session, &model)).await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
     }
 
@@ -2460,6 +2578,11 @@ impl ApiServer for Server {
         effort: Option<String>,
     ) -> RpcResult<()> {
         self.authorize_opt(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "set_effort", (session, &effort)).await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
@@ -2493,6 +2616,9 @@ impl ApiServer for Server {
         hidden: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "set_mcp_hidden", (session, &tools, hidden)).await? {
+            return Ok(r);
+        }
         ask::<ToolRegistry, _>(
             tools::REGISTRY_ACTOR,
             SetHidden {
@@ -2511,6 +2637,11 @@ impl ApiServer for Server {
         enabled: bool,
     ) -> RpcResult<ApprovalsState> {
         self.authorize_opt(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "set_approvals", (session, enabled)).await?
+        {
+            return Ok(r);
+        }
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetApprovals { session, enabled }).await
     }
 
@@ -2530,6 +2661,11 @@ impl ApiServer for Server {
         enabled: bool,
     ) -> RpcResult<CommunicationState> {
         self.authorize_opt(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "set_communication", (session, enabled)).await?
+        {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetCommunication { session, enabled }).await
     }
 
@@ -2541,6 +2677,9 @@ impl ApiServer for Server {
         alias: Option<String>,
     ) -> RpcResult<CommunicationState> {
         self.authorize(ext, root).await?;
+        if let Some(r) = forward::route(ext, root, "set_peer_scope", (root, &scope, &alias)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetPeerScope { root, scope, alias }).await
     }
 
@@ -2605,6 +2744,9 @@ impl ApiServer for Server {
         text: String,
     ) -> RpcResult<PeerReceipt> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "answer_peer_request", (session, reply_to, &text)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             AnswerPeerRequest {
@@ -2641,6 +2783,9 @@ impl ApiServer for Server {
             Some(s) => s,
             None => owner_root().await?,
         };
+        if let Some(r) = forward::route(ext, session, "use_skill", (Some(session), &name, &args)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             UseSkill {
@@ -3003,6 +3148,9 @@ impl ApiServer for Server {
         session: SessionId,
     ) -> RpcResult<HarvestResult> {
         self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "knowledge_harvest", (session,)).await? {
+            return Ok(r);
+        }
         ask::<Agents, _>(agent::AGENT_ACTOR, Harvest { session }).await
     }
 
@@ -3665,7 +3813,11 @@ impl ApiServer for Server {
     }
 
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
-        send(&artifact()?, artifact::search::Get { call_id }).await
+        match send(&artifact()?, artifact::search::Get { call_id: call_id.clone() }).await {
+            Ok(a) => Ok(a),
+            // 68 §7: the index is engine-local; a record shown elsewhere comes from a peer.
+            Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id).await.map_err(|_| e),
+        }
     }
 
     async fn get_artifact_listing(
@@ -3750,9 +3902,26 @@ impl ApiServer for Server {
             Some(s) => self.authorize(ext, s).await?.resources.root.clone(),
             None => self.rt.data_dir.clone(),
         };
-        let real =
-            std::fs::canonicalize(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
-        let allowed = ["attachments", "browser", "computer", "artifacts"]
+        let real = match std::fs::canonicalize(&path) {
+            Ok(p) => p,
+            // 68 §7: a blob (`…/artifacts/<hash>.<ext>`) or spill file
+            // (`…/spill/<session>/<call_id>.txt`) this engine never wrote is
+            // fetched from a peer and cached under ours.
+            Err(e) => {
+                let dir = |n: usize| path.ancestors().nth(n).and_then(Path::file_name).and_then(|d| d.to_str());
+                let fetched = match (path.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
+                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name).await,
+                    (Some(_), Some(session), Some("spill")) => match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
+                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id).await,
+                        _ => return Err(failed(format!("{}: {e}", path.display()))),
+                    },
+                    _ => return Err(failed(format!("{}: {e}", path.display()))),
+                }
+                .map_err(|e| failed(format!("{}: {e:#}", path.display())))?;
+                std::fs::canonicalize(&fetched).map_err(|e| failed(format!("{}: {e}", fetched.display())))?
+            }
+        };
+        let allowed = ["attachments", "browser", "computer", "artifacts", "spill"]
             .iter()
             .any(|d| std::fs::canonicalize(root.join(d)).is_ok_and(|dir| real.starts_with(dir)));
         if !allowed {
@@ -3854,6 +4023,9 @@ impl ApiServer for Server {
             }
         };
         let sink = pending.accept().await?;
+        // 68 §5: a session owned elsewhere streams its live events here while
+        // this subscription lives (the guard drops with the task).
+        let follow = session.and_then(sessionsync::events::follow);
         let session = session.map(|s| s.to_string());
         let private = self.private.clone();
         // Replay in-flight asks so a client that subscribes (or reconnects over
@@ -3876,6 +4048,7 @@ impl ApiServer for Server {
             }
         }
         tokio::spawn(async move {
+            let _follow = follow;
             loop {
                 let msg = tokio::select! {
                     _ = sink.closed() => return,

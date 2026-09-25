@@ -610,7 +610,7 @@ mod tests {
         use ::search::PageState;
         let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store.create_session(id, "m", None, None, None).await.unwrap();
         store.set_title(id, "deploy checklist").await.unwrap();

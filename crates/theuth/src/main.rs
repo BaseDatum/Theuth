@@ -476,6 +476,7 @@ agent:
 #   relay: https://iroh.relay.theuth.io   # iroh relay when hole punching fails; self-host: your `iroh-relay` URL; `none` → bind locally, never dial a relay
 #   discovery: true          # DNS/pkarr + mDNS peer lookup; false → dial remembered addresses only (one laptop, no network)
 #   name: \"\"                 # display name other engines see; \"\" → hostname
+#   bind: ~                  # `ip:port` the iroh endpoint binds; ~ → every interface, an OS-chosen port. Several engines on one box: 127.0.0.1:<port> each
 #   hub: eligible            # prefer | eligible | never — this engine's willingness to hold the hub lease
 #   probation_secs: 21600    # a newly joined engine cannot take the lease from an incumbent for this long
 #   handover_secs: 600       # an incumbent keeps the lease this long after a better engine appears, then hands over
@@ -1036,6 +1037,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         // 67: mesh → replica → roster → tasks, in that order (contract doc).
         Box::new(mesh::MeshPlugin),
         Box::new(replica::ReplicaPlugin),
+        // 68: ships the agent store's session log over `theuth/sessions/1`; needs agent + replica.
+        Box::new(sessionsync::SessionSyncPlugin),
         Box::new(roster::RosterPlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),

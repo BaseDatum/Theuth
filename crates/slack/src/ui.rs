@@ -677,6 +677,9 @@ mod tests {
             project: None,
             retention: agent::Retention::Durable,
             running: false,
+            owner: String::new(),
+            epoch: 1,
+            here: true,
         }
     }
 

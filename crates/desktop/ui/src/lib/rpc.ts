@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { Api } from '@/rpc/api'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
@@ -15,6 +16,10 @@ export function useApi(): Api {
 export const queryKeys = {
   sessions: ['sessions'] as const,
   session: (id: string) => ['session', id] as const,
+  /** `session_orphans(id)` (68 §4.3); dropped on `SessionOwnerChanged`. */
+  sessionOrphans: (id: string) => ['session-orphans', id] as const,
+  /** `sessions_status()` (68 §10): Settings → Mesh → Sessions. */
+  sessionsStatus: ['sessions-status'] as const,
   /** `list_project_styles()` (51 §3 as-built); the style dialog invalidates it after `set_project_style`. */
   projectStyles: ['project-styles'] as const,
   /** Prefix of every unified-search page (49 §4.2); invalidated by `useInvalidateOn` and the reconnect/`Lagged` reload. */
@@ -107,6 +112,15 @@ export const queryKeys = {
   briefTags: ['briefs', 'tags'] as const,
 }
 
+/** One `list_sessions` row with `SessionOwnerChanged` applied; the list is returned as is when the session is not in it. */
+export function withOwner(
+  rows: readonly SessionSummary[] | undefined,
+  e: { session: string; owner: string; epoch: number; here: boolean },
+): SessionSummary[] | undefined {
+  if (!rows?.some((s) => s.id === e.session)) return rows as SessionSummary[] | undefined
+  return rows.map((s) => (s.id === e.session ? { ...s, owner: e.owner, epoch: e.epoch, here: e.here } : s))
+}
+
 const SESSIONS_DEBOUNCE_MS = 500
 
 /** Wire events to query invalidation (25 §6.2): the session list debounced, the rest immediate. */
@@ -156,6 +170,14 @@ export function useInvalidateOn(): void {
       on('SessionMetadataChanged', () => {
         sessions()
         void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
+      }),
+      // Ownership moved (68 §4.2): patch the cached rows at once so chips, header and menus follow live; the
+      // debounced refetch settles the rest, and the session's orphans are re-asked.
+      on('SessionOwnerChanged', (e) => {
+        qc.setQueryData<SessionSummary[]>(queryKeys.sessions, (rows) => withOwner(rows, e))
+        void qc.invalidateQueries({ queryKey: queryKeys.sessionOrphans(e.session) })
+        void qc.invalidateQueries({ queryKey: queryKeys.sessionsStatus })
+        sessions()
       }),
       on('McpProgress', () => void qc.invalidateQueries({ queryKey: ['mcp'] })),
       on('LoginFinished', () => {

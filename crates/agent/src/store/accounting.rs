@@ -244,7 +244,7 @@ fn total_of(id: &str, nodes: &HashMap<String, Node>, children: &BTreeMap<String,
 impl Store {
     /// Register `id` as an accounting owner under `parent` (see [`ensure_owner_in`]).
     pub async fn ensure_owner(&self, id: SessionId, parent: Option<SessionId>) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         ensure_owner_in(&mut tx, id, parent).await?;
         tx.commit().await?;
         Ok(())
@@ -264,6 +264,7 @@ impl Store {
         model: Option<&str>,
     ) -> anyhow::Result<CallId> {
         let call = CallId(Uuid::now_v7().to_string());
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO model_calls (call_id, owner_id, request_id, attempt, turn_id, kind, status, \
              provider, requested_model, coverage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -279,21 +280,24 @@ impl Store {
         .bind(model)
         .bind(CallStatus::Unresolved.as_str())
         .bind(now())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(call)
     }
 
     /// Mark a pending attempt dispatched; commit before invoking transport.
     pub async fn mark_dispatched(&self, call: &CallId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         let n = sqlx::query("UPDATE model_calls SET status = ?, dispatched_at = ? WHERE call_id = ? AND status = ?")
             .bind(CallStatus::Dispatched.as_str())
             .bind(now())
             .bind(&call.0)
             .bind(CallStatus::Pending.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected();
+        tx.commit().await?;
         anyhow::ensure!(n == 1, "call {call} is not pending");
         Ok(())
     }
@@ -316,7 +320,7 @@ impl Store {
         } else {
             (Coverage::Unknown, Some(obs.unknown_reason.as_deref().unwrap_or("no cost observation")))
         };
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let owner: Option<(String,)> = sqlx::query_as(
             "UPDATE model_calls SET status = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, \
              cache_write_tokens = ?, context_tokens = ?, provider = COALESCE(?, provider), \
@@ -357,6 +361,7 @@ impl Store {
 
     /// A conclusively local pre-dispatch failure: excluded from every total.
     pub async fn mark_not_dispatched(&self, call: &CallId, reason: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE model_calls SET status = ?, coverage = ?, unknown_reason = ?, settled_at = ? \
              WHERE call_id = ? AND status = ?",
@@ -367,9 +372,10 @@ impl Store {
         .bind(now())
         .bind(&call.0)
         .bind(CallStatus::Pending.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         anyhow::ensure!(n == 1, "call {call} is not pending");
         Ok(())
     }
@@ -377,7 +383,7 @@ impl Store {
     /// Startup: attempts still `pending`/`dispatched` become `unresolved`
     /// (neither lost nor resent). Returns how many.
     pub async fn unresolve_open_calls(&self) -> anyhow::Result<u64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let owners: Vec<(String,)> = sqlx::query_as(
             "UPDATE model_calls SET status = ?, settled_at = ? WHERE status IN (?, ?) RETURNING owner_id",
         )
@@ -405,7 +411,7 @@ impl Store {
         anyhow::ensure!(crate::cost::valid_currency(&total.currency), "invalid currency");
         let total_nanos = i64::try_from(total.nanos).map_err(|_| anyhow::anyhow!("amount out of range"))?;
         let oid = owner.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let state: Option<MeterState> = sqlx::query_as(
             "SELECT id, owner_id, epoch, currency, baseline_nanos, high_water_nanos, last_report_id \
              FROM remote_meters WHERE origin = ? AND external_session = ? ORDER BY epoch DESC LIMIT 1",
@@ -511,7 +517,7 @@ impl Store {
     /// `None` when `id` is not an owner.
     pub async fn session_cost(&self, id: SessionId) -> anyhow::Result<Option<SessionCost>> {
         let sid = id.to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read.begin().await?;
         let head: Option<(String, i64)> =
             sqlx::query_as("SELECT history_coverage, revision FROM cost_owners WHERE id = ?")
                 .bind(&sid)
@@ -634,7 +640,7 @@ impl Store {
 
     /// Child delete (see [`tombstone_owner_in`]).
     pub async fn tombstone_owner(&self, id: SessionId) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         tombstone_owner_in(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
@@ -642,7 +648,7 @@ impl Store {
 
     /// Root delete (see [`delete_root_ledger_in`]).
     pub async fn delete_root_ledger(&self, root: SessionId) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         delete_root_ledger_in(&mut tx, root).await?;
         tx.commit().await?;
         Ok(())
@@ -656,7 +662,7 @@ mod tests {
     async fn fresh() -> Store {
         let dir = std::env::temp_dir().join(format!("theuth-acct-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir.join("sessions.sqlite")).await.unwrap()
+        Store::open(&dir.join("sessions.sqlite"), None).await.unwrap()
     }
 
     fn usd(amount: f64) -> Money {
@@ -728,7 +734,7 @@ mod tests {
         store.delete_root_ledger(r).await.unwrap();
         assert!(store.session_cost(r).await.unwrap().is_none());
         assert!(store.session_cost(g).await.unwrap().is_none());
-        let (calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_calls").fetch_one(&store.pool).await.unwrap();
+        let (calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_calls").fetch_one(&store.read).await.unwrap();
         assert_eq!(calls, 0);
     }
 

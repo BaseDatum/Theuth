@@ -24,6 +24,7 @@ import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRe
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
 import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
+import { ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { drafts, useSkillDraft } from '@/lib/drafts'
@@ -42,6 +43,7 @@ import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { HeldStrip } from './HeldStrip'
+import { type Offline, OwnerOfflineCard } from './OwnerOfflineCard'
 import { LevelMeter } from './LevelMeter'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
@@ -168,6 +170,8 @@ export function Composer({
   const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
   const [selected, setSelected] = useState(0)
   const [busy, setBusy] = useState(false)
+  /** 68 §5: a send the owner could not take; the card above the composer offers to take the session here and resend. */
+  const [offline, setOffline] = useState<Offline | null>(null)
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
   const [recording, setRecording] = useState(false)
@@ -449,6 +453,8 @@ export function Composer({
     if ((!line && !skill && !held) || busy) return
     setBusy(true)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
+    // The input a refused send would resend after "Continue here" (68 §5).
+    let pending: { body: string; files: string[] } | null = null
     try {
       if (line.startsWith('/skill:')) {
         const [name = '', ...words] = line.slice('/skill:'.length).trim().split(/\s+/)
@@ -479,6 +485,7 @@ export function Composer({
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
       const body = pinned ? compose([pinned], expanded.text) : expanded.text
       const { files } = expanded
+      pending = { body, files }
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
       // 66 §7.6: recents are recorded on send, not on pick.
       const sent = [...pastes.values()].flatMap((p) => (p.kind === 'ref' ? [p.ref] : []))
@@ -506,6 +513,10 @@ export function Composer({
             view: draftCreate.private ? VIEW : null,
             cwd: null,
             model: null,
+            effort: null,
+            parent_session: null,
+            parent_engine: null,
+            harness: null,
           })
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session
@@ -525,7 +536,9 @@ export function Composer({
         else await navigate({ to: '/c/$session', params: { session: id } })
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      const unreachable = ownerUnreachable(e)
+      if (unreachable && session && pending) setOffline({ ...unreachable, ...pending })
+      else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -658,6 +671,7 @@ export function Composer({
   return (
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
       {!compact && <CommunicationNotice session={session} state={comm} exports={exports} />}
+      {session && offline && <OwnerOfflineCard session={session} offline={offline} onDone={() => setOffline(null)} />}
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
       {skill && (
         <div className="flex justify-end pb-2">

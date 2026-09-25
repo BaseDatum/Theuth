@@ -236,3 +236,41 @@ async fn relays_through_a_middle_peer() {
     link(&switch, &c.transport, &d.transport, true);
     converge(&[&d.pool], &[row("t1", "one", "done")]).await;
 }
+
+/// A table that existed before it joined replication (68 decision 8:
+/// `cost_owners`): its rows carry no `hlc` and no trigger ever saw them.
+/// `announce_unstamped` ships them once; a second call finds nothing.
+#[tokio::test]
+async fn pre_existing_rows_are_announced_once() {
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    link(&switch, &a.transport, &b.transport, true);
+    for n in [&a, &b] {
+        exec(&n.pool, "CREATE TABLE owners (id TEXT PRIMARY KEY, root TEXT, hlc TEXT)").await;
+    }
+    exec(&a.pool, "INSERT INTO owners (id, root) VALUES ('o1', 'r1'), ('o2', 'r1')").await;
+    let ha = a.engine.attach(&a.pool, &["owners"]).await.unwrap();
+    let _hb = b.engine.attach(&b.pool, &["owners"]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    async fn on_b(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar::<_, String>("SELECT id FROM owners ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    assert_eq!(ha.announce_unstamped().await.unwrap(), 2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while on_b(&b.pool).await.len() < 2 {
+        assert!(tokio::time::Instant::now() < deadline, "B never received the announced rows");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(on_b(&b.pool).await, ["o1", "o2"]);
+    let stamped: i64 = sqlx::query_scalar("SELECT count(*) FROM owners WHERE hlc IS NULL")
+        .fetch_one(&a.pool)
+        .await
+        .unwrap();
+    assert_eq!(stamped, 0);
+    assert_eq!(ha.announce_unstamped().await.unwrap(), 0);
+}

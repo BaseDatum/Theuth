@@ -33,13 +33,15 @@ const BATCH_ROWS: i64 = 5000;
 const FEED_CAPACITY: usize = 1024;
 
 /// Hybrid logical clock: `max(wall, last) + counter`, tie-broken by origin.
-pub(crate) struct Clock {
+/// Public since 68 §3: the session log stamps its rows with it.
+pub struct Clock {
     origin: PeerId,
     state: Mutex<(u64, u32)>,
 }
 
 impl Clock {
-    fn new(origin: PeerId, last: (u64, u32)) -> Self {
+    /// A clock for `origin` that continues from `last` (`(0, 0)` for a fresh one).
+    pub fn new(origin: PeerId, last: (u64, u32)) -> Self {
         Self {
             origin,
             state: Mutex::new(last),
@@ -47,7 +49,7 @@ impl Clock {
     }
 
     /// A stamp strictly above every earlier one, at least `wall_ms`.
-    pub(crate) fn tick(&self, wall_ms: u64) -> Hlc {
+    pub fn tick(&self, wall_ms: u64) -> Hlc {
         let mut s = self.state.lock();
         if wall_ms > s.0 {
             *s = (wall_ms, 0);
@@ -62,7 +64,7 @@ impl Clock {
     }
 
     /// Learn a stamp seen elsewhere so later ticks stay above it.
-    pub(crate) fn observe(&self, seen: &Hlc) {
+    pub fn observe(&self, seen: &Hlc) {
         let mut s = self.state.lock();
         if (seen.wall_ms, seen.counter) > *s {
             *s = (seen.wall_ms, seen.counter);
@@ -306,9 +308,45 @@ impl Engine {
         let (wall, counter) = self.clock.snapshot();
         store::save_clock(&mut *tx, wall, counter).await?;
         tx.commit().await?;
+        if let Err(e) = self.prune_outbox().await {
+            tracing::warn!("replica: prune outbox: {e:#}");
+        }
 
         let _ = self.feed.send(batch.clone());
         Ok(batch)
+    }
+
+    /// Drop own batches every known peer already holds (67 loose ends 2.4,
+    /// 68 §6): `seq < min_acked_seq`, never the newest — `MAX(seq)` seeds
+    /// `next_seq` at open. Known peers are the other origins in the outbox
+    /// (every engine writes its own presence rows); one of them unseen since
+    /// start means nothing is pruned, so an offline peer's catch-up survives
+    /// restarts. A solo engine keeps its outbox: stage 1 has no snapshot path.
+    pub async fn prune_outbox(&self) -> anyhow::Result<u64> {
+        let known = self.store.version_vector().await?;
+        let min_acked_seq = {
+            let vv = self.remote_vv.lock();
+            let mut min: Option<u64> = None;
+            for peer in known.keys().filter(|p| **p != self.origin) {
+                let Some(held) = vv.get(peer).and_then(|m| m.get(&self.origin)) else {
+                    return Ok(0);
+                };
+                min = Some(min.map_or(*held, |m| m.min(*held)));
+            }
+            min
+        };
+        let Some(min_acked_seq) = min_acked_seq else {
+            return Ok(0);
+        };
+        Ok(sqlx::query(
+            "DELETE FROM outbox WHERE origin = ?1 AND seq < ?2 \
+             AND seq < (SELECT MAX(seq) FROM outbox WHERE origin = ?1)",
+        )
+        .bind(&self.origin.0)
+        .bind(min_acked_seq as i64)
+        .execute(self.store.pool())
+        .await?
+        .rows_affected())
     }
 }
 
@@ -455,6 +493,39 @@ impl ReplicaHandle {
     /// batch if there was anything.
     pub async fn flush(&self) -> anyhow::Result<Option<ChangeBatch>> {
         self.engine.capture(&self.pool, &self.tables).await
+    }
+
+    /// Announce every row of these tables that carries no `hlc` — written
+    /// before the attach (a pre-existing table joining replication) or by a
+    /// writer that does not stamp — as one change per column, then stamp the
+    /// rows so the next call skips them. The update trigger logs nothing for
+    /// a stamp-only write, hence the explicit announce. Returns the row count.
+    pub async fn announce_unstamped(&self) -> anyhow::Result<u64> {
+        let _guard = self.engine.write_lock.lock().await;
+        let mut n = 0;
+        for table in self.tables.iter() {
+            let attached = self.engine.tables.lock().get(table).cloned();
+            let Some(attached) = attached else { continue };
+            let (t, pk) = (quote(table), quote(&attached.info.pk));
+            let pks: Vec<(String,)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT CAST({pk} AS TEXT) FROM {t} WHERE \"hlc\" IS NULL")))
+                    .fetch_all(&self.pool)
+                    .await?;
+            if pks.is_empty() {
+                continue;
+            }
+            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {t} SET \"hlc\" = ? WHERE \"hlc\" IS NULL")))
+                .bind(self.engine.clock.tick(now_ms()).to_text())
+                .execute(&self.pool)
+                .await?;
+            let mut changes = Vec::with_capacity(pks.len() * attached.info.columns.len());
+            for (pk,) in &pks {
+                changes.extend(self.engine.row_as_changes(&attached, table, pk).await?);
+            }
+            self.engine.emit_locked(changes).await?;
+            n += pks.len() as u64;
+        }
+        Ok(n)
     }
 
     /// The tables this handle replicates.

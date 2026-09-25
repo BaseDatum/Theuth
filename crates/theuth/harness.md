@@ -69,6 +69,7 @@ artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra director
 app: {enabled: true}   # the `app` tool, `/apps`, `get_app`/`app_*` RPC and the parser helper; false = none of those, published apps stay readable as source (46)
 signal: {enabled: true, device_name: theuth, owner: "+1555…", allowed: []}
 a2a: {enabled: false, listen: 127.0.0.1:7780, public_url: null}   # remote agents over A2A (50 §6); off = no actor or listener; peers/exports in a2a/peers.yaml, `/a2a reload`
+sessions: {takeover_secs: 300, release_wait_secs: 10, orphan_keep_days: 7}   # transcript replication across engines (68 §9): owner unseen this long → another engine may take a session it needs to write; how long a taker waits for a reachable owner to flush; how long a demoted owner keeps undelivered turns for viewing
 ```
 
 Only `agent.model` is required. Changing this file needs a restart, which

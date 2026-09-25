@@ -26,6 +26,31 @@ pub const NO_CONTINUATION: &str = "no continuation";
 /// agent has no desk yet; replaced by the desk id once delivery returns.
 pub const DISPATCHING: &str = "dispatching";
 
+/// 68 §4.4: takes an orphaned checkout's session here before the `Resume`
+/// wake, so the resumed desk continues the replicated transcript instead of
+/// starting over from the progress note.
+#[async_trait::async_trait]
+pub trait SessionTaker: Send + Sync {
+    /// `Ok` once `session` is owned here; `Err` keeps the progress-note fallback.
+    async fn take(&self, session: &str) -> Result<(), String>;
+}
+
+/// The real taker: `TakeSession { reason: Orphan }` on the sessions actor.
+pub struct MeshTaker;
+
+#[async_trait::async_trait]
+impl SessionTaker for MeshTaker {
+    async fn take(&self, session: &str) -> Result<(), String> {
+        let id = session.parse().map_err(|e| format!("{session}: {e}"))?;
+        let actor = sessionsync::actor().ok_or_else(|| "sessions actor is not running".to_owned())?;
+        actor
+            .ask(sessionsync::TakeSession { id, reason: sessionsync::TakeReason::Orphan })
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// One claimed wake the actor must deliver off the mailbox.
 pub struct Delivery {
     /// The wake, `claimed_by` set.
@@ -48,6 +73,8 @@ pub struct Ledger {
     pub clock: Clock,
     /// This engine, written into every checkout.
     pub engine: String,
+    /// Takes a lost engine's session here before its `Resume` wake (68 §4.4).
+    pub taker: Arc<dyn SessionTaker>,
     /// `updated_ms` of a task when its wake was claimed: the no-progress
     /// comparison point (67 §7.3). Local: a hub move restarts the count.
     delivered: HashMap<TaskId, u64>,
@@ -105,6 +132,7 @@ impl Ledger {
             thread,
             clock,
             engine,
+            taker: Arc::new(MeshTaker),
             delivered: HashMap::new(),
             retry: HashMap::new(),
             unreachable_since: HashMap::new(),
@@ -609,6 +637,7 @@ impl Ledger {
             epoch: prev.as_ref().map_or(0, |c| c.epoch) + 1,
             progress_at_ms: now,
             orphaned: false,
+            taken: false,
         };
         let before = t.state;
         t.checkout = Some(c.clone());
@@ -896,11 +925,30 @@ impl Ledger {
             let mut n = c.clone();
             n.orphaned = true;
             n.epoch += 1;
+            // 68 §4.4: a session on a lost engine follows the work here; the
+            // checkout then names this engine and the `Resume` wake lands on
+            // it. A hung local session (staleness) is not taken.
+            let taken = if c.engine != self.engine && !c.session.is_empty() {
+                self.taker.take(&c.session).await.map_err(|e| {
+                    tracing::info!(task = %t.id, "session {} not taken from {}: {e}", c.session, c.engine);
+                })
+            } else {
+                Err(())
+            };
+            if taken.is_ok() {
+                n.engine = self.engine.clone();
+                n.taken = true;
+            }
             t.checkout = Some(n.clone());
             t.updated_ms = now;
             self.save(&t).await?;
             self.event(&t, "system", None, "checkout", Some(checkout_text(&c)), Some(checkout_text(&n))).await;
-            self.say(&t, "system", &format!("session {} on {} is presumed lost; resume from the last progress note", c.session, c.engine)).await;
+            let note = if taken.is_ok() {
+                format!("session {} on {} is presumed lost; taken here ({}), resume it", c.session, c.engine, self.engine)
+            } else {
+                format!("session {} on {} is presumed lost; resume from the last progress note", c.session, c.engine)
+            };
+            self.say(&t, "system", &note).await;
             self.wake(&t.owner, Some(&t.id), WakeReason::Resume).await;
             orphaned.push(t.id);
         }
@@ -1030,11 +1078,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// A sessions actor: records takes; `fail` = the owner refused.
+    #[derive(Default)]
+    pub struct MemTaker {
+        pub taken: Mutex<Vec<String>>,
+        pub fail: Mutex<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionTaker for MemTaker {
+        async fn take(&self, session: &str) -> Result<(), String> {
+            if *self.fail.lock().unwrap() {
+                return Err("owner busy".into());
+            }
+            self.taken.lock().unwrap().push(session.to_owned());
+            Ok(())
+        }
+    }
+
     pub struct Rig {
         pub ledger: Ledger,
         pub clock: Arc<AtomicU64>,
         pub thread: Arc<MemThread>,
         pub router: Arc<MemRouter>,
+        pub taker: Arc<MemTaker>,
         _dir: tempfile::TempDir,
     }
 
@@ -1058,7 +1125,9 @@ pub(crate) mod tests {
         router.sessions.insert("s-desk-ops".into(), "ops".into());
         let router = Arc::new(router);
         ledger.router = Some(router.clone());
-        Rig { ledger, clock, thread, router, _dir: dir }
+        let taker = Arc::new(MemTaker::default());
+        ledger.taker = taker.clone();
+        Rig { ledger, clock, thread, router, taker, _dir: dir }
     }
 
     impl Rig {
@@ -1496,6 +1565,56 @@ pub(crate) mod tests {
         assert!(r.ledger.update(&t.id, TaskPatch { state: Some(TaskState::Review), ..Default::default() }, "agent:ops", Some("s-ops")).await.unwrap_err().starts_with("superseded"));
         r.ledger.comment(&t.id, "resumed", true, "agent:ops", Some("s-ops-2")).await.unwrap();
         assert_eq!(r.ledger.get(&t.id).await.unwrap().checkout.unwrap().progress_at_ms, r.clock.load(Ordering::SeqCst));
+    }
+
+    /// 68 §4.4: the sweep takes a lost engine's session here before the
+    /// `Resume` wake; the checkout then names this engine and is marked
+    /// `taken`. A refused take keeps the progress-note fallback; a hung local
+    /// session is never taken.
+    #[tokio::test]
+    async fn resume_takes_the_lost_engines_session() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        let mut c = r.ledger.get(&t.id).await.unwrap().checkout.unwrap();
+        c.engine = "build-a".into();
+        let mut moved = r.ledger.get(&t.id).await.unwrap();
+        moved.checkout = Some(c);
+        r.ledger.save(&moved).await.unwrap();
+        let others: HashSet<String> = HashSet::from(["mac".to_owned()]);
+        r.ledger.sweep(Some(&others)).await.unwrap();
+        r.tick(120_000);
+        assert_eq!(r.ledger.sweep(Some(&others)).await.unwrap(), vec![t.id.clone()]);
+        assert_eq!(*r.taker.taken.lock().unwrap(), vec!["s-ops".to_owned()]);
+        let c = r.ledger.get(&t.id).await.unwrap().checkout.unwrap();
+        assert!(c.orphaned && c.taken && c.epoch == 2, "{c:?}");
+        assert_eq!((c.engine.as_str(), c.session.as_str()), ("mac", "s-ops"), "the checkout followed the session here");
+        assert!(r.ledger.wakes().await.unwrap().iter().any(|w| w.agent == "ops" && w.reason == WakeReason::Resume));
+        assert!(r.thread.0.lock().unwrap().values().flatten().any(|b| b.contains("taken here (mac)")));
+        // the taken session keeps writing its progress notes
+        r.ledger.comment(&t.id, "going on", true, "agent:ops", Some("s-ops")).await.unwrap();
+
+        // refused take: the note falls back, the checkout stays on the lost engine
+        let t2 = r.task("agent:ops").await;
+        r.ledger.checkout(&t2.id, "s-ops-2", "agent:ops").await.unwrap();
+        let mut moved = r.ledger.get(&t2.id).await.unwrap();
+        moved.checkout.as_mut().unwrap().engine = "build-a".into();
+        r.ledger.save(&moved).await.unwrap();
+        *r.taker.fail.lock().unwrap() = true;
+        // build-a has been unreachable since the first sweep: orphaned at once.
+        assert_eq!(r.ledger.sweep(Some(&others)).await.unwrap(), vec![t2.id.clone()]);
+        let c = r.ledger.get(&t2.id).await.unwrap().checkout.unwrap();
+        assert!(c.orphaned && !c.taken && c.engine == "build-a", "{c:?}");
+        assert!(r.thread.0.lock().unwrap().values().flatten().any(|b| b.contains("resume from the last progress note")));
+
+        // a hung session on this engine is orphaned by staleness, never taken
+        *r.taker.fail.lock().unwrap() = false;
+        let t3 = r.task("agent:ops").await;
+        r.ledger.checkout(&t3.id, "s-ops-3", "agent:ops").await.unwrap();
+        r.tick(901_000);
+        assert_eq!(r.ledger.sweep(None).await.unwrap(), vec![t3.id.clone()]);
+        assert_eq!(r.taker.taken.lock().unwrap().len(), 1);
+        assert!(!r.ledger.get(&t3.id).await.unwrap().checkout.unwrap().taken);
     }
 
     #[tokio::test]

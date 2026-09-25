@@ -17,7 +17,7 @@ use crate::model::{
     TodoCard, TurnAction, UiEvent, action_name, agent_row, artifact_row, artifact_size, describe,
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
-use crate::model::{Grouped, terminal_row};
+use crate::model::{Grouped, session_row, terminal_row};
 use crate::search::{self, Focus, Preview};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
@@ -905,20 +905,7 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                 .map(|row| match row {
                     Grouped::Heading(h) => h.clone(),
                     Grouped::Item((s, depth)) => {
-                        // Row prefix (mark, id, stamp, model, gaps, box) is ~52 columns; the title gets the rest.
-                        let room = usize::from(width).saturating_sub(52 + 2 * depth).max(16);
-                        let title: String = s.title.chars().take(room).collect();
-                        format!(
-                            "{} {}{}  {}  {:<20} {}",
-                            if Some(s.id) == m.session { "●" } else { " " },
-                            "  ".repeat(*depth),
-                            short(s.id),
-                            s.updated_at
-                                .with_timezone(&chrono::Local)
-                                .format("%m-%d %H:%M"),
-                            s.model.rsplit('/').next().unwrap_or(&s.model),
-                            title
-                        )
+                        session_row(s, *depth, width, Some(s.id) == m.session)
                     }
                 })
                 .collect(),

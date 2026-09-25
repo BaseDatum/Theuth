@@ -884,7 +884,7 @@ impl Store {
         )
         .bind(id.to_string())
         .bind(LINEAGE_MAX)
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         let Some((_, last_parent, scope, alias)) = rows.last() else {
             anyhow::bail!(CommError::NotFound);
@@ -924,7 +924,7 @@ impl Store {
             bounded("alias", a, ALIAS_MAX as usize)?;
         }
         let sid = root.to_string();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let n =
             sqlx::query("UPDATE sessions SET scope = ?, alias = ? WHERE id = ? AND parent IS NULL")
                 .bind(scope.as_str())
@@ -949,7 +949,7 @@ impl Store {
         let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
             "SELECT id, scope, alias FROM sessions WHERE parent IS NULL ORDER BY created_at, id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter()
             .map(|(id, scope, alias)| {
@@ -969,7 +969,7 @@ impl Store {
     /// The live binding id for `alias` at `endpoint`: reused when both match,
     /// minted (revoking the old row) when the endpoint changed or none is live.
     pub async fn bind_peer(&self, alias: &str, endpoint: &str) -> anyhow::Result<PeerBinding> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let b = bind_peer_in(&mut tx, alias, endpoint).await?;
         tx.commit().await?;
         Ok(b)
@@ -984,7 +984,7 @@ impl Store {
         bind: &[(&str, &str)],
         revoke: &[&str],
     ) -> anyhow::Result<Vec<PeerBinding>> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let ts = now();
         for alias in revoke {
             sqlx::query(
@@ -1005,14 +1005,16 @@ impl Store {
 
     /// Revoke the live binding of `alias`; `Ok(false)` when none is live.
     pub async fn revoke_peer_binding(&self, alias: &str) -> anyhow::Result<bool> {
+        let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE peer_bindings SET revoked_at = ? WHERE alias = ? AND revoked_at IS NULL",
         )
         .bind(now())
         .bind(alias)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         Ok(n == 1)
     }
 
@@ -1022,7 +1024,7 @@ impl Store {
             "SELECT id, endpoint FROM peer_bindings WHERE alias = ? AND revoked_at IS NULL",
         )
         .bind(alias)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(|(id, endpoint)| {
             Ok(PeerBinding {
@@ -1040,7 +1042,7 @@ impl Store {
             "SELECT alias, endpoint FROM peer_bindings WHERE id = ? AND revoked_at IS NULL",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         Ok(row.map(|(alias, endpoint)| PeerBinding {
             id,
@@ -1056,7 +1058,7 @@ impl Store {
     /// after commit; a duplicate returns the existing outcome, a changed
     /// duplicate is `Conflict`, an unknown/mismatched `reply_to` is `NotFound`.
     pub async fn accept_exchange(&self, a: &AcceptExchange<'_>) -> anyhow::Result<PeerReceipt> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let (receipt, _) = accept_in(&mut tx, a).await?;
         tx.commit().await?;
         Ok(receipt)
@@ -1076,7 +1078,7 @@ impl Store {
     ) -> anyhow::Result<Option<(i64, ChatMessage)>> {
         let ids = id.to_string();
         let sid = recipient.to_string();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let row = exchange_in(&mut tx, &ids)
             .await?
             .ok_or(CommError::NotFound)?;
@@ -1110,7 +1112,7 @@ impl Store {
     /// Suppress one still-`accepted` exchange (admission failed at intake).
     /// Idempotent when already suppressed; `Terminal` for any other state.
     pub async fn suppress_exchange(&self, id: Uuid, reason: &str) -> anyhow::Result<PeerReceipt> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let r = finish_in(
             &mut tx,
             id,
@@ -1132,7 +1134,7 @@ impl Store {
         subtree: Option<SessionId>,
         reason: &str,
     ) -> anyhow::Result<Vec<PeerReceipt>> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let r = suppress_in(&mut tx, subtree, reason).await?;
         tx.commit().await?;
         Ok(r)
@@ -1155,7 +1157,7 @@ impl Store {
         let ids = original.to_string();
         let sid = by.to_string();
         let owner = format!("owner:{by}");
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let row = exchange_in(&mut tx, &ids)
             .await?
             .filter(|r| {
@@ -1200,7 +1202,7 @@ impl Store {
 
     /// Record a definite failure (`accepted`/`consumed`/`unknown` → `failed`).
     pub async fn fail_exchange(&self, id: Uuid, error: &str) -> anyhow::Result<PeerReceipt> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let r = finish_in(
             &mut tx,
             id,
@@ -1229,7 +1231,7 @@ impl Store {
         if let Some(t) = task_id {
             bounded("task_id", t, EXTERNAL_ID_MAX)?;
         }
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let r = finish_in(
             &mut tx,
             id,
@@ -1248,7 +1250,7 @@ impl Store {
     pub async fn bind_exchange_task(&self, id: Uuid, task_id: &str) -> anyhow::Result<PeerReceipt> {
         bounded("task_id", task_id, EXTERNAL_ID_MAX)?;
         let ids = id.to_string();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let row = exchange_in(&mut tx, &ids)
             .await?
             .ok_or(CommError::NotFound)?;
@@ -1273,7 +1275,7 @@ impl Store {
 
     /// Current receipt of any exchange (harness-internal; not caller-scoped).
     pub async fn exchange_receipt(&self, id: Uuid) -> anyhow::Result<Option<PeerReceipt>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         exchange_in(&mut conn, &id.to_string())
             .await?
             .map(|r| r.receipt())
@@ -1283,7 +1285,7 @@ impl Store {
     /// The owner-side record of any exchange (harness-internal; not
     /// caller-scoped): both participants of a receipt for notification.
     pub async fn exchange_record(&self, id: Uuid) -> anyhow::Result<Option<PeerRecord>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         exchange_in(&mut conn, &id.to_string())
             .await?
             .map(PeerRecord::try_from)
@@ -1301,7 +1303,7 @@ impl Store {
         generation: i64,
     ) -> anyhow::Result<Option<PeerReceipt>> {
         let ids = id.to_string();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let row = exchange_in(&mut tx, &ids)
             .await?
             .ok_or(CommError::NotFound)?;
@@ -1345,7 +1347,7 @@ impl Store {
         ))
         .bind(id.to_string())
         .bind(caller.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(PeerRecord::try_from).transpose()
     }
@@ -1371,7 +1373,7 @@ impl Store {
         .bind(caller.to_string())
         .bind(after.map(|a| a.to_string()))
         .bind(i64::from(limit.clamp(1, TASK_PAGE_MAX)))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(PeerRecord::try_from).collect()
     }
@@ -1390,7 +1392,7 @@ impl Store {
         ))
         .bind(recipient.to_string())
         .bind(i64::from(limit))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(PeerRecord::try_from).collect()
     }
@@ -1409,7 +1411,7 @@ impl Store {
              WHERE recipient_session = ? AND history_seq IS NOT NULL ORDER BY history_seq"
         ))
         .bind(recipient.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter()
             .map(|r| {
@@ -1423,7 +1425,7 @@ impl Store {
     /// `reason`, every nonterminal task becomes `failed` keeping its snapshot
     /// and recording `reason`. Nothing is re-run.
     pub async fn fail_interrupted(&self, reason: &str) -> anyhow::Result<Interrupted> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let ts = now();
         let rows: Vec<ExchangeRow> = sqlx::query_as(concat!(
             "UPDATE peer_exchanges SET state = 'failed', error = ?, updated_at = ? \
@@ -1468,7 +1470,7 @@ impl Store {
         scope_ok(scope)?;
         bounded("context_id", id, EXTERNAL_ID_MAX)?;
         let sid = session.to_string();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         if !session_exists(&mut tx, &sid).await? {
             anyhow::bail!(CommError::NotFound);
         }
@@ -1504,7 +1506,7 @@ impl Store {
         scope: A2aScope<'_>,
         id: &str,
     ) -> anyhow::Result<Option<A2aContext>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         context_in(&mut conn, scope, id).await
     }
 
@@ -1521,7 +1523,7 @@ impl Store {
         request: A2aRequest<'_>,
     ) -> anyhow::Result<(PeerReceipt, A2aTask)> {
         scope_ok(scope)?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let mut a = a.clone();
         let existing_task: Option<A2aTask>;
         let request_scope = match &request {
@@ -1624,7 +1626,7 @@ impl Store {
 
     /// One task the caller owns; unknown and unauthorized are both `None`.
     pub async fn a2a_task(&self, scope: A2aScope<'_>, id: &str) -> anyhow::Result<Option<A2aTask>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read.acquire().await?;
         task_in(&mut conn, scope, id).await
     }
 
@@ -1661,7 +1663,7 @@ impl Store {
         .bind(q.context)
         .bind(status)
         .bind(updated_after.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(&self.read)
         .await?;
         // All parameters numbered: sqlx binds anonymous `?` by position and
         // `?N` by number, so mixing them misassigns later arguments.
@@ -1682,7 +1684,7 @@ impl Store {
         .bind(after_at)
         .bind(after_seq)
         .bind(i64::from(limit) + 1)
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         let limit = usize::from(limit);
         // The stored text verbatim, so the keyset compares what SQLite sorted.
@@ -1712,7 +1714,7 @@ impl Store {
         snapshot: &serde_json::Value,
         error: Option<&str>,
     ) -> anyhow::Result<A2aTask> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let cur = task_in(&mut tx, scope, id)
             .await?
             .ok_or(CommError::NotFound)?;
@@ -1794,7 +1796,7 @@ impl Store {
         scope: A2aScope<'_>,
         id: &str,
     ) -> anyhow::Result<A2aTask> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let cur = task_in(&mut tx, scope, id)
             .await?
             .ok_or(CommError::NotFound)?;
@@ -1822,7 +1824,7 @@ impl Store {
     /// nonterminal task scope; idempotent. `Terminal` once the task settled.
     pub async fn bind_a2a_work(&self, task_id: &str, key: &str) -> anyhow::Result<()> {
         bounded("key", key, EXTERNAL_ID_MAX)?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.begin_write().await?;
         let task = task_unscoped_in(&mut tx, task_id).await?;
         if task.status.is_terminal() {
             anyhow::bail!(CommError::Terminal);
@@ -1838,14 +1840,16 @@ impl Store {
 
     /// Mark bound work settled; `Ok(false)` when it was not pending.
     pub async fn settle_a2a_work(&self, task_id: &str, key: &str) -> anyhow::Result<bool> {
+        let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE a2a_task_work SET settled = 1 WHERE task_id = ? AND key = ? AND settled = 0",
         )
         .bind(task_id)
         .bind(key)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         Ok(n == 1)
     }
 
@@ -1861,7 +1865,7 @@ impl Store {
              ORDER BY t.seq DESC LIMIT 1"
         ))
         .bind(key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(A2aTask::try_from).transpose()
     }
@@ -1875,7 +1879,7 @@ impl Store {
              AND status IN ('working', 'input_required', 'auth_required') ORDER BY seq LIMIT 1"
         ))
         .bind(session.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(A2aTask::try_from).transpose()
     }
@@ -1889,7 +1893,7 @@ impl Store {
              ORDER BY seq LIMIT 1"
         ))
         .bind(session.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read)
         .await?;
         row.map(A2aTask::try_from).transpose()
     }
@@ -1904,7 +1908,7 @@ impl Store {
              AND status NOT IN ('completed', 'failed', 'canceled', 'rejected') ORDER BY seq"
         ))
         .bind(session.map(|s| s.to_string()))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(A2aTask::try_from).collect()
     }
@@ -1944,7 +1948,7 @@ mod tests {
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("theuth-comm-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store.create_session(id, "m", None, None, None).await.unwrap();
         (store, id, dir)
@@ -2284,7 +2288,7 @@ mod tests {
         sqlx::query("UPDATE sessions SET parent = ? WHERE id = ?")
             .bind(grandkid.to_string())
             .bind(root.to_string())
-            .execute(&store.pool)
+            .execute(&store.write)
             .await
             .unwrap();
         let e = store.lineage(kid).await.unwrap_err();

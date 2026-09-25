@@ -92,6 +92,9 @@ import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionOrphan } from '@/rpc/bindings/SessionOrphan'
+import type { SessionOwner } from '@/rpc/bindings/SessionOwner'
+import type { SessionsStatus } from '@/rpc/bindings/SessionsStatus'
 import type { SignalStatus } from '@/rpc/bindings/SignalStatus'
 import type { SkillBody } from '@/rpc/bindings/SkillBody'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
@@ -281,6 +284,14 @@ export interface Api {
   get_todos(session: SessionId): Promise<TodoSnapshot>
   /** Ledger summary of `session` (51 §6.5): returned money per currency, estimates for unavailable calls, coverage, children. */
   session_cost(session: SessionId): Promise<SessionCost>
+  /** Take `session` here (68 §4.2): `user` at once, `orphan` for a resumed checkout, `write` after `takeover_secs`. `SessionOwnerChanged` follows. */
+  session_take(session: SessionId, reason: 'user' | 'orphan' | 'write'): Promise<SessionOwner>
+  /** Who owns `session` and whether that is this engine (68 §5). */
+  session_owner(session: SessionId): Promise<SessionOwner>
+  /** Turns this engine wrote as a superseded owner and never delivered (68 §4.3), one entry per epoch. */
+  session_orphans(session: SessionId): Promise<SessionOrphan[]>
+  /** This engine's replication summary (68 §10): id, sessions owned here / elsewhere, log head, last snapshot. */
+  sessions_status(): Promise<SessionsStatus>
   info(): Promise<Info>
   knowledge_delete(id: string): Promise<null>
   knowledge_get(id: string): Promise<Concept>
@@ -799,6 +810,10 @@ export const METHODS = [
   'search_refresh',
   'send_input',
   'session_cost',
+  'session_orphans',
+  'session_owner',
+  'session_take',
+  'sessions_status',
   'set_approvals',
   'set_aws_profile',
   'set_communication',

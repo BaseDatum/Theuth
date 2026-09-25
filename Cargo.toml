@@ -41,6 +41,7 @@ nodes = { path = "crates/nodes" }
 a2a = { path = "crates/a2a" }  # A2A network boundary plugin (50 §6)
 schedule = { path = "crates/schedule" }
 replica = { path = "crates/replica" }  # small-record replication: HLC, change feed, Transport trait (67 §5.1)
+sessionsync = { path = "crates/sessionsync" }  # transcript replication with transferable ownership (68)
 mesh = { path = "crates/mesh" }  # engine mesh: iroh endpoint, pairing, hub lease, engine stats (67 §4)
 tasks = { path = "crates/tasks" }  # task records, wakes, checkout, disposition (67 §7)
 roster = { path = "crates/roster" }  # agents as files, desks, episodes, budgets, proposals (67 §6)

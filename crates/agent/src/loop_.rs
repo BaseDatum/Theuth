@@ -5297,7 +5297,7 @@ mod tests {
     async fn context_edit_is_idle_only_and_installs_committed_frame() {
         let dir = std::env::temp_dir().join(format!("theuth-loop-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store.create_session(id, "m", None, None, None).await.unwrap();
         for m in [
@@ -5892,7 +5892,7 @@ mod tests {
         use crate::store::communication::AcceptExchange;
         let dir = std::env::temp_dir().join(format!("theuth-peer-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let (mut policy, sender, id, generation) = route();
         store.create_session(id, "m", None, None, None).await.unwrap();
         store.create_session(sender, "m", None, None, None).await.unwrap();
@@ -6008,7 +6008,7 @@ mod tests {
     async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
         let dir = std::env::temp_dir().join(format!("theuth-vision-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite")).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
         let id = SessionId::new();
         store.create_session(id, "m", None, None, None).await.unwrap();
         let shot = Binary::from_base64("image/png", "AAAA", Some("shot.png".into()));

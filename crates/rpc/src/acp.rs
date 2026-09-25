@@ -164,6 +164,8 @@ pub async fn serve_mesh(rt: Runtime) {
     let Some(transport) = replica::transport(&rt).await else {
         return;
     };
+    // 68 §5: forwarded session RPCs from other front doors, on `theuth/rpc/1`.
+    tokio::spawn(crate::forward::serve(rt.clone(), transport.clone(), crate::methods(rt.clone()).await));
     let relay = relay(&rt, None).await;
     let api = relay.ask(Api).await.unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
     let (t, data_dir, shutdown) = (transport.clone(), rt.data_dir.clone(), rt.shutdown.clone());

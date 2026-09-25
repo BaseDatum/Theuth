@@ -28,7 +28,7 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use sqlx::SqlitePool;
 
-pub use engine::{Engine, ReplicaHandle};
+pub use engine::{Clock, Engine, ReplicaHandle};
 pub use types::{ByteStream, Change, ChangeBatch, Hlc, PeerEvent, PeerId, Transport};
 
 /// Registry name of the [`Replica`] actor.
@@ -47,6 +47,10 @@ pub const ALPN_SESSIONS: &str = "theuth/sessions/1";
 pub const ALPN_KNOWLEDGE: &str = "theuth/knowledge/1";
 /// Stream ALPN: lease and presence gossip (67 §4.3, §4.6).
 pub const ALPN_GOSSIP: &str = "theuth/gossip/1";
+/// Stream ALPN: one forwarded JSON-RPC request per stream, front door → owner (68 §5).
+pub const ALPN_RPC: &str = "theuth/rpc/1";
+/// Stream ALPN: artifact blobs and spill files on demand (68 §7).
+pub const ALPN_ARTIFACTS: &str = "theuth/artifacts/1";
 
 /// `ask` → `()`: the mesh hands over its transport once the endpoint is up.
 /// Replaces any earlier one.

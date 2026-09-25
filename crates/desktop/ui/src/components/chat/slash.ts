@@ -91,6 +91,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '',
     desc: 'open the parent session (from a subagent)',
   },
+  { name: '/take', hint: '', desc: 'continue this session on this engine (68)' },
   { name: '/search', hint: '[query]', desc: 'search sessions, artifacts and knowledge (prefilled with query)' },
   { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
@@ -513,6 +514,11 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!ctx.parent) throw new Error('this is the top-level session')
       await navigate({ to: '/c/$session', params: { session: ctx.parent } })
       return
+    case '/take': {
+      const o = await api.session_take(need(session), 'user')
+      toast(`session continues here (epoch ${o.epoch})`)
+      return
+    }
     case '/todos':
       need(session)
       return openSurface('todos')

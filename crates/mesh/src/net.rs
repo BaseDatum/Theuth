@@ -128,11 +128,13 @@ impl std::fmt::Debug for Net {
 }
 
 /// Every ALPN whose inbound streams are handed out through [`Transport::accept`].
-const STREAM_ALPNS: [&str; 4] = [
+const STREAM_ALPNS: [&str; 6] = [
     replica::ALPN_RECORDS,
     replica::ALPN_ACP,
     replica::ALPN_SESSIONS,
     replica::ALPN_KNOWLEDGE,
+    replica::ALPN_RPC,
+    replica::ALPN_ARTIFACTS,
 ];
 
 impl Net {

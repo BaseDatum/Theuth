@@ -11,6 +11,11 @@ tools = { workspace = true }
 agent = { workspace = true }
 search = { workspace = true }
 document = { workspace = true }
+replica = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+futures = { workspace = true }
+bytes = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
 parking_lot = { workspace = true }
 markdown = { workspace = true }
 kameo = { workspace = true }

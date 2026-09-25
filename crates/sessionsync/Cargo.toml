@@ -1,0 +1,45 @@
+[package]
+name = "sessionsync"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Transcript replication with transferable ownership: ships the agent store's per-commit changeset log over the mesh and applies peers' logs (design doc 68)"
+
+[dependencies]
+runtime = { workspace = true }
+replica = { workspace = true }
+agent = { workspace = true }
+# 68 §4.2 (c): an unreachable owner's `last_seen_ms` from `mesh::Status`.
+mesh = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+futures = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
+serde_json = { workspace = true }
+# The same session-extension bindings the store links; `apply.rs` calls
+# `sqlite3changeset_apply` on the store's write connection.
+libsqlite3-sys = { version = "0.36", features = ["session"] }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+genai = { workspace = true }
+mesh = { workspace = true }
+figment = { workspace = true }
+tempfile = "3"
+uuid = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
+
+[lints]
+workspace = true

@@ -6,6 +6,7 @@ import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { lastCode } from '@/components/chat/MessageAssistant'
 import { NewChatPane } from '@/components/chat/NewChatPane'
+import { OrphansBanner } from '@/components/chat/OrphansBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
 import { TodoCard } from '@/components/chat/TodoCard'
@@ -205,6 +206,7 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
     <>
       <Header session={session} first={first} onClose={split ? close : undefined} />
       <PrivateStrip session={session} />
+      <OrphansBanner session={session} />
       {fromSearch && (
         <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
           <SearchReturn />

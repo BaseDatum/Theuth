@@ -17,6 +17,10 @@ pub struct MeshConfig {
     pub discovery: bool,
     /// Display name other engines see; empty = hostname.
     pub name: String,
+    /// Socket the iroh endpoint binds (`ip:port`); `None` = every interface,
+    /// an OS-chosen port. Set it for several engines on one box (a fixed
+    /// loopback port survives restarts and needs no firewall exception).
+    pub bind: Option<std::net::SocketAddr>,
     /// This engine's lease preference (`prefer` | `eligible` | `never`).
     pub hub: HubPref,
     /// A newly joined engine cannot take the lease from an incumbent for this long (67 §4.5).
@@ -39,6 +43,7 @@ impl Default for MeshConfig {
             relay: "https://iroh.relay.theuth.io".into(),
             discovery: true,
             name: String::new(),
+            bind: None,
             hub: HubPref::Eligible,
             probation_secs: 21_600,
             handover_secs: 600,

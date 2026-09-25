@@ -212,6 +212,9 @@ mod tests {
             project: None,
             retention: tools::Retention::Durable,
             running: false,
+            owner: String::new(),
+            epoch: 1,
+            here: true,
         };
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);

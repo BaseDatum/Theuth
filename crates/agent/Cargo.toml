@@ -35,6 +35,11 @@ genai = { workspace = true }
 aws-config = { workspace = true }
 parking_lot = { workspace = true }
 sqlx = { workspace = true }
+# 68 §3: the session extension on the store's write connection; the vendored
+# build (workspace `[patch]`) compiles SQLITE_ENABLE_SESSION for every target.
+libsqlite3-sys = { version = "0.36", features = ["session"] }
+# 68 §2: `sessions.owner` is a mesh `EngineId`; only the id and the identity file loader are used.
+mesh = { workspace = true }
 nucleo = { workspace = true }
 gray_matter = { workspace = true }
 ts-rs = { workspace = true, optional = true }

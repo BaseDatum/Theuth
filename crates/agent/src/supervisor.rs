@@ -94,7 +94,7 @@ use crate::{
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{attach, frame, repl, search, spill};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
-use crate::SessionCostQuery;
+use crate::{DurableStore, SessionCostQuery, UnloadSession};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -4744,6 +4744,30 @@ impl Message<SyncSkills> for Agents {
     }
 }
 
+impl Message<DurableStore> for Agents {
+    type Reply = Store;
+
+    async fn handle(&mut self, _: DurableStore, _: &mut Context<Self, Self::Reply>) -> Store {
+        self.store.clone()
+    }
+}
+
+impl Message<UnloadSession> for Agents {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: UnloadSession, _: &mut Context<Self, Self::Reply>) -> bool {
+        // As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
+        // forget the live entry; rows and peer state stay.
+        let Some(live) = self.sessions.remove(&m.session) else {
+            return false;
+        };
+        live.actor.tell_cancel().await;
+        live.actor.kill().await;
+        self.running.remove(&m.session);
+        true
+    }
+}
+
 impl Message<ListSessions> for Agents {
     type Reply = Vec<SessionSummary>;
 
@@ -6468,12 +6492,36 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         cfg.surface = rt.section("surface")?;
     }
     let cfg = Arc::new(cfg);
-    let store = Store::open(&rt.data_dir.join("sessions.sqlite")).await?;
+    // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
+    // starts after us, so read (or create) the identity file directly.
+    let engine = match mesh::identity::Identity::load_or_create(&rt.data_dir.join(mesh::DIR)) {
+        Ok(i) => Some(i.id()),
+        Err(e) => {
+            tracing::warn!("mesh identity unavailable; sessions stay owned by '': {e:#}");
+            None
+        }
+    };
+    let store = Store::open(&rt.data_dir.join("sessions.sqlite"), engine).await?;
     // 51 §6.4: calls a previous process left open can never settle.
     match store.unresolve_open_calls().await {
         Ok(n) if n > 0 => tracing::info!("accounting: {n} open call(s) marked unresolved"),
         Ok(_) => {}
         Err(e) => tracing::error!("accounting restart: {e:#}"),
+    }
+    // 68 decision 8: `projects`/`cost_owners` ride the record replica, which
+    // starts after us.
+    {
+        let rt2 = rt.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+                return;
+            }
+            match store.replicate_records().await {
+                Ok(n) => tracing::info!("accounting: projects/cost_owners replicated ({n} row(s) announced)"),
+                Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
+            }
+        });
     }
     // 51 §4.5: scratch dirs of dead processes, proven free by their lock.
     let swept = crate::private::sweep_stale();
@@ -7117,7 +7165,7 @@ impl Agents {
                 tracing::warn!(session = %root, "private rows: {e:#}");
             }
             if let Ok(store) = Arc::try_unwrap(store) {
-                store.pool().close().await;
+                store.close().await;
             }
             if let Some(scratch) = scratch
                 && let Err(e) = scratch.remove()
@@ -8125,7 +8173,7 @@ pub(crate) mod tests {
             catalog: Arc::new(Catalog::load(&dir)),
             pool: None,
             configured: Arc::new(|_: &str| false),
-            store: Store::open(&dir.join("sessions.sqlite")).await.unwrap(),
+            store: Store::open(&dir.join("sessions.sqlite"), None).await.unwrap(),
             client: Client::new().unwrap(),
             auth: Auth::stub(&dir),
             sessions: HashMap::new(),

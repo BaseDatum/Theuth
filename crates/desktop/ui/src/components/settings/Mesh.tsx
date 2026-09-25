@@ -10,7 +10,7 @@ import { keys, useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import type { HubPref } from '@/rpc/bindings/HubPref'
 import { useConnection } from '@/store/connection'
 
@@ -102,6 +102,8 @@ export function Mesh() {
         ))}
       </Section>
 
+      <Sessions engine={s.self_id} name={info?.name ?? '—'} />
+
       <Section
         title="Pair another engine"
         actions={
@@ -141,5 +143,27 @@ export function Mesh() {
         </form>
       </Section>
     </>
+  )
+}
+
+/** Settings › Mesh › Sessions (68 §10): this engine, sessions owned here / elsewhere, the log head and the last snapshot. */
+function Sessions({ engine, name }: { engine: string; name: string }) {
+  const api = useApi()
+  const status = useQuery({ queryKey: queryKeys.sessionsStatus, queryFn: () => api.sessions_status() })
+  const s = status.data
+  const snapshot = s?.last_snapshot ? `${age(Date.parse(s.last_snapshot))} ago` : 'none yet'
+  return (
+    <Section title="Sessions">
+      {status.isError && <Empty>{status.error.message}</Empty>}
+      <Row label="Engine" description={name}>
+        <span className="font-mono text-[13px] text-fg-tertiary">{(s?.engine || engine).slice(0, 12)}…</span>
+      </Row>
+      <Row label="Owned here" description="Sessions this engine writes; the rest are read from replicas and taken on demand.">
+        <span className="text-[13px] tabular-nums">{s ? `${s.here} · ${s.elsewhere} elsewhere` : '—'}</span>
+      </Row>
+      <Row label="Replication log" description={s ? `last snapshot ${snapshot}` : '—'}>
+        <span className="text-[13px] tabular-nums">{s ? `seq ${s.log_seq}` : '—'}</span>
+      </Row>
+    </Section>
   )
 }

@@ -475,6 +475,22 @@ pub struct Harvest {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListSessions;
 
+/// `ask` → the durable [`store::Store`] handle (68 §3): what the session
+/// replication plugin writes `session_log`/`session_cursors` through and
+/// applies remote changesets to. Never a private store.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DurableStore;
+
+/// `ask` → whether a live actor was stopped. Stop the session's actor
+/// without touching its rows (68 §4.2 release / §4.3 demote): the
+/// transcript stays readable; the next input respawns an actor, whose
+/// writes the store's owner guard then decides.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct UnloadSession {
+    /// The session.
+    pub session: SessionId,
+}
+
 /// `ask` → [`Loaded`] for rendering a resumed session. `before`/`limit` page
 /// the rendered entries (design doc 25 §7): entries with `seq < before`, the
 /// last `limit` of them; both `None` = everything. A page never splits a
@@ -1281,6 +1297,24 @@ pub struct SessionSummary {
     /// view (what `AgentState::Running` means); `false` on a bare store row.
     #[serde(default)]
     pub running: bool,
+    /// Engine that holds the live actor and writes the transcript (68 §2):
+    /// its mesh `EngineId` as text; `""` on a lone engine that never joined a mesh.
+    #[serde(default)]
+    pub owner: String,
+    /// Ownership epoch; bumps on every transfer (68 §4.2).
+    #[serde(default = "one")]
+    pub epoch: u32,
+    /// The owner is this engine: writes are served locally, not forwarded.
+    #[serde(default = "yes")]
+    pub here: bool,
+}
+
+fn one() -> u32 {
+    1
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A project's icon and colour (51 §3 as-built): one row per styled project,
@@ -1709,6 +1743,18 @@ pub enum AgentEvent {
         /// Session.
         session: SessionId,
     },
+    /// Ownership moved (68 §4.2): `owner` now holds the live actor and
+    /// writes the transcript; `here` says whether that is this engine.
+    SessionOwnerChanged {
+        /// Session.
+        session: SessionId,
+        /// New owner (mesh `EngineId` as text).
+        owner: String,
+        /// New epoch.
+        epoch: u32,
+        /// `owner` is this engine.
+        here: bool,
+    },
     /// The session's effective context changed outside a normal turn
     /// (design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /
     /// compaction handback, or an undo/redo. Published after commit and
@@ -1821,6 +1867,7 @@ impl AgentEvent {
             | Self::SkillsChanged { session, .. }
             | Self::TitleChanged { session, .. }
             | Self::SessionDeleted { session }
+            | Self::SessionOwnerChanged { session, .. }
             | Self::ContextChanged { session, .. }
             | Self::TodoChanged { session, .. }
             | Self::VisionProgress { session, .. }

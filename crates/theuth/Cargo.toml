@@ -29,6 +29,7 @@ link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
 replica = { workspace = true }
+sessionsync = { workspace = true }
 mesh = { workspace = true }
 tasks = { workspace = true }
 roster = { workspace = true }

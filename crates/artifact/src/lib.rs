@@ -14,6 +14,7 @@
 
 pub mod archive;
 pub mod kind;
+pub mod mesh;
 pub mod pdf;
 pub mod search;
 pub mod store;
@@ -767,6 +768,8 @@ impl runtime::Plugin for ArtifactPlugin {
             .await;
         rt.subscribe::<ArtifactActor, document::Exported>(&actor)
             .await;
+        // 68 §7: blobs and spill files for replicas, on `theuth/artifacts/1`.
+        tokio::spawn(mesh::serve(rt.clone(), stores.clone()));
 
         tokio::spawn(async move {
             match state.sweep().await {

@@ -21,6 +21,9 @@ const s = (id: string, project: string | null, updated_at: string, pinned = fals
   project,
   retention: 'durable',
   running: false,
+  owner: '',
+  epoch: 1,
+  here: true,
 })
 
 const keys = (rows: Row[]) => rows.map((r) => r.key)

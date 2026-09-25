@@ -492,7 +492,7 @@ impl runtime::Plugin for MeshPlugin {
                 secret: identity.secret,
                 relay: cfg.relay.clone(),
                 discovery: cfg.discovery,
-                bind_addr: None,
+                bind_addr: cfg.bind,
             },
             store.clone(),
             name,

@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { CornerLeftUp, Gauge, Globe, LayoutGrid, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { CornerLeftUp, Gauge, Globe, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { EngineChip } from '@/components/sidebar/SessionItem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -11,6 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { type HeaderItem, decideTier, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { parseNote } from '@/lib/voice-note'
@@ -57,6 +59,12 @@ function Parent({ id, row }: { id: string; row?: boolean }) {
       ↳ {name}
     </Link>
   )
+}
+
+/** `name · epoch N` for the compact menu's Owner line. */
+function OwnerDetail({ owner, epoch }: { owner: string; epoch: number }) {
+  const label = useEngineLabel(owner)
+  return <span title={`owned by ${owner}`}>{`${label} · epoch ${epoch}`}</span>
 }
 
 /** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). `row`: the compact menu's line. */
@@ -158,7 +166,9 @@ export function Header({
   const artifacts = useSessionField(session ?? '', 'artifacts')
   const terminals = useHasTerminals(session)
   const liveTitle = useSessionField(session ?? '', 'title')
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session && !liveTitle })
+  // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
+  const row = session ? sessions.data?.find((s) => s.id === session) : undefined
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
@@ -170,7 +180,7 @@ export function Header({
   const tier = useTier(ref, rowRef)
   const compact = tier > 0
 
-  const raw = session ? liveTitle || sessions.data?.find((s) => s.id === session)?.title || session.slice(0, 8) : 'New chat'
+  const raw = session ? liveTitle || row?.title || session.slice(0, 8) : 'New chat'
   const title = parseNote(raw)?.body || raw
   const nav = first && (!open || isMobile)
   /**
@@ -204,6 +214,18 @@ export function Header({
         ),
     },
     { id: 'parent', slot: 'menu', render: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null) },
+    {
+      id: 'owner',
+      slot: 'menu',
+      render: (mode) =>
+        row && !row.here ? (
+          mode === 'row' ? (
+            <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} />} />
+          ) : (
+            <EngineChip owner={row.owner} epoch={row.epoch} />
+          )
+        ) : null,
+    },
     {
       id: 'title',
       slot: 'bar',

@@ -381,6 +381,8 @@ pub enum Command {
     ListTasks(Option<String>),
     /// `agents_list`: the roster (67 §12).
     ListRoster,
+    /// `session_take(id, "user")`: `/take` continues the open session on this engine (68 §10).
+    TakeSession(SessionId),
     /// `computer_permissions`.
     ComputerStatus,
     /// `compact`.
@@ -1319,7 +1321,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "computer control: permissions and displays",
     ),
     ("/parent", "", "open the parent session (from a subagent)"),
-    ("/sessions", "", "switch session (picker)"),
+    ("/sessions", "", "switch session (picker; owner chip on sessions owned elsewhere)"),
+    ("/take", "", "continue the open session on this engine (68)"),
     (
         "/broadcast",
         "[running|roots] [text]",
@@ -5232,6 +5235,34 @@ impl Model {
                 }
                 return;
             }
+            // Ownership moved (68 §4.2): the picker's chip follows; the open
+            // session gets one line. Nothing streams, so finish nothing below.
+            AgentEvent::SessionOwnerChanged {
+                session,
+                owner,
+                epoch,
+                here,
+            } => {
+                if let Some(Menu::Sessions { items, .. }) = &mut self.menu {
+                    for row in items.iter_mut() {
+                        if let Grouped::Item((s, _)) = row
+                            && s.id == *session
+                        {
+                            s.owner = owner.clone();
+                            s.epoch = *epoch;
+                            s.here = *here;
+                        }
+                    }
+                }
+                if self.session == Some(*session) {
+                    self.entries.push(Entry::Info(if *here {
+                        format!("session continues here (epoch {epoch})")
+                    } else {
+                        format!("session now owned by {} (epoch {epoch})", engine_chip(owner))
+                    }));
+                }
+                return;
+            }
             // Queue bookkeeping mid-stream must not finish the streaming tail below.
             AgentEvent::InputQueued { session, id, text, .. } => {
                 if self.session == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
@@ -5561,6 +5592,7 @@ impl Model {
             }
             AgentEvent::SessionMetadataChanged { .. }
             | AgentEvent::ModelUsageChanged { .. }
+            | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. } => {}
         }
     }
@@ -5691,6 +5723,10 @@ impl Model {
                 self.quit = true;
             }
             "/sessions" => send(tx, Command::ListSessions),
+            "/take" => match self.session {
+                Some(s) => send(tx, Command::TakeSession(s)),
+                None => self.entries.push(Entry::Error("no session open".into())),
+            },
             "/search" => self.open_search(arg, tx),
             "/attach" => self.open_attach(arg, tx),
             "/resume" => match arg.parse::<SessionId>() {
@@ -9821,6 +9857,63 @@ pub fn agents_table(rows: &[roster::AgentSummary]) -> String {
     out.join("\n")
 }
 
+/// Owner chip for a mesh `EngineId` (a 64-hex key): its first 8 chars; `?` when empty.
+pub fn engine_chip(owner: &str) -> String {
+    if owner.is_empty() {
+        return "?".into();
+    }
+    owner.chars().take(8).collect()
+}
+
+/// `/sessions` row: mark · id · stamp · model · owner chip · title (68 §10).
+/// The chip is the engine's short id on a session owned elsewhere, blank here.
+pub fn session_row(s: &SessionSummary, depth: usize, width: u16, current: bool) -> String {
+    // Row prefix (mark, id, stamp, model, chip, gaps, box) is ~62 columns; the title gets the rest.
+    let room = usize::from(width).saturating_sub(62 + 2 * depth).max(16);
+    let title: String = s.title.chars().take(room).collect();
+    let chip = if s.here { String::new() } else { engine_chip(&s.owner) };
+    format!(
+        "{} {}{}  {}  {:<20} {chip:<8}  {title}",
+        if current { "●" } else { " " },
+        "  ".repeat(depth),
+        short(s.id),
+        s.updated_at.with_timezone(&chrono::Local).format("%m-%d %H:%M"),
+        s.model.rsplit('/').next().unwrap_or(&s.model),
+    )
+}
+
+/// The owner-offline sentence (68 §5), `/take` as the action. `last_seen` is
+/// already text (`3m ago`, `never`).
+pub fn owner_offline_line(owner: &str, last_seen: &str) -> String {
+    let chip = engine_chip(owner);
+    format!(
+        "owned by {chip}, last seen {last_seen}. continue here now? \
+         (turns not yet shipped from {chip} stay there) — /take"
+    )
+}
+
+/// `OwnerUnreachable{owner, last_seen}` out of a failed call's `data`: the
+/// serde external form (`{"OwnerUnreachable": {…}}`) or a flat object tagged
+/// `kind`/`type`. Returns the owner and `last_seen` as `ago` text.
+pub fn owner_unreachable(data: Option<&str>) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(data?).ok()?;
+    let tagged = ["kind", "type"]
+        .iter()
+        .any(|k| v.get(k).and_then(|t| t.as_str()) == Some("OwnerUnreachable"));
+    let o = v.get("OwnerUnreachable").or(tagged.then_some(&v))?;
+    let owner = o.get("owner")?.as_str()?.to_owned();
+    let last_seen = match o.get("last_seen") {
+        Some(serde_json::Value::String(t)) => chrono::DateTime::parse_from_rfc3339(t)
+            .map_or_else(|_| t.clone(), |t| ago(chrono::Utc::now() - t.with_timezone(&chrono::Utc))),
+        Some(serde_json::Value::Number(ms)) => ms
+            .as_i64()
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+            .map_or_else(|| ms.to_string(), |t| ago(chrono::Utc::now() - t)),
+        _ => "never".to_owned(),
+    };
+    Some((owner, last_seen))
+}
+
 /// `/schedules history <name>`: `fired · took · result · session · report` rows,
 /// newest first; `took` is `…` while the run is still going, `report` is the
 /// run's first line cut at 60 chars. A loop with `until` or `approvals: false`
@@ -12563,6 +12656,62 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no agents"));
     }
 
+    /// 68 §10: `/take` needs an open session; the picker row carries the
+    /// owner chip only when the session lives elsewhere and follows
+    /// `SessionOwnerChanged`; the owner-offline refusal is one sentence
+    /// ending in `/take`.
+    #[test]
+    fn take_slash_owner_chip_and_offline_sentence() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/take", &tx);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(t)) if t == "no session open"));
+        let id = SessionId::new();
+        m.session = Some(id);
+        m.submit("/take", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::TakeSession(s)) if s == id));
+
+        let mut s = summary(id, None, None);
+        s.title = "Fix the deploy".into();
+        assert!(session_row(&s, 0, 120, true).ends_with(&format!("{:<20} {:<8}  Fix the deploy", "m", "")));
+        s.owner = "abcdef0123456789".repeat(4);
+        s.here = false;
+        let row = session_row(&s, 0, 120, false);
+        assert!(row.contains(" abcdef01  Fix the deploy"), "{row}");
+        assert_eq!(engine_chip(""), "?");
+
+        m.apply(UiEvent::Sessions(vec![s.clone()]));
+        m.apply(UiEvent::Agent(AgentEvent::SessionOwnerChanged {
+            session: id,
+            owner: "me".into(),
+            epoch: 2,
+            here: true,
+        }));
+        match &m.menu {
+            Some(Menu::Sessions { items, .. }) => {
+                let Grouped::Item((row, _)) = &items[1] else { panic!("{items:?}") };
+                assert!(row.here && row.epoch == 2 && row.owner == "me");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "session continues here (epoch 2)"));
+
+        assert_eq!(
+            owner_offline_line(&s.owner, "3m ago"),
+            "owned by abcdef01, last seen 3m ago. continue here now? (turns not yet shipped from abcdef01 stay there) — /take"
+        );
+        let (owner, seen) =
+            owner_unreachable(Some(r#"{"OwnerUnreachable":{"owner":"abcdef0123456789","last_seen":null}}"#)).unwrap();
+        assert_eq!((owner.as_str(), seen.as_str()), ("abcdef0123456789", "never"));
+        let (_, seen) = owner_unreachable(Some(
+            r#"{"kind":"OwnerUnreachable","owner":"x","last_seen":"2020-01-01T00:00:00Z"}"#,
+        ))
+        .unwrap();
+        assert!(seen.ends_with("d ago"), "{seen}");
+        assert!(owner_unreachable(Some(r#"{"other":1}"#)).is_none());
+        assert!(owner_unreachable(None).is_none());
+    }
+
     #[test]
     fn schedules_slash_args_and_loop_columns() {
         let (tx, mut rx) = unbounded_channel();
@@ -15053,6 +15202,9 @@ mod tests {
             project: project.map(str::to_owned),
             retention: Retention::Durable,
             running: false,
+            owner: String::new(),
+            epoch: 1,
+            here: true,
         }
     }
 

@@ -485,6 +485,10 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::Tasks(project, msg(api.tasks_list(filter).await)?)
         }
         Command::ListRoster => UiEvent::Roster(msg(api.agents_list().await)?),
+        Command::TakeSession(id) => {
+            let o = msg(api.session_take(id, "user".into()).await)?;
+            UiEvent::Info(format!("taking session here (epoch {})", o.epoch))
+        }
         Command::FireSchedule(name) => {
             let id = msg(api.fire_schedule(name.clone()).await)?;
             UiEvent::Info(format!("fired {name} → session {id}"))
@@ -963,10 +967,14 @@ fn msg<T>(r: Result<T, ClientError>) -> anyhow::Result<T> {
 }
 
 /// The user-facing text of a failed call: the harness's message for a
-/// refusal, the transport's for a lost socket.
+/// refusal, the transport's for a lost socket. An `OwnerUnreachable` refusal
+/// (68 §5) becomes the owner-offline sentence with `/take` as the action.
 fn reason(e: ClientError) -> String {
     match e {
-        ClientError::Call(e) => e.message().to_owned(),
+        ClientError::Call(e) => match model::owner_unreachable(e.data().map(|d| d.get())) {
+            Some((owner, last_seen)) => model::owner_offline_line(&owner, &last_seen),
+            None => e.message().to_owned(),
+        },
         e => e.to_string(),
     }
 }
@@ -1386,9 +1394,10 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }),
         UiEvent::AskResolved(_) => Ok(()),
-        UiEvent::Sessions(list) => list
-            .iter()
-            .try_for_each(|s| writeln!(out, "{}  {}  {}", s.id, s.model, s.title)),
+        UiEvent::Sessions(list) => list.iter().try_for_each(|s| {
+            let chip = if s.here { String::new() } else { model::engine_chip(&s.owner) };
+            writeln!(out, "{}  {}  {chip:<8}  {}", s.id, s.model, s.title)
+        }),
         // Real output groups with state, coverage and exact identities (49
         // §6.2); an interactive chip set is not on offer here.
         UiEvent::Search(_, reply) => search::print_lines(reply)

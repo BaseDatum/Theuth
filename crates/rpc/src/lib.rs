@@ -27,6 +27,7 @@ pub mod api;
 pub mod bridge;
 pub mod client;
 pub mod engine;
+pub mod forward;
 pub mod search;
 
 #[cfg(test)]

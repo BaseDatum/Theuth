@@ -317,6 +317,9 @@ export function SessionList({
                   pinned={row.session.pinned}
                   archived={row.session.archived}
                   project={row.session.project}
+                  owner={row.session.owner}
+                  epoch={row.session.epoch}
+                  here={row.session.here}
                   subagents={subs.get(row.session.id)}
                   active={row.session.id === active}
                   selected={selected.has(row.session.id)}

@@ -168,7 +168,7 @@ pub fn sweep(dir: &Path, max_age: Duration) {
 }
 
 /// `call_id` as a safe file stem: `[A-Za-z0-9._-]`, anything else → `_`.
-fn sanitize(call_id: &str) -> String {
+pub fn sanitize(call_id: &str) -> String {
     call_id
         .chars()
         .map(|c| {

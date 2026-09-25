@@ -101,7 +101,7 @@ impl Engine {
     }
 
     /// The row as it stands, one change per column with the clock it holds.
-    async fn row_as_changes(&self, attached: &Attached, table: &str, pk: &str) -> anyhow::Result<Vec<Change>> {
+    pub(crate) async fn row_as_changes(&self, attached: &Attached, table: &str, pk: &str) -> anyhow::Result<Vec<Change>> {
         let cols = attached.info.columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
         let sql = format!(
             "SELECT {cols}, \"hlc\" FROM {} WHERE {} = ?",

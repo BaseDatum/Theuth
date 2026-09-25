@@ -123,6 +123,10 @@ pub struct Checkout {
     /// next checkout may take the task and bumps `epoch`.
     #[serde(default)]
     pub orphaned: bool,
+    /// Set with `orphaned` when the sweep took the session onto `engine`
+    /// (68 §4.4): the `Resume` wake continues that session.
+    #[serde(default)]
+    pub taken: bool,
 }
 
 /// The task record (67 §7.1).
