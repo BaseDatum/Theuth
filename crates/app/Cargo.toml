@@ -12,6 +12,7 @@ platform = { workspace = true }
 artifact = { workspace = true }
 link = { workspace = true }
 agent = { workspace = true }
+roster = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

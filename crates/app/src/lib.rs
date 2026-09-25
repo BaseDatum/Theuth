@@ -13,6 +13,7 @@
 //! - [`skill`] (the bundled `apps` skill), [`HASH`] (library compatibility hash)
 
 pub mod actor;
+pub mod agent_draft;
 pub mod draft;
 pub mod fence;
 pub mod helper;
@@ -28,6 +29,7 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use actor::{Apps, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi};
+pub use agent_draft::{AgentDraft, AgentDraftArgs, AgentDraftTool};
 pub use draft::{Draft, TaskDraftArgs, TaskDraftTool};
 pub use tool::{AppArgs, AppTool, EXAMPLE, prompt};
 
@@ -340,6 +342,9 @@ impl runtime::Plugin for AppPlugin {
                     .await;
                 let _ = reg
                     .ask(tools::RegisterTool(Arc::new(TaskDraftTool { core: core.clone() })))
+                    .await;
+                let _ = reg
+                    .ask(tools::RegisterTool(Arc::new(AgentDraftTool { core: core.clone() })))
                     .await;
                 let _ = reg
                     .ask(tools::RegisterPrompt {
