@@ -11217,7 +11217,7 @@ dependencies = [
 
 [[package]]
 name = "mesh"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15595,7 +15595,7 @@ dependencies = [
 
 [[package]]
 name = "replica"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15854,7 +15854,7 @@ checksum = "c85cd47a33a4510b1424fe796498e174c6a9cf94e606460ef022a19f3e4ff85e"
 
 [[package]]
 name = "roster"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -16852,7 +16852,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -17558,7 +17558,7 @@ dependencies = [
 
 [[package]]
 name = "sessionsync"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "agent",
  "anyhow",
@@ -19422,7 +19422,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tasks"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "agent",
  "anyhow",
