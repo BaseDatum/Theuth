@@ -731,9 +731,17 @@ pub trait Api {
     ) -> RpcResult<Vec<document::DocSummary>>;
     /// The document bound to `binding`. A knowledge binding whose concept
     /// exists but has no document yet gets one created from its file (59
-    /// §7.1, on demand); `None` only when there is nothing to bind to.
+    /// §7.1, on demand), an agent-charter binding from the roster file's body;
+    /// `None` only when there is nothing to bind to.
     #[method(name = "doc_resolve", with_extensions)]
     async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>>;
+    /// The document bound to an agent-charter `binding`, created from `markdown` when there is none
+    /// (the Hire wizard's draft, before `agents/<name>.md` exists). Other bindings: `owner_creates`.
+    #[method(name = "doc_ensure", with_extensions)]
+    async fn doc_ensure(&self, binding: document::Binding, markdown: String) -> RpcResult<document::DocId>;
+    /// Lossy markdown of the whole document (what its export writes) — Hire copies it into the charter body.
+    #[method(name = "doc_markdown")]
+    async fn doc_markdown(&self, doc: document::DocId) -> RpcResult<String>;
     /// Open `doc`: its metadata, the Yjs state missing from `sv` (base64 v1
     /// state vector; absent = everything) as ≤ 48 KiB base64 chunks, and the
     /// current awareness states.
@@ -3042,14 +3050,22 @@ impl ApiServer for Server {
         if let Some(id) = doc_send(&docs, document::Lookup { binding: binding.clone() }).await? {
             return Ok(Some(id));
         }
-        // On demand (59 §7.1): a knowledge concept becomes a document from its current file.
-        let document::Binding::Knowledge(concept) = &binding else {
-            return Ok(None);
-        };
-        let text = match send(&knowledge()?, Get { id: concept.clone() }).await {
-            Ok(c) => c.text,
-            Err(e) if e.code() == ASK_FAILED => return Ok(None),
-            Err(e) => return Err(e),
+        let text = match &binding {
+            // On demand (59 §7.1): a knowledge concept becomes a document from its current file.
+            document::Binding::Knowledge(concept) => match send(&knowledge()?, Get { id: concept.clone() }).await {
+                Ok(c) => c.text,
+                Err(e) if e.code() == ASK_FAILED => return Ok(None),
+                Err(e) => return Err(e),
+            },
+            // An agent's charter becomes a document from the body of `agents/<name>.md`; theuth's is
+            // `prompt.md`, read-only, never a document.
+            document::Binding::AgentCharter(name) if name == roster::AgentName::DEFAULT => return Ok(None),
+            document::Binding::AgentCharter(name) => match send(&roster_actor()?, roster::GetAgent(name.clone())).await {
+                Ok(f) => f.body,
+                Err(e) if e.code() == ASK_FAILED => return Ok(None),
+                Err(e) => return Err(e),
+            },
+            _ => return Ok(None),
         };
         let r = doc_send(
             &docs,
@@ -3061,6 +3077,29 @@ impl ApiServer for Server {
         .await
         .map(Some);
         doc_forward(ext, "doc_resolve", (&binding,), r).await
+    }
+
+    async fn doc_ensure(&self, ext: &Extensions, binding: document::Binding, markdown: String) -> RpcResult<document::DocId> {
+        if !matches!(&binding, document::Binding::AgentCharter(name) if name != roster::AgentName::DEFAULT) {
+            return Err(ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                "owner_creates",
+                None::<()>,
+            ));
+        }
+        let r = doc_send(
+            &documents()?,
+            document::Ensure {
+                binding: binding.clone(),
+                markdown: markdown.clone(),
+            },
+        )
+        .await;
+        doc_forward(ext, "doc_ensure", (&binding, &markdown), r).await
+    }
+
+    async fn doc_markdown(&self, doc: document::DocId) -> RpcResult<String> {
+        doc_send(&documents()?, document::Markdown { doc, blocks: None, annotate: false }).await
     }
 
     async fn doc_open(

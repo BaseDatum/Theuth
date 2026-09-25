@@ -232,8 +232,12 @@ export interface Api {
   dictation_status(): Promise<DictationState>
   /** Documents (59 §6.1). `doc_list`: metadata rows, newest first, optionally one kind. */
   doc_list(kind: DocKind | null, limit: number | null): Promise<DocSummary[]>
-  /** The document bound to `binding`; a knowledge concept without one is created from its file on demand (59 §7.1). `null` when nothing is bound and nothing can be created. */
+  /** The document bound to `binding`; a knowledge concept without one is created from its file, an agent's charter from its `agents/<name>.md` body, on demand (59 §7.1). `null` when nothing is bound and nothing can be created. */
   doc_resolve(binding: Binding): Promise<DocId | null>
+  /** The agent-charter document bound to `binding`, created from `markdown` when there is none (the Hire wizard, before the file exists). */
+  doc_ensure(binding: Binding, markdown: string): Promise<DocId>
+  /** Lossy markdown of the whole document — what its export writes. */
+  doc_markdown(doc: DocId): Promise<string>
   /** Metadata, the Yjs state missing from `sv` (base64 state vector; `null` = everything) as ≤ 48 KiB base64 chunks, and current awareness. */
   doc_open(doc: DocId, sv: string | null): Promise<DocOpen>
   /** One base64 Yjs v1 update from this connection; `DocTooLarge` past the cap. */
@@ -707,10 +711,12 @@ export const METHODS = [
   'doc_awareness',
   'doc_create',
   'doc_delete',
+  'doc_ensure',
   'doc_join',
   'doc_link_create',
   'doc_link_revoke',
   'doc_list',
+  'doc_markdown',
   'doc_member_revoke',
   'doc_member_set',
   'doc_members',

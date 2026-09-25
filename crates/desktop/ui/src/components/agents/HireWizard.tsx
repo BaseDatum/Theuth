@@ -1,6 +1,7 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, PanelLeft } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { useAgents } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
@@ -9,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useSidebar } from '@/components/ui/sidebar'
 import { Textarea } from '@/components/ui/textarea'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import { CharterEditor } from './CharterEditor'
+import { CharterDoc, useCharterDoc } from './CharterDoc'
 import { AccessFields, Field, RuntimeFields, type Setter } from './RuntimeAccessFields'
 import { AgentAvatar } from './identity'
 import { managerNames } from './hiring'
@@ -29,14 +31,17 @@ import {
   suggestName,
   toFile,
   validate,
+  withCharter,
 } from './wizard'
 
 const LABEL: Record<Step, string> = { identity: 'Identity', role: 'Role', runtime: 'Runtime', access: 'Access', budget: 'Budget', charter: 'Charter', review: 'Review' }
 
 /**
  * `/agents/new` — paperclip's hire flow (AgentBasicsDialog + NewAgentSetup) as one stepped page. Each step validates
- * before Next; the draft and the step live in localStorage so a reload resumes in place; Hire writes the file with
- * `agent_put` (unpaused, or paused for "Hire paused") and lands on the new agent's overview.
+ * before Next; the draft and the step live in localStorage so a reload resumes in place. The charter is a document
+ * (`agent-charter:<name>`, seeded with the starter template on the Charter step); Next and Hire copy its markdown into
+ * `body`, and Hire writes the file with `agent_put` (unpaused, or paused for "Hire paused") and lands on the new
+ * agent's overview — from then on the file is the source of truth and the document follows it.
  */
 export function HireWizard() {
   const sidebar = useSidebar()
@@ -44,6 +49,7 @@ export function HireWizard() {
   const navigate = useNavigate()
   const agents = useAgents()
   const { put } = useAgentActions()
+  const api = useApi()
   const [saved] = useState(loadDraft)
   const [step, setStep] = useState<Step>(saved?.step ?? 'identity')
   const [d, setD] = useState<Draft>(saved?.draft ?? emptyDraft)
@@ -61,17 +67,33 @@ export function HireWizard() {
     setTouched(false)
     setStep(s)
   }
-  const next = () => {
-    if (Object.keys(errors).length > 0) return setTouched(true)
-    if (step === 'budget' && !d.body.trim()) set('body', starterCharter(d))
+  // The charter document exists from the Charter step on (an empty name disables the query), so renaming on
+  // Identity never mints documents for names that were only passing through.
+  const charter = useCharterDoc(step === 'charter' || step === 'review' ? d.name : '', starterCharter(d))
+  // The draft with the document's current markdown as `body` (what Hire writes and Review shows).
+  const fromDoc = async (): Promise<Draft> => {
+    try {
+      const draft = await withCharter(d, charter.data ?? null, (doc) => api.doc_markdown(doc))
+      setD(draft)
+      return draft
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+      return d
+    }
+  }
+  const next = async () => {
+    const draft = step === 'charter' ? await fromDoc() : d
+    if (Object.keys(validate(step, draft, taken)).length > 0) return setTouched(true)
     go(STEPS[at + 1] ?? 'review')
   }
-  const hire = (paused: boolean) => {
+  const hire = async (paused: boolean) => {
+    const draft = await fromDoc()
+    const bad = firstInvalid(draft, taken)
     if (bad) return go(bad)
-    put.mutate(toFile(d, paused), {
+    put.mutate(toFile(draft, paused), {
       onSuccess: () => {
         clearDraft()
-        void navigate({ to: '/agents/$name/$tab', params: { name: d.name, tab: 'overview' } })
+        void navigate({ to: '/agents/$name/$tab', params: { name: draft.name, tab: 'overview' } })
       },
     })
   }
@@ -156,15 +178,15 @@ export function HireWizard() {
               Back
             </Button>
             {step !== 'review' ? (
-              <Button size="sm" onClick={next}>
+              <Button size="sm" onClick={() => void next()}>
                 Next
               </Button>
             ) : (
               <>
-                <Button size="sm" variant="outline" disabled={put.isPending} onClick={() => hire(true)}>
+                <Button size="sm" variant="outline" disabled={put.isPending} onClick={() => void hire(true)}>
                   Hire paused
                 </Button>
-                <Button size="sm" disabled={put.isPending} onClick={() => hire(false)}>
+                <Button size="sm" disabled={put.isPending} onClick={() => void hire(false)}>
                   Hire {d.title.trim() || d.name}
                 </Button>
               </>
@@ -238,13 +260,12 @@ function StepBody({ step, d, set, err, taken }: { step: Step; d: Draft; set: Set
       return <BudgetStep d={d} set={set} error={err('budget')} />
     case 'charter':
       return (
-        <div className="flex min-h-[360px] flex-1 flex-col gap-2">
-          <p className="text-sm text-fg-secondary">The charter is the desk's system prompt: what it owns, how it works, when to escalate. Markdown.</p>
-          <CharterEditor value={d.body} onChange={(v) => set('body', v)} className="min-h-[320px] flex-1" />
+        <div className="flex min-h-[560px] flex-1 flex-col gap-2">
+          <p className="text-sm text-fg-secondary">
+            The charter is the desk's system prompt: what it owns, how it works, when to escalate. Write it here or with theuth in the chat below.
+          </p>
+          <CharterDoc who={d} seed={starterCharter(d)} hint={`Hire writes this into agents/${d.name}.md.`} className="min-h-[520px] rounded-lg border border-border-subtle" />
           {err('body') && <p className="text-xs text-danger">{err('body')}</p>}
-          <Button variant="ghost" size="sm" className="self-start" onClick={() => set('body', starterCharter(d))}>
-            Reset to the starter template
-          </Button>
         </div>
       )
     case 'review':

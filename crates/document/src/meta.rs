@@ -89,6 +89,8 @@ pub enum DocKind {
     MeetingNote,
     /// A free-standing note (step 3).
     Note,
+    /// An agent's charter — the body of `agents/<name>.md` (67 §6.1); the roster copies each export into the file.
+    AgentCharter,
 }
 
 impl DocKind {
@@ -98,6 +100,7 @@ impl DocKind {
             Self::Artifact => "artifact",
             Self::MeetingNote => "meeting_note",
             Self::Note => "note",
+            Self::AgentCharter => "agent_charter",
         }
     }
 }
@@ -126,6 +129,8 @@ pub enum Binding {
     MeetingNote(String),
     /// A note has no other owner.
     Note,
+    /// An agent's charter by roster name (`ops`); the wizard binds the same way before the file exists.
+    AgentCharter(String),
 }
 
 impl Binding {
@@ -141,19 +146,21 @@ impl Binding {
             Self::Artifact { .. } => DocKind::Artifact,
             Self::MeetingNote(_) => DocKind::MeetingNote,
             Self::Note => DocKind::Note,
+            Self::AgentCharter(_) => DocKind::AgentCharter,
         }
     }
 
     /// The derived markdown path relative to the data dir (§4.1): a concept file, a meeting's `notes.md`
     /// (renamed `summary.md` by the summary turn, §7.4), an artifact's stable export under `documents/`
     /// (the artifact store copies each settled export into a content-addressed blob + version row, §7.2),
-    /// a note's `note.md`.
+    /// a note's `note.md`, a charter's `charter.md` (the roster splices it under the file's front matter).
     pub fn derived(&self, id: &DocId) -> String {
         match self {
             Self::Knowledge(c) => format!("knowledge/{c}.md"),
             Self::Artifact { .. } => format!("documents/{id}/artifact.md"),
             Self::MeetingNote(m) => format!("meetings/{m}/notes.md"),
             Self::Note => format!("documents/{id}/note.md"),
+            Self::AgentCharter(_) => format!("documents/{id}/charter.md"),
         }
     }
 }
@@ -609,6 +616,10 @@ mod tests {
         assert_ne!(a, DocId::for_binding(&Binding::Knowledge("facts/bar".into())));
         assert_ne!(a, DocId::for_binding(&Binding::MeetingNote("facts/foo".into())));
         assert_ne!(DocId::for_binding(&Binding::Note), DocId::for_binding(&Binding::Note));
+        let c = Binding::AgentCharter("ops".into());
+        assert_eq!(DocId::for_binding(&c), DocId::for_binding(&Binding::AgentCharter("ops".into())));
+        assert_ne!(DocId::for_binding(&c), DocId::for_binding(&Binding::AgentCharter("ops2".into())));
+        assert_ne!(DocId::for_binding(&c), DocId::for_binding(&Binding::Knowledge("ops".into())));
     }
 
     #[test]
@@ -634,6 +645,10 @@ mod tests {
             Binding::MeetingNote("m1".into()).derived(&id),
             "meetings/m1/notes.md"
         );
+        let c = Binding::AgentCharter("ops".into());
+        assert_eq!(c.key(), r#"{"agent_charter":"ops"}"#);
+        assert_eq!(c.kind(), DocKind::AgentCharter);
+        assert_eq!(c.derived(&id), format!("documents/{id}/charter.md"));
     }
 
     #[test]

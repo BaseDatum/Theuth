@@ -11,6 +11,7 @@ tools = { workspace = true }
 tasks = { workspace = true }
 agent = { workspace = true }
 knowledge = { workspace = true }
+document = { workspace = true }
 mesh = { workspace = true }
 replica = { workspace = true }
 platform = { workspace = true }

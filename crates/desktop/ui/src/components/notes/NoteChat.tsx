@@ -18,9 +18,9 @@ const PAGE = 60
  * 59 §7.3: the chat under a note. A resizable bottom panel with the remembered session's transcript (`compact`)
  * and a composer whose every message leads with the note's `[attached note …]` marker (66 §3.3); the first message
  * creates a session titled like the note and the panel keeps it (`lib/note-chat`). "New chat" forgets the session; the
- * session itself stays in the normal chat list.
+ * session itself stays in the normal chat list. `about` names the document in the copy (an agent's charter is one too).
  */
-export function NoteChat({ note, doc }: { note: string; doc: AttachRef }) {
+export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc: AttachRef; about?: string }) {
   const state = useNoteChat((s) => s.notes[note] ?? EMPTY)
   const set = useNoteChat((s) => s.set)
   const navigate = useNavigate()
@@ -63,7 +63,7 @@ export function NoteChat({ note, doc }: { note: string; doc: AttachRef }) {
     <section
       className="flex shrink-0 flex-col border-t border-border-subtle bg-background"
       style={{ height: state.height }}
-      aria-label="Chat about this note"
+      aria-label={`Chat about ${about}`}
     >
       <div
         role="separator"
@@ -72,7 +72,7 @@ export function NoteChat({ note, doc }: { note: string; doc: AttachRef }) {
         className="h-1.5 shrink-0 cursor-row-resize hover:bg-layer-2"
       />
       <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
-        <span className="min-w-0 flex-1 truncate">{session ? title || 'Chat' : 'New chat about this note'}</span>
+        <span className="min-w-0 flex-1 truncate">{session ? title || 'Chat' : `New chat about ${about}`}</span>
         {session && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -104,7 +104,7 @@ export function NoteChat({ note, doc }: { note: string; doc: AttachRef }) {
         <Transcript key={session} session={session} compact />
       ) : (
         <p className="m-auto px-6 text-center text-sm text-fg-tertiary">
-          Ask about this note; the first message starts a chat with it attached.
+          Ask about {about}; the first message starts a chat with it attached.
         </p>
       )}
       <Composer

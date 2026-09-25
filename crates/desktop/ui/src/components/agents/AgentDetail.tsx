@@ -26,6 +26,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import { CharterDoc } from './CharterDoc'
 import { CharterEditor } from './CharterEditor'
 import { AccessFields, Field, RuntimeFields } from './RuntimeAccessFields'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar } from './identity'
@@ -138,7 +139,7 @@ export function AgentDetail({ name, tab }: { name: string; tab: Tab }) {
             </TabsList>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {tab === 'overview' && <Overview file={file.data} summary={summary} agents={agents.data ?? []} />}
-              {tab === 'charter' && <Charter key={file.data.body} file={file.data} />}
+              {tab === 'charter' && <Charter file={file.data} />}
               {tab === 'runtime' && <Runtime key={JSON.stringify(file.data)} file={file.data} />}
               {tab === 'runs' && <Runs name={name} desk={summary?.desk ?? null} />}
               {tab === 'tasks' && <TasksTab name={name} />}
@@ -358,32 +359,19 @@ function BudgetCard({ file: f, summary: s }: { file: AgentFile; summary: AgentSu
   )
 }
 
+/** The charter document with its chat (`CharterDoc`); theuth's `prompt.md` stays a read-only view. */
 function Charter({ file: f }: { file: AgentFile }) {
-  const { put } = useAgentActions()
-  const [body, setBody] = useState(f.body)
-  const root = f.name === THEUTH
-  const dirty = body !== f.body
+  if (f.name !== THEUTH) {
+    return <CharterDoc who={f} hint={`The desk's system prompt is built from this; edits land in agents/${f.name}.md once you pause.`} className="h-full" />
+  }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {root && (
-        <p className="border-b border-border-subtle px-4 py-2 text-[13px] text-fg-secondary">
-          theuth's charter is <code>prompt.md</code> in the data directory, read-only here.
-        </p>
-      )}
+      <p className="border-b border-border-subtle px-4 py-2 text-[13px] text-fg-secondary">
+        theuth's charter is <code>prompt.md</code> in the data directory, read-only here.
+      </p>
       <div className="min-h-0 flex-1 p-4">
-        <CharterEditor value={body} onChange={setBody} readOnly={root} className="h-full min-h-[320px]" />
+        <CharterEditor value={f.body} readOnly className="h-full min-h-[320px]" />
       </div>
-      {!root && (
-        <footer className="flex shrink-0 items-center gap-2 border-t border-border-subtle px-4 py-2">
-          <span className="flex-1 text-[13px] text-fg-tertiary">{dirty ? 'You have unsaved changes.' : 'The desk\u2019s system prompt is built from this.'}</span>
-          <Button variant="ghost" size="sm" disabled={!dirty || put.isPending} onClick={() => setBody(f.body)}>
-            Discard
-          </Button>
-          <Button size="sm" disabled={!dirty || !body.trim() || put.isPending} onClick={() => put.mutate({ ...f, body })}>
-            Save changes
-          </Button>
-        </footer>
-      )}
     </div>
   )
 }

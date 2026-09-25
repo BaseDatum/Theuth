@@ -261,6 +261,7 @@ impl Roster {
                         if let Err(e) = self.store.upsert_agent(f, mtime).await {
                             tracing::warn!(agent = %stem, "agents row not written: {e:#}");
                         }
+                        push_charter(before.get(&stem).and_then(|p| p.as_ref().ok()).map(|f| f.body.as_str()), f);
                     }
                     Err(e) => tracing::warn!("{}/{stem}.md: {e}", self.dir.display()),
                 }
@@ -511,9 +512,13 @@ impl Roster {
 
     /// Write the file, update the read model in place (so a `GetAgent` right
     /// after sees it) and mirror the row; the watcher's reconcile then finds
-    /// it unchanged and does nothing.
+    /// it unchanged and does nothing. A changed body follows into the charter
+    /// document; the document's own export lands through `write_text`.
     async fn write_file(&self, f: &AgentFile) -> Result<(), String> {
-        self.write_text(f.name.as_str(), &file::render(f)).await
+        let old = self.shared.file(f.name.as_str());
+        self.write_text(f.name.as_str(), &file::render(f)).await?;
+        push_charter(old.as_ref().map(|o| o.body.as_str()), f);
+        Ok(())
     }
 
     async fn write_text(&self, name: &str, text: &str) -> Result<(), String> {
@@ -1128,13 +1133,72 @@ impl Message<RemoveAgent> for Roster {
 
     async fn handle(&mut self, m: RemoveAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let approval = self.remove_agent(&m.name).await?;
-        // Reconcile drops the read model, the `agents` row and the desk.
+        // Reconcile drops the read model, the `agents` row and the desk; the charter document goes to `.trash`.
         let _ = ctx.actor_ref().tell(Reconcile).await;
+        if let Some(docs) = document::Handle::lookup() {
+            let binding = document::Binding::AgentCharter(m.name.clone());
+            tokio::spawn(async move {
+                if let Ok(Some(doc)) = docs.actor().ask(document::Lookup { binding }).await {
+                    let _ = docs.delete(doc).await;
+                }
+            });
+        }
         if let Some(id) = approval {
             let note = m.note.as_deref().map(str::trim).filter(|s| !s.is_empty());
             close_hire_task(&m.name, id, &note.map_or_else(|| "rejected".to_owned(), |n| format!("rejected: {n}"))).await;
         }
         Ok(())
+    }
+}
+
+/// 67 §6.1: the file is the charter's source of truth and its document follows it — a new or
+/// changed body is imported into `agent-charter:<name>` (59 §4.4, one diff transaction) when
+/// that document exists. Fire-and-forget: the roster never waits on the documents actor.
+fn push_charter(old_body: Option<&str>, f: &AgentFile) {
+    if old_body == Some(f.body.as_str()) {
+        return;
+    }
+    let Some(docs) = document::Handle::lookup() else { return };
+    let (name, body) = (f.name.as_str().to_owned(), f.body.clone());
+    tokio::spawn(async move {
+        let binding = document::Binding::AgentCharter(name.clone());
+        let Ok(Some(doc)) = docs.actor().ask(document::Lookup { binding }).await else { return };
+        if let Err(e) = docs.import_markdown(doc, body, document::Principal::File).await {
+            tracing::warn!(agent = %name, "charter document not updated from the file: {e}");
+        }
+    });
+}
+
+impl Message<document::Exported> for Roster {
+    type Reply = ();
+
+    async fn handle(&mut self, m: document::Exported, _: &mut Context<Self, Self::Reply>) {
+        if let document::Binding::AgentCharter(name) = m.binding {
+            self.charter_exported(&name, &m.path).await;
+        }
+    }
+}
+
+impl Roster {
+    /// The other direction: the charter document's export (`documents.export_quiet_secs` after the
+    /// last edit) becomes the file's body under its front matter. A name without a file (the Hire
+    /// wizard's draft, `theuth`) has nothing to write yet; an empty export would make the file
+    /// invalid (`empty charter`) and is ignored. Answers whether the file was rewritten.
+    async fn charter_exported(&self, name: &str, path: &std::path::Path) -> bool {
+        let Some(mut f) = self.shared.file(name).filter(|f| !f.name.is_default()) else { return false };
+        let Ok(text) = std::fs::read_to_string(path) else { return false };
+        let body = text.trim();
+        if body.is_empty() || body == f.body {
+            return false;
+        }
+        f.body = body.to_owned();
+        match self.write_text(f.name.as_str(), &file::render(&f)).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(agent = %name, "charter export not written to the file: {e}");
+                false
+            }
+        }
     }
 }
 
@@ -1357,6 +1421,8 @@ impl runtime::Plugin for RosterPlugin {
         );
         actor.register(ROSTER_ACTOR)?;
         rt.subscribe::<Roster, agent::AgentEvent>(&actor).await;
+        // The charter document's exports become the file's body.
+        rt.subscribe::<Roster, document::Exported>(&actor).await;
         // 67 §4.4: desks and dispatch follow the lease; self id once the mesh is up.
         rt.subscribe::<Roster, mesh::MeshEvent>(&actor).await;
         let me = actor.clone();
@@ -1580,6 +1646,33 @@ mod tests {
         assert!(r.store.agent_names().await.unwrap().is_empty());
 
         assert!(file::parse("theuth", "x").is_err());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[tokio::test]
+    async fn charter_export_replaces_the_body_and_keeps_the_front_matter() {
+        let data = tmp("charter");
+        let r = roster(&data).await;
+        let f = file::parse("qa", "---\ntitle: QA\nmcp: [grafana]\nbudget: 10 EUR/month\n---\nTest everything.\n").unwrap();
+        r.write_file(&f).await.unwrap();
+        let export = data.join("charter.md");
+
+        std::fs::write(&export, "# QA\n\nTest everything, twice.\n").unwrap();
+        assert!(r.charter_exported("qa", &export).await);
+        let on_disk = std::fs::read_to_string(data.join("agents/qa.md")).unwrap();
+        assert!(on_disk.contains("budget: 10 EUR/month\n"), "{on_disk}");
+        assert!(on_disk.contains("grafana"), "{on_disk}");
+        assert_eq!(r.shared.file("qa").unwrap().body, "# QA\n\nTest everything, twice.");
+        assert_eq!(file::parse("qa", &on_disk).unwrap(), r.shared.file("qa").unwrap());
+
+        // The same text again, an empty export, an unknown name and theuth change nothing.
+        assert!(!r.charter_exported("qa", &export).await);
+        std::fs::write(&export, "\n\n").unwrap();
+        assert!(!r.charter_exported("qa", &export).await);
+        std::fs::write(&export, "# Draft\n").unwrap();
+        assert!(!r.charter_exported("not-hired-yet", &export).await);
+        assert!(!r.charter_exported("theuth", &export).await);
+        assert_eq!(r.shared.file("qa").unwrap().body, "# QA\n\nTest everything, twice.");
         let _ = std::fs::remove_dir_all(&data);
     }
 
