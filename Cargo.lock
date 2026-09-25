@@ -15892,6 +15892,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "document",
  "figment",
  "gray_matter",
  "kameo",
