@@ -74,6 +74,26 @@ pub fn is_hub() -> bool {
     HUB.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// This engine's display name once the plugin read `mesh.name` (67 §8); empty
+/// until then. Read by plugins naming the local engine in text (`agent:
+/// "<harness>@<engine>"`, `tasks::place`) without a round trip to the actor.
+static SELF_NAME: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The mesh plugin sets this at start (and a test may, to name the engine).
+pub fn set_self_name(name: &str) {
+    *SELF_NAME.write().unwrap_or_else(|p| p.into_inner()) = name.to_owned();
+}
+
+/// This engine's name as its peers see it: `mesh.name`, else the hostname.
+pub fn self_name() -> String {
+    let n = SELF_NAME.read().unwrap_or_else(|p| p.into_inner());
+    if n.is_empty() {
+        platform::process::hostname().to_owned()
+    } else {
+        n.clone()
+    }
+}
+
 /// `ask` → `Result<MeshStatus, String>`: this engine, its peers, the lease.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Status;
@@ -553,6 +573,7 @@ impl runtime::Plugin for MeshPlugin {
             "" => platform::process::hostname().to_owned(),
             n => n.to_owned(),
         };
+        set_self_name(&name);
         let net = match Net::bind(
             net::BindOpts {
                 secret: identity.secret,

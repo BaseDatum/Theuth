@@ -558,8 +558,9 @@ impl Message<PlaceContext> for Tasks {
 /// question stands; the desk's late answer arrives as an ordinary message).
 const DESK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The engines that can start work now: this one (by hostname, as the
-/// mesh's peers know it) and every reachable peer, with what each advertises.
+/// The engines that can start work now: this one (by its `mesh.name`, hostname
+/// by default — as the mesh's peers know it) and every reachable peer, with
+/// what each advertises.
 async fn engines() -> Vec<place::Engine> {
     let Some(mesh) = mesh::actor() else {
         return Vec::new();
@@ -568,7 +569,7 @@ async fn engines() -> Vec<place::Engine> {
         return Vec::new();
     };
     let stats = mesh.ask(mesh::ListStats).await.unwrap_or_default();
-    let me = (platform::process::hostname().to_owned(), status.self_id);
+    let me = (status.self_name, status.self_id);
     std::iter::once(me)
         .chain(status.peers.into_iter().filter(|p| p.reachable).map(|p| (p.name, p.id)))
         .filter_map(|(name, id)| {
