@@ -61,9 +61,10 @@ impl Docs {
         Self { actor, data_dir }
     }
 
-    /// `doc` is a `DocId`, `knowledge:<id>`, `meeting:<id>` (66 §6.4: the meeting's note), or a
-    /// bare concept id with a `/` in it. A concept without a document gets one from its file on
-    /// demand (§7.1), as `doc_resolve` does.
+    /// `doc` is a `DocId`, `knowledge:<id>`, `meeting:<id>` (66 §6.4: the meeting's note),
+    /// `agent-charter:<name>` (the agent's charter, once opened in the Agents view), or a bare concept
+    /// id with a `/` in it. A concept without a document gets one from its file on demand (§7.1), as
+    /// `doc_resolve` does.
     async fn resolve(&self, doc: &str) -> anyhow::Result<DocId> {
         if let Some(id) = DocId::parse(doc) {
             return Ok(id);
@@ -75,10 +76,17 @@ impl Docs {
                 None => anyhow::bail!("meeting `{meeting}` has no note yet; use `meeting_read` for the transcript"),
             };
         }
+        if let Some(name) = doc.strip_prefix("agent-charter:") {
+            let binding = Binding::AgentCharter(name.to_owned());
+            return match self.actor.ask(Lookup { binding }).await.map_err(anyhow::Error::msg)? {
+                Some(id) => Ok(id),
+                None => anyhow::bail!("agent `{name}` has no charter document yet; open its Charter tab in the Agents view first"),
+            };
+        }
         let concept = match doc.strip_prefix("knowledge:") {
             Some(c) => c,
             None if doc.contains('/') => doc,
-            None => anyhow::bail!("`{doc}` is neither a document id, `knowledge:<concept id>` nor `meeting:<id>`"),
+            None => anyhow::bail!("`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>` nor `agent-charter:<name>`"),
         };
         let binding = Binding::Knowledge(concept.to_owned());
         if let Some(id) = self.actor.ask(Lookup { binding: binding.clone() }).await.map_err(anyhow::Error::msg)? {

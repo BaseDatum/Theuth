@@ -255,7 +255,7 @@ impl Store {
             .await?;
         fs::rename(self.dir(from), &to_dir)?;
         meta.id = to.clone();
-        if matches!(binding, Binding::Artifact { .. }) {
+        if matches!(binding, Binding::Artifact { .. } | Binding::AgentCharter(_)) {
             meta.derived = binding.derived(to);
         }
         write_atomic(&to_dir.join(META), serde_json::to_vec_pretty(&meta)?.as_slice())?;
