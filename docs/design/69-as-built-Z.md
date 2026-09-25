@@ -32,10 +32,10 @@ All twelve invariants ran on this Mac against a local `theuth-relay` (ws://127.0
 
 ## Not built / found, not fixed
 
-- `mesh_meta.name` default resolves to the **youngest** engine's name (`meta_default` stamps at `first_seen_ms` intending oldest-wins, but LWW is newest-wins). Cosmetic; `meta_set` beats defaults as designed.
-- Each non-hub re-touches the replicated `docs` row (`bytes`/`updated_ms`) after adopting a hub snapshot: N−1 two-column batches per edit, bounded, not a storm.
+- `mesh_meta.name` default resolves to the **youngest** engine's name (`meta_default` stamps at `first_seen_ms` intending oldest-wins, but LWW is newest-wins). Cosmetic; `meta_set` beats defaults as designed. *Closed 2026-09-25 (FIXBATCH B): defaults stamp at wall-clock zero; an explicit rename at any real time wins everywhere.*
+- Each non-hub re-touches the replicated `docs` row (`bytes`/`updated_ms`) after adopting a hub snapshot: N−1 two-column batches per edit, bounded, not a storm. *Closed 2026-09-25 (FIXBATCH C): the adopt path no longer touches the row.*
 - A snapshot batch that reaches a fresh engine before its file mirrors attached is skipped for those tables (`touches unattached table doc_files/skills`); the mirror's own scan converges later.
-- `pkarr publish` WARN every 1–13 s on an engine with stored peers and `discovery: true` when `dns.iroh.link` is unreachable (pre-69).
+- `pkarr publish` WARN every 1–13 s on an engine with stored peers and `discovery: true` when `dns.iroh.link` is unreachable (pre-69). *Closed 2026-09-25 (FIXBATCH D): `iroh::address_lookup::pkarr=error` in the default env-filter.*
 - A graceful *process shutdown* tells devices `HARNESS_GONE 4` (K deviation 6); only a lease loss says `HUB_MOVED 5`.
 - Gossip heartbeat delivery pauses (30–60 s) between two loopback peers were worked around (fix 5: liveness = QUIC connection), not diagnosed inside iroh-gossip.
 - No UI (D) path was driven; `bunx tsc` not run (no TS touched).
