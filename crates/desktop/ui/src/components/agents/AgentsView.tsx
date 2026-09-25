@@ -1,37 +1,38 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, PanelLeft } from 'lucide-react'
+import { List, Network, PanelLeft, UserPlus } from 'lucide-react'
+import { useState } from 'react'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
-import { Queue } from '@/components/tasks/Queue'
 import { THEUTH } from '@/components/tasks/helpers'
 import { useAgents } from '@/components/tasks/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
-import type { AgentStatus } from '@/rpc/bindings/AgentStatus'
-import { AgentDetail } from './AgentDetail'
-import { type Node, budgetUsed, tree } from './tree'
+import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import { HiringInbox } from './HiringInbox'
+import { OrgChart } from './OrgChart'
+import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar } from './identity'
+import { proposed } from './hiring'
+import { type Node, tree } from './tree'
 
-const STATUS_CLASS: Record<AgentStatus, string> = {
-  idle: 'bg-fg-tertiary/40',
-  working: 'bg-success',
-  blocked: 'bg-warning',
-  paused: 'bg-fg-tertiary',
-  proposed: 'bg-primary',
-  unreachable: 'bg-danger',
-  invalid: 'bg-danger',
-}
+const VIEW_KEY = 'theuth.agents-view'
+type View = 'org' | 'list'
 
 /**
- * `/agents` and `/agents/$name` (67 §12): the roster as a tree by `reports_to` rooted at the built-in `theuth`,
- * the Queue strip on top, and the selected agent's file on the right (below the tree on phones).
+ * `/agents` (67 §12, paperclip's Agents page): the roster as an org chart by `reports_to` rooted at the built-in
+ * `theuth`, or as a list; "Hire an agent" leads to the wizard; proposed agents wait in the Hiring inbox on top.
  */
-export function AgentsView({ name }: { name: string | null }) {
+export function AgentsView() {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   const agents = useAgents()
+  const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'org'))
+  const list = agents.data ?? []
+  // Proposed agents are hires awaiting approval: they wait in the inbox, not on the chart.
+  const root = tree(list.filter((a) => a.status !== 'proposed' && a.file.proposed_by === null))
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
@@ -46,96 +47,107 @@ export function AgentsView({ name }: { name: string | null }) {
             </Button>
           </div>
         )}
-        {name && (
-          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to agents">
-            <Link to="/agents">
-              <ChevronLeft />
-            </Link>
-          </Button>
-        )}
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Agents</h2>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
+          Agents {agents.data && <span className="font-normal text-fg-tertiary tabular-nums">{list.length}</span>}
+        </h2>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={view}
+          onValueChange={(v) => {
+            if (v) {
+              setView(v as View)
+              localStorage.setItem(VIEW_KEY, v)
+            }
+          }}
+          aria-label="Agent view"
+          className="hidden sm:flex"
+        >
+          <ToggleGroupItem value="org" aria-label="Org chart">
+            <Network />
+          </ToggleGroupItem>
+          <ToggleGroupItem value="list" aria-label="List">
+            <List />
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <Button asChild size="sm" className="ml-1">
+          <Link to="/agents/new">
+            <UserPlus /> Hire an agent
+          </Link>
+        </Button>
       </header>
-      <Queue />
-      <div className="flex min-h-0 flex-1">
-        <aside className={cn('w-full shrink-0 flex-col overflow-y-auto border-r border-border-subtle md:flex md:w-[320px]', name ? 'hidden' : 'flex')}>
-          {agents.isPending && (
-            <div className="space-y-2 p-3">
-              <Skeleton className="h-8 w-2/3" />
-              <Skeleton className="h-8 w-1/2" />
-            </div>
-          )}
-          {agents.isError && <p className="p-3 text-sm text-fg-tertiary">{agents.error.message}</p>}
-          <ul className="p-2">
-            <Row node={tree(agents.data ?? [])} depth={0} active={name} />
-          </ul>
-        </aside>
-        <main className={cn('min-w-0 flex-1 overflow-y-auto md:flex', name ? 'flex' : 'hidden')}>
-          {name ? (
-            <AgentDetail name={name} />
-          ) : (
-            <p className="m-auto hidden text-sm text-fg-tertiary md:block">Pick an agent.</p>
-          )}
-        </main>
-      </div>
+      <HiringInbox agents={proposed(agents.data)} />
+      {agents.isPending && (
+        <div className="space-y-2 p-3">
+          <Skeleton className="h-8 w-2/3" />
+          <Skeleton className="h-8 w-1/2" />
+        </div>
+      )}
+      {agents.isError && <p className="p-3 text-sm text-fg-tertiary">{agents.error.message}</p>}
+      {agents.data && list.filter((a) => a.file.name !== THEUTH).length === 0 && (
+        <p className="border-b border-border-subtle px-3 py-2 text-[13px] text-fg-secondary">
+          Only the built-in <b>theuth</b> so far. Hire an agent to give it a report — or ask theuth to propose one.
+        </p>
+      )}
+      {agents.data && (view === 'org' && !sidebar.isMobile ? <OrgChart root={root} /> : <Table root={root} />)}
     </article>
   )
 }
 
-function Row({ node, depth, active }: { node: Node; depth: number; active: string | null }) {
-  const navigate = useNavigate()
-  const a = node.agent
-  const used = a ? budgetUsed(a) : null
+/** The same tree as an indented table: status, manager, open tasks, budget. Phones always get this. */
+function Table({ root }: { root: Node }) {
+  const rows: { node: Node; depth: number }[] = []
+  const walk = (n: Node, depth: number) => {
+    rows.push({ node: n, depth })
+    n.children.forEach((c) => walk(c, depth + 1))
+  }
+  walk(root, 0)
   return (
-    <li>
-      <Link
-        to="/agents/$name"
-        params={{ name: node.name }}
-        className={cn('flex flex-col gap-1 rounded-[10px] px-2.5 py-2 text-sm hover:bg-layer-2', active === node.name && 'bg-layer-2')}
-        style={{ marginLeft: depth * 14 }}
-      >
-        <div className="flex items-center gap-2">
-          <span className={cn('size-2 shrink-0 rounded-full', a ? STATUS_CLASS[a.status] : 'bg-success')} aria-hidden />
-          <span className="min-w-0 flex-1 truncate font-medium">{a?.file.title ?? node.name}</span>
-          {node.name === THEUTH ? (
-            <Badge variant="outline">built-in</Badge>
-          ) : (
-            <span className="text-xs text-fg-tertiary">{a?.status ?? '—'}</span>
-          )}
-        </div>
-        {a && (
-          <div className="flex items-center gap-2 text-xs text-fg-secondary">
-            <span className="tabular-nums">{a.open_tasks} open</span>
-            {used !== null && a.file.budget.type === 'monthly' && (
-              <span className="flex min-w-0 flex-1 items-center gap-1.5" title={`${a.spent_month} / ${a.file.budget.amount} ${a.file.budget.currency}`}>
-                <span className="h-1 flex-1 overflow-hidden rounded-full bg-layer-3">
-                  <span className={cn('block h-full', used >= 1 ? 'bg-danger' : used >= 0.8 ? 'bg-warning' : 'bg-success')} style={{ width: `${used * 100}%` }} />
-                </span>
-                <span className="tabular-nums">{Math.round(used * 100)}%</span>
-              </span>
-            )}
-            {a.desk && (
-              <button
-                type="button"
-                className="ml-auto text-primary hover:underline"
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void navigate({ to: '/c/$session', params: { session: a.desk! } })
-                }}
-              >
-                desk
-              </button>
-            )}
-          </div>
-        )}
-      </Link>
-      {node.children.length > 0 && (
-        <ul>
-          {node.children.map((c) => (
-            <Row key={c.name} node={c} depth={depth + 1} active={active} />
+    <div className="min-h-0 flex-1 overflow-auto">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 bg-background text-left text-xs text-fg-tertiary">
+          <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:font-medium">
+            <th>Agent</th>
+            <th className="hidden md:table-cell">Active</th>
+            <th className="hidden md:table-cell">Activity</th>
+            <th className="hidden md:table-cell">Reports to</th>
+            <th className="text-right">Open</th>
+            <th className="hidden w-40 lg:table-cell">Budget</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ node, depth }) => (
+            <Row key={node.name} name={node.name} agent={node.agent} depth={depth} />
           ))}
-        </ul>
-      )}
-    </li>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Row({ name, agent: a, depth }: { name: string; agent: AgentSummary | null; depth: number }) {
+  const navigate = useNavigate()
+  const title = a?.file.title ?? name
+  return (
+    <tr
+      className={cn('cursor-pointer border-t border-border-subtle hover:bg-layer-2 [&>td]:px-3 [&>td]:py-2', a?.file.paused && 'opacity-60')}
+      onClick={() => void navigate({ to: '/agents/$name/$tab', params: { name, tab: 'overview' } })}
+    >
+      <td>
+        <span className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
+          <AgentAvatar name={name} title={title} size={28} />
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{title}</span>
+            <span className="block truncate font-mono text-[11px] text-fg-tertiary">{name}</span>
+          </span>
+        </span>
+      </td>
+      <td className="hidden md:table-cell">{name === THEUTH ? <Badge variant="outline">built-in</Badge> : a && <ActiveSwitch agent={a} />}</td>
+      <td className="hidden md:table-cell">{a && !a.file.paused && <ActivityChip status={a.status} />}</td>
+      <td className="hidden text-fg-secondary md:table-cell">{name === THEUTH ? 'you' : a?.file.reports_to}</td>
+      <td className="text-right tabular-nums">{a?.open_tasks ?? '—'}</td>
+      <td className="hidden lg:table-cell">{a && (a.file.budget.type === 'monthly' ? <BudgetBar agent={a} /> : <span className="text-xs text-fg-tertiary">none</span>)}</td>
+    </tr>
   )
 }

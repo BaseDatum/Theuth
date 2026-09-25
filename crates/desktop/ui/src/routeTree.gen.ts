@@ -16,7 +16,7 @@ import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
 import { Route as NotesRouteImport } from './routes/notes'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
-import { Route as AgentsNameRouteImport } from './routes/agents.$name'
+import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
@@ -28,6 +28,8 @@ import { Route as NotesIdRouteImport } from './routes/notes_.$id'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
+import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
+import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -64,9 +66,9 @@ const AgentsIndexRoute = AgentsIndexRouteImport.update({
   path: '/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AgentsNameRoute = AgentsNameRouteImport.update({
-  id: '/agents/$name',
-  path: '/agents/$name',
+const AgentsNewRoute = AgentsNewRouteImport.update({
+  id: '/agents/new',
+  path: '/agents/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ArtifactsCallIdRoute = ArtifactsCallIdRouteImport.update({
@@ -124,6 +126,16 @@ const TasksIdRoute = TasksIdRouteImport.update({
   path: '/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentsNameIndexRoute = AgentsNameIndexRouteImport.update({
+  id: '/agents/$name/',
+  path: '/agents/$name/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AgentsNameTabRoute = AgentsNameTabRouteImport.update({
+  id: '/agents/$name/$tab',
+  path: '/agents/$name/$tab',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -132,7 +144,7 @@ export interface FileRoutesByFullPath {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
-  '/agents/$name': typeof AgentsNameRoute
+  '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -145,6 +157,8 @@ export interface FileRoutesByFullPath {
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/tasks/': typeof TasksIndexRoute
+  '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/agents/$name/': typeof AgentsNameIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -153,7 +167,7 @@ export interface FileRoutesByTo {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
-  '/agents/$name': typeof AgentsNameRoute
+  '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -166,6 +180,8 @@ export interface FileRoutesByTo {
   '/agents': typeof AgentsIndexRoute
   '/meetings': typeof MeetingsIndexRoute
   '/tasks': typeof TasksIndexRoute
+  '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/agents/$name': typeof AgentsNameIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -175,7 +191,7 @@ export interface FileRoutesById {
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
   '/notes': typeof NotesRoute
-  '/agents/$name': typeof AgentsNameRoute
+  '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
@@ -188,6 +204,8 @@ export interface FileRoutesById {
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/tasks/': typeof TasksIndexRoute
+  '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/agents/$name/': typeof AgentsNameIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -198,7 +216,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
-    | '/agents/$name'
+    | '/agents/new'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -211,6 +229,8 @@ export interface FileRouteTypes {
     | '/agents/'
     | '/meetings/'
     | '/tasks/'
+    | '/agents/$name/$tab'
+    | '/agents/$name/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -219,7 +239,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
-    | '/agents/$name'
+    | '/agents/new'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -232,6 +252,8 @@ export interface FileRouteTypes {
     | '/agents'
     | '/meetings'
     | '/tasks'
+    | '/agents/$name/$tab'
+    | '/agents/$name'
   id:
     | '__root__'
     | '/'
@@ -240,7 +262,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/link'
     | '/notes'
-    | '/agents/$name'
+    | '/agents/new'
     | '/artifacts/$callId'
     | '/c/$session'
     | '/knowledge/$'
@@ -253,6 +275,8 @@ export interface FileRouteTypes {
     | '/agents/'
     | '/meetings/'
     | '/tasks/'
+    | '/agents/$name/$tab'
+    | '/agents/$name/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -262,7 +286,7 @@ export interface RootRouteChildren {
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
   NotesRoute: typeof NotesRoute
-  AgentsNameRoute: typeof AgentsNameRoute
+  AgentsNewRoute: typeof AgentsNewRoute
   CSessionRoute: typeof CSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
@@ -273,6 +297,8 @@ export interface RootRouteChildren {
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
   TasksIndexRoute: typeof TasksIndexRoute
+  AgentsNameTabRoute: typeof AgentsNameTabRoute
+  AgentsNameIndexRoute: typeof AgentsNameIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -326,11 +352,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/agents/$name': {
-      id: '/agents/$name'
-      path: '/agents/$name'
-      fullPath: '/agents/$name'
-      preLoaderRoute: typeof AgentsNameRouteImport
+    '/agents/new': {
+      id: '/agents/new'
+      path: '/agents/new'
+      fullPath: '/agents/new'
+      preLoaderRoute: typeof AgentsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/artifacts/$callId': {
@@ -410,6 +436,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agents/$name/': {
+      id: '/agents/$name/'
+      path: '/agents/$name'
+      fullPath: '/agents/$name/'
+      preLoaderRoute: typeof AgentsNameIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents/$name/$tab': {
+      id: '/agents/$name/$tab'
+      path: '/agents/$name/$tab'
+      fullPath: '/agents/$name/$tab'
+      preLoaderRoute: typeof AgentsNameTabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -444,7 +484,7 @@ const rootRouteChildren: RootRouteChildren = {
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
   NotesRoute: NotesRoute,
-  AgentsNameRoute: AgentsNameRoute,
+  AgentsNewRoute: AgentsNewRoute,
   CSessionRoute: CSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,
   MeetingsBriefsRoute: MeetingsBriefsRoute,
@@ -455,6 +495,8 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
   TasksIndexRoute: TasksIndexRoute,
+  AgentsNameTabRoute: AgentsNameTabRoute,
+  AgentsNameIndexRoute: AgentsNameIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
