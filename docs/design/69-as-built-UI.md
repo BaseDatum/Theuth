@@ -37,3 +37,11 @@ Nothing from the brief left out.
 None new; fixtures in `helpers.test.ts` and `attach.test.ts` updated for the new required fields.
 
 DONE UI
+
+## Follow-up commit `` — fix(ui): doc_stats in the RPC method list
+
+`src/rpc/api.ts`: `doc_stats(): Promise<DocStats>` (hand-written `DocStats` type mirroring `document::DocStats`, same precedent as `PermissionStatus`, since `just ts` does not export the document crate) and `peer_deliver(session, envelope): Promise<PeerReceipt>` (the second method the METHODS-vs-server test flagged); both added to `METHODS`.
+
+`bunx tsc --noEmit` → exit 0. vitest: **Test Files 65 passed (65), Tests 389 passed (389)** — fully green.
+
+DONE UI2
