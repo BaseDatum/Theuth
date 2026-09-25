@@ -34,8 +34,8 @@ beneath, not a peer state. **Proposed** appears only in the Hiring inbox. The wi
 ### `/agents/new`
 Steps (`wizard.ts` `STEPS`): Identity (title → suggested `name`, `[a-z0-9-]{1,32}`, not `theuth`, not taken) → Role
 (manager from the roster, capabilities) → Runtime (model from `list_models`, effort from the model's `efforts`, tools
-ceiling) → Access (MCP allowlist from `list_mcp`: every server, or per-server checkboxes plus optional `server.tool`
-narrowing) → Budget (none / monthly amount + currency; paperclip's policy wording: soft alert at 80 %, hard stop
+ceiling) → Access (MCP allowlist from `list_mcp`: all servers (`mcp: null`), none (`[]`), or per-server checkboxes plus
+optional `server.tool` narrowing) → Budget (none / monthly amount + currency; paperclip's policy wording: soft alert at 80 %, hard stop
 pauses) → Charter (CodeMirror markdown; a starter template is injected on first arrival) → Review → **Hire** /
 **Hire paused** = `agent_put(toFile(draft, paused))`, `proposed_by: null`, then the new agent's overview.
 Validation per step (`validate`), forward jumps stop at the first incomplete step (`firstInvalid`), Back always allowed.

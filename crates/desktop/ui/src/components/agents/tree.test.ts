@@ -3,7 +3,7 @@ import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import { type Node, budgetUsed, layout, tree } from './tree'
 
 const s = (name: string, reports_to: string, extra: Partial<AgentSummary> = {}): AgentSummary => ({
-  file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: [], budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x' },
+  file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x' },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0, ...extra,
 })
 

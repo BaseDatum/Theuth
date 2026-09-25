@@ -9,7 +9,7 @@ const task = (t: Partial<Task>): Task => ({
   created_ms: 0, updated_ms: 0, no_progress_count: 0, next_wake_after_ms: null, ...t,
 })
 const summary = (name: string, reports_to: string): AgentSummary => ({
-  file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: [], budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x' },
+  file: { name, title: name, reports_to, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x' },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0,
 })
 

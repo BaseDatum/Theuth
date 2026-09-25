@@ -150,8 +150,9 @@ pub struct AgentFile {
     pub effort: Option<String>,
     /// Risk ceiling: `read_only` | `mutating` | `destructive` (67 §6.3).
     pub tools: Option<String>,
-    /// MCP servers (or `server.tool`) it may see; empty = every server (67 §6.3).
-    pub mcp: Vec<String>,
+    /// MCP servers (or `server.tool`) it may see (67 §6.3): `None` = every
+    /// server, `Some([])` = none, `Some(list)` = only those.
+    pub mcp: Option<Vec<String>>,
     /// Monthly cap.
     pub budget: Budget,
     /// "When I am relevant", read by other agents when handing off.

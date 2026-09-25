@@ -61,7 +61,7 @@ export const EVENTS: TaskEvent[] = [
 ]
 
 const file = (name: string, title: string, reports_to: string, extra: Partial<AgentSummary['file']> = {}): AgentSummary['file'] => ({
-  name, title, reports_to, model: 'anthropic/claude-opus-5-5', effort: 'high', tools: 'mutating', mcp: [],
+  name, title, reports_to, model: 'anthropic/claude-opus-5-5', effort: 'high', tools: 'mutating', mcp: null,
   budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null,
   body: `You are ${title}. Your charter is to keep things running.`, ...extra,
 })

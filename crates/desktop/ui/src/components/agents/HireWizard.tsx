@@ -321,7 +321,7 @@ function Review({ d }: { d: Draft }) {
     ['Model', d.model ?? <span className="text-fg-tertiary">node default</span>],
     ['Effort', d.effort ?? <span className="text-fg-tertiary">default</span>],
     ['Tools ceiling', d.tools ?? <span className="text-fg-tertiary">inherited</span>],
-    ['MCP', d.mcp.length === 0 ? <span className="text-fg-tertiary">every server</span> : d.mcp.join(', ')],
+    ['MCP', d.mcp === null ? <span className="text-fg-tertiary">every server</span> : d.mcp.length === 0 ? <span className="text-fg-tertiary">none</span> : d.mcp.join(', ')],
     ['Budget', d.budget.type === 'none' ? <span className="text-fg-tertiary">none</span> : `${d.budget.amount} ${d.budget.currency} / month`],
   ]
   return (
