@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, Bot, FolderOpen, ListChecks, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Megaphone, Mic, PanelLeft, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -120,6 +120,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <SidebarMenuItem><SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5"><Link to="/routines"><CalendarClock /> Routines</Link></SidebarMenuButton></SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/knowledge">
