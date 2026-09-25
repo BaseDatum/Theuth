@@ -29,6 +29,7 @@ Open questions the stage-2 doc must answer: first-sync size (a new engine pullin
 | 2.6 | Windows targets in `t mesh add --ssh` | §13: detect OS/arch, install `t` | detected, then refused | a PowerShell install path (service via `--install-service`, which 32's installer already has for Windows) | small |
 | 2.7 | `put` over SSH is `cat >` over exec | §13 / 64 §4: `put` primitive | works; binary-safe via base64 in the built-in transport | `russh-sftp` if large files ever matter | optional |
 | 2.8 | Slack call-out reply prefix | §10 `[orch]`: `<Title> —` prefix | as built | Slack's `chat.postMessage` `username` override (needs `chat:write.customize`) if the prefix reads badly in practice | tiny, needs a look at real threads |
+| 2.9 | Schedule ticks as a hub duty | decision 5, §4.4: schedule ticks are a hub duty | **closed 2026-09-25** — stage 1 gated desks/dispatch/Slack/Signal but not schedules; every engine fired mirrored schedule files. Now `mesh::is_hub` (AtomicBool, default true, set on every `MeshEvent::Lease`) gates the ticker; a non-hub does not fire or advance `last`; regaining the hub re-arms every entry through the boot path, so `missed:` decides what fires for the pause. Run history is engine-local: one duplicate at handover is possible. Manual `Fire` ("run now") stays ungated | — | done |
 
 ## 3. Open questions (need evidence, not code, first)
 

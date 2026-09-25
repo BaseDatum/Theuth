@@ -531,6 +531,7 @@ Built by eleven parallel omp workers plus four fix rounds and a single-engine sm
 | §13 | `put` over SFTP | `put` = `cat >` over exec; **Windows targets refused** for now | S |
 | §5.4 | vault rows encrypted per engine | vault rows + a **mesh data key** carried in the pairing string, sealed locally per engine; `vault.id` single PK | attach refuses composite keys |
 | §4.7 | — | Signal answering and Slack sockets **follow the lease in their own crates** (`Follower`), not via roster | roster→slack dependency would cycle |
+| §4.4 schedule ticks | hub duty | were **NOT gated** in stage 1 — every engine fired mirrored schedules; fixed 2026-09-25 (`mesh::is_hub` flag set on every `MeshEvent::Lease`, default true; the ticker fires only on the hub, `missed:` policy on handover via the boot re-arm path, run history engine-local so one duplicate at handover is possible; manual `Fire` stays ungated) | schedules mirror to every engine (`replica::files::mirror_at`); the ticker had no lease check |
 
 **Verification on the integrated branch (`feature/67-agents`)**: workspace `cargo test --no-fail-fast` — see §21 for the final numbers; single-engine smoke: serving in 0.31 s, lease = self in 0.27 s, byte-identical `list_sessions`/`knowledge_search`/`list_secrets`/`list_schedules` against `main`, each new sqlite file unwritable → one WARN and the rest serves.
 
