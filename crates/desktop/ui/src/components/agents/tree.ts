@@ -49,7 +49,7 @@ export const CARD = { w: 200, h: 92, gx: 24, gy: 56 } as const
  * Org-chart coordinates (paperclip's OrgChart layout): a parent is centred over its children, siblings sit side by
  * side with `gx` between subtrees, each level `h + gy` lower. Pure, so the chart is a map over `cards` and `edges`.
  */
-export function layout(root: Node, c = CARD): Layout {
+export function layout(root: Node, c: { w: number; h: number; gx: number; gy: number } = CARD): Layout {
   const width = (n: Node): number => (n.children.length === 0 ? c.w : Math.max(c.w, n.children.reduce((s, k) => s + width(k), 0) + (n.children.length - 1) * c.gx))
   const cards: Placed[] = []
   const edges: Layout['edges'] = []
