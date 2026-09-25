@@ -91,7 +91,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     hint: '',
     desc: 'open the parent session (from a subagent)',
   },
-  { name: '/take', hint: '', desc: 'continue this session on this engine (68)' },
+  { name: '/take', hint: '', desc: 'continue this session on this node (68)' },
   { name: '/search', hint: '[query]', desc: 'search sessions, artifacts and knowledge (prefilled with query)' },
   { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
@@ -109,7 +109,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/communication',
     hint: '[on|off] [always]',
-    desc: 'model-to-model messaging; `always` persists the engine-wide switch',
+    desc: 'model-to-model messaging; `always` persists the node-wide switch',
   },
   { name: '/peers', hint: '', desc: 'peers this session may message (picker) and pending requests' },
   { name: '/broadcast', hint: '[running|roots] [text]', desc: 'send one message to many sessions' },
@@ -142,7 +142,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/aws',
     hint: '[profile|clear]',
-    desc: 'AWS profile Bedrock signs with, engine-wide (picker without arg)',
+    desc: 'AWS profile Bedrock signs with, node-wide (picker without arg)',
   },
   { name: '/exit', hint: '', desc: 'same as /quit' },
 ]
@@ -186,9 +186,7 @@ export type SettingsTab =
   | 'computer'
   | 'skills'
   | 'agents'
-  | 'engines'
   | 'link'
-  | 'nodes'
   | 'mesh'
   | 'connections'
   | 'channels'
@@ -468,7 +466,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       // Over link the daemon opens its own browser on the engine (31 §9); here the URL is only shown.
       if (useEngines.getState().active !== LOCAL) {
         toast.message(
-          `Sign in from the engine (${useConnection.getState().info?.name ?? 'engine'})`,
+          `Sign in from the node (${useConnection.getState().info?.name ?? 'node'})`,
           { description: url },
         )
       } else {

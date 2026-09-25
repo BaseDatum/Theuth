@@ -46,10 +46,10 @@ export const engineLabel = (h: Engine): string => (h.kind === 'mesh' && h.meshNa
  */
 export const meshChip = (p: Presence): string | null => (p === 'online' ? null : p === 'refused' ? 'revoked — pair again' : 'reconnecting…')
 
-/** `2 of 3 engines online` for a mesh row; `null` before its hub answered `mesh_status`. */
+/** `2 of 3 nodes online` for a mesh row; `null` before its hub answered `mesh_status`. */
 export function useMembersLine(id: string): string | null {
   const m = useEngines((s) => s.members[id])
-  return m ? `${m.online} of ${m.total} engine${m.total === 1 ? '' : 's'} online` : null
+  return m ? `${m.online} of ${m.total} node${m.total === 1 ? '' : 's'} online` : null
 }
 
 /**
@@ -72,7 +72,7 @@ export function EngineSwitcher({ className }: { className?: string }) {
 
   const presenceOf = (id: string): Presence => (id === LOCAL ? localPresence : (presence[id] ?? 'offline'))
   const current = engines.find((h) => h.id === active)
-  const activeName = current?.kind === 'mesh' ? engineLabel(current) : (info?.name ?? (active === LOCAL ? LOCAL_NAME : (current?.name ?? 'Engine')))
+  const activeName = current?.kind === 'mesh' ? engineLabel(current) : (info?.name ?? (active === LOCAL ? LOCAL_NAME : (current?.name ?? 'Node')))
   const via = current?.parent && (current.parent === LOCAL ? LOCAL_NAME : engines.find((h) => h.id === current.parent)?.name)
   const chip = current?.kind === 'mesh' ? meshChip(presenceOf(active)) : null
 
@@ -125,9 +125,9 @@ export function EngineSwitcher({ className }: { className?: string }) {
         })}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void navigate({ to: '/link' })}>
-          <Plus /> Add engine…
+          <Plus /> Pair with a mesh…
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'engines' }, search: {} })}>
+        <DropdownMenuItem onSelect={() => void navigate({ to: '/settings/$tab', params: { tab: 'mesh' }, search: {} })}>
           <Settings2 /> Manage…
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -135,7 +135,7 @@ export function EngineSwitcher({ className }: { className?: string }) {
   )
 }
 
-/** The mesh row's trailing text: the failover chip while not online, else `n of m engines online`. */
+/** The mesh row's trailing text: the failover chip while not online, else `n of m nodes online`. */
 function Members({ id, presence }: { id: string; presence: Presence }) {
   const line = useMembersLine(id)
   const text = meshChip(presence) ?? line

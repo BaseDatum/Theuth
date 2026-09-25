@@ -45,27 +45,27 @@ function LinkStartup({ id }: { id: string }) {
     >
       <div className="flex w-full max-w-[640px] flex-col gap-4 rounded-xl border border-border-subtle bg-elevated p-6">
         <p className="text-fg-secondary">{refused ? (mesh ? `${name} revoked this device — pair again` : `${name} refused this device`) : `Reconnecting to ${name}…`}</p>
-        {presence === 'offline' && <p className="text-xs text-fg-secondary">{mesh ? 'Hub offline — waiting for an engine to take over' : 'Engine offline'}</p>}
+        {presence === 'offline' && <p className="text-xs text-fg-secondary">{mesh ? 'Hub offline — waiting for a node to take over' : 'Node offline'}</p>}
         {presence === 'connecting' && <p className="text-xs text-fg-secondary">Relay unreachable</p>}
         <p className="text-sm text-fg-secondary">
           {refused
             ? mesh
-              ? 'The mesh no longer knows this device (revoked on any of its engines). Show a new pairing code there (Settings › Mesh › Devices, or `t mesh devices add`), pair again, then forget this entry.'
-              : 'The engine no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
+              ? 'The mesh no longer knows this device (revoked on any of its nodes). Show a new pairing code there (Settings › Link, or `t mesh devices add`), pair again, then forget this entry.'
+              : 'The node no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
             : mesh
-              ? 'The hub is offline or the relay is unreachable. Another engine of the mesh takes over within about half a minute; this screen closes when it answers.'
-              : 'The engine is offline or the relay is unreachable. This screen closes when it is back.'}
+              ? 'The hub is offline or the relay is unreachable. Another node of the mesh takes over within about half a minute; this screen closes when it answers.'
+              : 'The node is offline or the relay is unreachable. This screen closes when it is back.'}
         </p>
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="ghost" className="min-h-11" onClick={() => remove(id)}>
-            Forget this engine
+            Forget this node
           </Button>
           <Button variant="secondary" className="min-h-11" onClick={() => setPairing(true)}>
-            Pair an engine…
+            Pair with a mesh…
           </Button>
           {next !== undefined && (
             <Button variant="secondary" className="min-h-11" onClick={() => setActive(next)}>
-              Switch engine
+              Switch node
             </Button>
           )}
         </div>

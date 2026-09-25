@@ -26,7 +26,7 @@ export const MODE_HELP: Record<Prefix, Record<Mode, string>> = {
 
 /** 57 §7.1: the consent text under "Share with theuth". */
 export const SHARE_CONSENT =
-  'Uploads are byte-identical to the rows on this disk: no session, meeting or account identifiers, secrets already replaced by placeholders. At most one batch per engine per day. Turning this off stops uploads but cannot recall what was already sent.'
+  'Uploads are byte-identical to the rows on this disk: no session, meeting or account identifiers, secrets already replaced by placeholders. At most one batch per node per day. Turning this off stops uploads but cannot recall what was already sent.'
 
 /** Shown while no uploader exists: the switch is saved and honoured later. */
 export const SHARE_UNAVAILABLE = 'Upload not available in this version — your choice is saved and honoured by the uploader once it ships.'

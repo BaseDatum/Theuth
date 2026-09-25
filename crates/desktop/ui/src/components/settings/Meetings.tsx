@@ -29,7 +29,7 @@ export function Meetings() {
       <Section title="Screen capture">
         <Row
           label="Hidden from capture"
-          description="Both windows are excluded from screen sharing and screenshots (NSWindow sharingType none). Never automatic: the engine does not detect screen sharing. Your own ⌘⇧3/4 screenshots of the windows come out black while this is on."
+          description="Both windows are excluded from screen sharing and screenshots (NSWindow sharingType none). Never automatic: theuth does not detect screen sharing. Your own ⌘⇧3/4 screenshots of the windows come out black while this is on."
         >
           <Switch checked={hidden} disabled={!local} onCheckedChange={(on) => void setHiddenFromCapture(on)} />
         </Row>

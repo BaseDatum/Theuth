@@ -111,13 +111,13 @@ export function Communication({ session, focus }: { session: string | null; focu
           label="Let sessions message each other"
           description={
             <>
-              Engine-wide ceiling for discovery, sends, delegation and child results; off blocks every session. Saved
+              Node-wide ceiling for discovery, sends, delegation and child results; off blocks every session. Saved
               to config.yaml. {s && sourceText(s)}
             </>
           }
         >
           <Switch
-            aria-label="Let sessions message each other, engine-wide"
+            aria-label="Let sessions message each other, node-wide"
             aria-busy={setGlobal.isPending || undefined}
             checked={s?.global ?? false}
             disabled={busy}
@@ -130,7 +130,7 @@ export function Communication({ session, focus }: { session: string | null; focu
             description={
               <>
                 Turning it off opts this chat and its subagents out. Kept in memory: it survives compaction and
-                switching frontends, not a restart of the engine.
+                switching frontends, not a restart of the node.
                 {s && !s.global && ' Globally off right now, so this switch alone cannot enable it.'}
               </>
             }
@@ -156,7 +156,7 @@ export function Communication({ session, focus }: { session: string | null; focu
               s.effective
                 ? 'A route still needs the peer in scope, and network peers an explicit grant.'
                 : !s.global
-                  ? 'Blocked: the engine-wide switch is off.'
+                  ? 'Blocked: the node-wide switch is off.'
                   : s.inherited_from && s.inherited_from !== s.session
                     ? `Blocked: an ancestor session opted out (${s.inherited_from}).`
                     : s.opted_out
@@ -303,7 +303,7 @@ function Network({ state }: { state: CommunicationState | undefined }) {
                 : a.listening
                   ? `Bound to ${a.address ?? 'the configured address'}${a.public_url ? `, published at ${a.public_url}` : ''}.`
                   : state && !state.global
-                    ? 'Configured, but stopped while the engine-wide communication switch is off.'
+                    ? 'Configured, but stopped while the node-wide communication switch is off.'
                     : 'Configured, but the listener is not bound.'
             }
           />

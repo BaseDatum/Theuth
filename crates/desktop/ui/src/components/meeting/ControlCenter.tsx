@@ -73,7 +73,7 @@ const hasTranscript = (l: Lifecycle | null): boolean => l !== null && l.current 
 
 const degradationText = (d: Degradation): string =>
   d === 'NoNote'
-    ? 'no meeting note: the documents helper is missing (Settings › Engine › Documents)'
+    ? 'no meeting note: the documents helper is missing (Settings › Node › Documents)'
     : d === 'DiarizationDown'
       ? 'live speaker labels down (the post pass still labels speakers)'
       : typeof d === 'string'

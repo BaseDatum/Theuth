@@ -113,7 +113,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
             <OwnerSelect id="nt-reviewer" value={effectiveReviewer} agents={agents.data ?? []} onChange={setReviewer} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Where" htmlFor="nt-where" hint="engine name, optional">
+            <Field label="Where" htmlFor="nt-where" hint="node name, optional">
               <Input id="nt-where" list="nt-engines" value={where} onChange={(e) => setWhere(e.target.value)} />
               <datalist id="nt-engines">{mesh.data?.peers.map((p) => <option key={p.id} value={p.name} />)}</datalist>
             </Field>

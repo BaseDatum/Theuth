@@ -102,7 +102,7 @@ export const remaining = (disconnectedAt: number, now: number): number =>
 export const disconnectText = (secs: number): string =>
   secs > 0
     ? `Disconnected — reconnect within ${secs} s or the private session closes`
-    : 'Disconnected — the 30 s reconnect window has elapsed; the engine may already have closed this private session'
+    : 'Disconnected — the 30 s reconnect window has elapsed; the node may already have closed this private session'
 
 const current = () => usePrivate.getState().current
 
@@ -156,7 +156,7 @@ async function leave(p: Private): Promise<void> {
     toast(`Private session closed (cleanup ${r.cleanup})`)
   } catch {
     toast.warning(
-      'Could not reach the engine to close the private session; it closes on its own once the 30 s reconnect window expires',
+      'Could not reach the node to close the private session; it closes on its own once the 30 s reconnect window expires',
     )
   }
 }

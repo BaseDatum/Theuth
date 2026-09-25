@@ -9,14 +9,12 @@ import {
   Keyboard,
   Link2,
   Lock,
-  Network,
   type LucideIcon,
   MessageSquare,
   Mic,
   Monitor,
   Radio,
   RefreshCw,
-  Server,
   Settings2,
   Share2,
   ShieldCheck,
@@ -25,7 +23,6 @@ import {
   X,
 } from 'lucide-react'
 import { useState } from 'react'
-import { Engines } from '@/components/link/Engines'
 import { Agents } from '@/components/settings/Agents'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
@@ -38,7 +35,6 @@ import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
 import { Mesh } from '@/components/settings/Mesh'
-import { Nodes } from '@/components/settings/Nodes'
 import { Schedules } from '@/components/settings/Schedules'
 import { Secrets } from '@/components/settings/Secrets'
 import { Shortcuts } from '@/components/settings/Shortcuts'
@@ -47,7 +43,6 @@ import { Tools } from '@/components/settings/Tools'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { useHasNodes } from '@/link/nodes'
 
 const TABS = [
   ['general', 'General', Settings2],
@@ -61,10 +56,8 @@ const TABS = [
   ['labs', 'Labs', FlaskConical],
   ['skills', 'Skills', Sparkles],
   ['agents', 'Agents', Bot],
-  ['engines', 'Engines', Server],
-  ['link', 'Link', Link2],
-  ['nodes', 'Nodes', Network],
   ['mesh', 'Mesh', Share2],
+  ['link', 'Link', Link2],
   ['connections', 'Connections', KeyRound],
   ['secrets', 'Secrets', Lock],
   ['channels', 'Channels', MessageSquare],
@@ -101,10 +94,8 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'labs' && <Labs />}
       {tab === 'skills' && <Skills session={session} />}
       {tab === 'agents' && <Agents />}
-      {tab === 'engines' && <Engines />}
-      {tab === 'link' && <Link />}
-      {tab === 'nodes' && <Nodes />}
       {tab === 'mesh' && <Mesh />}
+      {tab === 'link' && <Link />}
       {tab === 'connections' && <Connections />}
       {tab === 'secrets' && <Secrets />}
       {tab === 'channels' && <Channels />}
@@ -121,10 +112,9 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
 export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const mobile = useIsMobile()
   const [pushed, setPushed] = useState(false)
-  // Settings › Nodes only where the engine answers `list_nodes` (32 §8.3); Labs only while `decision.enabled` (57 §7.1).
-  const hasNodes = useHasNodes()
+  // Labs only while `decision.enabled` (57 §7.1).
   const hasLabs = useLabsVisible()
-  const tabs = TABS.filter(([id]) => (id !== 'nodes' || hasNodes) && (id !== 'labs' || hasLabs))
+  const tabs = TABS.filter(([id]) => id !== 'labs' || hasLabs)
   const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
 
   if (mobile) {

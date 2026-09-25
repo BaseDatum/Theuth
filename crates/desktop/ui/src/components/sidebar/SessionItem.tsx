@@ -310,7 +310,7 @@ export const SessionItem = memo(function SessionItem({
               <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
               <DropdownMenuItem
                 disabled={here}
-                title={here ? 'This session already runs on this engine' : undefined}
+                title={here ? 'This session already runs on this node' : undefined}
                 onSelect={() => void take()}
               >
                 Continue here

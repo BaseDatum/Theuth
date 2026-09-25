@@ -125,7 +125,7 @@ export function Loop() {
         </Row>
         <Row
           label="Reply recoveries per turn"
-          description="How many times per turn the engine picks up a reply cut off by a stalled stream or the output token limit before the turn stops with an error. 0 turns recovery off. New sessions only."
+          description="How many times per turn theuth picks up a reply cut off by a stalled stream or the output token limit before the turn stops with an error. 0 turns recovery off. New sessions only."
         >
           <Count value={info?.max_salvages} min={0} action={setMaxSalvages} />
         </Row>
@@ -171,8 +171,8 @@ export function Loop() {
           </Select>
         </Row>
         <Row
-          label="Show engine nudges"
-          description="Show the engine's mid-turn notes to the model (continue, tool rounds, context pressure) in the chat. Display only."
+          label="Show theuth nudges"
+          description="Show theuth's mid-turn notes to the model (continue, tool rounds, context pressure) in the chat. Display only."
         >
           <Switch checked={showNudges} onCheckedChange={useNudges.getState().setShow} />
         </Row>
@@ -225,7 +225,7 @@ export function Loop() {
             visionModel.isError
               ? `Could not read the vision fallback: ${visionModel.error.message}`
               : unavailable
-                ? `${unavailable} is selected but not available on this engine; pick another or Off.`
+                ? `${unavailable} is selected but not available on this node; pick another or Off.`
                 : 'Used only when the main model cannot view images. It receives the image and a question written by the main model. Images may go to a different configured provider, and each new image batch costs a question call and a vision call; text redaction cannot remove secrets shown in pixels.'
           }
         >

@@ -299,9 +299,9 @@ function useUnavailable(live: LiveDocument, fileHasBody: boolean): string | null
   switch (live.status.kind) {
     case 'live':
     case 'readonly':
-      return fileHasBody ? 'the document is empty although the file has a body — its import failed (documents helper missing? see the engine log)' : null
+      return fileHasBody ? 'the document is empty although the file has a body — its import failed (documents helper missing? see the node\'s log)' : null
     case 'offline':
-      return 'the engine could not open the document (documents helper missing? see its log)'
+      return 'theuth could not open the document (documents helper missing? see its log)'
     default:
       return 'still connecting'
   }

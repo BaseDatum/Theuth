@@ -135,7 +135,7 @@ const FIRST_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"info","params":[]}'
  * `{ name, platform, pending? }`, read `PairAccept`, send one `info` request (the
  * record that enrols us) and await its reply. Adds the engine to the store and
  * returns it. A 4-part key pairs this device's per-mesh identity with a mesh (69 §4).
- * Throws `Error('expired or used key' | 'engine offline' | 'relay unreachable')`.
+ * Throws `Error('expired or used key' | 'node offline' | 'relay unreachable')`.
  */
 export async function pair(key: string, deviceName: string, opts: LinkOptions = {}): Promise<Engine> {
   const k = parsePairingKey(key)
@@ -146,7 +146,7 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
   try {
     // Relay sends PRESENCE on connect; parked while the engine is offline.
     for (;;) {
-      const f = await frames.next(PRESENCE_WAIT_MS, 'engine offline')
+      const f = await frames.next(PRESENCE_WAIT_MS, 'node offline')
       if (!f) throw new Error('relay unreachable')
       const d = decodeFrame(f)
       if (d?.op === 'presence' && d.online) break
@@ -173,7 +173,7 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
     // First transport record proves we hold the secret; the engine enrols us on decrypt.
     const [record] = splitRecords(new TextEncoder().encode(FIRST_REQUEST))
     ws.send(encodeData(await session.send.encrypt(new Uint8Array(), record as Uint8Array<ArrayBuffer>)))
-    const reply = new Reassembler().push(await session.recv.decrypt(new Uint8Array(), await nextData(frames, 'engine offline')))
+    const reply = new Reassembler().push(await session.recv.decrypt(new Uint8Array(), await nextData(frames, 'node offline')))
     const parsed = JSON.parse(new TextDecoder().decode(reply ?? new Uint8Array())) as { error?: { message: string } }
     if (parsed.error) throw new Error(parsed.error.message)
     const now = Date.now()
@@ -204,6 +204,6 @@ async function nextData(frames: FrameQueue, refusedError: string): Promise<Uint8
     const d = decodeFrame(f)
     if (d?.op === 'data') return d.payload
     if (d?.op === 'close') throw new Error(refusedError)
-    if (d?.op === 'presence' && !d.online) throw new Error('engine offline')
+    if (d?.op === 'presence' && !d.online) throw new Error('node offline')
   }
 }
