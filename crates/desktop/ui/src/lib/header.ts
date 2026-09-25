@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react'
-
 /**
  * The pane header's layout tiers, chosen from the pane's own width (not the viewport): 0 = the full bar; 1 = the
  * compact bar (title · context % · one panel button · chevron · ⋯) with the rest behind the chevron; 2 = compact with
@@ -27,16 +25,59 @@ export function decideTier(tier: number, width: number, need: readonly (number |
 /** How a header item renders: inline in the full bar, inline in the compact bar, or as a labelled row in the chevron menu. */
 export type Mode = 'full' | 'bar' | 'row'
 
+export type HeaderId =
+  | 'search'
+  | 'sidebar'
+  | 'model'
+  | 'title'
+  | 'parent'
+  | 'owner'
+  | 'context'
+  | 'cost'
+  | 'terminals'
+  | 'browser'
+  | 'artifacts'
+  | 'approvalsOff'
+  | 'pending'
+  | 'more'
+  | 'menu'
+  | 'close'
+
 /**
- * One header control or indicator, rendered by every layout from the same descriptor so the full bar and the compact
- * menu cannot drift. `slot` says where it lives when the pane is narrow: `bar` stays inline, `menu` moves behind the
- * chevron, `both` keeps a compact form inline and its details in the menu. `shed` items leave the bar at tier 2.
+ * One header control or indicator; the component renders every layout from the same descriptor so the full bar and
+ * the compact menu cannot drift. `slot` says where it lives when the pane is narrow: `bar` stays inline, `menu` moves
+ * behind the chevron, `both` keeps a compact form inline and its details in the menu. `shed` items leave the bar at tier 2.
  */
 export type HeaderItem = {
-  id: string
+  id: HeaderId
   slot: 'bar' | 'menu' | 'both'
   shed?: boolean
-  render(mode: Mode): ReactNode
+}
+
+/**
+ * The header's items in display order. The title follows the model picker in the full bar and, with the picker behind
+ * the chevron, opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
+ * session's output surface, over the live browser over terminals); the other two move behind the chevron.
+ */
+export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null): HeaderItem[] {
+  return [
+    { id: 'search', slot: 'menu' },
+    { id: 'sidebar', slot: 'bar' },
+    { id: 'model', slot: 'menu' },
+    { id: 'title', slot: 'bar' },
+    { id: 'parent', slot: 'menu' },
+    { id: 'owner', slot: 'menu' },
+    { id: 'context', slot: 'both', shed: true },
+    { id: 'cost', slot: 'menu' },
+    { id: 'terminals', slot: panel === 'terminals' ? 'bar' : 'menu', shed: true },
+    { id: 'browser', slot: panel === 'browser' ? 'bar' : 'menu', shed: true },
+    { id: 'artifacts', slot: panel === 'artifacts' ? 'bar' : 'menu', shed: true },
+    { id: 'approvalsOff', slot: 'menu' },
+    { id: 'pending', slot: 'menu' },
+    { id: 'more', slot: 'bar' },
+    { id: 'menu', slot: 'bar' },
+    { id: 'close', slot: 'bar' },
+  ]
 }
 
 /** Which items the bar shows and which the chevron menu lists at `tier`. Tier 0 lists nothing: every item is inline. */

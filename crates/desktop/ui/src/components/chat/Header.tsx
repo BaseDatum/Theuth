@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { CornerLeftUp, Gauge, Globe, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
-import { Fragment, type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { EngineChip } from '@/components/sidebar/SessionItem'
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
-import { type HeaderItem, decideTier, layout } from '@/lib/header'
+import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -136,9 +136,10 @@ function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLEleme
 }
 
 /**
- * 52 px bar over the column. Every control is one `HeaderItem`, rendered inline by the full bar and, when the pane is
- * too narrow for that (`useTier`), either kept in the compact bar (title · context % · one panel button · chevron · ⋯)
- * or listed as a labelled row behind the chevron (`HeaderMenu`), so the two layouts share one source of truth.
+ * 52 px bar over the column. Every control is one `HeaderItem` (`headerOrder`), rendered inline by the full bar and,
+ * when the pane is too narrow for that (`useTier`), either kept in the compact bar (title · context % · one panel
+ * button · chevron · ⋯) or listed as a labelled row behind the chevron (`HeaderMenu`), so the two layouts share one
+ * source of truth.
  * The dialogs and sheets the items open live here, not in the items, so a menu that closes on selection cannot
  * unmount them. Draggable window region. `first` (default): this column touches the window's top-left, so it carries
  * the sidebar toggle and the traffic-light inset; `onClose` adds a close control for a split pane.
@@ -180,7 +181,7 @@ export function Header({
   const tier = useTier(ref, rowRef)
   const compact = tier > 0
 
-  const raw = session ? liveTitle || row?.title || session.slice(0, 8) : 'New chat'
+  const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
   const title = parseNote(raw)?.body || raw
   const nav = first && (!open || isMobile)
   /**
@@ -188,152 +189,94 @@ export function Header({
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : browser ? 'browser' : terminals ? 'terminals' : null
+  const { bar, menu } = layout(headerOrder(panel), tier)
 
-  const items: HeaderItem[] = [
-    {
-      id: 'search',
-      slot: 'menu',
-      render: (mode) =>
-        !nav ? null : mode === 'row' ? (
-          <MenuRow icon={Search} label="Search" onSelect={() => window.dispatchEvent(new Event('theuth:search'))} />
-        ) : (
-          <SearchTrigger className="shrink-0" />
-        ),
-    },
-    { id: 'sidebar', slot: 'bar', render: () => (nav ? <SidebarToggle /> : null) },
-    {
-      id: 'model',
-      slot: 'menu',
-      render: (mode) =>
+  const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
+    search: (mode) =>
+      !nav ? null : mode === 'row' ? (
+        <MenuRow icon={Search} label="Search" onSelect={() => window.dispatchEvent(new Event('theuth:search'))} />
+      ) : (
+        <SearchTrigger className="shrink-0" />
+      ),
+    sidebar: () => (nav ? <SidebarToggle /> : null),
+    model: (mode) =>
+      mode === 'row' ? (
+        <ModelRow session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} onOpen={() => setPicker(true)} />
+      ) : (
+        <div className="min-w-0">
+          <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
+        </div>
+      ),
+    // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never pushes
+    // the controls out; it truncates to nothing before they move (or, in the full bar, before the tier drops).
+    title: () => (
+      <span data-tauri-drag-region={mac || undefined} className="w-0 min-w-0 flex-1 truncate text-sm font-medium" title={title}>
+        {title}
+      </span>
+    ),
+    parent: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null),
+    owner: (mode) =>
+      row && !row.here ? (
         mode === 'row' ? (
-          <ModelRow session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} onOpen={() => setPicker(true)} />
+          <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} />} />
         ) : (
-          <div className="min-w-0">
-            <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
-          </div>
-        ),
-    },
-    { id: 'parent', slot: 'menu', render: (mode) => (parent ? <Parent id={parent} row={mode === 'row'} /> : null) },
-    {
-      id: 'owner',
-      slot: 'menu',
-      render: (mode) =>
-        row && !row.here ? (
-          mode === 'row' ? (
-            <MenuRow icon={Network} label="Owner" detail={<OwnerDetail owner={row.owner} epoch={row.epoch} />} />
-          ) : (
-            <EngineChip owner={row.owner} epoch={row.epoch} />
-          )
-        ) : null,
-    },
-    {
-      id: 'title',
-      slot: 'bar',
-      render: (mode) =>
-        mode === 'bar' ? (
-          // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never
-          // pushes the controls out; it truncates to nothing before they move.
-          <span data-tauri-drag-region={mac || undefined} className="w-0 min-w-0 flex-1 truncate text-sm font-medium" title={title}>
-            {title}
-          </span>
-        ) : null,
-    },
-    {
-      id: 'spacer',
-      slot: 'bar',
-      render: (mode) => (mode === 'full' ? <div className="flex-1" data-tauri-drag-region={mac || undefined} /> : null),
-    },
-    {
-      id: 'context',
-      slot: 'both',
-      shed: true,
-      render: (mode) =>
-        !session ? null : mode === 'row' ? (
-          <MenuRow icon={Gauge} label="Context" detail={<ContextMeter session={session} />} />
-        ) : (
-          <ContextMeter session={session} compact={mode === 'bar'} />
-        ),
-    },
-    { id: 'cost', slot: 'menu', render: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null) },
-    {
-      id: 'terminals',
-      slot: panel === 'terminals' ? 'bar' : 'menu',
-      shed: true,
-      render: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
-    },
-    {
-      id: 'browser',
-      slot: panel === 'browser' ? 'bar' : 'menu',
-      shed: true,
-      render: (mode) =>
-        !session || !browser ? null : mode === 'row' ? (
-          <MenuRow icon={Globe} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
-        ) : (
-          <Button
-            variant="ghost"
-            className="size-9 rounded-lg text-fg-secondary"
-            aria-label="Live browser"
-            onClick={() => useSessions.getState().setBrowserLive(session, true)}
-          >
-            <Globe className="size-5" />
-          </Button>
-        ),
-    },
-    {
-      id: 'artifacts',
-      slot: panel === 'artifacts' ? 'bar' : 'menu',
-      shed: true,
-      render: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
-    },
-    {
-      id: 'approvalsOff',
-      slot: 'menu',
-      render: (mode) =>
-        !approvalsOff ? null : mode === 'row' ? (
-          <MenuRow icon={ShieldOff} label="Approvals off" />
-        ) : (
-          <Badge variant="outline" className="text-fg-secondary">
-            approvals off
-          </Badge>
-        ),
-    },
-    {
-      id: 'pending',
-      slot: 'menu',
-      render: (mode) =>
-        pending === 0 ? null : mode === 'row' ? (
-          <MenuRow label="Pending approvals" detail={pending} className="text-warning" onSelect={() => setSheet(true)} />
-        ) : (
-          <Button variant="ghost" className="h-7 rounded-full px-2 text-warning" onClick={() => setSheet(true)} aria-label="Pending approvals">
-            ●{pending}
-          </Button>
-        ),
-    },
-    {
-      id: 'more',
-      slot: 'bar',
-      render: (mode) =>
-        mode === 'full' ? null : (
-          <HeaderMenu header={ref} badge={pending > 0}>
-            {menu.map((i) => (
-              <Fragment key={i.id}>{i.render('row')}</Fragment>
-            ))}
-          </HeaderMenu>
-        ),
-    },
-    { id: 'menu', slot: 'bar', render: () => (session ? <SessionMenu session={session} /> : null) },
-    {
-      id: 'close',
-      slot: 'bar',
-      render: () =>
-        onClose ? (
-          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
-            <X className="size-5" />
-          </Button>
-        ) : null,
-    },
-  ]
-  const { bar, menu } = layout(items, tier)
+          <EngineChip owner={row.owner} epoch={row.epoch} />
+        )
+      ) : null,
+    context: (mode) =>
+      !session ? null : mode === 'row' ? (
+        <MenuRow icon={Gauge} label="Context" detail={<ContextMeter session={session} />} />
+      ) : (
+        <ContextMeter session={session} compact={mode === 'bar'} />
+      ),
+    cost: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null),
+    terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
+    browser: (mode) =>
+      !session || !browser ? null : mode === 'row' ? (
+        <MenuRow icon={Globe} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
+      ) : (
+        <Button
+          variant="ghost"
+          className="size-9 rounded-lg text-fg-secondary"
+          aria-label="Live browser"
+          onClick={() => useSessions.getState().setBrowserLive(session, true)}
+        >
+          <Globe className="size-5" />
+        </Button>
+      ),
+    artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
+    approvalsOff: (mode) =>
+      !approvalsOff ? null : mode === 'row' ? (
+        <MenuRow icon={ShieldOff} label="Approvals off" />
+      ) : (
+        <Badge variant="outline" className="text-fg-secondary">
+          approvals off
+        </Badge>
+      ),
+    pending: (mode) =>
+      pending === 0 ? null : mode === 'row' ? (
+        <MenuRow label="Pending approvals" detail={pending} className="text-warning" onSelect={() => setSheet(true)} />
+      ) : (
+        <Button variant="ghost" className="h-7 rounded-full px-2 text-warning" onClick={() => setSheet(true)} aria-label="Pending approvals">
+          ●{pending}
+        </Button>
+      ),
+    more: (mode) =>
+      mode === 'full' ? null : (
+        <HeaderMenu header={ref} badge={pending > 0}>
+          {menu.map((i) => (
+            <Fragment key={i.id}>{render[i.id]('row')}</Fragment>
+          ))}
+        </HeaderMenu>
+      ),
+    menu: () => (session ? <SessionMenu session={session} /> : null),
+    close: () =>
+      onClose ? (
+        <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
+          <X className="size-5" />
+        </Button>
+      ) : null,
+  }
 
   return (
     <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
@@ -343,7 +286,7 @@ export function Header({
         className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', nav && !open && mac && 'pl-20')}
       >
         {bar.map((i) => (
-          <Fragment key={i.id}>{i.render(compact ? 'bar' : 'full')}</Fragment>
+          <Fragment key={i.id}>{render[i.id](compact ? 'bar' : 'full')}</Fragment>
         ))}
       </div>
       <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
