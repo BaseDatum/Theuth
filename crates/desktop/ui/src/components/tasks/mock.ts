@@ -50,6 +50,7 @@ export const TASKS: Task[] = [
   task(6, { title: 'Nightly dependency audit', owner: { type: 'agent', name: 'ops' }, state: 'done', project: 'sre', schedule: ['deps-audit', now - 8 * H], created_by: 'system' }),
   task(7, { title: 'Ask Sky about the pricing table', owner: { type: 'agent', name: 'writer' }, state: 'blocked', project: 'launch', blockers: ['person:sky'] }),
   task(8, { title: 'Old migration spike', owner: { type: 'agent', name: 'research' }, state: 'cancelled', project: null }),
+  task(9, { title: 'Evaluate the new tracing backend', owner: { type: 'agent', name: 'ops' }, state: 'backlog', project: 'sre', reviewer: { type: 'user' } }),
 ]
 
 export const EVENTS: TaskEvent[] = [

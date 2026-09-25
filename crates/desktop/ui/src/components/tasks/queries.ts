@@ -1,10 +1,14 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { useProjects } from '@/components/chat/ProjectPicker'
+import { errorText } from '@/components/settings/shared'
 import { useApi } from '@/lib/rpc'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
+import type { TaskState } from '@/rpc/bindings/TaskState'
 import { ownerText } from './helpers'
 import { AGENTS, EVENTS, MESH, TASKS, mockOn } from './mock'
 
@@ -55,6 +59,27 @@ export function useAgents() {
 export function useMesh() {
   const api = useApi()
   return useQuery({ queryKey: keys.mesh, queryFn: (): Promise<MeshStatus> | MeshStatus => (mockOn() ? MESH : api.mesh_status()) })
+}
+
+/**
+ * Project labels the board knows: every session's plus every task's. A project exists when a session or a task
+ * carries the label (51 §3), so a task created under a new name is what creates the project.
+ */
+export function useBoardProjects(): string[] {
+  const fromSessions = useProjects()
+  const tasks = useTasks()
+  return [...new Set([...fromSessions, ...(tasks.data?.flatMap((t) => (t.project ? [t.project] : [])) ?? [])])].sort()
+}
+
+/** `task_move` as a mutation: refetches the lists (and the task's events) on success, toasts the engine's refusal verbatim. */
+export function useMoveTask() {
+  const api = useApi()
+  const invalidate = useInvalidateTasks()
+  return useMutation({
+    mutationFn: ({ id, state, note }: { id: string; state: TaskState; note?: string }) => api.task_move(id, state, note?.trim() || null),
+    onSuccess: (t) => invalidate(t.id),
+    onError: (e) => toast.error(errorText(e)),
+  })
 }
 
 /** Refetch every task list and one task after a write. */

@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { Task } from '@/rpc/bindings/Task'
-import { USER, actionsFor, age, agent, awaitsMyReview, columns, defaultReviewer, needsPerson, ownerText, parseBlocker, parseOwner } from './helpers'
+import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, defaultReviewer, needsPerson, nodesOf, ownerText, parseBlocker, parseOwner, stateChip } from './helpers'
 
 const task = (t: Partial<Task>): Task => ({
   id: 'x', title: 't', brief: '', owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
@@ -44,17 +44,49 @@ test('queue predicates: human blockers and my reviews only', () => {
   expect(awaitsMyReview(task({ state: 'review', owner: USER }))).toBe(true)
 })
 
-test('mark done is gated by the reviewer; cancel never from review', () => {
+test('mark done is gated by the reviewer; cancel never from review; start and pull back are backlog ↔ todo', () => {
   expect(actionsFor(task({ state: 'review', owner: agent('ops'), reviewer: agent('lead') }))).toMatchObject({ markDone: true, canMarkDone: false, cancel: false })
   expect(actionsFor(task({ state: 'review', owner: agent('ops'), reviewer: USER })).canMarkDone).toBe(true)
-  expect(actionsFor(task({ state: 'doing' }))).toMatchObject({ sendBack: false, cancel: true })
+  expect(actionsFor(task({ state: 'doing' }))).toMatchObject({ sendBack: false, cancel: true, start: false, toBacklog: false })
   expect(actionsFor(task({ state: 'done' })).cancel).toBe(false)
+  expect(actionsFor(task({ state: 'backlog' }))).toMatchObject({ start: true, toBacklog: false, cancel: true })
+  expect(actionsFor(task({ state: 'todo' }))).toMatchObject({ start: false, toBacklog: true })
 })
 
-test('columns hide cancelled unless asked and keep order', () => {
-  const list = [task({ id: 'a', state: 'done' }), task({ id: 'b', state: 'cancelled' }), task({ id: 'c', state: 'todo' })]
-  expect(columns(list, false).map((c) => c.state)).toEqual(['todo', 'doing', 'review', 'blocked', 'done'])
+test('columns start with backlog, hide cancelled unless asked and keep order', () => {
+  const list = [task({ id: 'a', state: 'done' }), task({ id: 'b', state: 'cancelled' }), task({ id: 'c', state: 'todo' }), task({ id: 'd', state: 'backlog' })]
+  expect(columns(list, false).map((c) => c.state)).toEqual(['backlog', 'todo', 'doing', 'review', 'blocked', 'done'])
+  expect(columns(list, false)[0]).toEqual({ state: 'backlog', tasks: [list[3]] })
   expect(columns(list, true).at(-1)).toEqual({ state: 'cancelled', tasks: [list[1]] })
+})
+
+test('state chip text follows the rulings: not started, queued for a desk, at a desk with an open session', () => {
+  expect(stateChip(task({ state: 'backlog', owner: agent('ops') }))).toBe('not started')
+  expect(stateChip(task({ state: 'todo', owner: agent('ops') }))).toBe("queued for ops's desk")
+  expect(stateChip(task({ state: 'todo', owner: USER }))).toBe('todo')
+  expect(stateChip(task({ state: 'doing', owner: agent('ops') }))).toBe("at ops's desk · open session")
+  expect(stateChip(task({ state: 'doing', owner: USER }))).toBe('in progress · open session')
+  expect(stateChip(task({ state: 'review' }))).toBe('review')
+  expect(stateChip(task({ state: 'blocked' }))).toBe('blocked')
+})
+
+test('drag is backlog ↔ todo only', () => {
+  expect(canDrag('backlog', 'todo')).toBe(true)
+  expect(canDrag('todo', 'backlog')).toBe(true)
+  expect(canDrag('todo', 'todo')).toBe(false)
+  expect(canDrag('todo', 'doing')).toBe(false)
+  expect(canDrag('review', 'todo')).toBe(false)
+})
+
+test('nodes list this node first, then peers, without repeating self', () => {
+  const peer = (name: string, reachable: boolean) => ({ id: name, name, addrs: [], reachable, last_seen_ms: 0, hub_pref: 0 })
+  const mesh = { self_id: 'me', self_name: 'mac', mesh_name: null, peers: [peer('mac', true), peer('build-A', true), peer('nas', false)], lease: null, traffic: null, replica: null }
+  expect(nodesOf(mesh as never).map((n) => [n.name, n.here, n.reachable])).toEqual([
+    ['mac', true, true],
+    ['build-A', false, true],
+    ['nas', false, false],
+  ])
+  expect(nodesOf(undefined)).toEqual([])
 })
 
 test('age buckets', () => {
