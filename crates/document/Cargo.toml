@@ -12,6 +12,7 @@ platform = { workspace = true }
 search = { workspace = true }
 replica = { workspace = true }
 mesh = { workspace = true }
+secrets = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }

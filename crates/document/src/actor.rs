@@ -2003,8 +2003,8 @@ impl Message<MirrorChanged> for DocumentActor {
                 tracing::info!(doc = %id, "document snapshot merged from the mesh (open)");
             }
             crate::mirror::MirrorFile::Meta => {
-                let incoming: DocMeta = match serde_json::from_slice(&bytes) {
-                    Ok(m) => m,
+                let incoming: DocMeta = match self.store.parse_meta(&bytes) {
+                    Ok((m, _)) => m,
                     Err(e) => {
                         tracing::warn!(doc = %id, error = %e, "documents: foreign meta.json undecodable");
                         return;

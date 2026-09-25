@@ -110,7 +110,7 @@ pub fn start(mirror_dir: &Path, actor: ActorRef<DocumentActor>) -> anyhow::Resul
 /// - `members`: union by `pub`; both sides → the one with the greater `max(added_ms, last_seen_ms)`,
 ///   ties → local;
 /// - `links`: union by `id`; both sides → a set `revoked_ms` wins (revocation is monotone), else the
-///   greater `created_ms`, ties → local; an empty `secret_hash` never replaces a set one;
+///   greater `created_ms`, ties → local; an empty `secret_hash_sealed` never replaces a set one;
 /// - `authors`: union; both sides → the newer-`updated_ms` side's entry;
 /// - `last_export` stays local (the derived file is this engine's).
 ///
@@ -149,11 +149,11 @@ pub fn merge_meta(local: &mut DocMeta, incoming: &DocMeta) -> bool {
                     (Some(_), None) => false,
                     _ => l.created_ms > mine.created_ms,
                 };
-                let hash = if mine.secret_hash.is_empty() { l.secret_hash.clone() } else { mine.secret_hash.clone() };
+                let hash = if mine.secret_hash_sealed.is_empty() { l.secret_hash_sealed.clone() } else { mine.secret_hash_sealed.clone() };
                 if take {
                     *mine = l.clone();
                 }
-                mine.secret_hash = hash;
+                mine.secret_hash_sealed = hash;
             }
             None => local.links.push(l.clone()),
         }
@@ -179,7 +179,7 @@ fn link(id: &str, created_ms: i64, revoked_ms: Option<i64>, hash: &str) -> crate
     crate::meta::ShareLink {
         id: id.to_owned(),
         role: crate::meta::Role::Editor,
-        secret_hash: hash.to_owned(),
+        secret_hash_sealed: hash.to_owned(),
         name: None,
         created_ms,
         expires_ms: None,
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(names, vec!["Ann R", "Bob", "Cid"]);
         let l1 = local.links.iter().find(|l| l.id == "l1").unwrap();
         assert_eq!(l1.revoked_ms, Some(7));
-        assert_eq!(l1.secret_hash, "hash1", "a blanked wire hash never erases the key");
+        assert_eq!(l1.secret_hash_sealed, "hash1", "a blanked wire hash never erases the key");
         assert_eq!(local.links.len(), 3);
         assert_eq!(local.authors["blk1"], "c");
         assert_eq!(local.authors["blk2"], "c");

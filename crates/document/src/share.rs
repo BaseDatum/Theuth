@@ -3,9 +3,10 @@
 //! types live in [`crate::meta`].
 //!
 //! Proof (§8.3, as built): `HMAC-SHA256(key = sha256(secret), handshake_hash ‖
-//! guest_pub)`. The harness stores only `sha256(secret)` (`ShareLink::secret_hash`),
-//! so that hash — not the secret — is the HMAC key; the browser hashes the
-//! fragment secret before signing. The hash therefore never leaves this machine.
+//! guest_pub)`. The harness stores only `sha256(secret)`, sealed with the mesh data key
+//! (`ShareLink::secret_hash_sealed`, SEAL) and opened here at proof time; so that hash — not the
+//! secret — is the HMAC key; the browser hashes the fragment secret before signing. The hash
+//! never sits in the clear on disk, and only engines holding the mesh key (every hub) can check it.
 
 use std::fmt;
 
@@ -21,15 +22,29 @@ use crate::hub::DocError;
 use crate::relay::{Client, Cmd};
 use crate::meta::{DocEvent, DocId, Joined, Member, Members, PALETTE, Principal, Role, ShareLink};
 use crate::store::now_ms;
+use secrets::Vault;
 
 type HmacSha256 = Hmac<Sha256>;
 
-fn b64url(bytes: &[u8]) -> String {
+pub(crate) fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn unb64url(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unb64url(s: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()
+}
+
+/// `ShareLink::secret_hash_sealed` for `hash`: sealed with the mesh key, the link id as aad so a
+/// ciphertext cannot be moved between links.
+pub(crate) fn seal_hash(vault: &Vault, link_id: &str, hash: &[u8]) -> String {
+    b64url(&vault.seal_with_mesh_key(link_id.as_bytes(), hash))
+}
+
+/// The HMAC key a link holds; `None` when the field is empty, damaged, or sealed under another
+/// mesh key.
+fn open_hash(vault: &Vault, link: &ShareLink) -> Option<Vec<u8>> {
+    let bytes = unb64url(&link.secret_hash_sealed)?;
+    vault.open_with_mesh_key(link.id.as_bytes(), &bytes).map(|k| k.to_vec())
 }
 
 /// `sha256(secret)`, the value a link stores and the proof's key.
@@ -46,9 +61,9 @@ pub fn proof(secret_hash: &[u8; 32], handshake_hash: &[u8], guest_pub: &[u8; 32]
     mac.finalize().into_bytes().into()
 }
 
-/// Constant-time check of `proof` against the link's stored hash.
-fn verify(link: &ShareLink, handshake_hash: &[u8], guest_pub: &[u8; 32], proof: &[u8]) -> bool {
-    let Some(key) = unb64url(&link.secret_hash) else {
+/// Constant-time check of `proof` against the link's sealed hash; no vault = no key = refused.
+pub(crate) fn verify(vault: Option<&Vault>, link: &ShareLink, handshake_hash: &[u8], guest_pub: &[u8; 32], proof: &[u8]) -> bool {
+    let Some(key) = vault.and_then(|v| open_hash(v, link)) else {
         return false;
     };
     let Ok(mut mac) = HmacSha256::new_from_slice(&key) else {
@@ -211,14 +226,18 @@ impl Message<LinkCreate> for DocumentActor {
         if self.cfg.sharing != "on" {
             return Err("sharing_off".into());
         }
+        let Some(vault) = self.store.vault() else {
+            return Err("secrets vault unavailable; cannot seal the link secret".into());
+        };
         let mut secret = [0u8; 32];
         let mut id = [0u8; 8];
         rand::rng().fill_bytes(&mut secret);
         rand::rng().fill_bytes(&mut id);
+        let id = format!("lnk_{}", b64url(&id));
         let link = ShareLink {
-            id: format!("lnk_{}", b64url(&id)),
+            secret_hash_sealed: seal_hash(&vault, &id, &secret_hash(&secret)),
+            id,
             role: m.role,
-            secret_hash: b64url(&secret_hash(&secret)),
             name: m.name.filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_owned()),
             created_ms: now_ms(),
             expires_ms: m.expires_ms,
@@ -305,6 +324,7 @@ impl DocumentActor {
         }
         let max = self.cfg.max_members;
         let pub_ = b64url(&m.guest_pub);
+        let vault = self.store.vault();
         let o = self.load(&m.doc).map_err(JoinError::Other)?;
         if let Some(existing) = o.meta.members.iter().find(|x| x.pub_ == pub_) {
             return Ok(Joined {
@@ -319,7 +339,7 @@ impl DocumentActor {
             .meta
             .links
             .iter()
-            .find(|l| verify(l, &m.handshake_hash, &m.guest_pub, &m.proof))
+            .find(|l| verify(vault.as_deref(), l, &m.handshake_hash, &m.guest_pub, &m.proof))
         else {
             return Err(if o.meta.links.is_empty() { JoinError::LinkUnknown } else { JoinError::BadProof });
         };
@@ -491,11 +511,16 @@ impl Message<MembersOf> for DocumentActor {
 mod tests {
     use super::*;
 
-    fn link(secret: &[u8]) -> ShareLink {
+    async fn vault() -> Vault {
+        let dir = tempfile::tempdir().unwrap();
+        Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap()
+    }
+
+    fn link(vault: &Vault, secret: &[u8]) -> ShareLink {
         ShareLink {
             id: "lnk_test".into(),
             role: Role::Editor,
-            secret_hash: b64url(&secret_hash(secret)),
+            secret_hash_sealed: seal_hash(vault, "lnk_test", &secret_hash(secret)),
             name: None,
             created_ms: 0,
             expires_ms: None,
@@ -503,26 +528,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn proof_binds_secret_connection_and_key() {
+    #[tokio::test]
+    async fn sealed_hash_round_trips_under_the_mesh_key_only() {
+        let (a, b) = (vault().await, vault().await);
         let secret = [7u8; 32];
-        let l = link(&secret);
+        let hash = secret_hash(&secret);
+        let l = link(&a, &secret);
+        assert_ne!(l.secret_hash_sealed, b64url(&hash), "not plaintext");
+        assert_eq!(open_hash(&a, &l).as_deref(), Some(&hash[..]));
+        assert_eq!(open_hash(&b, &l), None, "another mesh key does not open it");
+        let mut moved = l.clone();
+        moved.id = "lnk_other".into();
+        assert_eq!(open_hash(&a, &moved), None, "aad binds the ciphertext to its link");
+        assert_eq!(open_hash(&a, &l.public()), None);
+    }
+
+    #[tokio::test]
+    async fn proof_binds_secret_connection_and_key() {
+        let v = vault().await;
+        let secret = [7u8; 32];
+        let l = link(&v, &secret);
         let h = [1u8; 32];
         let g = [2u8; 32];
         let p = proof(&secret_hash(&secret), &h, &g);
-        assert!(verify(&l, &h, &g, &p));
+        assert!(verify(Some(&v), &l, &h, &g, &p));
         // Another connection, another guest key, another secret, a truncated proof: all refused.
-        assert!(!verify(&l, &[9u8; 32], &g, &p));
-        assert!(!verify(&l, &h, &[3u8; 32], &p));
-        assert!(!verify(&link(&[8u8; 32]), &h, &g, &p));
-        assert!(!verify(&l, &h, &g, &p[..31]));
-        // The wire copy carries no key and verifies nothing.
-        assert!(!verify(&l.public(), &h, &g, &p));
+        assert!(!verify(Some(&v), &l, &[9u8; 32], &g, &p));
+        assert!(!verify(Some(&v), &l, &h, &[3u8; 32], &p));
+        assert!(!verify(Some(&v), &link(&v, &[8u8; 32]), &h, &g, &p));
+        assert!(!verify(Some(&v), &l, &h, &g, &p[..31]));
+        // The wire copy carries no key and verifies nothing; neither does an engine without a vault.
+        assert!(!verify(Some(&v), &l.public(), &h, &g, &p));
+        assert!(!verify(None, &l, &h, &g, &p));
     }
 
-    #[test]
-    fn link_liveness() {
-        let mut l = link(&[0u8; 32]);
+    #[tokio::test]
+    async fn link_liveness() {
+        let mut l = link(&vault().await, &[0u8; 32]);
         assert!(l.live(10));
         l.expires_ms = Some(10);
         assert!(!l.live(10));
