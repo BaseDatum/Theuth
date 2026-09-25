@@ -28,6 +28,8 @@ use yrs::types::{Change, DeepObservable, Event};
 use yrs::{ReadTxn, StateVector, Transact, TransactionMut, Update, Xml};
 
 use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
+use crate::hub::DocError;
+use crate::relay::{Client, Cmd};
 use crate::meta::{
     AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, DocumentChanged,
     Principal, SnapshotInfo, Who,
@@ -66,9 +68,9 @@ pub(crate) struct Open {
     /// Upper bound on the encoded state: snapshot + log bytes (§4.7 limit).
     bytes: usize,
     idle_since: Instant,
-    export_due: Option<Instant>,
+    pub(crate) export_due: Option<Instant>,
     export_first: Option<Instant>,
-    exporting: bool,
+    pub(crate) exporting: bool,
     /// The owner hears [`Exported`] once this passes with the file settled (§4.3 as built: `export_quiet_secs`
     /// after the last update) — or at once when the document has no subscriber, unloads, or the harness stops.
     notify_due: Option<Instant>,
@@ -226,8 +228,8 @@ pub struct DocumentActor {
     pub(crate) store: Store,
     helper: Helper,
     pub(crate) cfg: DocumentsConfig,
-    rt: Runtime,
-    data_dir: PathBuf,
+    pub(crate) rt: Runtime,
+    pub(crate) data_dir: PathBuf,
     pub(crate) open: HashMap<DocId, Open>,
     pub(crate) subs: HashMap<DocId, Vec<Subscriber>>,
     imports: HashMap<u64, Import>,
@@ -235,6 +237,10 @@ pub struct DocumentActor {
     last_sweep: Option<Instant>,
     /// Set by [`Flush`]: every export that lands from here on is reported to its owner at once.
     shutting_down: bool,
+    /// 69: the lease follower and the watcher token; every hub-only handler asks `hub.gate()`.
+    pub(crate) hub: crate::hub::Hub,
+    /// 69: off the hub, the `theuth/docs/1` legs carrying clients' sessions to the holder.
+    pub(crate) legs: crate::relay::Legs,
 }
 
 impl DocumentActor {
@@ -252,6 +258,8 @@ impl DocumentActor {
             edits: HashMap::new(),
             last_sweep: None,
             shutting_down: false,
+            hub: Default::default(),
+            legs: Default::default(),
         }
     }
 
@@ -367,7 +375,6 @@ impl DocumentActor {
         o.bytes += update.len();
         o.idle_since = Instant::now();
         o.meta.updated_ms = now;
-        let bytes = o.bytes;
         if !from_helper {
             self.helper.update(doc, &update).log("update");
         }
@@ -399,14 +406,16 @@ impl DocumentActor {
             update: base64::engine::general_purpose::STANDARD.encode(&update),
             by: who,
         };
+        // 69: the index row (`updated_ms`, `bytes`) is replicated; it moves at snapshot/export, not per keystroke.
         self.fan_out(doc, ev, by.conn());
-        if let Err(e) = self.store.touch(doc, now, bytes).await {
-            tracing::warn!(doc = %doc, error = %e, "documents index touch failed");
-        }
         Ok(())
     }
 
     fn schedule_export(&mut self, doc: &DocId) {
+        // 69: exports are a hub duty; a replica's derived files come from their owners (knowledge sync).
+        if !self.hub.holding() {
+            return;
+        }
         let debounce = Duration::from_millis(self.cfg.export_debounce_ms);
         let quiet = Duration::from_secs(self.cfg.export_quiet_secs);
         if let Some(o) = self.open.get_mut(doc)
@@ -612,7 +621,7 @@ impl DocumentActor {
         self.fan_out_agent_awareness(doc);
     }
 
-    fn actor_ref(&self) -> ActorRef<Self> {
+    pub(crate) fn actor_ref(&self) -> ActorRef<Self> {
         ActorRef::<Self>::lookup(crate::DOCUMENT_ACTOR)
             .ok()
             .flatten()
@@ -620,7 +629,7 @@ impl DocumentActor {
     }
 
     /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`]; `done` hears the outcome.
-    fn export(&mut self, doc: &DocId, done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
+    pub(crate) fn export(&mut self, doc: &DocId, done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
         let Some(o) = self.open.get_mut(doc) else {
             return;
         };
@@ -658,6 +667,12 @@ impl DocumentActor {
         o.log_count = 0;
         o.log_bytes = 0;
         o.bytes = n;
+        let (id, updated_ms, s) = (doc.clone(), o.meta.updated_ms, store.clone());
+        tokio::spawn(async move {
+            if let Err(e) = s.touch_at_snapshot(&id, updated_ms, n).await {
+                tracing::warn!(doc = %id, error = %e, "documents index touch failed");
+            }
+        });
         if label.is_some() {
             let _ = store.prune_snapshots(doc, keep);
             self.fan_out(
@@ -671,7 +686,7 @@ impl DocumentActor {
         Ok(())
     }
 
-    fn unload(&mut self, doc: &DocId, reason: &str) {
+    pub(crate) fn unload(&mut self, doc: &DocId, reason: &str) {
         if self.open.get(doc).is_some_and(|o| o.log_count > 0)
             && let Err(e) = self.snapshot(doc, None)
         {
@@ -820,9 +835,22 @@ pub struct OpenDoc {
 }
 
 impl Message<OpenDoc> for DocumentActor {
-    type Reply = Result<DocOpen, String>;
+    type Reply = DelegatedReply<Result<DocOpen, DocError>>;
 
-    async fn handle(&mut self, m: OpenDoc, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: OpenDoc, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.open_doc(m).await),
+            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Open { sv: m.sv, reply: tx }),
+            Err(e) => tx.send(Err(e)),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn open_doc(&mut self, m: OpenDoc) -> Result<DocOpen, DocError> {
         let sv = match m.sv {
             Some(s) => StateVector::decode_v1(&unb64(&s)?).map_err(|e| format!("bad sv: {e}"))?,
             None => StateVector::default(),
@@ -864,8 +892,8 @@ impl Message<OpenDoc> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<(), String>`: one v1 update (base64) from `by`; `UpdateTooLarge` past [`MAX_UPDATE_B64`],
-/// `DocTooLarge` beyond the document cap.
+/// `ask` → `Result<(), DocError>`: one v1 update (base64) from `by`; `UpdateTooLarge` past [`MAX_UPDATE_B64`],
+/// `DocTooLarge` beyond the document cap; `NotHub` off the hub (69).
 #[derive(Clone, Debug)]
 pub struct ApplyUpdate {
     /// Document.
@@ -881,22 +909,38 @@ pub struct ApplyUpdate {
 pub const MAX_UPDATE_B64: usize = 48 * 1024;
 
 impl Message<ApplyUpdate> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: ApplyUpdate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: ApplyUpdate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.apply_update(m).await),
+            Ok(Some(hub)) => {
+                self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Update { update: m.update, reply: tx })
+            }
+            Err(e) => tx.send(Err(e)),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn apply_update(&mut self, m: ApplyUpdate) -> Result<(), DocError> {
         if m.update.len() > MAX_UPDATE_B64 {
             return Err(format!(
                 "UpdateTooLarge: one update may be {MAX_UPDATE_B64} bytes at most, not {}",
                 m.update.len()
-            ));
+            )
+            .into());
         }
         let update = unb64(&m.update)?;
         self.admit(&m.doc, &m.by, true)?;
-        self.apply(&m.doc, update, m.by, false, Vec::new()).await
+        Ok(self.apply(&m.doc, update, m.by, false, Vec::new()).await?)
     }
 }
 
-/// `ask` → `Result<mpsc::Receiver<DocEvent>, String>`: every event of `doc` not caused by `by`'s connection.
+/// `ask` → `Result<mpsc::Receiver<DocEvent>, DocError>`: every event of `doc` not caused by `by`'s connection; hub only (69).
 #[derive(Clone, Debug)]
 pub struct Subscribe {
     /// Document.
@@ -906,9 +950,22 @@ pub struct Subscribe {
 }
 
 impl Message<Subscribe> for DocumentActor {
-    type Reply = Result<mpsc::Receiver<DocEvent>, String>;
+    type Reply = DelegatedReply<Result<mpsc::Receiver<DocEvent>, DocError>>;
 
-    async fn handle(&mut self, m: Subscribe, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: Subscribe, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.subscribe(m)),
+            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Subscribe { reply: tx }),
+            Err(e) => tx.send(Err(e)),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    fn subscribe(&mut self, m: Subscribe) -> Result<mpsc::Receiver<DocEvent>, DocError> {
         self.admit(&m.doc, &m.by, false)?;
         let o = self.load(&m.doc)?;
         o.idle_since = Instant::now();
@@ -922,7 +979,7 @@ impl Message<Subscribe> for DocumentActor {
     }
 }
 
-/// `ask` → `Result<(), String>`: an awareness update (base64 y-protocols), relayed, never persisted.
+/// `ask` → `Result<(), DocError>`: an awareness update (base64 y-protocols), relayed, never persisted; hub only (69).
 #[derive(Clone, Debug)]
 pub struct AwarenessUpdateMsg {
     /// Document.
@@ -934,13 +991,24 @@ pub struct AwarenessUpdateMsg {
 }
 
 impl Message<AwarenessUpdateMsg> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(
-        &mut self,
-        m: AwarenessUpdateMsg,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, m: AwarenessUpdateMsg, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.awareness_update(m)),
+            Ok(Some(hub)) => {
+                self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Awareness { state: m.state, reply: tx })
+            }
+            Err(e) => tx.send(Err(e)),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    fn awareness_update(&mut self, m: AwarenessUpdateMsg) -> Result<(), DocError> {
         let bytes = unb64(&m.state)?;
         let u = AwarenessUpdate::decode_v1(&bytes).map_err(|e| format!("bad awareness: {e}"))?;
         self.admit(&m.doc, &m.by, false)?;
@@ -996,6 +1064,10 @@ impl Message<Ensure> for DocumentActor {
     async fn handle(&mut self, m: Ensure, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         match self.store.lookup(&m.binding).await {
             Ok(Some(id)) => {
                 // Bound but never filled (see `unsynced_file`): import now and answer when it has
@@ -1020,7 +1092,7 @@ impl Message<Ensure> for DocumentActor {
                 return reply;
             }
         }
-        let id = DocId::new();
+        let id = DocId::for_binding(&m.binding);
         let now = now_ms();
         let kind = m.binding.kind();
         let meta = DocMeta {
@@ -1076,6 +1148,10 @@ impl Message<ImportMarkdown> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         self.start_import(&m.doc, m.markdown, m.by, m.mode, ImportReply::Outcome(tx));
         reply
     }
@@ -1190,7 +1266,14 @@ impl Message<Edit> for DocumentActor {
     async fn handle(&mut self, m: Edit, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        self.start_edit(&m.doc, m.edits, m.by, tx);
+        // E2: the tools and owner plugins run on every engine; off the hub the edit rides a
+        // `theuth/docs/1` leg (`Cmd::Edit`) and the hub's typed outcome comes back. A hub that cannot
+        // be reached answers `NotHub:<id>` — an error the caller sees and may retry, never a drop.
+        match self.hub.route() {
+            Ok(None) => self.start_edit(&m.doc, m.edits, m.by, tx),
+            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Edit { edits: m.edits, by: m.by, reply: tx }),
+            Err(e) => tx.send(Err(EditError::Other(e.to_string()))),
+        }
         reply
     }
 }
@@ -1258,6 +1341,10 @@ impl Message<UndoLastAgentEdit> for DocumentActor {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         let last = self.open.get_mut(&m.doc).and_then(|o| o.last_agent_edit.take());
         let Some(last) = last else {
             tx.send(Err("no agent edit to undo".into()));
@@ -1442,6 +1529,10 @@ impl Message<CreateNote> for DocumentActor {
     async fn handle(&mut self, m: CreateNote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         self.create_doc(Binding::Note, m.title, m.markdown, m.by, tx)
             .await;
         reply
@@ -1454,6 +1545,10 @@ impl Message<Create> for DocumentActor {
     async fn handle(&mut self, m: Create, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         self.create_doc(m.binding, m.title, m.markdown, m.by, tx)
             .await;
         reply
@@ -1470,7 +1565,7 @@ impl DocumentActor {
         by: Principal,
         tx: ReplySender<Result<DocSummary, String>>,
     ) {
-        let id = DocId::new();
+        let id = DocId::for_binding(&binding);
         let now = now_ms();
         let meta = DocMeta {
             derived: binding.derived(&id),
@@ -1522,6 +1617,10 @@ impl Message<Rename> for DocumentActor {
     async fn handle(&mut self, m: Rename, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         let title = m.title.trim().to_owned();
         if title.is_empty() {
             tx.send(Err("title must not be empty".into()));
@@ -1589,6 +1688,7 @@ impl Message<DeleteNote> for DocumentActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: DeleteNote, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate_str()?;
         let kind = match self.open.get(&m.doc) {
             Some(o) => o.meta.kind,
             None => self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?.kind,
@@ -1620,6 +1720,18 @@ impl Message<ListDocs> for DocumentActor {
     }
 }
 
+/// `ask` → [`store::DocStats`]: the mirror merge counters (69 E2), served anywhere.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stats;
+
+impl Message<Stats> for DocumentActor {
+    type Reply = store::DocStats;
+
+    async fn handle(&mut self, _: Stats, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store.stats()
+    }
+}
+
 /// `ask` → `Result<(), String>`: a labelled snapshot (§4.6).
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -1633,6 +1745,7 @@ impl Message<Snapshot> for DocumentActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Snapshot, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate_str()?;
         self.load(&m.doc)?;
         self.snapshot(&m.doc, Some(&m.label))
     }
@@ -1655,6 +1768,10 @@ impl Message<SetDerived> for DocumentActor {
     async fn handle(&mut self, m: SetDerived, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         let o = match self.load(&m.doc) {
             Ok(o) => o,
             Err(e) => {
@@ -1713,6 +1830,10 @@ impl Message<Restore> for DocumentActor {
     async fn handle(&mut self, m: Restore, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
         let bytes = match self.store.read_snapshot(&m.doc, &m.snapshot) {
             Ok(b) => b,
             Err(e) => {
@@ -1766,6 +1887,7 @@ impl Message<Delete> for DocumentActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Delete, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate_str()?;
         self.delete_doc(&m.doc).await
     }
 }
@@ -1783,6 +1905,9 @@ impl Message<FileChanged> for DocumentActor {
     type Reply = ();
 
     async fn handle(&mut self, m: FileChanged, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.hub.holding() {
+            return;
+        }
         let id = match self.store.lookup(&m.binding).await {
             Ok(Some(id)) => id,
             Ok(None) => return,
@@ -1811,6 +1936,94 @@ impl Message<FileChanged> for DocumentActor {
             ImportMode::Diff,
             ImportReply::None,
         );
+    }
+}
+
+/// `tell`: a file in `documents/mirror/` changed (the mirror watcher, 69): a peer's projection to
+/// merge, or this process's own write to skip.
+#[derive(Clone, Debug)]
+pub struct MirrorChanged {
+    /// Absolute path of the mirror file.
+    pub path: PathBuf,
+}
+
+impl Message<MirrorChanged> for DocumentActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: MirrorChanged, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some((id, kind)) = crate::mirror::parse(&m.path) else { return };
+        // Off the hub a loaded document is a read cache (`doc_read`): drop it and merge on disk. Closed
+        // documents merge on disk; a document a peer removed follows its tombstone into `.trash`.
+        if !self.hub.holding() && self.open.contains_key(&id) {
+            self.unload(&id, "unloaded");
+        }
+        if !self.open.contains_key(&id) {
+            match self.store.mirror_apply(&m.path).await {
+                Ok(store::Applied::Created(_)) | Ok(store::Applied::Merged(_)) => {
+                    if let Ok(meta) = self.store.read_meta(&id) {
+                        self.rt.publish(DocumentChanged::of(&meta, false)).await;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(doc = %id, error = %e, "documents: mirror file not merged"),
+            }
+            return;
+        }
+        let Ok(Some(bytes)) = store::read_opt(&m.path) else { return };
+        if self.store.is_own_projection(&crate::mirror::file_name(&id, kind), &bytes) {
+            return;
+        }
+        match kind {
+            crate::mirror::MirrorFile::Snapshot => {
+                let Some(o) = self.open.get(&id) else { return };
+                let theirs = match store::decode_state(&bytes) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!(doc = %id, error = %e, "documents: foreign snapshot undecodable");
+                        return;
+                    }
+                };
+                // Only news goes through `apply` (log, fan-out, export, then a re-snapshot that ships):
+                // the diff below is never empty once the document holds a deletion, so its length says
+                // nothing (69 E2).
+                if !store::exceeds(&theirs, &o.doc) {
+                    store::Counters::bump(&self.store.counters.unchanged);
+                    store::Counters::bump(&self.store.counters.noop_applies_avoided);
+                    return;
+                }
+                let diff = theirs.transact().encode_state_as_update_v1(&o.doc.transact().state_vector());
+                // Into the live document like any update (log, fan-out, helper mirror); the derived
+                // file follows, which `Principal::File` alone would not schedule.
+                if let Err(e) = self.apply(&id, diff, Principal::File, false, Vec::new()).await {
+                    tracing::warn!(doc = %id, error = %e, "documents: foreign snapshot not merged");
+                    return;
+                }
+                store::Counters::bump(&self.store.counters.merged);
+                self.schedule_export(&id);
+                tracing::info!(doc = %id, "document snapshot merged from the mesh (open)");
+            }
+            crate::mirror::MirrorFile::Meta => {
+                let incoming: DocMeta = match serde_json::from_slice(&bytes) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(doc = %id, error = %e, "documents: foreign meta.json undecodable");
+                        return;
+                    }
+                };
+                let Some(o) = self.open.get_mut(&id) else { return };
+                if !crate::mirror::merge_meta(&mut o.meta, &incoming) {
+                    return;
+                }
+                let (meta, title) = (o.meta.clone(), o.meta.title.clone());
+                if let Err(e) = self.store.write_meta(&meta).await {
+                    tracing::warn!(doc = %id, error = %e, "meta.json: merge not saved");
+                }
+                let (members, links) = (meta.members.clone(), meta.links.iter().map(crate::meta::ShareLink::public).collect());
+                self.fan_out(&id, DocEvent::Members { members, links }, None);
+                self.fan_out(&id, DocEvent::Meta { title }, None);
+                self.rt.publish(DocumentChanged::of(&meta, false)).await;
+            }
+        }
     }
 }
 
@@ -1902,7 +2115,11 @@ impl Message<Tick> for DocumentActor {
             if self.owner_due(id, o, now) {
                 notifies.push(id.clone());
             }
-            if o.log_bytes > LOG_MAX_BYTES || o.log_count > LOG_MAX_COUNT {
+            // §4.1 size/count policy, plus 69: a quiet period, so the replicated mirror lags by seconds.
+            if o.log_bytes > LOG_MAX_BYTES
+                || o.log_count > LOG_MAX_COUNT
+                || (self.hub.holding() && o.log_count > 0 && now.duration_since(o.idle_since) >= Duration::from_millis(self.cfg.snapshot_quiet_ms))
+            {
                 snapshots.push(id.clone());
             }
             if !o.exporting

@@ -579,7 +579,9 @@ async fn online(
                     let r = why.load(Ordering::Acquire);
                     m.closed(r);
                     if !send_device(ws, frame::CLOSE, &[r]).await { return false }
-                    if r == reason::HARNESS_GONE { return true }
+                    // 4: the uplink died; 5: the hub sent HUB_MOVED before it left (69 decision
+                    // 6). Either way the device stays parked for the next registration.
+                    if reason::reparks(r) { return true }
                     close(ws, close_code::NORMAL).await;
                     break None;
                 }

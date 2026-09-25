@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import { container, isDesktop } from '@/lib/platform'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { idbGet, idbPut } from './idb'
 
-/** One paired harness (31 §7.3). `id` is the base64url harness public key. */
+/**
+ * One paired harness (31 §7.3). `id` is the base64url public key this row dials at `/h/<id>`:
+ * an engine's link identity for `kind: 'engine'`, the mesh device id for `kind: 'mesh'` (69 §4).
+ */
 export interface Harness {
   id: string
   name: string
@@ -17,7 +21,14 @@ export interface Harness {
   order: number
   /** The harness that introduced this one as its node (32 §8.1); listed nested under it. */
   parent?: string
+  /** `mesh`: this device is paired to a mesh (its hub answers, whichever engine that is); `engine`: one engine. */
+  kind: 'engine' | 'mesh'
+  /** `mesh_status.mesh_name` (else the hub's `self_name`), refreshed on every connect. */
+  meshName?: string
 }
+
+/** A mesh's engines as its hub last reported them: `online` counts the hub itself. */
+export type MeshMembers = { online: number; total: number }
 
 /** `refused`: the harness answered the handshake with `CLOSE refused` — it no longer knows this device; pair again. */
 export type Presence = 'online' | 'offline' | 'connecting' | 'refused'
@@ -27,7 +38,7 @@ export const LOCAL = 'local'
 /** Its label by shell ("This Mac" / "This PC" / "This computer"); `Info.name` replaces it once connected. */
 export const LOCAL_NAME = container() === 'macos' ? 'This Mac' : container() === 'windows' ? 'This PC' : 'This computer'
 /** The local daemon as a `Harness` row, so its nodes nest under it. */
-const LOCAL_ROW: Harness = { id: LOCAL, name: LOCAL_NAME, relayHost: '', secure: false, pairedAt: 0, lastSeen: 0, order: -1 }
+const LOCAL_ROW: Harness = { id: LOCAL, name: LOCAL_NAME, relayHost: '', secure: false, pairedAt: 0, lastSeen: 0, order: -1, kind: 'engine' }
 
 type Persisted = { harnesses: Harness[]; active: string }
 
@@ -37,6 +48,8 @@ type HarnessesStore = Persisted & {
   pairError: Record<string, string>
   /** Harness answers `list_nodes` (32 §8.3); absent until its first connect. */
   nodes: Record<string, boolean>
+  /** Per mesh row, from its hub's `mesh_status`; absent until the first connect. */
+  members: Record<string, MeshMembers>
   /** IndexedDB read once; `harnesses` is meaningless before. */
   hydrated: boolean
   add(h: Harness): void
@@ -48,6 +61,7 @@ type HarnessesStore = Persisted & {
   setPresence(id: string, p: Presence): void
   setPairError(id: string, error: string | undefined): void
   setNodes(id: string, on: boolean): void
+  setMesh(id: string, meshName: string | undefined, members: MeshMembers): void
 }
 
 /** `{ harness, depth }` rows of the switcher: each child right after its parent, in order; `depth` 0 at the top. */
@@ -83,6 +97,7 @@ export const useHarnesses = create<HarnessesStore>()((set) => ({
   presence: {},
   pairError: {},
   nodes: {},
+  members: {},
   hydrated: false,
   add: (h) => set((s) => ({ harnesses: byOrder([...s.harnesses.filter((x) => x.id !== h.id), h]) })),
   remove: (id) =>
@@ -111,7 +126,18 @@ export const useHarnesses = create<HarnessesStore>()((set) => ({
       return { pairError: error === undefined ? rest : { ...rest, [id]: error } }
     }),
   setNodes: (id, on) => set((s) => (s.nodes[id] === on ? s : { nodes: { ...s.nodes, [id]: on } })),
+  setMesh: (id, meshName, members) =>
+    set((s) => ({
+      // A new `harnesses` array is persisted; only build one when the name moved.
+      harnesses: s.harnesses.some((x) => x.id === id && x.meshName !== meshName) ? s.harnesses.map((x) => (x.id === id ? { ...x, meshName } : x)) : s.harnesses,
+      members: { ...s.members, [id]: members },
+    })),
 }))
+
+/** Fold a mesh row's `mesh_status` in (69 §4): the mesh name (else the hub's own) and `n of m` engines, the hub counted. */
+export function applyMeshStatus(id: string, s: MeshStatus): void {
+  useHarnesses.getState().setMesh(id, s.mesh_name ?? s.self_name, { online: 1 + s.peers.filter((p) => p.reachable).length, total: 1 + s.peers.length })
+}
 
 /** The switcher's rows: the local daemon first when this container has one, children indented under their parent. */
 export function useHarnessTree(): HarnessTreeRow[] {
@@ -132,7 +158,8 @@ let hydrating: Promise<void> | undefined
 export function hydrateHarnesses(): Promise<void> {
   hydrating ??= (async () => {
     const stored = await idbGet<Persisted>('harnesses', 'state')
-    const harnesses = byOrder(stored?.harnesses ?? [])
+    // Rows persisted before 69 have no `kind`: every one of them dialled an engine.
+    const harnesses = byOrder((stored?.harnesses ?? []).map((h) => ({ ...h, kind: h.kind ?? 'engine' })))
     let active = stored?.active ?? LOCAL
     if ((active === LOCAL && !hasLocal()) || (active !== LOCAL && !harnesses.some((h) => h.id === active))) {
       active = hasLocal() ? LOCAL : (harnesses[0]?.id ?? LOCAL)

@@ -86,7 +86,12 @@ impl Engine {
         let (wall, counter) = self.clock.snapshot();
         store::save_clock(&mut *book, wall, counter).await?;
         book.commit().await?;
+        self.count_applied(&batch.changes);
         let _ = self.feed.send(batch.clone());
+        // A receive-only engine prunes too (69 audit: relayed origins grew forever).
+        if let Err(e) = self.prune_outbox().await {
+            tracing::warn!("replica: prune outbox: {e:#}");
+        }
 
         for (attached, table, pk) in reannounce {
             match self.row_as_changes(&attached, &table, &pk).await {
@@ -136,6 +141,42 @@ impl Engine {
             });
         }
         Ok(out)
+    }
+
+    /// Every live row of every attached table as whole-row changes (each column under the clock
+    /// it holds) plus every tombstone, emitted as one batch of this origin: the stage-1 "snapshot"
+    /// (68 §6 decision 7) for a peer whose catch-up point lies below what the outbox still holds —
+    /// a newcomer, or an engine away long enough for the prune to pass it. Peers that already hold
+    /// the state apply it as a no-op (same clocks). `None` when there is nothing to send.
+    // ponytail: one batch of the whole state to every connected peer per newcomer; chunk it when a
+    // table outgrows the frame.
+    pub(crate) async fn snapshot_batch(&self) -> anyhow::Result<Option<ChangeBatch>> {
+        let _guard = self.write_lock.lock().await;
+        let attached: Vec<(String, Attached)> =
+            self.tables.lock().iter().map(|(t, a)| (t.clone(), a.clone())).collect();
+        let mut changes = Vec::new();
+        for (table, a) in &attached {
+            let pks: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT CAST({} AS TEXT) FROM {}",
+                quote(&a.info.pk),
+                quote(table)
+            )))
+            .fetch_all(&a.pool)
+            .await?;
+            for (pk,) in &pks {
+                changes.extend(self.row_as_changes(a, table, pk).await?);
+            }
+        }
+        let tombs: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT table_name, pk, hlc FROM tombstone").fetch_all(self.store.pool()).await?;
+        for (table, pk, hlc) in tombs {
+            let Some(hlc) = Hlc::parse(&hlc) else { continue };
+            changes.push(Change { table, pk, column: None, value: None, hlc, deleted: true });
+        }
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.emit_locked(changes).await?))
     }
 }
 
@@ -222,26 +263,38 @@ async fn apply_row(
         .map(String::as_str)
         .filter(|c| winners.contains_key(c))
         .collect();
-    let sets: Vec<String> = cols.iter().map(|c| format!("{0} = excluded.{0}", quote(c))).collect();
-    let sql = format!(
-        "INSERT INTO {t} ({pk}, {cols}, \"hlc\") VALUES (?, {marks}, ?)
-         ON CONFLICT ({pk}) DO UPDATE SET {sets}, \"hlc\" = max(coalesce({t}.\"hlc\", ''), excluded.\"hlc\")",
-        t = quote(table),
-        pk = quote(&attached.info.pk),
-        cols = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", "),
-        marks = vec!["?"; cols.len()].join(", "),
+    // UPDATE first, INSERT when the row is absent: SQLite checks NOT NULL before the conflict
+    // target, so `INSERT … ON CONFLICT DO UPDATE` with a subset of the columns failed on every
+    // table with a NOT NULL column whenever the row already existed here (69 smoke: docs,
+    // cost_owners, availability, vault, engine_stats — no remote column write ever landed).
+    let (t, pk_col) = (quote(table), quote(&attached.info.pk));
+    let sets: Vec<String> = cols.iter().map(|c| format!("{} = ?", quote(c))).collect();
+    let update = format!(
+        "UPDATE {t} SET {sets}, \"hlc\" = max(coalesce(\"hlc\", ''), ?) WHERE {pk_col} = ?",
         sets = sets.join(", "),
     );
-    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(pk);
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(update));
     for c in &cols {
         q = winners[c].1.clone().bind(q);
     }
-    q = q.bind(row_hlc);
-    if let Err(e) = q.execute(&mut *tx).await {
-        // ponytail: a partial row for a pk this engine never received (its insert is still in
-        // flight from a third engine) trips NOT NULL; buffer such orphans if it ever bites.
-        tracing::warn!("replica: {table} pk {pk}: {e}; changes skipped");
-        return Ok(lost_delete);
+    let updated = q.bind(&row_hlc).bind(pk).execute(&mut *tx).await?.rows_affected();
+    if updated == 0 {
+        let insert = format!(
+            "INSERT INTO {t} ({pk_col}, {cols}, \"hlc\") VALUES (?, {marks}, ?)",
+            cols = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", "),
+            marks = vec!["?"; cols.len()].join(", "),
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(insert)).bind(pk);
+        for c in &cols {
+            q = winners[c].1.clone().bind(q);
+        }
+        if let Err(e) = q.bind(&row_hlc).execute(&mut *tx).await {
+            // A partial row for a pk this engine never received: the insert is still in flight
+            // from a third engine, or lies below a pruned outbox (the Hello gap snapshot covers
+            // that on the next connect). Skipped; the col clocks stay unset so it lands then.
+            tracing::warn!("replica: {table} pk {pk}: {e}; changes skipped");
+            return Ok(lost_delete);
+        }
     }
     for (col, (hlc, _)) in &winners {
         store::set_col_clock(book, table, pk, col, hlc).await?;

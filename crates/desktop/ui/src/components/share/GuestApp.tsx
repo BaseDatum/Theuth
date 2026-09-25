@@ -118,7 +118,7 @@ function NamePrompt({ onSubmit }: { onSubmit: (name: string) => void }) {
 function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
   const [state, setState] = useState<GuestState>({ kind: 'connecting' })
   useEffect(() => {
-    const harness: Harness = { id: target.harnessId, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0 }
+    const harness: Harness = { id: target.harnessId, name: '', relayHost: target.relayHost, secure: target.secure, pairedAt: Date.now(), lastSeen: 0, order: 0, kind: 'engine' }
     let provider: HarnessProvider | null = null
     let ended = false
     const end = (message: string) => {

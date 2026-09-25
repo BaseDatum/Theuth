@@ -201,18 +201,38 @@ pub async fn route<T: DeserializeOwned>(
         }
         Route::Forward(owner) => owner,
     };
+    match to_peer(ext, &owner, method, params).await? {
+        Some(v) => Ok(Some(v)),
+        None => Err(unreachable(owner.0, "not connected").await),
+    }
+}
+
+/// One call to `peer` verbatim over `theuth/rpc/1`, never a second hop. `Ok(None)`: it cannot be
+/// sent from here (this request was itself forwarded, no mesh transport, `peer` not connected) —
+/// the caller keeps its local answer. `Err`: the peer's error verbatim, or [`OWNER_UNREACHABLE`]
+/// when it gave no usable answer within [`TIMEOUT`]. 69: the document hub-only owner calls
+/// (`doc_members`, links, `doc_create`, …) ride this to the lease holder.
+pub async fn to_peer<T: DeserializeOwned>(
+    ext: &Extensions,
+    peer: &PeerId,
+    method: &str,
+    params: impl Serialize,
+) -> RpcResult<Option<T>> {
+    if ext.get::<Forwarded>().is_some() {
+        return Ok(None);
+    }
     let transport = match replica::actor() {
         Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
         None => None,
     };
-    let Some(transport) = transport.filter(|t| t.peers().contains(&owner)) else {
-        return Err(unreachable(owner.0, "not connected").await);
+    let Some(transport) = transport.filter(|t| t.peers().contains(peer)) else {
+        return Ok(None);
     };
     let params = serde_json::value::to_raw_value(&params).map_err(|e| internal(e.to_string()))?;
-    match forward(transport.as_ref(), &owner, method, &params).await {
+    match forward(transport.as_ref(), peer, method, &params).await {
         Ok(raw) => serde_json::from_str(raw.get()).map(Some).map_err(|e| internal(e.to_string())),
         Err(Err(e)) => Err(e),
-        Err(Ok(why)) => Err(unreachable(owner.0, &why).await),
+        Err(Ok(why)) => Err(unreachable(peer.0.clone(), &why).await),
     }
 }
 
@@ -528,5 +548,62 @@ mod tests {
         assert_eq!(classify(&store, desk).await.unwrap(), Route::Forward(PeerId("them".into())));
         assert_eq!(classify(&store, roster).await.unwrap(), Route::Forward(PeerId("them".into())));
         store.close().await;
+    }
+
+    /// 69 P: the agent crate's hand-written `peer_deliver` request line is
+    /// dispatched by [`serve`] like any forwarded RPC (positional params,
+    /// internal peer, `Forwarded` marker), and jsonrpsee's response line is
+    /// read back as the owner's receipt; an owner-side refusal is `Refused`.
+    #[tokio::test]
+    async fn peer_deliver_line_round_trips_through_the_owner_serve() {
+        use agent::communication::mesh::{self as pm, Failure};
+        use agent::{PeerEnvelope, PeerMessageState, PeerReceipt};
+
+        let (a, b) = pair();
+        let (seen_tx, mut seen) = mpsc::unbounded_channel::<(SessionId, PeerEnvelope, Option<Extensions>)>();
+        let mut m = jsonrpsee::RpcModule::new(seen_tx);
+        m.register_async_method("peer_deliver", |params, seen, ext| async move {
+            let (session, env): (SessionId, PeerEnvelope) = params.parse()?;
+            if env.text == "no" {
+                return Err(ErrorObjectOwned::owned(-32000, "send_message: communication disabled: off", None::<()>));
+            }
+            let receipt = PeerReceipt {
+                id: env.id,
+                to: format!("session:{session}"),
+                state: PeerMessageState::Accepted,
+                reply_to: env.reply_to,
+                reply: None,
+                task_id: None,
+                error: None,
+                answered_by: None,
+            };
+            let _ = seen.send((session, env, Some(ext)));
+            RpcResult::Ok(receipt)
+        })
+        .unwrap();
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        tokio::spawn(serve(rt, b.clone(), m.into()));
+
+        let session = SessionId::new();
+        let env = PeerEnvelope {
+            id: uuid::Uuid::now_v7(),
+            from: SessionId::new(),
+            text: "hello".into(),
+            reply_to: Some(uuid::Uuid::now_v7()),
+            request_id: Some("r1".into()),
+        };
+        let receipt = pm::forward(a.as_ref(), &b.me, session, &env).await.unwrap();
+        assert_eq!((receipt.id, receipt.state, receipt.reply_to), (env.id, PeerMessageState::Accepted, env.reply_to));
+        assert_eq!(receipt.to, format!("session:{session}"));
+        let (s, e, ext) = seen.recv().await.unwrap();
+        assert_eq!((s, e), (session, env.clone()));
+        let ext = ext.unwrap();
+        assert_eq!(ext.get::<Forwarded>().unwrap().0, a.me);
+        assert!(ext.get::<link::RpcPeer>().is_some());
+
+        let refused = pm::forward(a.as_ref(), &b.me, session, &PeerEnvelope { text: "no".into(), ..env })
+            .await
+            .unwrap_err();
+        assert_eq!(refused, Failure::Refused("send_message: communication disabled: off".into()));
     }
 }

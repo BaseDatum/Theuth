@@ -1,21 +1,41 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Trash2 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { Countdown, Editable } from '@/components/settings/Link'
 import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { age } from '@/components/tasks/helpers'
 import { PAIRING, mockOn } from '@/components/tasks/mock'
 import { keys, useMesh } from '@/components/tasks/queries'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { HubPref } from '@/rpc/bindings/HubPref'
+import type { LinkEvent } from '@/rpc/bindings/LinkEvent'
+import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
 import { useConnection } from '@/store/connection'
+import { on } from '@/store/sessions'
 
 const PREFS: readonly HubPref[] = ['prefer', 'eligible', 'never']
 const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.message('Copied'))
+const DEVICES = ['mesh', 'devices'] as const
+/** Any of these changes the replicated registry (69 §6); the snapshot is stale. */
+const DEVICE_EVENTS = ['DevicePaired', 'DevicesChanged', 'LinkRevoked'] as const satisfies readonly LinkEvent['type'][]
+const PLATFORM: Record<string, string> = { ios: 'iOS', macos: 'macOS', web: 'Web', theuth: 'theuth' }
 
 /**
  * Settings › Mesh (67 §12): this engine, its hub preference, the lease holder, the peer list with remove, and pairing
@@ -56,6 +76,9 @@ export function Mesh() {
           <Button variant="ghost" size="icon-sm" aria-label="Copy engine id" onClick={() => void copy(s.self_id)}>
             <Copy />
           </Button>
+        </Row>
+        <Row label="Mesh" description="The name devices see (69 decision 8); the first engine's `mesh.name` until one is set.">
+          <span className="text-[13px]">{s.mesh_name ?? '—'}</span>
         </Row>
         <Row label="Hub preference" description="prefer: take the lease whenever connected · eligible: by stability · never: peer only">
           <Select value={setHub.variables ?? 'eligible'} onValueChange={(v) => setHub.mutate(v as HubPref)}>
@@ -104,6 +127,8 @@ export function Mesh() {
 
       <Sessions engine={s.self_id} name={info?.name ?? '—'} />
 
+      <Devices meshName={s.mesh_name ?? s.self_name} />
+
       <Section
         title="Pair another engine"
         actions={
@@ -143,6 +168,105 @@ export function Mesh() {
         </form>
       </Section>
     </>
+  )
+}
+
+/**
+ * Settings › Mesh › Devices (69 §3–§4): the replicated registry — every phone/browser paired to this mesh,
+ * revoked rows greyed — rename, revoke, and "Pair a device": a 4-part QR any engine may show; the hub accepts.
+ */
+function Devices({ meshName }: { meshName: string }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const devices = useQuery({ queryKey: DEVICES, queryFn: () => api.devices_list(), retry: false })
+  const [pairing, setPairing] = useState<PairingPayload | null>(null)
+  const start = useAction((_: void) => api.device_pair_start(null), { keys: [], onSuccess: setPairing })
+  const rename = useAction((v: { id: string; name: string }) => api.device_rename(v.id, v.name), { keys: [DEVICES] })
+  const revoke = useAction((id: string) => api.device_revoke(id), { keys: [DEVICES] })
+
+  useEffect(() => {
+    const invalidate = () => void qc.invalidateQueries({ queryKey: DEVICES })
+    const offs = DEVICE_EVENTS.map((t) => on(t, invalidate))
+    // The device that scanned is in; the QR is spent.
+    offs.push(on('DevicePaired', () => setPairing(null)))
+    return () => {
+      for (const off of offs) off()
+    }
+  }, [qc])
+
+  return (
+    <Section
+      title="Devices"
+      actions={
+        <Button variant="outline" size="sm" disabled={start.isPending} onClick={() => start.mutate(undefined)}>
+          Pair a device
+        </Button>
+      }
+    >
+      {pairing && (
+        <div className="flex flex-wrap items-start gap-5 py-2">
+          <div className="rounded-lg bg-white">
+            <QRCodeSVG value={pairing.string} size={220} marginSize={4} />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-3 text-sm">
+            <p>Scan with your phone's camera, or paste the key into a browser at the relay. The device pairs with the mesh {meshName}: any engine that holds the hub lease answers it.</p>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => void copy(pairing.string)}>
+                <Copy /> Copy key
+              </Button>
+              <span className="text-[13px] text-fg-secondary tabular-nums">
+                <Countdown until={pairing.expires_ms} />
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => setPairing(null)}>
+                Hide
+              </Button>
+            </div>
+            <code className="block break-all font-mono text-xs text-fg-tertiary">{pairing.string}</code>
+            <span className="font-mono text-xs text-fg-tertiary">pending {pairing.pending_id}</span>
+          </div>
+        </div>
+      )}
+      {devices.isError && <Empty>{devices.error.message}</Empty>}
+      {devices.data?.length === 0 && <Empty>No device paired to this mesh yet. A QR code is valid for five minutes and pairs one device.</Empty>}
+      {devices.data?.map((d) => (
+        <DeviceRow key={d.id} device={d} onRename={(name) => rename.mutate({ id: d.id, name })} onRevoke={() => revoke.mutate(d.id)} />
+      ))}
+    </Section>
+  )
+}
+
+function DeviceRow({ device: d, onRename, onRevoke }: { device: DeviceInfo; onRename: (name: string) => void; onRevoke: () => void }) {
+  const seen = d.last_seen_ms ? `seen ${age(d.last_seen_ms)} ago` : 'never seen'
+  return (
+    <Row
+      label={
+        <span className={`flex items-center gap-2 ${d.revoked ? 'text-fg-tertiary line-through' : ''}`}>
+          <Dot on={!d.revoked && d.last_seen_ms > 0} />
+          <Editable value={d.name} width="w-48" disabled={d.revoked} onSave={onRename} />
+        </span>
+      }
+      description={`${PLATFORM[d.platform] ?? d.platform} · ${d.id} · paired ${age(d.paired_ms)} ago · ${d.revoked ? 'revoked' : seen}`}
+    >
+      {!d.revoked && (
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="outline" size="sm">
+              Revoke
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Revoke {d.name}?</AlertDialogTitle>
+              <AlertDialogDescription>Its connection closes now and every engine of the mesh refuses it; pairing again needs a new QR scan.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={onRevoke}>Revoke</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+    </Row>
   )
 }
 

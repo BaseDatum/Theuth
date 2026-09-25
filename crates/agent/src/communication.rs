@@ -23,6 +23,10 @@ use crate::continuation::InputTicket;
 /// storage only through agent commands, never a raw DB handle.
 pub mod network;
 
+/// Peer messages across engines (69 P): the `peer_deliver` wire on
+/// `theuth/rpc/1` and the engine-name lookup for `discover_peers`.
+pub mod mesh;
+
 /// `tell` (runner → `Agents`): a peer exchange was linked into `session`'s
 /// history at `seq` inside `turn` (§7 consumption transaction). Sent after
 /// the runner's `InputConsumed` for the same ticket, which is what binds the
@@ -288,6 +292,9 @@ pub enum PeerState {
     Stored,
     /// Remote endpoint known to be unreachable, or a child that is gone.
     Offline,
+    /// Owned by another engine of the mesh (69 P): stored there, its
+    /// liveness unknown here; `send_message` reaches it through its owner.
+    Remote,
 }
 
 /// Fine-grained liveness (62 §3.4): the [`crate::AgentState`] names, plus
@@ -380,6 +387,11 @@ pub struct PeerInfo {
     /// remote peer.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// The engine owning the session (69 P): this one's display name for a
+    /// local peer, the owner's for a `remote` one; `None` for a peer that is
+    /// no session (`peer:<name>`, `parent` over a conn).
+    #[serde(default)]
+    pub engine: Option<String>,
 }
 
 /// Reply to [`ListPeers`] / `discover_peers`: one page after permission filtering.
@@ -548,6 +560,39 @@ pub struct AnswerPeerRequest {
     pub reply_to: Uuid,
     /// Answer text; bounded by [`PEER_TEXT_MAX`].
     pub text: String,
+}
+
+/// One peer message on the wire between engines (69 P): what the sender's
+/// supervisor forwards to the owner of the addressed session as
+/// `peer_deliver(session, envelope)` over `theuth/rpc/1`. `id` is the
+/// sender's minted message id, kept by the owner's intake so `reply_to`
+/// names the same message on both engines.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PeerEnvelope {
+    /// The message id, minted on the sender's engine.
+    pub id: Uuid,
+    /// Authenticated sender session (a row every replica holds).
+    pub from: SessionId,
+    /// Redacted, bounded body.
+    pub text: String,
+    /// The message this one answers.
+    pub reply_to: Option<Uuid>,
+    /// Sender's idempotency key.
+    pub request_id: Option<String>,
+}
+
+/// `ask` → `Result<PeerReceipt, String>`: the owner's intake of a peer
+/// message another engine forwarded (69 P). Runs the ordinary [`crate::supervisor::Deliver`]
+/// path — this engine's communication policy, redaction, size bound, reply
+/// matching — under the envelope's id; never takes the session. `Err` is the
+/// refusal the sender records as a `failed` receipt.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerDeliver {
+    /// The addressed session; must be owned here.
+    pub session: SessionId,
+    /// The message.
+    pub envelope: PeerEnvelope,
 }
 
 /// Event: communication settings changed (§10). `session: None` = the global

@@ -1,6 +1,7 @@
 //! Derived-file watcher (design 59 §4.4): `notify` on `<data_dir>/knowledge/`,
 //! 300 ms debounce per path, then [`FileChanged`] to the actor, which skips
 //! its own exports by sha and imports everything else as `Principal::File`.
+//! A hub duty (69): [`crate::hub`] starts it on lease gain and cancels it on loss.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,14 +10,15 @@ use std::time::{Duration, Instant};
 use kameo::actor::ActorRef;
 use notify::Watcher;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::actor::{DocumentActor, FileChanged};
 use crate::meta::Binding;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// Watch `<data_dir>/knowledge` recursively for the process lifetime.
-pub fn start(data_dir: &Path, actor: ActorRef<DocumentActor>) -> anyhow::Result<()> {
+/// Watch `<data_dir>/knowledge` recursively until `cancel` fires.
+pub fn start(data_dir: &Path, actor: ActorRef<DocumentActor>, cancel: CancellationToken) -> anyhow::Result<()> {
     let root = data_dir.join("knowledge");
     std::fs::create_dir_all(&root)?;
     // FSEvents reports resolved paths (`/tmp` → `/private/tmp`); the prefix must match them.
@@ -36,6 +38,7 @@ pub fn start(data_dir: &Path, actor: ActorRef<DocumentActor>) -> anyhow::Result<
         loop {
             let next = due.values().min().copied();
             tokio::select! {
+                _ = cancel.cancelled() => break,
                 p = rx.recv() => {
                     let Some(p) = p else { break };
                     if binding_of(&root, &p).is_some() {

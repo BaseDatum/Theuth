@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
-    EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent, MeshStatus, Peer, PeerEvent,
+    AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent, MeshStatus, Peer, PeerEvent,
     PeerId,
 };
 
@@ -51,6 +51,9 @@ pub const MESH_ACTOR: &str = "mesh";
 
 /// Sqlite file under `data_dir` (67 §4).
 pub const DB: &str = "mesh.sqlite";
+
+/// How long the start-up rows wait for the replica plugin before they are written local-only.
+const ATTACH_WAIT: Duration = Duration::from_secs(10);
 
 /// Directory under `data_dir` holding the endpoint identity (67 §4.1).
 pub const DIR: &str = "mesh";
@@ -132,6 +135,8 @@ struct Live {
     self_stats: EngineStats,
     /// `hlc` of our last `engine_stats` write (what heartbeats carry).
     stats_hlc: String,
+    /// When each connected peer's open `availability` interval last hit its row.
+    touches: store::Touches,
 }
 
 /// Shared by the actor and its background loops.
@@ -166,10 +171,15 @@ impl Ctx {
 
     async fn status(&self) -> Result<MeshStatus, String> {
         let peers = self.store.peers().await.map_err(|e| e.to_string())?;
+        let mesh_name = self.store.meta_get("name").await.map_err(|e| e.to_string())?;
         Ok(MeshStatus {
             self_id: self.net.id.clone(),
+            self_name: self.net.name.clone(),
+            mesh_name,
             peers: peers.iter().map(|p| self.net.peer_of(p)).collect(),
             lease: self.lease(),
+            traffic: self.net.traffic(),
+            replica: replica::stats().await,
         })
     }
 
@@ -233,16 +243,20 @@ impl Ctx {
             first_seen_ms: self.first_seen_ms,
             connected_since_ms: self.started_ms,
         });
+        // A connected peer is a candidate: the QUIC control connection is the liveness signal
+        // (a dead peer drops out through `Disconnected`). Heartbeat age used to gate this, but
+        // iroh-gossip delivery between two peers proved to pause for 30–60 s at a time (69 smoke),
+        // which split the lease — two hubs, the mesh id flapping at the relay every few seconds.
+        // A heartbeat still carries `is_hub`/`stats_hlc`; its absence is logged, not acted on.
         for (id, since_ms) in self.net.connected() {
-            let Some(s) = seen.get(&id) else {
-                continue;
-            };
-            if now.saturating_sub(s.last_hb_ms) > lapse_ms {
-                continue;
+            if let Some(s) = seen.get(&id)
+                && now.saturating_sub(s.last_hb_ms) > lapse_ms
+            {
+                tracing::debug!("mesh: no heartbeat from {id} for {} s while connected (last stats {}); gossip lagging", (now - s.last_hb_ms) / 1000, s.stats_hlc);
             }
             match self.store.candidate(&id, since_ms, now).await {
                 Ok(Some(c)) => cands.push(c),
-                Ok(None) => tracing::debug!("mesh: no engine_stats row for {id} yet (heartbeat {}); waiting", s.stats_hlc),
+                Ok(None) => tracing::debug!("mesh: no engine_stats row for {id} yet; waiting"),
                 Err(e) => tracing::warn!("mesh: engine_stats for {id}: {e:#}"),
             }
         }
@@ -300,14 +314,38 @@ impl Ctx {
                 let _ = self.store.availability_open(&self.net.id, &p.id, false, now_ms()).await;
             }
         }
-        self.recompute("start").await;
+        // An engine with stored peers does not elect itself at start: it says "no holder" (every
+        // follower stops serving) until a peer connects or `lapse_secs` pass. Before (69 smoke) a
+        // restarted engine elected itself over the candidate set {self} in 0.3 s, registered the
+        // mesh id at the relay and bounced every device five times before the incumbent's view
+        // reached it; a lone engine (no peers) still elects itself at once.
+        let mut warming = !known.is_empty();
+        let warm_deadline = tokio::time::Instant::now() + Duration::from_secs(self.cfg().lapse_secs.max(1));
+        if warming {
+            let lease = LeaseState { holder: None, since_ms: now_ms(), reason: "start".into() };
+            Self::lock(&self.live).lease = lease.clone();
+            tracing::info!("mesh: lease → None (start: {} stored peer(s), waiting for one to connect)", known.len());
+            self.emit(MeshEvent::Lease(lease)).await;
+        } else {
+            self.recompute("start").await;
+        }
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep_until(warm_deadline), if warming => {
+                    warming = false;
+                    self.recompute("start").await;
+                }
                 _ = tick.tick() => {
                     let now = now_ms();
                     let connected = self.net.connected();
-                    for (id, _) in &connected {
+                    // Idle-writer guard (69 audit): the row is written on open,
+                    // close and every `availability_flush_secs`, not per heartbeat.
+                    let due: Vec<EngineId> = {
+                        let mut live = Self::lock(&self.live);
+                        connected.iter().filter(|(id, _)| live.touches.due(id, now)).map(|(id, _)| id.clone()).collect()
+                    };
+                    for id in &due {
                         let _ = self.store.availability_touch(&self.net.id, id, now).await;
                     }
                     let (is_hub, stats_hlc) = {
@@ -318,13 +356,13 @@ impl Ctx {
                     if let Ok(bytes) = serde_json::to_vec(&hb) {
                         let _ = sender.broadcast(bytes.into()).await;
                     }
-                    self.recompute("lapse").await;
+                    if !warming { self.recompute("lapse").await; }
                 }
                 ev = receiver.next() => match ev {
                     Some(Ok(GossipEvent::Received(msg))) => match serde_json::from_slice::<GossipMsg>(&msg.content) {
                         Ok(hb @ GossipMsg::Heartbeat { .. }) => {
                             self.on_heartbeat(hb);
-                            self.recompute("heartbeat").await;
+                            if !warming { self.recompute("heartbeat").await; }
                         }
                         Ok(GossipMsg::LeaseRelease { id }) => {
                             Self::lock(&self.live).seen.remove(&id);
@@ -332,7 +370,7 @@ impl Ctx {
                         }
                         Err(e) => tracing::debug!("mesh: gossip payload: {e}"),
                     },
-                    Some(Ok(_)) => {}
+                    Some(Ok(other)) => tracing::debug!("mesh: gossip {other:?}"),
                     Some(Err(e)) => tracing::debug!("mesh: gossip: {e}"),
                     None => break,
                 },
@@ -342,9 +380,14 @@ impl Ctx {
                             PeerEvent::Connected(p) => (p, true),
                             PeerEvent::Disconnected(p) => (p, false),
                         };
-                        let id = EngineId(p.0.clone());
-                        let _ = self.store.availability_open(&self.net.id, &id, up, now_ms()).await;
+                        let (id, now) = (EngineId(p.0.clone()), now_ms());
+                        let _ = self.store.availability_open(&self.net.id, &id, up, now).await;
+                        Self::lock(&self.live).touches.wrote(&id, now);
                         self.emit(MeshEvent::Peer(ev)).await;
+                        if up && warming {
+                            warming = false;
+                            self.recompute("connect").await;
+                        }
                         if !up {
                             Self::lock(&self.live).seen.remove(&id);
                             self.recompute("disconnect").await;
@@ -363,6 +406,11 @@ impl Ctx {
                     known = now;
                 }
             }
+        }
+        // Close every open interval at its true end, not at the last flush.
+        let now = now_ms();
+        for (id, _) in self.net.connected() {
+            let _ = self.store.availability_touch(&self.net.id, &id, now).await;
         }
         if self.is_hub()
             && let Ok(bytes) = serde_json::to_vec(&GossipMsg::LeaseRelease { id: self.net.id.clone() })
@@ -511,6 +559,7 @@ impl runtime::Plugin for MeshPlugin {
                 relay: cfg.relay.clone(),
                 discovery: cfg.discovery,
                 bind_addr: cfg.bind,
+                storm_frames_per_sec: cfg.storm_frames_per_sec,
             },
             store.clone(),
             name,
@@ -526,17 +575,10 @@ impl runtime::Plugin for MeshPlugin {
         };
         tracing::info!("mesh: engine {} on relay {} (discovery {})", net.id, cfg.relay, cfg.discovery);
 
-        // The replica plugin starts after this one: attach when it is up.
-        let (rt2, pool) = (rt.clone(), store.pool().clone());
-        tokio::spawn(async move {
-            if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
-                return;
-            }
-            match replica::attach(&pool, &["peers", "engine_stats", "availability"]).await {
-                Ok(_) => tracing::info!("mesh: peers/engine_stats/availability replicated"),
-                Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
-            }
-        });
+        // 69 decision 8: the mesh's name defaults to the first engine's own,
+        // stamped at this engine's first_seen so the oldest engine's default
+        // wins in replication and any rename beats every default. Written
+        // after the attach (below) so the trigger captures it.
 
         let (events, _) = broadcast::channel(256);
         let started_ms = now_ms();
@@ -555,13 +597,10 @@ impl runtime::Plugin for MeshPlugin {
                     gpu: false,
                 })
         };
-        let stats_hlc = match store.put_stats(&self_stats, cfg.hub, identity.first_seen_ms, started_ms).await {
-            Ok(hlc) => hlc,
-            Err(e) => {
-                tracing::warn!("mesh: engine_stats: {e:#}");
-                String::new()
-            }
-        };
+        // Written after the attach (below): a row that lands before the replica
+        // is up never fires a trigger and only its later column writes ship —
+        // a partial row every peer refuses (69 smoke: no peer could elect us).
+        let stats_hlc = String::new();
         let ctx = Arc::new(Ctx {
             rt: rt.clone(),
             cfg: Mutex::new(cfg.clone()),
@@ -578,13 +617,32 @@ impl runtime::Plugin for MeshPlugin {
                     reason: "start".into(),
                 },
                 seen: HashMap::new(),
-                self_stats,
+                self_stats: self_stats.clone(),
                 stats_hlc,
+                touches: store::Touches::new(cfg.availability_flush_secs * 1000),
             }),
         });
 
         let actor = Mesh::spawn(Mesh { ctx: ctx.clone() });
         actor.register(MESH_ACTOR)?;
+
+        // The replica plugin starts after this one: attach when it is up (bounded — a slimmer
+        // plugin set may never start it), then write the start-up rows.
+        let (c, name, first_seen, stats) = (ctx.clone(), net.name.clone(), identity.first_seen_ms, self_stats);
+        tokio::spawn(async move {
+            let replica =
+                tokio::time::timeout(ATTACH_WAIT, c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)).await;
+            if matches!(replica, Ok(Some(_))) {
+                match replica::attach(c.store.pool(), &["peers", "engine_stats", "availability", "mesh_meta"]).await {
+                    Ok(_) => tracing::info!("mesh: peers/engine_stats/availability/mesh_meta replicated"),
+                    Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
+                }
+            }
+            if let Err(e) = c.store.meta_default("name", &name, first_seen).await {
+                tracing::warn!("mesh: mesh_meta name: {e:#}");
+            }
+            c.write_stats(stats).await;
+        });
 
         // The transport, to the replica plugin whenever it comes up.
         let (rt2, transport) = (rt.clone(), net.clone());

@@ -32,7 +32,7 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-pub use vault::{KEEP, KeyStore, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo};
+pub use vault::{KEEP, KeyStore, MESH_PREFIX, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo};
 
 /// How often the plugin looks for rows written by others (a peer's batch
 /// applied by the replica, `t --secret-set`) and refreshes the in-memory copy.
@@ -401,6 +401,22 @@ pub async fn handle(rt: &Runtime) -> Option<Arc<Vault>> {
     }
 }
 
+/// The mesh's Noise static private key (69 decision 1): the `mesh/device_key`
+/// row, created on first use. `Err` when the vault is unavailable. The caller
+/// (link) derives the keypair; secrets cannot name `link::Identity` without a
+/// dependency cycle.
+pub async fn mesh_device_key(rt: &Runtime) -> anyhow::Result<zeroize::Zeroizing<[u8; 32]>> {
+    let vault = handle(rt).await.ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
+    vault.mesh_device_key().await
+}
+
+/// [`Vault::mesh_device_key_if_set`] for the runtime: the row when it exists, never minted.
+/// `Err` when the vault is unavailable.
+pub async fn mesh_device_key_existing(rt: &Runtime) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+    let vault = handle(rt).await.ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
+    vault.mesh_device_key_if_set()
+}
+
 impl ::tools::secrets::Secrets for Vault {
     fn expand(&self, args: &mut serde_json::Value) -> Result<usize, String> {
         Vault::expand(self, args)
@@ -510,7 +526,13 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
             return;
         }
         match replica::attach(v2.pool(), store::TABLES).await {
-            Ok(_) => tracing::info!("secrets: vault replicates"),
+            // Rows written before the attach (the vault predates 67; the mesh key row can land
+            // before the replica is up) never fired a trigger: announce them whole once, else a
+            // later column write ships alone and trips NOT NULL on every peer (69 smoke).
+            Ok(h) => match h.announce_unstamped().await {
+                Ok(n) => tracing::info!("secrets: vault replicates ({n} pre-existing row(s) announced)"),
+                Err(e) => tracing::warn!("secrets: vault replicates; existing rows not announced: {e:#}"),
+            },
             Err(e) => tracing::warn!("secrets: vault is local only: {e:#}"),
         }
     });

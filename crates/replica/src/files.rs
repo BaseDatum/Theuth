@@ -13,7 +13,7 @@
 //! otherwise (fresh engine, crash between apply and projection) the row is
 //! projected.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +85,12 @@ struct Mirror {
     table: String,
     /// Files this mirror has seen on disk (scanned or written).
     on_disk: Mutex<HashSet<String>>,
+    /// Per path, the row `hlc` the file on disk was last projected from. A
+    /// scan that finds file ≠ row while the row is a peer's, newer than the
+    /// file and not yet projected is looking at a projection still on its
+    /// way (apply committed the row; the feed has not reached us) and must
+    /// not upsert the old bytes over it (69 audit).
+    projected: Mutex<HashMap<String, String>>,
     /// Scan and projection never interleave.
     io: tokio::sync::Mutex<()>,
 }
@@ -92,27 +98,8 @@ struct Mirror {
 impl Engine {
     /// [`mirror`] on this engine; see the module docs.
     pub async fn mirror(self: &Arc<Self>, pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Result<ReplicaHandle> {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "CREATE TABLE IF NOT EXISTS {} (
-                path     TEXT PRIMARY KEY,
-                bytes    BLOB,
-                mtime_ms INTEGER,
-                deleted  INTEGER NOT NULL DEFAULT 0,
-                hlc      TEXT
-            )",
-            quote(table)
-        )))
-        .execute(pool)
-        .await?;
-        let handle = self.attach(pool, &[table]).await?;
-        let m = Arc::new(Mirror {
-            handle: handle.clone(),
-            dir: dir.to_path_buf(),
-            table: table.to_owned(),
-            on_disk: Mutex::new(HashSet::new()),
-            io: tokio::sync::Mutex::new(()),
-        });
+        let m = Mirror::new(self, pool, dir, table).await?;
+        let handle = m.handle.clone();
         m.scan().await?;
 
         // Hand edits → rows (the `schedule` watcher idiom).
@@ -143,7 +130,7 @@ impl Engine {
         // Rows from peers → files.
         let mut feed = handle.subscribe();
         let me = self.origin.clone();
-        let m2 = m.clone();
+        let m2 = m;
         tokio::spawn(async move {
             loop {
                 let batch = match feed.recv().await {
@@ -179,6 +166,32 @@ impl Engine {
 }
 
 impl Mirror {
+    /// Create `table` if missing, attach it, build the mirror (no scan, no tasks).
+    async fn new(engine: &Arc<Engine>, pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Result<Arc<Self>> {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                path     TEXT PRIMARY KEY,
+                bytes    BLOB,
+                mtime_ms INTEGER,
+                deleted  INTEGER NOT NULL DEFAULT 0,
+                hlc      TEXT
+            )",
+            quote(table)
+        )))
+        .execute(pool)
+        .await?;
+        let handle = engine.attach(pool, &[table]).await?;
+        Ok(Arc::new(Self {
+            handle,
+            dir: dir.to_path_buf(),
+            table: table.to_owned(),
+            on_disk: Mutex::new(HashSet::new()),
+            projected: Mutex::new(HashMap::new()),
+            io: tokio::sync::Mutex::new(()),
+        }))
+    }
+
     fn pool(&self) -> &SqlitePool {
         &self.handle.pool
     }
@@ -206,7 +219,7 @@ impl Mirror {
             let bytes = std::fs::read(entry.path())?;
             seen.insert(name.clone());
             let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT bytes, deleted FROM {} WHERE path = ?",
+                "SELECT bytes, deleted, hlc FROM {} WHERE path = ?",
                 quote(&self.table)
             )))
             .bind(&name)
@@ -216,6 +229,10 @@ impl Mirror {
                 r.get::<i64, _>("deleted") == 0 && r.get::<Option<Vec<u8>>, _>("bytes").as_deref() == Some(&bytes[..])
             });
             if same {
+                continue;
+            }
+            if self.projection_pending(row.as_ref(), &name, mtime_ms) {
+                tracing::debug!("replica: mirror {}: {name} awaits projection; not rescanned", self.dir.display());
                 continue;
             }
             let hlc = self.handle.stamp(mtime_ms).to_text();
@@ -296,7 +313,7 @@ impl Mirror {
             anyhow::bail!("refusing path {path:?}");
         }
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT bytes, deleted FROM {} WHERE path = ?",
+            "SELECT bytes, deleted, hlc FROM {} WHERE path = ?",
             quote(&self.table)
         )))
         .bind(path)
@@ -306,6 +323,9 @@ impl Mirror {
             return Ok(());
         };
         let file = self.dir.join(path);
+        if let Some(hlc) = row.get::<Option<String>, _>("hlc") {
+            self.projected.lock().insert(path.to_owned(), hlc);
+        }
         if row.get::<i64, _>("deleted") != 0 {
             match std::fs::remove_file(&file) {
                 Ok(()) => {}
@@ -325,6 +345,22 @@ impl Mirror {
         std::fs::rename(&tmp, &file).with_context(|| format!("rename to {}", file.display()))?;
         self.on_disk.lock().insert(path.to_owned());
         Ok(())
+    }
+
+    /// Is the row behind `row` (of `path`) a peer's write that scan must not
+    /// override: from another origin, stamped above the file's `mtime_ms`,
+    /// and not the row the file was last projected from? Once the pending
+    /// projection lands, `projected` names it and a later hand edit scans.
+    fn projection_pending(&self, row: Option<&sqlx::sqlite::SqliteRow>, path: &str, mtime_ms: u64) -> bool {
+        let Some(text) = row.and_then(|r| r.get::<Option<String>, _>("hlc")) else {
+            return false;
+        };
+        let Some(hlc) = crate::Hlc::parse(&text) else {
+            return false;
+        };
+        hlc.origin != *self.handle.origin()
+            && hlc.wall_ms > mtime_ms
+            && self.projected.lock().get(path) != Some(&text)
     }
 }
 
@@ -485,5 +521,60 @@ mod tests {
             pump(&b, &a).await;
             until(async || !a.files.join(file).exists()).await;
         }
+    }
+
+    /// 69 audit: a scan between apply's row commit and the feed-driven
+    /// projection saw file ≠ row and upserted the old bytes with a stamp
+    /// above the observed clock, reverting the peer's write and shipping the
+    /// revert back. B here is a bare [`Mirror`] with no watcher or feed task,
+    /// so apply, scan and project run in the order written.
+    #[tokio::test]
+    async fn scan_between_apply_and_projection_does_not_revert() {
+        let a = side().await;
+        let bdir = tempfile::tempdir().unwrap();
+        let b_engine = Engine::open(&bdir.path().join("replica.sqlite")).await.unwrap();
+        let b_pool = open_pool(&bdir.path().join("data.sqlite")).await;
+        let b_files = bdir.path().join("agents");
+        let b = super::Mirror::new(&b_engine, &b_pool, &b_files, "agents").await.unwrap();
+        let b_side = Side {
+            engine: b_engine.clone(),
+            handle: b.handle.clone(),
+            files: b_files.clone(),
+            _dir: bdir,
+        };
+
+        std::fs::write(a.files.join("ops.md"), b"v1").unwrap();
+        until(async || row(&a, "ops.md").await.is_some()).await;
+        pump(&a, &b_side).await;
+        b.scan().await.unwrap(); // never seen on disk → projected
+        assert_eq!(std::fs::read(b_files.join("ops.md")).unwrap(), b"v1");
+
+        // A edits (later mtime); B applies the row but the projection has not run.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        std::fs::write(a.files.join("ops.md"), b"v2").unwrap();
+        until(async || row(&a, "ops.md").await.is_some_and(|(x, _)| x == b"v2")).await;
+        pump(&a, &b_side).await;
+        assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v2");
+        assert_eq!(std::fs::read(b_files.join("ops.md")).unwrap(), b"v1", "projection pending");
+
+        // The race: a scan now sees file (v1) ≠ row (v2). Before: row ← v1 with a B stamp.
+        b.scan().await.unwrap();
+        assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v2", "scan reverted the peer's write");
+        assert!(b.handle.flush().await.unwrap().is_none(), "the revert shipped back");
+
+        // The projection lands; the file follows the row.
+        b.project("ops.md").await.unwrap();
+        assert_eq!(std::fs::read(b_files.join("ops.md")).unwrap(), b"v2");
+        b.scan().await.unwrap();
+        assert!(b.handle.flush().await.unwrap().is_none());
+        assert!(!b_engine.store.version_vector().await.unwrap().contains_key(b_engine.origin()), "B never wrote a batch");
+
+        // A hand edit on B after the projection is a real change and does replicate.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        std::fs::write(b_files.join("ops.md"), b"v3").unwrap();
+        b.scan().await.unwrap();
+        assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v3");
+        let batch = b.handle.flush().await.unwrap().expect("hand edit replicates");
+        assert_eq!(batch.origin, *b_engine.origin());
     }
 }

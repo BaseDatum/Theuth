@@ -1,60 +1,11 @@
 //! 67 §4.4, §4.6: the hub duties (dispatch, desks) follow the mesh lease.
-//! [`Follower`] is the pure state machine; [`Duties`] + [`apply`] name what
-//! a gain or a loss does. The actor mirrors `apply` inline (it needs `&mut
-//! self`); other plugins (slack, signal) keep a `Follower` of their own.
+//! [`Follower`] (the pure state machine) lives in `mesh::lease` since 69 so
+//! `link` can follow the lease without depending on roster; [`Duties`] +
+//! [`apply`] name what a gain or a loss does here. The actor mirrors `apply`
+//! inline (it needs `&mut self`); other plugins (slack, signal) keep a
+//! `Follower` of their own.
 
-use mesh::LeaseState;
-
-/// Where this engine stands with the lease. Duties are on until the mesh
-/// says otherwise: an engine without a mesh is its own hub.
-#[derive(Clone, Debug)]
-pub struct Follower {
-    /// This engine's id, once the mesh answered `Status`.
-    pub self_id: Option<String>,
-    /// Whether the duties are on.
-    pub holding: bool,
-    /// The last lease seen: `Some(holder)` once one arrived.
-    seen: Option<Option<String>>,
-}
-
-impl Default for Follower {
-    fn default() -> Self {
-        Self {
-            self_id: None,
-            holding: true,
-            seen: None,
-        }
-    }
-}
-
-impl Follower {
-    /// The engine id is known: re-evaluate the last lease seen.
-    /// `Some(true)` = just gained, `Some(false)` = just lost, `None` = unchanged.
-    pub fn set_self(&mut self, id: String) -> Option<bool> {
-        self.self_id = Some(id);
-        self.settle()
-    }
-
-    /// A lease event. `Some(true)` = just gained (holder is us), `Some(false)`
-    /// = just lost (someone else or nobody holds), `None` = unchanged. Before
-    /// `self_id` is known nothing changes: the lease is remembered and
-    /// [`Self::set_self`] resolves it.
-    pub fn observe(&mut self, lease: &LeaseState) -> Option<bool> {
-        self.seen = Some(lease.holder.as_ref().map(|h| h.0.clone()));
-        self.settle()
-    }
-
-    fn settle(&mut self) -> Option<bool> {
-        let me = self.self_id.as_deref()?;
-        let holder = self.seen.as_ref()?;
-        let want = holder.as_deref() == Some(me);
-        if want == self.holding {
-            return None;
-        }
-        self.holding = want;
-        Some(want)
-    }
-}
+pub use mesh::lease::Follower;
 
 /// What a hub does that a non-hub does not (67 §4.4).
 #[async_trait::async_trait]
@@ -87,7 +38,7 @@ pub async fn apply(change: Option<bool>, d: &dyn Duties) {
 mod tests {
     use std::sync::Mutex;
 
-    use mesh::EngineId;
+    use mesh::{EngineId, LeaseState};
 
     use super::*;
 
@@ -170,14 +121,5 @@ mod tests {
                 "open_desks",
             ]
         );
-    }
-
-    #[test]
-    fn set_self_without_a_lease_is_no_change() {
-        let mut f = Follower::default();
-        assert_eq!(f.set_self("a".into()), None);
-        assert!(f.holding);
-        assert_eq!(f.observe(&lease(None)), Some(false));
-        assert_eq!(f.observe(&lease(None)), None);
     }
 }

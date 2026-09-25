@@ -213,6 +213,10 @@ pub enum UiEvent {
     Pairing(link::Pairing),
     /// Link plugin traffic (bus event).
     LinkEvent(link::LinkEvent),
+    /// Reply to [`Command::MeshDevicesList`] (and the commands that change it): the mesh's replicated registry (69 §3).
+    MeshDevices(Vec<link::DeviceInfo>),
+    /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
+    MeshDevicePairing(link::PairingPayload),
     /// The self-updater staged a newer version (39 §4.1).
     UpdateReady(update::UpdateReady),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
@@ -614,6 +618,14 @@ pub enum Command {
     LinkRenameDevice(String, String),
     /// `link_revoke_device`, then `link_status`.
     LinkRevoke(String),
+    /// `devices_list` (69 §3).
+    MeshDevicesList,
+    /// `device_pair_start(name)`: the mesh pairing QR.
+    MeshDevicesAdd(Option<String>),
+    /// `device_revoke(id)`, then `devices_list`.
+    MeshDevicesRevoke(String),
+    /// `device_rename(id, name)`, then `devices_list`.
+    MeshDevicesRename(String, String),
     /// `list_nodes`.
     ListNodes,
     /// `add_node(key, name)`, then `list_nodes`.
@@ -1412,6 +1424,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/link",
         "[on|off|pair|rm <n>|name <n> <name>|relay <url>]",
         "pair and manage phones",
+    ),
+    (
+        "/mesh",
+        "devices [list|add [name]|rm <id>|name <id> <name>]",
+        "devices paired to the mesh (any engine serves them)",
     ),
     (
         "/nodes",
@@ -4806,6 +4823,30 @@ impl Model {
                 });
                 self.invite = Some(card);
             }
+            UiEvent::MeshDevices(list) => {
+                if list.is_empty() {
+                    self.entries.push(Entry::Info("mesh devices: none paired".into()));
+                }
+                let now = now_ms();
+                for d in list {
+                    self.entries.push(Entry::Info(mesh_device_line(&d, now)));
+                }
+            }
+            UiEvent::MeshDevicePairing(p) => {
+                // The QR any engine may show; the hub accepts (69 decision 4). Shares the
+                // node-invite countdown slot: one ticking invite card at a time.
+                let card = PairingCard::new(link::Pairing {
+                    key: p.string,
+                    expires_at_ms: p.expires_ms,
+                });
+                self.entries.push(Entry::Card {
+                    kind: CardKind::Node,
+                    title: format!("mesh device pairing · pending {}", p.pending_id),
+                    text: Box::new(markdown::Text::complete(&card.body())),
+                    expanded: true,
+                });
+                self.invite = Some(card);
+            }
             // Added, removed, online, revoked: all reshape the rows; re-ask.
             UiEvent::NodeEvent(_) => self.refresh_nodes = true,
             UiEvent::Secrets(list) => {
@@ -5136,6 +5177,9 @@ impl Model {
                     s.devices.retain(|d| d.id != id);
                 }
             }
+            // 69: the mesh identity's uplink and its replicated registry; the
+            // status snapshot carries both, so re-ask.
+            MeshRelay { .. } | DevicePaired { .. } | DevicesChanged => self.refresh_link = true,
         }
     }
 
@@ -5937,6 +5981,7 @@ impl Model {
             "/fork" => self.turn_cmd(TurnAction::Fork, cmd, arg, tx),
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
+            "/mesh" => self.mesh_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
@@ -8667,6 +8712,37 @@ impl Model {
         }
     }
 
+    /// `/mesh devices [list|add [name]|rm <id>|name <id> <name…>]` (69 §7), the CLI's `t mesh devices`.
+    fn mesh_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        const USAGE: &str = "usage: /mesh devices [list|add [name]|rm <id>|name <id> <name>]";
+        let (sub, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        if sub != "devices" {
+            self.entries.push(Entry::Error(USAGE.into()));
+            return;
+        }
+        let (verb, rest) = rest
+            .split_once(char::is_whitespace)
+            .map_or((rest, ""), |(s, r)| (s, r.trim()));
+        match (verb, rest) {
+            ("" | "list", _) => send(tx, Command::MeshDevicesList),
+            ("add", name) => send(
+                tx,
+                Command::MeshDevicesAdd((!name.is_empty()).then(|| name.to_owned())),
+            ),
+            ("rm", id) if !id.is_empty() => send(tx, Command::MeshDevicesRevoke(id.to_owned())),
+            ("name", rest) if rest.contains(char::is_whitespace) => {
+                let (id, name) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                send(
+                    tx,
+                    Command::MeshDevicesRename(id.to_owned(), name.trim().to_owned()),
+                );
+            }
+            _ => self.entries.push(Entry::Error(USAGE.into())),
+        }
+    }
+
     /// `/link` menu title: the status line, then the keys.
     pub fn link_title(&self) -> String {
         let Some(s) = &self.link else {
@@ -8942,6 +9018,25 @@ pub fn link_line(s: &link::LinkStatus) -> String {
         s.devices.len(),
         if s.devices.len() == 1 { "" } else { "s" },
         s.devices.iter().filter(|d| d.online).count()
+    )
+}
+
+/// One `/mesh devices` row: `<id>  <name>  <platform>  paired 2d ago · seen 3h ago | never seen | revoked`.
+pub fn mesh_device_line(d: &link::DeviceInfo, now: u64) -> String {
+    let since = |ms: u64| ago(chrono::Duration::milliseconds(now.saturating_sub(ms) as i64));
+    let state = if d.revoked {
+        "revoked".to_owned()
+    } else if d.last_seen_ms == 0 {
+        "never seen".to_owned()
+    } else {
+        format!("seen {}", since(d.last_seen_ms))
+    };
+    format!(
+        "{}  {}  {}  paired {} · {state}",
+        d.id,
+        d.name,
+        d.platform,
+        since(d.paired_ms)
     )
 }
 
@@ -11649,6 +11744,54 @@ mod tests {
     }
 
     #[test]
+    fn mesh_devices_command_mirrors_the_cli() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/mesh devices", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesList)));
+        m.submit("/mesh devices add", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(None))));
+        m.submit("/mesh devices add work phone", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesAdd(Some(n))) if n == "work phone"));
+        m.submit("/mesh devices rm abcd1234", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::MeshDevicesRevoke(id)) if id == "abcd1234"));
+        m.submit("/mesh devices name abcd1234 Sky's phone", &tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::MeshDevicesRename(id, n)) if id == "abcd1234" && n == "Sky's phone")
+        );
+        // Anything but `devices` is usage, sent nowhere.
+        m.submit("/mesh status", &tx);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /mesh devices")));
+
+        let now = now_ms();
+        let row = link::DeviceInfo {
+            id: "abcd1234".into(),
+            name: "phone".into(),
+            platform: "ios".into(),
+            paired_ms: now - 86_400_000,
+            last_seen_ms: 0,
+            revoked: false,
+        };
+        assert_eq!(mesh_device_line(&row, now), "abcd1234  phone  ios  paired 1d ago · never seen");
+        let revoked = link::DeviceInfo {
+            revoked: true,
+            last_seen_ms: now - 3_600_000,
+            ..row.clone()
+        };
+        assert!(mesh_device_line(&revoked, now).ends_with("· revoked"));
+        m.apply(UiEvent::MeshDevices(vec![]));
+        assert!(matches!(m.entries.last(), Some(Entry::Info(s)) if s == "mesh devices: none paired"));
+        m.apply(UiEvent::MeshDevicePairing(link::PairingPayload {
+            string: "https://relay.example/link#1.AAAA.d29yaw.QWJDLV8xMjM".into(),
+            expires_ms: now + 300_000,
+            pending_id: "AbC-_123".into(),
+        }));
+        assert!(m.invite.is_some());
+        assert!(matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Node, title, .. }) if title.ends_with("pending AbC-_123")));
+    }
+
+    #[test]
     fn link_menu_pairs_and_card_follows_events() {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
@@ -11668,6 +11811,7 @@ mod tests {
             connected: true,
             devices: vec![device.clone()],
             pairing: None,
+            mesh: None,
         };
         // Bare `/link` asks, the reply opens the modal; `/link off` alone only reports.
         m.submit("/link", &tx);

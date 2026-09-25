@@ -12,10 +12,13 @@ use std::fmt;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
 use rand::RngCore;
 use sha2::Sha256;
 
 use crate::actor::DocumentActor;
+use crate::hub::DocError;
+use crate::relay::{Client, Cmd};
 use crate::meta::{DocEvent, DocId, Joined, Member, Members, PALETTE, Principal, Role, ShareLink};
 use crate::store::now_ms;
 
@@ -56,9 +59,12 @@ fn verify(link: &ShareLink, handshake_hash: &[u8], guest_pub: &[u8; 32], proof: 
     mac.verify_slice(proof).is_ok()
 }
 
-/// Why a join was refused (§8.3). `Display` is the wire code the guest page keys its copy on.
+/// Why a join was refused (§8.3). `Display` is the wire code the guest page keys its copy on;
+/// `NotHub` displays as [`DocError::NotHub`] does (`NotHub:<engine id>`), so the RPC layer maps it too.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinError {
+    /// This engine does not hold the hub lease (69); the holder, when known.
+    NotHub(Option<mesh::EngineId>),
     /// The document has no links at all.
     LinkUnknown,
     /// `doc_link_revoke` happened.
@@ -78,6 +84,7 @@ pub enum JoinError {
 impl fmt::Display for JoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotHub(hub) => write!(f, "{}", DocError::NotHub { hub: hub.clone() }),
             Self::LinkUnknown => f.write_str("link_unknown"),
             Self::LinkRevoked => f.write_str("link_revoked"),
             Self::LinkExpired => f.write_str("link_expired"),
@@ -197,11 +204,12 @@ pub struct LinkCreate {
 }
 
 impl Message<LinkCreate> for DocumentActor {
-    type Reply = Result<(ShareLink, String), String>;
+    type Reply = Result<(ShareLink, String), DocError>;
 
     async fn handle(&mut self, m: LinkCreate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate()?;
         if self.cfg.sharing != "on" {
-            return Err("sharing_off".to_owned());
+            return Err("sharing_off".into());
         }
         let mut secret = [0u8; 32];
         let mut id = [0u8; 8];
@@ -233,9 +241,10 @@ pub struct LinkRevoke {
 }
 
 impl Message<LinkRevoke> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = Result<(), DocError>;
 
     async fn handle(&mut self, m: LinkRevoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate()?;
         let o = self.load(&m.doc)?;
         let link = o
             .meta
@@ -270,9 +279,27 @@ pub struct Join {
 }
 
 impl Message<Join> for DocumentActor {
-    type Reply = Result<Joined, JoinError>;
+    type Reply = DelegatedReply<Result<Joined, JoinError>>;
 
-    async fn handle(&mut self, m: Join, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: Join, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.join(m).await),
+            Ok(Some(hub)) => {
+                let client = Client::Member(b64url(&m.guest_pub));
+                let doc = m.doc.clone();
+                self.forward(hub, &doc, client, Cmd::Join { join: m, reply: tx });
+            }
+            Err(DocError::NotHub { hub }) => tx.send(Err(JoinError::NotHub(hub))),
+            Err(DocError::Other(e)) => tx.send(Err(JoinError::Other(e))),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn join(&mut self, m: Join) -> Result<Joined, JoinError> {
         if self.cfg.sharing == "disabled" {
             return Err(JoinError::SharingOff);
         }
@@ -345,9 +372,10 @@ pub struct MemberSet {
 }
 
 impl Message<MemberSet> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = Result<(), DocError>;
 
     async fn handle(&mut self, m: MemberSet, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate()?;
         let o = self.load(&m.doc)?;
         let member = o
             .meta
@@ -382,14 +410,15 @@ pub struct MemberRevoke {
 }
 
 impl Message<MemberRevoke> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = Result<(), DocError>;
 
     async fn handle(&mut self, m: MemberRevoke, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate()?;
         let o = self.load(&m.doc)?;
         let before = o.meta.members.len();
         o.meta.members.retain(|x| x.pub_ != m.pub_);
         if o.meta.members.len() == before {
-            return Err("not_member".to_owned());
+            return Err("not_member".into());
         }
         self.close_member(&m.doc, &m.pub_, "revoked");
         self.members_changed(&m.doc).await;
@@ -410,14 +439,27 @@ pub struct SetName {
 }
 
 impl Message<SetName> for DocumentActor {
-    type Reply = Result<(), String>;
+    type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: SetName, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: SetName, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        match self.hub.route() {
+            Ok(None) => tx.send(self.set_name(m).await),
+            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::SetName { name: m.name, reply: tx }),
+            Err(e) => tx.send(Err(e)),
+        }
+        reply
+    }
+}
+
+impl DocumentActor {
+    async fn set_name(&mut self, m: SetName) -> Result<(), DocError> {
         let pub_ = m.by.member().ok_or_else(|| "not_member".to_owned())?.to_owned();
         self.admit(&m.doc, &m.by, true)?;
         let name = m.name.trim();
         if name.is_empty() || name.chars().count() > 64 {
-            return Err("bad_name".to_owned());
+            return Err("bad_name".into());
         }
         let o = self.load(&m.doc)?;
         if let Some(member) = o.meta.members.iter_mut().find(|x| x.pub_ == pub_) {
@@ -436,11 +478,12 @@ pub struct MembersOf {
 }
 
 impl Message<MembersOf> for DocumentActor {
-    type Reply = Result<Members, String>;
+    type Reply = Result<Members, DocError>;
 
     async fn handle(&mut self, m: MembersOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate()?;
         self.load(&m.doc)?;
-        self.members_of(&m.doc)
+        Ok(self.members_of(&m.doc)?)
     }
 }
 

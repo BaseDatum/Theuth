@@ -16,6 +16,7 @@ const row = (id: string, order: number, parent?: string): Harness => ({
   pairedAt: 1,
   lastSeen: 1,
   order,
+  kind: 'engine',
   ...(parent ? { parent } : {}),
 })
 

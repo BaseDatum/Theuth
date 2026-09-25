@@ -31,8 +31,8 @@ import { on } from '@/store/sessions'
 
 const KEY = ['link'] as const
 
-/** Every link bus event; any of them means the status snapshot is stale. */
-const LINK_EVENTS = ['LinkRelay', 'LinkPairing', 'LinkPaired', 'LinkDevice', 'LinkRevoked'] as const satisfies readonly LinkEvent['type'][]
+/** Every link bus event; any of them means the status snapshot is stale (`LinkStatus.mesh` follows the 69 ones). */
+const LINK_EVENTS = ['LinkRelay', 'LinkPairing', 'LinkPaired', 'LinkDevice', 'LinkRevoked', 'MeshRelay', 'DevicePaired', 'DevicesChanged'] as const satisfies readonly LinkEvent['type'][]
 
 const PLATFORM: Record<string, string> = { ios: 'iOS', macos: 'macOS', web: 'Web' }
 
@@ -109,6 +109,22 @@ export function Link() {
           <Row label="Harness id">
             <span className="font-mono text-[13px] text-fg-tertiary">{s.harness_id.slice(0, 8)}…</span>
             <Button variant="ghost" size="icon-sm" aria-label="Copy harness id" onClick={() => void copy(s.harness_id ?? '')}>
+              <Copy />
+            </Button>
+          </Row>
+        )}
+        {s.mesh && (
+          <Row
+            label="Mesh uplink"
+            description={
+              <span className="flex items-center gap-1.5">
+                <Dot on={s.mesh.connected} />
+                {s.mesh.connected ? 'this engine is the hub: serving the mesh’s devices' : 'another engine holds the hub lease'} · devices pair in Settings › Mesh
+              </span>
+            }
+          >
+            <span className="font-mono text-[13px] text-fg-tertiary">{s.mesh.device_id.slice(0, 8)}…</span>
+            <Button variant="ghost" size="icon-sm" aria-label="Copy mesh device id" onClick={() => void copy(s.mesh?.device_id ?? '')}>
               <Copy />
             </Button>
           </Row>

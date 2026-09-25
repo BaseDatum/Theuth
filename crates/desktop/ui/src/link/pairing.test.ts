@@ -22,6 +22,7 @@ test('parsePairingKey: full URL, scheme → secure, bare form needs an origin, j
   expect(k).toMatchObject({ relayHost: 'relay.example.com:8787', secure: true, name: 'Studio Mac', harnessId: b64url(pub) })
   expect(k?.harnessPub).toEqual(pub)
   expect(k?.secret).toEqual(secret)
+  expect(k?.pending).toBeUndefined()
   expect(parsePairingKey(`http://localhost:8787/link#${frag}`)).toMatchObject({ relayHost: 'localhost:8787', secure: false })
   expect(parsePairingKey(` ${frag} `)).toBeNull() // no `location` under node
   expect(parsePairingKey(`https://relay.example.com/other#${frag}`)).toBeNull()
@@ -29,6 +30,17 @@ test('parsePairingKey: full URL, scheme → secure, bare form needs an origin, j
   expect(parsePairingKey(`https://relay.example.com/link#1.${b64url(pub)}.${b64url(utf8.encode('x'))}`)).toBeNull()
   expect(parsePairingKey('https://relay.example.com/link')).toBeNull()
   expect(parsePairingKey('nonsense')).toBeNull()
+})
+
+test('parsePairingKey: a 4th part is the pending id of a mesh pairing (69 §5); 5 parts or junk there is not a key', () => {
+  const pub = new Uint8Array(32).fill(1)
+  const secret = new Uint8Array(32).fill(2)
+  // The contract's example: name `work`, pending `AbC-_123`.
+  const s = `https://relay.example/link#1.${b64url(concat(pub, secret))}.d29yaw.QWJDLV8xMjM`
+  expect(parsePairingKey(s)).toMatchObject({ relayHost: 'relay.example', secure: true, name: 'work', harnessId: b64url(pub), pending: 'AbC-_123' })
+  expect(parsePairingKey(`${s}.QQ`)).toBeNull()
+  expect(parsePairingKey(`${s.slice(0, -'QWJDLV8xMjM'.length)}not/base64url`)).toBeNull()
+  expect(parsePairingKey(`${s.slice(0, -'QWJDLV8xMjM'.length)}`)).toBeNull() // empty 4th part
 })
 
 /** Noise IK / IKpsk2 responder: `msg1 → { payload, rs, reply(payload) → { msg2, send, recv } }`. */
@@ -219,7 +231,7 @@ test('session: IK over the relay, RPC round trips, large records split/reassembl
   FakeSocket.harness = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'old name', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0 }
+  const harness = { id: h.id, name: 'old name', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
   useHarnesses.getState().add(harness)
   const t = new LinkTransport(harness, { ws: WS, identity: () => Promise.resolve(device) })
   const client = new RpcClient(t)
@@ -256,7 +268,7 @@ test('session: raw socket close (relay restart) → reconnecting → new socket 
   FakeSocket.harness = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0 }
+  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
   useHarnesses.getState().add(harness)
   const client = new RpcClient(new LinkTransport(harness, { ws: WS, identity: () => Promise.resolve(device) }))
   const states: string[] = []
@@ -281,7 +293,7 @@ test('session: relay refuses two upgrades, then accepts → open; served from th
   FakeSocket.harness = h
   const device = await generateIdentity()
   h.enrolled.push(b64url(device.pub))
-  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0 }
+  const harness = { id: h.id, name: 'x', relayHost: 'relay.test', secure: false, pairedAt: 0, lastSeen: 0, order: 0, kind: 'engine' as const }
   useHarnesses.getState().add(harness)
   // The web build: page origin = relay; a relay restart rotates the `__Host-link` secret → every upgrade is 403 until a page fetch.
   vi.stubGlobal('location', { host: 'relay.test' })

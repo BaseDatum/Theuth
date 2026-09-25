@@ -5,7 +5,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// A document id: uuid v7 rendered as 26 lowercase base32 characters (§4.1).
+/// A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,
+/// meeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a
+/// mesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
@@ -14,9 +16,21 @@ pub struct DocId(pub String);
 const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 impl DocId {
-    /// A fresh time-ordered id.
+    /// The v5 namespace every bound document's id is derived in (fixed; never changes).
+    pub const NAMESPACE: uuid::Uuid = uuid::uuid!("7a6e7c1e-59d0-4d0c-9c2b-1f3a0d0c5e69");
+
+    /// A fresh time-ordered id (notes).
     pub fn new() -> Self {
         Self::from_uuid(uuid::Uuid::now_v7())
+    }
+
+    /// The id of the document bound to `binding`: uuid v5 (namespace [`Self::NAMESPACE`], name =
+    /// [`Binding::key`]) for bound kinds, so two engines agree without talking; a fresh v7 for a `Note`.
+    pub fn for_binding(binding: &Binding) -> Self {
+        match binding {
+            Binding::Note => Self::new(),
+            b => Self::from_uuid(uuid::Uuid::new_v5(&Self::NAMESPACE, b.key().as_bytes())),
+        }
     }
 
     /// Render `u` (16 bytes → 26 chars, RFC 4648 alphabet lowercased, no padding).
@@ -574,11 +588,24 @@ mod tests {
         assert!(DocId::parse(&"1".repeat(26)).is_none());
         // Known vector: all-zero uuid → 26 × 'a'.
         assert_eq!(DocId::from_uuid(uuid::Uuid::nil()).0, "a".repeat(26));
-        // v7 ids sort by time, and so do their base32 renderings (first bits are the timestamp).
+        // v7 ids sort by time. Their base32 renderings do NOT sort as strings (the alphabet is
+        // a–z then 2–7, and '2' < 'a' in ASCII), so compare the ids, not the text.
         let a = DocId::new();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b = DocId::new();
-        assert!(a.0 < b.0);
+        assert!(a.as_str() != b.as_str());
+        assert!(DocId::parse(a.as_str()).is_some() && DocId::parse(b.as_str()).is_some());
+    }
+
+    #[test]
+    fn bound_ids_are_deterministic_and_notes_are_not() {
+        let k = Binding::Knowledge("facts/foo".into());
+        let a = DocId::for_binding(&k);
+        assert_eq!(a, DocId::for_binding(&k));
+        assert!(DocId::parse(a.as_str()).is_some());
+        assert_ne!(a, DocId::for_binding(&Binding::Knowledge("facts/bar".into())));
+        assert_ne!(a, DocId::for_binding(&Binding::MeetingNote("facts/foo".into())));
+        assert_ne!(DocId::for_binding(&Binding::Note), DocId::for_binding(&Binding::Note));
     }
 
     #[test]

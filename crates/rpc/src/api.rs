@@ -34,7 +34,7 @@ use agent::{
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
     PrivateTrees, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetSessionProject,
-    ListProjectStyles, ProjectStyle, SetProjectStyle,
+    ListProjectStyles, ProjectStyle, SetProjectStyle, PeerDeliver, PeerEnvelope,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{
@@ -68,6 +68,7 @@ use link::{
 };
 use parking_lot::RwLock;
 use runtime::{InputId, Runtime, SessionId};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
@@ -177,6 +178,14 @@ pub trait Api {
         files: Vec<PathBuf>,
         delivery: Option<Delivery>,
     ) -> RpcResult<InputId>;
+    /// A peer message for `session` forwarded by the engine of its sender
+    /// (69 P): the owner's intake. Mesh-internal — accepted only over
+    /// `theuth/rpc/1` (the `Forwarded` marker), never from a client; the
+    /// supervisor refuses when the session is not owned here (no take).
+    /// Returns the owner's receipt (`accepted`); a refusal is the error the
+    /// sender records as a `failed` receipt.
+    #[method(name = "peer_deliver", with_extensions)]
+    async fn peer_deliver(&self, session: SessionId, envelope: PeerEnvelope) -> RpcResult<PeerReceipt>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -723,7 +732,7 @@ pub trait Api {
     /// The document bound to `binding`. A knowledge binding whose concept
     /// exists but has no document yet gets one created from its file (59
     /// §7.1, on demand); `None` only when there is nothing to bind to.
-    #[method(name = "doc_resolve")]
+    #[method(name = "doc_resolve", with_extensions)]
     async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>>;
     /// Open `doc`: its metadata, the Yjs state missing from `sv` (base64 v1
     /// state vector; absent = everything) as ≤ 48 KiB base64 chunks, and the
@@ -744,25 +753,29 @@ pub trait Api {
     #[method(name = "doc_snapshots")]
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>>;
     /// Import a snapshot's markdown as one diff transaction (59 §4.6: history is kept, not rewound).
-    #[method(name = "doc_restore")]
+    #[method(name = "doc_restore", with_extensions)]
     async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()>;
     /// Revert the last agent edit of `doc` as the owner (59 §5.5 page menu); one level, in memory.
-    #[method(name = "doc_undo_agent")]
+    #[method(name = "doc_undo_agent", with_extensions)]
     async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()>;
     /// A new note (59 §5.3, §7.3): `kind: note`, derived `documents/<id>/note.md`, headed `# <title>` unless `markdown` has one.
-    #[method(name = "doc_create")]
+    #[method(name = "doc_create", with_extensions)]
     async fn doc_create(&self, title: String, markdown: Option<String>) -> RpcResult<document::DocSummary>;
     /// Retitle a note: meta, index and its first block when that is a level-1 heading. Other kinds: `title_owned_by_binding`.
-    #[method(name = "doc_rename")]
+    #[method(name = "doc_rename", with_extensions)]
     async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()>;
     /// Move a note to `documents/.trash/<id>` (swept after 30 days); subscribers get `Closed{deleted}`. Other kinds: `delete_via_owner`.
-    #[method(name = "doc_delete")]
+    #[method(name = "doc_delete", with_extensions)]
     async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()>;
     /// Whether the documents helper (`theuth-documents-<version>` beside `t`, 59 §3.2) is there and how its
     /// process is doing (`process`: `running` | `crashed{stderr}` | `missing` | `starting`); a missing or
     /// crashed helper disables notes, knowledge editing and meeting notes. Answers whether documents run or not.
     #[method(name = "documents_status")]
     async fn documents_status(&self) -> RpcResult<document::HelperStatus>;
+    /// How this engine handled peers' document snapshots since start (69 E2): `merged`, `unchanged`,
+    /// `resnapshots`, `noop_applies_avoided`. Served on any engine; never persisted.
+    #[method(name = "doc_stats")]
+    async fn doc_stats(&self) -> RpcResult<document::DocStats>;
     /// A document's members and share links (59 §8; owner only).
     #[method(name = "doc_members", with_extensions)]
     async fn doc_members(&self, doc: document::DocId) -> RpcResult<document::Members>;
@@ -780,7 +793,7 @@ pub trait Api {
     /// handshake from that static finds no membership.
     #[method(name = "doc_member_revoke", with_extensions)]
     async fn doc_member_revoke(&self, doc: document::DocId, member: String) -> RpcResult<()>;
-    /// A new share link (59 §8.2; owner only): `https://<relay>/d#1.<harness>.<doc>.<secret>`,
+    /// A new share link (59 §8.2; owner only): `https://<relay>/d#1.<mesh device id | engine id>.<doc>.<secret>` (69),
     /// returned once — the harness keeps only `sha256(secret)`. Needs Link enabled (the relay host).
     #[method(name = "doc_link_create", with_extensions)]
     async fn doc_link_create(
@@ -930,6 +943,21 @@ pub trait Api {
     /// Revoke a paired device: close its conns, delete its row.
     #[method(name = "link_revoke_device")]
     async fn link_revoke_device(&self, id: String) -> RpcResult<()>;
+    /// Every row of the replicated device registry, revoked included (69 §3).
+    #[method(name = "devices_list")]
+    async fn devices_list(&self) -> RpcResult<Vec<link::DeviceInfo>>;
+    /// Revoke a device (69 §3): `revoked_ms` set, conns closed; replicates to every hub.
+    #[method(name = "device_revoke")]
+    async fn device_revoke(&self, id: String) -> RpcResult<()>;
+    /// Rename a device in the replicated registry (69 §3).
+    #[method(name = "device_rename")]
+    async fn device_rename(&self, id: String, name: String) -> RpcResult<()>;
+    /// Start a pairing against the MESH identity (69 decision 4): the QR
+    /// string (4 parts, pending id last), its expiry and the pending id. Any
+    /// engine may call it; the hub accepts the device. `name` is what the QR
+    /// shows; `None` → the mesh's name.
+    #[method(name = "device_pair_start")]
+    async fn device_pair_start(&self, name: Option<String>) -> RpcResult<link::PairingPayload>;
     /// Store base64 `bytes` as `<data_dir>/attachments/<sha256[..16]>.<ext>`
     /// and return the path, for `send_input { files }` or `transcribe`. `ext`
     /// ∈ png, jpg, jpeg, gif, webp, pdf, m4a, mp4, webm, ogg, opus, mp3, wav;
@@ -1603,6 +1631,57 @@ fn documents() -> RpcResult<ActorRef<document::DocumentActor>> {
     })
 }
 
+/// JSON-RPC error code: this engine does not hold the hub lease, and the document call is a hub duty
+/// (69 §5). `data` is a `document::DocError` in serde's external enum form:
+/// `{"NotHub": {"hub": "<engine id>" | null}}` — Y's forwarding keys on it.
+pub const NOT_HUB: i32 = -32011;
+
+/// [`send`] for the document actor: a `NotHub` refusal (typed, or in its `Display` form from a
+/// handler whose error stayed a `String`) becomes [`NOT_HUB`] with the typed payload; anything else
+/// is `ASK_FAILED` with the message.
+async fn doc_send<M>(actor: &ActorRef<document::DocumentActor>, msg: M) -> RpcResult<<<document::DocumentActor as Message<M>>::Reply as Reply>::Ok>
+where
+    document::DocumentActor: Message<M>,
+    M: Send + 'static,
+    <<document::DocumentActor as Message<M>>::Reply as Reply>::Error: Display,
+{
+    actor.ask(msg).await.map_err(|e: SendError<M, _>| match e {
+        SendError::HandlerError(e) => match document::DocError::parse(&e.to_string()) {
+            err @ document::DocError::NotHub { .. } => {
+                ErrorObjectOwned::owned(NOT_HUB, "another engine holds the hub lease", Some(err))
+            }
+            document::DocError::Other(msg) => failed(msg),
+        },
+        other => failed(other.to_string()),
+    })
+}
+
+/// 69 Y: a hub-only owner call this engine refused with `NotHub{hub}` is re-issued verbatim to `hub`
+/// as one unary JSON-RPC over `theuth/rpc/1` (`forward::to_peer`; request/reply, so no stream). The
+/// hub dispatches it as its internal peer: these are owner-only or owner-side methods, so the
+/// principal is right there. `params` is the positional list in trait order. `hub: null`, no
+/// transport, or a hub not connected → the refusal stands (the client sees `-32011`).
+async fn doc_forward<T: DeserializeOwned>(
+    ext: &Extensions,
+    method: &str,
+    params: impl Serialize,
+    r: RpcResult<T>,
+) -> RpcResult<T> {
+    let Err(e) = &r else { return r };
+    if e.code() != NOT_HUB {
+        return r;
+    }
+    let hub = e
+        .data()
+        .and_then(|d| serde_json::from_str::<document::DocError>(d.get()).ok())
+        .and_then(|d| d.not_hub().cloned().flatten());
+    let Some(hub) = hub else { return r };
+    match forward::to_peer(ext, &replica::PeerId(hub.0), method, params).await? {
+        Some(v) => Ok(v),
+        None => r,
+    }
+}
+
 /// The knowledge actor; `knowledge.enabled: false` means it was never
 /// spawned (12 §9.3).
 fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
@@ -1821,6 +1900,23 @@ impl ApiServer for Server {
         )
         .await?;
         Ok(id)
+    }
+
+    async fn peer_deliver(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        envelope: PeerEnvelope,
+    ) -> RpcResult<PeerReceipt> {
+        self.authorize(ext, session).await?;
+        if ext.get::<forward::Forwarded>().is_none() {
+            return Err(ErrorObjectOwned::owned(
+                UNAUTHORIZED,
+                "peer_deliver is mesh-internal",
+                None::<()>,
+            ));
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, PeerDeliver { session, envelope }).await
     }
 
     async fn broadcast(
@@ -2918,12 +3014,12 @@ impl ApiServer for Server {
         kind: Option<document::DocKind>,
         limit: Option<u32>,
     ) -> RpcResult<Vec<document::DocSummary>> {
-        send(&documents()?, document::ListDocs { kind, limit }).await
+        doc_send(&documents()?, document::ListDocs { kind, limit }).await
     }
 
-    async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>> {
+    async fn doc_resolve(&self, ext: &Extensions, binding: document::Binding) -> RpcResult<Option<document::DocId>> {
         let docs = documents()?;
-        if let Some(id) = send(&docs, document::Lookup { binding: binding.clone() }).await? {
+        if let Some(id) = doc_send(&docs, document::Lookup { binding: binding.clone() }).await? {
             return Ok(Some(id));
         }
         // On demand (59 §7.1): a knowledge concept becomes a document from its current file.
@@ -2935,15 +3031,16 @@ impl ApiServer for Server {
             Err(e) if e.code() == ASK_FAILED => return Ok(None),
             Err(e) => return Err(e),
         };
-        send(
+        let r = doc_send(
             &docs,
             document::Ensure {
-                binding,
+                binding: binding.clone(),
                 markdown: text,
             },
         )
         .await
-        .map(Some)
+        .map(Some);
+        doc_forward(ext, "doc_resolve", (&binding,), r).await
     }
 
     async fn doc_open(
@@ -2953,7 +3050,7 @@ impl ApiServer for Server {
         sv: Option<String>,
     ) -> RpcResult<document::DocOpen> {
         let (peer, by) = principal(ext)?;
-        let r = send(&documents()?, document::OpenDoc { doc, sv, by }).await;
+        let r = doc_send(&documents()?, document::OpenDoc { doc, sv, by }).await;
         member_outcome(&peer, &r);
         r
     }
@@ -2965,7 +3062,7 @@ impl ApiServer for Server {
         update: String,
     ) -> RpcResult<()> {
         let (peer, by) = principal(ext)?;
-        let r = send(&documents()?, document::ApplyUpdate { doc, update, by }).await;
+        let r = doc_send(&documents()?, document::ApplyUpdate { doc, update, by }).await;
         member_outcome(&peer, &r);
         r
     }
@@ -2977,14 +3074,15 @@ impl ApiServer for Server {
         state: String,
     ) -> RpcResult<()> {
         let (peer, by) = principal(ext)?;
-        let r = send(&documents()?, document::AwarenessUpdateMsg { doc, state, by }).await;
+        let r = doc_send(&documents()?, document::AwarenessUpdateMsg { doc, state, by }).await;
         member_outcome(&peer, &r);
         r
     }
 
     async fn doc_members(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<document::Members> {
         owner(ext)?;
-        send(&documents()?, document::MembersOf { doc }).await
+        let r = doc_send(&documents()?, document::MembersOf { doc: doc.clone() }).await;
+        doc_forward(ext, "doc_members", (&doc,), r).await
     }
 
     async fn doc_member_set(
@@ -2996,13 +3094,20 @@ impl ApiServer for Server {
         name: Option<String>,
     ) -> RpcResult<()> {
         owner(ext)?;
-        send(&documents()?, document::MemberSet { doc, pub_: member, role, name }).await
+        let r = doc_send(
+            &documents()?,
+            document::MemberSet { doc: doc.clone(), pub_: member.clone(), role, name: name.clone() },
+        )
+        .await;
+        doc_forward(ext, "doc_member_set", (&doc, &member, role, &name), r).await
     }
 
     async fn doc_member_revoke(&self, ext: &Extensions, doc: document::DocId, member: String) -> RpcResult<()> {
         owner(ext)?;
-        send(&documents()?, document::MemberRevoke { doc, pub_: member.clone() }).await?;
-        // 59 §8.4: their live conns go too. Link off (no conns) is not an error.
+        let r = doc_send(&documents()?, document::MemberRevoke { doc: doc.clone(), pub_: member.clone() }).await;
+        doc_forward(ext, "doc_member_revoke", (&doc, &member), r).await?;
+        // 59 §8.4: their live conns go too — here as well as on the hub (the guest may hang off either
+        // engine's uplink). Link off (no conns) is not an error.
         if let Ok(link) = link()
             && let Ok(key) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&member)
             && let Ok(key) = <[u8; 32]>::try_from(key)
@@ -3021,36 +3126,47 @@ impl ApiServer for Server {
         expires_ms: Option<i64>,
     ) -> RpcResult<document::LinkCreated> {
         owner(ext)?;
-        // The URL needs the relay host and this harness's id (59 §8.2): Link must be on.
+        // The URL needs the relay host and an id devices dial (59 §8.2): Link must be on. 69: the mesh
+        // device id when this engine has one — the hub, whichever engine it is, answers `/h/<mesh id>`
+        // — else the engine id (a single engine before any device paired). Old engine-id links keep
+        // resolving: the engine uplink stays registered.
         let status: LinkStatus = send(&link()?, link::Status).await?;
-        let harness = status.harness_id.filter(|_| status.enabled).ok_or_else(|| {
-            failed("link is off: turn on Settings › Link to share documents")
-        })?;
+        if !status.enabled {
+            return Err(failed("link is off: turn on Settings › Link to share documents"));
+        }
+        let harness = status
+            .mesh
+            .as_ref()
+            .map(|m| m.device_id.clone())
+            .or(status.harness_id)
+            .ok_or_else(|| failed("link has no identity yet"))?;
         let relay = status.relay.trim_end_matches('/');
         let origin = relay
             .strip_prefix("wss://")
             .map(|h| format!("https://{h}"))
             .or_else(|| relay.strip_prefix("ws://").map(|h| format!("http://{h}")))
             .unwrap_or_else(|| relay.to_owned());
-        let (link, secret) = send(
+        let r = doc_send(
             &documents()?,
             document::LinkCreate {
                 doc: doc.clone(),
                 role,
-                name,
+                name: name.clone(),
                 expires_ms,
             },
         )
-        .await?;
-        Ok(document::LinkCreated {
+        .await
+        .map(|(link, secret)| document::LinkCreated {
             url: format!("{origin}/d#1.{harness}.{doc}.{secret}"),
             link,
-        })
+        });
+        doc_forward(ext, "doc_link_create", (&doc, role, &name, expires_ms), r).await
     }
 
     async fn doc_link_revoke(&self, ext: &Extensions, doc: document::DocId, link: String) -> RpcResult<()> {
         owner(ext)?;
-        send(&documents()?, document::LinkRevoke { doc, link }).await
+        let r = doc_send(&documents()?, document::LinkRevoke { doc: doc.clone(), link: link.clone() }).await;
+        doc_forward(ext, "doc_link_revoke", (&doc, &link), r).await
     }
 
     async fn doc_join(
@@ -3067,7 +3183,7 @@ impl ApiServer for Server {
         let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(proof)
             .map_err(|_| failed("bad_proof"))?;
-        let r = send(
+        let r = doc_send(
             &documents()?,
             document::Join {
                 doc,
@@ -3089,29 +3205,32 @@ impl ApiServer for Server {
 
     async fn doc_set_name(&self, ext: &Extensions, doc: document::DocId, name: String) -> RpcResult<()> {
         let (peer, by) = principal(ext)?;
-        let r = send(&documents()?, document::SetName { doc, by, name }).await;
+        let r = doc_send(&documents()?, document::SetName { doc, by, name }).await;
         member_outcome(&peer, &r);
         r
     }
 
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {
-        send(&documents()?, document::Snapshots { doc }).await
+        doc_send(&documents()?, document::Snapshots { doc }).await
     }
 
-    async fn doc_restore(&self, doc: document::DocId, snapshot: String) -> RpcResult<()> {
-        send(&documents()?, document::Restore { doc, snapshot })
+    async fn doc_restore(&self, ext: &Extensions, doc: document::DocId, snapshot: String) -> RpcResult<()> {
+        let r = doc_send(&documents()?, document::Restore { doc: doc.clone(), snapshot: snapshot.clone() })
             .await
-            .map(|_| ())
+            .map(|_| ());
+        doc_forward(ext, "doc_restore", (&doc, &snapshot), r).await
     }
 
-    async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()> {
-        send(&documents()?, document::UndoLastAgentEdit { doc })
+    async fn doc_undo_agent(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<()> {
+        let r = doc_send(&documents()?, document::UndoLastAgentEdit { doc: doc.clone() })
             .await
-            .map(|_| ())
+            .map(|_| ());
+        doc_forward(ext, "doc_undo_agent", (&doc,), r).await
     }
 
     async fn doc_create(
         &self,
+        ext: &Extensions,
         title: String,
         markdown: Option<String>,
     ) -> RpcResult<document::DocSummary> {
@@ -3122,27 +3241,34 @@ impl ApiServer for Server {
                 None::<()>,
             ));
         }
-        send(
+        let r = doc_send(
             &documents()?,
             document::CreateNote {
                 title: title.trim().to_owned(),
-                markdown: markdown.unwrap_or_default(),
+                markdown: markdown.clone().unwrap_or_default(),
                 by: document::Principal::Owner { device: None },
             },
         )
-        .await
+        .await;
+        doc_forward(ext, "doc_create", (&title, &markdown), r).await
     }
 
     async fn documents_status(&self) -> RpcResult<document::HelperStatus> {
         Ok(document::helper_status())
     }
 
-    async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()> {
-        send(&documents()?, document::Rename { doc, title }).await
+    async fn doc_stats(&self) -> RpcResult<document::DocStats> {
+        doc_send(&documents()?, document::Stats).await
     }
 
-    async fn doc_delete(&self, doc: document::DocId) -> RpcResult<()> {
-        send(&documents()?, document::DeleteNote { doc }).await
+    async fn doc_rename(&self, ext: &Extensions, doc: document::DocId, title: String) -> RpcResult<()> {
+        let r = doc_send(&documents()?, document::Rename { doc: doc.clone(), title: title.clone() }).await;
+        doc_forward(ext, "doc_rename", (&doc, &title), r).await
+    }
+
+    async fn doc_delete(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<()> {
+        let r = doc_send(&documents()?, document::DeleteNote { doc: doc.clone() }).await;
+        doc_forward(ext, "doc_delete", (&doc,), r).await
     }
 
     async fn knowledge_harvest(
@@ -3323,6 +3449,22 @@ impl ApiServer for Server {
 
     async fn link_revoke_device(&self, id: String) -> RpcResult<()> {
         send(&link()?, Revoke { id }).await
+    }
+
+    async fn devices_list(&self) -> RpcResult<Vec<link::DeviceInfo>> {
+        send(&link()?, link::DevicesList).await
+    }
+
+    async fn device_revoke(&self, id: String) -> RpcResult<()> {
+        send(&link()?, Revoke { id }).await
+    }
+
+    async fn device_rename(&self, id: String, name: String) -> RpcResult<()> {
+        send(&link()?, RenameDevice { id, name }).await
+    }
+
+    async fn device_pair_start(&self, name: Option<String>) -> RpcResult<link::PairingPayload> {
+        send(&link()?, link::DevicePairStart { name }).await
     }
 
     async fn list_nodes(&self) -> RpcResult<Vec<nodes::Node>> {
@@ -3953,7 +4095,7 @@ impl ApiServer for Server {
         // `doc_open` after this cannot race an update it would then miss (59 §6.2).
         let admit = async {
             let (peer, by) = principal(ext)?;
-            let r = send(&documents()?, document::Subscribe { doc, by }).await;
+            let r = doc_send(&documents()?, document::Subscribe { doc, by }).await;
             member_outcome(&peer, &r);
             r
         };

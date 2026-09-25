@@ -102,7 +102,7 @@ mod tests {
             key,
             msg2,
             mode,
-        }) = respond(&msg1, &h, "Studio", |k| k == &d.public, None)
+        }) = respond(&msg1, &h, "Studio", |k| k == &d.public, |_| None)
         else {
             panic!("expected session");
         };
@@ -126,7 +126,7 @@ mod tests {
         // IK msg1: e (32) ‖ enc(s) (32+16) ‖ enc(payload) (0+16).
         assert_eq!(msg1.len(), 32 + 48 + 16);
         let Some(Handshake::Session { mode, .. }) =
-            respond(&msg1, &h, "h", |k| k == &d.public, None)
+            respond(&msg1, &h, "h", |k| k == &d.public, |_| None)
         else {
             panic!("expected session");
         };
@@ -140,18 +140,19 @@ mod tests {
         let hello = PairHello {
             name: "Studio Mac".into(),
             platform: "theuth".into(),
+            pending: None,
         };
         let (hs, msg1) = pair(&d, &h.public, &psk, &hello).unwrap();
         let Some(Handshake::Pair {
             key, hello, msg2, ..
-        }) = respond(&msg1, &h, "Node", |_| false, Some(&psk))
+        }) = respond(&msg1, &h, "Node", |_| false, |hint| hint.is_none().then_some(psk))
         else {
             panic!("expected pairing");
         };
         assert_eq!(key, d.public);
         assert_eq!(
-            (hello.name.as_str(), hello.platform.as_str()),
-            ("Studio Mac", "theuth")
+            (hello.name.as_str(), hello.platform.as_str(), hello.pending),
+            ("Studio Mac", "theuth", None)
         );
         let (_, accept) = finish(hs, &msg2).unwrap();
         assert_eq!(accept, br#"{"name":"Node"}"#);
@@ -166,6 +167,6 @@ mod tests {
             .build_initiator()
             .unwrap();
         let (_, m1) = msg1(hs, &[1, 1]).unwrap();
-        assert!(respond(&m1, &h, "h", |k| k == &d.public, None).is_none());
+        assert!(respond(&m1, &h, "h", |k| k == &d.public, |_| None).is_none());
     }
 }

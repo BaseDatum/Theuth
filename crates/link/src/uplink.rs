@@ -34,6 +34,11 @@ pub const CLOSE_NORMAL: u8 = 0;
 pub const CLOSE_QUEUE_FULL: u8 = 1;
 /// CLOSE reason: refused (handshake/auth failure, over limit).
 pub const CLOSE_REFUSED: u8 = 3;
+/// CLOSE reason: the harness uplink went away (relay → device only).
+pub const CLOSE_HARNESS_GONE: u8 = 4;
+/// CLOSE reason: the hub lease moved (69 decision 6); the mesh uplink sends
+/// it to every device conn on a graceful handover. Devices treat it like 4.
+pub const CLOSE_HUB_MOVED: u8 = 5;
 
 /// Uplink outbound queue (31 §4.5).
 const OUT_QUEUE: usize = 4096;
@@ -367,10 +372,14 @@ mod liveness_tests {
                 },
                 hostname: "test".into(),
                 identity: Some(identity),
-                devices: crate::devices::Devices::load(&dir),
+                devices: crate::devices::Devices::empty(),
                 pairing: None,
+                pending: crate::devices::Pending::new(None, None),
+                mesh_identity: None,
+                mesh: None,
                 connected: false,
                 conns: Default::default(),
+                mesh_conns: Default::default(),
                 guests: Default::default(),
             },
         );

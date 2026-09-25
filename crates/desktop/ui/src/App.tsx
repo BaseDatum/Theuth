@@ -31,7 +31,7 @@ import {
   setHiddenFromCapture,
 } from '@/lib/tauri'
 import { startUpdateListener } from '@/lib/update'
-import { LOCAL, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
+import { LOCAL, applyMeshStatus, hasLocal, hydrateHarnesses, useHarnesses, useNeedsPairing } from '@/link/harnesses'
 import { autoPair, watchNodes } from '@/link/nodes'
 import { LinkTransport } from '@/link/transport'
 import { type Api, makeApi } from '@/rpc/api'
@@ -71,11 +71,15 @@ async function quit(): Promise<void> {
   await quitAck()
 }
 
-/** `info` into the connection store, then the harness's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent). */
+/**
+ * `info` into the connection store, then the harness's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent).
+ * A mesh row also re-reads `mesh_status` (69 §4): whichever engine is the hub now names the mesh and its members.
+ */
 function loadInfo(st: Stores, api: Api): Promise<void> {
   return api.info().then((info) => {
     st.connection.getState().setInfo(info)
     void autoPair(st.id, api)
+    if (useHarnesses.getState().harnesses.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
     void api.dictation_prewarm().then(setModel).catch(() => undefined)
     void refreshStatus(api).catch(() => undefined)
     // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
@@ -179,7 +183,10 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
       let lost = false
       client.onState((s) => {
         conn.setConnState(s)
-        const shown = useHarnesses.getState().active === st.id
+        // Toasts for the harness on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
+        // "reconnecting…" chip instead — the new hub answers on the same id within seconds.
+        const { active, harnesses } = useHarnesses.getState()
+        const shown = active === st.id && harnesses.find((h) => h.id === st.id)?.kind !== 'mesh'
         if (s === 'reconnecting' && !lost) {
           lost = true
           if (shown) toast('Connection lost, reconnecting…')

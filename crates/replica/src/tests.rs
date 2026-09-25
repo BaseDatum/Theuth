@@ -209,3 +209,87 @@ async fn attach_rejects_bad_shapes() {
     let e = engine.attach(&pool, &["ok"]).await.unwrap_err().to_string();
     assert!(e.contains("already attached"), "{e}");
 }
+
+/// Rows of `origin` in `a`'s outbox.
+async fn outbox_rows(a: &Side, origin: &str) -> u64 {
+    let vv = a.engine.store.batches_after(&crate::PeerId(origin.into()), 0).await.unwrap();
+    vv.len() as u64
+}
+
+/// 69 audit: the outbox pruned only this engine's own batches; every relayed
+/// origin grew forever. Now each origin is pruned below what every known peer
+/// holds of it, always keeping the newest batch, and nothing is pruned while
+/// a known peer has not said hello since start.
+#[tokio::test]
+async fn prunes_every_origin_below_what_all_peers_hold() {
+    let a = side().await;
+    let batch = |origin: &str, seq: u64| crate::ChangeBatch {
+        origin: crate::PeerId(origin.into()),
+        seq,
+        changes: Vec::new(),
+    };
+    // Own feed: seq 1..=3. Relayed: B 1..=3, C 1..=2, D 1.
+    for _ in 0..3 {
+        a.engine.emit_locked(Vec::new()).await.unwrap();
+    }
+    for (origin, n) in [("B", 3), ("C", 2), ("D", 1)] {
+        for seq in 1..=n {
+            assert!(a.engine.apply(&batch(origin, seq)).await.unwrap());
+        }
+    }
+    let me = a.engine.origin().0.clone();
+    let vv = |pairs: &[(&str, u64)]| -> std::collections::HashMap<crate::PeerId, u64> {
+        pairs.iter().map(|(o, s)| (crate::PeerId((*o).to_owned()), *s)).collect()
+    };
+    let (b, c, d) = (crate::PeerId("B".into()), crate::PeerId("C".into()), crate::PeerId("D".into()));
+
+    // B and C said hello; D (a known origin) has not: nothing goes.
+    a.engine.learn(&b, &vv(&[(&me, 3), ("B", 3), ("C", 2), ("D", 1)]));
+    a.engine.learn(&c, &vv(&[(&me, 2), ("B", 2), ("C", 2)]));
+    assert_eq!(a.engine.prune_outbox().await.unwrap(), 0);
+    assert_eq!((outbox_rows(&a, &me).await, outbox_rows(&a, "B").await), (3, 3));
+
+    // D says hello: every origin drops below the minimum any peer holds.
+    // me: min(3, 2, 1) = 1 → nothing below 1. B: min(3, 2, 0) = 0. C: min(2, 2, 2) = 2 → #1 goes.
+    a.engine.learn(&d, &vv(&[(&me, 1), ("C", 2), ("D", 1)]));
+    assert_eq!(a.engine.prune_outbox().await.unwrap(), 1);
+    assert_eq!(outbox_rows(&a, "C").await, 1);
+    // B holds everything: me → floor 3 keeps only #3, B → floor 3, C already at #2, D floor 1 keeps #1.
+    a.engine.learn(&c, &vv(&[(&me, 3), ("B", 3), ("C", 2), ("D", 1)]));
+    a.engine.learn(&d, &vv(&[(&me, 3), ("B", 3), ("C", 2), ("D", 1)]));
+    assert_eq!(a.engine.prune_outbox().await.unwrap(), 4);
+    for origin in [me.as_str(), "B", "C", "D"] {
+        assert_eq!(outbox_rows(&a, origin).await, 1, "{origin}: the newest batch always stays");
+    }
+    // The version vector (what `Hello` advertises) is untouched by pruning.
+    let held = a.engine.store.version_vector().await.unwrap();
+    assert_eq!(held[&crate::PeerId(me)], 3);
+    assert_eq!(held[&b], 3);
+}
+
+/// 69 audit: `captured`/`applied`/`echo` count column changes; a local write
+/// that repeats an applied `(table, pk, column, value)` within 500 ms is an
+/// echo, an ordinary edit is not. Before: no counter existed.
+#[tokio::test]
+async fn counters_see_captures_applies_and_echoes() {
+    let (a, b) = (side().await, side().await);
+    exec(&a.pool, "INSERT INTO tasks (id, title, n) VALUES ('t1', 'one', 1)").await;
+    pump(&a, &b).await;
+    let (sa, sb) = (a.engine.stats().await.unwrap(), b.engine.stats().await.unwrap());
+    assert_eq!((sa.captured, sa.applied, sa.echo, sa.outbox_rows), (3, 0, 0, 1), "{sa:?}");
+    assert_eq!((sb.captured, sb.applied, sb.echo, sb.outbox_rows), (0, 3, 0, 1), "{sb:?}");
+
+    // B writes the row back as it stands (a mirror re-scanning its own projection would):
+    // the same-value update logs nothing, so drop and re-insert to force the capture.
+    exec(&b.pool, "DELETE FROM tasks WHERE id = 't1'").await;
+    exec(&b.pool, "INSERT INTO tasks (id, title, n) VALUES ('t1', 'one', 1)").await;
+    b.handle.flush().await.unwrap();
+    let sb = b.engine.stats().await.unwrap();
+    assert_eq!((sb.captured, sb.echo), (4, 3), "delete + three echoed columns: {sb:?}");
+
+    // A real edit on B is not an echo.
+    exec(&b.pool, "UPDATE tasks SET n = 2 WHERE id = 't1'").await;
+    b.handle.flush().await.unwrap();
+    let sb = b.engine.stats().await.unwrap();
+    assert_eq!((sb.captured, sb.echo), (5, 3), "{sb:?}");
+}

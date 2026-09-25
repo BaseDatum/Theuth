@@ -27,7 +27,10 @@ function LinkStartup({ id }: { id: string }) {
   const { harnesses, presence: all, setActive, remove } = useHarnesses()
   const [pairing, setPairing] = useState(false)
   const presence = all[id]
-  const name = useConnection((s) => s.info?.name) ?? harnesses.find((h) => h.id === id)?.name ?? id
+  const row = harnesses.find((h) => h.id === id)
+  const mesh = row?.kind === 'mesh'
+  const infoName = useConnection((s) => s.info?.name)
+  const name = (mesh && row.meshName) || infoName || row?.name || id
   // ponytail: one button to the local daemon, else another paired harness (online first); a picker if people pair many.
   const others = harnesses.filter((h) => h.id !== id)
   const next = hasLocal() ? LOCAL : (others.find((h) => all[h.id] === 'online') ?? others[0])?.id
@@ -41,13 +44,17 @@ function LinkStartup({ id }: { id: string }) {
       data-tauri-drag-region={isMacDesktop() || undefined}
     >
       <div className="flex w-full max-w-[640px] flex-col gap-4 rounded-xl border border-border-subtle bg-elevated p-6">
-        <p className="text-fg-secondary">{refused ? `${name} refused this device` : `Reconnecting to ${name}…`}</p>
-        {presence === 'offline' && <p className="text-xs text-fg-secondary">Harness offline</p>}
+        <p className="text-fg-secondary">{refused ? (mesh ? `${name} revoked this device — pair again` : `${name} refused this device`) : `Reconnecting to ${name}…`}</p>
+        {presence === 'offline' && <p className="text-xs text-fg-secondary">{mesh ? 'Hub offline — waiting for an engine to take over' : 'Harness offline'}</p>}
         {presence === 'connecting' && <p className="text-xs text-fg-secondary">Relay unreachable</p>}
         <p className="text-sm text-fg-secondary">
           {refused
-            ? 'The harness no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
-            : 'The harness is offline or the relay is unreachable. This screen closes when it is back.'}
+            ? mesh
+              ? 'The mesh no longer knows this device (revoked on any of its engines). Show a new pairing code there (Settings › Mesh › Devices, or `t mesh devices add`), pair again, then forget this entry.'
+              : 'The harness no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
+            : mesh
+              ? 'The hub is offline or the relay is unreachable. Another engine of the mesh takes over within about half a minute; this screen closes when it answers.'
+              : 'The harness is offline or the relay is unreachable. This screen closes when it is back.'}
         </p>
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="ghost" className="min-h-11" onClick={() => remove(id)}>

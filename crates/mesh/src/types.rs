@@ -130,14 +130,45 @@ pub enum MeshEvent {
     Lease(LeaseState),
 }
 
+/// Frames and bytes one stream ALPN has moved since start (69 audit: the
+/// number a storm would show). A frame is one read or write on a stream,
+/// not a protocol message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AlpnTraffic {
+    /// Stream ALPN (`theuth/records/1`, …).
+    pub alpn: String,
+    /// Reads that returned bytes.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub frames_in: u64,
+    /// Writes.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub frames_out: u64,
+    /// Bytes read.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes_in: u64,
+    /// Bytes written.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes_out: u64,
+}
+
 /// Reply to [`crate::Status`] / `mesh_status`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MeshStatus {
     /// This engine.
     pub self_id: EngineId,
+    /// This engine's display name (`mesh.name`, default the hostname).
+    pub self_name: String,
+    /// The mesh's name (`mesh_meta.name`, 69 decision 8); `None` until an
+    /// engine wrote it.
+    pub mesh_name: Option<String>,
     /// Every paired engine, this one excluded.
     pub peers: Vec<Peer>,
     /// The lease.
     pub lease: LeaseState,
+    /// Per stream ALPN, what moved since start; sorted by `alpn`.
+    pub traffic: Vec<AlpnTraffic>,
+    /// Replication counters; `None` until the replica plugin syncs over this mesh.
+    pub replica: Option<replica::Stats>,
 }

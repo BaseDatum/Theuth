@@ -8,9 +8,11 @@
 //! accepted, so a wrong guess costs one extra connection, never a gap).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -28,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use crate::identity::now_ms;
 use crate::pairing::{self, Payload, PeerEntry, Pending};
 use crate::store::Store;
-use crate::types::{EngineId, HubPref, Peer};
+use crate::types::{AlpnTraffic, EngineId, HubPref, Peer};
 
 /// Stream ALPN: mesh control — pairing handshake, presence, peer-set exchange.
 /// Not in the contract's five: gossip owns `ALPN_GOSSIP` end to end.
@@ -81,6 +83,120 @@ pub struct BindOpts {
     pub discovery: bool,
     /// Explicit socket to bind (tests: `127.0.0.1:0`).
     pub bind_addr: Option<std::net::SocketAddr>,
+    /// `mesh.storm_frames_per_sec`: one ALPN above this for 10 s is warned about.
+    pub storm_frames_per_sec: u64,
+}
+
+/// Frames = one `poll_read` that returned bytes, or one `poll_write`. Not
+/// protocol messages: a sampler on top of these needs no knowledge of what
+/// rides on the ALPN.
+#[derive(Default)]
+struct Counters {
+    frames_in: AtomicU64,
+    frames_out: AtomicU64,
+    bytes_in: AtomicU64,
+    bytes_out: AtomicU64,
+    sampler: Mutex<Sampler>,
+}
+
+/// Rate over 1 s windows, driven by the traffic itself (a storm keeps it
+/// running; silence needs no timer). Warns once the rate has stayed above
+/// the limit for [`STORM_SUSTAIN`], at most every [`STORM_WARN_EVERY`].
+#[derive(Default)]
+struct Sampler {
+    window_start_ms: u64,
+    frames_at_start: u64,
+    over_since_ms: Option<u64>,
+    last_warn_ms: u64,
+}
+
+/// A rate above the limit for this long is a storm.
+const STORM_SUSTAIN: Duration = Duration::from_secs(10);
+/// Storm warnings are logged at most this often per ALPN.
+const STORM_WARN_EVERY: Duration = Duration::from_secs(60);
+
+impl Sampler {
+    /// One more frame at `now_ms` with `total` frames so far; `Some(rate)` when
+    /// this crossed into a warning.
+    fn sample(&mut self, now_ms: u64, total: u64, limit: u64) -> Option<u64> {
+        if self.window_start_ms == 0 {
+            (self.window_start_ms, self.frames_at_start) = (now_ms, total);
+            return None;
+        }
+        let elapsed = now_ms.saturating_sub(self.window_start_ms);
+        if elapsed < 1000 {
+            return None;
+        }
+        let rate = total.saturating_sub(self.frames_at_start) * 1000 / elapsed;
+        let window_start = self.window_start_ms;
+        (self.window_start_ms, self.frames_at_start) = (now_ms, total);
+        if rate <= limit {
+            self.over_since_ms = None;
+            return None;
+        }
+        let since = *self.over_since_ms.get_or_insert(window_start);
+        if now_ms.saturating_sub(since) >= STORM_SUSTAIN.as_millis() as u64
+            && (self.last_warn_ms == 0 || now_ms.saturating_sub(self.last_warn_ms) >= STORM_WARN_EVERY.as_millis() as u64)
+        {
+            self.last_warn_ms = now_ms;
+            return Some(rate);
+        }
+        None
+    }
+}
+
+impl Counters {
+    fn frame(&self, alpn: &str, limit: u64) {
+        let total = self.frames_in.load(Ordering::Relaxed) + self.frames_out.load(Ordering::Relaxed);
+        let warn = self.sampler.lock().unwrap_or_else(|p| p.into_inner()).sample(now_ms(), total, limit);
+        if let Some(rate) = warn {
+            tracing::warn!("mesh: {alpn} at {rate} frames/s for 10 s (limit {limit}): storm?");
+        }
+    }
+}
+
+/// A stream whose reads and writes feed one ALPN's [`Counters`].
+struct Counted {
+    inner: Box<dyn ByteStream>,
+    counters: Arc<Counters>,
+    alpn: String,
+    limit: u64,
+}
+
+impl tokio::io::AsyncRead for Counted {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let r = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &r {
+            let n = buf.filled().len() - before;
+            if n > 0 {
+                self.counters.frames_in.fetch_add(1, Ordering::Relaxed);
+                self.counters.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
+                self.counters.frame(&self.alpn, self.limit);
+            }
+        }
+        r
+    }
+}
+
+impl tokio::io::AsyncWrite for Counted {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let r = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &r {
+            self.counters.frames_out.fetch_add(1, Ordering::Relaxed);
+            self.counters.bytes_out.fetch_add(*n as u64, Ordering::Relaxed);
+            self.counters.frame(&self.alpn, self.limit);
+        }
+        r
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 type InboundItem = (PeerId, Box<dyn ByteStream>);
@@ -102,7 +218,8 @@ pub struct Net {
     /// This engine.
     pub id: EngineId,
     store: Store,
-    name: String,
+    /// This engine's display name (`mesh.name`, default the hostname).
+    pub name: String,
     relay: String,
     /// Relays to insert on `join_network` (empty = `mesh.relay: none`).
     relays: RelayMap,
@@ -119,6 +236,9 @@ pub struct Net {
     /// Bumped on every peer-set change; the connector and the lease loop watch it.
     pub peers_gen: watch::Sender<u64>,
     inbound: HashMap<&'static str, (mpsc::Sender<InboundItem>, tokio::sync::Mutex<mpsc::Receiver<InboundItem>>)>,
+    /// Per ALPN, what its streams moved (69 audit).
+    traffic: Mutex<HashMap<String, Arc<Counters>>>,
+    storm_frames_per_sec: u64,
 }
 
 impl std::fmt::Debug for Net {
@@ -128,13 +248,14 @@ impl std::fmt::Debug for Net {
 }
 
 /// Every ALPN whose inbound streams are handed out through [`Transport::accept`].
-const STREAM_ALPNS: [&str; 6] = [
+const STREAM_ALPNS: [&str; 7] = [
     replica::ALPN_RECORDS,
     replica::ALPN_ACP,
     replica::ALPN_SESSIONS,
     replica::ALPN_KNOWLEDGE,
     replica::ALPN_RPC,
     replica::ALPN_ARTIFACTS,
+    replica::ALPN_DOCS,
 ];
 
 impl Net {
@@ -206,6 +327,8 @@ impl Net {
                 events,
                 peers_gen,
                 inbound,
+                traffic: Mutex::new(HashMap::new()),
+                storm_frames_per_sec: opts.storm_frames_per_sec,
             }
         });
         if !net.paired_ids().is_empty() {
@@ -419,11 +542,21 @@ impl Net {
     pub async fn merge_peers(&self, incoming: &[PeerEntry]) -> anyhow::Result<()> {
         let local = self.store.peer_entries().await?;
         let (_, changed) = pairing::merge(&local, incoming, &self.id);
-        if changed.is_empty() {
-            return Ok(());
-        }
         for p in &changed {
             self.store.put_peer(p).await?;
+        }
+        // The `peers` table also travels by the record replica, which writes the row behind this
+        // merge's back: nothing "changed" here, yet the in-memory paired set never learned the id
+        // and refused its control connection as a stranger (69 smoke: C, paired to A, could not
+        // connect to B). Refresh whenever a live incoming id is unknown to the set.
+        let unknown = {
+            let paired = self.paired.read().unwrap_or_else(|p| p.into_inner());
+            incoming.iter().any(|p| {
+                p.removed_ms.is_none() && p.id != self.id && EndpointId::from_str(&p.id.0).is_ok_and(|e| !paired.contains(&e))
+            })
+        };
+        if changed.is_empty() && !unknown {
+            return Ok(());
         }
         self.refresh_paired().await?;
         Ok(())
@@ -580,6 +713,7 @@ impl Net {
         // Stranger: the first stream must be a valid PairHello.
         let (mut send, mut recv) = conn.accept_bi().await?;
         let Ok(Msg::PairHello { token, me, peers }) = read_msg(&mut recv).await else {
+            tracing::debug!("mesh: {} is not in the paired set and sent no PairHello; closed", peer.fmt_short());
             conn.close(0u32.into(), b"not paired");
             return Ok(());
         };
@@ -727,6 +861,33 @@ impl Net {
             let _ = tx.send(item).await;
         }
     }
+
+    /// Wrap `stream` so its reads and writes count toward `alpn`.
+    fn count(&self, alpn: &str, stream: Box<dyn ByteStream>) -> Box<dyn ByteStream> {
+        let counters = Self::lock(&self.traffic).entry(alpn.to_owned()).or_default().clone();
+        Box::new(Counted {
+            inner: stream,
+            counters,
+            alpn: alpn.to_owned(),
+            limit: self.storm_frames_per_sec,
+        })
+    }
+
+    /// What every ALPN's streams moved since start, sorted by ALPN.
+    pub fn traffic(&self) -> Vec<AlpnTraffic> {
+        let mut out: Vec<AlpnTraffic> = Self::lock(&self.traffic)
+            .iter()
+            .map(|(alpn, c)| AlpnTraffic {
+                alpn: alpn.clone(),
+                frames_in: c.frames_in.load(Ordering::Relaxed),
+                frames_out: c.frames_out.load(Ordering::Relaxed),
+                bytes_in: c.bytes_in.load(Ordering::Relaxed),
+                bytes_out: c.bytes_out.load(Ordering::Relaxed),
+            })
+            .collect();
+        out.sort_by(|a, b| a.alpn.cmp(&b.alpn));
+        out
+    }
 }
 
 #[async_trait::async_trait]
@@ -740,7 +901,7 @@ impl Transport for Net {
         anyhow::ensure!(self.is_paired(&id), "{peer} is not a paired engine");
         let conn = self.connection(id, alpn).await?;
         let (send, recv) = conn.open_bi().await.context("open stream")?;
-        Ok(Box::new(tokio::io::join(recv, send)))
+        Ok(self.count(alpn, Box::new(tokio::io::join(recv, send))))
     }
 
     fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
@@ -788,7 +949,7 @@ impl ProtocolHandler for Inbound {
         }
         let pid = PeerId(peer.to_string());
         while let Ok((send, recv)) = connection.accept_bi().await {
-            let stream: Box<dyn ByteStream> = Box::new(tokio::io::join(recv, send));
+            let stream = net.count(self.alpn, Box::new(tokio::io::join(recv, send)));
             net.deliver_inbound(self.alpn, (pid.clone(), stream)).await;
         }
         Ok(())
@@ -857,6 +1018,7 @@ mod tests {
                 relay: String::new(),
                 discovery: false,
                 bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                storm_frames_per_sec: 50,
             },
             store,
             name.into(),
@@ -911,11 +1073,66 @@ mod tests {
         assert_eq!(from, PeerId(b.id.0.clone()));
         assert_eq!(&got, b"hello");
 
+        // 69 audit: the round trip is on the books, per ALPN, both ends.
+        let per = |n: &Net| n.traffic().into_iter().find(|t| t.alpn == replica::ALPN_RECORDS).unwrap();
+        let (ta, tb) = (per(&a), per(&b));
+        assert_eq!((ta.bytes_in, ta.bytes_out, tb.bytes_in, tb.bytes_out), (5, 5, 5, 5), "{ta:?} {tb:?}");
+        assert!(ta.frames_in >= 1 && ta.frames_out >= 1 && tb.frames_in >= 1 && tb.frames_out >= 1);
+
         // Removal tombstones on b and closes the connection.
         b.remove_peer(&a.id).await.unwrap();
         assert!(!b.is_paired(&a.endpoint.id()));
         assert!(b.store.peer_entries().await.unwrap()[0].removed());
         a.shutdown().await;
         b.shutdown().await;
+    }
+
+    /// The sampler warns once the rate stays above the limit for 10 s, then
+    /// at most once a minute; a quiet second resets the sustain clock.
+    #[test]
+    fn sampler_warns_on_sustained_rate_once_a_minute() {
+        let mut s = Sampler::default();
+        let (mut total, mut warned) = (0, Vec::new());
+        // 100 frames/s for 12 s (clock starts at 1 s; 0 is "no window yet"):
+        // the first warning lands once 10 s are over.
+        for sec in 1..=12u64 {
+            total += 100;
+            if let Some(rate) = s.sample(sec * 1000, total, 50) {
+                warned.push((sec, rate));
+            }
+        }
+        assert_eq!(warned, vec![(11, 100)], "10 s above the limit, measured from the first hot window");
+        // Still hot for the rest of the minute: nothing more until 60 s after the warning.
+        for sec in 13..=75u64 {
+            total += 100;
+            if let Some(rate) = s.sample(sec * 1000, total, 50) {
+                warned.push((sec, rate));
+            }
+        }
+        assert_eq!(warned, vec![(11, 100), (71, 100)]);
+        // A quiet second resets: 5 hot seconds after it warn nothing.
+        assert!(s.sample(76_000, total + 10, 50).is_none());
+        for sec in 77..=81u64 {
+            total += 100;
+            assert!(s.sample(sec * 1000, total, 50).is_none(), "sustain restarted at {sec}");
+        }
+    }
+
+    /// `Counted` books bytes and frames on both directions of a duplex pipe.
+    #[tokio::test]
+    async fn counted_stream_books_both_directions() {
+        let (x, y) = tokio::io::duplex(64);
+        let c = Arc::new(Counters::default());
+        let mut cx = Counted { inner: Box::new(x), counters: c.clone(), alpn: "t".into(), limit: 50 };
+        let mut y = y;
+        cx.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        y.read_exact(&mut buf).await.unwrap();
+        y.write_all(b"hi").await.unwrap();
+        let mut back = [0u8; 2];
+        cx.read_exact(&mut back).await.unwrap();
+        let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        assert_eq!((load(&c.frames_out), load(&c.bytes_out)), (1, 5));
+        assert_eq!((load(&c.frames_in), load(&c.bytes_in)), (1, 2));
     }
 }

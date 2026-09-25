@@ -306,7 +306,7 @@ mod tests {
             msg2,
             mode,
             ..
-        }) = respond(&msg1, &h, "node", |k| k == &d.public, None)
+        }) = respond(&msg1, &h, "node", |k| k == &d.public, |_| None)
         else {
             panic!("expected session");
         };
@@ -342,10 +342,10 @@ mod tests {
 
     #[test]
     fn relay_url_from_parsed() {
-        let key = link::pairing::build("ws://127.0.0.1:8787", &[1; 32], &[2; 32], "n");
+        let key = link::pairing::build("ws://127.0.0.1:8787", &[1; 32], &[2; 32], "n", None);
         let p = link::pairing::parse(&key).unwrap();
         assert_eq!(relay_url(&p), "ws://127.0.0.1:8787");
-        let key = link::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "n");
+        let key = link::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "n", None);
         assert_eq!(
             relay_url(&link::pairing::parse(&key).unwrap()),
             "wss://relay.example"

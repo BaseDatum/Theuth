@@ -74,11 +74,15 @@ export const AGENTS: AgentSummary[] = [
 
 export const MESH: MeshStatus = {
   self_id: 'e1a4c0ffee00000000000000000000000000000000000000000000000000mac1',
+  self_name: 'mac-1',
+  mesh_name: 'work',
   peers: [
     { id: 'b1ea5e0000000000000000000000000000000000000000000000000000buildA', name: 'build-A', addrs: ['10.0.0.12:4433'], reachable: true, last_seen_ms: now - 5_000, hub_pref: 'prefer' },
     { id: 'c0de0000000000000000000000000000000000000000000000000000container3', name: 'container-3', addrs: [], reachable: false, last_seen_ms: now - 2 * H, hub_pref: 'eligible' },
   ],
   lease: { holder: 'b1ea5e0000000000000000000000000000000000000000000000000000buildA', since_ms: now - 30 * H, reason: 'prefer' },
+  traffic: [{ alpn: 'theuth/records/1', frames_in: 412, frames_out: 398, bytes_in: 91_204, bytes_out: 88_710 }],
+  replica: { captured: 120, applied: 233, relayed: 0, echo: 0, outbox_rows: 41 },
 }
 
 export const PAIRING = 'theuth-mesh:1:e1a4c0ffee…mac1:relay=https://iroh.relay.theuth.io'

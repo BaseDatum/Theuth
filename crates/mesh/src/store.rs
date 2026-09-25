@@ -1,7 +1,9 @@
-//! `<data_dir>/mesh.sqlite`: `peers`, `engine_stats`, `availability`, `lease_log` (67 §4).
-//! The first three replicate (`replica::attach`); every write stamps `hlc`
-//! from the process clock so peers merge it per column LWW.
+//! `<data_dir>/mesh.sqlite`: `peers`, `engine_stats`, `availability`, `mesh_meta`,
+//! `lease_log` (67 §4, 69 decision 8). All but `lease_log` replicate
+//! (`replica::attach`); every write stamps `hlc` from the process clock so
+//! peers merge it per column LWW.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -229,6 +231,7 @@ impl Store {
     }
 
     /// Extend the latest interval of `subject` (as seen by `observer`) to `now_ms`.
+    /// A replicated write: [`Touches`] decides when a heartbeat gets to call it.
     pub async fn availability_touch(&self, observer: &EngineId, subject: &EngineId, now_ms: u64) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE availability SET to_ms = ?, hlc = ? WHERE observer = ? AND subject = ?
@@ -280,6 +283,78 @@ impl Store {
             .await?;
         Ok(())
     }
+
+    // --- mesh_meta (69 decision 8) --------------------------------------
+
+    /// One mesh-wide value (`name`, …); `None` when no engine wrote it yet.
+    pub async fn meta_get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM mesh_meta WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.and_then(|r| r.get::<Option<String>, _>("value")))
+    }
+
+    /// Set a mesh-wide value (replicates LWW by `hlc`).
+    pub async fn meta_set(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO mesh_meta (key, value, hlc) VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, hlc = excluded.hlc",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(self.hlc(crate::identity::now_ms()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A default: write `value` only when `key` has no row yet, stamped at
+    /// `at_ms` (the engine's `first_seen_ms`) instead of now — so when two
+    /// engines' defaults meet in replication the *oldest* engine's wins (LWW
+    /// picks the larger clock; ours is deliberately old), and any explicit
+    /// [`Self::meta_set`] beats every default. Returns whether this call wrote.
+    pub async fn meta_default(&self, key: &str, value: &str, at_ms: u64) -> anyhow::Result<bool> {
+        let hlc = replica::Hlc { wall_ms: at_ms, counter: 0, origin: replica::PeerId(self.me.0.clone()) }.to_text();
+        let r = sqlx::query("INSERT INTO mesh_meta (key, value, hlc) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING")
+            .bind(key)
+            .bind(value)
+            .bind(hlc)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+}
+
+/// When each connected peer's open interval last reached its row. Every
+/// heartbeat used to `UPDATE availability` (a replicated batch every 10 s
+/// per peer, idling forever); now open and close write, and a heartbeat
+/// writes only when `every_ms` has passed since the last write.
+pub struct Touches {
+    every_ms: u64,
+    last: HashMap<EngineId, u64>,
+}
+
+impl Touches {
+    /// A gate that lets a heartbeat write every `every_ms`.
+    pub fn new(every_ms: u64) -> Self {
+        Self { every_ms, last: HashMap::new() }
+    }
+
+    /// The row of `subject` was written at `now_ms` (interval opened or closed).
+    pub fn wrote(&mut self, subject: &EngineId, now_ms: u64) {
+        self.last.insert(subject.clone(), now_ms);
+    }
+
+    /// Heartbeat for `subject`: is a row write due? Records it when so.
+    pub fn due(&mut self, subject: &EngineId, now_ms: u64) -> bool {
+        let last = self.last.entry(subject.clone()).or_insert(now_ms);
+        if now_ms.saturating_sub(*last) < self.every_ms {
+            return false;
+        }
+        *last = now_ms;
+        true
+    }
 }
 
 /// `prefer | eligible | never` (the `hub_pref` column).
@@ -322,7 +397,7 @@ fn class_from(s: &str) -> EngineClass {
 mod tests {
     use super::*;
 
-    /// The three tables satisfy `replica::attach` (single-column pk, `hlc TEXT`),
+    /// The replicated tables satisfy `replica::attach` (single-column pk, `hlc TEXT`),
     /// our writes carry parseable stamps in our origin, and the capture sees them.
     #[tokio::test]
     async fn tables_attach_to_replication() {
@@ -330,7 +405,7 @@ mod tests {
         let me = EngineId("me".into());
         let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone()).await.unwrap();
         let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
-        let handle = engine.attach(store.pool(), &["peers", "engine_stats", "availability"]).await.unwrap();
+        let handle = engine.attach(store.pool(), &["peers", "engine_stats", "availability", "mesh_meta"]).await.unwrap();
         let mut feed = handle.subscribe();
 
         let peer = EngineId("peer".into());
@@ -364,5 +439,73 @@ mod tests {
         let c = store.candidate(&me, 0, 3_000).await.unwrap().unwrap();
         assert!((c.hub_pref, c.first_seen_ms, c.class) == (HubPref::Prefer, 5, EngineClass::Server));
         assert!(store.candidate(&peer, 0, 3_000).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn meta_default_keeps_the_first_value_and_stamps_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into())).await.unwrap();
+        assert_eq!(store.meta_get("name").await.unwrap(), None);
+        assert!(store.meta_default("name", "work", 1_000).await.unwrap());
+        assert!(!store.meta_default("name", "other", 1_000).await.unwrap());
+        assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("work"));
+        let hlc: String = sqlx::query("SELECT hlc FROM mesh_meta WHERE key = 'name'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+            .get("hlc");
+        assert_eq!(replica::Hlc::parse(&hlc).unwrap().wall_ms, 1_000, "a default is stamped at first_seen, not now");
+        store.meta_set("name", "renamed").await.unwrap();
+        assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
+    }
+
+    /// 69 audit, idle writer: three heartbeats while connected write no row
+    /// (before: three replicated UPDATEs); the flush interval and the close do.
+    #[tokio::test]
+    async fn heartbeats_do_not_write_availability() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = EngineId("me".into());
+        let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone()).await.unwrap();
+        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+        let handle = engine.attach(store.pool(), &["availability"]).await.unwrap();
+        let mut feed = handle.subscribe();
+        // Every batch (poller's or flush's) is on the feed once `flush` returns.
+        let mut replicated = async || {
+            handle.flush().await.unwrap();
+            let mut changes = Vec::new();
+            while let Ok(b) = feed.try_recv() {
+                changes.extend(b.changes);
+            }
+            changes
+        };
+        let peer = EngineId("peer".into());
+        let mut touches = Touches::new(600_000);
+
+        // Connect: one write.
+        store.availability_open(&me, &peer, true, 1_000).await.unwrap();
+        touches.wrote(&peer, 1_000);
+        assert!(!replicated().await.is_empty());
+
+        // Three 10 s heartbeats: zero writes.
+        let mut writes = 0;
+        for now in [11_000, 21_000, 31_000] {
+            if touches.due(&peer, now) {
+                store.availability_touch(&me, &peer, now).await.unwrap();
+                writes += 1;
+            }
+        }
+        assert_eq!(writes, 0);
+        assert!(replicated().await.is_empty(), "a heartbeat replicated");
+
+        // The flush interval elapsed: one write; disconnect closes: one write.
+        assert!(touches.due(&peer, 601_000));
+        assert!(!touches.due(&peer, 611_000));
+        store.availability_touch(&me, &peer, 601_000).await.unwrap();
+        store.availability_open(&me, &peer, false, 700_000).await.unwrap();
+        touches.wrote(&peer, 700_000);
+        let changes = replicated().await;
+        assert!(changes.iter().any(|c| c.pk == "me|peer|1000" && c.column.as_deref() == Some("to_ms")), "{changes:?}");
+        assert!(changes.iter().any(|c| c.pk == "me|peer|700000"), "{changes:?}");
+        assert!((store.availability_30d(&peer, 700_000).await.unwrap() - 1.0).abs() < f32::EPSILON);
     }
 }

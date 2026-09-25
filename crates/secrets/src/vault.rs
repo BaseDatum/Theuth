@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::Context as _;
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use regex::Regex;
@@ -110,13 +110,21 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
 
-/// Prefix of the OAuth grant rows (67 §5.4): `oauth/<ns>`. The one `/` name
-/// family a local caller may write ([`Vault::set_if_version`]).
+/// Prefix of the OAuth grant rows (67 §5.4): `oauth/<ns>`.
 pub const OAUTH_PREFIX: &str = "oauth/";
 
-/// `valid_name`, or an OAuth grant row.
+/// Prefix of the mesh's own rows (69 decision 1): `mesh/<name>`, e.g.
+/// `mesh/device_key`. Like `oauth/`, writable only through
+/// [`Vault::set_if_version`], never listed, never expandable by placeholder.
+pub const MESH_PREFIX: &str = "mesh/";
+
+/// `valid_name`, or one of the `/` families a local caller may write
+/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`.
 fn writable_name(name: &str) -> bool {
-    valid_name(name) || name.strip_prefix(OAUTH_PREFIX).is_some_and(valid_name)
+    valid_name(name)
+        || [OAUTH_PREFIX, MESH_PREFIX]
+            .iter()
+            .any(|p| name.strip_prefix(p).is_some_and(valid_name))
 }
 
 #[derive(Deserialize)]
@@ -262,6 +270,62 @@ impl Vault {
         self.refresh().await
     }
 
+    /// Vault name of the mesh's Noise static key (69 decision 1).
+    pub const MESH_DEVICE_KEY: &'static str = "mesh/device_key";
+
+    /// The `mesh/device_key` row when it exists — no minting (69 decision 1: a hub *loads* the
+    /// mesh identity; only a pairing creates it, so two engines that ran alone before pairing do
+    /// not each mint one and collide). `Ok(None)` = no row yet.
+    pub fn mesh_device_key_if_set(&self) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
+        self.get(Self::MESH_DEVICE_KEY, 0).map(|v| Self::decode_mesh_key(&v)).transpose()
+    }
+
+    fn decode_mesh_key(v: &str) -> anyhow::Result<Zeroizing<[u8; 32]>> {
+        let bytes = Zeroizing::new(URL_SAFE_NO_PAD.decode(v).context("mesh/device_key: not base64url")?);
+        let key: [u8; 32] = bytes.as_slice().try_into().context("mesh/device_key: expected 32 bytes")?;
+        Ok(Zeroizing::new(key))
+    }
+
+    /// The mesh's own X25519 static private key (69 decision 1), 32 bytes:
+    /// the row `mesh/device_key` (value = base64url, no padding), created by
+    /// the first caller with `set_if_version(expected = None)`. A race loser
+    /// (`Ok(None)`) re-reads and uses the winner's key, so every engine of the
+    /// mesh derives the same device id.
+    pub async fn mesh_device_key(&self) -> anyhow::Result<Zeroizing<[u8; 32]>> {
+        let decode = Self::decode_mesh_key;
+        if let Some(k) = self.mesh_device_key_if_set()? {
+            return Ok(k);
+        }
+        let fresh: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*fresh));
+        match self.set_if_version(Self::MESH_DEVICE_KEY, &encoded, "link", None).await {
+            Ok(Some(_)) => Ok(fresh),
+            Ok(None) => {
+                // Lost the race: another engine (or task) wrote first; its
+                // replicated row is what `refresh` just loaded.
+                self.refresh().await?;
+                let v = self
+                    .get(Self::MESH_DEVICE_KEY, 0)
+                    .ok_or_else(|| anyhow::anyhow!("mesh/device_key: lost the race but no row"))?;
+                decode(&v)
+            }
+            Err(e) => Err(anyhow::anyhow!("mesh/device_key: {e}")),
+        }
+    }
+
+    /// `nonce ‖ XChaCha20-Poly1305(mesh key, aad)` — for callers that keep a
+    /// value in their own replicated table but want it sealed like a vault
+    /// row (69: link's `pending.psk_sealed`).
+    pub fn seal_with_mesh_key(&self, aad: &[u8], plain: &[u8]) -> Vec<u8> {
+        seal(&self.mesh_key(), aad, plain)
+    }
+
+    /// Inverse of [`Vault::seal_with_mesh_key`]; `None` = wrong key, wrong
+    /// aad or damaged bytes.
+    pub fn open_with_mesh_key(&self, aad: &[u8], bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        open_bytes(&self.mesh_key(), aad, bytes)
+    }
+
     /// Newest mtime of the sqlite file or its WAL: moves on every write by
     /// anyone (a peer's rows applied here, another process). The plugin polls
     /// it to know when to [`Vault::refresh`].
@@ -337,13 +401,20 @@ impl Vault {
         Some((cur.v, cur.value.clone()))
     }
 
-    /// Every secret, sorted by name. Never a value.
+    /// Every user-facing secret, sorted by name. Never a value; never a
+    /// backend row (`oauth/*`, `mesh/*` — anything with a `/`).
     pub fn list(&self) -> Vec<SecretInfo> {
         self.read()
             .entries
             .iter()
+            .filter(|(name, _)| !name.contains('/'))
             .map(|(name, e)| info(name, e))
             .collect()
+    }
+
+    /// One name's info, backend rows included.
+    fn info_of(&self, name: &str) -> Option<SecretInfo> {
+        self.read().entries.get(name).map(|e| info(name, e))
     }
 
     /// Push a new version (`v` monotonic per name, ≤ [`KEEP`] kept). The same
@@ -545,7 +616,7 @@ impl Vault {
             && let Some((cur, true, _)) = &cached
             && expected.is_none_or(|x| x == *cur)
         {
-            return Ok(self.list().into_iter().find(|s| s.name == name));
+            return Ok(self.info_of(name));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
         let cur: Option<u32> = sqlx::query_scalar::<_, i64>("SELECT version FROM vault_current WHERE name = ?")
@@ -607,7 +678,7 @@ impl Vault {
             .map_err(e)?;
         tx.commit().await.map_err(e)?;
         self.refresh().await.map_err(|e| format!("{e:#}"))?;
-        Ok(self.list().into_iter().find(|s| s.name == name))
+        Ok(self.info_of(name))
     }
 
     /// First start after 67: the single-file vault becomes rows (names the
@@ -1073,6 +1144,53 @@ mod tests {
         assert!(writable_name("oauth/github"));
         assert!(!writable_name("oauth/"));
         assert!(!writable_name("oauth/a/b"));
+        assert!(writable_name("mesh/device_key"));
+        assert!(!writable_name("mesh/"));
+        assert!(!writable_name("mesh/a/b"));
+    }
+
+    /// 69 decision 1: `mesh/*` rows are written only through `set_if_version`,
+    /// hidden from every list (as `oauth/*` now is too) and no placeholder can
+    /// name them.
+    #[tokio::test]
+    async fn backend_rows_are_hidden_and_unexpandable() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "user-token-value", None, "user").await.unwrap();
+        assert!(v.set("mesh/device_key", "x", None, "u").await.is_err(), "`/` names only via set_if_version");
+        let i = v.set_if_version("mesh/device_key", "device-key-bytes-b64", "link", None).await.unwrap().unwrap();
+        assert_eq!((i.name.as_str(), i.current), ("mesh/device_key", 1));
+        v.set_if_version("oauth/gh", "{}", "oauth", None).await.unwrap().unwrap();
+        assert_eq!(v.get("mesh/device_key", 0).unwrap().as_str(), "device-key-bytes-b64");
+        assert_eq!(v.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["tok"]);
+
+        let mut args = serde_json::json!({"a": "{{secret:mesh/device_key}}", "b": "{{secret:oauth/gh}}"});
+        assert_eq!(v.expand(&mut args).unwrap(), 0, "the placeholder grammar has no `/`");
+        assert_eq!(args["a"], "{{secret:mesh/device_key}}");
+    }
+
+    /// 69 decision 1: two callers racing for the first `mesh/device_key`
+    /// end with the same key; a reopen reads the row back; the sealing
+    /// helpers round-trip under the mesh key and refuse a wrong aad.
+    #[tokio::test]
+    async fn mesh_device_key_is_created_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        assert!(v.mesh_device_key_if_set().unwrap().is_none(), "a hub loads, never mints");
+        assert!(v.info_of(Vault::MESH_DEVICE_KEY).is_none());
+        let (a, b) = tokio::join!(v.mesh_device_key(), v.mesh_device_key());
+        assert_eq!(*v.mesh_device_key_if_set().unwrap().unwrap(), **a.as_ref().unwrap());
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(*a, *b, "the race loser adopts the winner's key");
+        assert_eq!(v.info_of(Vault::MESH_DEVICE_KEY).unwrap().current, 1, "exactly one version written");
+        assert!(v.list().is_empty(), "never listed");
+        drop(v);
+        let v = open(dir.path()).await;
+        assert_eq!(*v.mesh_device_key().await.unwrap(), *a);
+
+        let sealed = v.seal_with_mesh_key(b"pending#1", b"psk-bytes");
+        assert_eq!(v.open_with_mesh_key(b"pending#1", &sealed).unwrap().as_slice(), b"psk-bytes");
+        assert!(v.open_with_mesh_key(b"pending#2", &sealed).is_none());
     }
 
     #[tokio::test]

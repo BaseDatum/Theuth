@@ -47,3 +47,25 @@ test('browser without a dev daemon: no local row, pairing needed once hydrated e
   const s = m.useHarnesses.getState()
   expect(s.hydrated && s.harnesses.length === 0 && !m.hasLocal()).toBe(true)
 })
+
+test('hydrate: rows persisted before 69 get kind engine; a mesh row keeps its kind and name', async () => {
+  const old = { id: 'e1', name: 'Studio Mac', relayHost: 'relay.test', secure: true, pairedAt: 1, lastSeen: 1, order: 0 }
+  const mesh = { ...old, id: 'm1', name: 'work hub', order: 1, kind: 'mesh', meshName: 'work' }
+  vi.doMock('./idb', () => ({ idbGet: () => Promise.resolve({ harnesses: [old, mesh], active: 'm1' }), idbPut: () => Promise.resolve() }))
+  try {
+    const m = await load(UA.linux, false)
+    await m.hydrateHarnesses()
+    const s = m.useHarnesses.getState()
+    expect(s.harnesses.map((h) => [h.id, h.kind, h.meshName])).toEqual([
+      ['e1', 'engine', undefined],
+      ['m1', 'mesh', 'work'],
+    ])
+    expect(s.active).toBe('m1')
+    // `setMesh` refreshes the name from `mesh_status` and keeps the member count beside the row.
+    s.setMesh('m1', 'work (renamed)', { online: 2, total: 3 })
+    expect(m.useHarnesses.getState().harnesses[1]).toMatchObject({ meshName: 'work (renamed)' })
+    expect(m.useHarnesses.getState().members.m1).toEqual({ online: 2, total: 3 })
+  } finally {
+    vi.doUnmock('./idb')
+  }
+})

@@ -34,8 +34,19 @@ pub mod reason {
     pub const REFUSED: u8 = 3;
     /// The harness uplink went away.
     pub const HARNESS_GONE: u8 = 4;
+    /// The hub lease moved to another engine (69 decision 6): the harness
+    /// sends it to every device conn on a graceful handover and the relay
+    /// forwards it. Devices treat it like `HARNESS_GONE`: they re-park and
+    /// reconnect to the same id, which the new hub registers.
+    pub const HUB_MOVED: u8 = 5;
     /// Number of reasons (for counters).
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
+
+    /// Whether a device told `r` keeps its socket parked for the next
+    /// harness instead of being closed: the harness is gone or moving.
+    pub fn reparks(r: u8) -> bool {
+        r == HARNESS_GONE || r == HUB_MOVED
+    }
 }
 
 /// A parsed uplink frame.
@@ -142,5 +153,18 @@ mod tests {
         assert!(decode_device(&Bytes::new()).is_none());
         let data = decode_device(&encode_device(DATA, b"")).unwrap();
         assert_eq!((data.op, data.payload.len()), (DATA, 0));
+    }
+
+    /// The flap-avoidance contract with `link` (69 decision 2): `register`
+    /// replaces the holder, the loser stops redialing, and its devices — told
+    /// 5 — stay parked for the winner exactly as after a 4.
+    #[test]
+    fn hub_moved_reparks_like_harness_gone() {
+        assert!(reason::reparks(reason::HARNESS_GONE));
+        assert!(reason::reparks(reason::HUB_MOVED));
+        for r in [reason::NORMAL, reason::QUEUE_FULL, reason::IDLE, reason::REFUSED] {
+            assert!(!reason::reparks(r), "{r}");
+        }
+        assert!((reason::HUB_MOVED as usize) < reason::COUNT);
     }
 }

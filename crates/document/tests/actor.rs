@@ -1255,3 +1255,64 @@ async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves(
     assert!(exported(&mut heard, Duration::from_millis(500)).await.is_none(), "one edit session, one owner notification");
     stop(actor).await;
 }
+
+/// 69: the yrs server is a hub duty. Losing the lease closes every subscriber with `hub_moved`,
+/// snapshots the log into `snapshot.yjs` + the mirror, and refuses writes with a typed `NotHub`
+/// naming the holder; `Markdown` (a read) still serves; gaining it back serves again.
+#[tokio::test]
+async fn hub_gate_follows_the_lease() {
+    let _serial = SERIAL.lock().await;
+    let Some(bin) = helper_bin() else {
+        eprintln!("skipped: documents helper not built");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let owner = Principal::Owner { device: Some(1) };
+    let id = actor.ask(CreateNote { title: "H".into(), markdown: "one\n".into(), by: owner.clone() }).await.unwrap().id;
+    let mut sub = actor.ask(Subscribe { doc: id.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("a"), by: owner.clone() }).await.unwrap();
+    until_exported(&mut sub).await;
+
+    let lease = |holder: Option<&str>| mesh::MeshEvent::Lease(mesh::LeaseState {
+        holder: holder.map(|h| mesh::EngineId(h.into())),
+        since_ms: 0,
+        reason: "test".into(),
+    });
+    // The mesh names us and says another engine holds the lease.
+    actor.tell(document::hub::SelfId(mesh::EngineId("me".into()))).await.unwrap();
+    actor.tell(lease(Some("other"))).await.unwrap();
+    assert_eq!(next_event(&mut sub).await, DocEvent::Closed { reason: document::HUB_MOVED.into() });
+    let snap = dir.path().join(format!("documents/{id}/snapshot.yjs"));
+    let mirror = dir.path().join(format!("documents/mirror/{id}.snapshot.yjs"));
+    assert!(snap.is_file() && mirror.is_file(), "snapshotted on loss");
+    assert_eq!(std::fs::read(&snap).unwrap(), std::fs::read(&mirror).unwrap());
+    let e = actor.ask(OpenDoc { doc: id.clone(), sv: None, by: owner.clone() }).await.unwrap_err();
+    let kameo::error::SendError::HandlerError(e) = e else { panic!("{e:?}") };
+    assert_eq!(e, document::DocError::NotHub { hub: Some(mesh::EngineId("other".into())) });
+    assert_eq!(e.to_string(), "NotHub:other");
+    let e = actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("b"), by: owner.clone() }).await.unwrap_err().to_string();
+    assert_eq!(e, "NotHub:other");
+    assert!(actor.ask(Subscribe { doc: id.clone(), by: owner.clone() }).await.is_err());
+    let e = actor.ask(CreateNote { title: "X".into(), markdown: String::new(), by: owner.clone() }).await.unwrap_err().to_string();
+    assert_eq!(e, "NotHub:other");
+    let e = actor.ask(LinkCreate { doc: id.clone(), role: Role::Editor, name: None, expires_ms: None }).await.unwrap_err().to_string();
+    assert_eq!(e, "NotHub:other");
+    // Reads serve from the local replica anywhere.
+    let md = actor.ask(document::Markdown { doc: id.clone(), blocks: None, annotate: false }).await.unwrap();
+    assert!(md.contains("one"), "{md}");
+
+    // Nobody holds it: still not us, and no hub to name.
+    actor.tell(lease(None)).await.unwrap();
+    let e = actor.ask(OpenDoc { doc: id.clone(), sv: None, by: owner.clone() }).await.unwrap_err().to_string();
+    assert_eq!(e, "NotHub:");
+
+    // The lease comes here: serving again, the state intact.
+    actor.tell(lease(Some("me"))).await.unwrap();
+    let opened = actor.ask(OpenDoc { doc: id.clone(), sv: None, by: owner.clone() }).await.unwrap();
+    assert!(!opened.state.is_empty());
+    let mut sub = actor.ask(Subscribe { doc: id.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
+    actor.ask(ApplyUpdate { doc: id.clone(), update: scratch_update("c"), by: owner.clone() }).await.unwrap();
+    assert!(matches!(next_event(&mut sub).await, DocEvent::Update { .. }));
+    stop(actor).await;
+}

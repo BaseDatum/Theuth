@@ -44,7 +44,8 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
       toast.error('not a pairing key')
       return
     }
-    if (parent && api) setChoice({ key: raw.trim(), name: parsed.name })
+    // A mesh key (4 parts, 69 §5) is this device's own pairing; `add_node` takes engine keys only.
+    if (parent && api && parsed.pending === undefined) setChoice({ key: raw.trim(), name: parsed.name })
     else await pairHere(raw.trim(), parsed.name)
   }
 
@@ -52,7 +53,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
     setPairingWith(name)
     try {
       const h = await pair(k, deviceName())
-      toast.success(`Paired ${h.name}`)
+      toast.success(h.kind === 'mesh' ? `Paired with mesh ${h.meshName ?? h.name}` : `Paired ${h.name}`)
       useHarnesses.getState().setActive(h.id)
       onPaired?.()
     } catch (e) {

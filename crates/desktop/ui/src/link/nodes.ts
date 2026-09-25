@@ -39,6 +39,7 @@ function placeholder(node: Pick<Node, 'id' | 'name' | 'relay'>, parent: string, 
     lastSeen: 0,
     order: harnesses.reduce((m, x) => Math.max(m, x.order + 1), 0),
     parent,
+    kind: 'engine',
   }
 }
 

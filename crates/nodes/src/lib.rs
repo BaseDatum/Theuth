@@ -441,6 +441,7 @@ async fn add(ctx: Arc<Ctx>, m: Add) -> Result<Node, String> {
     let hello = PairHello {
         name: ctx.hello_name.clone(),
         platform: "theuth".to_owned(),
+        pending: parsed.pending.clone(),
     };
     let (transport, accept) = match conn::pair(&mut sock, &ctx.identity, &parsed, &hello).await {
         Ok(x) => x,
@@ -729,7 +730,7 @@ mod tests {
 
     #[test]
     fn add_refuses_own_key() {
-        let key = link::pairing::build("wss://relay.example", &our(), &[2; 32], "Mac");
+        let key = link::pairing::build("wss://relay.example", &our(), &[2; 32], "Mac", None);
         let e = precheck(&our(), &[], &BTreeMap::new(), &key, None).unwrap_err();
         assert_eq!(e, "this key is our own harness");
     }
@@ -744,7 +745,7 @@ mod tests {
 
     #[test]
     fn add_refuses_agents_yaml_clash_unless_renamed() {
-        let key = link::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "codex");
+        let key = link::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "codex", None);
         let mut agents = BTreeMap::new();
         agents.insert(
             "codex".to_owned(),

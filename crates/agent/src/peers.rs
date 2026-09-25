@@ -523,13 +523,15 @@ impl Tool for DiscoverPeersTool {
              other owner roots and configured remote agents. Each row has the canonical address for send_message, \
              a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
              `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
-             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `title` is filled only \
+             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `engine` names the \
+             engine a session lives on; a session owned by another engine of the mesh has state `remote` (its \
+             activity is unknown here; send_message still reaches it). `title` is filled only \
              for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
              model assigned, e.g. `[rust, merge]`) come with every local peer, empty until it has a model-written title, \
              and say what a peer is working on so you can tell which are relevant to you. Rows come working-first, then \
-             most recently active; `active_only` keeps only peers with a turn in flight or a running job/PTY. \
-             Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the next page. \
-             Listing wakes nobody and probes no network."
+             most recently active; `active_only` keeps only peers with a turn in flight or a running job/PTY (never \
+             a `remote` one). Default {DISCOVER_DEFAULT_LIMIT} rows, max {DISCOVER_MAX_LIMIT}; pass `cursor` for the \
+             next page. Listing wakes nobody and probes no network."
         )
     }
 
@@ -582,6 +584,11 @@ impl Tool for DiscoverPeersTool {
                         if let Some(at) = a.last_active {
                             s.push_str(&format!(" last_active={}", at.to_rfc3339()));
                         }
+                    }
+                    if p.state == crate::communication::PeerState::Remote
+                        && let Some(e) = &p.engine
+                    {
+                        s.push_str(&format!(" engine={e}"));
                     }
                     if let Some(t) = &p.title {
                         s.push_str(&format!(" title={t:?}"));

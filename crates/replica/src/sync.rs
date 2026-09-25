@@ -45,6 +45,7 @@ impl Engine {
     /// every connected peer now and on each `Connected`.
     pub fn register_transport(self: &Arc<Self>, transport: Arc<dyn Transport>) {
         *self.transport.lock() = Some(transport.clone());
+        self.set_mesh_engine();
         let engine = self.clone();
         let t = transport.clone();
         tokio::spawn(async move {
@@ -101,7 +102,7 @@ impl Engine {
     }
 
     /// `true` once per (remote, batch): records that `remote` holds it.
-    fn mark_sent(&self, remote: &PeerId, batch: &ChangeBatch) -> bool {
+    pub(crate) fn mark_sent(&self, remote: &PeerId, batch: &ChangeBatch) -> bool {
         let mut vv = self.remote_vv.lock();
         let held = vv.entry(remote.clone()).or_default().entry(batch.origin.clone()).or_insert(0);
         if batch.seq > *held {
@@ -114,7 +115,7 @@ impl Engine {
 
     /// A `Hello` is authoritative about what `remote` holds: replace, never
     /// merge, so an over-estimate from a failed send cannot starve the peer.
-    fn learn(&self, remote: &PeerId, theirs: &HashMap<PeerId, u64>) {
+    pub(crate) fn learn(&self, remote: &PeerId, theirs: &HashMap<PeerId, u64>) {
         self.remote_vv.lock().insert(remote.clone(), theirs.clone());
     }
 }
@@ -161,7 +162,27 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
     let remote = theirs.origin.clone();
     engine.learn(&remote, &theirs.version_vector);
 
-    // Catch-up: everything we hold above what they hold, in seq order per origin.
+    // Catch-up: everything we hold above what they hold, in seq order per origin. A peer whose
+    // point lies below the oldest batch still held of some origin (a newcomer, an engine away
+    // longer than the prune) cannot be rebuilt from batches: it gets the whole state first as
+    // one batch, then the tail (whose columns then lose LWW to the same clocks — no partial rows).
+    let mut behind = false;
+    for (origin, seq) in &hello.version_vector {
+        let after = theirs.version_vector.get(origin).copied().unwrap_or(0);
+        if *seq > after && engine.store.oldest_seq(origin).await?.is_some_and(|oldest| after + 1 < oldest) {
+            behind = true;
+        }
+    }
+    if behind && let Some(batch) = engine.snapshot_batch().await? {
+        tracing::info!(
+            "replica: {remote} is behind the pruned outbox; sent a snapshot of {} change(s) as seq {}",
+            batch.changes.len(),
+            batch.seq
+        );
+        if engine.mark_sent(&remote, &batch) {
+            framed.send(frame(TAG_BATCH, &postcard::to_allocvec(&batch)?)).await?;
+        }
+    }
     for (origin, seq) in &hello.version_vector {
         let after = theirs.version_vector.get(origin).copied().unwrap_or(0);
         if *seq <= after {
@@ -170,6 +191,9 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
         for bytes in engine.store.batches_after(origin, after).await? {
             let batch: ChangeBatch = postcard::from_bytes(&bytes)?;
             if engine.mark_sent(&remote, &batch) {
+                if batch.origin != engine.origin {
+                    engine.count_relayed(&batch.changes);
+                }
                 framed.send(frame(TAG_BATCH, &bytes)).await?;
             }
         }
@@ -194,6 +218,9 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
                 match outbound {
                     Ok(batch) => {
                         if engine.mark_sent(&remote, &batch) {
+                            if batch.origin != engine.origin {
+                                engine.count_relayed(&batch.changes);
+                            }
                             framed.send(frame(TAG_BATCH, &postcard::to_allocvec(&batch)?)).await?;
                         }
                     }

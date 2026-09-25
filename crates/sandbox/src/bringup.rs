@@ -299,12 +299,16 @@ mod tests {
             *p += 1;
             Ok(mesh::MeshStatus {
                 self_id: mesh::EngineId("me".into()),
+                self_name: "me".into(),
+                mesh_name: None,
                 peers: vec![peer(*p >= self.reachable_after)],
                 lease: mesh::LeaseState {
                     holder: None,
                     since_ms: 0,
                     reason: String::new(),
                 },
+                traffic: Vec::new(),
+                replica: None,
             })
         }
     }

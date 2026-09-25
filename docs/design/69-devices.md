@@ -1,6 +1,6 @@
 # 69 — Devices pair to the mesh
 
-*Status: design v0.3, 2026-09-25 (v0.3: wave 2 — documents replicate, the yrs server is a hub duty, share links name the mesh — Sky: "go all the way"; v0.2: recon corrections — second identity beside the engine's, no-redial on lease loss, pending id in the QR, per-mesh device keys are new work, failover ≈ 30 s, PSK 5 min). Follows 67 (mesh, hub lease) and 68 (sessions everywhere). Sky's rulings of 2026-09-25: serving paired devices is a **hub duty** with automatic failover, so the device registry is **replicated**; devices pair to **hubs (meshes), not engines**, so one device connects to several meshes (work, personal). Supersedes 31 §6 (per-engine `devices.yaml`) and closes 67 loose end 3.2's first half; the transport (31 relay vs iroh) is left as it is.*
+*Status: **v0.4 — BUILT** on feature/69-devices, 2026-09-25 (§8 as built; v0.3: wave 2 — documents replicate, the yrs server is a hub duty, share links name the mesh — Sky: "go all the way"; v0.2: recon corrections — second identity beside the engine's, no-redial on lease loss, pending id in the QR, per-mesh device keys are new work, failover ≈ 30 s, PSK 5 min). Follows 67 (mesh, hub lease) and 68 (sessions everywhere). Sky's rulings of 2026-09-25: serving paired devices is a **hub duty** with automatic failover, so the device registry is **replicated**; devices pair to **hubs (meshes), not engines**, so one device connects to several meshes (work, personal). Supersedes 31 §6 (per-engine `devices.yaml`) and closes 67 loose end 3.2's first half; the transport (31 relay vs iroh) is left as it is.*
 
 ## 0. Decisions
 
@@ -83,3 +83,29 @@ Wave 2 (after the recon): contract **C2** (document index attach + mirror wiring
 ## 7. Out of scope
 
 Devices over iroh (67 loose end 3.2, unchanged); per‑device permissions beyond pair/revoke; multi‑user meshes; retiring the engine link identity (candidate follow-up).
+## 8. As built (v0.4, 2026-09-25 evening)
+
+Nine workers + two merge omps + one twelve-invariant smoke on this Mac (three engines, local relay, web-mode device harness). Workspace: 1695 passed, 2 pre-existing PTY/zsh failures. Per-worker reports: `69-as-built-{C,K,D,C2,M,Y,E1,E2,P,Z}.md`; smoke recipe and evidence: `69-smoke.md`; contracts: `69-contract.md`, `69-contract-docs.md`.
+
+| # | Invariant | Evidence |
+|---|---|---|
+| 1 | lone engine registers engine id + mesh id | both registrations at the relay; `link_status.mesh.connected` |
+| 2 | pairing on a non-hub lands on the hub | pending row replicated < 1 s; device served by A; `devices_list` equal on A and B |
+| 3 | device session round trip | reply received, session owned by A |
+| 4 | hub SIGKILL survived | device back on B against the same key in **31.1 s** (QUIC detection 31.1 s + 18 ms handshake) |
+| 5 | no relay flap | A restart: 0 registrations while B holds; B release → A registered +42 ms |
+| 6 | revocation global | revoke on the non-hub → `CLOSE 3` on the hub at the next handshake, 2 s |
+| 7 | documents on the hub survive it | B's copy 2.9 s; share URL carries the mesh id; guest re-joined on B in 2.35 s, identical markdown, 0 re-snapshots |
+| 8 | off-hub editing forwards | non-hub `doc_open` 7.5 ms over `theuth/docs/1`; hub device sees the update in 40 ms |
+| 9 | documents migration | copy of Sky's store: 36 moves / 0 merges, `hlc` stamped, all knowledge docs open, idempotent |
+| 10 | no replication storms | 306 s idle: 0 batches, 0 mirror rows; one edit: hub 4 / non-hubs 1 batch, 0 re-snapshots; pairing 1 batch per writer; knowledge sync one way, md sha stable |
+| 11 | peers follow the owner | cross-engine `await_reply` answered in 3.3 s; dead owner → `failed{OwnerUnreachable}` in 32.3 s |
+| 12 | lone engine byte-identical to main | identical except `doc_list[].bytes` lagging until the 2 s quiet snapshot (C2 contract) |
+
+Deviations accepted at merge (details in the per-worker reports): mesh identity is a *second* link identity, minted only by a pairing and loaded by every hub (the smoke caught K's eager mint — two identities per mesh); `Follower` lives in `mesh::lease`; `secrets::mesh_device_key` returns raw bytes (crate cycle); the mesh uplink is gated on `link.enabled`; `Uplink {Engine, Mesh}` enum carries K's consume-on-take pending semantics; revoked static → `CLOSE 3`, unknown static → guest; `docs` row touched at snapshot/export only; receivers adopt the hub's snapshot bytes verbatim when they add nothing (`store::exceeds` on state vector + delete set); `Msg` gained Hello/SetName/Edit tags; `NotHub{hub: Option<EngineId>}`; agent tool edits off the hub forward as `Msg::Edit`; `peer_deliver` over `theuth/rpc/1`, receipts engine-local, both engines' communication policy must allow; counters `MeshStatus.traffic/.replica`, `doc_stats`.
+
+Echo audit (all seven replication paths): no unbounded loop; six risks fixed — hub no-op merge, receiver re-snapshot amplification, `availability_touch` idle writes every 10 s (67), foreign outbox never pruned (67), files-mirror scan/apply race that reverted remote writes for schedules/skills/mcp (67), plus the storm sampler's "never warned" bug found on verification. Knowledge LWW by relay time (sync.rs) is recorded, not fixed.
+
+Smoke fixes (Z, ten commits): eager mesh-identity mint; vault rows never announced; replica upsert applied a column subset to NOT NULL tables; no snapshot path for a peer behind the pruned outbox; mesh rows written before the attach; lease split on paused gossip; self-election on restart (relay flap); eager mesh uplink at boot; paired set not refreshed when the replica delivered the row first; first reconcile waited for the wrong signal.
+
+Found, not fixed: youngest-wins on `mesh_meta.name`; N−1 `docs`-row touches per edit; pkarr log noise; `ScheduleInfo.next` stale on a non-hub (S1); knowledge LWW by relay time; the per-engine link identity's only external user is now `nodes` — retiring it is the natural follow-up; devices over iroh (67 loose end 3.2) unchanged; `secret_hash` sits in plaintext `meta.json` on every engine of the mesh.

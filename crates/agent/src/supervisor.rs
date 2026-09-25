@@ -38,11 +38,12 @@ use uuid::Uuid;
 use crate::communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, DISCOVER_DEFAULT_LIMIT,
     DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
-    PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed, PeerDelivered, PeerInfo,
-    PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged, PeerMessagePage,
-    PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord, PeerRelationship, PeerScope,
-    PeerState, PeerTurnFinished, PeerUplink, Policy, PolicyError, SetCommunication, SetPeerScope,
-    SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION, network,
+    PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed, PeerDeliver, PeerDelivered,
+    PeerEnvelope, PeerInfo, PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged,
+    PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord,
+    PeerRelationship, PeerScope, PeerState, PeerTurnFinished, PeerUplink, Policy, PolicyError,
+    SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION,
+    mesh as peer_mesh, network,
 };
 
 use crate::acp_child::AcpChild;
@@ -222,6 +223,11 @@ pub struct Agents {
     durable_resources: Arc<SessionResources>,
     /// Owner-gone grace before a private root closes itself (51 §4.3).
     private_grace: Duration,
+    /// The mesh transport peer messages to sessions owned elsewhere travel
+    /// on (69 P); fetched from the replica actor on first need, injected by
+    /// tests. `None` until the mesh is up: every such message then fails
+    /// `OwnerUnreachable`.
+    transport: Option<Arc<dyn replica::Transport>>,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -3162,6 +3168,138 @@ impl Message<Deliver> for Agents {
     type Reply = Result<Delivered, String>;
 
     async fn handle(&mut self, m: Deliver, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.deliver(m, None).await
+    }
+}
+
+impl Message<PeerDeliver> for Agents {
+    type Reply = Result<PeerReceipt, String>;
+
+    async fn handle(&mut self, m: PeerDeliver, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.peer_deliver(m).await
+    }
+}
+
+impl Agents {
+    /// The owner's intake of a forwarded peer message (69 P): the ordinary
+    /// [`Self::deliver`] path from the envelope's sender to `session`, under
+    /// the envelope's id and this engine's policy. Refused when the row is
+    /// not ours (the sender's replica was stale) — never a take.
+    pub(crate) async fn peer_deliver(&mut self, m: PeerDeliver) -> Result<PeerReceipt, String> {
+        let row = self
+            .store
+            .session(m.session)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("unknown peer `session:{}`", m.session))?;
+        if !row.here {
+            return Err(format!("session:{} is owned by {}, not here", m.session, row.owner));
+        }
+        // The sender is a replicated row: its lineage must be known to the
+        // policy before `route` (as `resolve` does for the recipient).
+        self.mirror(m.envelope.from).await;
+        let PeerEnvelope {
+            id,
+            from,
+            text,
+            reply_to,
+            request_id,
+        } = m.envelope;
+        let d = self
+            .deliver(
+                Deliver {
+                    from,
+                    to: format!("session:{}", m.session),
+                    text,
+                    await_reply: false,
+                    reply_to,
+                    request_id,
+                    admitted: CancellationToken::new(),
+                },
+                Some(id),
+            )
+            .await?;
+        Ok(d.receipt)
+    }
+
+    /// `(owner engine id)` when `session`'s replicated row is owned by
+    /// another engine (69 P); `None` for ours, unowned or unknown — today's
+    /// local path.
+    async fn remote_owner(&self, session: SessionId) -> Option<String> {
+        let row = self.store.session(session).await.ok().flatten()?;
+        (!row.here && !row.owner.is_empty()).then_some(row.owner)
+    }
+
+    /// The mesh transport, fetched once from the replica actor (tests inject it).
+    async fn transport(&mut self) -> Option<Arc<dyn replica::Transport>> {
+        if self.transport.is_none() {
+            self.transport = match replica::actor() {
+                Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
+                None => None,
+            };
+        }
+        self.transport.clone()
+    }
+
+    /// Hand an accepted exchange to the owner of `to` (69 P): one
+    /// `peer_deliver` over `theuth/rpc/1`. The receipt stays `accepted`
+    /// when the owner's intake committed (a waiter is registered as for a
+    /// local recipient); otherwise it is `failed` with [`peer_mesh::Failure`]'s
+    /// text — the sender reads a normal receipt either way.
+    async fn forward_peer(
+        &mut self,
+        owner: String,
+        to: SessionId,
+        m: &Deliver,
+        body: String,
+        receipt: PeerReceipt,
+        generation: Generation,
+    ) -> Result<Delivered, String> {
+        // Nothing here will consume it.
+        self.enqueued.remove(&receipt.id);
+        let envelope = PeerEnvelope {
+            id: receipt.id,
+            from: m.from,
+            text: body,
+            reply_to: m.reply_to,
+            request_id: m.request_id.clone(),
+        };
+        let peer = replica::PeerId(owner.clone());
+        let outcome = match self.transport().await {
+            Some(t) => peer_mesh::forward(t.as_ref(), &peer, to, &envelope).await,
+            None => Err(peer_mesh::Failure::Unreachable {
+                owner,
+                why: "mesh not running".into(),
+            }),
+        };
+        match outcome {
+            Ok(_) => {
+                let reply = m
+                    .await_reply
+                    .then(|| self.wait(m.from, receipt.to.clone(), receipt.id, generation))
+                    .transpose()?;
+                Ok(Delivered { receipt, reply })
+            }
+            Err(f) => {
+                tracing::info!(session = %to, id = %receipt.id, "peer message not forwarded: {f:?}");
+                let error = f.receipt_error().await;
+                let failed = self
+                    .store
+                    .fail_exchange(receipt.id, &error)
+                    .await
+                    .unwrap_or(receipt);
+                self.peer_changed(&failed).await;
+                Ok(Delivered {
+                    receipt: failed,
+                    reply: None,
+                })
+            }
+        }
+    }
+
+    /// [`Deliver`]'s body. `id`: the message id when another engine minted
+    /// it ([`Self::peer_deliver`]); minted by the store otherwise.
+    pub(crate) async fn deliver(&mut self, m: Deliver, id: Option<Uuid>) -> Result<Delivered, String> {
         let revoked = || {
             format!(
                 "send_message: {}: {}",
@@ -3235,21 +3373,22 @@ impl Message<Deliver> for Agents {
             None => None,
         };
         let (from_key, to_key) = (format!("session:{}", m.from), format!("session:{to}"));
-        let receipt = self
-            .store
-            .accept_exchange(&AcceptExchange {
-                sender: &from_key,
-                recipient: &to_key,
-                sender_session: Some(m.from),
-                recipient_session: Some(to),
-                request_id: m.request_id.as_deref(),
-                reply_to: m.reply_to,
-                request_scope: scope,
-                generation: generation.revision() as i64,
-                body: &body,
-            })
-            .await
-            .map_err(comm_err)?;
+        let accept = AcceptExchange {
+            sender: &from_key,
+            recipient: &to_key,
+            sender_session: Some(m.from),
+            recipient_session: Some(to),
+            request_id: m.request_id.as_deref(),
+            reply_to: m.reply_to,
+            request_scope: scope,
+            generation: generation.revision() as i64,
+            body: &body,
+        };
+        let receipt = match id {
+            Some(id) => self.store.accept_exchange_as(id, &accept).await,
+            None => self.store.accept_exchange(&accept).await,
+        }
+        .map_err(comm_err)?;
         if receipt.state != PeerMessageState::Accepted || !self.enqueued.insert(receipt.id) {
             // A retried request_id: the existing outcome, nothing sent again.
             return Ok(Delivered {
@@ -3297,6 +3436,11 @@ impl Message<Deliver> for Agents {
                     reply,
                 });
             }
+        }
+        // 69 P: the recipient lives on another engine — its owner runs the
+        // intake; nothing here is woken.
+        if let Some(owner) = self.remote_owner(to).await {
+            return self.forward_peer(owner, to, &m, body, receipt, generation).await;
         }
         let record = self
             .store
@@ -3595,6 +3739,10 @@ impl Agents {
             self.mirror(r.id).await;
         }
         let me_parent = rows.iter().find(|r| r.id == session).and_then(|r| r.parent);
+        // 69 P: engine display names, asked once; rows owned elsewhere are
+        // `remote` (no activity here — their owner would know), ours carry
+        // this engine's name for symmetry.
+        let (me_name, names) = peer_mesh::engine_names().await;
         // Rows keep their session id for the activity lookup, which runs once
         // the policy guard is released.
         let mut same = Vec::new();
@@ -3647,7 +3795,10 @@ impl Agents {
                     }
                     Some(_) => PeerKind::Acp,
                 };
-                let state = if self.approvals.contains_key(&r.id) || self.running.contains(&r.id) {
+                let remote = !r.here && !r.owner.is_empty();
+                let state = if remote {
+                    PeerState::Remote
+                } else if self.approvals.contains_key(&r.id) || self.running.contains(&r.id) {
                     PeerState::Running
                 } else if self.waits.values().any(|w| w.session == r.id) {
                     PeerState::Awaiting
@@ -3674,6 +3825,11 @@ impl Agents {
                     activity: None,
                     title,
                     tags: r.tags.clone(),
+                    engine: Some(if remote {
+                        peer_mesh::engine_name(&names, &r.owner)
+                    } else {
+                        me_name.clone()
+                    }),
                 };
                 if their_root == root {
                     same.push((r.id, info));
@@ -3683,7 +3839,12 @@ impl Agents {
             }
         }
         same.extend(other);
-        let ids: Vec<SessionId> = same.iter().map(|(id, _)| *id).collect();
+        // Remote rows have no activity here: their owner's engine would know.
+        let ids: Vec<SessionId> = same
+            .iter()
+            .filter(|(_, info)| info.state != PeerState::Remote)
+            .map(|(id, _)| *id)
+            .collect();
         let mut activity = self.activity_for(&ids).await;
         let mut out: Vec<PeerInfo> = same
             .into_iter()
@@ -3720,6 +3881,7 @@ fn remote_parent_row(p: &RemoteParent) -> PeerInfo {
         activity: None,
         title: None,
         tags: Vec::new(),
+        engine: p.engine.clone(),
     }
 }
 
@@ -6666,6 +6828,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             generation: 0,
             durable_resources: SessionResources::durable_arc(&rt.data_dir),
             private_grace: PRIVATE_GRACE,
+            transport: None,
         },
         runtime::subscriber_mailbox(),
     );
@@ -8157,8 +8320,15 @@ pub(crate) mod tests {
     /// module's tests, which drive the same value through its hooks.
     pub(crate) async fn agents_with(communication: bool) -> Agents {
         let dir = std::env::temp_dir().join(format!("theuth-agents-{}", uuid::Uuid::now_v7()));
+        agents_on(dir, None, communication).await
+    }
+
+    /// [`agents_with`] over `dir`'s store opened as mesh engine `engine`
+    /// (69 P: two of these, each holding the other's rows, are two engines).
+    pub(crate) async fn agents_on(dir: PathBuf, engine: Option<&str>, communication: bool) -> Agents {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Arc::new(AgentConfig::default());
+        let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
         Agents {
             rt: Runtime::new(figment::Figment::new(), dir.clone()),
             default_model: cfg.model.clone(),
@@ -8173,7 +8343,7 @@ pub(crate) mod tests {
             catalog: Arc::new(Catalog::load(&dir)),
             pool: None,
             configured: Arc::new(|_: &str| false),
-            store: Store::open(&dir.join("sessions.sqlite"), None).await.unwrap(),
+            store: Store::open(&dir.join("sessions.sqlite"), engine).await.unwrap(),
             client: Client::new().unwrap(),
             auth: Auth::stub(&dir),
             sessions: HashMap::new(),
@@ -8204,6 +8374,7 @@ pub(crate) mod tests {
             durable_resources: SessionResources::durable_arc(&dir),
             // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
             private_grace: Duration::from_millis(200),
+            transport: None,
         }
     }
 
@@ -8598,6 +8769,7 @@ pub(crate) mod tests {
             activity,
             title: None,
             tags: Vec::new(),
+            engine: None,
         };
         let act = |state: PeerLiveState, ptys: u16, secs_ago: i64| PeerActivity {
             state,
@@ -9656,5 +9828,241 @@ pub(crate) mod tests {
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert!(agents.ask(PrivateTrees).await.unwrap().is_empty());
         assert!(refused(authorize(9).await).starts_with("session clos"));
+    }
+
+    // ---- 69 P: peer messages follow the owner --------------------------------
+
+    /// Two engines `a` and `b` over one loopback switch, each holding both
+    /// rows: `a_root` owned by `a`, `b_root` owned by `b`, both `owner`
+    /// scope (the rows are seeded through a store opened as the owning
+    /// engine, then re-opened as this one — the shape a replica holds).
+    struct TwoEngines {
+        a: Agents,
+        b: Agents,
+        a_root: SessionId,
+        b_root: SessionId,
+        net: Vec<Arc<peer_mesh::loopback::Loop>>,
+    }
+
+    async fn seed(dir: &Path, as_engine: &str, id: SessionId) {
+        let s = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId(as_engine.into())))
+            .await
+            .unwrap();
+        s.create_session(id, "m", None, None, None).await.unwrap();
+        s.set_root_scope(id, PeerScope::Owner, None).await.unwrap();
+        s.close().await;
+    }
+
+    async fn two_engines() -> TwoEngines {
+        let base = std::env::temp_dir().join(format!("theuth-69p-{}", Uuid::now_v7()));
+        let (dir_a, dir_b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let (a_root, b_root) = (SessionId::new(), SessionId::new());
+        for dir in [&dir_a, &dir_b] {
+            seed(dir, "a", a_root).await;
+            seed(dir, "b", b_root).await;
+        }
+        let net = peer_mesh::loopback::nodes(&["a", "b"]);
+        let mut a = agents_on(dir_a, Some("a"), true).await;
+        let mut b = agents_on(dir_b, Some("b"), true).await;
+        a.transport = Some(net[0].clone());
+        b.transport = Some(net[1].clone());
+        for x in [&mut a, &mut b] {
+            x.mirror(a_root).await;
+            x.mirror(b_root).await;
+        }
+        TwoEngines {
+            a,
+            b,
+            a_root,
+            b_root,
+            net,
+        }
+    }
+
+    /// The owner side of `theuth/rpc/1` for one engine, as `rpc::forward::serve`
+    /// + `api::peer_deliver` do it: one request line per stream, dispatched
+    /// into the supervisor's [`Agents::peer_deliver`], one response line.
+    fn serve_peer_deliver(t: Arc<peer_mesh::loopback::Loop>, agents: Arc<tokio::sync::Mutex<Agents>>) {
+        use replica::Transport;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        tokio::spawn(async move {
+            while let Ok((_, stream)) = t.accept(replica::ALPN_RPC).await {
+                let agents = agents.clone();
+                tokio::spawn(async move {
+                    let (read, mut write) = tokio::io::split(stream);
+                    let mut line = String::new();
+                    BufReader::new(read).read_line(&mut line).await.unwrap();
+                    let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(req["method"], peer_mesh::METHOD);
+                    let session: SessionId = serde_json::from_value(req["params"][0].clone()).unwrap();
+                    let envelope: PeerEnvelope = serde_json::from_value(req["params"][1].clone()).unwrap();
+                    let rp = match agents.lock().await.peer_deliver(PeerDeliver { session, envelope }).await {
+                        Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
+                        Err(e) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e}}),
+                    };
+                    write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
+                    write.flush().await.unwrap();
+                });
+            }
+        });
+    }
+
+    fn deliver(from: SessionId, to: SessionId, text: &str, await_reply: bool, reply_to: Option<Uuid>) -> Deliver {
+        Deliver {
+            from,
+            to: format!("session:{to}"),
+            text: text.into(),
+            await_reply,
+            reply_to,
+            request_id: None,
+            admitted: CancellationToken::new(),
+        }
+    }
+
+    /// A `Deliver` to a row owned elsewhere is forwarded to the owner, whose
+    /// intake records the exchange under the sender's id; the sender's own
+    /// row stays `accepted` and nothing local is woken. The reply travels
+    /// the other way through the second forwarder and settles the wait.
+    #[tokio::test]
+    async fn peer_messages_follow_the_owner_and_replies_round_trip() {
+        let TwoEngines {
+            a,
+            b,
+            a_root,
+            b_root,
+            net,
+        } = two_engines().await;
+        let (a, b) = (Arc::new(tokio::sync::Mutex::new(a)), Arc::new(tokio::sync::Mutex::new(b)));
+        serve_peer_deliver(net[0].clone(), a.clone());
+        serve_peer_deliver(net[1].clone(), b.clone());
+
+        let d = a
+            .lock()
+            .await
+            .deliver(deliver(a_root, b_root, "question", true, None), None)
+            .await
+            .unwrap();
+        assert_eq!(d.receipt.state, PeerMessageState::Accepted);
+        assert_eq!(d.receipt.to, format!("session:{b_root}"));
+        let id = d.receipt.id;
+        {
+            let a = a.lock().await;
+            assert!(!a.enqueued.contains(&id), "nothing here consumes a forwarded message");
+            assert!(a.sessions.get(&b_root).is_none(), "the remote row was not woken here");
+            assert!(a.waits.contains_key(&id), "the wait is registered as for a local recipient");
+            assert_eq!(a.store.exchange_receipt(id).await.unwrap().unwrap().state, PeerMessageState::Accepted);
+        }
+        // The owner's intake: same id, reversed view, its own row.
+        let theirs = b.lock().await.store.peer_record(b_root, id).await.unwrap().unwrap();
+        assert_eq!(theirs.from, format!("session:{a_root}"));
+        assert_eq!(theirs.text, "question");
+        assert_ne!(theirs.receipt.state, PeerMessageState::Failed);
+
+        // b answers: forwarded to a, whose intake settles the wait.
+        let r = b
+            .lock()
+            .await
+            .deliver(deliver(b_root, a_root, "42", false, Some(id)), None)
+            .await
+            .unwrap();
+        assert_eq!((r.receipt.state, r.receipt.reply_to), (PeerMessageState::Accepted, Some(id)));
+        let fin = d.reply.unwrap().await.unwrap();
+        assert_eq!((fin.id, fin.state), (id, PeerMessageState::Replied));
+        assert_eq!(fin.reply.as_deref(), Some("42"));
+        assert_eq!(fin.answered_by.as_deref(), Some(format!("session:{b_root}").as_str()));
+        assert!(a.lock().await.waits.is_empty());
+    }
+
+    /// No owner on the wire: the receipt is `failed` with 68 F's error data
+    /// shape (the words the desktop card shows), durably; no wait is kept.
+    #[tokio::test]
+    async fn an_unreachable_owner_is_a_failed_receipt_in_the_front_door_shape() {
+        let TwoEngines {
+            mut a,
+            a_root,
+            b_root,
+            ..
+        } = two_engines().await;
+        // A switch on which `b` is not connected.
+        a.transport = Some(peer_mesh::loopback::nodes(&["a"]).remove(0));
+        let d = a.deliver(deliver(a_root, b_root, "hello?", true, None), None).await.unwrap();
+        assert_eq!(d.receipt.state, PeerMessageState::Failed);
+        assert_eq!(
+            d.receipt.error.as_deref(),
+            Some(r#"{"OwnerUnreachable":{"owner":"b","last_seen":null}}"#)
+        );
+        assert!(d.reply.is_none());
+        assert!(a.waits.is_empty());
+        assert_eq!(
+            a.store.exchange_receipt(d.receipt.id).await.unwrap().unwrap().state,
+            PeerMessageState::Failed
+        );
+        // The owner's intake refuses the row it does not own (never a take).
+        let e = a
+            .peer_deliver(PeerDeliver {
+                session: b_root,
+                envelope: PeerEnvelope {
+                    id: Uuid::now_v7(),
+                    from: a_root,
+                    text: "x".into(),
+                    reply_to: None,
+                    request_id: None,
+                },
+            })
+            .await
+            .unwrap_err();
+        assert!(e.contains("owned by b"), "{e}");
+    }
+
+    /// `discover_peers`: a row owned elsewhere is `remote` with its owner's
+    /// engine name and no activity; ours carry this engine's name.
+    /// `active_only` drops remote rows (their activity is unknown here).
+    #[tokio::test]
+    async fn directory_marks_rows_owned_elsewhere_as_remote() {
+        let TwoEngines {
+            mut a,
+            mut b,
+            a_root,
+            b_root,
+            ..
+        } = two_engines().await;
+        let mut rows = a.directory(a_root).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.address, format!("session:{b_root}"));
+        assert_eq!((r.state, r.relationship), (PeerState::Remote, PeerRelationship::Root));
+        assert_eq!(r.engine.as_deref(), Some("b"), "no mesh actor: the id itself (short)");
+        assert!(r.activity.is_none());
+        arrange(&mut rows, true);
+        assert!(rows.is_empty(), "remote activity is unknown: active_only keeps none");
+        // Seen from b, a's root is the remote one.
+        let rows = b.directory(b_root).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address, format!("session:{a_root}"));
+        assert_eq!((rows[0].state, rows[0].engine.as_deref()), (PeerState::Remote, Some("a")));
+    }
+
+    /// A mesh of one: every row is ours, so `Deliver` takes today's local
+    /// path — the exchange is enqueued here, no transport is consulted — and
+    /// the directory carries this engine's name on every row.
+    #[tokio::test]
+    async fn a_lone_engine_delivers_locally_as_before() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let child = SessionId::new();
+        a.session(Some(child), Some((root, "kid")), None, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(a.remote_owner(child).await, None);
+        let d = a.deliver(deliver(root, child, "hi", false, None), None).await.unwrap();
+        assert_eq!(d.receipt.state, PeerMessageState::Accepted);
+        assert!(a.enqueued.contains(&d.receipt.id), "queued for the local recipient");
+        assert!(a.transport.is_none(), "no mesh was consulted");
+        let rows = a.directory(root).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_ne!(rows[0].state, PeerState::Remote);
+        assert_eq!(rows[0].engine.as_deref(), Some(platform::process::hostname()));
     }
 }

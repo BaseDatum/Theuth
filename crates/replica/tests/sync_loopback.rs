@@ -235,6 +235,14 @@ async fn relays_through_a_middle_peer() {
     let d = node("D", &switch).await;
     link(&switch, &c.transport, &d.transport, true);
     converge(&[&d.pool], &[row("t1", "one", "done")]).await;
+    // 69 audit counters (column changes): B forwarded A's insert (2) to C and C's update (1) to A;
+    // C forwarded A's insert to D; A, a leaf, relayed nothing.
+    let (a_stats, b_stats, c_stats) =
+        (a.engine.stats().await.unwrap(), b.engine.stats().await.unwrap(), c.engine.stats().await.unwrap());
+    assert_eq!(a_stats.relayed, 0, "{a_stats:?}");
+    assert!(b_stats.relayed >= 3, "{b_stats:?}");
+    assert!(c_stats.relayed >= 2, "{c_stats:?}");
+    assert_eq!(a_stats.echo + b_stats.echo + c_stats.echo, 0, "no echo anywhere");
 }
 
 /// A table that existed before it joined replication (68 decision 8:
@@ -273,4 +281,88 @@ async fn pre_existing_rows_are_announced_once() {
         .unwrap();
     assert_eq!(stamped, 0);
     assert_eq!(ha.announce_unstamped().await.unwrap(), 0);
+}
+
+/// 69 smoke: once every known peer holds a batch the outbox prunes it, so a peer that joins
+/// later (or lost its replica) finds its catch-up point below what is held. It gets the whole
+/// state as one batch first; the remaining tail (single columns) then lands as a no-op instead of
+/// a partial row. Before the fix C ended with `title = NULL` (the insert was pruned away).
+#[tokio::test]
+async fn a_late_joiner_behind_the_pruned_outbox_gets_a_snapshot() {
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    link(&switch, &a.transport, &b.transport, true);
+    // B writes too: the prune knows peers by the origins in the outbox.
+    exec(&b.pool, "INSERT INTO tasks (id, title, state) VALUES ('b1', 'from B', 'todo')").await;
+    exec(&a.pool, "INSERT INTO tasks (id, title, state) VALUES ('t1', 'one', 'todo')").await;
+    converge(&[&a.pool, &b.pool], &[row("b1", "from B", "todo"), row("t1", "one", "todo")]).await;
+    for state in ["doing", "review", "done"] {
+        exec(&a.pool, &format!("UPDATE tasks SET state = '{state}' WHERE id = 't1'")).await;
+        converge(&[&a.pool, &b.pool], &[row("b1", "from B", "todo"), row("t1", "one", state)]).await;
+    }
+    exec(&a.pool, "INSERT INTO tasks (id, title, state) VALUES ('t2', 'two', 'todo'), ('t3', 'three', 'todo')").await;
+    exec(&a.pool, "DELETE FROM tasks WHERE id = 't3'").await;
+    let want = [row("b1", "from B", "todo"), row("t1", "one", "done"), row("t2", "two", "todo")];
+    converge(&[&a.pool, &b.pool], &want).await;
+    // The prune ran: A's own feed no longer starts at seq 1.
+    let book = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::new().filename(a._dir.path().join("replica.sqlite")))
+        .await
+        .unwrap();
+    let oldest: i64 = sqlx::query_scalar("SELECT MIN(seq) FROM outbox WHERE origin = ?")
+        .bind(&a.engine.origin().0)
+        .fetch_one(&book)
+        .await
+        .unwrap();
+    assert!(oldest > 1, "A's outbox was not pruned (oldest seq {oldest})");
+
+    // C knows only A and never saw the insert batches.
+    let c = node("C", &switch).await;
+    link(&switch, &a.transport, &c.transport, true);
+    converge(&[&c.pool], &want).await;
+    // A later write on A still reaches C; the tombstone travelled (t3 stays dead on C).
+    exec(&a.pool, "UPDATE tasks SET state = 'archived' WHERE id = 't2'").await;
+    converge(
+        &[&a.pool, &b.pool, &c.pool],
+        &[row("b1", "from B", "todo"), row("t1", "one", "done"), row("t2", "two", "archived")],
+    )
+    .await;
+    let c_stats = c.engine.stats().await.unwrap();
+    assert_eq!(c_stats.echo, 0, "{c_stats:?}");
+}
+
+/// 69 smoke: a peer's single-column write to a row that exists here must land on a table with a
+/// NOT NULL column — SQLite checks NOT NULL before the upsert's conflict target, so the old
+/// `INSERT … ON CONFLICT DO UPDATE` with a column subset never applied one.
+#[tokio::test]
+async fn a_partial_update_lands_on_a_not_null_table() {
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    link(&switch, &a.transport, &b.transport, true);
+    for n in [&a, &b] {
+        exec(&n.pool, "CREATE TABLE notes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT, hlc TEXT)").await;
+        n.engine.attach(&n.pool, &["notes"]).await.unwrap();
+    }
+    exec(&a.pool, "INSERT INTO notes (id, kind, body) VALUES ('n1', 'note', 'first')").await;
+    async fn body(pool: &SqlitePool) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT body FROM notes WHERE id = 'n1'")
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+            .flatten()
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while body(&b.pool).await.as_deref() != Some("first") {
+        assert!(tokio::time::Instant::now() < deadline, "insert never reached B");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    exec(&b.pool, "UPDATE notes SET body = 'edited on B' WHERE id = 'n1'").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while body(&a.pool).await.as_deref() != Some("edited on B") {
+        assert!(tokio::time::Instant::now() < deadline, "B's column write never landed on A: {:?}", body(&a.pool).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

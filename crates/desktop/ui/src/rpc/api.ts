@@ -70,6 +70,8 @@ import type { ModelState } from '@/rpc/bindings/ModelState'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
+import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
+import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
 import type { PeerMessagePage } from '@/rpc/bindings/PeerMessagePage'
 import type { PeerPage } from '@/rpc/bindings/PeerPage'
@@ -358,6 +360,13 @@ export interface Api {
   link_rename_device(id: string, name: string): Promise<null>
   link_revoke_device(id: string): Promise<null>
   link_status(): Promise<LinkStatus>
+  /** Every row of the mesh's replicated device registry, revoked included (69 §3). */
+  devices_list(): Promise<DeviceInfo[]>
+  /** Revoke a mesh device: refused by every hub within one replication hop (69 §3). */
+  device_revoke(id: string): Promise<null>
+  device_rename(id: string, name: string): Promise<null>
+  /** Start a 5-minute pairing against the mesh identity; `string` is the 4-part QR payload (69 decision 4). `name: null` → the mesh's name. */
+  device_pair_start(name: string | null): Promise<PairingPayload>
   /** Nodes of this harness (32 §6.6); method-not-found (-32601) on a harness without the `nodes` plugin. */
   list_nodes(): Promise<Node[]>
   /** Every file in `~/.theuth/schedules/`, parsed or not (34 §8). */
@@ -659,6 +668,10 @@ export const METHODS = [
   'delete_decision_training',
   'delete_secret',
   'delete_session',
+  'device_pair_start',
+  'device_rename',
+  'device_revoke',
+  'devices_list',
   'dictation_audio',
   'dictation_prewarm',
   'dictation_start',

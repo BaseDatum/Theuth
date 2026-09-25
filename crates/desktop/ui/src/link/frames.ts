@@ -14,9 +14,14 @@ export const CLOSE_REASON: Record<number, string> = {
   2: 'idle',
   3: 'refused',
   4: 'harness gone',
+  5: 'hub moved',
 }
 /** DATA before OPEN, conn limit, or the harness rejected the device. */
 export const CLOSE_REFUSED = 3
+/** The harness uplink went away: transient, reconnect to the same id. */
+export const CLOSE_HARNESS_GONE = 4
+/** The hub lease moved to another engine (69 decision 6): transient, same as 4. */
+export const CLOSE_HUB_MOVED = 5
 
 export type Frame =
   | { op: 'data'; payload: Uint8Array<ArrayBuffer> }

@@ -3,7 +3,14 @@
 //! byte in IK message 1 (31 §4.3, §6.2; 32 §4.2): mode 0 carries JSON-RPC
 //! into `raw_json_request`, mode 1 hands the records to the ACP agent half
 //! (32 §4.3).
+//!
+//! Two uplinks feed conns here (69 §2), told apart by [`Uplink`]: the
+//! ENGINE identity's (its in-memory single pairing) and the MESH identity's
+//! (the replicated `devices`/`pending` rows; registered in `State::mesh_conns`).
+//! An unknown static becomes a doc guest (59 §8.3) on either; on the mesh a
+//! REVOKED static (its row stays) is refused with `CLOSE 3` instead.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::devices::{Row, device_id};
 use crate::identity::{Identity, now_ms, params};
-use crate::state::Ctx;
+use crate::state::{ConnHandle, Ctx, State};
 use crate::types::{LinkEvent, RpcPeer};
 use crate::uplink::{self, CLOSE_NORMAL, CLOSE_REFUSED};
 
@@ -31,13 +38,19 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// Subscription notification buffer per request (31 §6.2).
 const SUB_BUF: usize = 4096;
 
-/// IKpsk2 msg1 payload.
+/// IKpsk2 msg1 payload. Tolerates unknown fields (older and newer apps).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairHello {
     /// Device display name.
     pub name: String,
     /// `ios` | `macos` | `web` | `theuth` | …
     pub platform: String,
+    /// The `pending` row id from the pairing string's 4th part (69 decision
+    /// 4): psk2 is mixed in after msg1, so this is how the hub picks the PSK
+    /// among several replicated pending rows. `None` (older apps, engine
+    /// pairings) → the single live pending row, if exactly one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
 }
 
 /// IKpsk2 msg2 payload.
@@ -96,6 +109,8 @@ pub enum Handshake {
         key: [u8; 32],
         /// What the device said.
         hello: PairHello,
+        /// The PSK the chooser picked for this handshake.
+        psk: [u8; 32],
         /// msg2 to send.
         msg2: Vec<u8>,
     },
@@ -106,14 +121,15 @@ fn static_of(hs: &snow::HandshakeState) -> Option<[u8; 32]> {
 }
 
 /// Read `msg1` as IK; a known static → session (payload `[]` or `[mode]`; anything longer is
-/// refused), an unknown one → guest (59 §8.3); if IK does not read, with `psk`, re-read it as
-/// IKpsk2 → pairing; else `None` (CLOSE 3).
+/// refused), an unknown one → guest (59 §8.3); if IK does not read, re-read it as IKpsk2 →
+/// pairing, the PSK chosen by `psk` from the `PairHello.pending` hint (69 decision 4: psk2 is
+/// mixed in after msg1, so the hello is readable first); `psk` returning `None` → `None` (CLOSE 3).
 pub fn respond(
     msg1: &[u8],
     identity: &Identity,
     name: &str,
     known: impl Fn(&[u8; 32]) -> bool,
-    psk: Option<&[u8; 32]>,
+    psk: impl FnOnce(Option<&str>) -> Option<[u8; 32]>,
 ) -> Option<Handshake> {
     let prologue = identity.prologue();
     let mut payload = vec![0u8; MAX_MSG];
@@ -157,19 +173,22 @@ pub fn respond(
         });
     }
 
-    let psk = psk?;
+    // IKpsk2's psk token is in msg2: msg1 reads with a placeholder, the real
+    // PSK goes in once the hello says which pending row the device holds.
     let mut hs = Builder::new(params("IKpsk2").ok()?)
         .local_private_key(&identity.private)
         .ok()?
         .prologue(&prologue)
         .ok()?
-        .psk(2, psk)
+        .psk(2, &[0u8; 32])
         .ok()?
         .build_responder()
         .ok()?;
     let n = hs.read_message(msg1, &mut payload).ok()?;
     let hello: PairHello = serde_json::from_slice(&payload[..n]).ok()?;
     let key = static_of(&hs)?;
+    let psk = psk(hello.pending.as_deref())?;
+    hs.set_psk(2, &psk).ok()?;
     let accept = serde_json::to_vec(&PairAccept { name }).ok()?;
     let n = hs.write_message(&accept, &mut msg2).ok()?;
     msg2.truncate(n);
@@ -177,6 +196,7 @@ pub fn respond(
         transport: hs.into_transport_mode().ok()?,
         key,
         hello,
+        psk,
         msg2,
     })
 }
@@ -255,35 +275,104 @@ impl Conn {
     }
 }
 
-/// Run the conn to completion. Publishes `LinkDevice`/`LinkPaired`/`LinkPairing`;
+/// Which uplink's identity a conn answers with (69 §2, §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Uplink {
+    /// The engine's own identity: its single in-memory pairing, the engine-id share links.
+    Engine,
+    /// The mesh identity (`mesh/device_key`), served by the hub only: the replicated `devices` and
+    /// `pending` rows, the mesh-id share links.
+    Mesh,
+}
+
+impl Uplink {
+    /// The conn map this uplink's conns live in.
+    fn conns(self, st: &mut State) -> &mut HashMap<u32, ConnHandle> {
+        match self {
+            Uplink::Engine => &mut st.conns,
+            Uplink::Mesh => &mut st.mesh_conns,
+        }
+    }
+}
+
+/// Run an engine-uplink conn to completion. Publishes `LinkDevice`/`LinkPaired`/`LinkPairing`;
 /// persists `last_seen_ms` on close.
-pub async fn run(mut c: Conn) {
+pub async fn run(c: Conn) {
+    run_as(c, Uplink::Engine).await
+}
+
+/// Run a mesh-uplink conn to completion (69 §5 decision 12, Y): `IK` with the mesh static, a known
+/// static = an active replicated `devices` row, the pairing PSK from the replicated `pending` rows
+/// (`PairHello.pending` → `Pending::take`, else the single live row — consumed either way), and an
+/// unknown static is a guest exactly as on the engine uplink ([`GUEST_METHODS`], the join deadline,
+/// the rate limit). The mesh uplink supervisor (`mesh_uplink::run_once`) spawns this per `OPEN`.
+pub async fn run_mesh(c: Conn) {
+    run_as(c, Uplink::Mesh).await
+}
+
+/// Every exit — refused, timed out, closed — takes the conn's handle out of its map.
+async fn run_as(mut c: Conn, uplink: Uplink) {
+    let session = serve(&mut c, uplink).await;
+    let closed = {
+        let mut st = c.ctx.lock();
+        uplink.conns(&mut st).remove(&c.id);
+        session
+            .filter(|key| st.devices.touch_last_seen(key, now_ms()))
+            .map(|key| (device_id(&key), st.online(&key)))
+    };
+    if let Some((id, online)) = closed {
+        c.ctx.rt.publish(LinkEvent::LinkDevice { id, online }).await;
+    }
+}
+
+/// Handshake and records; `Some(key)` when the conn became a device session.
+async fn serve(c: &mut Conn, uplink: Uplink) -> Option<[u8; 32]> {
     let deadline = Instant::now() + HANDSHAKE_DEADLINE;
     let msg1 = tokio::select! {
-        _ = c.cancel.cancelled() => return c.close(CLOSE_NORMAL).await,
+        _ = c.cancel.cancelled() => { c.close(CLOSE_NORMAL).await; return None }
         m = tokio::time::timeout_at(deadline, c.inbound.recv()) => match m {
             Ok(Some(b)) => b,
-            Ok(None) => return,
-            Err(_) => return c.close(CLOSE_REFUSED).await,
+            Ok(None) => return None,
+            Err(_) => { c.close(CLOSE_REFUSED).await; return None }
         },
     };
 
-    let (hs, psk) = {
-        let st = c.ctx.lock();
-        let psk = st
-            .live_pairing()
-            .filter(|_| st.devices.len() < st.cfg.max_devices)
-            .map(|p| p.secret);
-        let hs = st.identity.as_ref().and_then(|identity| {
-            respond(
-                &msg1,
-                identity,
-                st.name(),
-                |k| st.devices.by_key(k).is_some(),
-                psk.as_ref(),
-            )
-        });
-        (hs, psk)
+    let hs = {
+        let mut guard = c.ctx.lock();
+        let full = guard.devices.len() >= guard.cfg.max_devices;
+        match uplink {
+            // The ENGINE identity's PSK is the single in-memory pairing, hint ignored.
+            Uplink::Engine => {
+                let st = &*guard;
+                let psk = st.live_pairing().filter(|_| !full).map(|p| p.secret);
+                st.identity.as_ref().and_then(|identity| {
+                    respond(&msg1, identity, st.name(), |k| st.devices.by_key(k).is_some(), |_hint| psk)
+                })
+            }
+            // 69 decision 4: the PSK is the replicated pending row the hello
+            // names, else the only live one; both are consumed here (a
+            // second handshake with the same id gets nothing).
+            Uplink::Mesh => {
+                let State {
+                    cfg,
+                    hostname,
+                    mesh_identity,
+                    devices,
+                    pending,
+                    ..
+                } = &mut *guard;
+                let name = if cfg.name.is_empty() { hostname.as_str() } else { cfg.name.as_str() };
+                mesh_identity.as_ref().and_then(|identity| {
+                    respond(&msg1, identity, name, |k| devices.by_key(k).is_some(), |hint| {
+                        if full {
+                            return None;
+                        }
+                        hint.and_then(|id| pending.take(id))
+                            .or_else(|| pending.single_live().and_then(|(id, _)| pending.take(&id)))
+                    })
+                })
+            }
+        }
     };
     let (mut transport, key, pending, msg2, mode) = match hs {
         Some(Handshake::Session {
@@ -296,48 +385,59 @@ pub async fn run(mut c: Conn) {
             transport,
             key,
             hello,
+            psk,
             msg2,
-        }) => (transport, key, Some(hello), msg2, 0),
+        }) => (transport, key, Some((hello, psk)), msg2, 0),
         Some(Handshake::Guest {
             mut transport,
             key,
             msg2,
             handshake_hash,
         }) => {
+            // 69 §5: a revoked device (its row stays, `revoked_ms` set) is told 3 — the app shows
+            // "revoked — pair again" — while a never-seen static is a doc guest.
+            if uplink == Uplink::Mesh && c.ctx.lock().devices.is_revoked(&key) {
+                tracing::debug!(conn = c.id, "revoked device on the mesh uplink; refused");
+                c.close(CLOSE_REFUSED).await;
+                return None;
+            }
             // 59 §8.3, §11: the DH is spent; the budget decides whether msg2 goes out.
             let admitted = {
                 let mut st = c.ctx.lock();
                 let per_minute = st.cfg.guest_handshakes_per_minute;
                 let ok = st.guests.take(per_minute, Instant::now().into_std());
-                if ok && let Some(h) = st.conns.get_mut(&c.id) {
+                if ok && let Some(h) = uplink.conns(&mut st).get_mut(&c.id) {
                     h.device = Some(key);
                 }
                 ok
             };
             if !admitted {
                 tracing::debug!(conn = c.id, "guest handshake over the per-minute budget; refused");
-                return c.close(CLOSE_REFUSED).await;
+                c.close(CLOSE_REFUSED).await;
+                return None;
             }
             if !c.send(msg2).await {
-                return;
+                return None;
             }
-            run_guest(&mut c, &mut transport, key, handshake_hash, deadline).await;
-            c.ctx.lock().conns.remove(&c.id);
-            return;
+            run_guest(c, &mut transport, key, handshake_hash, deadline).await;
+            return None;
         }
-        None => return c.close(CLOSE_REFUSED).await,
+        None => {
+            c.close(CLOSE_REFUSED).await;
+            return None;
+        }
     };
     if !c.send(msg2).await {
-        return;
+        return None;
     }
     if pending.is_none() {
-        mark_online(&c, &key).await;
+        mark_online(c, &key, uplink).await;
     }
 
     let session = match mode {
-        0 => run_api(&mut c, &mut transport, &key, pending, psk, deadline).await,
+        0 => run_api(c, &mut transport, &key, pending, deadline, uplink).await,
         1 => {
-            run_acp(&mut c, &mut transport, deadline).await;
+            run_acp(c, &mut transport, deadline).await;
             true
         }
         _ => {
@@ -345,29 +445,7 @@ pub async fn run(mut c: Conn) {
             true
         }
     };
-
-    let (was_session, still_online) = {
-        let mut st = c.ctx.lock();
-        st.conns.remove(&c.id);
-        if session && let Some(row) = st.devices.by_key_mut(&key) {
-            row.last_seen_ms = now_ms();
-            if let Err(e) = st.devices.save() {
-                tracing::warn!("devices.yaml: {e}");
-            }
-            (true, st.online(&key))
-        } else {
-            (false, false)
-        }
-    };
-    if was_session {
-        c.ctx
-            .rt
-            .publish(LinkEvent::LinkDevice {
-                id: device_id(&key),
-                online: still_online,
-            })
-            .await;
-    }
+    session.then_some(key)
 }
 
 /// Mode 0 (31 §6.2): records are JSON-RPC requests into `raw_json_request`
@@ -379,9 +457,9 @@ async fn run_api(
     c: &mut Conn,
     transport: &mut TransportState,
     key: &[u8; 32],
-    mut pending: Option<PairHello>,
-    psk: Option<[u8; 32]>,
+    mut pending: Option<(PairHello, [u8; 32])>,
     deadline: Instant,
+    uplink: Uplink,
 ) -> bool {
     let mut session = pending.is_none();
     let (peer, _peer_guard) = RpcPeer::open_remote();
@@ -410,8 +488,12 @@ async fn run_api(
                     break;
                 };
                 first = false;
-                if let Some(hello) = pending.take() {
-                    if !commit_pairing(c, key, hello, psk).await {
+                if let Some((hello, psk)) = pending.take() {
+                    let ok = match uplink {
+                        Uplink::Mesh => commit_mesh_pairing(c, key, hello).await,
+                        Uplink::Engine => commit_pairing(c, key, hello, psk).await,
+                    };
+                    if !ok {
                         c.close(CLOSE_REFUSED).await;
                         break;
                     }
@@ -577,10 +659,10 @@ async fn run_acp(c: &mut Conn, transport: &mut TransportState, deadline: Instant
     }
 }
 
-async fn mark_online(c: &Conn, key: &[u8; 32]) {
+async fn mark_online(c: &Conn, key: &[u8; 32], uplink: Uplink) {
     {
         let mut st = c.ctx.lock();
-        if let Some(h) = st.conns.get_mut(&c.id) {
+        if let Some(h) = uplink.conns(&mut st).get_mut(&c.id) {
             h.device = Some(*key);
         }
     }
@@ -593,13 +675,13 @@ async fn mark_online(c: &Conn, key: &[u8; 32]) {
         .await;
 }
 
-/// First transport record decrypted under the PSK: enrol the device, consume
-/// the pairing. `false` when the pairing this handshake used is gone
-/// (cancelled, expired or replaced).
-async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: Option<[u8; 32]>) -> bool {
+/// The engine path's commit: first transport record decrypted under the PSK —
+/// enrol the device, consume the pairing. `false` when the pairing this
+/// handshake used is gone (cancelled, expired or replaced).
+async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: [u8; 32]) -> bool {
     let row = {
         let mut st = c.ctx.lock();
-        let same = st.live_pairing().is_some_and(|p| Some(p.secret) == psk);
+        let same = st.live_pairing().is_some_and(|p| p.secret == psk);
         if !same || st.devices.len() >= st.cfg.max_devices {
             return false;
         }
@@ -611,10 +693,9 @@ async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: Option<
             platform: hello.platform,
             paired_at_ms: now_ms(),
             last_seen_ms: 0,
+            revoked_ms: None,
         };
-        if let Err(e) = st.devices.insert(row.clone()) {
-            tracing::warn!("devices.yaml: {e}");
-        }
+        st.devices.insert(row.clone());
         row
     };
     // `LinkPaired` first: a consumer that treats `LinkPairing { key: None }`
@@ -632,7 +713,39 @@ async fn commit_pairing(c: &Conn, key: &[u8; 32], hello: PairHello, psk: Option<
             expires_at_ms: None,
         })
         .await;
-    mark_online(c, key).await;
+    // 69: the replicated registry changed (the engine pairing path; the mesh
+    // path adds `DevicePaired { id }`).
+    c.ctx.rt.publish(LinkEvent::DevicesChanged).await;
+    mark_online(c, key, Uplink::Engine).await;
+    true
+}
+
+/// The mesh path's commit (69 decision 3): the pending row was consumed at
+/// the handshake, so the first record decrypting under its PSK is the proof;
+/// write the replicated `devices` row. `false` when the registry filled up
+/// meanwhile.
+async fn commit_mesh_pairing(c: &Conn, key: &[u8; 32], hello: PairHello) -> bool {
+    let id = {
+        let mut st = c.ctx.lock();
+        if st.devices.len() >= st.cfg.max_devices {
+            return false;
+        }
+        let row = Row {
+            id: device_id(key),
+            key: *key,
+            name: hello.name,
+            platform: hello.platform,
+            paired_at_ms: now_ms(),
+            last_seen_ms: 0,
+            revoked_ms: None,
+        };
+        st.devices.insert(row.clone());
+        row.id
+    };
+    tracing::info!(device = %id, "device paired to the mesh");
+    c.ctx.rt.publish(LinkEvent::DevicePaired { id }).await;
+    c.ctx.rt.publish(LinkEvent::DevicesChanged).await;
+    mark_online(c, key, Uplink::Mesh).await;
     true
 }
 
@@ -793,7 +906,7 @@ mod tests {
             msg2,
             handshake_hash,
             ..
-        }) = respond(&msg1[..n], &harness, "h", |_| false, None)
+        }) = respond(&msg1[..n], &harness, "h", |_| false, |_| None)
         else {
             panic!("expected guest");
         };
@@ -803,34 +916,42 @@ mod tests {
         // A payload longer than the mode byte is still refused.
         let mut dev = initiator("IK", &dpriv, &harness, None);
         let n = dev.write_message(&[2, 2], &mut msg1).unwrap();
-        assert!(respond(&msg1[..n], &harness, "h", |_| false, None).is_none());
+        assert!(respond(&msg1[..n], &harness, "h", |_| false, |_| None).is_none());
 
-        // Unknown device, IKpsk2 msg1, pairing pending → Pair; IK read fails cleanly first.
+        // Unknown device, IKpsk2 msg1 with a pending hint → Pair; IK read fails cleanly first.
         let mut dev = initiator("IKpsk2", &dpriv, &harness, Some(&psk));
-        let hello = br#"{"name":"iPhone","platform":"ios"}"#;
+        let hello = br#"{"name":"iPhone","platform":"ios","pending":"p1","future":1}"#;
         let n = dev.write_message(hello, &mut msg1).unwrap();
         // psk2 is mixed after `se`: msg1 reads under any secret, so a wrong
         // secret only shows when the device cannot read msg2 (and its first
         // record would not decrypt here — nothing is enrolled before that).
         let Some(Handshake::Pair { msg2: bad_msg2, .. }) =
-            respond(&msg1[..n], &harness, "h", |_| false, Some(&[0u8; 32]))
+            respond(&msg1[..n], &harness, "h", |_| false, |_| Some([0u8; 32]))
         else {
             panic!("msg1 must read under any psk");
         };
         assert!(dev.read_message(&bad_msg2, &mut buf).is_err());
+        // No PSK for the hint → refused before msg2.
+        assert!(respond(&msg1[..n], &harness, "h", |_| false, |hint| {
+            assert_eq!(hint, Some("p1"));
+            None
+        })
+        .is_none());
         let Some(Handshake::Pair {
             mut transport,
             key,
             hello,
+            psk: chosen,
             msg2,
-        }) = respond(&msg1[..n], &harness, "Sky", |_| false, Some(&psk))
+        }) = respond(&msg1[..n], &harness, "Sky", |_| false, |hint| (hint == Some("p1")).then_some(psk))
         else {
             panic!("expected pairing");
         };
         assert_eq!(key, dpub);
+        assert_eq!(chosen, psk);
         assert_eq!(
-            (hello.name.as_str(), hello.platform.as_str()),
-            ("iPhone", "ios")
+            (hello.name.as_str(), hello.platform.as_str(), hello.pending.as_deref()),
+            ("iPhone", "ios", Some("p1"))
         );
         let n = dev.read_message(&msg2, &mut buf).unwrap();
         assert_eq!(&buf[..n], br#"{"name":"Sky"}"#);
@@ -849,7 +970,7 @@ mod tests {
             key,
             msg2,
             mode,
-        }) = respond(&msg1[..n], &harness, "Sky", |k| k == &dpub, Some(&psk))
+        }) = respond(&msg1[..n], &harness, "Sky", |k| k == &dpub, |_| Some(psk))
         else {
             panic!("expected session");
         };
@@ -869,7 +990,7 @@ mod tests {
         let mut other = initiator("IK", &opriv, &harness, None);
         let n = other.write_message(&[], &mut msg1).unwrap();
         assert!(matches!(
-            respond(&msg1[..n], &harness, "h", |k| k == &dpub, Some(&psk)),
+            respond(&msg1[..n], &harness, "h", |k| k == &dpub, |_| Some(psk)),
             Some(Handshake::Guest { key, .. }) if key == opub
         ));
     }
@@ -911,5 +1032,286 @@ mod tests {
             assert!(b.take(10, t1));
         }
         assert!(!b.take(10, t1));
+    }
+
+    /// A mesh conn task over channels, registered in `mesh_conns` as the
+    /// uplink does it: the map owns the only inbound sender, so removing the
+    /// entry (a relay `CLOSE`) ends the task. Returns the conn's outbound frames.
+    fn mesh_conn(ctx: &Arc<Ctx>, id: u32) -> mpsc::Receiver<Message> {
+        let (inbound, rx) = mpsc::channel(16);
+        let (out, out_rx) = mpsc::channel(64);
+        let cancel = CancellationToken::new();
+        ctx.lock().mesh_conns.insert(
+            id,
+            ConnHandle {
+                device: None,
+                inbound,
+                cancel: cancel.clone(),
+            },
+        );
+        tokio::spawn(run_mesh(Conn {
+            ctx: ctx.clone(),
+            id,
+            inbound: rx,
+            out,
+            cancel,
+        }));
+        out_rx
+    }
+
+    /// One relay `DATA` payload into conn `id`.
+    async fn data(ctx: &Ctx, id: u32, payload: &[u8]) {
+        let tx = ctx.lock().mesh_conns[&id].inbound.clone();
+        tx.send(Bytes::copy_from_slice(payload)).await.unwrap();
+    }
+
+    /// Next frame from the conn as `(op, conn, payload)`.
+    async fn frame(out: &mut mpsc::Receiver<Message>) -> (u8, u32, Bytes) {
+        let Some(Message::Binary(b)) = tokio::time::timeout(Duration::from_secs(5), out.recv()).await.expect("frame")
+        else {
+            panic!("binary frame");
+        };
+        uplink::parse(&b).unwrap()
+    }
+
+    /// Encrypt one JSON-RPC message as the device would and hand its records to conn `id`.
+    async fn device_send(ctx: &Ctx, id: u32, t: &mut TransportState, text: &str) {
+        let mut buf = vec![0u8; MAX_MSG];
+        for rec in split(text.as_bytes()) {
+            let n = t.write_message(&rec, &mut buf).unwrap();
+            data(ctx, id, &buf[..n]).await;
+        }
+    }
+
+    /// One JSON-RPC response as the device reads it (records until FIN).
+    async fn device_recv(t: &mut TransportState, rx: &mut mpsc::Receiver<Message>) -> serde_json::Value {
+        let mut asm = Reassembler::default();
+        let mut buf = vec![0u8; MAX_MSG];
+        loop {
+            let (op, _, payload) = frame(rx).await;
+            assert_eq!(op, uplink::OP_DATA);
+            let n = t.read_message(&payload, &mut buf).unwrap();
+            if let Some(text) = asm.push(&buf[..n]) {
+                return serde_json::from_slice(&text).unwrap();
+            }
+        }
+    }
+
+    /// A device does IKpsk2 with `psk` and `hello`, then sends one record.
+    /// `Ok(out)` once the record was answered; `Err(reason)` when refused.
+    async fn pair_attempt(
+        ctx: &Arc<Ctx>,
+        id: u32,
+        hub: &Identity,
+        dev: &[u8; 32],
+        psk: &[u8; 32],
+        hello: &[u8],
+    ) -> Result<mpsc::Receiver<Message>, u8> {
+        let mut out = mesh_conn(ctx, id);
+        let mut hs = initiator("IKpsk2", dev, hub, Some(psk));
+        let mut msg1 = vec![0u8; MAX_MSG];
+        let n = hs.write_message(hello, &mut msg1).unwrap();
+        data(ctx, id, &msg1[..n]).await;
+        let (op, c, payload) = frame(&mut out).await;
+        assert_eq!(c, id);
+        if op == uplink::OP_CLOSE {
+            return Err(payload[0]);
+        }
+        assert_eq!(op, uplink::OP_DATA);
+        let mut buf = vec![0u8; MAX_MSG];
+        hs.read_message(&payload, &mut buf).expect("msg2 under the right PSK");
+        let mut t = hs.into_transport_mode().unwrap();
+        // The first record is the proof; `{}` gets jsonrpsee's parse error back.
+        let n = t.write_message(b"\x01{}", &mut buf).unwrap();
+        data(ctx, id, &buf[..n]).await;
+        let (op, _, _) = frame(&mut out).await;
+        assert_eq!(op, uplink::OP_DATA, "a response record, not a CLOSE");
+        Ok(out)
+    }
+
+    /// A dispatch with one member-only method: `info` answers a session, the guest gate refuses it.
+    fn dispatch_with_info(ctx: &Ctx) {
+        let mut module = jsonrpsee::RpcModule::new(());
+        module.register_method("info", |_, _, _| true).unwrap();
+        let acp: crate::types::AcpServe = Arc::new(|_, _| Box::pin(async {}));
+        ctx.set_dispatch(crate::types::SetDispatch {
+            methods: module.into(),
+            acp,
+        });
+    }
+
+    /// 69 decisions 3–4 on the mesh path: a device whose hello names a
+    /// pending row another engine wrote pairs (the row is consumed, the
+    /// `devices` row written, `last_seen_ms` set on close); once revoked its
+    /// `IK` is refused with `CLOSE 3` before msg2 — not a guest, not a session.
+    #[tokio::test]
+    async fn mesh_conn_pairs_from_a_replicated_pending_row_and_refuses_revoked() {
+        use crate::mesh_uplink::testing;
+        let hub = testing::identity();
+        let ctx = testing::ctx("ws://x", None, Some(hub.clone()));
+        dispatch_with_info(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
+        let store = crate::store::Store::open(&dir.path().join(crate::store::DB)).await.unwrap();
+        ctx.lock().pending = crate::devices::Pending::new(Some(store.clone()), Some(vault.clone()));
+
+        // Engine B shows the QR: its own mirror writes the row; ours learns it from the table.
+        let mut b = crate::devices::Pending::new(Some(store.clone()), Some(vault));
+        let (pending_id, psk, _) = b.create("work").unwrap();
+        let rows = loop {
+            let rows = store.pending().await.unwrap();
+            if !rows.is_empty() {
+                break rows;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(crate::follow::reload_pending(&ctx, rows.clone()));
+        assert!(!crate::follow::reload_pending(&ctx, rows), "already mirrored");
+
+        let (dpriv, dpub) = keypair();
+        let hello = format!(r#"{{"name":"iPhone","platform":"ios","pending":"{pending_id}"}}"#);
+        let _out = pair_attempt(&ctx, 1, &hub, &dpriv, &psk, hello.as_bytes()).await.expect("paired");
+        {
+            let st = ctx.lock();
+            let row = st.devices.by_key(&dpub).expect("devices row written at the first record");
+            assert_eq!((row.name.as_str(), row.platform.as_str(), row.last_seen_ms), ("iPhone", "ios", 0));
+            assert_eq!(st.mesh_conns[&1].device, Some(dpub), "online");
+            assert!(st.pending.is_empty(), "the pending row was consumed");
+        }
+        // Session close (a relay CLOSE): the task ends and `last_seen_ms` is written.
+        ctx.lock().mesh_conns.remove(&1);
+        testing::until(|| ctx.lock().devices.by_key(&dpub).unwrap().last_seen_ms > 0).await;
+
+        // Known device: IK → session; `info` answers.
+        let mut out = mesh_conn(&ctx, 2);
+        let mut hs = initiator("IK", &dpriv, &hub, None);
+        let mut msg1 = vec![0u8; MAX_MSG];
+        let n = hs.write_message(&[], &mut msg1).unwrap();
+        data(&ctx, 2, &msg1[..n]).await;
+        let (op, _, msg2) = frame(&mut out).await;
+        assert_eq!(op, uplink::OP_DATA);
+        let mut buf = vec![0u8; MAX_MSG];
+        hs.read_message(&msg2, &mut buf).unwrap();
+        let mut t = hs.into_transport_mode().unwrap();
+        testing::until(|| ctx.lock().mesh_conns.get(&2).is_some_and(|h| h.device == Some(dpub))).await;
+        device_send(&ctx, 2, &mut t, r#"{"jsonrpc":"2.0","id":1,"method":"info"}"#).await;
+        assert_eq!(device_recv(&mut t, &mut out).await["result"], true);
+        ctx.lock().mesh_conns.remove(&2);
+        assert!(out.recv().await.is_none(), "conn task ended");
+
+        // Revoked (here or, replicated, anywhere): the same IK is refused before msg2 — the app
+        // shows "revoked — pair again" on 3 (69 smoke invariant 6); unknown statics are guests.
+        let id = device_id(&dpub);
+        assert!(ctx.lock().devices.remove(&id).is_some());
+        let mut out = mesh_conn(&ctx, 3);
+        let mut hs = initiator("IK", &dpriv, &hub, None);
+        let n = hs.write_message(&[2], &mut msg1).unwrap();
+        data(&ctx, 3, &msg1[..n]).await;
+        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 3, Bytes::from_static(&[CLOSE_REFUSED])));
+        assert!(out.recv().await.is_none(), "conn task ended");
+        assert!(ctx.lock().mesh_conns.is_empty(), "a refused conn leaves no handle behind");
+    }
+
+    /// A hint-less hello (older app, 3-part string) pairs only while exactly
+    /// one pending row is live; with two it is refused, and a wrong hint
+    /// falls back the same way.
+    #[tokio::test]
+    async fn mesh_conn_without_a_hint_needs_exactly_one_live_pending_row() {
+        use crate::mesh_uplink::testing;
+        let hub = testing::identity();
+        let ctx = testing::ctx("ws://x", None, Some(hub.clone()));
+        dispatch_with_info(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
+        ctx.lock().pending = crate::devices::Pending::new(None, Some(vault));
+        let hello = br#"{"name":"Mac","platform":"macos"}"#;
+
+        // Two live rows: nothing to fall back to.
+        let (_, psk1, _) = ctx.lock().pending.create("a").unwrap();
+        let (id_b, _, _) = ctx.lock().pending.create("b").unwrap();
+        let (d1, _) = keypair();
+        assert_eq!(pair_attempt(&ctx, 1, &hub, &d1, &psk1, hello).await.err(), Some(CLOSE_REFUSED));
+        assert_eq!(ctx.lock().pending.len(), 2, "nothing consumed by a refusal");
+
+        // Exactly one live row: a hint-less device gets it — so does one with a stale hint.
+        assert!(ctx.lock().pending.take(&id_b).is_some());
+        let (d2, d2pub) = keypair();
+        let stale = br#"{"name":"Mac","platform":"macos","pending":"gone"}"#;
+        let _out = pair_attempt(&ctx, 2, &hub, &d2, &psk1, stale).await.expect("single live row");
+        assert!(ctx.lock().devices.by_key(&d2pub).is_some());
+        assert!(ctx.lock().pending.is_empty());
+
+        // The registry is full: the PSK is not even chosen.
+        let (_, psk3, _) = ctx.lock().pending.create("c").unwrap();
+        ctx.lock().cfg.max_devices = 1;
+        let (d3, _) = keypair();
+        assert_eq!(pair_attempt(&ctx, 3, &hub, &d3, &psk3, hello).await.err(), Some(CLOSE_REFUSED));
+        assert_eq!(ctx.lock().pending.len(), 1, "kept for when a device is revoked");
+    }
+
+    /// 69 §5 (Y): a mesh-uplink conn answers `IK` with the MESH static; an unknown static is a guest
+    /// on that identity exactly as on the engine uplink — gated to [`GUEST_METHODS`], registered in
+    /// `State::mesh_conns` under its static (what `DropGuest` finds through `State::all_conns`),
+    /// closed by that handle's token.
+    #[tokio::test]
+    async fn mesh_uplink_conn_admits_a_guest_against_the_mesh_static_and_drop_guest_closes_it() {
+        use crate::mesh_uplink::testing;
+        let mesh = testing::identity();
+        let engine = testing::identity();
+        let (gpriv, gpub) = keypair();
+        let ctx = testing::ctx("ws://x", Some(engine.clone()), Some(mesh.clone()));
+        // The dispatch: `doc_join` answers the guest's static from the peer the conn put in the extensions.
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_method("doc_join", |_, _, ext| {
+                let g = ext.get::<RpcPeer>().and_then(|p| p.guest()).expect("guest peer");
+                g.mark_joined();
+                crate::devices::device_id(&g.key)
+            })
+            .unwrap();
+        ctx.set_dispatch(crate::types::SetDispatch {
+            methods: module.into(),
+            acp: Arc::new(|_, _| Box::pin(async {})),
+        });
+        let mut out = mesh_conn(&ctx, 1);
+
+        // The guest dials the MESH identity (prologue and static from the share URL's mesh id).
+        let mut dev = initiator("IK", &gpriv, &mesh, None);
+        let mut msg1 = vec![0u8; MAX_MSG];
+        let n = dev.write_message(&[2], &mut msg1).unwrap();
+        data(&ctx, 1, &msg1[..n]).await;
+        let (op, _, msg2) = frame(&mut out).await;
+        assert_eq!(op, uplink::OP_DATA);
+        let mut buf = vec![0u8; MAX_MSG];
+        dev.read_message(&msg2, &mut buf).unwrap();
+        let mut dev = dev.into_transport_mode().unwrap();
+        assert_eq!(ctx.lock().mesh_conns[&1].device, Some(gpub), "registered under the guest static");
+
+        // Off the guest list: refused by the gate, never dispatched.
+        device_send(&ctx, 1, &mut dev, r#"{"jsonrpc":"2.0","id":1,"method":"doc_link_create","params":[]}"#).await;
+        let v = device_recv(&mut dev, &mut out).await;
+        assert_eq!(v["error"]["code"], -32601);
+        // `doc_join` reaches the dispatch as this guest.
+        device_send(&ctx, 1, &mut dev, r#"{"jsonrpc":"2.0","id":2,"method":"doc_join","params":[]}"#).await;
+        let v = device_recv(&mut dev, &mut out).await;
+        assert_eq!(v["result"], crate::devices::device_id(&gpub));
+
+        // `DropGuest` (59 §8.4, C2): the actor cancels every conn of both uplinks with this static —
+        // so this one goes with `CLOSE 0`.
+        let dropped: Vec<_> = ctx.lock().all_conns().filter(|c| c.device == Some(gpub)).map(|c| c.cancel.clone()).collect();
+        assert_eq!(dropped.len(), 1);
+        dropped[0].cancel();
+        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_NORMAL])));
+        assert!(out.recv().await.is_none(), "conn task ended");
+        assert!(ctx.lock().mesh_conns.is_empty(), "the conn task removed itself");
+
+        // The engine identity does not answer for the mesh: a guest dialling the ENGINE static on the
+        // mesh uplink fails the handshake and is refused.
+        let mut out = mesh_conn(&ctx, 1);
+        let mut dev = initiator("IK", &gpriv, &engine, None);
+        let n = dev.write_message(&[2], &mut msg1).unwrap();
+        data(&ctx, 1, &msg1[..n]).await;
+        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_REFUSED])));
+        assert!(out.recv().await.is_none(), "conn task ended");
     }
 }

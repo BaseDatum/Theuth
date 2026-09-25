@@ -1077,6 +1077,7 @@ mod tests {
                     relay: String::new(),
                     discovery: false,
                     bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                    storm_frames_per_sec: 50,
                 },
                 store,
                 name.into(),

@@ -35,6 +35,14 @@ pub struct MeshConfig {
     pub capabilities_secs: u64,
     /// Repo roots this engine advertises for placement (67 §8); empty = none.
     pub workspaces: Vec<String>,
+    /// While a peer stays connected, its open `availability` interval is
+    /// written (a replicated row) at most this often; open and close always
+    /// write. Keeps the 10 s heartbeat off the replication feed.
+    pub availability_flush_secs: u64,
+    /// One stream ALPN sustaining more frames per second than this for 10 s
+    /// is a storm: `mesh_status.traffic` shows it and a warning is logged
+    /// (once a minute at most).
+    pub storm_frames_per_sec: u64,
 }
 
 impl Default for MeshConfig {
@@ -51,6 +59,8 @@ impl Default for MeshConfig {
             lapse_secs: 30,
             capabilities_secs: 300,
             workspaces: Vec::new(),
+            availability_flush_secs: 600,
+            storm_frames_per_sec: 50,
         }
     }
 }

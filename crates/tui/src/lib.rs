@@ -764,6 +764,20 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.link_revoke_device(id).await)?;
             UiEvent::Link(msg(api.link_status().await)?)
         }
+        Command::MeshDevicesList => UiEvent::MeshDevices(msg(api.devices_list().await)?),
+        Command::MeshDevicesAdd(name) => {
+            UiEvent::MeshDevicePairing(msg(api.device_pair_start(name).await)?)
+        }
+        Command::MeshDevicesRevoke(id) => {
+            msg(api.device_revoke(id.clone()).await)?;
+            let _ = tx.send(UiEvent::Info(format!("revoked device {id}")));
+            UiEvent::MeshDevices(msg(api.devices_list().await)?)
+        }
+        Command::MeshDevicesRename(id, name) => {
+            msg(api.device_rename(id.clone(), name.clone()).await)?;
+            let _ = tx.send(UiEvent::Info(format!("renamed device {id} → {name}")));
+            UiEvent::MeshDevices(msg(api.devices_list().await)?)
+        }
         Command::ListNodes => UiEvent::Nodes(msg(api.list_nodes().await)?),
         Command::AddNode(key, name) => {
             let node = msg(api.add_node(key, name).await)?;
@@ -1497,6 +1511,19 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::NodeInvite(name, p) => {
             writeln!(out, "node invite · {name}\n{}\n{}", link::qr(&p.key), p.key)
         }
+        UiEvent::MeshDevices(list) if list.is_empty() => writeln!(out, "mesh devices: none paired"),
+        UiEvent::MeshDevices(list) => {
+            let now = model::now_ms();
+            list.iter()
+                .try_for_each(|d| writeln!(out, "{}", model::mesh_device_line(d, now)))
+        }
+        UiEvent::MeshDevicePairing(p) => writeln!(
+            out,
+            "{}\n{}\npending {} — expires in 5 min",
+            link::qr(&p.string),
+            p.string,
+            p.pending_id
+        ),
         UiEvent::NodeEvent(nodes::NodeEvent::NodeAdded { node }) => {
             writeln!(out, "paired node {}", node.name)
         }

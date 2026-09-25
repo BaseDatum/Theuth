@@ -77,9 +77,10 @@ pub mod cost;
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
-    ListPeerMessages, ListPeers, PeerConsumed, PeerDelivered, PeerInfo, PeerIntakeFailed,
-    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
-    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
+    ListPeerMessages, ListPeers, PeerConsumed, PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo,
+    PeerIntakeFailed, PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage,
+    PeerReceipt, PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication,
+    SetPeerScope,
 };
 pub use compact::CompactStyle;
 pub use context::{

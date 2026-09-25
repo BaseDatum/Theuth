@@ -590,10 +590,14 @@ async fn task_unscoped_in(conn: &mut SqliteConnection, id: &str) -> anyhow::Resu
 }
 
 /// The acceptance transaction body (50 §7). Returns the receipt and whether
-/// it is a dedup hit on an existing row.
+/// it is a dedup hit on an existing row. `id`: the message id when the
+/// sender's engine already minted it (69 P: a peer message forwarded to the
+/// owner keeps one id on both engines so `reply_to` matches); minted here
+/// otherwise.
 async fn accept_in(
     conn: &mut SqliteConnection,
     a: &AcceptExchange<'_>,
+    id: Option<Uuid>,
 ) -> anyhow::Result<(PeerReceipt, bool)> {
     bounded("sender", a.sender, EXTERNAL_ID_MAX)?;
     bounded("recipient", a.recipient, EXTERNAL_ID_MAX)?;
@@ -604,7 +608,7 @@ async fn accept_in(
         .recipient_session
         .or(a.sender_session)
         .ok_or_else(|| CommError::Invalid("no local participant".into()))?;
-    let id = Uuid::now_v7();
+    let id = id.unwrap_or_else(Uuid::now_v7);
     let id_s = id.to_string();
     let request_id = match a.request_id {
         Some(r) => {
@@ -1059,7 +1063,17 @@ impl Store {
     /// duplicate is `Conflict`, an unknown/mismatched `reply_to` is `NotFound`.
     pub async fn accept_exchange(&self, a: &AcceptExchange<'_>) -> anyhow::Result<PeerReceipt> {
         let mut tx = self.begin_write().await?;
-        let (receipt, _) = accept_in(&mut tx, a).await?;
+        let (receipt, _) = accept_in(&mut tx, a, None).await?;
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
+    /// [`Self::accept_exchange`] under a message id another engine minted
+    /// (69 P: the owner's intake of a forwarded peer message). A duplicate
+    /// `(sender, request_id)` still returns the existing row.
+    pub async fn accept_exchange_as(&self, id: Uuid, a: &AcceptExchange<'_>) -> anyhow::Result<PeerReceipt> {
+        let mut tx = self.begin_write().await?;
+        let (receipt, _) = accept_in(&mut tx, a, Some(id)).await?;
         tx.commit().await?;
         Ok(receipt)
     }
@@ -1560,7 +1574,7 @@ impl Store {
             }
         };
         a.request_scope = Some(request_scope);
-        let (receipt, dedup) = accept_in(&mut tx, &a).await?;
+        let (receipt, dedup) = accept_in(&mut tx, &a, None).await?;
         if dedup {
             // The existing outcome: the task bound to that acceptance.
             let row = exchange_in(&mut tx, &receipt.id.to_string())

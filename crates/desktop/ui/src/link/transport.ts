@@ -151,7 +151,7 @@ export class LinkTransport implements Transport {
     if (f.op === 'presence') {
       if (f.online) {
         this.#presence('connecting')
-        const identity = await (this.#opts.identity ?? getIdentity)()
+        const identity = await (this.#opts.identity ?? getIdentity)(this.harness.kind === 'mesh' ? this.harness.id : undefined)
         this.#drop()
         this.#hs = await handshakeIK({ s: identity, rs: unb64url(this.harness.id) as Uint8Array<ArrayBuffer>, prologue: prologue(this.harness.id) })
         ws.send(encodeData(this.#hs.message))
@@ -162,7 +162,8 @@ export class LinkTransport implements Transport {
       }
     } else if (f.op === 'close') {
       // `refused` while our handshake is out = the harness does not know this device (revoked, or its
-      // devices.yaml is gone). Every other reason (idle, harness gone) is transient; the client retries.
+      // devices.yaml is gone). Every other reason — idle, harness gone (4), hub moved (5, 69 decision 6) —
+      // is transient; the client retries against the same id and the new hub answers.
       if (f.reason === CLOSE_REFUSED && this.#hs) {
         this.#rejected = true
         this.#presence('refused')

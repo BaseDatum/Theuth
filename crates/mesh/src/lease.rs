@@ -1,7 +1,60 @@
 //! Election by stability (67 §4.3, §4.5): a pure function every engine runs
-//! over the same inputs, so no message ever says "you are hub".
+//! over the same inputs, so no message ever says "you are hub". [`Follower`]
+//! is the other half: how a plugin tracks whether *this* engine holds the
+//! lease (67 §4.4; roster, slack, signal, link each keep one).
 
-use crate::types::{EngineClass, EngineId, HubPref};
+use crate::types::{EngineClass, EngineId, HubPref, LeaseState};
+
+/// Where this engine stands with the lease. Duties are on until the mesh
+/// says otherwise: an engine without a mesh is its own hub.
+#[derive(Clone, Debug)]
+pub struct Follower {
+    /// This engine's id, once the mesh answered `Status`.
+    pub self_id: Option<String>,
+    /// Whether the duties are on.
+    pub holding: bool,
+    /// The last lease seen: `Some(holder)` once one arrived.
+    seen: Option<Option<String>>,
+}
+
+impl Default for Follower {
+    fn default() -> Self {
+        Self {
+            self_id: None,
+            holding: true,
+            seen: None,
+        }
+    }
+}
+
+impl Follower {
+    /// The engine id is known: re-evaluate the last lease seen.
+    /// `Some(true)` = just gained, `Some(false)` = just lost, `None` = unchanged.
+    pub fn set_self(&mut self, id: String) -> Option<bool> {
+        self.self_id = Some(id);
+        self.settle()
+    }
+
+    /// A lease event. `Some(true)` = just gained (holder is us), `Some(false)`
+    /// = just lost (someone else or nobody holds), `None` = unchanged. Before
+    /// `self_id` is known nothing changes: the lease is remembered and
+    /// [`Self::set_self`] resolves it.
+    pub fn observe(&mut self, lease: &LeaseState) -> Option<bool> {
+        self.seen = Some(lease.holder.as_ref().map(|h| h.0.clone()));
+        self.settle()
+    }
+
+    fn settle(&mut self) -> Option<bool> {
+        let me = self.self_id.as_deref()?;
+        let holder = self.seen.as_ref()?;
+        let want = holder.as_deref() == Some(me);
+        if want == self.holding {
+            return None;
+        }
+        self.holding = want;
+        Some(want)
+    }
+}
 
 /// One connected, heartbeating engine (this one included) as the election sees it.
 #[derive(Clone, Debug, PartialEq)]
@@ -111,6 +164,37 @@ mod tests {
 
     fn id(s: &str) -> Option<EngineId> {
         Some(EngineId(s.into()))
+    }
+
+    fn lease(holder: Option<&str>) -> LeaseState {
+        LeaseState {
+            holder: holder.map(|h| EngineId(h.to_owned())),
+            since_ms: 0,
+            reason: "test".into(),
+        }
+    }
+
+    #[test]
+    fn follower_tracks_the_lease() {
+        let mut f = Follower::default();
+        assert!(f.holding, "duties on until the mesh says otherwise");
+        assert_eq!(f.observe(&lease(Some("b"))), None, "unknown self: remembered, nothing moves");
+        assert!(f.holding);
+        assert_eq!(f.set_self("a".into()), Some(false), "self known: someone else holds");
+        assert_eq!(f.observe(&lease(Some("a"))), Some(true));
+        assert_eq!(f.observe(&lease(Some("a"))), None, "same holder again is no change");
+        assert_eq!(f.observe(&lease(Some("b"))), Some(false));
+        assert_eq!(f.observe(&lease(None)), None, "nobody after someone else: still lost");
+        assert_eq!(f.observe(&lease(Some("a"))), Some(true));
+    }
+
+    #[test]
+    fn set_self_without_a_lease_is_no_change() {
+        let mut f = Follower::default();
+        assert_eq!(f.set_self("a".into()), None);
+        assert!(f.holding);
+        assert_eq!(f.observe(&lease(None)), Some(false), "holder None is a loss");
+        assert_eq!(f.observe(&lease(None)), None);
     }
 
     #[test]

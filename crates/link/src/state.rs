@@ -8,10 +8,10 @@ use runtime::Runtime;
 use tokio::sync::{Notify, OnceCell, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::devices::Devices;
+use crate::devices::{Devices, Pending as PendingRows};
 use crate::identity::Identity;
 use crate::pairing::Pending;
-use crate::types::{LinkConfig, LinkStatus, SetDispatch};
+use crate::types::{LinkConfig, LinkStatus, MeshLink, SetDispatch};
 
 /// Everything a conn task needs: the runtime (events), the dispatch `rpc`
 /// hands over by message (32 §13) and the mutable [`State`].
@@ -79,14 +79,25 @@ pub struct State {
     pub hostname: String,
     /// `None` until enabled once.
     pub identity: Option<Identity>,
-    /// Paired devices.
+    /// Paired devices (engine and mesh pairings share the replicated table).
     pub devices: Devices,
-    /// The single pending pairing.
+    /// The single pending pairing of the ENGINE identity (nodes, doc guests).
     pub pairing: Option<Pending>,
+    /// The replicated `pending` rows of the MESH identity (69 decision 4).
+    pub pending: PendingRows,
+    /// The mesh identity (`mesh/device_key`, 69 decision 1): loaded on first
+    /// use (`device_pair_start`, lease gain); the same on every engine.
+    pub mesh_identity: Option<Identity>,
+    /// Its uplink as `link_status` shows it: `None` until the identity was
+    /// loaded; `connected` is kept by the mesh uplink supervisor.
+    pub mesh: Option<MeshLink>,
     /// Uplink registered with the relay.
     pub connected: bool,
-    /// Conns of the current uplink by relay conn id.
+    /// Conns of the current ENGINE uplink by relay conn id.
     pub conns: HashMap<u32, ConnHandle>,
+    /// Conns of the current MESH uplink (69 §2) by relay conn id — a second
+    /// socket, so a second id space.
+    pub mesh_conns: HashMap<u32, ConnHandle>,
     /// Guest handshakes admitted lately (59 §8.3 rate limit): tokens left and when they were last refilled.
     pub guests: Bucket,
 }
@@ -135,9 +146,14 @@ impl State {
         }
     }
 
-    /// A session conn for `key` is open.
+    /// A session conn for `key` is open on either uplink.
     pub fn online(&self, key: &[u8; 32]) -> bool {
-        self.conns.values().any(|c| c.device.as_ref() == Some(key))
+        self.all_conns().any(|c| c.device.as_ref() == Some(key))
+    }
+
+    /// Every live conn of both uplinks.
+    pub fn all_conns(&self) -> impl Iterator<Item = &ConnHandle> {
+        self.conns.values().chain(self.mesh_conns.values())
     }
 
     /// The pending pairing if it has not expired.
@@ -153,13 +169,9 @@ impl State {
             name: self.name().to_owned(),
             harness_id: self.identity.as_ref().map(|i| i.id.clone()),
             connected: self.connected,
-            devices: self
-                .devices
-                .rows()
-                .iter()
-                .map(|r| r.device(self.online(&r.key)))
-                .collect(),
+            devices: self.devices.rows().map(|r| r.device(self.online(&r.key))).collect(),
             pairing: self.live_pairing().map(Pending::pairing),
+            mesh: self.mesh.clone(),
         }
     }
 }

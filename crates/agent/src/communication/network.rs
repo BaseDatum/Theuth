@@ -453,6 +453,7 @@ impl NetworkState {
                 activity: None,
                 title: None,
                 tags: Vec::new(),
+                engine: None,
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));

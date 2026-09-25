@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod actor;
 pub mod helper;
+pub mod hub;
 pub mod meta;
+pub mod mirror;
+pub mod relay;
 pub mod search;
 pub mod share;
 pub mod store;
@@ -32,18 +35,20 @@ pub mod watch;
 pub use actor::{
     ApplyUpdate, AwarenessUpdateMsg, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
     EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
-    Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Subscribe, Tick, UndoLastAgentEdit,
+    Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit,
     with_heading,
 };
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
     helper_status, protocol_version,
 };
+pub use hub::{DocError, HUB_MOVED};
 pub use meta::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
     secret_hash,
 };
+pub use store::DocStats;
 
 /// Registry name of the [`DocumentActor`].
 pub const DOCUMENT_ACTOR: &str = "document";
@@ -76,6 +81,9 @@ pub struct DocumentsConfig {
     pub idle_unload_secs: u64,
     /// Documents kept in memory at most (§4.7); past it the longest idle without subscribers is unloaded.
     pub max_open_docs: usize,
+    /// 69: snapshot an open document this long after its last update (besides the 1 MiB / 1000-record /
+    /// unload triggers), so the replicated mirror lags by seconds, not by a megabyte.
+    pub snapshot_quiet_ms: u64,
 }
 
 impl Default for DocumentsConfig {
@@ -91,6 +99,7 @@ impl Default for DocumentsConfig {
             sharing: "on".to_owned(),
             idle_unload_secs: 600,
             max_open_docs: 256,
+            snapshot_quiet_ms: 2000,
         }
     }
 }
@@ -199,13 +208,29 @@ impl runtime::Plugin for DocumentPlugin {
                 return Ok(());
             }
         };
+        // 69: the index row replicates; the replica plugin starts after this one. Local only on failure.
+        let (rt2, pool) = (rt.clone(), store.pool().clone());
+        tokio::spawn(async move {
+            if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+                return;
+            }
+            match replica::attach(&pool, store::TABLES).await {
+                Ok(h) => {
+                    if let Err(e) = h.announce_unstamped().await {
+                        tracing::warn!("documents: existing rows not announced: {e:#}");
+                    }
+                    tracing::info!("documents: docs replicated");
+                }
+                Err(e) => tracing::info!("documents: replication unavailable ({e}); local only"),
+            }
+        });
         let path = helper_path();
         if !path.is_file() {
             tracing::warn!(path = %path.display(), "documents helper not found; the editor will report it on first use");
         }
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let helper = helper::Helper::new(path, events_tx, rt.shutdown.clone());
-        let actor = DocumentActor::spawn(DocumentActor::new(store, helper, cfg, rt.clone()));
+        let actor = DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         actor.register(DOCUMENT_ACTOR)?;
 
         let a = actor.clone();
@@ -241,8 +266,28 @@ impl runtime::Plugin for DocumentPlugin {
                 tools::register(&reg, a, rt2.data_dir.clone()).await;
             }
         });
-        if let Err(e) = watch::start(&rt.data_dir, actor) {
-            tracing::warn!("documents file watcher unavailable: {e:#}");
+        // 69: the derived-file watcher, exports and every write are hub duties. `Reconcile` starts the
+        // watcher now (a lone engine is its own hub); the lease and the self id flip it from here on.
+        let _ = actor.tell(hub::Reconcile).await;
+        rt.subscribe::<DocumentActor, mesh::MeshEvent>(&actor).await;
+        let (a, rt2) = (actor.clone(), rt.clone());
+        tokio::spawn(async move {
+            let Some(m) = rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else { return };
+            if let Ok(st) = m.ask(mesh::Status).await {
+                let _ = a.tell(hub::SelfId(st.self_id)).await;
+            }
+        });
+        // 69 Y: the hub side of `theuth/docs/1` — forwarded client sessions land on the actor.
+        tokio::spawn(relay::serve(rt.clone(), actor.clone()));
+        // 69: the flat mirror replicates as `doc_files` rows (disclosed replica one-liner); projections merge back.
+        tokio::spawn(replica::files::mirror_at(
+            store.root().join("mirror.sqlite"),
+            store.mirror_dir(),
+            "doc_files",
+            std::time::Duration::from_secs(60),
+        ));
+        if let Err(e) = mirror::start(&store.mirror_dir(), actor) {
+            tracing::warn!("documents mirror watcher unavailable: {e:#}");
         }
         Ok(())
     }

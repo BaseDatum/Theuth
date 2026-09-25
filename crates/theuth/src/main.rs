@@ -199,6 +199,34 @@ enum MeshCmd {
         /// prefer | eligible | never
         pref: String,
     },
+    /// Devices paired to this mesh (design doc 69): list, pair, revoke, rename.
+    Devices {
+        #[command(subcommand)]
+        cmd: DevicesCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum DevicesCmd {
+    /// Every device in the replicated registry, revoked ones included.
+    List,
+    /// Start a pairing: prints the QR and the string a device scans (5 min).
+    Add {
+        /// The name the QR shows; default: the mesh's name.
+        name: Option<String>,
+    },
+    /// Revoke a device: refused by every hub within one replication hop.
+    Revoke {
+        /// Device id (see `list`).
+        id: String,
+    },
+    /// Rename a device.
+    Rename {
+        /// Device id (see `list`).
+        id: String,
+        /// New name.
+        name: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -274,6 +302,22 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     .map_err(|_| anyhow::anyhow!("hub: expected prefer|eligible|never"))?;
                 client.request("mesh_set_hub", rpc_params![pref]).await
             }
+            MeshCmd::Devices { cmd } => match cmd {
+                DevicesCmd::List => client.request("devices_list", rpc_params![]).await,
+                DevicesCmd::Add { name } => {
+                    let r: Result<link::PairingPayload, ClientError> =
+                        client.request("device_pair_start", rpc_params![name]).await;
+                    match r {
+                        Ok(p) => {
+                            println!("{}\n{}\npending {} — expires in 5 min", link::qr(&p.string), p.string, p.pending_id);
+                            return Ok(());
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                DevicesCmd::Revoke { id } => client.request("device_revoke", rpc_params![id]).await,
+                DevicesCmd::Rename { id, name } => client.request("device_rename", rpc_params![id, name]).await,
+            },
         },
         Cmd::Tasks { cmd } => match cmd {
             TasksCmd::List {

@@ -10,11 +10,14 @@
 //!   conns here, local sockets in `rpc`), read from jsonrpsee extensions
 //! - [`qr`] renders a pairing string for terminals
 //!
-//! Modules: [`identity`] (static key, prologue), [`devices`] (`devices.yaml`),
-//! [`pairing`] (the §4.4 string), [`uplink`] (relay socket, `NK`, demux),
-//! [`conn`] (per-conn `IK`/`IKpsk2` handshake and records, dispatched by mode
-//! — 32 §4.2), [`initiator`] (this harness as a device of another, 32 §4.1),
-//! [`state`] (what those share).
+//! Modules: [`identity`] (static key, prologue), [`store`] (`link.sqlite`:
+//! the replicated `devices`/`pending` tables, 69), [`devices`] (their
+//! in-memory mirrors), [`pairing`] (the §4.4 string), [`uplink`] (relay
+//! socket, `NK`, demux), [`mesh_uplink`] (the mesh identity's second uplink,
+//! hub duty, 69 §2), [`follow`] (the lease and the tables it follows),
+//! [`conn`] (per-conn `IK`/`IKpsk2` handshake and records, dispatched by
+//! mode — 32 §4.2), [`initiator`] (this harness as a device of another, 32
+//! §4.1), [`state`] (what those share).
 //!
 //! What a conn dispatches into arrives by message: `rpc` `tell`s
 //! [`SetDispatch`] once at start (32 §13).
@@ -30,10 +33,13 @@ use tokio_util::sync::CancellationToken;
 
 pub mod conn;
 pub mod devices;
+pub mod follow;
 pub mod identity;
 pub mod initiator;
+pub mod mesh_uplink;
 pub mod pairing;
 pub mod state;
+pub mod store;
 pub mod types;
 pub mod uplink;
 
@@ -59,14 +65,23 @@ pub fn qr(text: &str) -> String {
     }
 }
 
-/// The [`LINK_ACTOR`] actor: config, identity, devices, the pending pairing
-/// and the uplink task's lifetime.
+/// The [`LINK_ACTOR`] actor: config, identity, devices, the pending pairing,
+/// the uplink task's lifetime and — as the hub — the mesh uplink's (69 §2).
 #[derive(kameo::Actor)]
 pub struct LinkActor {
     ctx: Arc<Ctx>,
     config_path: PathBuf,
     uplink: Option<CancellationToken>,
     pair_timer: Option<JoinHandle<()>>,
+    /// Where this engine stands with the hub lease (`follow`).
+    follower: mesh::lease::Follower,
+    /// The mesh identity's uplink while this engine is the hub.
+    mesh: Option<mesh_uplink::MeshUplink>,
+    /// A `mesh/device_key` load is in flight.
+    mesh_loading: bool,
+    /// The mesh answered `Status` (or is absent): the reconcile may start the mesh uplink. Until
+    /// then `follower.holding` is only its default and must not register anything.
+    mesh_ready: bool,
 }
 
 /// Terminal-mode answer when the uplink is off.
@@ -124,6 +139,45 @@ impl LinkActor {
             })
             .await;
     }
+
+    /// The mesh identity (69 decision 1) for a pairing: the vault's
+    /// `mesh/device_key`, minted here when no engine of the mesh has one yet;
+    /// cached in the state afterwards.
+    async fn mesh_identity(&self) -> Result<Identity, String> {
+        load_mesh_identity(&self.ctx).await
+    }
+}
+
+/// [`LinkActor::mesh_identity`]: the row, minted if absent.
+pub(crate) async fn load_mesh_identity(ctx: &Ctx) -> Result<Identity, String> {
+    if let Some(id) = ctx.lock().mesh_identity.clone() {
+        return Ok(id);
+    }
+    let key = secrets::mesh_device_key(&ctx.rt).await.map_err(|e| format!("mesh device key: {e:#}"))?;
+    Ok(cache_mesh_identity(ctx, Identity::from_private(*key)))
+}
+
+/// The mesh identity when the mesh has one — never minted (`follow`: a hub *serves* the mesh
+/// identity; only a pairing creates it, so two engines that ran alone before pairing do not each
+/// mint a key and collide, which would strand every device on the loser at the first failover).
+pub(crate) async fn existing_mesh_identity(ctx: &Ctx) -> Result<Option<Identity>, String> {
+    if let Some(id) = ctx.lock().mesh_identity.clone() {
+        return Ok(Some(id));
+    }
+    let key = secrets::mesh_device_key_existing(&ctx.rt)
+        .await
+        .map_err(|e| format!("mesh device key: {e:#}"))?;
+    Ok(key.map(|k| cache_mesh_identity(ctx, Identity::from_private(*k))))
+}
+
+fn cache_mesh_identity(ctx: &Ctx, id: Identity) -> Identity {
+    let mut st = ctx.lock();
+    let id = st.mesh_identity.get_or_insert(id).clone();
+    st.mesh.get_or_insert(MeshLink {
+        device_id: id.id.clone(),
+        connected: false,
+    });
+    id
 }
 
 impl Message<Status> for LinkActor {
@@ -145,7 +199,7 @@ impl Message<SetDispatch> for LinkActor {
 impl Message<Enable> for LinkActor {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: Enable, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: Enable, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let relay_changed = m.relay.is_some();
         if let Some(relay) = &m.relay {
             if !(relay.starts_with("wss://") || relay.starts_with("ws://")) {
@@ -172,6 +226,11 @@ impl Message<Enable> for LinkActor {
                 self.publish_pairing_ended().await;
             }
         }
+        // The mesh uplink follows `enabled` and the relay too (69 §8: `link.relay` applies to both).
+        if relay_changed && let Some(up) = self.mesh.take() {
+            up.stop();
+        }
+        self.sync_mesh(ctx.actor_ref().clone()).await;
         Ok(())
     }
 }
@@ -259,13 +318,11 @@ impl Message<RenameDevice> for LinkActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: RenameDevice, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let mut st = self.ctx.lock();
-        let row = st
-            .devices
-            .by_id_mut(&m.id)
-            .ok_or_else(|| format!("unknown device {}", m.id))?;
-        row.name = m.name;
-        st.devices.save().map_err(|e| format!("devices.yaml: {e}"))
+        if !self.ctx.lock().devices.rename(&m.id, &m.name) {
+            return Err(format!("unknown device {}", m.id));
+        }
+        self.ctx.rt.publish(LinkEvent::DevicesChanged).await;
+        Ok(())
     }
 }
 
@@ -280,19 +337,58 @@ impl Message<Revoke> for LinkActor {
                 .by_id(&m.id)
                 .map(|r| r.key)
                 .ok_or_else(|| format!("unknown device {}", m.id))?;
-            // Each conn task sends CLOSE 0 and removes itself.
-            for c in st.conns.values().filter(|c| c.device == Some(key)) {
+            // Each conn task (either uplink) sends CLOSE 0 and removes itself.
+            for c in st.all_conns().filter(|c| c.device == Some(key)) {
                 c.cancel.cancel();
             }
-            st.devices
-                .remove(&m.id)
-                .map_err(|e| format!("devices.yaml: {e}"))?;
+            st.devices.remove(&m.id);
         }
         self.ctx
             .rt
             .publish(LinkEvent::LinkRevoked { id: m.id })
             .await;
+        self.ctx.rt.publish(LinkEvent::DevicesChanged).await;
         Ok(())
+    }
+}
+
+impl Message<DevicesList> for LinkActor {
+    type Reply = Vec<DeviceInfo>;
+
+    async fn handle(&mut self, _: DevicesList, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ctx.lock().devices.all().iter().map(devices::Row::info).collect()
+    }
+}
+
+impl Message<DevicePairStart> for LinkActor {
+    type Reply = Result<PairingPayload, String>;
+
+    async fn handle(&mut self, m: DevicePairStart, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let identity = self.mesh_identity().await?;
+        // A pairing may have just minted the mesh identity: a hub registers it now, not at the
+        // next vault change.
+        self.sync_mesh(ctx.actor_ref().clone()).await;
+        // The name the QR shows: the caller's, else the mesh's, else ours.
+        let name = match m.name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()) {
+            Some(n) => n,
+            None => match mesh::actor() {
+                Some(a) => match a.ask(mesh::Status).await {
+                    Ok(s) => s.mesh_name.unwrap_or(s.self_name),
+                    _ => self.ctx.lock().name().to_owned(),
+                },
+                None => self.ctx.lock().name().to_owned(),
+            },
+        };
+        let mut st = self.ctx.lock();
+        if st.devices.len() >= st.cfg.max_devices {
+            return Err(format!("max_devices ({}) reached; revoke one first", st.cfg.max_devices));
+        }
+        let (pending_id, psk, expires_ms) = st.pending.create(&name)?;
+        Ok(PairingPayload {
+            string: pairing::build(&st.cfg.relay, &identity.public, &psk, &name, Some(&pending_id)),
+            expires_ms,
+            pending_id,
+        })
     }
 }
 
@@ -301,8 +397,9 @@ impl Message<DropGuest> for LinkActor {
 
     async fn handle(&mut self, m: DropGuest, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let st = self.ctx.lock();
-        // Each conn task sends CLOSE 0 and removes itself.
-        for c in st.conns.values().filter(|c| c.device == Some(m.key)) {
+        // Each conn task (either uplink — a guest may arrive on the mesh identity, 69 §5) sends
+        // CLOSE 0 and removes itself.
+        for c in st.all_conns().filter(|c| c.device == Some(m.key)) {
             c.cancel.cancel();
         }
     }
@@ -332,21 +429,57 @@ impl runtime::Plugin for LinkPlugin {
             None
         };
         let enabled = cfg.enabled && identity.is_some();
+        // 69 decision 3: the registry is `link.sqlite`, replicated once the
+        // replica plugin is up (it starts after this one); memory only when
+        // the file cannot be opened. The vault seals pending PSKs.
+        let store = match store::Store::open(&rt.data_dir.join(store::DB)).await {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!("link.sqlite unavailable ({e:#}); devices are memory only");
+                None
+            }
+        };
+        let devices = match &store {
+            Some(s) => Devices::open(s.clone(), &dir).await,
+            None => Devices::empty(),
+        };
+        let vault = secrets::handle(rt).await;
+        if let Some(pool) = store.as_ref().map(|s| s.pool().clone()) {
+            let rt2 = rt.clone();
+            tokio::spawn(async move {
+                if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+                    return;
+                }
+                match replica::attach(&pool, store::TABLES).await {
+                    Ok(_) => tracing::info!("link: devices/pending replicated"),
+                    Err(e) => tracing::info!("link: replication unavailable ({e}); local only"),
+                }
+            });
+        }
         let state = State {
             cfg,
             hostname: platform::process::hostname().to_owned(),
             identity,
-            devices: Devices::load(&dir),
+            devices,
             pairing: None,
+            pending: devices::Pending::new(store.clone(), vault),
+            mesh_identity: None,
+            mesh: None,
             connected: false,
             conns: Default::default(),
+            mesh_conns: Default::default(),
             guests: Default::default(),
         };
+        let ctx = Ctx::new(rt.clone(), state);
         let mut actor = LinkActor {
-            ctx: Ctx::new(rt.clone(), state),
+            ctx: ctx.clone(),
             config_path: rt.data_dir.join("config.yaml"),
             uplink: None,
             pair_timer: None,
+            follower: mesh::lease::Follower::default(),
+            mesh: None,
+            mesh_loading: false,
+            mesh_ready: false,
         };
         if enabled {
             actor.start_uplink();
@@ -355,6 +488,8 @@ impl runtime::Plugin for LinkPlugin {
         }
         let actor: ActorRef<LinkActor> = LinkActor::spawn(actor);
         actor.register(LINK_ACTOR)?;
+        // 69 §2: the hub serves the mesh identity; the tables follow the replica.
+        follow::start(rt, &actor, ctx, store).await;
         Ok(())
     }
 }
@@ -363,7 +498,7 @@ impl runtime::Plugin for LinkPlugin {
 mod tests {
     #[test]
     fn qr_renders_pairing_string() {
-        let key = super::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "Mac");
+        let key = super::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "Mac", None);
         let q = super::qr(&key);
         assert!(q.lines().count() > 10, "{q}");
     }

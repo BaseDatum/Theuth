@@ -12,9 +12,12 @@ export type PairingKey = {
   relayHost: string
   secure: boolean
   harnessPub: Uint8Array<ArrayBuffer>
+  /** What we dial: an engine id, or the mesh device id when `pending` is set. */
   harnessId: string
   secret: Uint8Array<ArrayBuffer>
   name: string
+  /** The `pending` row id of a mesh pairing (69 decision 4): the string's 4th part; sent in `PairHello`. */
+  pending?: string
 }
 
 /** WebSocket subprotocol both relay sockets negotiate. */
@@ -23,7 +26,7 @@ export const SUBPROTOCOL = 'theuth-link-1'
 /** Test/script seams: a WebSocket constructor and a device identity (the script has no IndexedDB); `onClose` sees every relay `CLOSE` reason (the guest page keys its copy on `3`). */
 export type LinkOptions = {
   ws?: typeof WebSocket
-  identity?: () => Promise<Identity>
+  identity?: (meshId?: string) => Promise<Identity>
   onClose?: (reason: number) => void
 }
 
@@ -31,8 +34,9 @@ export type LinkOptions = {
 export const wsUrl = (h: Pick<Harness, 'relayHost' | 'secure' | 'id'>): string => `${h.secure ? 'wss' : 'ws'}://${h.relayHost}/h/${h.id}`
 
 /**
- * `https://host[:port]/link#1.<b64url(pub ‖ secret)>.<b64url(name)>` or the bare
- * `1.<…>.<…>` (then the relay is the page's own origin). `null` when malformed.
+ * `https://host[:port]/link#1.<b64url(pub ‖ secret)>.<b64url(name)>[.<b64url(pending id)>]`
+ * or the bare `1.<…>.<…>` (then the relay is the page's own origin). 3 parts pair with
+ * an engine, 4 with a mesh (69 §5); anything else is `null`.
  */
 export function parsePairingKey(s: string): PairingKey | null {
   let relayHost: string | undefined
@@ -55,12 +59,18 @@ export function parsePairingKey(s: string): PairingKey | null {
   }
   if (!relayHost) return null
   const parts = frag.split('.')
-  if (parts.length !== 3 || parts[0] !== '1') return null
+  if ((parts.length !== 3 && parts.length !== 4) || parts[0] !== '1') return null
   const keys = unb64url(parts[1] as string)
   const name = unb64url(parts[2] as string)
   if (!keys || keys.length !== 64 || !name) return null
   const harnessPub = keys.slice(0, 32)
-  return { relayHost, secure, harnessPub, harnessId: b64url(harnessPub), secret: keys.slice(32), name: new TextDecoder().decode(name) }
+  const k: PairingKey = { relayHost, secure, harnessPub, harnessId: b64url(harnessPub), secret: keys.slice(32), name: new TextDecoder().decode(name) }
+  if (parts.length === 4) {
+    const pending = unb64url(parts[3] as string)
+    if (!pending || pending.length === 0) return null
+    k.pending = new TextDecoder().decode(pending)
+  }
+  return k
 }
 
 /** Binary frames from one relay socket as an awaitable queue. */
@@ -122,14 +132,15 @@ const FIRST_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"info","params":[]}'
 
 /**
  * Pair with the harness in `key`: wait for it to be online, run IKpsk2 with
- * `{ name, platform }`, read `PairAccept`, send one `info` request (the record
- * that enrols us) and await its reply. Adds the harness to the store and returns it.
+ * `{ name, platform, pending? }`, read `PairAccept`, send one `info` request (the
+ * record that enrols us) and await its reply. Adds the harness to the store and
+ * returns it. A 4-part key pairs this device's per-mesh identity with a mesh (69 §4).
  * Throws `Error('expired or used key' | 'harness offline' | 'relay unreachable')`.
  */
 export async function pair(key: string, deviceName: string, opts: LinkOptions = {}): Promise<Harness> {
   const k = parsePairingKey(key)
   if (!k) throw new Error('expired or used key')
-  const identity = await (opts.identity ?? getIdentity)()
+  const identity = await (opts.identity ?? getIdentity)(k.pending === undefined ? undefined : k.harnessId)
   const ws = await openSocket(wsUrl({ relayHost: k.relayHost, secure: k.secure, id: k.harnessId }), opts.ws)
   const frames = new FrameQueue(ws)
   try {
@@ -146,7 +157,7 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
         s: identity,
         rs: k.harnessPub,
         prologue: prologue(k.harnessId),
-        payload: new TextEncoder().encode(JSON.stringify({ name: deviceName, platform: container() })),
+        payload: new TextEncoder().encode(JSON.stringify({ name: deviceName, platform: container(), pending: k.pending })),
       },
       k.secret,
     )
@@ -175,7 +186,9 @@ export async function pair(key: string, deviceName: string, opts: LinkOptions = 
       pairedAt: now,
       lastSeen: now,
       order: harnesses.reduce((m, x) => Math.max(m, x.order + 1), 0),
+      kind: k.pending === undefined ? 'engine' : 'mesh',
     }
+    if (h.kind === 'mesh') h.meshName = k.name
     add(h)
     return h
   } finally {

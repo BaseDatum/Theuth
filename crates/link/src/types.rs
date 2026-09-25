@@ -66,6 +66,50 @@ pub struct Pairing {
     pub expires_at_ms: u64,
 }
 
+/// The mesh identity's uplink (69 §3): what this engine serves as the hub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct MeshLink {
+    /// `base64url(mesh static pub)`, 43 chars — what devices dial (`/h/<device_id>`).
+    pub device_id: String,
+    /// This engine holds the lease and its mesh uplink is registered.
+    pub connected: bool,
+}
+
+/// One row of the replicated device registry (69 §3), revoked rows included
+/// — `devices_list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DeviceInfo {
+    /// First 8 chars of `base64url(static pub)`.
+    pub id: String,
+    /// User-visible name.
+    pub name: String,
+    /// `ios` | `macos` | `web` | `theuth` | …
+    pub platform: String,
+    /// Unix ms.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub paired_ms: u64,
+    /// Unix ms of the last session close; `0` while never seen.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub last_seen_ms: u64,
+    /// `revoked_ms` is set: refused by every hub.
+    pub revoked: bool,
+}
+
+/// `device_pair_start` reply (69 decision 4): what the QR encodes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PairingPayload {
+    /// `https://<relay-host>/link#1.<b64url(mesh pub‖psk)>.<b64url(name)>.<b64url(pending_id)>`.
+    pub string: String,
+    /// Unix ms; the `pending` row dies then (5 min).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub expires_ms: u64,
+    /// The `pending` row id (the string's 4th part).
+    pub pending_id: String,
+}
+
 /// `link_status` reply.
 #[derive(
     Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
@@ -86,6 +130,8 @@ pub struct LinkStatus {
     pub devices: Vec<Device>,
     /// The pending pairing, if any.
     pub pairing: Option<Pairing>,
+    /// The mesh identity (69): `None` until the mesh device key was loaded.
+    pub mesh: Option<MeshLink>,
 }
 
 /// Events the link plugin publishes (31 §6.2). One stream, one `match`.
@@ -122,6 +168,21 @@ pub enum LinkEvent {
         /// `Device.id`.
         id: String,
     },
+    /// The mesh uplink (69 §2) registered with / lost the relay — this engine
+    /// started or stopped serving paired devices as the hub.
+    MeshRelay {
+        /// Registered right now.
+        connected: bool,
+    },
+    /// A device completed pairing against the mesh identity (69); the row is
+    /// in the replicated registry.
+    DevicePaired {
+        /// `Device.id`.
+        id: String,
+    },
+    /// The device registry changed (pair, rename, revoke, a replicated row);
+    /// `devices_list` again.
+    DevicesChanged,
 }
 
 /// `ask` → [`LinkStatus`].
@@ -169,6 +230,19 @@ pub struct RenameDevice {
 pub struct Revoke {
     /// `Device.id`.
     pub id: String,
+}
+
+/// `ask` → `Vec<DeviceInfo>`: every registry row, revoked included (69 §3).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DevicesList;
+
+/// `ask` → `Result<PairingPayload, String>`: a pairing for the MESH identity
+/// (69 decision 4): loads `mesh/device_key`, writes a `pending` row (any
+/// engine may; the hub accepts). `name: None` → the mesh's name.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DevicePairStart {
+    /// The name the QR shows (3rd part).
+    pub name: Option<String>,
 }
 
 /// `ask` → `()`: close every mode-2 conn of `key` (59 §8.4: `doc_member_revoke`); the static is not

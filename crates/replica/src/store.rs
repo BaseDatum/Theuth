@@ -85,6 +85,15 @@ impl Store {
             .collect())
     }
 
+    /// Lowest `seq` still held of `origin`, `None` when nothing is; anything below was pruned.
+    pub async fn oldest_seq(&self, origin: &PeerId) -> anyhow::Result<Option<u64>> {
+        let row = sqlx::query("SELECT MIN(seq) FROM outbox WHERE origin = ?")
+            .bind(&origin.0)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get::<Option<i64>, _>(0).map(|s| s as u64))
+    }
+
     /// Encoded batches of `origin` with `seq > after`, in order.
     pub async fn batches_after(&self, origin: &PeerId, after: u64) -> anyhow::Result<Vec<Vec<u8>>> {
         let rows = sqlx::query("SELECT batch FROM outbox WHERE origin = ? AND seq > ? ORDER BY seq")

@@ -3,11 +3,15 @@ name = "link"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Relay uplink, Noise pairing and sessions, paired-device registry (design doc 31)"
+description = "Relay uplink, Noise pairing and sessions, replicated paired-device registry (design docs 31, 69)"
 
 [dependencies]
 platform = { workspace = true }
 runtime = { workspace = true }
+replica = { workspace = true }
+secrets = { workspace = true }
+mesh = { workspace = true }
+sqlx = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -31,6 +35,7 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

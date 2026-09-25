@@ -11,9 +11,10 @@
 //! (`docs/design/67-replica-spike.md`) and captures only the connection it is
 //! attached to; a pool that recycles connections cannot be hooked from outside.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
@@ -31,6 +32,66 @@ const POLL: Duration = Duration::from_millis(200);
 const BATCH_ROWS: i64 = 5000;
 /// Change-feed subscribers behind by this many batches see `Lagged`.
 const FEED_CAPACITY: usize = 1024;
+/// A capture repeating an applied `(table, pk, column, value)` within this
+/// window is counted as an echo.
+const ECHO_WINDOW: Duration = Duration::from_millis(500);
+/// Applied column writes remembered for echo detection.
+const RECENT_CAP: usize = 1024;
+/// Echo warnings are logged at most this often.
+const WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// Replication counters (69 audit): every path that could echo or storm has a
+/// number that would show it; `mesh_status.replica` reports them. All but
+/// `outbox_rows` count column changes since start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ReplicaStats"))]
+pub struct Stats {
+    /// Captured from local writes.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub captured: u64,
+    /// Applied from peers' batches.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub applied: u64,
+    /// Sent on a stream on behalf of another origin.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub relayed: u64,
+    /// Captured within 500 ms of an apply of the same `(table, pk, column, value)`.
+    /// Rising = a plugin writes back what replication just wrote.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub echo: u64,
+    /// Batches held (own and relayed) after pruning.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub outbox_rows: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct Counters {
+    captured: AtomicU64,
+    applied: AtomicU64,
+    relayed: AtomicU64,
+    echo: AtomicU64,
+    last_echo_warn_ms: AtomicU64,
+}
+
+/// One applied column write, for echo detection.
+struct Recent {
+    table: String,
+    pk: String,
+    column: String,
+    value: Option<Vec<u8>>,
+    at_ms: u64,
+}
+
+/// The engine that syncs over the mesh ([`Engine::register_transport`] sets
+/// it): what the process-wide [`stats`] reads.
+static MESH_ENGINE: Mutex<Option<Weak<Engine>>> = Mutex::new(None);
+
+/// Counters of the engine on the mesh; `None` before the replica plugin is
+/// up and the mesh has registered its transport.
+pub async fn stats() -> Option<Stats> {
+    let engine = MESH_ENGINE.lock().as_ref()?.upgrade()?;
+    engine.stats().await.ok()
+}
 
 /// Hybrid logical clock: `max(wall, last) + counter`, tie-broken by origin.
 /// Public since 68 §3: the session log stamps its rows with it.
@@ -118,6 +179,9 @@ pub struct Engine {
     pub(crate) remote_vv: Mutex<HashMap<PeerId, HashMap<PeerId, u64>>>,
     /// The mesh transport once registered, for other ALPN users (knowledge sync).
     pub(crate) transport: Mutex<Option<Arc<dyn crate::Transport>>>,
+    pub(crate) counters: Counters,
+    /// Applied column writes of the last [`ECHO_WINDOW`], oldest first.
+    recent: Mutex<VecDeque<Recent>>,
 }
 
 impl Engine {
@@ -142,6 +206,8 @@ impl Engine {
             write_lock: tokio::sync::Mutex::new(()),
             remote_vv: Mutex::new(HashMap::new()),
             transport: Mutex::new(None),
+            counters: Counters::default(),
+            recent: Mutex::new(VecDeque::new()),
         }))
     }
 
@@ -263,6 +329,7 @@ impl Engine {
             });
         }
 
+        self.count_captured(&changes);
         let batch = self.emit_locked(changes).await?;
 
         let sql = format!("DELETE FROM _replica_log WHERE seq <= ? AND tbl IN ({placeholders})");
@@ -272,6 +339,88 @@ impl Engine {
         }
         q.execute(pool).await?;
         Ok(Some(batch))
+    }
+
+    /// Counters plus the outbox size.
+    pub async fn stats(&self) -> anyhow::Result<Stats> {
+        let outbox_rows: i64 = sqlx::query("SELECT COUNT(*) FROM outbox").fetch_one(self.store.pool()).await?.get(0);
+        Ok(Stats {
+            captured: self.counters.captured.load(Relaxed),
+            applied: self.counters.applied.load(Relaxed),
+            relayed: self.counters.relayed.load(Relaxed),
+            echo: self.counters.echo.load(Relaxed),
+            outbox_rows: outbox_rows as u64,
+        })
+    }
+
+    /// This engine is the one syncing over the mesh: [`stats`] reads it.
+    pub(crate) fn set_mesh_engine(self: &Arc<Self>) {
+        *MESH_ENGINE.lock() = Some(Arc::downgrade(self));
+    }
+
+    /// `changes` were sent on a stream for `origin`.
+    pub(crate) fn count_relayed(&self, changes: &[Change]) {
+        self.counters.relayed.fetch_add(changes.len() as u64, Relaxed);
+    }
+
+    /// `changes` were applied from a peer: count them and remember the
+    /// column writes so a capture that repeats one is an echo.
+    pub(crate) fn count_applied(&self, changes: &[Change]) {
+        self.counters.applied.fetch_add(changes.len() as u64, Relaxed);
+        let at_ms = now_ms();
+        let mut recent = self.recent.lock();
+        for c in changes {
+            let Some(column) = &c.column else { continue };
+            if c.deleted {
+                continue;
+            }
+            if recent.len() == RECENT_CAP {
+                recent.pop_front();
+            }
+            recent.push_back(Recent {
+                table: c.table.clone(),
+                pk: c.pk.clone(),
+                column: column.clone(),
+                value: c.value.clone(),
+                at_ms,
+            });
+        }
+    }
+
+    /// `changes` were captured locally: count them, and count as echoes the
+    /// ones repeating an applied write of the last [`ECHO_WINDOW`]. Warns
+    /// (at most every [`WARN_EVERY`]) when there are any.
+    fn count_captured(&self, changes: &[Change]) {
+        self.counters.captured.fetch_add(changes.len() as u64, Relaxed);
+        let now = now_ms();
+        let echoes = {
+            let mut recent = self.recent.lock();
+            while recent.front().is_some_and(|r| now.saturating_sub(r.at_ms) > ECHO_WINDOW.as_millis() as u64) {
+                recent.pop_front();
+            }
+            changes
+                .iter()
+                .filter(|c| {
+                    c.column.as_ref().is_some_and(|col| {
+                        recent.iter().any(|r| r.table == c.table && r.pk == c.pk && r.column == *col && r.value == c.value)
+                    })
+                })
+                .count() as u64
+        };
+        if echoes == 0 {
+            return;
+        }
+        let total = self.counters.echo.fetch_add(echoes, Relaxed) + echoes;
+        let last = self.counters.last_echo_warn_ms.load(Relaxed);
+        if now.saturating_sub(last) >= WARN_EVERY.as_millis() as u64
+            && self.counters.last_echo_warn_ms.compare_exchange(last, now, Relaxed, Relaxed).is_ok()
+        {
+            let sample = changes.iter().find(|c| c.column.is_some()).map(|c| format!("{}.{}", c.table, c.pk));
+            tracing::warn!(
+                "replica: {echoes} captured change(s) echo what a peer just wrote (total {total}); e.g. {}",
+                sample.unwrap_or_default()
+            );
+        }
     }
 
     /// Publish `changes` as the next batch of this origin: outbox, shadow
@@ -316,37 +465,49 @@ impl Engine {
         Ok(batch)
     }
 
-    /// Drop own batches every known peer already holds (67 loose ends 2.4,
-    /// 68 §6): `seq < min_acked_seq`, never the newest — `MAX(seq)` seeds
-    /// `next_seq` at open. Known peers are the other origins in the outbox
-    /// (every engine writes its own presence rows); one of them unseen since
-    /// start means nothing is pruned, so an offline peer's catch-up survives
-    /// restarts. A solo engine keeps its outbox: stage 1 has no snapshot path.
+    /// Drop batches every known peer already holds (67 loose ends 2.4, 68 §6,
+    /// 69 audit): per origin, `seq < min` over what each peer holds of that
+    /// origin, never the newest — `MAX(seq)` seeds `next_seq` at open and is
+    /// what a `Hello` compares against. Known peers are the other origins in
+    /// the outbox (every engine writes its own presence rows); one of them
+    /// unseen since start means nothing is pruned, so an offline peer's
+    /// catch-up survives restarts. A solo engine keeps its outbox: stage 1
+    /// has no snapshot path. Returns the rows deleted.
     pub async fn prune_outbox(&self) -> anyhow::Result<u64> {
         let known = self.store.version_vector().await?;
-        let min_acked_seq = {
+        let floors: Vec<(PeerId, u64)> = {
             let vv = self.remote_vv.lock();
-            let mut min: Option<u64> = None;
+            let mut held = Vec::with_capacity(known.len());
             for peer in known.keys().filter(|p| **p != self.origin) {
-                let Some(held) = vv.get(peer).and_then(|m| m.get(&self.origin)) else {
+                let Some(theirs) = vv.get(peer) else {
                     return Ok(0);
                 };
-                min = Some(min.map_or(*held, |m| m.min(*held)));
+                held.push(theirs);
             }
-            min
+            if held.is_empty() {
+                return Ok(0);
+            }
+            known
+                .keys()
+                .map(|origin| {
+                    let min = held.iter().map(|m| m.get(origin).copied().unwrap_or(0)).min().unwrap_or(0);
+                    (origin.clone(), min)
+                })
+                .collect()
         };
-        let Some(min_acked_seq) = min_acked_seq else {
-            return Ok(0);
-        };
-        Ok(sqlx::query(
-            "DELETE FROM outbox WHERE origin = ?1 AND seq < ?2 \
-             AND seq < (SELECT MAX(seq) FROM outbox WHERE origin = ?1)",
-        )
-        .bind(&self.origin.0)
-        .bind(min_acked_seq as i64)
-        .execute(self.store.pool())
-        .await?
-        .rows_affected())
+        let mut n = 0;
+        for (origin, floor) in floors {
+            n += sqlx::query(
+                "DELETE FROM outbox WHERE origin = ?1 AND seq < ?2 \
+                 AND seq < (SELECT MAX(seq) FROM outbox WHERE origin = ?1)",
+            )
+            .bind(&origin.0)
+            .bind(floor as i64)
+            .execute(self.store.pool())
+            .await?
+            .rows_affected();
+        }
+        Ok(n)
     }
 }
 

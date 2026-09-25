@@ -43,7 +43,8 @@ export async function importPrivate(raw: Uint8Array<ArrayBuffer>, extractable = 
   return subtle.importKey('pkcs8', der, { name: 'X25519' }, extractable, ['deriveBits'])
 }
 
-let identity: Promise<Identity> | undefined
+/** By IndexedDB key: `device` (engines) and one per mesh id (69 decision 9). */
+const identities: Record<string, Promise<Identity>> = {}
 
 /** IndexedDB row: PKCS#8 private key bytes and the raw public key. Older rows hold an `Identity` (a `CryptoKey`). */
 type StoredIdentity = { pkcs8: ArrayBuffer; pub: Uint8Array<ArrayBuffer> }
@@ -61,25 +62,28 @@ async function usable({ priv, pub }: Identity): Promise<boolean> {
 }
 
 /**
- * The device identity from IndexedDB (`link`/`identity`), created on first call.
- * At rest the private key is PKCS#8 bytes (a `CryptoKey` row did not survive an
- * iOS relaunch, which looked like a lost pairing); in memory it is a
- * non-extractable `CryptoKey`. A legacy `CryptoKey` row is kept while it works.
+ * The device identity from IndexedDB (`identity`/`device`; `identity/<mesh id>`
+ * for a mesh row, so this device is a different identity to each mesh), created
+ * on first call. At rest the private key is PKCS#8 bytes (a `CryptoKey` row did
+ * not survive an iOS relaunch, which looked like a lost pairing); in memory it is
+ * a non-extractable `CryptoKey`. A legacy `CryptoKey` row is kept while it works.
  */
-export function getIdentity(): Promise<Identity> {
-  identity ??= (async () => {
-    const stored = await idbGet<Identity | StoredIdentity>('identity', 'device').catch(() => undefined)
-    if (stored && 'pkcs8' in stored) {
-      return { priv: await subtle.importKey('pkcs8', stored.pkcs8, X25519, false, ['deriveBits']), pub: stored.pub }
-    }
-    if (stored && (await usable(stored))) return stored
-    const kp = (await subtle.generateKey(X25519, true, ['deriveBits'])) as CryptoKeyPair
-    const row: StoredIdentity = {
-      pkcs8: await subtle.exportKey('pkcs8', kp.privateKey),
-      pub: new Uint8Array(await subtle.exportKey('raw', kp.publicKey)),
-    }
-    await idbPut('identity', 'device', row)
-    return { priv: await subtle.importKey('pkcs8', row.pkcs8, X25519, false, ['deriveBits']), pub: row.pub }
-  })()
-  return identity
+export function getIdentity(meshId?: string): Promise<Identity> {
+  const key = meshId ?? 'device'
+  return (identities[key] ??= load(key))
+}
+
+async function load(key: string): Promise<Identity> {
+  const stored = await idbGet<Identity | StoredIdentity>('identity', key).catch(() => undefined)
+  if (stored && 'pkcs8' in stored) {
+    return { priv: await subtle.importKey('pkcs8', stored.pkcs8, X25519, false, ['deriveBits']), pub: stored.pub }
+  }
+  if (stored && (await usable(stored))) return stored
+  const kp = (await subtle.generateKey(X25519, true, ['deriveBits'])) as CryptoKeyPair
+  const row: StoredIdentity = {
+    pkcs8: await subtle.exportKey('pkcs8', kp.privateKey),
+    pub: new Uint8Array(await subtle.exportKey('raw', kp.publicKey)),
+  }
+  await idbPut('identity', key, row)
+  return { priv: await subtle.importKey('pkcs8', row.pkcs8, X25519, false, ['deriveBits']), pub: row.pub }
 }

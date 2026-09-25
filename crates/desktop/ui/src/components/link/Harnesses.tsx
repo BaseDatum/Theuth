@@ -15,8 +15,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Empty, Row, Section } from '@/components/settings/shared'
-import { type Harness, LOCAL, LOCAL_NAME, useHarnesses } from '@/link/harnesses'
-import { Dot } from './HarnessSwitcher'
+import { type Harness, LOCAL, LOCAL_NAME, type Presence, useHarnesses } from '@/link/harnesses'
+import { Dot, meshChip, useMembersLine } from './HarnessSwitcher'
 
 /** Local label; Enter/blur saves, Escape restores. */
 function Name({ harness }: { harness: Harness }) {
@@ -59,6 +59,7 @@ function Name({ harness }: { harness: Harness }) {
  * Settings › Harnesses (31 §7.5 "Manage"): paired harnesses with presence, local
  * rename, reorder and Forget. Forgetting the active one falls back to the local
  * daemon or the first remaining; with none left `App` shows the pair screen.
+ * A mesh row (69 §4) shows its mesh name, `n of m engines online` and the failover chip.
  */
 export function Harnesses() {
   const navigate = useNavigate()
@@ -88,6 +89,7 @@ export function Harnesses() {
         {harnesses.map((h, i) => {
           const p = presence[h.id] ?? 'offline'
           const via = h.parent && (h.parent === LOCAL ? LOCAL_NAME : harnesses.find((x) => x.id === h.parent)?.name)
+          const paired = h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'
           return (
             <Row
               key={h.id}
@@ -96,9 +98,10 @@ export function Harnesses() {
                   <Dot presence={p} />
                   <Name harness={h} />
                   {via && <span className="text-[13px] text-fg-tertiary">via {via}</span>}
+                  {h.kind === 'mesh' && <span className="text-[13px] text-fg-tertiary">mesh{h.meshName && h.meshName !== h.name ? ` · ${h.meshName}` : ''}</span>}
                 </span>
               }
-              description={`${h.relayHost} · ${h.pairedAt ? `paired ${ago(new Date(h.pairedAt).toISOString())} ago` : 'not paired yet'} · ${p}`}
+              description={h.kind === 'mesh' ? <MeshLine harness={h} presence={p} paired={paired} /> : `${h.relayHost} · ${paired} · ${p}`}
             >
               <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp />
@@ -136,4 +139,11 @@ export function Harnesses() {
       </AlertDialog>
     </>
   )
+}
+
+/** `relay · paired … · 2 of 3 engines online · relay connected` — or the failover chip instead of the last two. */
+function MeshLine({ harness: h, presence, paired }: { harness: Harness; presence: Presence; paired: string }) {
+  const members = useMembersLine(h.id)
+  const chip = meshChip(presence)
+  return <>{[h.relayHost, paired, chip ?? members, chip ? null : 'relay connected'].filter(Boolean).join(' · ')}</>
 }
