@@ -14,6 +14,18 @@ Not an app: one number or paragraph (say it); a static picture (surface fence);
 a document, table dump or image (`show`). Apps do not run in text channels; the card there is a
 receipt plus source. Library `{{hash}}`.
 
+## An inline fence in a reply
+
+An ```` ```openui ```` fence in a reply renders inline in the message flow, exactly like a
+json-render block: no card, no title bar, the reader hovers for "Open as app" and "Show source".
+It is static: `$state`, `@Set`/`@Reset`/`@OpenUrl` and inputs work; `Query`, `Mutation` and
+`@ToAssistant` are inert until the user opens it as an app. Reach for the explanatory components:
+`Steps`/`StepsItem`, `Tabs`/`TabItem`, `Callout`, `Card`/`CardHeader`, `Table`/`Col`,
+`BarChart`/`LineChart`/`Series`, `MetricIndicatorInline`, `ListBlock`/`ListItem`, `Tag`,
+`Accordion`/`AccordionItem`, `CodeBlock`, `Chips`/`ChipItem`, `OptionCards`/`OptionCard`, and
+`Buttons` with `@Set`/`@OpenUrl`. Use the `app` tool instead when the screen needs live data or
+actions that run tools.
+
 ## Syntax in one screen
 
 ```openui
