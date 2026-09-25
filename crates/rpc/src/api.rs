@@ -3816,7 +3816,7 @@ impl ApiServer for Server {
         match send(&artifact()?, artifact::search::Get { call_id: call_id.clone() }).await {
             Ok(a) => Ok(a),
             // 68 §7: the index is engine-local; a record shown elsewhere comes from a peer.
-            Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id).await.map_err(|_| e),
+            Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id, None).await.map_err(|_| e),
         }
     }
 
@@ -3910,9 +3910,9 @@ impl ApiServer for Server {
             Err(e) => {
                 let dir = |n: usize| path.ancestors().nth(n).and_then(Path::file_name).and_then(|d| d.to_str());
                 let fetched = match (path.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
-                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name).await,
+                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name, None).await,
                     (Some(_), Some(session), Some("spill")) => match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
-                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id).await,
+                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id, None).await,
                         _ => return Err(failed(format!("{}: {e}", path.display()))),
                     },
                     _ => return Err(failed(format!("{}: {e}", path.display()))),
