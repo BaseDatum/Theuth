@@ -52,13 +52,15 @@ pub fn now_ms() -> i64 {
 }
 
 /// The store handle: paths + the index pool + the shas of the mirror files this process last wrote
-/// (so the mirror watcher tells a foreign projection from an own write, 69) + the merge counters.
+/// (so the mirror watcher tells a foreign projection from an own write, 69) + the merge counters +
+/// the vault whose mesh key seals `ShareLink::secret_hash_sealed` (SEAL).
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
     db: SqlitePool,
     projected: Arc<Mutex<HashMap<String, String>>>,
     pub(crate) counters: Arc<Counters>,
+    vault: Option<Arc<secrets::Vault>>,
 }
 
 /// What the mirror merges did in this process (69 E2: the echo audit); read as [`DocStats`].
@@ -154,6 +156,7 @@ impl Store {
             db,
             projected: Default::default(),
             counters: Default::default(),
+            vault: None,
         };
         store.migrate_ids().await?;
         Ok(store)
@@ -162,6 +165,18 @@ impl Store {
     /// The index pool (for `replica::attach`).
     pub fn pool(&self) -> &SqlitePool {
         &self.db
+    }
+
+    /// Seal share-link hashes with `vault`'s mesh key (SEAL). Without one, links cannot be created
+    /// or verified and a pre-SEAL plaintext hash is dropped on load.
+    pub fn with_vault(mut self, vault: Arc<secrets::Vault>) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
+    /// The vault, when the secrets plugin gave one.
+    pub fn vault(&self) -> Option<Arc<secrets::Vault>> {
+        self.vault.clone()
     }
 
     /// The merge counters now.
@@ -293,11 +308,40 @@ impl Store {
         Ok(())
     }
 
-    /// `meta.json`.
+    /// `meta.json`; a pre-SEAL plaintext `links[].secret_hash` is sealed in place (file and mirror).
     pub fn read_meta(&self, id: &DocId) -> anyhow::Result<DocMeta> {
         let p = self.dir(id).join(META);
         let bytes = fs::read(&p).with_context(|| format!("read {}", p.display()))?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let (meta, sealed) = self.parse_meta(&bytes)?;
+        if sealed {
+            write_atomic(&p, serde_json::to_vec_pretty(&meta)?.as_slice())?;
+            self.mirror_write(id)?;
+            tracing::info!(doc = %id, "documents: share-link secret hashes sealed with the mesh key");
+        }
+        Ok(meta)
+    }
+
+    /// Parse `meta.json` bytes. A pre-SEAL plaintext `links[].secret_hash` (base64url sha256) is
+    /// sealed with the mesh key into `secret_hash_sealed`; `true` when that happened. Without a
+    /// vault the plaintext cannot be sealed and does not survive the parse (serde drops the unknown
+    /// field): the link then refuses every proof, as it would without the key.
+    pub(crate) fn parse_meta(&self, bytes: &[u8]) -> anyhow::Result<(DocMeta, bool)> {
+        use serde_json::Value;
+        let mut v: Value = serde_json::from_slice(bytes)?;
+        let mut sealed = false;
+        if let Some(vault) = &self.vault
+            && let Some(links) = v.get_mut("links").and_then(Value::as_array_mut)
+        {
+            for l in links.iter_mut().filter_map(Value::as_object_mut) {
+                let Some(Value::String(plain)) = l.remove("secret_hash") else { continue };
+                let (Some(hash), Some(id)) = (crate::share::unb64url(&plain), l.get("id").and_then(Value::as_str)) else {
+                    continue;
+                };
+                l.insert("secret_hash_sealed".into(), Value::String(crate::share::seal_hash(vault, id, &hash)));
+                sealed = true;
+            }
+        }
+        Ok((serde_json::from_value(v)?, sealed))
     }
 
     /// Rewrite `meta.json`, the index columns it feeds, and the mirror copy.
@@ -419,7 +463,7 @@ impl Store {
         }
         match kind {
             MirrorFile::Meta => {
-                let incoming: DocMeta = serde_json::from_slice(&bytes).context("mirror meta.json")?;
+                let (incoming, _) = self.parse_meta(&bytes).context("mirror meta.json")?;
                 let mut local = self.read_meta(&id)?;
                 if !mirror::merge_meta(&mut local, &incoming) {
                     return Ok(Applied::Unchanged);
@@ -885,6 +929,56 @@ mod tests {
         let len = t.len(&txn);
         t.insert(&mut txn, len, s);
         txn.encode_update_v1()
+    }
+
+    /// SEAL: a pre-SEAL `meta.json` with a plaintext `links[].secret_hash` is sealed on first read —
+    /// file, mirror copy and a foreign plaintext meta alike — and the sealed value opens to the same
+    /// HMAC key, so the guest's proof still verifies.
+    #[tokio::test]
+    async fn plaintext_link_hash_is_sealed_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
+        let store = Store::open(dir.path()).await.unwrap().with_vault(vault.clone());
+        let m = meta(Binding::Note);
+        store.create(&m).await.unwrap();
+        let hash = crate::share::secret_hash(b"the link secret");
+        let plain_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
+        let mut v = serde_json::to_value(&m).unwrap();
+        v["links"] = serde_json::json!([{
+            "id": "lnk_old", "role": "editor", "secret_hash": plain_b64, "name": null,
+            "created_ms": 5, "expires_ms": null, "revoked_ms": null
+        }]);
+        let p = store.dir(&m.id).join(META);
+        fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+
+        let loaded = store.read_meta(&m.id).unwrap();
+        let link = &loaded.links[0];
+        assert!(!link.secret_hash_sealed.is_empty());
+        assert_ne!(link.secret_hash_sealed, plain_b64);
+        let opened = vault.open_with_mesh_key(b"lnk_old", &crate::share::unb64url(&link.secret_hash_sealed).unwrap()).unwrap();
+        assert_eq!(opened.as_slice(), &hash[..], "the proof key is unchanged");
+        // The guest's proof (the math is unchanged) verifies against the migrated link.
+        let (h, g) = ([1u8; 32], [2u8; 32]);
+        assert!(crate::share::verify(Some(&vault), link, &h, &g, &crate::share::proof(&hash, &h, &g)));
+        assert!(!crate::share::verify(Some(&vault), link, &h, &g, &crate::share::proof(&[0u8; 32], &h, &g)));
+        // Rewritten in place, and the mirror copy is the sealed one.
+        for bytes in [fs::read(&p).unwrap(), fs::read(store.mirror_dir().join(mirror::file_name(&m.id, MirrorFile::Meta))).unwrap()] {
+            let on_disk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(on_disk["links"][0].get("secret_hash").is_none(), "no plaintext left");
+            assert_eq!(on_disk["links"][0]["secret_hash_sealed"], link.secret_hash_sealed);
+        }
+        // Second read: nothing to migrate, same value.
+        assert_eq!(store.read_meta(&m.id).unwrap().links[0].secret_hash_sealed, link.secret_hash_sealed);
+        // A foreign plaintext meta (an engine not yet upgraded) is sealed before it merges.
+        let (foreign, sealed) = store.parse_meta(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(sealed);
+        assert_eq!(
+            vault.open_with_mesh_key(b"lnk_old", &crate::share::unb64url(&foreign.links[0].secret_hash_sealed).unwrap()).unwrap().as_slice(),
+            &hash[..]
+        );
+        // Without a vault nothing is rewritten.
+        let bare = Store::open(dir.path()).await.unwrap();
+        assert!(!bare.parse_meta(&serde_json::to_vec(&v).unwrap()).unwrap().1);
     }
 
     #[tokio::test]

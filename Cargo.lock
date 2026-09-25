@@ -4673,6 +4673,7 @@ dependencies = [
  "runtime",
  "schemars 1.2.2",
  "search",
+ "secrets",
  "serde",
  "serde_json",
  "sha2 0.10.9",

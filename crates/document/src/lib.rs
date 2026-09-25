@@ -208,6 +208,14 @@ impl runtime::Plugin for DocumentPlugin {
                 return Ok(());
             }
         };
+        // SEAL: share-link hashes are sealed with the mesh key; secrets starts before this plugin.
+        let store = match secrets::handle(rt).await {
+            Some(vault) => store.with_vault(vault),
+            None => {
+                tracing::warn!("documents: secrets vault unavailable; share links cannot be created or verified");
+                store
+            }
+        };
         // 69: the index row replicates; the replica plugin starts after this one. Local only on failure.
         let (rt2, pool) = (rt.clone(), store.pool().clone());
         tokio::spawn(async move {

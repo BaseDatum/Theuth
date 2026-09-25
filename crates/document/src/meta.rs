@@ -197,8 +197,9 @@ pub const PALETTE: [&str; 12] = [
     "#b45309", "#15803d", "#1d4ed8", "#9333ea",
 ];
 
-/// A share link (§8.2). `secret_hash` is what the harness holds; on the wire (`doc_members`,
-/// `doc_open`) it is blanked — with the §8.3 proof it is the HMAC key, so it never leaves this machine.
+/// A share link (§8.2). `secret_hash_sealed` is what the harness holds — the §8.3 HMAC key,
+/// `sha256(secret)`, sealed with the mesh data key (SEAL) so the replicated `meta.json` never
+/// carries it in the clear; on the wire (`doc_members`, `doc_open`) it is blanked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ShareLink {
@@ -206,10 +207,12 @@ pub struct ShareLink {
     pub id: String,
     /// Role every joiner gets.
     pub role: Role,
-    /// base64url(sha256(secret)); empty on the wire.
+    /// base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad = link id, sha256(secret))); empty on
+    /// the wire. Opened by `share.rs` at proof time; pre-SEAL plaintext `secret_hash` is sealed on
+    /// load ([`crate::store::Store::parse_meta`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     #[cfg_attr(feature = "ts", ts(skip))]
-    pub secret_hash: String,
+    pub secret_hash_sealed: String,
     /// Preset display name for joiners.
     pub name: Option<String>,
     /// Created.
@@ -229,7 +232,7 @@ impl ShareLink {
     /// A copy for the wire: everything but the HMAC key.
     pub fn public(&self) -> Self {
         Self {
-            secret_hash: String::new(),
+            secret_hash_sealed: String::new(),
             ..self.clone()
         }
     }

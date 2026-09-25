@@ -38,7 +38,9 @@ async fn start_with(data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorR
 }
 
 async fn start_in(rt: runtime::Runtime, data_dir: &Path, bin: &Path, cfg: DocumentsConfig) -> ActorRef<DocumentActor> {
-    let store = store::Store::open(data_dir).await.unwrap();
+    // SEAL: the store seals share-link hashes with the vault's mesh key, as the plugin wires it.
+    let vault = secrets::Vault::open(data_dir, secrets::KeyStore::File).await.unwrap();
+    let store = store::Store::open(data_dir).await.unwrap().with_vault(std::sync::Arc::new(vault));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
@@ -711,16 +713,15 @@ async fn sharing_links_join_roles_demote_revoke() {
         .await
         .unwrap();
     assert!(link.id.starts_with("lnk_"));
-    assert!(link.secret_hash.is_empty(), "no hash on the wire");
+    assert!(link.secret_hash_sealed.is_empty(), "no hash on the wire");
     let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&secret).unwrap();
     let key = secret_hash(&secret);
     let meta: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join(format!("documents/{doc}/meta.json"))).unwrap()).unwrap();
-    assert_eq!(
-        meta["links"][0]["secret_hash"],
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key),
-        "meta.json holds sha256(secret), never the secret"
-    );
+    let sealed = meta["links"][0]["secret_hash_sealed"].as_str().unwrap();
+    assert!(meta["links"][0].get("secret_hash").is_none(), "no plaintext hash in meta.json");
+    assert_ne!(sealed, base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key), "meta.json holds the hash sealed, never in the clear");
+    assert!(!sealed.is_empty());
     assert!(matches!(next_event(&mut owner_sub).await, DocEvent::Members { links, .. } if links.len() == 1));
 
     let guest = [7u8; 32];
@@ -888,7 +889,7 @@ async fn sharing_links_join_roles_demote_revoke() {
     let members = actor.ask(MembersOf { doc: doc.clone() }).await.unwrap();
     assert_eq!(members.members.len(), 63);
     assert!(members.members.iter().all(|m| m.pub_ != guest_pub));
-    assert!(members.links.iter().all(|l| l.secret_hash.is_empty()));
+    assert!(members.links.iter().all(|l| l.secret_hash_sealed.is_empty()));
     assert_eq!(members.links.len(), 3);
     // Membership survives a reload (meta.json).
     let meta: serde_json::Value =
