@@ -156,8 +156,10 @@ You can adjust this behavior in a number of ways:
 * If you use the `bundled`, `bundled-sqlcipher`, or `bundled-sqlcipher-vendored-openssl` features, `libsqlite3-sys` will use the
   [cc](https://crates.io/crates/cc) crate to compile SQLite or SQLCipher from source and
   link against that. This source is embedded in the `libsqlite3-sys` crate and
-  is currently SQLite 3.51.1 (as of `rusqlite` 0.38.0 / `libsqlite3-sys`
-  0.36.0).  This is probably the simplest solution to any build problems. You can enable this by adding the following in your `Cargo.toml` file:
+  is currently SQLite 3.51.3 (`rusqlite` 0.39.0's amalgamation; 3.51.1 deadlocked two threads
+  closing WAL connections of one file — `unixLock` → `unixIsSharingShmNode` took the VFS mutex under
+  the inode mutex while `unixClose` took them the other way round; fixed upstream in 3.51.2).
+  This is probably the simplest solution to any build problems. You can enable this by adding the following in your `Cargo.toml` file:
   ```toml
   [dependencies.rusqlite]
   version = "0.38.0"
