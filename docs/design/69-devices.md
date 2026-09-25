@@ -1,6 +1,6 @@
 # 69 — Devices pair to the mesh
 
-*Status: design v0.2, 2026-09-25 (v0.2: recon corrections — second identity beside the engine's, no-redial on lease loss, pending id in the QR, per-mesh device keys are new work, failover ≈ 30 s, PSK 5 min). Follows 67 (mesh, hub lease) and 68 (sessions everywhere). Sky's rulings of 2026-09-25: serving paired devices is a **hub duty** with automatic failover, so the device registry is **replicated**; devices pair to **hubs (meshes), not engines**, so one device connects to several meshes (work, personal). Supersedes 31 §6 (per-engine `devices.yaml`) and closes 67 loose end 3.2's first half; the transport (31 relay vs iroh) is left as it is.*
+*Status: design v0.3, 2026-09-25 (v0.3: wave 2 — documents replicate, the yrs server is a hub duty, share links name the mesh — Sky: "go all the way"; v0.2: recon corrections — second identity beside the engine's, no-redial on lease loss, pending id in the QR, per-mesh device keys are new work, failover ≈ 30 s, PSK 5 min). Follows 67 (mesh, hub lease) and 68 (sessions everywhere). Sky's rulings of 2026-09-25: serving paired devices is a **hub duty** with automatic failover, so the device registry is **replicated**; devices pair to **hubs (meshes), not engines**, so one device connects to several meshes (work, personal). Supersedes 31 §6 (per-engine `devices.yaml`) and closes 67 loose end 3.2's first half; the transport (31 relay vs iroh) is left as it is.*
 
 ## 0. Decisions
 
@@ -61,10 +61,25 @@ Security: a device row carries only the device's static public key and metadata;
 - One device, several meshes: a per-mesh device key `identity/<mesh id>` (new — today there is one `identity/device`); switch by tapping; sessions/tasks/agents shown are the active mesh's.
 - Local engine on this machine: still the `LOCAL` entry; the same app can be local for one mesh and a device of another.
 
-## 5. Build
+## 5. Wave 2 — documents go all the way (ruling 2026-09-25)
+
+Documents (`<data_dir>/documents/`: `index.sqlite` + one directory per document) are the one store neither 67 nor 68 replicated, which is why a share link had to name the holding engine. Sky's ruling: replicate them, make the live-editing (yrs) server a hub responsibility, and let share links name the mesh.
+
+| # | Decision | Why |
+|---|---|---|
+| 10 | **Document files replicate** to every engine (per-document directories via `replica::files::mirror_at`, the index tables via `replica::attach` with `hlc`) | a document must exist wherever the hub is |
+| 11 | **The yrs server is a hub duty**: the hub holds the live `Doc` for any open document and serves editors (desktop, TUI, guests); a non-hub engine's editor session is forwarded to the hub the way 68 forwards desk steers; agent tool edits (`doc_insert/replace/delete`) go through the same path | one live Doc per document, no cross-engine CRDT reconciliation of half-applied sessions; handover = the new hub loads the replicated files and editors reconnect |
+| 12 | **Share links name the mesh**: `/d#1.<mesh device id>.<doc>.<secret>`; the hub serves guests; old engine-id links keep working while the engine identity exists | links survive the hub changing |
+| 13 | **Afterwards the engine link identity has no external user** except `nodes` (already absorbed by the mesh) → retire it in a follow-up (not yet ruled) | one identity per mesh |
+
+Details (layout, what is file vs row, whether the yrs update log ships as a per-document single-writer log or yrs merges make fan-out safe) follow the document-crate recon — `69-recon-docs.md` — and are fixed in the wave-2 contract.
+
+## 6. Build
 
 Contract: `link.sqlite` + `devices`/`pending` tables + replica attach, `mesh/device_key` vault row and the reserved prefix, `Follower` moved to `mesh`, `mesh_meta` + `mesh_status` fields, `HUB_MOVED 5`, RPC/CLI stubs, `LinkStatus.mesh`, QR 4th part + `PairHello.pending` — 1 omp. Then in parallel: **K** link crate (mesh identity registration, replicated registry, pairing flow, HubMoved) ; **D** device app (meshes list, pairing UI, failover UX, member presence); **Z** smoke: two engines + a real phone or the desktop in web mode — pair via engine B's QR, connect through hub A, kill A, watch the device land on B with an open session intact.
 
-## 6. Out of scope
+Wave 2 (after the recon): contract **C2** (document index attach + mirror wiring + yrs-server hub gate + share URL form), then **M** documents replicate, **Y** yrs on the hub + guest serving + forwarding, **Z2** smoke: edit on A, read on B, kill A, guest link still opens on B, editor reconnects.
 
-Devices over iroh (67 loose end 3.2, unchanged); per‑device permissions beyond pair/revoke; multi‑user meshes.
+## 7. Out of scope
+
+Devices over iroh (67 loose end 3.2, unchanged); per‑device permissions beyond pair/revoke; multi‑user meshes; retiring the engine link identity (candidate follow-up).
