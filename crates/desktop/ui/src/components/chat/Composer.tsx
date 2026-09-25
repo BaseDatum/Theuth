@@ -27,7 +27,7 @@ import { isDesktop, touch } from '@/lib/platform'
 import { ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { drafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import * as speech from '@/lib/speech'
 import { matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
@@ -51,14 +51,14 @@ import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 /** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
 export type DraftCreate = { private: boolean; project: string | null }
 
-const NONE: Pastes = new Map()
+const NONE = EMPTY.pastes
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /**
  * Seed the next mount of `session`'s composer (`null` = the new chat at `/`; `panel` = a note page's panel) with `text`
  * and a held chip per reference in `refs` (59 §5.4 "Ask theuth…", 66 §7.8 "Attach to chat…").
  */
 export function prefillDraft(session: string | null, text: string, refs: AttachRef[] = [], panel = false): void {
-  drafts.set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
+  useDrafts.getState().set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
 }
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
@@ -159,12 +159,11 @@ export function Composer({
     queryFn: () => api.list_skills(),
   })
   // A panel's composer (`onCreated`) keeps its own draft apart from the chat page's for the same session.
+  // The draft is the store's (`lib/drafts`): durable across remounts, pane switches and a relaunch.
   const draftKey = `${onCreated ? 'panel:' : ''}${session ?? ''}`
-  const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? '')
-  const [pastes, setPastes] = useState<Pastes>(() => drafts.get(draftKey)?.pastes ?? NONE)
-  useEffect(() => {
-    drafts.set(draftKey, { text, pastes })
-  }, [draftKey, text, pastes])
+  const { text, pastes } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
+  const setText = (t: string) => useDrafts.getState().setText(draftKey, t)
+  const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
   /** Skill parked for the next send (`lib/skill-draft`): the send becomes `use_skill(session, skill, words)`. */
   const skill = useSkillDraft((s) => (session ? s.by[session] : undefined))
   const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
