@@ -628,7 +628,7 @@ impl runtime::Plugin for MeshPlugin {
 
         // The replica plugin starts after this one: attach when it is up (bounded — a slimmer
         // plugin set may never start it), then write the start-up rows.
-        let (c, name, first_seen, stats) = (ctx.clone(), net.name.clone(), identity.first_seen_ms, self_stats);
+        let (c, name, stats) = (ctx.clone(), net.name.clone(), self_stats);
         tokio::spawn(async move {
             let replica =
                 tokio::time::timeout(ATTACH_WAIT, c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)).await;
@@ -638,7 +638,7 @@ impl runtime::Plugin for MeshPlugin {
                     Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
                 }
             }
-            if let Err(e) = c.store.meta_default("name", &name, first_seen).await {
+            if let Err(e) = c.store.meta_default("name", &name).await {
                 tracing::warn!("mesh: mesh_meta name: {e:#}");
             }
             c.write_stats(stats).await;
