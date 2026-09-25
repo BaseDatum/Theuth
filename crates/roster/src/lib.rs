@@ -75,6 +75,18 @@ pub struct PauseAgent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApproveAgent(pub String);
 
+/// `ask` → `Result<(), String>`: delete `agents/<name>.md` (67 §6.5 refusal,
+/// the Agents view's remove). A pending proposal's row goes too and its hire
+/// task is cancelled with `note` (or "rejected"). `Err("no such agent")`;
+/// `theuth` is refused.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoveAgent {
+    /// Agent name.
+    pub name: String,
+    /// Why, for a proposal's hire task; `None` for a plain removal.
+    pub note: Option<String>,
+}
+
 /// `ask` → `Result<String, String>`: `agent_propose` (67 §6.5). Writes the
 /// file with `paused: true` and `proposed_by`, records the proposal, answers
 /// the approval id. `Err` when the name is taken or reserved.
@@ -1090,42 +1102,75 @@ impl Message<ApproveAgent> for Roster {
         let text = file::set_key(&text, "proposed_by", None);
         self.write_text(&m.0, &text).await?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
-        // 67 §6.5: the hire task was the approval; close it. Best effort — a
-        // pre-task uuid or a down tasks plugin just logs.
-        if let Some(id) = approval
-            && let Some(t) = tasks::actor()
-        {
-            let id = tasks::TaskId(id);
-            let r = match t
-                .ask(tasks::CommentTask {
-                    id: id.clone(),
-                    text: "approved".into(),
-                    progress: false,
-                    actor: "user".into(),
-                    session: None,
-                })
-                .await
-            {
-                Ok(()) => t
-                    .ask(tasks::UpdateTask {
-                        id,
-                        patch: tasks::TaskPatch {
-                            state: Some(tasks::TaskState::Cancelled),
-                            ..Default::default()
-                        },
-                        actor: "user".into(),
-                        session: None,
-                    })
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
-            if let Err(e) = r {
-                tracing::debug!(agent = %m.0, "hire task not closed: {e}");
-            }
+        // 67 §6.5: the hire task was the approval; close it.
+        if let Some(id) = approval {
+            close_hire_task(&m.0, id, "approved").await;
         }
         Ok(())
+    }
+}
+
+impl Message<RemoveAgent> for Roster {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: RemoveAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let approval = self.remove_agent(&m.name).await?;
+        // Reconcile drops the read model, the `agents` row and the desk.
+        let _ = ctx.actor_ref().tell(Reconcile).await;
+        if let Some(id) = approval {
+            let note = m.note.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            close_hire_task(&m.name, id, &note.map_or_else(|| "rejected".to_owned(), |n| format!("rejected: {n}"))).await;
+        }
+        Ok(())
+    }
+}
+
+impl Roster {
+    /// Delete the file and any proposal row; answers the proposal's approval id.
+    async fn remove_agent(&self, name: &str) -> Result<Option<String>, String> {
+        if name == AgentName::DEFAULT {
+            return Err("theuth is the built-in default agent and cannot be removed".into());
+        }
+        std::fs::remove_file(self.dir.join(format!("{name}.md"))).map_err(|_| "no such agent".to_owned())?;
+        self.store
+            .delete_proposal(name)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Comment `text` on a hire task and cancel it, as the user. Best effort — a
+/// pre-task uuid or a down tasks plugin just logs.
+async fn close_hire_task(agent: &str, id: String, text: &str) {
+    let Some(t) = tasks::actor() else { return };
+    let id = tasks::TaskId(id);
+    let r = match t
+        .ask(tasks::CommentTask {
+            id: id.clone(),
+            text: text.into(),
+            progress: false,
+            actor: "user".into(),
+            session: None,
+        })
+        .await
+    {
+        Ok(()) => t
+            .ask(tasks::UpdateTask {
+                id,
+                patch: tasks::TaskPatch {
+                    state: Some(tasks::TaskState::Cancelled),
+                    ..Default::default()
+                },
+                actor: "user".into(),
+                session: None,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = r {
+        tracing::debug!(agent, "hire task not closed: {e}");
     }
 }
 
@@ -1516,6 +1561,25 @@ mod tests {
         assert!(r.store.agent_names().await.unwrap().is_empty());
 
         assert!(file::parse("theuth", "x").is_err());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_file_and_proposal_and_refuses_theuth() {
+        let data = tmp("remove");
+        let mut r = roster(&data).await;
+        let f = file::parse("qa", "---\ntitle: QA\nproposed_by: agent:ops\npaused: true\n---\nTest.\n").unwrap();
+        r.write_file(&f).await.unwrap();
+        r.store.insert_proposal("qa", "agent:ops", "approval-1", 0).await.unwrap();
+
+        assert_eq!(r.remove_agent("qa").await, Ok(Some("approval-1".to_owned())));
+        assert!(!data.join("agents/qa.md").exists());
+        r.reconcile().await;
+        assert!(r.shared.file("qa").is_none());
+        assert_eq!(r.store.delete_proposal("qa").await.unwrap(), None, "proposal row is gone");
+
+        assert_eq!(r.remove_agent("qa").await, Err("no such agent".to_owned()));
+        assert!(r.remove_agent("theuth").await.unwrap_err().contains("built-in"));
         let _ = std::fs::remove_dir_all(&data);
     }
 

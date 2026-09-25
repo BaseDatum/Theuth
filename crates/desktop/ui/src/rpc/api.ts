@@ -403,6 +403,8 @@ export interface Api {
   agent_pause(name: string, paused: boolean): Promise<null>
   /** Approve a proposed agent (67 §6.5). */
   agent_approve(name: string): Promise<null>
+  /** Delete `agents/<name>.md`; for a proposal, `note` goes on the hire task (67 §6.5). `theuth` is refused. */
+  agent_remove(name: string, note: string | null): Promise<null>
   /** Tasks matching `filter`, oldest first (67 §12). */
   tasks_list(filter: TaskFilter): Promise<Task[]>
   /** One task (67 §7.1). */
@@ -652,6 +654,7 @@ export const METHODS = [
   'agent_get',
   'agent_pause',
   'agent_put',
+  'agent_remove',
   'agents_list',
   'answer_ask',
   'answer_peer_request',
