@@ -1345,6 +1345,7 @@ impl Channel {
             (Some(tasks), None) => tasks
                 .ask(tasks::CreateTask {
                     input: tasks::TaskCreate {
+                        state: tasks::TaskState::Todo,
                         title: first_line(&text),
                         brief: text,
                         owner: tasks::Owner::Agent(name.clone()),

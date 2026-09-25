@@ -128,6 +128,7 @@ import type { TaskCreate } from '@/rpc/bindings/TaskCreate'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
+import type { TaskState } from '@/rpc/bindings/TaskState'
 import type { RpcClient } from '@/rpc/client'
 import type {
   AgentInfo,
@@ -410,6 +411,8 @@ export interface Api {
   task_create(input: TaskCreate): Promise<Task>
   /** Patch a task as the user (67 §7.2). */
   task_update(id: string, patch: TaskPatch): Promise<Task>
+  /** Move a task on the user's intent: backlog ↔ todo, → cancelled, review → done | doing | todo (67 §7.2, 69). `Err` names the allowed targets. */
+  task_move(id: string, state: TaskState, note: string | null): Promise<Task>
   /** Comment on a task's thread as the user (67 §7.3). */
   task_comment(id: string, text: string): Promise<null>
   /** The task's field-level event log (67 §7.2). */
@@ -890,6 +893,7 @@ export const METHODS = [
   'task_create',
   'task_events',
   'task_get',
+  'task_move',
   'task_update',
   'tasks_list',
   'title_model',

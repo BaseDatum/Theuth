@@ -1261,6 +1261,10 @@ pub trait Api {
     /// Patch a task as the user: assign, set state, blockers, placement (67 §7.2, §12).
     #[method(name = "task_update")]
     async fn task_update(&self, id: String, patch: tasks::TaskPatch) -> RpcResult<tasks::Task>;
+    /// Move a task on the user's intent (67 §7.2): backlog ↔ todo, → cancelled,
+    /// review → done | todo, blocked → todo. `Err` names the allowed targets.
+    #[method(name = "task_move")]
+    async fn task_move(&self, id: String, state: tasks::TaskState, note: Option<String>) -> RpcResult<tasks::Task>;
     /// Append a comment to a task's thread as the user; wakes the owner (67 §7.3).
     #[method(name = "task_comment")]
     async fn task_comment(&self, id: String, text: String) -> RpcResult<()>;
@@ -3876,6 +3880,17 @@ impl ApiServer for Server {
         let m = tasks::UpdateTask {
             id: tasks::TaskId(id),
             patch,
+            actor: "user".into(),
+            session: None,
+        };
+        send(&tasks_actor()?, m).await
+    }
+
+    async fn task_move(&self, id: String, state: tasks::TaskState, note: Option<String>) -> RpcResult<tasks::Task> {
+        let m = tasks::MoveTask {
+            id: tasks::TaskId(id),
+            state,
+            note,
             actor: "user".into(),
             session: None,
         };

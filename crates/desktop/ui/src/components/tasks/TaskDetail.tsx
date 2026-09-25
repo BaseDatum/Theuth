@@ -1,6 +1,6 @@
 import { useMutation, useQueries } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ExternalLink, MessageSquare } from 'lucide-react'
+import { MessageSquare } from 'lucide-react'
 import { type ReactNode, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
@@ -29,15 +29,14 @@ import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import { OwnerSelect } from './OwnerSelect'
-import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId } from './helpers'
-import { useAgents, useInvalidateTasks, useTask, useTaskEvents } from './queries'
-
-/** `blocks` is not in the contract yet; the engine may add it to `task_get` — render it when present. */
-type TaskWithBlocks = Task & { blocks?: string[] }
+import { TaskChips } from './TaskChips'
+import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip } from './helpers'
+import { useAgents, useInvalidateTasks, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
 
 /**
- * `/tasks/$id` (67 §12): brief, blockers and blocks, placement, the thread document with a comment box, sessions,
- * cost, the field-level event log, and the actions the state allows. Every action is one RPC; errors toast verbatim.
+ * `/tasks/$id` (67 §12, 69): brief, blocked-by and blocks (editable chips), placement, the thread document with a
+ * comment box, sessions, cost, the field-level event log, and the actions the state allows. Every action is one RPC;
+ * errors toast verbatim. Links live in the brief; the record's `external` field is not shown.
  */
 export function TaskDetail({ id }: { id: string }) {
   const task = useTask(id)
@@ -59,7 +58,7 @@ export function TaskDetail({ id }: { id: string }) {
       </Frame>
     )
   }
-  const t = task.data as TaskWithBlocks
+  const t = task.data
   return (
     <Frame
       backTo="/tasks"
@@ -68,7 +67,7 @@ export function TaskDetail({ id }: { id: string }) {
         <h2 className="flex min-w-0 flex-1 items-center gap-2 truncate text-sm font-semibold">
           <ProjectIcon project={t.project} className="size-4" />
           <span className="truncate">{t.title}</span>
-          <Badge variant="outline">{t.state}</Badge>
+          <StateBadge task={t} />
         </h2>
       }
     >
@@ -80,41 +79,7 @@ export function TaskDetail({ id }: { id: string }) {
                 {t.brief || '_No brief._'}
               </Streamdown>
             </Section>
-            {(t.blockers.length > 0 || (t.blocks?.length ?? 0) > 0) && (
-              <div className="grid gap-6 sm:grid-cols-2">
-                <Section title={`Waiting on ${t.blockers.length}`}>
-                  <ul className="space-y-1 text-sm">
-                    {t.blockers.map((raw) => {
-                      const b = parseBlocker(raw)
-                      return (
-                        <li key={raw}>
-                          {b.kind === 'task' ? (
-                            <Link to="/tasks/$id" params={{ id: b.id }} className="text-primary hover:underline">
-                              task {shortId(b.id)}
-                            </Link>
-                          ) : (
-                            <span className="font-mono text-fg-secondary">{raw}</span>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </Section>
-                {t.blocks && t.blocks.length > 0 && (
-                  <Section title={`Blocks ${t.blocks.length}`}>
-                    <ul className="space-y-1 text-sm">
-                      {t.blocks.map((bid) => (
-                        <li key={bid}>
-                          <Link to="/tasks/$id" params={{ id: bid }} className="text-primary hover:underline">
-                            task {shortId(bid)}
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  </Section>
-                )}
-              </div>
-            )}
+            <Relations task={t} />
             <Placement task={t} events={events.data ?? []} />
             <Section title="Thread">
               <Thread task={t} />
@@ -143,20 +108,6 @@ export function TaskDetail({ id }: { id: string }) {
           <aside className="flex w-full shrink-0 flex-col gap-6 md:w-72">
             <Actions task={t} />
             <Sessions task={t} events={events.data ?? []} />
-            {t.external.length > 0 && (
-              <Section title="External">
-                <ul className="space-y-1 text-sm">
-                  {t.external.map((u) => (
-                    <li key={u}>
-                      <a href={u} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-primary hover:underline">
-                        <ExternalLink className="size-3.5" />
-                        <span className="truncate">{u}</span>
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            )}
             <Section title="Record">
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
                 <dt className="text-fg-tertiary">id</dt>
@@ -193,6 +144,77 @@ export function TaskDetail({ id }: { id: string }) {
         </div>
       </div>
     </Frame>
+  )
+}
+
+/** The state chip; while `doing`, "at ops's desk · open session" links to the checkout session on its node. */
+function StateBadge({ task: t }: { task: Task }) {
+  const text = stateChip(t)
+  if (t.state === 'doing' && t.checkout) {
+    return (
+      <Link to="/c/$session" params={{ session: t.checkout.session }} title={`open the session on ${t.checkout.engine}`}>
+        <Badge className="hover:opacity-80">
+          {text} · {t.checkout.engine}
+        </Badge>
+      </Link>
+    )
+  }
+  return <Badge variant="outline">{text}</Badge>
+}
+
+/**
+ * *Blocked by* and *Blocks* side by side (69): task blockers as editable chips (each opens the other task), decision
+ * and person blockers as text; *Blocks* edits the other task's `blockers`. The inverse is computed by the engine.
+ */
+function Relations({ task: t }: { task: Task }) {
+  const api = useApi()
+  const invalidate = useInvalidateTasks()
+  const all = useTasks()
+  const byId = Object.fromEntries((all.data ?? []).map((x) => [x.id, x]))
+  const taskBlockers = t.blockers.filter((raw) => parseBlocker(raw).kind === 'task')
+  const otherBlockers = t.blockers.filter((raw) => parseBlocker(raw).kind !== 'task')
+  const blockedBy = taskBlockers.flatMap((id) => (byId[id] ? [byId[id]] : []))
+  const blocks = t.blocks.flatMap((id) => (byId[id] ? [byId[id]] : []))
+  const patch = useMutation({
+    mutationFn: ({ id, blockers }: { id: string; blockers: string[] }) => api.task_update(id, { blockers }),
+    onSuccess: () => invalidate(t.id),
+    onError: (e) => toast.error(errorText(e)),
+  })
+  const busy = patch.isPending
+  return (
+    <div className="grid gap-6 sm:grid-cols-2">
+      <Section title={`Blocked by ${t.blockers.length}`}>
+        <TaskChips
+          title="Blocked by"
+          tasks={blockedBy}
+          project={t.project}
+          exclude={[t.id, ...t.blocks]}
+          disabled={busy}
+          onAdd={(b) => patch.mutate({ id: t.id, blockers: [...t.blockers, b.id] })}
+          onRemove={(b) => patch.mutate({ id: t.id, blockers: t.blockers.filter((x) => x !== b.id) })}
+        />
+        {otherBlockers.length > 0 && (
+          <ul className="mt-2 space-y-1 text-sm">
+            {otherBlockers.map((raw) => (
+              <li key={raw} className="font-mono text-fg-secondary">
+                {raw}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+      <Section title={`Blocks ${t.blocks.length}`}>
+        <TaskChips
+          title="Blocks"
+          tasks={blocks}
+          project={t.project}
+          exclude={[t.id, ...taskBlockers]}
+          disabled={busy}
+          onAdd={(b) => patch.mutate({ id: b.id, blockers: [...b.blockers, t.id] })}
+          onRemove={(b) => patch.mutate({ id: b.id, blockers: b.blockers.filter((x) => x !== t.id) })}
+        />
+      </Section>
+    </div>
   )
 }
 
@@ -306,7 +328,7 @@ function Sessions({ task: t, events }: { task: Task; events: TaskEvent[] }) {
   )
 }
 
-/** State-gated actions (67 §7.2): assign, send back with notes, mark done, cancel, move project. */
+/** State-gated actions (67 §7.2, 69): assign, start / back to backlog, send back with notes, mark done, cancel, move project. */
 function Actions({ task: t }: { task: Task }) {
   const api = useApi()
   const agents = useAgents()
@@ -318,24 +340,18 @@ function Actions({ task: t }: { task: Task }) {
   const [confirmCancel, setConfirmCancel] = useState(false)
   const a = actionsFor(t)
   const patch = useMutation({
-    mutationFn: async ({ patch, note }: { patch: TaskPatch; note?: string }) => {
-      const r = await api.task_update(t.id, patch)
-      if (note) await api.task_comment(t.id, note)
-      return r
-    },
-    onSuccess: () => {
-      setNotes('')
-      invalidate(t.id)
-    },
+    mutationFn: (patch: TaskPatch) => api.task_update(t.id, patch),
+    onSuccess: () => invalidate(t.id),
     onError: (e) => toast.error(errorText(e)),
   })
-  const busy = patch.isPending
+  const move = useMoveTask()
+  const busy = patch.isPending || move.isPending
   return (
     <Section title="Actions">
       <div className="flex flex-col gap-3 text-sm">
         <div className="flex items-center gap-2">
           <OwnerSelect value={owner} agents={agents.data ?? []} onChange={setOwner} className="min-w-0 flex-1" />
-          <Button size="sm" variant="outline" disabled={busy || owner === ownerText(t.owner)} onClick={() => patch.mutate({ patch: { owner: parseOwner(owner) } })}>
+          <Button size="sm" variant="outline" disabled={busy || owner === ownerText(t.owner)} onClick={() => patch.mutate({ owner: parseOwner(owner) })}>
             {t.owner.type === 'user' && owner === 'user' ? 'Assign' : 'Reassign'}
           </Button>
         </div>
@@ -343,11 +359,21 @@ function Actions({ task: t }: { task: Task }) {
           Reviewer: {ownerLabel(t.reviewer)}
           {t.reviewer === null && " (owner's manager)"}
         </p>
+        {a.start && (
+          <Button size="sm" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'todo' })}>
+            Start{t.owner.type === 'agent' && ` — queue for ${t.owner.name}'s desk`}
+          </Button>
+        )}
+        {a.toBacklog && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'backlog' })}>
+            Back to backlog
+          </Button>
+        )}
         {a.sendBack && (
           <div className="flex flex-col gap-1.5">
             <Textarea rows={2} placeholder="Notes for the owner" value={notes} onChange={(e) => setNotes(e.target.value)} />
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="flex-1" disabled={busy} onClick={() => patch.mutate({ patch: { state: 'doing' }, note: notes.trim() || undefined })}>
+              <Button size="sm" variant="outline" className="flex-1" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'doing', note: notes }, { onSuccess: () => setNotes('') })}>
                 Send back
               </Button>
               <Button
@@ -355,7 +381,7 @@ function Actions({ task: t }: { task: Task }) {
                 className="flex-1"
                 disabled={busy || !a.canMarkDone}
                 title={a.canMarkDone ? undefined : 'Only the reviewer (or the owner when that is you) can mark it done'}
-                onClick={() => patch.mutate({ patch: { state: 'done' } })}
+                onClick={() => move.mutate({ id: t.id, state: 'done' })}
               >
                 Mark done
               </Button>
@@ -364,7 +390,7 @@ function Actions({ task: t }: { task: Task }) {
         )}
         <div className="flex items-center gap-2">
           <ProjectPicker value={project} onChange={setProject} />
-          <Button size="sm" variant="outline" disabled={busy || (project ?? null) === t.project} onClick={() => patch.mutate({ patch: { project: project?.trim() || null } })}>
+          <Button size="sm" variant="outline" disabled={busy || (project ?? null) === t.project} onClick={() => patch.mutate({ project: project?.trim() || null })}>
             Move
           </Button>
         </div>
@@ -385,12 +411,7 @@ function Actions({ task: t }: { task: Task }) {
           <AlertDialogFooter>
             <AlertDialogCancel>Keep</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() =>
-                patch.mutate(
-                  { patch: { state: 'cancelled' } },
-                  { onSuccess: () => void navigate({ to: '/tasks' }) },
-                )
-              }
+              onClick={() => move.mutate({ id: t.id, state: 'cancelled' }, { onSuccess: () => void navigate({ to: '/tasks' }) })}
             >
               Cancel task
             </AlertDialogAction>

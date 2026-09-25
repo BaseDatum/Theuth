@@ -1,8 +1,8 @@
 //! The task tools (67 §7, §8, §11), registered by `TasksPlugin::start` once
 //! the tool registry is up: `task_create`, `task_inbox`, `task_checkout`,
-//! `task_update`, `task_note`, `task_place`, `escalate`, `decide`. Each is one
-//! message to the [`Tasks`] actor; the caller's identity comes from the roster
-//! through [`CallerOf`].
+//! `task_update`, `task_move`, `task_note`, `task_place`, `escalate`, `decide`.
+//! Each is one message to the [`Tasks`] actor; the caller's identity comes from
+//! the roster through [`CallerOf`].
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::thread::Thread;
 use crate::types::{Disposition, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState};
 use crate::{
     AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, Escalate, GetTask,
-    ListTasks, NoteDisposition, PlaceTask, Tasks, UpdateTask, escalate,
+    ListTasks, MoveTask, NoteDisposition, PlaceTask, Tasks, UpdateTask, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -36,12 +36,25 @@ impl Message<CallerOf> for Tasks {
     }
 }
 
-/// Register the eight tools on `reg`.
+/// The tasks plugin's system-prompt paragraph (`RegisterPrompt { plugin: "tasks" }`,
+/// 69 TASKS): the board is primarily for observation; tasks are made in chat.
+pub const PROMPT: &str = "## Tasks\n\
+The board is for observation; work is filed from chat. When the user describes work to be done (a request \
+with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft` with \
+the proposed tasks and wait for the user's approval, which arrives as their next message (`[app task-drafts …]` \
+naming a draft id and a choice). Then `task_create` with `state: backlog` for \"add to backlog\", `state: todo` \
+for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". A task created in `backlog` \
+runs nothing until it is started. When the user asks to start, pull back, drop, approve or send back a task, \
+use `task_move` (it refuses illegal moves and lists what is allowed from the task's state). Your own work on a \
+task is `task_checkout`; finishing it is `task_update` with a disposition.";
+
+/// Register the nine tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskInboxTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskCheckoutTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskUpdateTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(TaskMoveTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskNoteTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskPlaceTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(EscalateTool))).await;
@@ -96,6 +109,14 @@ fn parse_owner(s: Option<&str>) -> anyhow::Result<Option<Owner>> {
         .transpose()
 }
 
+/// `task_create`'s `state`: `backlog` unless the caller passed `todo`; anything else is refused.
+fn create_state(s: Option<TaskState>) -> Result<TaskState, String> {
+    match s.unwrap_or(TaskState::Backlog) {
+        s @ (TaskState::Backlog | TaskState::Todo) => Ok(s),
+        s => Err(format!("state is backlog or todo, not {}", s.as_str())),
+    }
+}
+
 /// Arguments for [`TaskCreateTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TaskCreateArgs {
@@ -103,6 +124,10 @@ pub struct TaskCreateArgs {
     pub title: String,
     /// Markdown brief: context, constraints, acceptance. The whole of what the owner gets.
     pub brief: String,
+    /// `backlog` (default: on the board, not dispatched — nobody is woken) or `todo` (the owner is
+    /// woken and the work is placed). Pass `todo` only when the user asked to start it now.
+    #[serde(default)]
+    pub state: Option<TaskState>,
     /// `agent:<name>` or `user`. Default: the calling agent.
     #[serde(default)]
     pub owner: Option<String>,
@@ -137,12 +162,14 @@ impl Tool for TaskCreateTool {
 
     fn description(&self) -> String {
         "Create a task: a first-class record on the board with one owner (an agent or the user), a state \
-         (starts `todo`), a project (the same project labels sessions carry; defaults to your session's), \
+         (`backlog` by default — not dispatched; `todo` when the user wants it started now: the owner is woken \
+         with reason `assigned`), a project (the same project labels sessions carry; defaults to your session's), \
          an optional reviewer, blockers, a parent for delegation, and a placement (`where` engine, \
          `harness`). Use it to delegate work to another agent (set `parent` to your current task so the \
          tree shows it), to hand something to the user, or to put your own future work on the board. \
-         The owner is woken with reason `assigned`. External tickets (Jira, GitHub) are links on the task, \
-         never the source of truth. Returns the task id and its line."
+         When the user describes work in chat, prefer `task_draft` first and create only after approval. \
+         External tickets (Jira, GitHub) are links on the task, never the source of truth. Returns the task id \
+         and its line."
             .into()
     }
 
@@ -157,7 +184,12 @@ impl Tool for TaskCreateTool {
             Some(p) => Some(p),
             None => session_project(&cx).await,
         };
+        let state = match create_state(a.state) {
+            Ok(s) => s,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
         let input = TaskCreate {
+            state,
             title: a.title,
             brief: a.brief,
             owner,
@@ -179,11 +211,12 @@ impl Tool for TaskCreateTool {
         );
         Ok(match r {
             Ok(t) => ToolOutput::ok(format!(
-                "created task {} — owner {}, reviewer {}, project {}, state todo",
+                "created task {} — owner {}, reviewer {}, project {}, state {}",
                 t.id,
                 t.owner,
                 t.reviewer.as_ref().map_or("none".to_owned(), ToString::to_string),
-                t.project.as_deref().unwrap_or("none")
+                t.project.as_deref().unwrap_or("none"),
+                t.state.as_str()
             )),
             Err(e) => ToolOutput::err(e),
         })
@@ -447,6 +480,58 @@ impl Tool for TaskUpdateTool {
                 .await;
         }
         out(r)
+    }
+}
+
+/// Arguments for [`TaskMoveTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TaskMoveArgs {
+    /// Task id.
+    pub task: TaskId,
+    /// Target state: `todo` (start a backlog task; resume a blocked one; send a reviewed one back),
+    /// `backlog` (pull a queued task back), `done` (reviewer approves), `cancelled` (drop).
+    pub state: TaskState,
+    /// Why, for the thread (optional).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `task_move`: a state change on the user's (or the caller's) intent.
+pub struct TaskMoveTool;
+
+#[async_trait::async_trait]
+impl Tool for TaskMoveTool {
+    const NAME: &'static str = "task_move";
+    const RISK: Risk = Risk::Mutating;
+    type Args = TaskMoveArgs;
+
+    fn description(&self) -> String {
+        "Move a task between states when the user asks (\"start that\", \"put it back\", \"drop it\", \
+         \"approve it\"): backlog ↔ todo, anything → cancelled, review → done | todo (reviewer), blocked → todo \
+         (owner, once its blockers are clear). `todo` from backlog wakes the owner. Illegal moves are refused \
+         with the list of states allowed from where the task is. Working a task yourself is `task_checkout`; \
+         finishing one is `task_update` with a disposition."
+            .into()
+    }
+
+    async fn call(&self, a: TaskMoveArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let actor = actor()?;
+        let me = caller(&actor, &cx).await;
+        let r = flat(
+            actor
+                .ask(MoveTask {
+                    id: a.task,
+                    state: a.state,
+                    note: a.note,
+                    actor: me,
+                    session: Some(cx.session.to_string()),
+                })
+                .await,
+        );
+        Ok(match r {
+            Ok(t) => ToolOutput::ok(format!("task {} is now {} (owner {})", t.id, t.state.as_str(), t.owner)),
+            Err(e) => ToolOutput::err(e),
+        })
     }
 }
 
@@ -846,5 +931,19 @@ impl Tool for DecideTool {
             Ok(()) => ToolOutput::ok(format!("decided `{}` on task {}; the owner is re-woken.", a.decision, a.task)),
             Err(e) => ToolOutput::err(e),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_create_defaults_to_backlog_and_refuses_other_states() {
+        assert_eq!(create_state(None), Ok(TaskState::Backlog));
+        assert_eq!(create_state(Some(TaskState::Todo)), Ok(TaskState::Todo));
+        assert!(create_state(Some(TaskState::Doing)).unwrap_err().contains("backlog or todo"));
+        let a: TaskCreateArgs = serde_json::from_value(serde_json::json!({ "title": "t", "brief": "b" })).unwrap();
+        assert_eq!(a.state, None, "the schema does not force a state; the default is backlog");
     }
 }

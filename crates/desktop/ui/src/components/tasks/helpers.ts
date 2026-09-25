@@ -1,11 +1,20 @@
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
+import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { Owner } from '@/rpc/bindings/Owner'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
 
-/** Board columns in order; `cancelled` sits behind a toggle (67 §12). */
-export const COLUMNS: readonly TaskState[] = ['todo', 'doing', 'review', 'blocked', 'done']
+/** Board columns in order — Backlog first (69 TASKS); `cancelled` sits behind a toggle (67 §12). */
+export const COLUMNS: readonly TaskState[] = ['backlog', 'todo', 'doing', 'review', 'blocked', 'done']
 export const STATES: readonly TaskState[] = [...COLUMNS, 'cancelled']
+/** The two columns a card may be dragged between (user-intent moves; everything else is a button). */
+export const DRAG_STATES: readonly TaskState[] = ['backlog', 'todo']
+export const canDrag = (from: TaskState, to: TaskState): boolean => from !== to && DRAG_STATES.includes(from) && DRAG_STATES.includes(to)
+
+/** A node the work can run on: this one first, then every mesh peer (the UI says node where the record says engine). */
+export type Node = { name: string; here: boolean; reachable: boolean }
+export const nodesOf = (m: MeshStatus | undefined): Node[] =>
+  m ? [{ name: m.self_name, here: true, reachable: true }, ...m.peers.filter((p) => p.name !== m.self_name).map((p) => ({ name: p.name, here: false, reachable: p.reachable }))] : []
 
 /** The built-in default agent (67 decision 1): root of every reporting line, never a roster entry. */
 export const THEUTH = 'theuth'
@@ -23,6 +32,24 @@ export function parseOwner(s: string): Owner {
 
 /** Chip text: the agent's name, "you", or "system". */
 export const ownerLabel = (o: Owner | null): string => (o === null ? '—' : o.type === 'agent' ? o.name : o.type === 'user' ? 'you' : 'system')
+
+/**
+ * State chip text (Sky's rulings, 69 TASKS): `backlog` → "not started"; `todo` owned by an agent →
+ * "queued for ‹agent›'s desk"; `doing` → "at ‹agent›'s desk · open session" (the user's own: "in progress · open
+ * session"); every other state is its name. The UI says node where the record says engine.
+ */
+export function stateChip(t: Task): string {
+  switch (t.state) {
+    case 'backlog':
+      return 'not started'
+    case 'todo':
+      return t.owner.type === 'agent' ? `queued for ${t.owner.name}'s desk` : 'todo'
+    case 'doing':
+      return t.owner.type === 'agent' ? `at ${t.owner.name}'s desk · open session` : 'in progress · open session'
+    default:
+      return t.state
+  }
+}
 
 /** Who reviews by default (67 §7.1): the owner's `reports_to`; `theuth`/unknown manager → the user. */
 export function defaultReviewer(owner: Owner, agents: readonly AgentSummary[]): Owner {
@@ -69,10 +96,12 @@ export function columns(tasks: readonly Task[], withCancelled: boolean): { state
   return states.map((state) => ({ state, tasks: tasks.filter((t) => t.state === state) }))
 }
 
-/** Actions the detail page offers per state (67 §7.2 transitions the user may take). */
-export function actionsFor(t: Task): { sendBack: boolean; markDone: boolean; cancel: boolean; canMarkDone: boolean } {
+/** Actions the detail page offers per state (67 §7.2 transitions the user may take, 69 backlog ↔ todo). */
+export function actionsFor(t: Task): { start: boolean; toBacklog: boolean; sendBack: boolean; markDone: boolean; cancel: boolean; canMarkDone: boolean } {
   const open = t.state !== 'done' && t.state !== 'cancelled'
   return {
+    start: t.state === 'backlog',
+    toBacklog: t.state === 'todo',
     sendBack: t.state === 'review',
     markDone: t.state === 'review',
     // `done` needs a reviewer other than the owner unless the owner is the user (67 §7.2).

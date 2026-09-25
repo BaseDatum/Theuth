@@ -1,28 +1,31 @@
 import { useMutation } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { Check, ChevronsUpDown, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
-import { Badge } from '@/components/ui/badge'
+import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Button } from '@/components/ui/button'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useApi } from '@/lib/rpc'
 import type { Task } from '@/rpc/bindings/Task'
 import { OwnerSelect } from './OwnerSelect'
-import { TaskPicker } from './TaskPicker'
-import { USER, defaultReviewer, ownerText, parseOwner, shortId } from './helpers'
-import { useAgents, useInvalidateTasks, useMesh } from './queries'
+import { TaskChips } from './TaskChips'
+import { USER, defaultReviewer, nodesOf, ownerText, parseOwner } from './helpers'
+import { useAgents, useBoardProjects, useInvalidateTasks, useMesh } from './queries'
 
 export const HARNESSES = ['native', 'omp', 'opencode', 'claude'] as const
 
 /**
- * "New task" (67 §12): title, brief, project (defaults to the board's), owner, reviewer (defaults to the owner's
- * manager), optional placement, external links, and the tasks this one waits on. `TaskCreate` carries no
- * blockers, so a second `task_update` sets them after the create.
+ * "New task" (67 §12, 69): title, brief, project (the board's by default; a new name creates the project), owner,
+ * reviewer (defaults to the owner's manager), where (a node, or "theuth decides"), harness, and the tasks this one
+ * waits on / blocks. The task is created in `backlog` — nothing runs until Start. `TaskCreate` carries no blockers,
+ * so `task_update` sets them after the create: this task's `blockers`, and this id appended to each blocked task's.
+ * Links belong in the brief; the record's `external` field is left empty.
  */
 export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { open: boolean; onOpenChange(open: boolean): void; project: string | null }) {
   const api = useApi()
@@ -35,11 +38,11 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
   const [owner, setOwner] = useState(ownerText(USER))
   // `null` = follow the owner's manager; a string = the user picked one.
   const [reviewer, setReviewer] = useState<string | null>(null)
+  // '' = theuth decides (`where: null`).
   const [where, setWhere] = useState('')
   const [harness, setHarness] = useState('')
-  const [external, setExternal] = useState('')
   const [blockedBy, setBlockedBy] = useState<Task[]>([])
-  const [picking, setPicking] = useState(false)
+  const [blocks, setBlocks] = useState<Task[]>([])
   const effectiveReviewer = reviewer ?? ownerText(defaultReviewer(parseOwner(owner), agents.data ?? []))
 
   const reset = () => {
@@ -50,23 +53,25 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
     setReviewer(null)
     setWhere('')
     setHarness('')
-    setExternal('')
     setBlockedBy([])
+    setBlocks([])
   }
   const create = useMutation({
     mutationFn: async () => {
       const t = await api.task_create({
+        state: 'backlog',
         title: title.trim(),
         brief,
         owner: parseOwner(owner),
         reviewer: parseOwner(effectiveReviewer),
         parent: null,
         project: project?.trim() || null,
-        where: where.trim() || null,
+        where: where || null,
         harness: harness || null,
-        external: external.split('\n').map((s) => s.trim()).filter(Boolean),
+        external: [],
       })
       if (blockedBy.length) await api.task_update(t.id, { blockers: blockedBy.map((b) => b.id) })
+      for (const b of blocks) await api.task_update(b.id, { blockers: [...b.blockers, t.id] })
       return t
     },
     onSuccess: (t) => {
@@ -100,11 +105,11 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
           <Field label="Title" htmlFor="nt-title">
             <Input id="nt-title" autoFocus required value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
-          <Field label="Brief" htmlFor="nt-brief">
-            <Textarea id="nt-brief" rows={5} placeholder="Markdown" value={brief} onChange={(e) => setBrief(e.target.value)} />
+          <Field label="Brief" htmlFor="nt-brief" hint="Markdown; put links here">
+            <Textarea id="nt-brief" rows={5} placeholder="Context, constraints, acceptance, links" value={brief} onChange={(e) => setBrief(e.target.value)} />
           </Field>
           <Field label="Project" htmlFor="nt-project">
-            <ProjectPicker id="nt-project" value={project} onChange={setProject} />
+            <ProjectCombobox id="nt-project" value={project} onChange={setProject} />
           </Field>
           <Field label="Owner" htmlFor="nt-owner">
             <OwnerSelect id="nt-owner" value={owner} agents={agents.data ?? []} onChange={setOwner} />
@@ -113,17 +118,19 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
             <OwnerSelect id="nt-reviewer" value={effectiveReviewer} agents={agents.data ?? []} onChange={setReviewer} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Where" htmlFor="nt-where" hint="node name, optional">
-              <Input id="nt-where" list="nt-engines" value={where} onChange={(e) => setWhere(e.target.value)} />
-              <datalist id="nt-engines">{mesh.data?.peers.map((p) => <option key={p.id} value={p.name} />)}</datalist>
+            <Field label="Where" htmlFor="nt-where" hint="node">
+              <select id="nt-where" className="h-8 rounded-md border border-input bg-transparent px-2 text-sm" value={where} onChange={(e) => setWhere(e.target.value)}>
+                <option value="">theuth decides</option>
+                {nodesOf(mesh.data).map((n) => (
+                  <option key={n.name} value={n.name} disabled={!n.reachable}>
+                    {n.name}
+                    {n.here ? ' (this node)' : n.reachable ? '' : ' (unreachable)'}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Harness" htmlFor="nt-harness" hint="optional">
-              <select
-                id="nt-harness"
-                className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
-                value={harness}
-                onChange={(e) => setHarness(e.target.value)}
-              >
+              <select id="nt-harness" className="h-8 rounded-md border border-input bg-transparent px-2 text-sm" value={harness} onChange={(e) => setHarness(e.target.value)}>
                 <option value="">theuth decides</option>
                 {HARNESSES.map((h) => (
                   <option key={h} value={h}>
@@ -133,34 +140,83 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
               </select>
             </Field>
           </div>
-          <Field label="External links" htmlFor="nt-external" hint="one URL per line">
-            <Textarea id="nt-external" rows={2} value={external} onChange={(e) => setExternal(e.target.value)} />
+          <Field label="Blocked by" hint="this task waits on">
+            <TaskChips title="Blocked by" tasks={blockedBy} project={project} exclude={blocks.map((b) => b.id)} onAdd={(t) => setBlockedBy((l) => [...l, t])} onRemove={(t) => setBlockedBy((l) => l.filter((x) => x.id !== t.id))} />
           </Field>
-          <Field label="Blocked by">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {blockedBy.map((b) => (
-                <Badge key={b.id} variant="secondary" className="max-w-full gap-1 pr-1">
-                  <span className="truncate">{b.title}</span>
-                  <span className="text-fg-tertiary">{shortId(b.id)}</span>
-                  <button type="button" aria-label={`Remove ${b.title}`} className="rounded-full hover:bg-layer-2" onClick={() => setBlockedBy((l) => l.filter((x) => x.id !== b.id))}>
-                    <X className="size-3" />
-                  </button>
-                </Badge>
-              ))}
-              <Button type="button" variant="outline" size="sm" onClick={() => setPicking(true)}>
-                Add task…
-              </Button>
-            </div>
+          <Field label="Blocks" hint="tasks that wait on this one">
+            <TaskChips title="Blocks" tasks={blocks} project={project} exclude={blockedBy.map((b) => b.id)} onAdd={(t) => setBlocks((l) => [...l, t])} onRemove={(t) => setBlocks((l) => l.filter((x) => x.id !== t.id))} />
           </Field>
           <SheetFooter className="px-0">
             <Button type="submit" disabled={create.isPending || !title.trim()}>
-              Create
+              Create in backlog
             </Button>
           </SheetFooter>
         </form>
-        <TaskPicker open={picking} onOpenChange={setPicking} project={project} exclude={blockedBy.map((b) => b.id)} onPick={(t) => setBlockedBy((l) => [...l, t])} />
       </SheetContent>
     </Sheet>
+  )
+}
+
+/**
+ * Project combobox: the board's known projects (sessions' and tasks'), "None", and — when the typed text matches no
+ * project — an explicit "New project ‹name›" row. Picking that row is what creates the project: the task carries
+ * the label, and every picker lists it from then on.
+ */
+export function ProjectCombobox({ id, value, onChange }: { id?: string; value: string | null; onChange(v: string | null): void }) {
+  const projects = useBoardProjects()
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+  const name = typed.trim()
+  const isNew = name !== '' && !projects.some((p) => p.toLowerCase() === name.toLowerCase())
+  const pick = (v: string | null) => {
+    onChange(v)
+    setTyped('')
+    setOpen(false)
+  }
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button id={id} type="button" variant="outline" size="sm" role="combobox" aria-expanded={open} className="w-full justify-between font-normal">
+          <span className="flex min-w-0 items-center gap-1.5">
+            {value && <ProjectIcon project={value} className="size-3.5" />}
+            <span className="truncate">{value ?? 'None'}</span>
+          </span>
+          <ChevronsUpDown className="size-3.5 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-0">
+        <Command>
+          <CommandInput placeholder="Find or name a project" value={typed} onValueChange={setTyped} />
+          <CommandList>
+            <CommandEmpty>Type a name to create a project.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem value="none" onSelect={() => pick(null)}>
+                None
+                {value === null && <Check className="ml-auto size-4" />}
+              </CommandItem>
+              {projects.map((p) => (
+                <CommandItem key={p} value={p} onSelect={() => pick(p)}>
+                  <ProjectIcon project={p} className="size-3.5" />
+                  <span className="truncate">{p}</span>
+                  {value === p && <Check className="ml-auto size-4" />}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {isNew && (
+              <>
+                <CommandSeparator />
+                <CommandGroup forceMount>
+                  <CommandItem value={`new:${name}`} forceMount onSelect={() => pick(name)}>
+                    <Plus className="size-3.5" />
+                    New project <span className="font-medium">{name}</span>
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 

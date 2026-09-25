@@ -6,7 +6,7 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`TASKS_ACTOR`] actor ([`Tasks`]): [`ListTasks`],
-//!   [`GetTask`], [`TaskBlocks`], [`CreateTask`], [`UpdateTask`], [`CommentTask`],
+//!   [`GetTask`], [`TaskBlocks`], [`CreateTask`], [`UpdateTask`], [`MoveTask`], [`CommentTask`],
 //!   [`TaskEvents`], [`CheckoutTask`], [`PlaceTask`], [`Escalate`],
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
 //!   [`NoteDisposition`], [`EpisodeClosing`], [`SetDispatching`],
@@ -123,6 +123,24 @@ pub struct UpdateTask {
     pub id: TaskId,
     /// What.
     pub patch: TaskPatch,
+    /// `agent:<name>` | `user` | `system`.
+    pub actor: String,
+    /// Session doing it.
+    pub session: Option<String>,
+}
+
+/// `ask` → `Result<Task, String>`: `task_move` — a state change on the caller's
+/// intent (backlog ↔ todo, → cancelled, review → done | todo, blocked → todo …),
+/// guarded like [`UpdateTask`]; `Err` names the allowed targets. `note` is
+/// appended to the thread as a comment.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoveTask {
+    /// Which.
+    pub id: TaskId,
+    /// Where to.
+    pub state: TaskState,
+    /// Why, for the thread.
+    pub note: Option<String>,
     /// `agent:<name>` | `user` | `system`.
     pub actor: String,
     /// Session doing it.
@@ -400,6 +418,14 @@ impl Message<UpdateTask> for Tasks {
 
     async fn handle(&mut self, m: UpdateTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger.update(&m.id, m.patch, &m.actor, m.session.as_deref()).await
+    }
+}
+
+impl Message<MoveTask> for Tasks {
+    type Reply = Result<Task, String>;
+
+    async fn handle(&mut self, m: MoveTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.move_to(&m.id, m.state, m.note.as_deref(), &m.actor, m.session.as_deref()).await
     }
 }
 
@@ -794,6 +820,12 @@ impl runtime::Plugin for TasksPlugin {
                 .await
             {
                 tools::register(&reg).await;
+                let _ = reg
+                    .ask(::tools::RegisterPrompt {
+                        plugin: "tasks",
+                        text: tools::PROMPT.into(),
+                    })
+                    .await;
             }
         });
         Ok(())
