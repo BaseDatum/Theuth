@@ -2,7 +2,7 @@
 //! running `theuth-relay` on loopback and histograms DATA echo RTT.
 //!
 //! ```text
-//! cargo run --release -p relay --example bench -- ws://127.0.0.1:8787 <harnesses> <devices-per-harness> <msgs/s per device> <seconds> [relay-pid]
+//! cargo run --release -p relay --example relay_bench -- ws://127.0.0.1:8787 <harnesses> <devices-per-harness> <msgs/s per device> <seconds> [relay-pid]
 //! ```
 //!
 //! Each fake harness completes the NK registration with a generated static

@@ -1004,7 +1004,7 @@ Verified (2026-09-15):
 Not exercised: iOS build (`cargo tauri ios init` not run); camera scan;
 universal link; real cellular; `send_input` streaming over link with a live
 model (no API key in the scratch dir; subscription events covered by vitest
-against a fake harness); the §11 bench numbers (`crates/relay/examples/bench.rs`
+against a fake harness); the §11 bench numbers (`crates/relay/examples/relay_bench.rs`
 exists, not run); `--tls`; Docker image build.
 
 Open: §11 bench numbers; the mobile Settings deep link landing on the pane.
