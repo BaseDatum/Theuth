@@ -1420,7 +1420,7 @@ impl Repl {
                         };
                         checkout.resume(answer, &mut *on_print).await?
                     }
-                    TurnEvent::ResolveFutures { pending_call_ids } => {
+                    TurnEvent::ResolveFutures { pending_call_ids, .. } => {
                         // In invocation order (gather input order), whatever order
                         // the sandbox lists the futures in.
                         let mut calls: Vec<(u32, PendingCall)> = pending_call_ids

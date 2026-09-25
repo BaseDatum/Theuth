@@ -16,7 +16,7 @@ model was working with.
 Sources: cave-agent (`acodercat/cave-agent`), prime-agent
 (`PrimeIntellect-ai/prime-agent`, `docs/rlm.md`, `docs/rlm-runtime.md`),
 the user's earlier `../codemcp`, and pydantic `monty` (0.0.23 at design time,
-1.0.0-beta.2 since 2026-09-22 — §15; Rust crates `monty-pool`, `monty-types`,
+1.0.0-beta.2 since 2026-09-22 — §15; 1.0.0 since 2026-09-25 — §16; Rust crates `monty-pool`, `monty-types`,
 `monty-fs`; docs at pydantic.dev/docs/monty).
 §1 is what they taught us; the rest is what we build.
 
@@ -1017,3 +1017,33 @@ model turn over the WebSocket RPC ran `x = 1+1; x → 2`, `d = await
 list_dir(path='/tmp'); len(d) → 3548` (inner call `…​.1`), `x → 2`; the
 process was restarted and `x → 2` again from the restored dump. No worker
 spawn, protocol or restore warnings in `logs/`.
+
+## 16. As-built 2026-09-25: monty 1.0.0
+
+Pins `=1.0.0` for the same five crates. Wire protocol stays 5; dump format
+12 → 13 (#913 CBOR instead of postcard, #922 one-letter serde names). Release
+notes: github.com/pydantic/monty/releases/tag/v1.0.0 (beta.2 → 1.0.0 is
+#913, #922, #909, #927, #894, #910, #911, #929, #925, #928, #933, #665, #936).
+
+**API delta that touched theuth**: one line. `TurnEvent::ResolveFutures` gained
+`position: Option<SourceRange>` (#909, every suspension reports its source
+position); the bridge's arm ignores it with `..` (`FunctionCall`/`OsCall`
+already did). Nothing else in `repl.rs`, `worker.rs` or `tools` changed:
+`ReplConfig` gained `persistence: Persistence` (#933, relay-only — session
+IDs, forking, ephemeral sessions and auto-resume live in the WebSocket
+transport; a local subprocess worker ignores it and `Checkout::session_id()`
+is `None`) and `..Default::default()` already covered it. `monty_types` adds
+`allocate_into_baseline` (#928: the type checker is built lazily and charged
+to the worker baseline — not to the cell's memory limit; unused here).
+
+**Behaviour unchanged**: `system_sleep` contract (host waits ≤ `MAX_SLEEP`
+300 s per call, pool charges `max_total_sleep` 600 s per checkout, the
+crossing sleep raises `TimeoutError: sleep limit exceeded`), `OsPolicy`
+clock answers, the nested-mount refusal and the `/spill` skip, CWD = first
+mount, `set_hard_limit(memory_limit_with_headroom(…))` in the worker.
+`Checkout::restore` still zeroes and restores `sleep_used` around `Load`.
+
+**Snapshot compatibility.** A beta.2 dump is refused on `Load` with
+`dump format version 12 is older than 13, the oldest this build reads`; the
+§5 path renames it `.stale`, warns once, and the first cell reports the lost
+heap from `.names.json`, as for 0.0.23 → beta.2.
