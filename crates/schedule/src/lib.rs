@@ -260,14 +260,30 @@ struct Entry {
 
 impl Entry {
     fn new(raw: String, spec: Result<file::Spec, String>, now: DateTime<Local>) -> Self {
-        let next = next_of(&spec, now, None);
-        Self {
+        let mut e = Self {
             spec,
             raw,
-            next,
+            next: None,
             session: None,
             last: None,
             last_result: None,
+        };
+        e.arm(now);
+        e
+    }
+
+    /// `next` from `last` as at boot (34 §3): a `missed: run` cron occurrence
+    /// in `(last, now]` is due now; otherwise the next occurrence after `now`.
+    /// Also the handover path: a non-hub does not tick, so regaining the hub
+    /// re-arms every entry through here.
+    fn arm(&mut self, now: DateTime<Local>) {
+        self.next = next_of(&self.spec, now, self.last);
+        if let (Ok(s), Some(last)) = (&self.spec, self.last)
+            && s.enabled
+            && s.missed_run
+            && s.when.missed(last, now)
+        {
+            self.next = Some(now);
         }
     }
 }
@@ -350,6 +366,8 @@ pub struct Schedule {
     consumed: HashSet<String>,
     /// Turns `agent:` fires into tasks (67 §7.4); `None` until the tasks plugin registers.
     task_creator: Option<Arc<dyn TaskCreator>>,
+    /// [`mesh::is_hub`] as of the last tick; ticks are a hub duty (67 §4.4).
+    hub: bool,
 }
 
 impl Message<RegisterTaskCreator> for Schedule {
@@ -379,14 +397,7 @@ impl Schedule {
                 e.session = l.session;
                 e.last = l.last;
                 e.last_result = l.last_result;
-                e.next = next_of(&e.spec, now, e.last);
-                if let (Ok(s), Some(last)) = (&e.spec, e.last)
-                    && s.enabled
-                    && s.missed_run
-                    && s.when.missed(last, now)
-                {
-                    e.next = Some(now);
-                }
+                e.arm(now);
             }
             entries.insert(name, e);
         }
@@ -399,6 +410,7 @@ impl Schedule {
             running: HashMap::new(),
             consumed: HashSet::new(),
             task_creator: None,
+            hub: mesh::is_hub(),
         }
     }
 
@@ -771,18 +783,7 @@ impl Message<Tick> for Schedule {
     type Reply = ();
 
     async fn handle(&mut self, _: Tick, _: &mut Context<Self, Self::Reply>) {
-        let now = Local::now();
-        let due: Vec<String> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.next.is_some_and(|t| t <= now) && !self.is_running(e))
-            .map(|(n, _)| n.clone())
-            .collect();
-        for name in due {
-            if let Err(e) = self.fire(&name, now, false).await {
-                tracing::warn!(%name, "not fired: {e}");
-            }
-        }
+        self.tick(Local::now()).await;
 
         let inst = Instant::now();
         let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -811,6 +812,40 @@ impl Message<Tick> for Schedule {
     }
 }
 
+impl Schedule {
+    /// Fire what is due (34 §3) — on the hub only (67 §4.4). A non-hub
+    /// neither fires nor advances `last`; regaining the hub re-arms every
+    /// entry as at boot, so `missed:` decides what fires for the pause.
+    async fn tick(&mut self, now: DateTime<Local>) {
+        let hub = mesh::is_hub();
+        if hub != self.hub {
+            self.hub = hub;
+            if hub {
+                tracing::info!("schedules: hub regained, ticks resumed");
+                for e in self.entries.values_mut() {
+                    e.arm(now);
+                }
+            } else {
+                tracing::info!("schedules: not the hub, ticks paused");
+            }
+        }
+        if !hub {
+            return;
+        }
+        let due: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.next.is_some_and(|t| t <= now) && !self.is_running(e))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in due {
+            if let Err(e) = self.fire(&name, now, false).await {
+                tracing::warn!(%name, "not fired: {e}");
+            }
+        }
+    }
+}
+
 impl Message<NextWake> for Schedule {
     type Reply = Option<Duration>;
 
@@ -820,11 +855,13 @@ impl Message<NextWake> for Schedule {
         // Running entries count: a fire due while its run is still going becomes
         // a `skipped: busy` row at that tick, and a run that finished early must
         // not leave the loop asleep until TICK.
+        // A non-hub does not fire: only run deadlines wake it, else TICK.
         let next = self
             .entries
             .values()
             .filter_map(|e| e.next)
             .min()
+            .filter(|_| mesh::is_hub())
             .map(|t| (t - now).to_std().unwrap_or_default());
         let deadline = self
             .running
@@ -1104,6 +1141,7 @@ impl Message<Fire> for Schedule {
         if !spec.enabled {
             return Err("disabled".to_owned());
         }
+        // Not gated on the hub (67 §4.4): *run now* is the user's ask on this engine.
         match self.fire(&m.name, Local::now(), true).await? {
             Fired::Session(s) => Ok(s),
             // No session to open: the reply names the task instead (67 §7.4).
@@ -1273,8 +1311,8 @@ mod fire_tests {
 
     /// Records every call; answers a fixed task id.
     #[derive(Default)]
-    struct Recorder {
-        calls: Mutex<Vec<(String, u64, String, String, Option<String>, Option<String>)>>,
+    pub(super) struct Recorder {
+        pub(super) calls: Mutex<Vec<(String, u64, String, String, Option<String>, Option<String>)>>,
         closed: Mutex<Vec<String>>,
     }
 
@@ -1305,7 +1343,7 @@ mod fire_tests {
         }
     }
 
-    async fn actor(dir: &Path, files: &[(&str, &str)]) -> (Schedule, Arc<Recorder>) {
+    pub(super) async fn actor(dir: &Path, files: &[(&str, &str)]) -> (Schedule, Arc<Recorder>) {
         let sched = dir.join(DIR);
         std::fs::create_dir_all(&sched).unwrap();
         for (name, text) in files {
@@ -1383,5 +1421,83 @@ mod fire_tests {
         // No agent actor in a unit test: the session path is the one taken, and it says so.
         assert_eq!(s.fire("plain", Local::now(), true).await.unwrap_err(), "agent is not running");
         assert!(rec.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod hub_tests {
+    use parking_lot::Mutex;
+
+    use super::fire_tests::actor;
+    use super::*;
+
+    /// The hub flag is process-global: these run one at a time and leave it true.
+    static HUB: Mutex<()> = Mutex::new(());
+
+    fn hub_lock() -> parking_lot::MutexGuard<'static, ()> {
+        HUB.lock()
+    }
+
+    const DUE: &str = "---\nevery: 1h\nagent: ops\n---\ngo\n";
+
+    #[tokio::test]
+    async fn single_engine_default_is_hub() {
+        let _g = hub_lock();
+        assert!(mesh::is_hub());
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("n", DUE)]).await;
+        assert!(s.hub);
+        s.tick(Local::now()).await;
+        assert_eq!(rec.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn non_hub_ticker_skips_and_does_not_advance_last() {
+        let _g = hub_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(dir.path(), &[("n", DUE)]).await;
+        mesh::set_hub(false);
+        let now = Local::now();
+        s.tick(now).await;
+        s.tick(now + chrono::Duration::hours(3)).await;
+        mesh::set_hub(true);
+        assert!(rec.calls.lock().unwrap().is_empty(), "non-hub fired");
+        let e = &s.entries["n"];
+        assert!(e.last.is_none() && e.next.is_some_and(|t| t <= now));
+        assert!(!s.hub);
+        assert!(s.store.history("n", 5).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn regaining_hub_applies_missed_policy() {
+        let _g = hub_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, rec) = actor(
+            dir.path(),
+            &[
+                ("skip", "---\ncron: \"*/5 * * * *\"\nagent: ops\n---\ngo\n"),
+                ("run", "---\ncron: \"*/5 * * * *\"\nagent: ops\nmissed: run\n---\ngo\n"),
+            ],
+        )
+        .await;
+        // Both fired once as the hub, so `last` is set and the next occurrence is armed.
+        let t0 = Local::now();
+        s.fire("skip", t0, false).await.unwrap();
+        s.fire("run", t0, false).await.unwrap();
+        assert_eq!(rec.calls.lock().unwrap().len(), 2);
+        // Lose the hub; a day passes with occurrences due; nothing fires.
+        mesh::set_hub(false);
+        let paused = t0 + chrono::Duration::hours(24);
+        s.tick(paused).await;
+        assert_eq!(rec.calls.lock().unwrap().len(), 2);
+        // Regain it: `missed: run` fires for the pause, `missed: skip` waits for its next occurrence.
+        mesh::set_hub(true);
+        let back = paused + chrono::Duration::seconds(1);
+        s.tick(back).await;
+        let calls = rec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert_eq!((calls[2].0.as_str(), calls[2].1), ("run", back.timestamp_millis() as u64));
+        assert!(s.entries["skip"].next.is_some_and(|t| t > back));
+        assert_eq!(s.entries["skip"].last, Some(t0));
     }
 }
