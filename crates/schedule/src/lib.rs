@@ -90,6 +90,28 @@ pub struct SetEnabled {
     pub enabled: bool,
 }
 
+/// `ask` → `Result<ScheduleFile, String>`: a file's front matter and body for
+/// the desktop editor. `Err("no such schedule" | "front matter: …")`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Get {
+    /// File stem.
+    pub name: String,
+}
+
+/// `ask` → `Result<ScheduleInfo, String>`: validate and write `<dir>/<name>.md`
+/// (create or replace), then reconcile so the reply is current. `Err(<name
+/// rule> | <parse error> | <io error>)`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Put(pub file::ScheduleFile);
+
+/// `ask` → `Result<(), String>`: remove `<dir>/<name>.md`; the history gets a
+/// `removed` row like any other deletion. `Err("no such schedule" | <io error>)`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Delete {
+    /// File stem.
+    pub name: String,
+}
+
 /// `ask` → `Result<String, String>`: the model in a run declares its loop done
 /// (33 §3.5, the `schedule_done` tool). `session` is the run's session or one
 /// of its descendants. Ends the loop (`done (model): <why>` row, file removed,
@@ -164,6 +186,10 @@ pub struct ScheduleInfo {
     pub approvals: bool,
     /// `cwd:` — where `until` runs and the session starts.
     pub cwd: Option<PathBuf>,
+    /// `agent:` — the roster agent whose task each fire creates (67 §7.4).
+    pub agent: Option<String>,
+    /// `project:` — the project label of that task (67 §7.1).
+    pub project: Option<String>,
 }
 
 /// One row of `runs` (34 §7).
@@ -730,6 +756,14 @@ impl Message<Reconcile> for Schedule {
     type Reply = ();
 
     async fn handle(&mut self, _: Reconcile, ctx: &mut Context<Self, Self::Reply>) {
+        self.reconcile(ctx.actor_ref()).await;
+    }
+}
+
+impl Schedule {
+    /// Re-read the directory (34 §2.3): new/changed files re-parse, gone files
+    /// get a `removed` row; publishes `Changed` and wakes the tick loop.
+    async fn reconcile(&mut self, me: &ActorRef<Self>) {
         let now = Local::now();
         let mut seen = HashSet::new();
         for (name, raw, spec) in file::load_dir(&self.dir) {
@@ -775,7 +809,7 @@ impl Message<Reconcile> for Schedule {
         }
         self.rt.publish(ScheduleEvent::Changed).await;
         // A new file may already be due; the tick loop is asleep for up to TICK.
-        let _ = ctx.actor_ref().tell(Tick).await;
+        let _ = me.tell(Tick).await;
     }
 }
 
@@ -1120,6 +1154,8 @@ impl Schedule {
             runs: if is_loop { self.runs_of(name).await } else { 0 },
             approvals: spec.is_none_or(|s| s.approvals),
             cwd: spec.and_then(|s| s.cwd.clone()),
+            agent: spec.and_then(|s| s.agent.clone()),
+            project: spec.and_then(|s| s.project.clone()),
         }
     }
 }
@@ -1188,6 +1224,45 @@ impl Message<SetEnabled> for Schedule {
         let info = self.info(&m.name, e).await;
         self.rt.publish(ScheduleEvent::Changed).await;
         Ok(info)
+    }
+}
+
+impl Message<Get> for Schedule {
+    type Reply = Result<file::ScheduleFile, String>;
+
+    async fn handle(&mut self, m: Get, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let e = self.entries.get(&m.name).ok_or("no such schedule")?;
+        file::ScheduleFile::read(&m.name, &e.raw)
+    }
+}
+
+impl Message<Put> for Schedule {
+    type Reply = Result<ScheduleInfo, String>;
+
+    async fn handle(&mut self, m: Put, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let name = m.0.name.clone();
+        if !file::valid_name(&name) {
+            return Err("name: [a-z0-9][a-z0-9-]*, at most 40 chars".into());
+        }
+        let text = file::render(&m.0.args());
+        file::parse(&name, &text)?;
+        file::write_atomic(&self.dir, &name, &text).map_err(|e| e.to_string())?;
+        self.reconcile(ctx.actor_ref()).await;
+        let e = self.entries.get(&name).ok_or("no such schedule")?;
+        Ok(self.info(&name, e).await)
+    }
+}
+
+impl Message<Delete> for Schedule {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Delete, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.entries.contains_key(&m.name) {
+            return Err("no such schedule".into());
+        }
+        std::fs::remove_file(self.dir.join(format!("{}.md", m.name))).map_err(|e| e.to_string())?;
+        self.reconcile(ctx.actor_ref()).await;
+        Ok(())
     }
 }
 

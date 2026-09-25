@@ -137,6 +137,9 @@ impl Tool for ScheduleTool {
             cwd: a.cwd.as_deref(),
             approvals: a.approvals.unwrap_or(true),
             enabled: a.enabled.unwrap_or(true),
+            missed_run: false,
+            agent: None,
+            project: None,
         });
         let spec = match file::parse(&a.name, &text) {
             Ok(s) => s,

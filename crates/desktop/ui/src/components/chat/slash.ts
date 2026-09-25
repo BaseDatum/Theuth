@@ -181,7 +181,6 @@ export type SettingsTab =
   | 'loop'
   | 'approvals'
   | 'communication'
-  | 'schedules'
   | 'computer'
   | 'agents'
   | 'link'

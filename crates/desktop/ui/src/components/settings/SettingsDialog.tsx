@@ -1,7 +1,6 @@
 import { cn } from 'cn'
 import {
   Bot,
-  CalendarClock,
   ChevronLeft,
   ChevronRight,
   FlaskConical,
@@ -32,7 +31,6 @@ import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
 import { Mesh } from '@/components/settings/Mesh'
-import { Schedules } from '@/components/settings/Schedules'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
@@ -43,7 +41,6 @@ const TABS = [
   ['loop', 'Agent loop', RefreshCw],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
-  ['schedules', 'Schedules', CalendarClock],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
   ['labs', 'Labs', FlaskConical],
@@ -78,7 +75,6 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'loop' && <Loop />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
-      {tab === 'schedules' && <Schedules />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'labs' && <Labs />}

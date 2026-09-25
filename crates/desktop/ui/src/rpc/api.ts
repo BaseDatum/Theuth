@@ -86,6 +86,7 @@ import type { RepoInfo } from '@/rpc/bindings/RepoInfo'
 import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
 import type { ArchiveListing } from '@/rpc/bindings/ArchiveListing'
 import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
@@ -578,6 +579,12 @@ export interface Api {
   search_refresh(categories: SearchCategory[] | null): Promise<void>
   /** The last `limit` fires and skips of a schedule, newest first (34 §8). */
   schedule_history(name: string, limit: number): Promise<RunInfo[]>
+  /** A schedule file's front matter and body for the editor; rejects with `no such schedule`. */
+  get_schedule(name: string): Promise<ScheduleFile>
+  /** Validate and write a schedule file (create or replace); rejects with the name rule or the parse error. */
+  put_schedule(file: ScheduleFile): Promise<ScheduleInfo>
+  /** Remove a schedule file; rejects with `no such schedule`. */
+  delete_schedule(name: string): Promise<void>
   send_input(session: SessionId | null, text: string, files: string[], delivery?: Delivery | null): Promise<SessionId>
   /** Sign every Bedrock call on the engine as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
@@ -685,6 +692,7 @@ export const METHODS = [
   'decision_stats',
   'decision_training',
   'delete_decision_training',
+  'delete_schedule',
   'delete_secret',
   'delete_session',
   'device_pair_start',
@@ -728,6 +736,7 @@ export const METHODS = [
   'get_attachment',
   'get_communication',
   'get_prompt',
+  'get_schedule',
   'get_todos',
   'info',
   'invite_node',
@@ -823,6 +832,7 @@ export const METHODS = [
   'pty_screen',
   'publish_app',
   'put_attachment',
+  'put_schedule',
   'put_session_attachment',
   'redo',
   'regenerate',

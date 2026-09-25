@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveDateTime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Smallest accepted `every:` interval.
 const MIN_EVERY: Duration = Duration::from_secs(10);
@@ -291,8 +291,103 @@ pub struct FileArgs<'a> {
     pub approvals: bool,
     /// `enabled:` — written only when false: the draft (33 §0.6).
     pub enabled: bool,
+    /// `missed: run` — written only when true.
+    pub missed_run: bool,
+    /// `agent:` — written only when present (67 §7.4).
+    pub agent: Option<&'a str>,
+    /// `project:` — written only when present (67 §7.1).
+    pub project: Option<&'a str>,
     /// Body.
     pub prompt: &'a str,
+}
+
+/// One schedule file as the desktop editor reads and writes it: every front
+/// matter key as written (no defaults applied, `cwd` unexpanded) plus the body.
+/// Read leniently so a file that fails [`parse`] can still be repaired.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ScheduleFile {
+    /// File stem.
+    pub name: String,
+    /// `cron:` expression.
+    pub cron: Option<String>,
+    /// `every:` interval.
+    pub every: Option<String>,
+    /// `at:` instant.
+    pub at: Option<String>,
+    /// `quiet:` (default false).
+    pub quiet: bool,
+    /// `missed: run` (default skip).
+    pub missed_run: bool,
+    /// `model:`.
+    pub model: Option<String>,
+    /// `enabled:` (default true).
+    pub enabled: bool,
+    /// `until:`.
+    pub until: Option<String>,
+    /// `max_runs:`.
+    pub max_runs: Option<u32>,
+    /// `cwd:` as written.
+    pub cwd: Option<String>,
+    /// `approvals:` (default true).
+    pub approvals: bool,
+    /// `agent:`.
+    pub agent: Option<String>,
+    /// `project:`.
+    pub project: Option<String>,
+    /// Body, trimmed.
+    pub prompt: String,
+}
+
+impl ScheduleFile {
+    /// Front matter + body of `text`; `Err("front matter: …")` only when the YAML itself is broken.
+    pub fn read(name: &str, text: &str) -> Result<Self, String> {
+        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+        let parsed = matter
+            .parse::<FrontMatter>(text)
+            .map_err(|e| format!("front matter: {e}"))?;
+        let fm = parsed.data.unwrap_or_default();
+        Ok(Self {
+            name: name.to_string(),
+            cron: fm.cron,
+            every: fm.every,
+            at: fm.at,
+            quiet: fm.quiet.unwrap_or(false),
+            missed_run: fm.missed.as_deref().map(str::trim) == Some("run"),
+            model: fm.model,
+            enabled: fm.enabled.unwrap_or(true),
+            until: fm.until,
+            max_runs: fm.max_runs,
+            cwd: fm.cwd,
+            approvals: fm.approvals.unwrap_or(true),
+            agent: fm.agent,
+            project: fm.project,
+            prompt: parsed.content.trim().to_string(),
+        })
+    }
+
+    /// Borrow as [`render`] input; empty strings count as absent.
+    pub fn args(&self) -> FileArgs<'_> {
+        fn some(s: &Option<String>) -> Option<&str> {
+            s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        }
+        FileArgs {
+            cron: some(&self.cron),
+            every: some(&self.every),
+            at: some(&self.at),
+            quiet: self.quiet,
+            model: some(&self.model),
+            until: some(&self.until),
+            max_runs: self.max_runs,
+            cwd: some(&self.cwd),
+            approvals: self.approvals,
+            enabled: self.enabled,
+            missed_run: self.missed_run,
+            agent: some(&self.agent),
+            project: some(&self.project),
+            prompt: &self.prompt,
+        }
+    }
 }
 
 /// YAML double-quoted scalar: `\` and `"` escaped, so `:`, `#`, `$(…)` and a
@@ -334,6 +429,15 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if !a.enabled {
         s.push_str("enabled: false\n");
+    }
+    if a.missed_run {
+        s.push_str("missed: run\n");
+    }
+    if let Some(v) = a.agent {
+        s.push_str(&format!("agent: {}\n", v.trim()));
+    }
+    if let Some(v) = a.project {
+        s.push_str(&format!("project: {}\n", yaml_str(v.trim())));
     }
     s.push_str("---\n\n");
     s.push_str(a.prompt.trim());
@@ -506,8 +610,40 @@ mod tests {
         cwd: None,
         approvals: true,
         enabled: true,
+        missed_run: false,
+        agent: None,
+        project: None,
         prompt: "p",
     };
+
+    #[test]
+    fn schedule_file_round_trip() {
+        let f = ScheduleFile {
+            name: "x".into(),
+            cron: Some("0 9 * * 1-5".into()),
+            quiet: true,
+            missed_run: true,
+            model: Some("m".into()),
+            enabled: false,
+            cwd: Some("~/src".into()),
+            approvals: false,
+            agent: Some("alice".into()),
+            project: Some("web: v2".into()),
+            prompt: "do it".into(),
+            ..ScheduleFile::default()
+        };
+        let text = render(&f.args());
+        let back = ScheduleFile::read("x", &text).unwrap();
+        assert_eq!(back.cron.as_deref(), Some("0 9 * * 1-5"));
+        assert!(back.quiet && back.missed_run && !back.enabled && !back.approvals);
+        assert_eq!(back.cwd.as_deref(), Some("~/src"));
+        assert_eq!(back.agent.as_deref(), Some("alice"));
+        assert_eq!(back.project.as_deref(), Some("web: v2"));
+        assert_eq!(back.prompt, "do it");
+        // Broken semantics (no clause) still read: the editor can repair it.
+        let broken = ScheduleFile::read("y", "---\nquiet: true\n---\n").unwrap();
+        assert!(broken.cron.is_none() && broken.quiet && broken.prompt.is_empty());
+    }
 
     #[test]
     fn render_parse_round_trip() {

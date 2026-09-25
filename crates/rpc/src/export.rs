@@ -184,6 +184,7 @@ async fn export_bindings() {
         schedule::ScheduleInfo,
         schedule::RunInfo,
         schedule::ScheduleEvent,
+        schedule::file::ScheduleFile,
         sessionsync::types::SessionOwner,
         sessionsync::types::SessionOrphan,
         sessionsync::types::SessionsStatus,

@@ -27,6 +27,8 @@ import { Route as MeetingsIdRouteImport } from './routes/meetings.$id'
 import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
 import { Route as NotesIdRouteImport } from './routes/notes_.$id'
+import { Route as RoutinesIndexRouteImport } from './routes/routines.index'
+import { Route as RoutinesNewRouteImport } from './routes/routines.new'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as SkillsIndexRouteImport } from './routes/skills.index'
 import { Route as SkillsNameRouteImport } from './routes/skills.$name'
@@ -34,6 +36,8 @@ import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
+import { Route as RoutinesNameIndexRouteImport } from './routes/routines.$name.index'
+import { Route as RoutinesNameSectionRouteImport } from './routes/routines.$name.$section'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -125,6 +129,16 @@ const NotesIdRoute = NotesIdRouteImport.update({
   path: '/notes/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RoutinesIndexRoute = RoutinesIndexRouteImport.update({
+  id: '/routines/',
+  path: '/routines/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RoutinesNewRoute = RoutinesNewRouteImport.update({
+  id: '/routines/new',
+  path: '/routines/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsTabRoute = SettingsTabRouteImport.update({
   id: '/settings/$tab',
   path: '/settings/$tab',
@@ -160,6 +174,16 @@ const AgentsNameTabRoute = AgentsNameTabRouteImport.update({
   path: '/agents/$name/$tab',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RoutinesNameIndexRoute = RoutinesNameIndexRouteImport.update({
+  id: '/routines/$name/',
+  path: '/routines/$name/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RoutinesNameSectionRoute = RoutinesNameSectionRouteImport.update({
+  id: '/routines/$name/$section',
+  path: '/routines/$name/$section',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -178,15 +202,19 @@ export interface FileRoutesByFullPath {
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/notes/$id': typeof NotesIdRoute
+  '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
   '/tasks/$id': typeof TasksIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/routines/': typeof RoutinesIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
+  '/routines/$name/': typeof RoutinesNameIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -205,15 +233,19 @@ export interface FileRoutesByTo {
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/notes/$id': typeof NotesIdRoute
+  '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
   '/tasks/$id': typeof TasksIdRoute
   '/agents': typeof AgentsIndexRoute
   '/meetings': typeof MeetingsIndexRoute
+  '/routines': typeof RoutinesIndexRoute
   '/skills': typeof SkillsIndexRoute
   '/tasks': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name': typeof AgentsNameIndexRoute
+  '/routines/$name': typeof RoutinesNameIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -233,15 +265,19 @@ export interface FileRoutesById {
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
   '/notes_/$id': typeof NotesIdRoute
+  '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
   '/tasks/$id': typeof TasksIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
+  '/routines/': typeof RoutinesIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
+  '/routines/$name/': typeof RoutinesNameIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -262,15 +298,19 @@ export interface FileRouteTypes {
     | '/meetings/briefs'
     | '/meetings/new'
     | '/notes/$id'
+    | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
     | '/tasks/$id'
     | '/agents/'
     | '/meetings/'
+    | '/routines/'
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/routines/$name/$section'
     | '/agents/$name/'
+    | '/routines/$name/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -289,15 +329,19 @@ export interface FileRouteTypes {
     | '/meetings/briefs'
     | '/meetings/new'
     | '/notes/$id'
+    | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
     | '/tasks/$id'
     | '/agents'
     | '/meetings'
+    | '/routines'
     | '/skills'
     | '/tasks'
     | '/agents/$name/$tab'
+    | '/routines/$name/$section'
     | '/agents/$name'
+    | '/routines/$name'
   id:
     | '__root__'
     | '/'
@@ -316,15 +360,19 @@ export interface FileRouteTypes {
     | '/meetings/briefs'
     | '/meetings/new'
     | '/notes_/$id'
+    | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
     | '/tasks/$id'
     | '/agents/'
     | '/meetings/'
+    | '/routines/'
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/routines/$name/$section'
     | '/agents/$name/'
+    | '/routines/$name/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -342,15 +390,19 @@ export interface RootRouteChildren {
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
   MeetingsNewRoute: typeof MeetingsNewRoute
   NotesIdRoute: typeof NotesIdRoute
+  RoutinesNewRoute: typeof RoutinesNewRoute
   SettingsTabRoute: typeof SettingsTabRoute
   SkillsNameRoute: typeof SkillsNameRoute
   TasksIdRoute: typeof TasksIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
+  RoutinesIndexRoute: typeof RoutinesIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
   TasksIndexRoute: typeof TasksIndexRoute
   AgentsNameTabRoute: typeof AgentsNameTabRoute
+  RoutinesNameSectionRoute: typeof RoutinesNameSectionRoute
   AgentsNameIndexRoute: typeof AgentsNameIndexRoute
+  RoutinesNameIndexRoute: typeof RoutinesNameIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -481,6 +533,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/routines/': {
+      id: '/routines/'
+      path: '/routines'
+      fullPath: '/routines/'
+      preLoaderRoute: typeof RoutinesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/routines/new': {
+      id: '/routines/new'
+      path: '/routines/new'
+      fullPath: '/routines/new'
+      preLoaderRoute: typeof RoutinesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/$tab': {
       id: '/settings/$tab'
       path: '/settings/$tab'
@@ -530,6 +596,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsNameTabRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/routines/$name/': {
+      id: '/routines/$name/'
+      path: '/routines/$name'
+      fullPath: '/routines/$name/'
+      preLoaderRoute: typeof RoutinesNameIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/routines/$name/$section': {
+      id: '/routines/$name/$section'
+      path: '/routines/$name/$section'
+      fullPath: '/routines/$name/$section'
+      preLoaderRoute: typeof RoutinesNameSectionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -572,15 +652,19 @@ const rootRouteChildren: RootRouteChildren = {
   MeetingsBriefsRoute: MeetingsBriefsRoute,
   MeetingsNewRoute: MeetingsNewRoute,
   NotesIdRoute: NotesIdRoute,
+  RoutinesNewRoute: RoutinesNewRoute,
   SettingsTabRoute: SettingsTabRoute,
   SkillsNameRoute: SkillsNameRoute,
   TasksIdRoute: TasksIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
+  RoutinesIndexRoute: RoutinesIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
   TasksIndexRoute: TasksIndexRoute,
   AgentsNameTabRoute: AgentsNameTabRoute,
+  RoutinesNameSectionRoute: RoutinesNameSectionRoute,
   AgentsNameIndexRoute: AgentsNameIndexRoute,
+  RoutinesNameIndexRoute: RoutinesNameIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

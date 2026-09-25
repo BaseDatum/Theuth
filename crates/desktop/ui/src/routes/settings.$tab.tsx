@@ -1,5 +1,6 @@
 import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
 import { movedTab } from '@/components/library/moved'
+import { movedSettingsTab } from '@/components/routines/helpers'
 import { SettingsDialog, type Tab, isTab } from '@/components/settings/SettingsDialog'
 import { isMacDesktop } from '@/lib/hotkeys'
 
@@ -12,9 +13,9 @@ export const Route = createFileRoute('/settings/$tab')({
     ...(typeof s.peer === 'string' && { peer: s.peer }),
   }),
   beforeLoad: ({ params, search }) => {
-    // Skills, Tools and Secrets became Library pages; old links and `/settings/<tab>` bookmarks follow.
-    const moved = movedTab(params.tab)
-    if (moved) throw redirect({ to: moved, search: search.session ? { session: search.session } : {} })
+    // Skills, Tools and Secrets became Library pages and Schedules became Routines; old links and `/settings/<tab>` bookmarks follow.
+    const moved = movedTab(params.tab) ?? movedSettingsTab(params.tab)
+    if (moved) throw redirect({ to: moved, replace: true, search: search.session ? { session: search.session } : {} })
     if (!isTab(params.tab))
       throw redirect({
         to: '/settings/$tab',
