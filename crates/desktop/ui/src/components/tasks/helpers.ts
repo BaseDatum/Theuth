@@ -13,20 +13,20 @@ export const THEUTH = 'theuth'
 export const USER: Owner = { type: 'user' }
 export const agent = (name: string): Owner => ({ type: 'agent', name })
 
-/** `Owner` → its text form (`agent:ops` | `user`), the shape filters, `created_by` and `actor` carry. */
-export const ownerText = (o: Owner): string => (o.type === 'user' ? 'user' : `agent:${o.name}`)
+/** `Owner` → its text form (`agent:ops` | `user` | `system`), the shape filters, `created_by` and `actor` carry. */
+export const ownerText = (o: Owner): string => (o.type === 'agent' ? `agent:${o.name}` : o.type)
 
 /** Text form → `Owner`; `theuth` and `user` both mean the user's line ends here. */
 export function parseOwner(s: string): Owner {
-  return s.startsWith('agent:') ? agent(s.slice(6)) : USER
+  return s.startsWith('agent:') ? agent(s.slice(6)) : s === 'system' ? { type: 'system' } : USER
 }
 
-/** Chip text: the agent's name, or "you". */
-export const ownerLabel = (o: Owner | null): string => (o === null ? '—' : o.type === 'user' ? 'you' : o.name)
+/** Chip text: the agent's name, "you", or "system". */
+export const ownerLabel = (o: Owner | null): string => (o === null ? '—' : o.type === 'agent' ? o.name : o.type === 'user' ? 'you' : 'system')
 
 /** Who reviews by default (67 §7.1): the owner's `reports_to`; `theuth`/unknown manager → the user. */
 export function defaultReviewer(owner: Owner, agents: readonly AgentSummary[]): Owner {
-  if (owner.type === 'user') return USER
+  if (owner.type !== 'agent') return USER
   const mgr = agents.find((a) => a.file.name === owner.name)?.file.reports_to
   return !mgr || mgr === THEUTH || mgr === 'user' ? USER : agent(mgr)
 }
