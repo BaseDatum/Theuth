@@ -184,6 +184,12 @@ pub struct Task {
     /// Back-off: no wake is delivered before this (ms since epoch).
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub next_wake_after_ms: Option<u64>,
+    /// Acceptance criteria (70 DESK-PROTOCOL): what `done` is judged against
+    /// first. Drafted from the brief by whoever creates the task when the user
+    /// did not state it; `None` = judged on the user's evident intention, and
+    /// then self-review is not allowed.
+    #[serde(default)]
+    pub done_when: Option<String>,
 }
 
 /// Why an agent is woken (67 §7.3).
@@ -207,6 +213,14 @@ pub enum WakeReason {
     Resume,
     /// `/wake`, the board, the CLI.
     Manual,
+    /// A task was handed to it by its previous owner (70 DESK-PROTOCOL: the
+    /// fit check); the thread says why.
+    Reassigned,
+    /// Every blocker of a task it owns is resolved: the work it delegated or
+    /// waited on is in.
+    BlockersResolved,
+    /// Every child of a task it owns is done or cancelled.
+    ChildrenCompleted,
 }
 
 impl WakeReason {
@@ -221,6 +235,9 @@ impl WakeReason {
             Self::Review => "review",
             Self::Resume => "resume",
             Self::Manual => "manual",
+            Self::Reassigned => "reassigned",
+            Self::BlockersResolved => "blockers_resolved",
+            Self::ChildrenCompleted => "children_completed",
         }
     }
 }
@@ -286,6 +303,37 @@ pub enum Disposition {
         /// What will.
         by: String,
     },
+}
+
+/// Why a task is `done` (70 DESK-PROTOCOL, Sky's ruling): the reviewer judges
+/// against `done_when` first, the user's evident intention second, and third
+/// the follow-up tasks that carry the work on. Written into the thread as
+/// `done because: …`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DoneBecause {
+    /// `done_when` is met.
+    CriteriaMet,
+    /// No explicit criteria, or they miss the point: the user's evident intention is met.
+    IntentMet,
+    /// The work continues in follow-up tasks that naturally follow this one.
+    FollowUpsFiled {
+        /// The follow-ups.
+        tasks: Vec<TaskId>,
+    },
+}
+
+impl std::fmt::Display for DoneBecause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CriteriaMet => f.write_str("criteria met"),
+            Self::IntentMet => f.write_str("intent met"),
+            Self::FollowUpsFiled { tasks } => {
+                write!(f, "follow-ups filed ({})", tasks.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(", "))
+            }
+        }
+    }
 }
 
 /// One row of `task_events`: a field-level change (67 §7.2).
@@ -354,6 +402,9 @@ pub struct TaskCreate {
     /// External ticket URLs.
     #[serde(default)]
     pub external: Vec<String>,
+    /// Acceptance criteria; `None` = none stated (the creator should draft them from the brief).
+    #[serde(default)]
+    pub done_when: Option<String>,
 }
 
 impl TaskCreate {
@@ -389,6 +440,10 @@ pub struct TaskPatch {
     pub harness: Option<String>,
     /// External URLs, replaced whole.
     pub external: Option<Vec<String>>,
+    /// Acceptance criteria.
+    pub done_when: Option<String>,
+    /// Required from an agent moving a task to `done`; `user`/`system` default to intent met.
+    pub done_because: Option<DoneBecause>,
 }
 
 #[cfg(test)]
@@ -426,6 +481,7 @@ mod tests {
             where_: Some("build-A".into()),
             harness: None,
             external: vec![],
+            done_when: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");

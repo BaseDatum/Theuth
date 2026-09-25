@@ -37,28 +37,85 @@ with `visibility: team` or `shared` for the items your team or everyone should k
 must already have its disposition. Answer with the journal text only: it is written to your journal file as is and \
 is what your next episode starts from.";
 
-/// The desk's operating manual (67 §6.2, §7.3): the paragraph that follows
-/// the charter and the journal in the opening block.
-pub fn manual(f: &AgentFile) -> String {
+/// The desk's operating manual (67 §6.2, §7.3; 70 DESK-PROTOCOL): the part
+/// of the identity block after the charter and the journal. `max_rounds` is
+/// `roster.max_rounds`.
+pub fn manual(f: &AgentFile, max_rounds: u32) -> String {
     let name = f.name.as_str();
     let model = f.model.as_deref().unwrap_or("the default");
     let tools = f.tools.as_deref().unwrap_or("destructive");
     format!(
-        "You are the desk of agent `{name}` ({title}). You take wakes, read your inbox with `task_inbox`, \
-check out one task with `task_checkout`, open a child session for it with `spawn_subagent` exactly where the task \
-says (`agent: \"<harness>@<engine>\"` from the task's `harness` and `where`, or the engine name alone for the native \
-harness; pass `model` and `tools` from your file: model {model}, tools {tools}), review the result, then set the \
-disposition with `task_update`. Never do the work in this session: no files, no shells, no browsing here, only \
-through a child. Handle the task the wake names before any other; write progress with `task_note`; call `escalate` \
-when you need a decision you may not make yourself, and wait for the answer. Disposition rule: an episode's closing \
-turn must leave every task it checked out in `review | blocked | done(by reviewer) | delegated (child task exists) | \
-continuing (a schedule, reminder or live child will wake it)`. A task left in `doing` with none of these is set \
-`blocked: \"no continuation\"` and the manager is woken. Tasks in `backlog` are not dispatched: they are not in \
-your inbox and you do not `task_move` them to `todo` — the user starts them. A role missing from the roster is a \
-proposal, not a hire: `agents_list`, then `agent_propose` (it lands paused and files a `hire_agent` approval up \
-your line); the user decides. Your `knowledge_put` writes are private to you by default; \
-`knowledge_share` opens them to your team or everyone. When asked to write your journal, answer with the journal only.",
+        "You are the desk of agent `{name}` ({title}): an employee finishing a job, not a chat bot relaying \
+output. You take wakes, read your inbox with `task_inbox`, and handle the task the wake names before any other. \
+Never do the work in this session: no files, no shells, no browsing here, only through a child session.\n\
+\n\
+1. Fit check first. On an `assigned` or `reassigned` wake, before any work, read the roster the wake carries \
+(active agents with their capabilities). If another agent's capabilities match the task better than your \
+charter, hand it over at once with `task_reassign {{task, to, why}}`: the thread records `reassigned to ‹agent›: \
+‹why›` and they are woken. `theuth`'s desk is the router by default — most user tasks land on it, and routing IS \
+its job. Only when nobody fits do you work the task yourself: `task_checkout`, then `spawn_subagent` exactly where \
+the task says (`agent: \"<harness>@<engine>\"` from the task's `harness` and `where`, or the engine name alone for \
+the native harness; pass `model` and `tools` from your file: model {model}, tools {tools}) with a complete brief. \
+A role missing from the roster is a proposal, not a hire: `agent_propose` (it lands paused and files a \
+`hire_agent` approval up your line); the user decides.\n\
+\n\
+2. Follow through. A child's result arrives in this same session as a `<message>`; your episode does not end \
+there. (i) Read it. (ii) Decide whether the task's `done_when` (its acceptance criteria) is met — if the findings \
+raise follow-up questions, spawn further children (at most {max_rounds} rounds per task in one episode) or file \
+child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the thread with `task_note`: a \
+report block — summary, findings, evidence, recommended actions — in your own words, having verified the child's \
+claims. (iv) Set the disposition with `task_update`. Write progress with `task_note progress: true` at natural \
+boundaries; call `escalate` when you need a decision you may not make yourself, and wait for the answer.\n\
+\n\
+3. Delegation and waiting. Long or parallel work is a child task (`task_create` with `parent` and your task's \
+id in `blockers`, or `disposition: delegated {{to}}`). You are woken by `blockers_resolved` when what you wait on \
+is done and by `children_completed` when every child is closed — never poll, never busy-wait. Talking sideways \
+to another agent is creating a self-contained task for them. `blocked` names what you wait on (a task id, \
+`decision:<id>`, `person:<name>`); prose is not a waiting path.\n\
+\n\
+4. Disposition checklist — every turn woken for a task ends with the task moved: `done` (reviewer only, with \
+`done_because`), `review {{reviewer}}`, `blocked {{on}}`, `delegated {{to}}` or `continuing {{by}}` (something \
+that will actually wake you: a schedule, a reminder, a live child). A task is done when (1) it meets its \
+`done_when`, or (2) it meets the user's evident intention, or (3) you filed the follow-up tasks that naturally \
+follow it — judge in that order and say which. Assigning yourself plus a please-review comment is not a review \
+path: the reviewer is a different desk or the user; a desk that is its own reviewer marks done only against an \
+explicit `done_when`, as `criteria_met`; without one the review goes to your manager. On a `review` wake you \
+end the turn with `task_move done` (with `done_because`) or send it back to the owner with notes. On a \
+`comment` wake you reply in the thread. A wake that ends with its task unmoved gets ONE nudge; if the task is \
+still unmoved after that it is set `blocked: \"no continuation\"` and your manager is woken — the same rule \
+that closes an episode: every task you checked out must be in `review | blocked | done(by reviewer) | \
+delegated (child task exists) | continuing` when the episode closes.\n\
+\n\
+Tasks in `backlog` are not dispatched: they are not in your inbox and you do not `task_move` them to `todo` — \
+the user starts them. Your `knowledge_put` writes are private to you by default; `knowledge_share` opens them \
+to your team or everyone. When asked to write your journal, answer with the journal only.",
         title = f.title,
+    )
+}
+
+/// 70 DESK-PROTOCOL (e): the capabilities roster an `assigned` wake carries so
+/// the fit check is one glance — every other active agent (not paused, not a
+/// proposal), one line each: name, title, capabilities.
+pub fn roster_block<'a>(me: &str, agents: impl Iterator<Item = &'a AgentFile>) -> String {
+    let mut lines: Vec<String> = agents
+        .filter(|f| f.name.as_str() != me && !f.paused && f.proposed_by.is_none())
+        .map(|f| {
+            let caps = f
+                .capabilities
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .unwrap_or("(no capabilities stated)");
+            format!("- `{}` ({}): {}", f.name, f.title, caps.lines().collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push("- (no other active agent)".into());
+    }
+    format!(
+        "<roster>\nFit check: hand the task over with `task_reassign` if one of these fits it better than your \
+charter; otherwise work it.\n{}\n</roster>",
+        lines.join("\n")
     )
 }
 
@@ -67,7 +124,7 @@ your line); the user decides. Your `knowledge_put` writes are private to you by 
 /// theuth's place — who the agent is, whom it reports to, its charter,
 /// capabilities, journal and the manual. For `theuth` the charter is
 /// `prompt.md` (67 decision 1), so it never appears for anyone else.
-pub fn identity(f: &AgentFile, journal: Option<&str>) -> String {
+pub fn identity(f: &AgentFile, journal: Option<&str>, max_rounds: u32) -> String {
     let journal = journal
         .map(str::trim)
         .filter(|j| !j.is_empty())
@@ -82,7 +139,7 @@ pub fn identity(f: &AgentFile, journal: Option<&str>) -> String {
     if let Some(c) = f.capabilities.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         s.push_str(&format!("\n\nCapabilities (when you are the one to hand a task to): {c}"));
     }
-    s.push_str(&format!("\n\n<journal>\n{journal}\n</journal>\n\n{}", manual(f)));
+    s.push_str(&format!("\n\n<journal>\n{journal}\n</journal>\n\n{}", manual(f, max_rounds)));
     s
 }
 
@@ -148,6 +205,11 @@ pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
         }
         s.push_str(">\n");
         s.push_str(t.brief.trim());
+        if let Some(w) = t.done_when.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            s.push_str(&format!("\n\nDone when: {w}"));
+        } else {
+            s.push_str("\n\nDone when: (no acceptance criteria stated — judge on the user's evident intention; set them with `task_update done_when` once you know them)");
+        }
         if !t.blockers.is_empty() {
             s.push_str(&format!("\n\nBlockers: {}", t.blockers.join("; ")));
         }
@@ -201,6 +263,159 @@ pub struct Desk {
     pub primed: bool,
     /// Model the last turn ran on (for the context window).
     pub model: Option<String>,
+    /// The wake the desk is handling (70 DESK-PROTOCOL 3): set at delivery,
+    /// judged at every turn end by [`nudges::TABLE`], cleared when handled.
+    pub serving: Option<Serving>,
+}
+
+/// What a desk was woken for, as it stood at delivery (70 DESK-PROTOCOL 3).
+#[derive(Clone, Debug)]
+pub struct Serving {
+    /// The wake.
+    pub wake: tasks::Wake,
+    /// The task's state at delivery (`None`: no task or unknown).
+    pub state: Option<tasks::TaskState>,
+    /// Its owner at delivery.
+    pub owner: Option<tasks::Owner>,
+    /// `task_events` rows at delivery: anything after them is this wake's work.
+    pub events: usize,
+    /// The one nudge was sent.
+    pub nudged: bool,
+    /// Children spawned for it this episode (70 DESK-PROTOCOL 2: bounded by `roster.max_rounds`).
+    pub rounds: u32,
+}
+
+/// 70 DESK-PROTOCOL 3: the nudge points, in one table so Sky can rule on
+/// more. A desk turn woken for a task that ends with the task unmoved gets
+/// ONE nudge (fixed options, paperclip's successful-run-handoff shape) and the
+/// turn is re-run; a second unmoved end applies the 67 §7.3 rule
+/// (`blocked: no continuation`, manager woken). Every nudge is logged in the
+/// thread as `nudged: …`.
+pub mod nudges {
+    use tasks::{Task, TaskEvent, TaskState, WakeReason};
+
+    use super::Serving;
+
+    /// What the desk sees after the nudged turn if the task is still unmoved.
+    pub const THEN: &str = "One attempt: if the task is unchanged when this turn ends it is set `blocked: \"no \
+continuation\"` and your manager is woken.";
+
+    /// One row.
+    pub enum Nudge {
+        /// Judged when a desk turn ends.
+        TurnEnd {
+            /// Row name (the thread's `nudged: <name>` line).
+            name: &'static str,
+            /// Wake reasons it covers.
+            reasons: &'static [WakeReason],
+            /// Still unhandled? `(at delivery, task now, events since delivery by
+            /// the desk's agent, a child of the desk is still running)`.
+            unhandled: fn(&Serving, &Task, &[TaskEvent], bool) -> bool,
+            /// The nudge input.
+            text: fn(&Task) -> String,
+        },
+        /// Judged by the clock, in the tasks ledger; listed here for the ruling.
+        Time {
+            /// Row name.
+            name: &'static str,
+            /// Where and how it is enforced.
+            rule: &'static str,
+        },
+    }
+
+    /// A disposition event after delivery that names a real continuation.
+    fn continued(events: &[TaskEvent]) -> bool {
+        events.iter().any(|e| {
+            e.field == "disposition"
+                && e.after.as_deref().is_some_and(|a| a.starts_with("continuing") || a.starts_with("delegated"))
+        })
+    }
+
+    /// The task left the state it was delivered in, or changed hands.
+    fn moved(s: &Serving, t: &Task) -> bool {
+        Some(t.state) != s.state || s.owner.as_ref().is_some_and(|o| *o != t.owner)
+    }
+
+    /// The rows. Turn-end rows are matched by wake reason ([`for_reason`]).
+    pub const TABLE: &[Nudge] = &[
+        // (a) child result / assigned: a successful turn with no disposition.
+        Nudge::TurnEnd {
+            name: "disposition",
+            reasons: &[
+                WakeReason::Assigned,
+                WakeReason::Reassigned,
+                WakeReason::Manual,
+                WakeReason::Schedule,
+                WakeReason::Resume,
+                WakeReason::BlockersResolved,
+                WakeReason::ChildrenCompleted,
+            ],
+            unhandled: |s, t, events, live_child| match t.state {
+                // Not even checked out (or reassigned).
+                TaskState::Todo => !moved(s, t),
+                // Checked out, no live child, nothing that will wake the desk.
+                TaskState::Doing => !live_child && !continued(events),
+                _ => false,
+            },
+            text: |t| {
+                format!(
+                    "Task {} needs a disposition before this turn can end. Move it — exactly one of: `task_update \
+disposition: done` with `done_because` (reviewers only) · `disposition: review {{reviewer}}` (a different desk or \
+the user) · `disposition: blocked {{on}}` with what you wait on · `disposition: continuing {{by}}` / `delegated \
+{{to}}` (something that will wake you next). If it is still `todo`, either `task_reassign` it to the agent whose \
+capabilities fit or `task_checkout` and start the child now. Write the deliverable (`task_note` report: summary, \
+findings, evidence, recommended actions) before you dispose. {THEN}",
+                    t.id
+                )
+            },
+        },
+        // Review wake: the turn must end in a transition.
+        Nudge::TurnEnd {
+            name: "review",
+            reasons: &[WakeReason::Review],
+            unhandled: |_, t, _, _| t.state == TaskState::Review,
+            text: |t| {
+                format!(
+                    "Task {} is still in `review`. Move it — one of: `task_move done` with `done_because` \
+(criteria_met against its done_when · intent_met · follow_ups_filed) · `task_move todo` / `task_update state: \
+doing` back to the owner with your notes in the thread · `task_update disposition: blocked {{on}}` with a reason. \
+Your opinion alone is not a review: the transition is. {THEN}",
+                    t.id
+                )
+            },
+        },
+        // Comment / mention / answer: the thread wants a reply.
+        Nudge::TurnEnd {
+            name: "reply",
+            reasons: &[WakeReason::Comment, WakeReason::Mention, WakeReason::Answer],
+            unhandled: |s, t, events, _| events.is_empty() && !moved(s, t),
+            text: |t| {
+                format!(
+                    "The thread of task {} got no reply from you. Answer it with `task_note` (or move the task if \
+the comment changes its disposition). {THEN}",
+                    t.id
+                )
+            },
+        },
+        // (b) time-based rows, enforced in crates/tasks.
+        Nudge::Time {
+            name: "no-progress back-off",
+            rule: "tasks::ledger::complete_wake — a wake the owner's next write leaves unchanged counts; from the \
+second in a row the task's wakes are held 2 min, doubling to 30 min (tasks.backoff_min_secs / backoff_max_secs); a \
+user comment clears it.",
+        },
+        Nudge::Time {
+            name: "stale checkout",
+            rule: "tasks::ledger::sweep — a `doing` checkout with no progress note for tasks.stale_secs (15 min) or \
+on a lost engine is orphaned; its epoch is bumped and the owner is woken `resume` once; a task that stays orphaned \
+is re-placed by task_place.",
+        },
+    ];
+
+    /// The turn-end row for a wake reason.
+    pub fn for_reason(reason: WakeReason) -> Option<&'static Nudge> {
+        TABLE.iter().find(|n| matches!(n, Nudge::TurnEnd { reasons, .. } if reasons.contains(&reason)))
+    }
 }
 
 impl Desk {
@@ -466,6 +681,7 @@ mod tests {
             updated_ms: 0,
             no_progress_count: 0,
             next_wake_after_ms: None,
+            done_when: Some("curl shows the new expiry".into()),
         };
         let wake = tasks::Wake {
             id: "w1".into(),
@@ -483,6 +699,7 @@ mod tests {
 another task until this wake is handled.\n\n\
 <task id=\"12\" state=\"todo\" owner=\"agent:ops\" reviewer=\"agent:cto\" project=\"relay\" where=\"build-A\" \
 harness=\"omp\" thread=\"doc-7\">\nThe wildcard cert expires Friday.\nRenew and reload.\n\n\
+Done when: curl shows the new expiry\n\n\
 External: https://jira/SRE-1\n</task>"
         );
         let manual = tasks::Wake {
@@ -504,19 +721,139 @@ External: https://jira/SRE-1\n</task>"
             "---\ntitle: Infrastructure\nmodel: m1\ntools: mutating\ncapabilities: k8s, networks\n---\nYou run the clusters.",
         )
         .unwrap();
-        let text = identity(&f, Some("## Done\n- x\n"));
+        let text = identity(&f, Some("## Done\n- x\n"), 3);
         assert!(text.starts_with(
             "You are Infrastructure (`karol`), an agent on this theuth roster; you report to theuth. Your charter:\n\
              You run the clusters.\n\nCapabilities (when you are the one to hand a task to): k8s, networks\n\n\
              <journal>\n## Done\n- x\n</journal>\n\nYou are the desk of agent `karol`"
         ), "{text}");
         assert!(text.contains("model m1, tools mutating"));
-        assert!(text.contains("`review | blocked | done(by reviewer) | delegated (child task exists) | continuing (a schedule, reminder or live child will wake it)`"));
-        assert!(text.contains("`blocked: \"no continuation\"` and the manager is woken"));
+        assert!(text.contains("at most 3 rounds per task"));
+        assert!(text.contains("`task_reassign {task, to, why}`"));
+        assert!(text.contains("Assigning yourself plus a please-review comment is not a review path"));
+        assert!(text.contains("`blockers_resolved`") && text.contains("`children_completed`") && text.contains("never poll"));
+        assert!(text.contains("`review | blocked | done(by reviewer) | delegated (child task exists) | continuing`"));
+        assert!(text.contains("`blocked: \"no continuation\"` and your manager is woken"));
         assert!(!text.contains("You are theuth"));
-        assert!(identity(&f, None).contains("(first episode: no journal yet)"));
+        assert!(identity(&f, None, 3).contains("(first episode: no journal yet)"));
         let child = child_identity(&f, None);
         assert!(child.starts_with("You are working for Infrastructure (`karol`), an agent on this theuth roster. Its desk"));
+    }
+
+    /// 70 DESK-PROTOCOL (e): the fit-check roster lists every other active agent with capabilities.
+    #[test]
+    fn roster_block_lists_active_others_with_capabilities() {
+        let karol = parse("karol", "---\ntitle: Infrastructure\ncapabilities: k8s clusters,\n  networks\n---\nK.").unwrap();
+        let paused = parse("mkt", "---\npaused: true\ncapabilities: ads\n---\nM.").unwrap();
+        let plain = parse("ops", "Ops.").unwrap();
+        let files = [karol.clone(), paused, plain.clone()];
+        let block = roster_block("theuth", files.iter());
+        assert!(block.contains("- `karol` (Infrastructure): k8s clusters, networks"), "{block}");
+        assert!(block.contains("- `ops` (ops): (no capabilities stated)"), "{block}");
+        assert!(!block.contains("mkt"), "paused agents are not offered: {block}");
+        assert!(block.contains("`task_reassign`"));
+        assert!(roster_block("karol", [karol].iter()).contains("(no other active agent)"));
+    }
+
+    /// 70 DESK-PROTOCOL 3: the table's rows judge a turn end — an assigned wake
+    /// left in `todo` or in `doing` with nothing to wait on is unhandled; a
+    /// live child or a continuation is not; a review wake needs the transition;
+    /// a comment wake needs a reply.
+    #[test]
+    fn nudge_table_judges_turn_ends() {
+        use tasks::{TaskEvent, TaskState as S, WakeReason as R};
+        let mut t = tasks::Task {
+            id: tasks::TaskId("12".into()),
+            title: "Check cluster health".into(),
+            brief: String::new(),
+            owner: "agent:karol".parse().unwrap(),
+            state: S::Todo,
+            reviewer: None,
+            blockers: vec![],
+            blocks: vec![],
+            parent: None,
+            project: None,
+            where_: None,
+            harness: None,
+            external: vec![],
+            thread: None,
+            checkout: None,
+            schedule: None,
+            created_by: "user".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            no_progress_count: 0,
+            next_wake_after_ms: None,
+            done_when: None,
+        };
+        let id = t.id.clone();
+        let wake = move |reason| tasks::Wake {
+            id: "w".into(),
+            agent: "karol".into(),
+            task: Some(id.clone()),
+            reason,
+            key: String::new(),
+            count: 1,
+            claimed_by: None,
+            created_ms: 0,
+        };
+        let serving = |reason, state, owner: &str| Serving {
+            wake: wake(reason),
+            state: Some(state),
+            owner: Some(owner.parse().unwrap()),
+            events: 0,
+            nudged: false,
+            rounds: 0,
+        };
+        let ev = |field: &str, after: &str| TaskEvent {
+            at_ms: 0,
+            actor: "agent:karol".into(),
+            session: None,
+            field: field.into(),
+            before: None,
+            after: Some(after.into()),
+        };
+        let judge = |s: &Serving, t: &tasks::Task, events: &[TaskEvent], live: bool| match nudges::for_reason(s.wake.reason) {
+            Some(nudges::Nudge::TurnEnd { unhandled, text, .. }) => (unhandled(s, t, events, live), text(t)),
+            _ => panic!("no row for {:?}", s.wake.reason),
+        };
+
+        // assigned: still todo → nudge names the four options
+        let s = serving(R::Assigned, S::Todo, "agent:karol");
+        let (u, text) = judge(&s, &t, &[], false);
+        assert!(u);
+        for opt in ["disposition: done", "disposition: review {reviewer}", "disposition: blocked {on}", "disposition: continuing {by}"] {
+            assert!(text.contains(opt), "{text}");
+        }
+        assert!(text.contains(nudges::THEN));
+        // reassigned → handled
+        t.owner = "agent:ops".parse().unwrap();
+        assert!(!judge(&s, &t, &[], false).0);
+        t.owner = "agent:karol".parse().unwrap();
+        // checked out, child running → handled; child gone, nothing filed → unhandled
+        t.state = S::Doing;
+        assert!(!judge(&s, &t, &[], true).0);
+        assert!(judge(&s, &t, &[], false).0, "child returned, no disposition: the follow-through nudge");
+        assert!(!judge(&s, &t, &[ev("disposition", "delegated:77")], false).0);
+        assert!(!judge(&s, &t, &[ev("disposition", "continuing:nightly")], false).0);
+        // a disposition moved it → handled
+        t.state = S::Review;
+        assert!(!judge(&s, &t, &[], false).0);
+
+        // review wake: only the transition counts
+        let s = serving(R::Review, S::Review, "agent:ops");
+        assert!(judge(&s, &t, &[ev("comment", "looks fine to me")], false).0, "an opinion is not a review");
+        t.state = S::Done;
+        assert!(!judge(&s, &t, &[], false).0);
+
+        // comment wake: any event by the agent is a reply
+        t.state = S::Doing;
+        let s = serving(R::Comment, S::Doing, "agent:karol");
+        assert!(judge(&s, &t, &[], false).0);
+        assert!(!judge(&s, &t, &[ev("comment", "answered")], false).0);
+
+        // the time rows exist for the ruling
+        assert!(nudges::TABLE.iter().filter(|n| matches!(n, nudges::Nudge::Time { .. })).count() >= 2);
     }
 
     #[test]
@@ -528,6 +865,7 @@ External: https://jira/SRE-1\n</task>"
             working: false,
             primed: true,
             model: None,
+            serving: None,
         };
         let idle = 21_600;
         assert!(!d.idle_due(1_000_000 + idle * 1000, idle), "exactly the limit is not over it");

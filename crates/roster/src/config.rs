@@ -15,6 +15,9 @@ pub struct RosterConfig {
     pub episode_context_pct: u8,
     /// Ceiling on `roster/journal/<name>.md` (67 §6.2).
     pub journal_max_bytes: u64,
+    /// Follow-up rounds (child sessions) a desk may spend on one task per
+    /// episode before it must write the deliverable and dispose (70 DESK-PROTOCOL 2).
+    pub max_rounds: u32,
 }
 
 impl Default for RosterConfig {
@@ -24,6 +27,7 @@ impl Default for RosterConfig {
             episode_idle_secs: 21_600,
             episode_context_pct: 60,
             journal_max_bytes: 8192,
+            max_rounds: 3,
         }
     }
 }

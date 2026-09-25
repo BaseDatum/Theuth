@@ -338,7 +338,7 @@ mod tests {
             assert!(p.contains("## Hiring\n"), "{p}");
             assert!(p.contains("`agent_draft`") && p.contains("`agent_put`") && p.contains("Never tell the user to write or edit a file"));
         }
-        let manual = crate::desk::manual(&file::default_agent(&dir));
+        let manual = crate::desk::manual(&file::default_agent(&dir), 3);
         assert!(manual.contains("`agent_propose`") && !manual.contains("agent_put"));
     }
 }

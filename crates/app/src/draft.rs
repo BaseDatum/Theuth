@@ -41,6 +41,10 @@ pub struct Draft {
     /// What this one waits on: task ids, `decision:<id>`, `person:<name>`.
     #[serde(default)]
     pub blocked_by: Vec<String>,
+    /// Acceptance criteria: one to three checkable lines; drafted from the brief when the user did not
+    /// state them. The user sees and can correct them before approval.
+    #[serde(default)]
+    pub done_when: Option<String>,
 }
 
 /// Arguments of `task_draft`.
@@ -67,7 +71,8 @@ impl Tool for TaskDraftTool {
     fn description(&self) -> String {
         "Propose tasks for the user's approval before anything is created. When the user describes work \
          (\"we need to…\", \"can someone…\", a plan with several pieces), split it into tasks and call this \
-         with 1..n drafts {title, brief, owner?, project?, where?, blocks?, blocked_by?}. Each renders as a card \
+         with 1..n drafts {title, brief, done_when, owner?, project?, where?, blocks?, blocked_by?} — `done_when` \
+         is the acceptance criteria, drafted from the brief when the user did not state them. Each renders as a card \
          with three buttons: Add to backlog, Start now, Discard. Then STOP and wait: the press arrives as the \
          user's next message (it begins `[app task-drafts …]`) naming the draft id and the choice — \
          `add to backlog` → `task_create` with `state: backlog`; `start now` → `task_create` with `state: todo`; \
@@ -153,9 +158,13 @@ pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
             meta.push(format!("blocks {}", d.blocks.join(", ")));
         }
         let brief = if d.brief.trim().is_empty() { "_No brief._" } else { d.brief.trim() };
+        let brief = match d.done_when.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => format!("{brief}\n\n**Done when:** {w}"),
+            None => brief.to_owned(),
+        };
         out.push_str(&format!("{c} = Card([{c}_head, {c}_brief, {c}_meta, {c}_buttons])\n"));
         out.push_str(&format!("{c}_head = CardHeader({}, {})\n", lit(d.title.trim()), lit(&format!("draft {id}"))));
-        out.push_str(&format!("{c}_brief = TextContent({})\n", lit(brief)));
+        out.push_str(&format!("{c}_brief = TextContent({})\n", lit(&brief)));
         out.push_str(&format!("{c}_meta = TextContent({}, \"small\")\n", lit(&meta.join(" · "))));
         out.push_str(&format!("{c}_buttons = Buttons([{c}_backlog, {c}_start, {c}_discard])\n"));
         out.push_str(&format!(
