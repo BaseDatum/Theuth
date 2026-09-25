@@ -1,5 +1,6 @@
-import { expect, test } from 'vitest'
-import { isCommand } from './slash'
+import { expect, test, vi } from 'vitest'
+import type { Api } from '@/rpc/api'
+import { type Ctx, isCommand, run } from './slash'
 
 const SKILLS = ['caveman', 'ponytail']
 
@@ -24,4 +25,15 @@ test('skill index not loaded: a plain word still runs, a path-like word is text'
   expect(isCommand('/Users/x/y is broken', null)).toBe(false)
   expect(isCommand('/foo.txt is broken', null)).toBe(false)
   expect(isCommand('/', null)).toBe(false)
+})
+
+test('bare /skills and /mcp open the Library pages, carrying the chat they came from', async () => {
+  const navigate = vi.fn().mockResolvedValue(undefined)
+  const ctx = { api: {} as Api, session: 'abc', parent: null, navigate, reload: async () => {} } as unknown as Ctx
+  await run('/skills', ctx)
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: { session: 'abc' } })
+  await run('/mcp', ctx)
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/tools', search: { session: 'abc' } })
+  await run('/skills', { ...ctx, session: null })
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/skills', search: {} })
 })
