@@ -18,14 +18,25 @@ use kameo::actor::{ActorRef, Spawn};
 use tools::{Tool, ToolCx};
 use yrs::{Doc, Text, Transact};
 
-/// Both tests register the one `DOCUMENT_ACTOR` name: one at a time.
+/// Every test registers the one `DOCUMENT_ACTOR` name: one at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MD: &str = "---\ntype: fact\ntitle: A fact\ntags:\n  - x\n---\nhello there\n\nsecond block\n";
 
-fn helper_bin() -> Option<std::path::PathBuf> {
-    let p = helper::helper_path();
-    p.is_file().then_some(p)
+/// The compiled helper, or return from the test loudly. Cargo has no runtime `#[ignore]`: the test
+/// counts as `ok`, so the skip is shouted (`cargo test -- --nocapture` shows it).
+macro_rules! helper_or_skip {
+    () => {{
+        let p = helper::helper_path();
+        if !p.is_file() {
+            eprintln!(
+                "SKIPPED: no documents helper at {} — run `just documents-helper` or set THEUTH_DOCUMENTS_HELPER",
+                p.display()
+            );
+            return;
+        }
+        p
+    }};
 }
 
 async fn start(data_dir: &Path, bin: &Path) -> ActorRef<DocumentActor> {
@@ -48,6 +59,9 @@ async fn start_in(rt: runtime::Runtime, data_dir: &Path, bin: &Path, cfg: Docume
         ..cfg
     };
     let actor = DocumentActor::spawn(DocumentActor::new(store, h, cfg, rt));
+    // A test that panicked left its actor registered (the runtime drops without `on_stop`): one
+    // failure must not cascade into `NameAlreadyRegistered` for every later test.
+    kameo::registry::ACTOR_REGISTRY.lock().unwrap().remove(DOCUMENT_ACTOR);
     actor.register(DOCUMENT_ACTOR).unwrap();
     let a = actor.clone();
     tokio::spawn(async move {
@@ -104,10 +118,7 @@ async fn stop(actor: ActorRef<DocumentActor>) {
 #[tokio::test]
 async fn knowledge_document_round_trip_export_import_restart() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let derived = dir.path().join("knowledge/facts/a.md");
     std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
@@ -336,10 +347,7 @@ async fn next_event(sub: &mut tokio::sync::mpsc::Receiver<DocEvent>) -> DocEvent
 async fn agent_tools_edit_attribute_and_undo() {
     let _serial = SERIAL.lock().await;
     let _ = tracing_subscriber::fmt().with_env_filter("document=debug").with_test_writer().try_init();
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let derived = dir.path().join("knowledge/facts/b.md");
     std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
@@ -610,10 +618,7 @@ async fn agent_tools_edit_attribute_and_undo() {
 async fn notes_create_list_rename_delete() {
     let _serial = SERIAL.lock().await;
     let _ = tracing_subscriber::fmt().with_env_filter("document=debug").with_test_writer().try_init();
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start(dir.path(), &bin).await;
     let owner = Principal::Owner { device: None };
@@ -699,10 +704,7 @@ async fn notes_create_list_rename_delete() {
 #[tokio::test]
 async fn sharing_links_join_roles_demote_revoke() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start(dir.path(), &bin).await;
     let note = actor
@@ -716,6 +718,9 @@ async fn sharing_links_join_roles_demote_revoke() {
     let doc = note.id.clone();
     let owner = Principal::Owner { device: Some(1) };
     let mut owner_sub = actor.ask(Subscribe { doc: doc.clone(), by: owner.clone() }).await.unwrap();
+    // The note's own creation export (debounced) lands at a load-dependent point in the stream; wait it
+    // out so the asserts below see only what the sharing calls fan out.
+    until_exported(&mut owner_sub).await;
 
     // A link: the secret comes back once; the store keeps its hash and the wire copy has none.
     let (link, secret) = actor
@@ -771,10 +776,11 @@ async fn sharing_links_join_roles_demote_revoke() {
         .ask(ApplyUpdate { doc: doc.clone(), update: scratch_update("A"), by: member.clone() })
         .await
         .unwrap();
-    assert!(matches!(
-        next_event(&mut owner_sub).await,
-        DocEvent::Update { by: Who::Member { pub_, name }, .. } if pub_ == guest_pub && name == "Guest A"
-    ));
+    let ev = next_event(&mut owner_sub).await;
+    assert!(
+        matches!(&ev, DocEvent::Update { by: Who::Member { pub_, name }, .. } if *pub_ == guest_pub && name == "Guest A"),
+        "{ev:?}"
+    );
     // updates.log tag 4 carries the static.
     let log = std::fs::read(dir.path().join(format!("documents/{doc}/updates.log"))).unwrap();
     let recs: Vec<(u8, &[u8])> = store::records(&log).collect();
@@ -948,10 +954,7 @@ fn block_text_update(state: &[u8], id: &str, text: &str) -> String {
 #[tokio::test]
 async fn member_text_is_labelled_for_the_agent() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start(dir.path(), &bin).await;
     let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
@@ -1040,10 +1043,7 @@ async fn member_text_is_labelled_for_the_agent() {
 #[tokio::test]
 async fn limits_doc_size_update_size_awareness_cap() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start_with(dir.path(), &bin, DocumentsConfig { max_doc_bytes: 4096, ..DocumentsConfig::default() }).await;
     let note = actor
@@ -1104,10 +1104,7 @@ fn note_bytes(data_dir: &Path, doc: &document::DocId) -> usize {
 #[tokio::test]
 async fn idle_unload_compacts_the_log_and_reloads_identically() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start_with(dir.path(), &bin, DocumentsConfig { idle_unload_secs: 1, max_open_docs: 1, ..DocumentsConfig::default() }).await;
     let owner = Principal::Owner { device: Some(1) };
@@ -1161,10 +1158,7 @@ async fn idle_unload_compacts_the_log_and_reloads_identically() {
 #[tokio::test]
 async fn sharing_off_and_disabled() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     // `on`: a link and a member.
     let actor = start(dir.path(), &bin).await;
@@ -1228,10 +1222,7 @@ async fn until_exported(sub: &mut tokio::sync::mpsc::Receiver<DocEvent>) {
 #[tokio::test]
 async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
@@ -1273,12 +1264,13 @@ async fn owner_hears_an_export_after_the_quiet_period_or_when_the_editor_leaves(
 #[tokio::test]
 async fn hub_gate_follows_the_lease() {
     let _serial = SERIAL.lock().await;
-    let Some(bin) = helper_bin() else {
-        eprintln!("skipped: documents helper not built");
-        return;
-    };
+    let bin = helper_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let actor = start(dir.path(), &bin).await;
+    // As the plugin at start (lib.rs): take up the hub duties, so the loss below has duties to stop.
+    // `sync_hub` only unloads on a (holding → not) flip it saw start; a fresh actor holds by default
+    // (`Follower::default()`) but has taken nothing up until `Reconcile`.
+    actor.tell(document::hub::Reconcile).await.unwrap();
     let owner = Principal::Owner { device: Some(1) };
     let id = actor.ask(CreateNote { title: "H".into(), markdown: "one\n".into(), by: owner.clone() }).await.unwrap().id;
     let mut sub = actor.ask(Subscribe { doc: id.clone(), by: Principal::Owner { device: Some(9) } }).await.unwrap();
