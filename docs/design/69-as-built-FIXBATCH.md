@@ -1,0 +1,54 @@
+# FIXBATCH — as built (eight closures from the 67/68/69 loose ends)
+
+*Branch `fix/loose-ends-batch-2026-09-25`, worktree `theuth-fixbatch`, 2026-09-25, on top of `9db9ef9`. Brief: `/tmp/69/omp-FIXBATCH.md`.*
+
+## What was built, per commit
+
+| item | commit | change | before → after |
+|---|---|---|---|
+| B | `26fe5e2 fix(mesh): mesh_meta defaults stamp at zero so an explicit rename wins across engines` | `mesh/src/store.rs::meta_default` drops its `at_ms` argument and stamps `Hlc{wall_ms: 0, counter: 0, origin: me}`; `ON CONFLICT DO NOTHING` unchanged; `meta_set` unchanged (stamps now). Caller `mesh/src/lib.rs` updated. | Before: a default was stamped at the engine's `first_seen_ms`, so a fresh engine's default (first seen *after* the rename) out-ranked an explicit `meta_set` under LWW — the rename lost everywhere. After: any `meta_set` at a real time beats every default; two defaults tie on the clock and the larger origin id wins (the oldest-wins intent among defaults is dropped; Z called it cosmetic). Test `an_explicit_rename_beats_a_later_default_across_engines`: rename on A, default on B later, batches crossed via `ReplicaHandle::flush`/`Engine::apply` → both read `renamed`. |
+| C | `99e13a2 fix(document): a receiver adopting a hub snapshot leaves the docs row alone` | `document/src/store.rs::mirror_apply` snapshot branch: `touch_if_changed` moves inside the real-merge arm; the adopt arm writes the file, the log truncation and the projection only. | Before (observed by re-adding the touch and running the extended test): receiver's `docs` row `(updated_ms, bytes)` went `(41, 3)` → `(1, 25)`, i.e. one two-column replicated batch per receiver per edit (Z inv 10: hub 4 / non-hubs 1). After: row stays `(41, 3)`; `bytes`/`updated_ms` arrive with the hub's own row. Test `catching_up_ships_no_rows_and_a_real_merge_ships_one` extended with the hub's row on B and the assertion. |
+| D | `988b5f2 fix(theuth): silence iroh's pkarr publisher warn loop in the default log filter` | `crates/theuth/src/main.rs` daemon log setup: `.add_directive("iroh::address_lookup::pkarr=error")` beside the existing `info`. | Target name from the vendored source, not a live run (the desktop/engine was not run — working rule): `iroh-1.2.0/src/address_lookup/pkarr.rs:391` `warn!(err, url, ?retry_after, %failed_attempts, "Failed to publish to pkarr")` inside span `pkarr_publish`, retried every `failed_attempts` seconds (Z's 1–13 s). The event's target is the module path `iroh::address_lookup::pkarr`. The relay client (`iroh::socket::transports::relay::actor`) also warns on connect failure but backs off and stops at "retries exceeded"; Z did not observe it as noise, so it is left at warn. `iroh_dns`'s pkarr client has no warn/error sites. `RUST_LOG` still overrides (more specific directive wins). |
+| E | `8e67302 fix(schedule): ListSchedules recomputes a stale next on a non-hub` | `schedule/src/lib.rs::Schedule::info`: a `next` in the past is recomputed as `next_of(spec, now, None)` (Cron → next occurrence after now; Every → now, the hub's last fire being unknown here; At → `None` once past); `None` stays (ended loop, disabled, one-shot done). | Before: a non-hub kept the `next` it was armed with at boot forever (it never fires), so `list_schedules` showed a time in the past. After: fresh from the clause. Recompute is gated on staleness, not on hub state — on the hub `next` is fresh by construction (the ticker sleeps until it) so nothing changes there. Test `list_recomputes_a_stale_next_on_a_non_hub`. |
+| G | `406370f fix(tasks): hlc stamps are replica::Hlc text, so the replica keeps a task's own stamp` | `tasks/src/store.rs::hlc` builds `replica::Hlc{wall_ms, counter, origin}.to_text()` (`<wall hex16>-<counter hex8>-<origin>`) instead of `wall:counter:origin`. Origin still `local` until `SetEngine`. | Before: `Hlc::parse` returned `None` and `Engine::capture_locked` re-stamped every tasks/wakes/answered row with its own clock. After: the task's stamp is kept and observed. Test `hlc_text_round_trips_through_replica`. Rows written before this change keep their old text; the replica re-stamps them once as before — no migration. |
+| H | `194aa94 fix(tasks): the local engine goes by mesh.name in placement and agent: harness@engine` | `mesh::set_self_name`/`mesh::self_name()` (process-global `RwLock<String>`, set by the mesh plugin at start; empty → hostname) beside `is_hub`. `agent/src/peers.rs::canonical_agent` compares the engine part to `mesh::self_name()`. `tasks/src/tools.rs::engines` names this engine by `MeshStatus.self_name` (already on the status) instead of the hostname. | Before: `agent: "omp@build-A"` on an engine configured `mesh.name: build-A` on host `mac-mini` was treated as a stranger (`Some("omp@build-A")` → spawn error); `task_place`'s engine list called the local engine by hostname while peers knew it by `mesh.name`. After: both use the configured name. Test `engine_resolves_by_name_then_unique_id_prefix` extended: with `set_self_name("build-me")`, `omp@build-me` → `omp`, `build-me` → local native child, `omp@<hostname>` is now a stranger. `crates/rpc/src/acp.rs::serve_mesh` (named in 67 2.3) needed nothing: it registers *peers* by their `p.name`, never the local engine. |
+| I | `1b2b254 fix(relay): example bench renamed relay_bench` | `crates/relay/examples/bench.rs` → `relay_bench.rs`; `[[example]]` in `crates/relay/Cargo.toml`; the file's usage line; `docs/design/31-link.md:1007`. | relay had 3 references, decision had 6 (`57-decision.md` ×4, `lib.rs` ×2, `engine.rs`) plus its own usage line — relay's renamed. |
+| J | `08ac391 fix(tools): pty tests query_responder and tty_holder run under zsh and bash alike` | `query_responder`: `"${r#*\[}"` — the `[` is escaped so zsh does not read `*[` as a broken glob; still runs under `$SHELL`. `tty_holder_outliving_exit_keeps_an_operation_open`: its `StartTool` is built with `pty_shell: Some("/bin/sh")` — whether a `&` child of a `-c` shell outlives the exit holding the tty is shell behaviour, and the test is about the ledger. Production `platform::pty_command` untouched. | Before (`SHELL=/bin/zsh cargo test -p tools --lib pty::`): `25 passed; 2 failed` — `query_responder` panicked at `pty.rs:3064` with screen `zsh:1: bad pattern: *[`; `tty_holder…` panicked at `pty.rs:3377` `holder operation admitted` (no holder under zsh). After: `SHELL=/bin/zsh` → `27 passed`; `SHELL=/bin/bash` → `27 passed`. |
+
+Docs: `docs/design/67-loose-ends.md` rows 2.3 and 2.5 marked closed (in the G commit); `docs/design/69-as-built-Z.md` found-not-fixed bullets for B, C, D marked closed (in the docs commit).
+
+## Deviations from the brief
+
+1. **B: oldest-wins among defaults is gone.** The brief asked for "default only when absent"; stamping at zero is the only stamp that loses to every real-time `meta_set` regardless of engine age. Among defaults the tie-break is the origin id. Z rated the among-defaults choice cosmetic.
+2. **E: recompute is gated on staleness (`next < now`), not unconditional.** An unconditional recompute would revive `next` for an ended loop (`end()` sets `None`) and a fired one-shot. The brief's "regardless of hub state" is honoured: the check does not read `mesh::is_hub()`.
+3. **D: target names come from the vendored iroh 1.2.0 source**, not from an observed log line — the working rules forbid running the desktop and the relay is reachable from this Mac anyway. Only the pkarr publisher is demoted; the relay actor's warns are left (bounded by its retry cap).
+4. **H adds a mesh global** (`self_name`/`set_self_name`) rather than threading config into the agent crate: `canonical_agent` is sync and runs in a tool call; the pattern mirrors `is_hub`/`set_hub`. `crates/agent/src/peers.rs` and `crates/mesh/src/lib.rs` are outside the tasks crate — disclosed here (allow-list clause).
+5. **Working rule "cargo check at most once per commit"**: the brief's last line asks for `cargo test -p <crate> --lib` per item, so those ran instead (mesh, document, schedule, tasks, agent [filtered], tools ×3 incl. the before-run). For C the before-evidence came from temporarily re-adding the touch, running the one test, and `git checkout` of the file — no commit.
+6. Report paths: the brief names both `/tmp/67/report-FIXBATCH.md`/`docs/design/67-as-built-FIXBATCH.md` (template) and `/tmp/69/report-FIXBATCH.md` (this batch). Written to `/tmp/69/report-FIXBATCH.md` and `docs/design/69-as-built-FIXBATCH.md`; no `/tmp/67` file.
+7. No TS touched; `bunx tsc` not run.
+
+## Not built
+
+- No migration of pre-G `tasks`/`wakes`/`answered` rows to the new hlc text (the replica re-stamps them once, as before).
+- `agent/src/communication/mesh.rs::engine_names` falls back to the hostname when the mesh actor is absent — not changed (it already prefers `MeshStatus.self_name` when the actor is up; out of brief).
+
+## Tests written
+
+- `crates/mesh/src/store.rs`: `meta_default_keeps_the_first_value_and_stamps_zero` (renamed/retargeted from `…stamps_old`), `an_explicit_rename_beats_a_later_default_across_engines`.
+- `crates/document/src/store.rs`: `catching_up_ships_no_rows_and_a_real_merge_ships_one` extended (hub's `docs` row on the receiver, untouched by the adopt).
+- `crates/schedule/src/lib.rs`: `hub_tests::list_recomputes_a_stale_next_on_a_non_hub`.
+- `crates/tasks/src/store.rs`: `tests::hlc_text_round_trips_through_replica`.
+- `crates/agent/src/peers.rs`: `engine_resolves_by_name_then_unique_id_prefix` extended (`mesh.name` set).
+- `crates/tools/src/pty.rs`: the two tests made shell-independent (no new test).
+
+## Verification (exact results)
+
+- `cargo test -p mesh --lib` → `ok. 20 passed`.
+- `cargo test -p document --lib catching_up` → `ok. 1 passed` (with the old touch re-added: `FAILED … left: (1, 25) right: (41, 3)`).
+- `cargo test -p schedule --lib hub_tests` → `ok. 4 passed`.
+- `cargo test -p tasks --lib` → `ok. 36 passed`.
+- `cargo test -p agent --lib engine_resolves` → `ok. 1 passed`.
+- `SHELL=/bin/zsh cargo test -p tools --lib pty::` → before `FAILED. 25 passed; 2 failed`; after `ok. 27 passed`. `SHELL=/bin/bash …` → `ok. 27 passed`.
+- `cargo check --workspace --tests` → first run: `error: couldn't read crates/nodes/src/../../../bindings/methods.json` — the gitignored `bindings/` (output of `just ts`) does not exist in a fresh worktree; copied `../theuth/bindings` in (environment only, nothing committed). Second run: `Finished dev profile [unoptimized + debuginfo] target(s) in 47.51s`, two pre-existing warnings (`unused variable: vlink/elink`, `crates/document/tests/actor.rs:774,806`, untouched by this batch) — fixed with a `_` prefix in `fix(document): two unused-variable warnings in tests/actor.rs`; `cargo check -p document --tests` after it: `Finished dev profile [unoptimized + debuginfo] target(s) in 1m 07s`, no warnings. No `output filename collision` line (item I).
+
+DONE FIXBATCH

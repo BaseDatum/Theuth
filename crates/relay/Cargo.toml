@@ -36,8 +36,8 @@ tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 
 [[example]]
-name = "bench"
-path = "examples/bench.rs"
+name = "relay_bench"
+path = "examples/relay_bench.rs"
 
 [lints]
 workspace = true

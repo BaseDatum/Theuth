@@ -148,15 +148,15 @@ pub(crate) fn resolve_node(nodes: &Nodes, engine: &str) -> Option<String> {
 
 /// `agent` with its engine part replaced by the registered node name
 /// ([`resolve_node`]); unchanged when it names no node (a local harness).
-/// `None`: the engine is *this* one (its hostname, as the mesh's peers and a
-/// task's `where` name it) and no node — a local child, native or the named
-/// local harness (`omp@<this host>` → `omp`).
+/// `None`: the engine is *this* one (its `mesh.name`, hostname by default, as
+/// the mesh's peers and a task's `where` name it) and no node — a local child,
+/// native or the named local harness (`omp@<this engine>` → `omp`).
 pub(crate) fn canonical_agent(nodes: &Nodes, agent: &str) -> Option<String> {
     match parse_agent(agent) {
         Ok((harness, engine)) => match (harness, resolve_node(nodes, engine)) {
             (Some(h), Some(node)) => Some(format!("{h}@{node}")),
             (None, Some(node)) => Some(node),
-            (h, None) if engine == platform::process::hostname() => h.map(str::to_owned),
+            (h, None) if engine == mesh::self_name() => h.map(str::to_owned),
             (_, None) => Some(agent.to_owned()),
         },
         Err(_) => Some(agent.to_owned()),
@@ -786,8 +786,14 @@ mod tests {
         assert_eq!(canonical_agent(&nodes, "omp").as_deref(), Some("omp"), "a local harness passes through");
         assert_eq!(canonical_agent(&nodes, "a@b@c").as_deref(), Some("a@b@c"), "bad input is the spawn's error");
         let me = platform::process::hostname();
-        assert_eq!(canonical_agent(&nodes, me), None, "this engine → a local native child");
+        assert_eq!(canonical_agent(&nodes, me), None, "this engine → a local native child (hostname by default)");
         assert_eq!(canonical_agent(&nodes, &format!("omp@{me}")).as_deref(), Some("omp"));
+        // 67 2.3: with `mesh.name` set, the local engine goes by that name, not the hostname.
+        mesh::set_self_name("build-me");
+        assert_eq!(canonical_agent(&nodes, "build-me"), None);
+        assert_eq!(canonical_agent(&nodes, "omp@build-me").as_deref(), Some("omp"));
+        assert_eq!(canonical_agent(&nodes, &format!("omp@{me}")).as_deref(), Some(format!("omp@{me}").as_str()), "the hostname is a stranger now");
+        mesh::set_self_name("");
     }
 
     /// `tools` parses to a cap, `destructive` and absence are no cap, an

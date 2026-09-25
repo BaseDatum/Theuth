@@ -21,8 +21,8 @@ pub fn set_hlc_origin(origin: &str) {
     let _ = HLC_ORIGIN.set(origin.to_owned());
 }
 
-/// Next HLC stamp as text `wall_ms:counter:origin` — the same order as
-/// `replica::Hlc`'s derived `Ord`, zero-padded so text order is HLC order.
+/// Next HLC stamp as [`replica::Hlc::to_text`] (67 2.5: one format, so the
+/// replica keeps the task's own stamp instead of re-stamping the row on capture).
 pub fn hlc(now_ms: u64) -> String {
     let mut g = HLC.lock().unwrap_or_else(|e| e.into_inner());
     if now_ms > g.0 {
@@ -30,12 +30,12 @@ pub fn hlc(now_ms: u64) -> String {
     } else {
         g.1 += 1;
     }
-    format!(
-        "{:013}:{:05}:{}",
-        g.0,
-        g.1,
-        HLC_ORIGIN.get().map_or("local", String::as_str)
-    )
+    replica::Hlc {
+        wall_ms: g.0,
+        counter: g.1,
+        origin: replica::PeerId(HLC_ORIGIN.get().map_or("local", String::as_str).to_owned()),
+    }
+    .to_text()
 }
 
 /// Handle to `<data_dir>/tasks.sqlite`. Cheap to clone.
@@ -420,5 +420,21 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(r.rows_affected() == 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 67 2.5: the stamp parses as a `replica::Hlc` (so the replica keeps it) and
+    /// two stamps in one millisecond stay ordered by the counter.
+    #[test]
+    fn hlc_text_round_trips_through_replica() {
+        let a = super::hlc(1_700_000_000_000);
+        let b = super::hlc(1_700_000_000_000);
+        let pa = replica::Hlc::parse(&a).expect("parseable");
+        let pb = replica::Hlc::parse(&b).expect("parseable");
+        assert_eq!(pa.to_text(), a);
+        assert!(pa < pb, "{a} < {b}");
+        assert_eq!(pa.origin, pb.origin);
     }
 }

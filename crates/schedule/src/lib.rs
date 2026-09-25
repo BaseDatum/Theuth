@@ -1091,8 +1091,16 @@ impl Schedule {
     }
 
     /// [`ScheduleInfo`] for one entry; `runs` asks the store when the file
-    /// has a stop (33 §3.2).
+    /// has a stop (33 §3.2). A `next` in the past is stale — a non-hub never
+    /// fires, so its entries keep the `next` they were armed with — and is
+    /// recomputed from the clause as at now (`None` stays: ended, disabled,
+    /// one-shot done).
     async fn info(&self, name: &str, e: &Entry) -> ScheduleInfo {
+        let now = Local::now();
+        let next = match e.next {
+            Some(t) if t < now => next_of(&e.spec, now, None),
+            other => other,
+        };
         let spec = e.spec.as_ref().ok();
         let is_loop = spec.is_some_and(|s| s.until.is_some() || s.max_runs.is_some());
         ScheduleInfo {
@@ -1101,7 +1109,7 @@ impl Schedule {
             describe: spec.map_or_else(|| "—".to_owned(), |s| s.when.describe()),
             enabled: spec.is_some_and(|s| s.enabled),
             quiet: spec.is_some_and(|s| s.quiet),
-            next: e.next,
+            next,
             last: e.last,
             last_result: e.last_result.clone(),
             session: e.session,
@@ -1466,6 +1474,33 @@ mod hub_tests {
         assert!(e.last.is_none() && e.next.is_some_and(|t| t <= now));
         assert!(!s.hub);
         assert!(s.store.history("n", 5).await.unwrap().is_empty());
+    }
+
+    /// FIXBATCH E: a non-hub's entries keep the `next` they were armed with (it never fires);
+    /// `ListSchedules` recomputes a past `next` from the clause, and leaves `None` alone.
+    #[tokio::test]
+    async fn list_recomputes_a_stale_next_on_a_non_hub() {
+        let _g = hub_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let cron = "---\ncron: 0 9 * * *\nagent: ops\n---\ngo\n";
+        let (mut s, _rec) = actor(dir.path(), &[("c", cron), ("e", DUE), ("ended", cron)]).await;
+        mesh::set_hub(false);
+        let now = Local::now();
+        let yesterday = now - chrono::Duration::days(1);
+        s.entries.get_mut("c").unwrap().next = Some(yesterday);
+        s.entries.get_mut("e").unwrap().next = Some(yesterday);
+        s.entries.get_mut("ended").unwrap().next = None;
+        s.tick(now).await;
+        assert_eq!(s.entries["c"].next, Some(yesterday), "the non-hub does not re-arm");
+        let mut list = Vec::new();
+        for (name, e) in &s.entries {
+            list.push(s.info(name, e).await);
+        }
+        mesh::set_hub(true);
+        let by = |n: &str| list.iter().find(|i| i.name == n).unwrap().next;
+        assert!(by("c").is_some_and(|t| t > now), "cron: next occurrence after now, {:?}", by("c"));
+        assert!(by("e").is_some_and(|t| t >= now), "every: now when the hub's last fire is unknown");
+        assert_eq!(by("ended"), None, "an ended entry stays ended");
     }
 
     #[tokio::test]

@@ -74,6 +74,26 @@ pub fn is_hub() -> bool {
     HUB.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// This engine's display name once the plugin read `mesh.name` (67 §8); empty
+/// until then. Read by plugins naming the local engine in text (`agent:
+/// "<harness>@<engine>"`, `tasks::place`) without a round trip to the actor.
+static SELF_NAME: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The mesh plugin sets this at start (and a test may, to name the engine).
+pub fn set_self_name(name: &str) {
+    *SELF_NAME.write().unwrap_or_else(|p| p.into_inner()) = name.to_owned();
+}
+
+/// This engine's name as its peers see it: `mesh.name`, else the hostname.
+pub fn self_name() -> String {
+    let n = SELF_NAME.read().unwrap_or_else(|p| p.into_inner());
+    if n.is_empty() {
+        platform::process::hostname().to_owned()
+    } else {
+        n.clone()
+    }
+}
+
 /// `ask` → `Result<MeshStatus, String>`: this engine, its peers, the lease.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Status;
@@ -553,6 +573,7 @@ impl runtime::Plugin for MeshPlugin {
             "" => platform::process::hostname().to_owned(),
             n => n.to_owned(),
         };
+        set_self_name(&name);
         let net = match Net::bind(
             net::BindOpts {
                 secret: identity.secret,
@@ -628,7 +649,7 @@ impl runtime::Plugin for MeshPlugin {
 
         // The replica plugin starts after this one: attach when it is up (bounded — a slimmer
         // plugin set may never start it), then write the start-up rows.
-        let (c, name, first_seen, stats) = (ctx.clone(), net.name.clone(), identity.first_seen_ms, self_stats);
+        let (c, name, stats) = (ctx.clone(), net.name.clone(), self_stats);
         tokio::spawn(async move {
             let replica =
                 tokio::time::timeout(ATTACH_WAIT, c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)).await;
@@ -638,7 +659,7 @@ impl runtime::Plugin for MeshPlugin {
                     Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
                 }
             }
-            if let Err(e) = c.store.meta_default("name", &name, first_seen).await {
+            if let Err(e) = c.store.meta_default("name", &name).await {
                 tracing::warn!("mesh: mesh_meta name: {e:#}");
             }
             c.write_stats(stats).await;

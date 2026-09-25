@@ -479,19 +479,21 @@ impl Store {
                     return Ok(Applied::Unchanged);
                 }
                 Counters::bump(&self.counters.merged);
-                let n = if exceeds(&loaded.doc, &theirs) {
+                if exceeds(&loaded.doc, &theirs) {
                     // A real merge: state the peer lacks joins theirs and must ship once.
                     let diff = theirs.transact().encode_state_as_update_v1(&loaded.doc.transact().state_vector());
                     loaded.doc.transact_mut().apply_update(Update::decode_v1(&diff)?).context("apply foreign snapshot.yjs")?;
                     Counters::bump(&self.counters.resnapshots);
-                    self.snapshot(&id, &loaded.doc, None)?
+                    let n = self.snapshot(&id, &loaded.doc, None)?;
+                    self.touch_if_changed(&id, loaded.meta.updated_ms, n).await?;
                 } else {
                     // Theirs holds everything here: their bytes become this document's snapshot and this
                     // process's projection. The mirror file (the replica's copy) already equals its row,
                     // so nothing ships back; a re-encoding would differ byte-wise and ship a whole document.
-                    self.adopt_snapshot(&id, &bytes)?
-                };
-                self.touch_if_changed(&id, loaded.meta.updated_ms, n).await?;
+                    // The `docs` row is not touched either: `bytes`/`updated_ms` arrive with the hub's
+                    // own row (69 Z inv 10: N−1 receivers each shipped a two-column batch per edit).
+                    self.adopt_snapshot(&id, &bytes)?;
+                }
                 tracing::info!(doc = %id, "document snapshot merged from the mesh");
                 Ok(Applied::Merged(id))
             }
@@ -1406,7 +1408,8 @@ mod tests {
     }
 
     /// E2 brief 2: a receiver that merely catches up adopts the peer's bytes and ships nothing; only a
-    /// receiver with state of its own re-snapshots, and ships exactly one row.
+    /// receiver with state of its own re-snapshots, and ships exactly one row. FIXBATCH C: the adopt
+    /// leaves the (replicated) `docs` row alone too — `bytes`/`updated_ms` arrive with the hub's row.
     #[tokio::test]
     async fn catching_up_ships_no_rows_and_a_real_merge_ships_one() {
         let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1422,6 +1425,23 @@ mod tests {
         // (The creation counted as a merge when the snapshot half arrived after the meta; deltas from here.)
         let counts = |s: &Store| (s.stats().merged, s.stats().resnapshots, s.stats().unchanged);
         let (b0, a0) = (counts(&b), counts(&a));
+        // The hub's `docs` row as the replica delivers it (stale `bytes`: the receiver used to fix it up).
+        sqlx::query("INSERT INTO docs (id, kind, title, binding, created_ms, updated_ms, bytes) VALUES (?, 'knowledge', 't', ?, 1, 41, 3)")
+            .bind(m.id.as_str())
+            .bind(m.binding.key())
+            .execute(&b.db)
+            .await
+            .unwrap();
+        let docs_row = |s: &Store| {
+            let (db, id) = (s.db.clone(), m.id.clone());
+            async move {
+                sqlx::query_as::<_, (i64, i64)>("SELECT updated_ms, bytes FROM docs WHERE id = ?")
+                    .bind(id.as_str())
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
 
         // A's next snapshot lands on B: B merges (Merged) but ships 0 rows — its snapshot is A's bytes.
         a.append(&m.id, &Principal::File, &text_update(&doc, "two ")).unwrap();
@@ -1434,6 +1454,7 @@ mod tests {
         assert_eq!(lb.doc.get_or_insert_text("t").get_string(&lb.doc.transact()), "one two ");
         assert_eq!(lb.log_count, 0, "the log the snapshot covers is compacted");
         assert_eq!(counts(&b), (b0.0 + 1, b0.1, b0.2), "one merge, no re-snapshot");
+        assert_eq!(docs_row(&b).await, (41, 3), "the adopt wrote 0 docs-row updates on the receiver");
 
         // B edits locally first: A's next snapshot is a real merge on B — re-snapshotted, shipped once.
         b.append(&m.id, &Principal::File, &text_update(&lb.doc, "B!")).unwrap();

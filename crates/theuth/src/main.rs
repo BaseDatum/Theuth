@@ -897,9 +897,13 @@ async fn run() -> anyhow::Result<()> {
     std::fs::create_dir_all(&logs)?;
     let (writer, _guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "theuth.log"));
+    // iroh's pkarr publisher warns "Failed to publish to pkarr" every 1–13 s while the DNS relay is
+    // unreachable (69 Z); the endpoint keeps working, so that target only speaks at error.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("info".parse()?)
+                .add_directive("iroh::address_lookup::pkarr=error".parse()?),
         )
         .with_writer(writer)
         .with_ansi(false)

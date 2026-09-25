@@ -310,12 +310,12 @@ impl Store {
     }
 
     /// A default: write `value` only when `key` has no row yet, stamped at
-    /// `at_ms` (the engine's `first_seen_ms`) instead of now — so when two
-    /// engines' defaults meet in replication the *oldest* engine's wins (LWW
-    /// picks the larger clock; ours is deliberately old), and any explicit
-    /// [`Self::meta_set`] beats every default. Returns whether this call wrote.
-    pub async fn meta_default(&self, key: &str, value: &str, at_ms: u64) -> anyhow::Result<bool> {
-        let hlc = replica::Hlc { wall_ms: at_ms, counter: 0, origin: replica::PeerId(self.me.0.clone()) }.to_text();
+    /// wall-clock zero instead of now — so any explicit [`Self::meta_set`]
+    /// (stamped at its real time) beats every default in the per-column LWW
+    /// merge, whichever engine wrote it first. Two engines' defaults tie on
+    /// the clock and the larger origin id wins. Returns whether this call wrote.
+    pub async fn meta_default(&self, key: &str, value: &str) -> anyhow::Result<bool> {
+        let hlc = replica::Hlc { wall_ms: 0, counter: 0, origin: replica::PeerId(self.me.0.clone()) }.to_text();
         let r = sqlx::query("INSERT INTO mesh_meta (key, value, hlc) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING")
             .bind(key)
             .bind(value)
@@ -442,21 +442,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn meta_default_keeps_the_first_value_and_stamps_old() {
+    async fn meta_default_keeps_the_first_value_and_stamps_zero() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into())).await.unwrap();
         assert_eq!(store.meta_get("name").await.unwrap(), None);
-        assert!(store.meta_default("name", "work", 1_000).await.unwrap());
-        assert!(!store.meta_default("name", "other", 1_000).await.unwrap());
+        assert!(store.meta_default("name", "work").await.unwrap());
+        assert!(!store.meta_default("name", "other").await.unwrap());
         assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("work"));
         let hlc: String = sqlx::query("SELECT hlc FROM mesh_meta WHERE key = 'name'")
             .fetch_one(store.pool())
             .await
             .unwrap()
             .get("hlc");
-        assert_eq!(replica::Hlc::parse(&hlc).unwrap().wall_ms, 1_000, "a default is stamped at first_seen, not now");
+        assert_eq!(replica::Hlc::parse(&hlc).unwrap().wall_ms, 0, "a default is stamped at zero, not now");
         store.meta_set("name", "renamed").await.unwrap();
         assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
+    }
+
+    /// A rename on A, then a fresh B's default written *later*: the rename
+    /// wins on both sides once the batches cross (before: B's default carried
+    /// its first-seen stamp, newer than the rename, and won everywhere).
+    #[tokio::test]
+    async fn an_explicit_rename_beats_a_later_default_across_engines() {
+        async fn side(name: &str) -> (Store, std::sync::Arc<replica::engine::Engine>, replica::engine::ReplicaHandle, tempfile::TempDir) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(name.into())).await.unwrap();
+            let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+            let handle = engine.attach(store.pool(), &["mesh_meta"]).await.unwrap();
+            (store, engine, handle, dir)
+        }
+        let (a, a_engine, a_handle, _da) = side("a").await;
+        let (b, b_engine, b_handle, _db) = side("b").await;
+
+        a.meta_set("name", "renamed").await.unwrap();
+        b.meta_default("name", "b-host").await.unwrap();
+
+        while let Some(batch) = a_handle.flush().await.unwrap() {
+            b_engine.apply(&batch).await.unwrap();
+        }
+        while let Some(batch) = b_handle.flush().await.unwrap() {
+            a_engine.apply(&batch).await.unwrap();
+        }
+        assert_eq!(a.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
+        assert_eq!(b.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
     }
 
     /// 69 audit, idle writer: three heartbeats while connected write no row
