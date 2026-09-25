@@ -73,6 +73,7 @@ import type { Pairing } from '@/rpc/bindings/Pairing'
 import type { PairingPayload } from '@/rpc/bindings/PairingPayload'
 import type { DeviceInfo } from '@/rpc/bindings/DeviceInfo'
 import type { Put } from '@/rpc/bindings/Put'
+import type { PeerEnvelope } from '@/rpc/bindings/PeerEnvelope'
 import type { PeerMessagePage } from '@/rpc/bindings/PeerMessagePage'
 import type { PeerPage } from '@/rpc/bindings/PeerPage'
 import type { PeerReceipt } from '@/rpc/bindings/PeerReceipt'
@@ -154,6 +155,14 @@ export type PermissionStatus = {
     scale: number
   }[]
   note: string
+}
+
+/** `document::DocStats` (E2 §doc_stats); hand-written until `just ts` exports the document crate's types. */
+export type DocStats = {
+  merged: number
+  unchanged: number
+  resnapshots: number
+  noop_applies_avoided: number
 }
 
 /**
@@ -243,6 +252,8 @@ export interface Api {
   doc_delete(doc: DocId): Promise<null>
   /** The documents helper beside `t` (59 §3.2): missing = notes, knowledge editing and meeting notes are disabled. */
   documents_status(): Promise<HelperStatus>
+  /** Foreign-snapshot counters since start (E2): `merged`, `unchanged`, `resnapshots`, `noop_applies_avoided`; served on any engine, never persisted. */
+  doc_stats(): Promise<DocStats>
   /** A document's members and share links (59 §8; owner only). */
   doc_members(doc: DocId): Promise<Members>
   /** Rename or re-role a member (owner only); demoting an editor closes their subscription with `Closed{demoted}`. */
@@ -494,6 +505,8 @@ export interface Api {
   /** `transcript.json` (04 §3). */
   meeting_transcript(id: MeetingId): Promise<MeetingTranscript>
   new_session(): Promise<SessionId>
+  /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
+  peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
   peer_message(session: SessionId, id: string): Promise<PeerRecord>
   /** Write base64 `bytes` to `<data_dir>/attachments/<sha256[..16]>.<ext>`; returns the path for `send_input.files`. */
@@ -693,6 +706,7 @@ export const METHODS = [
   'doc_restore',
   'doc_set_name',
   'doc_snapshots',
+  'doc_stats',
   'doc_undo_agent',
   'doc_update',
   'documents_status',
@@ -795,6 +809,7 @@ export const METHODS = [
   'mesh_set_hub',
   'mesh_status',
   'new_session',
+  'peer_deliver',
   'peer_message',
   'pin_session',
   'pty_input',

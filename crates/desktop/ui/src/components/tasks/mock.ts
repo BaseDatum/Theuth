@@ -24,6 +24,7 @@ const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'stat
   brief: `Brief for **${t.title}**.\n\n- step one\n- step two`,
   reviewer: null,
   blockers: [],
+  blocks: [],
   parent: null,
   where: null,
   harness: null,
@@ -41,7 +42,7 @@ const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'stat
 
 export const TASKS: Task[] = [
   task(1, { title: 'Fix the flaky deploy on build-A', owner: { type: 'agent', name: 'ops' }, state: 'doing', project: 'sre', where: 'build-A', harness: 'omp',
-    reviewer: { type: 'user' }, checkout: { session: 'sess-ops-1', engine: 'build-A', epoch: 1, progress_at_ms: now - H / 6 }, external: ['https://github.com/example/sre/issues/42'] }),
+    reviewer: { type: 'user' }, checkout: { session: 'sess-ops-1', engine: 'build-A', epoch: 1, progress_at_ms: now - H / 6, orphaned: false, taken: false }, external: ['https://github.com/example/sre/issues/42'] }),
   task(2, { title: 'Rotate the Grafana API token', owner: { type: 'agent', name: 'ops' }, state: 'blocked', project: 'sre', blockers: ['decision:apr-7f3a'], reviewer: { type: 'user' } }),
   task(3, { title: 'Write the Q4 release notes', owner: { type: 'agent', name: 'writer' }, state: 'review', project: 'launch', reviewer: { type: 'user' }, created_by: 'agent:theuth' }),
   task(4, { title: 'Draft the landing page copy', owner: { type: 'agent', name: 'writer' }, state: 'todo', project: 'launch', blockers: [id(3)], reviewer: { type: 'agent', name: 'ops' } }),

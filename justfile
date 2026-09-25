@@ -186,9 +186,9 @@ release-ios:
 # Alias of package-macos.
 desktop-bundle: package-macos
 
-# Desktop UI gates: types, unit tests.
+# Desktop UI gates: types, unit tests, and the release build `package-macos` runs.
 desktop-check:
-    cd crates/desktop/ui && bun run check && bun run test
+    cd crates/desktop/ui && bun run check && bun run test && bun run build
 
 # Regenerates crates/desktop/gen/apple — overwrites the committed Xcode project.
 # Caps live in gen/apple/desktop_iOS/*. Do not run this for a normal build.

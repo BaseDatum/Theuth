@@ -21,6 +21,7 @@ const STATUS_CLASS: Record<AgentStatus, string> = {
   paused: 'bg-fg-tertiary',
   proposed: 'bg-primary',
   unreachable: 'bg-danger',
+  invalid: 'bg-danger',
 }
 
 /**

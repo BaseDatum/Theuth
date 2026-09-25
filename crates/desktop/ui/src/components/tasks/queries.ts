@@ -5,6 +5,7 @@ import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
+import { ownerText } from './helpers'
 import { AGENTS, EVENTS, MESH, TASKS, mockOn } from './mock'
 
 /** Query keys of the 67 records; `tasks` prefixes every list and `task(id)`. */
@@ -20,7 +21,7 @@ export const keys = {
 export const EMPTY_FILTER: TaskFilter = { owner: null, state: null, engine: null, project: null }
 
 const matches = (t: Task, f: TaskFilter) =>
-  (f.owner === null || (t.owner.type === 'user' ? 'user' : `agent:${t.owner.name}`) === f.owner) &&
+  (f.owner === null || ownerText(t.owner) === f.owner) &&
   (f.state === null || f.state.includes(t.state)) &&
   (f.engine === null || t.where === f.engine) &&
   (f.project === null || t.project === f.project)

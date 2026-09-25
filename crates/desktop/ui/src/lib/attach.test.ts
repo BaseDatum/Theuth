@@ -73,6 +73,8 @@ const meta: Meta = {
   scope: null,
   source: null,
   timestamp: new Date(2026, 8, 12).toISOString(),
+  owner: 'user',
+  visibility: 'shared',
 }
 const revision: HistorySearchHit = {
   id: 'decisions/prod-dr',
