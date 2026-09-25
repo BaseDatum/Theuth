@@ -14143,7 +14143,7 @@
         "name": "Gemini 2.5 Flash-Lite",
         "limit": {
           "context": 1048576,
-          "output": 65536
+          "output": 65535
         },
         "cost": {
           "input": 0.1,
@@ -20108,9 +20108,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.088606,
-          "output": 0.177212,
-          "cache_read": 0.017721
+          "input": 0.07168,
+          "output": 0.14336,
+          "cache_read": 0.014336
         },
         "reasoning": true,
         "tool_call": true,
@@ -20194,9 +20194,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.9396,
-          "output": 1.8792,
-          "cache_read": 0.0783
+          "input": 0.88044,
+          "output": 1.76088,
+          "cache_read": 0.07337
         },
         "reasoning": true,
         "tool_call": true,
@@ -20248,12 +20248,12 @@
         "name": "DeepSeek V4.1 Flash",
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 393216
         },
         "cost": {
-          "input": 0.14,
-          "output": 0.42,
-          "cache_read": 0.0042
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.003
         },
         "reasoning": true,
         "tool_call": true,
@@ -21670,7 +21670,7 @@
         "name": "MiniMax-01",
         "limit": {
           "context": 1000192,
-          "output": 900172
+          "output": 40000
         },
         "cost": {
           "input": 0.2,
@@ -25798,9 +25798,9 @@
           "output": 128000
         },
         "cost": {
-          "input": 0.132,
-          "output": 0.528,
-          "cache_read": 0.033
+          "input": 0.0825,
+          "output": 0.33,
+          "cache_read": 0.020625
         },
         "reasoning": true,
         "tool_call": true,
@@ -26715,12 +26715,12 @@
         "name": "GLM-5.3",
         "limit": {
           "context": 1310720,
-          "output": 131072
+          "output": 943717
         },
         "cost": {
-          "input": 0.84,
-          "output": 2.64,
-          "cache_read": 0.156
+          "input": 1.4,
+          "output": 4.4,
+          "cache_read": 0.26
         },
         "reasoning": true,
         "tool_call": true,
@@ -26741,12 +26741,12 @@
         "name": "GLM-5.3-Flash",
         "limit": {
           "context": 1310720,
-          "output": 943718
+          "output": 131072
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.5,
-          "cache_read": 0.05
+          "input": 0.045,
+          "output": 0.6,
+          "cache_read": 0.0285
         },
         "reasoning": true,
         "tool_call": true,
@@ -26981,12 +26981,12 @@
         "name": "DeepSeek Pro Latest",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 393216
         },
         "cost": {
-          "input": 0.39,
-          "output": 2.9,
-          "cache_read": 0.25
+          "input": 0.3894,
+          "output": 1.1682,
+          "cache_read": 0.01239
         },
         "reasoning": true,
         "tool_call": true,
@@ -27096,8 +27096,8 @@
           "output": 943718
         },
         "cost": {
-          "input": 1.4,
-          "output": 10.75,
+          "input": 1.35,
+          "output": 11.5,
           "cache_read": 0.3
         },
         "reasoning": true,
@@ -27325,9 +27325,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.5625,
-          "output": 2.5,
-          "cache_read": 0.125
+          "input": 0.5614,
+          "output": 1.7644,
+          "cache_read": 0.10426
         },
         "reasoning": true,
         "tool_call": true,
