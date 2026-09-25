@@ -167,7 +167,7 @@ function Requests({ session, focus }: { session: string; focus: string | null })
       {page.isSuccess && records.length === 0 && (
         <Empty>
           {pendingOnly
-            ? 'No request is waiting on this chat or its peers. Pending waits do not survive an engine restart; their durable outcome is in the full list.'
+            ? 'No request is waiting on this chat or its peers. Pending waits do not survive a node restart; their durable outcome is in the full list.'
             : 'No peer exchange recorded for this chat.'}
         </Empty>
       )}

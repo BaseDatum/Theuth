@@ -77,12 +77,12 @@ function wrap(e: unknown): AppCallError {
     if (e.code === APP_DISABLED)
       return new AppCallError(
         "unavailable",
-        "apps are disabled on this engine",
+        "apps are disabled on this node",
       );
     if (e.code === METHOD_NOT_FOUND)
       return new AppCallError(
         "unavailable",
-        "this engine does not support apps",
+        "this node does not support apps",
       );
     return new AppCallError("failed", e.message);
   }
@@ -215,7 +215,7 @@ export class PendingPresses {
     this.#timer = undefined;
     for (const p of this.#calls.values())
       p.reject(
-        new AppCallError("unknown", "view closed before the engine answered"),
+        new AppCallError("unknown", "view closed before the node answered"),
       );
     this.#calls.clear();
   }

@@ -27,7 +27,7 @@ const when = (rfc3339: string): string => {
  */
 export function OrphansBanner({ session }: { session: string }) {
   const api = useApi()
-  const engine = useConnection((s) => s.info?.name) || 'this engine'
+  const engine = useConnection((s) => s.info?.name) || 'this node'
   const { data: orphans = [] } = useQuery({ queryKey: queryKeys.sessionOrphans(session), queryFn: () => api.session_orphans(session) })
   const [open, setOpen] = useState(false)
   if (orphans.length === 0) return null
@@ -44,7 +44,7 @@ export function OrphansBanner({ session }: { session: string }) {
           <SheetHeader>
             <SheetTitle>Undelivered turns</SheetTitle>
             <SheetDescription>
-              Written on {engine} while it owned this session, superseded by another engine before they shipped. They
+              Written on {engine} while it owned this session, superseded by another node before they shipped. They
               stay here for viewing and are never merged.
             </SheetDescription>
           </SheetHeader>

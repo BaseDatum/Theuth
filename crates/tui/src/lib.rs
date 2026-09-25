@@ -231,7 +231,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
         if let Err(e) = rpc::client::mirror(&rt, &client).await {
             tracing::warn!(error = %e, "engine event stream");
         }
-        let _ = tx.send(UiEvent::Info("engine gone — starting one…".into()));
+        let _ = tx.send(UiEvent::Info("node process gone — starting one…".into()));
         let running = match rpc::engine::acquire(&rt.data_dir, Host::Tui, listen.clone()) {
             Ok(lease) => {
                 rpc::engine::hold(lease);
@@ -245,7 +245,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
                     }
                     Err(e) => {
                         rpc::engine::release();
-                        let _ = tx.send(UiEvent::Error(format!("engine failed to start: {e:#}")));
+                        let _ = tx.send(UiEvent::Error(format!("node process failed to start: {e:#}")));
                     }
                 }
                 return;
@@ -269,7 +269,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
         }
         let Some(c) = connected else {
             let _ = tx.send(UiEvent::Error(format!(
-                "engine gone; {running} but it never answered (attempt {attempt}/3)"
+                "node process gone; {running} but it never answered (attempt {attempt}/3)"
             )));
             return;
         };
@@ -277,7 +277,7 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
         *api.write().unwrap() = Arc::new(Engine::Remote(client.clone()));
         let _ = tx.send(UiEvent::Engine(Some(attached_label(&running))));
     }
-    let _ = tx.send(UiEvent::Error("engine gone; could not attach to its successor after 3 attempts".into()));
+    let _ = tx.send(UiEvent::Error("node process gone; could not attach to its successor after 3 attempts".into()));
 }
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -1695,7 +1695,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             Ok(())
         }
         UiEvent::Engine(None) => {
-            eprintln!("engine started here (pid {})", std::process::id());
+            eprintln!("node process started here (pid {})", std::process::id());
             Ok(())
         }
     };

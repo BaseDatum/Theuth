@@ -402,7 +402,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
         <div className="flex h-11 shrink-0 items-center gap-1 border-b pr-1 pl-4">
           <DialogTitle className="mr-auto text-sm font-medium">Search</DialogTitle>
           <DialogDescription className="sr-only">
-            Search sessions, artifacts, knowledge and knowledge history on this engine. Arrow keys move
+            Search sessions, artifacts, knowledge and knowledge history on this node. Arrow keys move
             between results; Enter opens the selected result.
           </DialogDescription>
           {/* Mobile: the footer is hidden, so Refresh and help live here as icons. */}

@@ -104,7 +104,7 @@ function Logins() {
           description={
             remote?.name === r.name ? (
               <>
-                Sign in from the engine ({engineName ?? 'engine'}):{' '}
+                Sign in from the node ({engineName ?? 'node'}):{' '}
                 <code className="select-all break-all font-mono text-xs">{remote.url}</code>
               </>
             ) : (
@@ -242,10 +242,10 @@ function Bedrock() {
               ? `Could not list profiles: ${aws.error.message}`
               : 'Listing profiles…'
             : stale
-              ? `Profile ${d.selected} is selected but not found on ${engineName ?? 'the engine'}; pick another or the default chain.`
+              ? `Profile ${d.selected} is selected but not found on ${engineName ?? 'the node'}; pick another or the default chain.`
               : d.selected
-                ? `Every Bedrock model on ${engineName ?? 'this engine'} signs with profile ${d.selected}.`
-                : `Bedrock on ${engineName ?? 'this engine'} uses a configured API key, otherwise the AWS default credential chain (${d.default_profile}). Select a profile to use its credentials from the next request.`
+                ? `Every Bedrock model on ${engineName ?? 'this node'} signs with profile ${d.selected}.`
+                : `Bedrock on ${engineName ?? 'this node'} uses a configured API key, otherwise the AWS default credential chain (${d.default_profile}). Select a profile to use its credentials from the next request.`
         }
       >
         {pick && (

@@ -90,9 +90,9 @@ function useAppDoc(callId: string | undefined, enabled: boolean) {
 /** Why a record cannot run here, from its `get_app` failure. */
 function reasonOf(e: unknown): string {
   if (e instanceof RpcError && e.code === APP_DISABLED)
-    return "Apps are disabled on this engine; the source stays readable.";
+    return "Apps are disabled on this node; the source stays readable.";
   if (e instanceof RpcError && e.code === -32601)
-    return "This engine predates apps: update it to run this app. The source stays readable.";
+    return "This node predates apps: update it to run this app. The source stays readable.";
   return `Could not load the app: ${e instanceof Error ? e.message : String(e)}`;
 }
 
@@ -141,7 +141,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
       program = {
         kind: "source",
         source: fileText,
-        reason: "Apps are disabled on this engine; the source stays readable.",
+        reason: "Apps are disabled on this node; the source stays readable.",
       };
     else if (docQ.isPending) program = { kind: "loading" };
     else if (docQ.isError)
@@ -191,7 +191,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
           kind: "source",
           source: draft.source,
           reason:
-            "Apps are disabled on this engine; the patch stays readable.",
+            "Apps are disabled on this node; the patch stays readable.",
         };
       else if (baseQ.isPending) program = { kind: "loading" };
       else if (baseQ.isError)
@@ -688,7 +688,7 @@ function Strip({
         : active
           ? "running…"
           : status === "busy"
-            ? "engine busy — press again later"
+            ? "node busy — press again later"
             : status === "unknown"
               ? "outcome unknown — check before repeating"
               : status !== null
@@ -743,7 +743,7 @@ function Strip({
           action = press(st.has_data ? "Refresh" : "Load");
           break;
         case "busy":
-          text = "engine busy";
+          text = "node busy";
           action = press("Retry");
           break;
         case "unavailable":

@@ -1334,7 +1334,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/parent", "", "open the parent session (from a subagent)"),
     ("/sessions", "", "switch session (picker; owner chip on sessions owned elsewhere)"),
-    ("/take", "", "continue the open session on this engine (68)"),
+    ("/take", "", "continue the open session on this node (68)"),
     (
         "/broadcast",
         "[running|roots] [text]",
@@ -1428,7 +1428,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "/mesh",
         "devices [list|add [name]|rm <id>|name <id> <name>]",
-        "devices paired to the mesh (any engine serves them)",
+        "devices paired with the mesh (any node serves them)",
     ),
     (
         "/nodes",
@@ -2611,7 +2611,7 @@ impl Prompt {
             Prompt::LinkDeviceName { name, .. } => {
                 format!("link  rename {name}  new name  (esc cancel)")
             }
-            Prompt::LinkName => "link  engine name  (esc cancel)".into(),
+            Prompt::LinkName => "link  node name  (esc cancel)".into(),
             Prompt::LinkRevoke { name, .. } => format!("link  revoke {name}?  y/n"),
             Prompt::NodeKey => "nodes  add  paste the node's key  (esc cancel)".into(),
             Prompt::NodeName { name, .. } => {
@@ -4604,7 +4604,7 @@ impl Model {
             UiEvent::Engine(attached) => {
                 let note = match &attached {
                     Some(label) => label.clone(),
-                    None => format!("engine started here (pid {})", std::process::id()),
+                    None => format!("node process started here (pid {})", std::process::id()),
                 };
                 self.attached = attached;
                 match self.session {
@@ -8758,7 +8758,7 @@ impl Model {
             .as_deref()
             .map_or_else(|| "no identity".into(), |id| id.chars().take(8).collect());
         format!(
-            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n engine name  e {}  esc",
+            "link · {} · {state} · {} ({id}…)   p pair  r rename  x revoke  n node name  e {}  esc",
             relay_host(&s.relay),
             s.name,
             if s.enabled { "disable" } else { "enable" }

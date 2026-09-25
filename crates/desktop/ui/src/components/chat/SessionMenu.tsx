@@ -266,7 +266,7 @@ export function SessionMenu({ session }: { session: string }) {
           {parent && <DropdownMenuItem onSelect={cmd('/parent')}>Open parent</DropdownMenuItem>}
           <DropdownMenuItem
             disabled={here}
-            title={here ? 'This session already runs on this engine' : undefined}
+            title={here ? 'This session already runs on this node' : undefined}
             onSelect={cmd('/take')}
           >
             Continue here

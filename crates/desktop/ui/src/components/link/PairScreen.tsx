@@ -35,7 +35,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
   const parent = useEngines((s) => (s.nodes[s.active] ? s.active : null))
   const infoName = useConnection((s) => s.info?.name)
   const storedName = useEngines((s) => s.engines.find((h) => h.id === s.active)?.name)
-  const parentName = infoName ?? storedName ?? (parent === LOCAL ? 'this Mac' : 'the active engine')
+  const parentName = infoName ?? storedName ?? (parent === LOCAL ? 'this Mac' : 'the active node')
   const api = useConnection((s) => s.api)
 
   const start = async (raw: string) => {
@@ -144,7 +144,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
             <ChevronLeft className="size-5" /> Back
           </Button>
         )}
-        <h1 className="text-2xl font-semibold">Connect to an engine</h1>
+        <h1 className="text-2xl font-semibold">Pair with a mesh</h1>
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">
             <Loader2 className="size-4 animate-spin" /> Pairing with {pairingWith}…
@@ -176,7 +176,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
         )}
       </div>
       <p className="mb-auto max-w-sm text-center text-xs text-fg-tertiary">
-        The relay carries encrypted traffic between your devices and this engine. It can see that they are connected, not what they say.
+        The relay carries encrypted traffic between your devices and the mesh. It can see that they are connected, not what they say.
       </p>
       <Dialog open={choice !== null} onOpenChange={(o) => !o && setChoice(null)}>
         <DialogContent className="max-w-sm">
@@ -204,7 +204,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
                 if (c) void pairHere(c.key, c.name)
               }}
             >
-              as an engine on this {ios ? 'phone' : 'device'}
+              as a node this {ios ? 'phone' : 'device'} reaches directly
             </Button>
           </div>
         </DialogContent>

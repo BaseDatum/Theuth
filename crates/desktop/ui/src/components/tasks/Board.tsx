@@ -100,11 +100,11 @@ export function Board() {
           </SelectContent>
         </Select>
         <Select value={search.engine ?? ANY} onValueChange={(v) => set({ engine: v === ANY ? undefined : v })}>
-          <SelectTrigger size="sm" className="w-36" aria-label="Engine">
-            <SelectValue placeholder="Engine" />
+          <SelectTrigger size="sm" className="w-36" aria-label="Node">
+            <SelectValue placeholder="Node" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ANY}>Any engine</SelectItem>
+            <SelectItem value={ANY}>Any node</SelectItem>
             {mesh.data?.peers.map((p) => (
               <SelectItem key={p.id} value={p.name}>
                 {p.name}

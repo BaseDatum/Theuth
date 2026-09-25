@@ -1,15 +1,15 @@
 /** Mid-turn engine notes share one transcript presentation; context summaries already have their own card. */
 export const ENGINE_NOTICES = {
-  todo_continue: { title: 'Nudge', description: 'The engine asked the model to continue unfinished todos.' },
-  rounds: { title: 'Tool rounds', description: 'The engine asked the model to wrap up within the tool-round limit.' },
-  context_pressure: { title: 'Context pressure', description: 'The engine warned the model that context compaction is near.' },
-  recovery: { title: 'Recovery', description: 'The engine asked the model to resume an interrupted reply.' },
-  continue: { title: 'Continuation', description: 'The engine asked the model to continue a reply cut off by the output limit.' },
-  steer: { title: 'Tool correction', description: 'The engine asked the model to change a repeatedly failing tool call.' },
-  surface_error: { title: 'Display correction', description: 'The engine asked the model to fix content that could not be rendered.' },
-  todo: { title: 'Todo reminder', description: 'The engine reminded the model of its current plan.' },
-  knowledge: { title: 'Knowledge reminder', description: 'The engine suggested relevant knowledge for the model to consult.' },
-  vision: { title: 'Images unseen', description: 'The engine told the model no vision model is configured, so the pending images were not looked at.' },
+  todo_continue: { title: 'Nudge', description: 'theuth asked the model to continue unfinished todos.' },
+  rounds: { title: 'Tool rounds', description: 'theuth asked the model to wrap up within the tool-round limit.' },
+  context_pressure: { title: 'Context pressure', description: 'theuth warned the model that context compaction is near.' },
+  recovery: { title: 'Recovery', description: 'theuth asked the model to resume an interrupted reply.' },
+  continue: { title: 'Continuation', description: 'theuth asked the model to continue a reply cut off by the output limit.' },
+  steer: { title: 'Tool correction', description: 'theuth asked the model to change a repeatedly failing tool call.' },
+  surface_error: { title: 'Display correction', description: 'theuth asked the model to fix content that could not be rendered.' },
+  todo: { title: 'Todo reminder', description: 'theuth reminded the model of its current plan.' },
+  knowledge: { title: 'Knowledge reminder', description: 'theuth suggested relevant knowledge for the model to consult.' },
+  vision: { title: 'Images unseen', description: 'theuth told the model no vision model is configured, so the pending images were not looked at.' },
 }
 
 /** One card an engine-wrapped input renders as. */

@@ -132,7 +132,7 @@ export function General() {
         )}
       </Section>
       {info && (
-        <Section title="Engine">
+        <Section title="Node">
           <Row label="Name" description={`theuth ${info.version}`}>
             <span className="text-sm">{info.name}</span>
           </Row>
@@ -156,7 +156,7 @@ export function General() {
           {update.data && (
             <Row
               label="Update"
-              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `t --update` on the engine'}`}
+              description={`${update.data.version} ${update.data.applied ? 'ready · restarts with the daemon' : 'available · `t --update` on the node'}`}
             />
           )}
         </Section>

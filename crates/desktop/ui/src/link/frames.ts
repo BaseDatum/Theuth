@@ -13,7 +13,7 @@ export const CLOSE_REASON: Record<number, string> = {
   1: 'queue full',
   2: 'idle',
   3: 'refused',
-  4: 'engine gone',
+  4: 'node gone',
   5: 'hub moved',
 }
 /** DATA before OPEN, conn limit, or the engine rejected the device. */

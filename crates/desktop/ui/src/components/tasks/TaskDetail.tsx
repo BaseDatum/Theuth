@@ -243,7 +243,7 @@ function Thread({ task: t }: { task: Task }) {
   })
   return (
     <div className="flex flex-col gap-3">
-      {t.thread ? <ThreadDoc id={t.thread} /> : <p className="text-sm text-fg-tertiary">No thread document yet — the engine creates it on the first note.</p>}
+      {t.thread ? <ThreadDoc id={t.thread} /> : <p className="text-sm text-fg-tertiary">No thread document yet — theuth creates it on the first note.</p>}
       <form
         className="flex flex-col gap-2"
         onSubmit={(e) => {
