@@ -167,17 +167,22 @@ impl Ledger {
             before,
             after,
         };
-        if let Err(err) = self.store.add_event(&t.id, &e).await {
+        let line = match (&e.before, &e.after) {
+            (Some(b), Some(a)) => format!("- {} **{actor}** {field}: {b} → {a}", stamp(e.at_ms)),
+            (None, Some(a)) => format!("- {} **{actor}** {field}: {a}", stamp(e.at_ms)),
+            (Some(b), None) => format!("- {} **{actor}** {field}: {b} → ∅", stamp(e.at_ms)),
+            (None, None) => format!("- {} **{actor}** {field}", stamp(e.at_ms)),
+        };
+        self.record(t, &e, &line).await;
+    }
+
+    /// An event row plus its thread line.
+    async fn record(&self, t: &Task, e: &TaskEvent, line: &str) {
+        if let Err(err) = self.store.add_event(&t.id, e).await {
             tracing::error!(task = %t.id, "event not recorded: {err:#}");
         }
         if let Some(doc) = &t.thread {
-            let line = match (&e.before, &e.after) {
-                (Some(b), Some(a)) => format!("- {} **{actor}** {field}: {b} → {a}", stamp(e.at_ms)),
-                (None, Some(a)) => format!("- {} **{actor}** {field}: {a}", stamp(e.at_ms)),
-                (Some(b), None) => format!("- {} **{actor}** {field}: {b} → ∅", stamp(e.at_ms)),
-                (None, None) => format!("- {} **{actor}** {field}", stamp(e.at_ms)),
-            };
-            self.thread.append(doc, &line).await;
+            self.thread.append(doc, line).await;
         }
     }
 
@@ -189,13 +194,24 @@ impl Ledger {
         }
     }
 
-    /// Raise a wake for `who` (nothing for the user or the harness).
-    pub async fn wake(&self, who: &Owner, task: Option<&TaskId>, reason: WakeReason) {
-        if let Some(agent) = agent_name(who)
-            && let Err(e) = self.store.raise(agent, task, reason, self.now()).await
-        {
+    /// Raise a wake for `who` about `t` (nothing for the user or the harness)
+    /// and record it: a `wake` event and a `woke <agent> (<reason>)` thread line.
+    pub async fn wake(&self, t: &Task, who: &Owner, reason: WakeReason, actor: &str) {
+        let Some(agent) = agent_name(who) else { return };
+        if let Err(e) = self.store.raise(agent, Some(&t.id), reason, self.now()).await {
             tracing::error!(agent, "wake not raised: {e:#}");
+            return;
         }
+        let e = TaskEvent {
+            at_ms: self.now(),
+            actor: actor.to_owned(),
+            session: None,
+            field: "wake".to_owned(),
+            before: None,
+            after: Some(agent.to_owned()),
+        };
+        let line = format!("- {} **{actor}** woke {agent} ({})", stamp(e.at_ms), reason.as_str());
+        self.record(t, &e, &line).await;
     }
 
     /// Fill `blocks` (the inverse of `blockers`, computed).
@@ -335,7 +351,7 @@ impl Ledger {
         self.save(&t).await?;
         self.event(&t, created_by, session, "created", None, Some(format!("owner {}", t.owner))).await;
         if t.state == TaskState::Todo {
-            self.wake(&t.owner, Some(&t.id), wake).await;
+            self.wake(&t, &t.owner, wake, created_by).await;
         }
         Ok(t)
     }
@@ -436,7 +452,7 @@ impl Ledger {
         t.updated_ms = self.now();
         self.save(t).await?;
         self.event(t, actor, None, "state", Some(before.as_str().into()), Some(to.as_str().into())).await;
-        self.wake(&t.owner, Some(&t.id), reason).await;
+        self.wake(t, &t.owner, reason, actor).await;
         Ok(())
     }
 
@@ -592,6 +608,11 @@ impl Ledger {
             }
             return self.with_blocks(t).await;
         }
+        if actor == "user" {
+            // A human touched the task: the back-off is over, like a human comment.
+            t.no_progress_count = 0;
+            t.next_wake_after_ms = None;
+        }
         t.updated_ms = self.now();
         self.save(&t).await?;
         for (field, b, a) in changes {
@@ -599,20 +620,20 @@ impl Ledger {
         }
 
         if t.owner != before.owner {
-            self.wake(&t.owner, Some(&t.id), WakeReason::Assigned).await;
+            self.wake(&t, &t.owner, WakeReason::Assigned, actor).await;
         }
         if t.state != before.state {
             match t.state {
                 TaskState::Review => {
                     if let Some(r) = &t.reviewer {
-                        self.wake(r, Some(&t.id), WakeReason::Review).await;
+                        self.wake(&t, r, WakeReason::Review, actor).await;
                     }
                 }
                 TaskState::Doing | TaskState::Todo if before.state == TaskState::Review => {
-                    self.wake(&t.owner, Some(&t.id), WakeReason::Comment).await;
+                    self.wake(&t, &t.owner, WakeReason::Resumed, actor).await;
                 }
                 TaskState::Todo if before.state == TaskState::Backlog => {
-                    self.wake(&t.owner, Some(&t.id), WakeReason::Assigned).await;
+                    self.wake(&t, &t.owner, WakeReason::Assigned, actor).await;
                 }
                 TaskState::Done | TaskState::Cancelled => self.on_closed(&t).await?,
                 _ => {}
@@ -752,7 +773,7 @@ impl Ledger {
             && let Some(a) = agent_name(&t.owner)
         {
             woken.insert(a.to_owned());
-            self.wake(&t.owner, Some(&t.id), WakeReason::Comment).await;
+            self.wake(&t, &t.owner, WakeReason::Comment, actor).await;
         }
         if t.state == TaskState::Review
             && let Some(r) = &t.reviewer
@@ -760,7 +781,7 @@ impl Ledger {
             && let Some(a) = agent_name(r)
             && woken.insert(a.to_owned())
         {
-            self.wake(r, Some(&t.id), WakeReason::Comment).await;
+            self.wake(&t, r, WakeReason::Comment, actor).await;
         }
         // `@`-less mentions: a word that is an agent's name.
         if let Some(router) = &self.router {
@@ -771,7 +792,7 @@ impl Ledger {
                 .collect();
             for a in router.agents() {
                 if a != me && words.contains(&a) && woken.insert(a.clone()) {
-                    self.wake(&Owner::Agent(a), Some(&t.id), WakeReason::Mention).await;
+                    self.wake(&t, &Owner::Agent(a), WakeReason::Mention, actor).await;
                 }
             }
         }
@@ -791,7 +812,7 @@ impl Ledger {
     pub async fn mention(&self, id: &TaskId, text: &str, actor: &str) -> R<()> {
         let t = self.load(id).await?;
         self.say(&t, actor, text).await;
-        self.wake(&t.owner, Some(id), WakeReason::Mention).await;
+        self.wake(&t, &t.owner, WakeReason::Mention, actor).await;
         Ok(())
     }
 
@@ -821,7 +842,7 @@ impl Ledger {
         blockers.push(decision.clone());
         let state = if matches!(t.state, TaskState::Doing | TaskState::Todo) { Some(TaskState::Blocked) } else { None };
         self.update(id, TaskPatch { blockers: Some(blockers), state, ..Default::default() }, actor, session).await?;
-        self.wake(&manager, Some(id), WakeReason::Answer).await;
+        self.wake(&t, &manager, WakeReason::Answer, actor).await;
         Ok((decision, manager))
     }
 
@@ -994,7 +1015,7 @@ impl Ledger {
                 format!("session {} on {} is presumed lost; resume from the last progress note", c.session, c.engine)
             };
             self.say(&t, "system", &note).await;
-            self.wake(&t.owner, Some(&t.id), WakeReason::Resume).await;
+            self.wake(&t, &t.owner, WakeReason::Resume, "system").await;
             orphaned.push(t.id);
         }
         if let Some(router) = &self.router {
@@ -1044,7 +1065,7 @@ impl Ledger {
             self.save(&t).await?;
             self.event(&t, "system", None, "state", Some("doing".into()), Some("blocked".into())).await;
             self.say(&t, "system", &format!("episode of {agent} closed without a disposition")).await;
-            self.wake(&self.manager_of(agent), Some(&t.id), WakeReason::Review).await;
+            self.wake(&t, &self.manager_of(agent), WakeReason::Review, "system").await;
             self.delivered.remove(&t.id);
             blocked.push(t.id);
         }
@@ -1624,6 +1645,50 @@ pub(crate) mod tests {
         let doc = t.thread.unwrap();
         let blocks = r.thread.0.lock().unwrap().get(&doc).cloned().unwrap();
         assert!(blocks.iter().any(|b| b.starts_with("**user** (") && b.ends_with("): looks off")));
+        assert!(blocks.iter().any(|b| b.contains("**user** woke ops (comment)")), "{blocks:?}");
+        assert!(r.ledger.events(&t.id).await.unwrap().iter().any(|e| e.field == "wake" && e.after.as_deref() == Some("ops")));
+    }
+
+    #[tokio::test]
+    async fn raise_requeues_a_claimed_wake() {
+        let mut r = rig().await;
+        r.router.desks.lock().unwrap().insert("ops".into(), "d-ops".into());
+        let t = r.task("agent:ops").await;
+        // the `assigned` wake goes out and is completed by the owner's write
+        r.ledger.dispatch().await.unwrap();
+        r.ledger.update(&t.id, TaskPatch { title: Some("deploy".into()), ..Default::default() }, "agent:ops", None).await.unwrap();
+        assert!(r.ledger.wakes().await.unwrap().is_empty());
+        r.ledger.comment(&t.id, "first", false, "user", None).await.unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.iter().map(|d| d.wake.reason).collect::<Vec<_>>(), vec![WakeReason::Comment]);
+        assert!(r.ledger.dispatch().await.unwrap().is_empty(), "claimed, one in flight");
+        // a second comment before the desk acted: the row is re-queued, not absorbed
+        r.ledger.comment(&t.id, "second", false, "user", None).await.unwrap();
+        let w = r.ledger.wakes().await.unwrap();
+        let w = w.iter().find(|w| w.reason == WakeReason::Comment).unwrap();
+        assert_eq!((w.count, w.claimed_by.as_deref()), (2, None));
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!((d.len(), d[0].wake.count, d[0].wake.claimed_by.as_deref()), (1, 2, Some("d-ops")));
+    }
+
+    #[tokio::test]
+    async fn send_back_wakes_owner_resumed_and_clears_backoff() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
+        let mut backed = r.ledger.get(&t.id).await.unwrap();
+        backed.no_progress_count = 3;
+        backed.next_wake_after_ms = Some(r.clock.load(Ordering::SeqCst) + 600_000);
+        r.ledger.save(&backed).await.unwrap();
+        let t = r.ledger.move_to(&t.id, TaskState::Doing, None, "user", None).await.unwrap();
+        assert_eq!((t.state, t.no_progress_count, t.next_wake_after_ms), (TaskState::Doing, 0, None));
+        let reasons: Vec<_> = r.ledger.wakes().await.unwrap().into_iter().map(|w| (w.agent, w.reason)).collect();
+        assert!(reasons.contains(&("ops".into(), WakeReason::Resumed)), "{reasons:?}");
+        let doc = t.thread.clone().unwrap();
+        let blocks = r.thread.0.lock().unwrap().get(&doc).cloned().unwrap();
+        assert!(blocks.iter().any(|b| b.contains("**user** woke ops (resumed)")), "{blocks:?}");
+        assert!(r.ledger.dispatch().await.unwrap().iter().any(|d| d.wake.agent == "ops"), "no back-off left");
     }
 
     // ---- orphans, epochs, episodes (commit 3) ---------------------------------------

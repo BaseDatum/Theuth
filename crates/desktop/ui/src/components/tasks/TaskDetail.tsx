@@ -250,7 +250,10 @@ function Placement({ task: t, events }: { task: Task; events: TaskEvent[] }) {
   )
 }
 
-/** The 59 document behind the task, read-only when the harness says so, plus a comment box → `task_comment`. */
+/**
+ * The 59 document behind the task, read-only when the harness says so, plus a comment box → `task_comment`. A comment
+ * wakes an agent owner; the user owning the task is told there is nobody to wake.
+ */
 function Thread({ task: t }: { task: Task }) {
   const api = useApi()
   const invalidate = useInvalidateTasks()
@@ -273,7 +276,12 @@ function Thread({ task: t }: { task: Task }) {
           if (text.trim()) comment.mutate()
         }}
       >
-        <Textarea rows={2} placeholder="Comment — wakes the owner" value={text} onChange={(e) => setText(e.target.value)} />
+        <Textarea rows={2} placeholder={t.owner.type === 'agent' ? `Comment — wakes ${t.owner.name}` : 'Comment'} value={text} onChange={(e) => setText(e.target.value)} />
+        {t.owner.type === 'user' && (
+          <Badge variant="outline" className="self-start">
+            owner is you — no wake
+          </Badge>
+        )}
         <Button type="submit" size="sm" className="self-end" disabled={comment.isPending || !text.trim()}>
           <MessageSquare /> Comment
         </Button>
@@ -373,7 +381,23 @@ function Actions({ task: t }: { task: Task }) {
           <div className="flex flex-col gap-1.5">
             <Textarea rows={2} placeholder="Notes for the owner" value={notes} onChange={(e) => setNotes(e.target.value)} />
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="flex-1" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'doing', note: notes }, { onSuccess: () => setNotes('') })}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1"
+                disabled={busy}
+                onClick={() =>
+                  move.mutate(
+                    { id: t.id, state: 'doing', note: notes },
+                    {
+                      onSuccess: () => {
+                        setNotes('')
+                        if (t.owner.type === 'agent') toast(`woke ${t.owner.name}`)
+                      },
+                    },
+                  )
+                }
+              >
                 Send back
               </Button>
               <Button

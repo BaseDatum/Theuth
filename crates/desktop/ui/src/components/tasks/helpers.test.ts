@@ -60,12 +60,15 @@ test('columns start with backlog, hide cancelled unless asked and keep order', (
   expect(columns(list, true).at(-1)).toEqual({ state: 'cancelled', tasks: [list[1]] })
 })
 
-test('state chip text follows the rulings: not started, queued for a desk, at a desk with an open session', () => {
+test('state chip text follows the rulings: not started, queued for a desk, at a desk only with an open session', () => {
+  const checkout = { session: 's', engine: 'mac', epoch: 1, progress_at_ms: 0, orphaned: false, taken: false }
   expect(stateChip(task({ state: 'backlog', owner: agent('ops') }))).toBe('not started')
   expect(stateChip(task({ state: 'todo', owner: agent('ops') }))).toBe("queued for ops's desk")
   expect(stateChip(task({ state: 'todo', owner: USER }))).toBe('todo')
-  expect(stateChip(task({ state: 'doing', owner: agent('ops') }))).toBe("at ops's desk · open session")
-  expect(stateChip(task({ state: 'doing', owner: USER }))).toBe('in progress · open session')
+  expect(stateChip(task({ state: 'doing', owner: agent('ops'), checkout }))).toBe("at ops's desk · open session")
+  expect(stateChip(task({ state: 'doing', owner: agent('ops') }))).toBe("queued for ops's desk")
+  expect(stateChip(task({ state: 'doing', owner: USER, checkout }))).toBe('in progress · open session')
+  expect(stateChip(task({ state: 'doing', owner: USER }))).toBe('in progress')
   expect(stateChip(task({ state: 'review' }))).toBe('review')
   expect(stateChip(task({ state: 'blocked' }))).toBe('blocked')
 })
