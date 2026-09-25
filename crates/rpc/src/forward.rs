@@ -12,7 +12,14 @@
 //! [`crate::api::Server`] as the internal peer, with a [`Forwarded`] marker in
 //! the extensions so the request is never forwarded a second hop: if the owner
 //! moved meanwhile the store's `NotOwner` guard answers, not a relay loop.
+//!
+//! Attachments (68 follow-up A1): a forwarded `files` list carries **names**,
+//! not the forwarder's absolute paths — each `<data_dir>/attachments/<sha16>.<ext>`
+//! is sent as the relative marker `attachments/<sha16>.<ext>` ([`ByName`]);
+//! the owner resolves every marker with `artifact::mesh::fetch_attachment`,
+//! asking the forwarder first ([`resolve_files`]), before the actor sees it.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,9 +72,76 @@ pub enum Route {
     Forward(PeerId),
 }
 
-/// Extension marker on a request the owner received over `theuth/rpc/1`.
-#[derive(Clone, Copy, Debug)]
-pub struct Forwarded;
+/// Extension marker on a request the owner received over `theuth/rpc/1`:
+/// the engine that forwarded it (a connected peer, and the one holding any
+/// attachment the request names).
+#[derive(Clone, Debug)]
+pub struct Forwarded(pub PeerId);
+
+/// `files` as a forwarded call sends them: every attachment-store path
+/// (`…/attachments/<sha16>.<ext>`) becomes the relative marker
+/// `attachments/<sha16>.<ext>`, anything else travels verbatim. Serialized
+/// only when the call is actually forwarded ([`route`]); nothing on the
+/// local path.
+pub struct ByName<'a>(pub &'a [PathBuf]);
+
+impl Serialize for ByName<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.0.iter().map(|f| match artifact::mesh::attachment_name(f) {
+            Some(name) => Path::new("attachments").join(name),
+            None => f.clone(),
+        }))
+    }
+}
+
+/// The marker's name: `attachments/<name>` → `<name>`.
+fn marker(f: &Path) -> Option<&str> {
+    f.strip_prefix("attachments").ok().and_then(Path::to_str)
+}
+
+/// The owner side of [`ByName`]: each `attachments/<name>` marker in `files`
+/// becomes this engine's `<data_dir>/attachments/<name>`, fetched from the
+/// forwarder (first) or any peer when not already here. Other entries pass.
+pub async fn resolve_files(ext: &Extensions, data_dir: &Path, files: Vec<PathBuf>) -> RpcResult<Vec<PathBuf>> {
+    if !files.iter().any(|f| marker(f).is_some()) {
+        return Ok(files);
+    }
+    let transport = match replica::actor() {
+        Some(r) => r.ask(replica::GetTransport).await.ok().flatten(),
+        None => None,
+    };
+    let Some(t) = transport else {
+        return Err(crate::api::failed("attachments: unavailable: no peer has it"));
+    };
+    resolve_files_via(ext, t.as_ref(), data_dir, files).await
+}
+
+/// [`resolve_files`] over a given transport.
+pub async fn resolve_files_via(
+    ext: &Extensions,
+    t: &dyn Transport,
+    data_dir: &Path,
+    mut files: Vec<PathBuf>,
+) -> RpcResult<Vec<PathBuf>> {
+    let prefer = ext.get::<Forwarded>().map(|f| &f.0);
+    let dir = artifact::mesh::attachments_dir(data_dir);
+    for f in &mut files {
+        let Some(name) = marker(f) else { continue };
+        *f = artifact::mesh::fetch_attachment_via(t, &dir, name, prefer)
+            .await
+            .map_err(|e| crate::api::failed(format!("{}: {e:#}", f.display())))?;
+    }
+    Ok(files)
+}
+
+/// The mesh peer owning `session`, when it is another engine and the
+/// sessions plugin is running: the first peer to ask for its files.
+pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
+    sessionsync::actor()?;
+    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await.ok()?;
+    let (owner, _) = store.owner(session).await.ok().flatten()?;
+    (!owner.is_empty() && owner != store.engine()).then_some(PeerId(owner))
+}
 
 /// Classify `session` from its row: `Here` when unknown, unowned or ours;
 /// `Forward(owner)` for an agent desk — an external harness (`agent` set) or
@@ -185,10 +259,9 @@ pub async fn forward(
 
 /// The owner side: accept `theuth/rpc/1` streams until shutdown and answer
 /// each with one dispatch of `methods` as the internal peer, marked
-/// [`Forwarded`]. `methods` is the full API ([`crate::methods`]).
+/// [`Forwarded`] with the opening peer. `methods` is the full API ([`crate::methods`]).
 pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: jsonrpsee::Methods) {
     methods.extensions_mut().insert(link::RpcPeer::internal());
-    methods.extensions_mut().insert(Forwarded);
     loop {
         let accepted = tokio::select! {
             () = rt.shutdown.cancelled() => return,
@@ -196,7 +269,8 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: json
         };
         match accepted {
             Ok((peer, stream)) => {
-                let methods = methods.clone();
+                let mut methods = methods.clone();
+                methods.extensions_mut().insert(Forwarded(peer.clone()));
                 tokio::spawn(async move {
                     if let Err(e) = answer(stream, &methods).await {
                         tracing::debug!(%peer, error = %e, "rpc mesh stream ended");
@@ -304,12 +378,28 @@ mod tests {
         }
     }
 
-    /// A fake owner: one `send_input` method that records what reached it.
-    fn fake_owner(seen: mpsc::UnboundedSender<(String, Option<Extensions>)>) -> jsonrpsee::Methods {
-        let mut m = jsonrpsee::RpcModule::new(seen);
-        m.register_async_method("send_input", |params, seen, ext| async move {
-            let (session, text): (Option<String>, String) = params.parse()?;
-            let _ = seen.send((text, Some(ext)));
+    /// What the fake owner records per `send_input`: text, resolved files, extensions.
+    type Seen = (String, Vec<PathBuf>, Option<Extensions>);
+
+    /// The fake owner's context: where it reports, and the transport + data
+    /// dir it resolves forwarded attachments with.
+    struct Owner {
+        seen: mpsc::UnboundedSender<Seen>,
+        t: Arc<Loop>,
+        data_dir: PathBuf,
+    }
+
+    /// A fake owner: one `send_input` method that resolves `files` like the
+    /// real one and records what reached it.
+    fn fake_owner(seen: mpsc::UnboundedSender<Seen>, t: Arc<Loop>, data_dir: PathBuf) -> jsonrpsee::Methods {
+        let mut m = jsonrpsee::RpcModule::new(Owner { seen, t, data_dir });
+        m.register_async_method("send_input", |params, o, ext| async move {
+            let mut seq = params.sequence();
+            let session: Option<String> = seq.next()?;
+            let text: String = seq.next()?;
+            let files: Vec<PathBuf> = seq.optional_next()?.unwrap_or_default();
+            let files = resolve_files_via(&ext, o.t.as_ref(), &o.data_dir, files).await?;
+            let _ = o.seen.send((text, files, Some(ext)));
             RpcResult::Ok(session.unwrap_or_default())
         })
         .unwrap();
@@ -325,15 +415,54 @@ mod tests {
         let (a, b) = pair();
         let (seen_tx, mut seen) = mpsc::unbounded_channel();
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx)));
+        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx, b.clone(), std::env::temp_dir())));
         let params = serde_json::value::to_raw_value(&(Some("s-1"), "hello")).unwrap();
         let reply = forward(a.as_ref(), &b.me, "send_input", &params).await.unwrap();
         assert_eq!(reply.get(), "\"s-1\"");
-        let (text, ext) = seen.recv().await.unwrap();
+        let (text, files, ext) = seen.recv().await.unwrap();
         assert_eq!(text, "hello");
+        assert!(files.is_empty());
         let ext = ext.unwrap();
-        assert!(ext.get::<Forwarded>().is_some(), "owner dispatch carries the one-hop marker");
+        assert_eq!(ext.get::<Forwarded>().unwrap().0, a.me, "owner dispatch carries the one-hop marker naming the forwarder");
         assert!(ext.get::<link::RpcPeer>().is_some(), "owner dispatch runs as the internal peer");
+    }
+
+    /// A1: the forwarder sends `files` by name (`attachments/<sha16>.<ext>`);
+    /// the owner fetches each from the forwarder over `theuth/artifacts/1`
+    /// into its own `attachments/` before the actor sees the paths.
+    #[tokio::test]
+    async fn forwarded_send_input_carries_attachments_by_name_and_the_owner_resolves_them() {
+        let (a, b) = pair();
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // The forwarder holds two attachments and serves the artifacts ALPN.
+        let (png, pdf) = (b"\x89PNG one".to_vec(), b"%PDF two".to_vec());
+        let p1 = agent::context::save_blob(&png, "png", a_dir.path()).unwrap();
+        let p2 = agent::context::save_blob(&pdf, "pdf", a_dir.path()).unwrap();
+        let rt_a = Runtime::new(figment::Figment::new(), a_dir.path().to_path_buf());
+        let state = artifact::State::open(a_dir.path(), rt_a.clone(), vec![]).await.unwrap();
+        tokio::spawn(artifact::mesh::serve_on(rt_a, a.clone(), Arc::new(artifact::Stores::new(Arc::new(state)))));
+        // The owner answers `theuth/rpc/1`.
+        let (seen_tx, mut seen) = mpsc::unbounded_channel();
+        let rt_b = Runtime::new(figment::Figment::new(), b_dir.path().to_path_buf());
+        tokio::spawn(serve(rt_b, b.clone(), fake_owner(seen_tx, b.clone(), b_dir.path().to_path_buf())));
+
+        let files = vec![p1.clone(), p2.clone(), PathBuf::from("/elsewhere/x.png")];
+        let wire = serde_json::to_value(ByName(&files)).unwrap();
+        let (n1, n2) = (p1.file_name().unwrap().to_str().unwrap(), p2.file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            wire,
+            serde_json::json!([format!("attachments/{n1}"), format!("attachments/{n2}"), "/elsewhere/x.png"]),
+            "store paths travel as names, anything else verbatim"
+        );
+        let params = serde_json::value::to_raw_value(&(Some("s-1"), "look", ByName(&files[..2]), None::<()>)).unwrap();
+        let reply = forward(a.as_ref(), &b.me, "send_input", &params).await.unwrap();
+        assert_eq!(reply.get(), "\"s-1\"");
+        let (text, resolved, _) = seen.recv().await.unwrap();
+        assert_eq!(text, "look");
+        let dir = artifact::mesh::attachments_dir(b_dir.path());
+        assert_eq!(resolved, vec![dir.join(n1), dir.join(n2)], "the owner's own attachments/ paths");
+        assert_eq!(std::fs::read(&resolved[0]).unwrap(), png);
+        assert_eq!(std::fs::read(&resolved[1]).unwrap(), pdf);
     }
 
     #[tokio::test]
@@ -341,7 +470,7 @@ mod tests {
         let (a, b) = pair();
         let (seen_tx, _seen) = mpsc::unbounded_channel();
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx)));
+        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx, b.clone(), std::env::temp_dir())));
         let params = serde_json::value::to_raw_value(&("s-1", "t")).unwrap();
         let e = forward(a.as_ref(), &b.me, "rename_session", &params).await.unwrap_err().unwrap_err();
         assert_eq!(e.code(), -32000);
