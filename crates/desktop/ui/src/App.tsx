@@ -72,7 +72,7 @@ async function quit(): Promise<void> {
 }
 
 /**
- * `info` into the connection store, then the engine's nodes (32 §8.2) and the dictation model (54 §0.5; errors — voice disabled, relay peer — are silent).
+ * `info` into the connection store, then the engine's nodes (32 §8.2) and the dictation model (54 §0.5; a refusal — voice disabled, relay peer — marks the model failed, which hides every field mic and dims the composer's).
  * A mesh row also re-reads `mesh_status` (69 §4): whichever engine is the hub now names the mesh and its members.
  */
 function loadInfo(st: Stores, api: Api): Promise<void> {
@@ -80,7 +80,7 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
     st.connection.getState().setInfo(info)
     void autoPair(st.id, api)
     if (useEngines.getState().engines.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
-    void api.dictation_prewarm().then(setModel).catch(() => undefined)
+    void api.dictation_prewarm().then(setModel, (e: unknown) => setModel({ state: 'failed', message: e instanceof Error ? e.message : String(e) }))
     void refreshStatus(api).catch(() => undefined)
     // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
     void hydrateMeeting(api).catch(() => undefined)

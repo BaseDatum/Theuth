@@ -2,9 +2,10 @@ import { createReactBlockSpec } from '@blocknote/react'
 import { frontmatterConfig } from '@theuth/documents/schema'
 import { type Entry, emitHeader, parseHeader } from '@theuth/documents/yaml'
 import { Check, Pencil, Plus, X } from 'lucide-react'
-import { type KeyboardEvent, type ReactNode, useState } from 'react'
+import { type KeyboardEvent, type ReactNode, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DictationButton } from '@/components/ui/dictation'
 import { Input } from '@/components/ui/input'
 import { cn } from 'cn'
 
@@ -260,6 +261,7 @@ function FreeRow({
 /** Chips; Enter or comma adds, Backspace on an empty input removes the last. */
 function Tags({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
   const [draft, setDraft] = useState('')
+  const input = useRef<HTMLInputElement>(null)
   const commit = () => {
     const t = draft.trim()
     if (t !== '' && !tags.includes(t)) onChange([...tags, t])
@@ -284,6 +286,7 @@ function Tags({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) =
         </span>
       ))}
       <input
+        ref={input}
         className="min-w-16 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         value={draft}
         placeholder={tags.length === 0 ? 'tag, tag' : ''}
@@ -291,6 +294,7 @@ function Tags({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) =
         onKeyDown={onKeyDown}
         onBlur={commit}
       />
+      <DictationButton field={input} />
     </div>
   )
 }

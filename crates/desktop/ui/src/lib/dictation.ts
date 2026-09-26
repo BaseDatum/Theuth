@@ -189,7 +189,7 @@ const subscribe = (cb: () => void) => {
 
 /** The store, re-rendering on change. */
 export function useDictation(): State {
-  return useSyncExternalStore(subscribe, snapshot)
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
 /** `dictation_prewarm`'s answer (App calls it on connect); events keep it current afterwards. */
@@ -211,17 +211,21 @@ export function reason(s: State): string | null {
 }
 
 /**
- * One text box with a mic button (StartForm's context, AskCard's answer): the store is global with one
+ * One text box with a mic button (`components/ui/dictation.tsx`, SearchDialog): the store is global with one
  * `active`, so the box takes an `owner` flag exactly as `Composer.tsx` does and splices the finished text
- * at its caret. `shown` is the live spliced value while dictating; render it read-only then.
+ * at its caret (a selection is replaced). `shown` is the live spliced value while dictating; render it
+ * read-only then. The field's DOM value wins over `value` at start, so uncontrolled fields work too.
+ * `api === null` (not connected): the toggle is a no-op.
  */
+export type Box = { dict: State; dictating: boolean; reason: string | null; toggle: () => void; shown: string }
+
 export function useBox(
-  api: Api,
+  api: Api | null,
   value: string,
-  onChange: (v: string) => void,
+  onChange: (v: string, caret: number) => void,
   ref: RefObject<HTMLInputElement | HTMLTextAreaElement | null>,
   mic: boolean,
-): { dict: State; dictating: boolean; reason: string | null; toggle: () => void; shown: string } {
+): Box {
   const dict = useDictation()
   const [owner, setOwner] = useState(false)
   const ownerRef = useRef(owner)
@@ -230,8 +234,8 @@ export function useBox(
   const why = reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another box' : null)
   useEffect(
     () =>
-      onFinish(({ value }) => {
-        if (ownerRef.current) onChange(value)
+      onFinish(({ value, caret }) => {
+        if (ownerRef.current) onChange(value, caret)
       }),
     [onChange],
   )
@@ -239,6 +243,7 @@ export function useBox(
     if (dict.phase === 'idle') setOwner(false)
   }, [dict.phase])
   const toggle = () => {
+    if (!api) return
     if (dictating) {
       if (dict.phase === 'dictating') void stop(api)
       return
@@ -248,12 +253,18 @@ export function useBox(
       return
     }
     if (dict.phase !== 'idle') return
-    const at = ref.current?.selectionStart ?? value.length
+    const { before, after } = anchor(ref.current?.value ?? value, ref.current?.selectionStart ?? null, ref.current?.selectionEnd ?? null)
     setOwner(true)
-    void start(api, value.slice(0, at), value.slice(at), mic)
+    void start(api, before, after, mic)
   }
   const shown = dictating && dict.active ? splice(dict.active.before, dict.active.after, dict.active.utts).value : value
   return { dict, dictating, reason: why, toggle, shown }
+}
+
+/** The caret anchor: text before the selection and after it, so the dictated region replaces what was selected. No selection → the end. */
+export function anchor(value: string, start: number | null, end: number | null): { before: string; after: string } {
+  const s = start ?? value.length
+  return { before: value.slice(0, s), after: value.slice(Math.max(s, end ?? s)) }
 }
 
 function handle(e: VoiceEvent): void {

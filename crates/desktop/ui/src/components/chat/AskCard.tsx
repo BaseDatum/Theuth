@@ -1,18 +1,15 @@
-import { Mic, Square, Volume2 } from 'lucide-react'
-import { memo, useCallback, useRef, useState } from 'react'
+import { Square, Volume2 } from 'lucide-react'
+import { memo, useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from 'cn'
-import * as dictation from '@/lib/dictation'
 import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
-import { LOCAL, useEngines } from '@/link/engines'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { Question } from '@/rpc/bindings/Question'
-import { LevelMeter } from './LevelMeter'
 import { ActionButton } from './MessageAssistant'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
@@ -49,37 +46,9 @@ function ReadAloud({ session, entryKey, text }: { session: string; entryKey: str
   return <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={toggle} className="size-8 shrink-0 [&_svg]:size-4" />
 }
 
-/** The `Type your own…` box with a mic (54; `dictation.useBox`). */
-function OwnAnswer({ value, active, onChange, voice }: { value: string; active: boolean; onChange: (v: string) => void; voice: boolean }) {
-  const api = useApi()
-  const ref = useRef<HTMLInputElement>(null)
-  const mic = useEngines((s) => s.active) !== LOCAL
-  const { dict, dictating, reason, toggle, shown } = dictation.useBox(api, value, onChange, ref, mic)
-  return (
-    <div className="relative min-w-0 flex-1">
-      <Input
-        ref={ref}
-        placeholder="Type your own…"
-        value={shown}
-        readOnly={dictating}
-        onChange={(e) => onChange(e.target.value)}
-        className={cn('h-8 text-sm', voice && 'pr-9', active && 'border-fg-accent')}
-      />
-      {voice && (
-        <Button
-          type="button"
-          variant="ghost"
-          className={cn('absolute top-0 right-0 rounded-full', dictating ? 'h-8 w-20 bg-fg-accent/10 p-0' : 'size-8', reason && !dictating && 'opacity-50')}
-          aria-label={dictating ? 'Stop dictation' : 'Dictate'}
-          aria-disabled={reason !== null && !dictating}
-          title={reason ?? undefined}
-          onClick={toggle}
-        >
-          {dictating && dict.active ? <LevelMeter levels={dict.active.levels} active /> : <Mic className="size-4" />}
-        </Button>
-      )}
-    </div>
-  )
+/** The `Type your own…` box; the `Input` carries the dictation mic (54). */
+function OwnAnswer({ value, active, onChange }: { value: string; active: boolean; onChange: (v: string) => void }) {
+  return <Input placeholder="Type your own…" value={value} onChange={(e) => onChange(e.target.value)} className={cn('h-8 min-w-0 flex-1 text-sm', active && 'border-fg-accent')} />
 }
 
 /** One question. `locked`: the answer was sent; everything renders but nothing changes. */
@@ -146,7 +115,7 @@ function QuestionBlock({
           )
         ) : (
           <div className="flex items-center gap-2">
-            <OwnAnswer value={typing ? draft.text : ''} active={typing} onChange={setText} voice={voice} />
+            <OwnAnswer value={typing ? draft.text : ''} active={typing} onChange={setText} />
             <Button
               type="button"
               size="sm"

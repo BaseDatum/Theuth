@@ -13,6 +13,7 @@ import { titleAfter } from '@/components/notes/title'
 import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
+import { DictationButton } from '@/components/ui/dictation'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { type AttachRef, subtitle } from '@/lib/attach'
 import type { EngineProvider } from '@/lib/doc/provider'
@@ -116,12 +117,15 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
       backTo="/notes"
       backLabel="Back to notes"
       title={
-        <TitleInput
-          ref={titleInput}
-          value={title}
-          disabled={!live.provider || deleted}
-          onCommit={(t) => t !== title && rename.mutate(t)}
-        />
+        <>
+          <TitleInput
+            ref={titleInput}
+            value={title}
+            disabled={!live.provider || deleted}
+            onCommit={(t) => t !== title && rename.mutate(t)}
+          />
+          {!deleted && <DictationButton field={titleInput} />}
+        </>
       }
       actions={
         <>

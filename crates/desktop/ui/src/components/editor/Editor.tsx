@@ -19,6 +19,7 @@ import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
+import { DictationButton } from '@/components/ui/dictation'
 import type { AgentPresence, DocStatus, EngineProvider } from '@/lib/doc/provider'
 import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
@@ -183,6 +184,15 @@ export function Editor({
         </span>
         {fromFile && <span>updated from file {hhmm(fromFile)}</span>}
         {exported && !fromFile && <span>exported {hhmm(exported)}</span>}
+        {editable && (
+          <DictationButton
+            onText={(text) => {
+              if (!text) return
+              editor.insertInlineContent(text)
+              editor.focus()
+            }}
+          />
+        )}
         {agent && (
           <span
             className="ml-auto rounded px-1.5 text-white"

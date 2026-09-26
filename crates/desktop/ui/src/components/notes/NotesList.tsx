@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
-import { type KeyboardEvent, useState } from 'react'
+import { type KeyboardEvent, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
 import { createNote } from '@/components/notes/create'
@@ -10,6 +10,7 @@ import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
+import { DictationButton } from '@/components/ui/dictation'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -94,6 +95,7 @@ function Row({ note }: { note: DocSummary }) {
     },
     onError: (e) => toast.error(e.message),
   })
+  const renameInput = useRef<HTMLInputElement>(null)
   const commit = () => {
     const t = renaming?.trim()
     setRenaming(null)
@@ -110,15 +112,19 @@ function Row({ note }: { note: DocSummary }) {
     <li className="group flex items-center gap-2 rounded-[10px] px-2.5 hover:bg-layer-2">
       <StickyNote className="size-4 shrink-0 text-fg-tertiary" />
       {renaming !== null ? (
-        <input
-          autoFocus
-          aria-label="Title"
-          className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none"
-          value={renaming}
-          onChange={(e) => setRenaming(e.target.value)}
-          onBlur={commit}
-          onKeyDown={onKeyDown}
-        />
+        <>
+          <input
+            ref={renameInput}
+            autoFocus
+            aria-label="Title"
+            className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none"
+            value={renaming}
+            onChange={(e) => setRenaming(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKeyDown}
+          />
+          <DictationButton field={renameInput} />
+        </>
       ) : (
         <Link
           to="/notes/$id"
