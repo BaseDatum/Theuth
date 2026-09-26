@@ -1,4 +1,4 @@
-import { ChevronDown, Globe, Loader2 } from 'lucide-react'
+import { ChevronDown, Globe, Loader2, Wrench } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
 import { type Source, domainOf, sourcesFromResult, uniqueDomains, urlsFromResult } from '@/lib/scrape'
 import { describe, resultLine } from '@/lib/describe'
@@ -116,7 +116,7 @@ export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: To
         onClick={() => expandable && setExpanded((v) => !v)}
       >
         <div className="flex items-center gap-2 font-medium">
-          <span className="shrink-0 text-fg-secondary">{tool.child ? '↳' : '⚙'}</span>
+          {tool.child ? <span className="shrink-0 text-fg-secondary">↳</span> : <Wrench className="size-3.5 shrink-0 text-fg-secondary" />}
           <span className="wrap-anywhere">{tool.name}</span>
           {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
         </div>

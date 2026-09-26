@@ -239,7 +239,7 @@ export function graphText(g: GraphValue): string {
     active: "◉",
     done: "●",
     muted: "○",
-    danger: "✖",
+    danger: "✗",
   };
   const label = new Map(g.nodes.map((n) => [n.id, n.label]));
   const line = (n: GraphValue["nodes"][number], indent: string) => {

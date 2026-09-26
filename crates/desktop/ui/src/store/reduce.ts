@@ -274,12 +274,12 @@ function userEntries(
           text: c.text,
           context,
         };
-      // 14 as-built: `⏲ Reminder r3 · after 10 min`, the model's message as the body.
+      // 14 as-built: `Reminder r3 · after 10 min` (MessagePeer draws the timer icon), the model's message as the body.
       case "reminder":
         return {
           id: nextId(),
           kind: "peer",
-          from: `⏲ Reminder ${c.id} · after ${humanSecs(c.after)}${c.late ? " · late" : ""}`,
+          from: `Reminder ${c.id} · after ${humanSecs(c.after)}${c.late ? " · late" : ""}`,
           text: c.text,
           context,
         };

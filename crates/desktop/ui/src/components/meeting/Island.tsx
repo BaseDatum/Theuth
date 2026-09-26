@@ -330,7 +330,7 @@ const VERDICT_MS = 4000
 
 /**
  * 57 §3.4 state chip beside the clock: the mode badge (`shadow` / `active`; nothing when off) and the live
- * indicator `⚡ deciding` → `skip` (fades) / `brief` / `→ model`. The tooltip carries the session counters.
+ * indicator Zap `deciding` → `skip` (fades) / `brief` / `→ model`. The tooltip carries the session counters.
  */
 function OracleChip() {
   const api = useApi()
@@ -349,7 +349,7 @@ function OracleChip() {
   const effective = last?.mode ?? mode.data?.effective ?? 'off'
   if (effective === 'off' && !deciding && !last) return null
   const verdict = deciding
-    ? '⚡ deciding'
+    ? 'deciding'
     : last && !faded
       ? last.disposition.kind === 'skip'
         ? 'skip'
@@ -363,6 +363,7 @@ function OracleChip() {
       title={oracleSummary(oracle) ?? `decision oracle ${effective}`}
     >
       {effective !== 'off' && <span className="uppercase tracking-wide">{effective}</span>}
+      {deciding && <Zap className="size-2.5 text-fg-accent" />}
       {verdict && <span className={cn('transition-opacity', deciding && 'text-fg-accent', last?.disposition.kind === 'skip' && !deciding && 'opacity-60')}>{verdict}</span>}
     </span>
   )
@@ -452,7 +453,7 @@ function Meters() {
   )
 }
 
-/** `rec mm:ss` on the recording clock; `⏸` while paused. */
+/** `rec mm:ss` on the recording clock; a pause icon while paused. */
 function Clock({ state }: { state: MeetingState }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
@@ -462,8 +463,8 @@ function Clock({ state }: { state: MeetingState }) {
   }, [state])
   const ms = elapsed(useMeeting.getState(), now)
   return (
-    <span className="shrink-0 font-mono text-[11px] tabular-nums text-fg-secondary">
-      {state === 'Paused' ? '⏸' : 'rec'} {mmss(ms)}
+    <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums text-fg-secondary">
+      {state === 'Paused' ? <Pause className="size-3" /> : 'rec'} {mmss(ms)}
     </span>
   )
 }

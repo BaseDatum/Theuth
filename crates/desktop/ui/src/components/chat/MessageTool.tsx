@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, Timer, Wrench } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { codeDetails, describe, resultLine } from '@/lib/describe'
@@ -101,13 +101,13 @@ function ReminderCard({ tool, session }: { tool: Tool; session: string }) {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [firesAt, now])
-  const delivered = useSessions((s) => id !== undefined && !!s.sessions[session]?.entries.some((e) => e.kind === 'peer' && e.from.startsWith(`⏲ Reminder ${id} `)))
+  const delivered = useSessions((s) => id !== undefined && !!s.sessions[session]?.entries.some((e) => e.kind === 'peer' && e.from.startsWith(`Reminder ${id} `)))
   const failed = tool.result?.isError
   const state = failed ? undefined : delivered ? 'delivered' : firesAt === undefined ? undefined : firesAt > now ? countdown(firesAt - now) : 'fired'
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
       <div className="flex items-center gap-2 font-medium">
-        <span className="shrink-0 text-fg-secondary">⏲</span>
+        <Timer className="size-3.5 shrink-0 text-fg-secondary" />
         <span className="wrap-anywhere">Reminder{id ? ` ${id}` : ''}</span>
         {(tool.pending || !tool.result) && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
         {state && <span className={cn('ml-auto shrink-0 font-mono text-xs tabular-nums', state === 'delivered' ? 'text-success' : 'text-fg-tertiary')}>{state}</span>}
@@ -118,7 +118,7 @@ function ReminderCard({ tool, session }: { tool: Tool; session: string }) {
   )
 }
 
-/** `⚙ name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` or `app` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first).
+/** Wrench + `name` row with the described arguments; ✓/✗ + first result line when done, click shows the whole output. A `show` or `app` call is an artifact card; `crawl`/`map_site`/`scrape_url`/`search_web` show stacked site favicons (search lists its sources, read ones first).
  * Specialized cards draw their own previews; the stored, model-visible occurrences (48 §2.3) render beneath them with their removal controls, since an artifact on screen is not necessarily in the frame and removing an occurrence never deletes the artifact.
  * `readOnly` (an inspection page) shows the occurrences without removal controls. */
 export const MessageTool = memo(function MessageTool({ tool, session, readOnly }: { tool: Tool; session: string; readOnly?: boolean }) {
@@ -160,7 +160,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
         onClick={() => expandable && setExpanded((v) => !v)}
       >
         <div className="flex items-center gap-2 font-medium">
-          <span className="shrink-0 text-fg-secondary">{tool.child ? '↳' : '⚙'}</span>
+          {tool.child ? <span className="shrink-0 text-fg-secondary">↳</span> : <Wrench className="size-3.5 shrink-0 text-fg-secondary" />}
           <span className="wrap-anywhere">{tool.name}</span>
           {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
         </div>

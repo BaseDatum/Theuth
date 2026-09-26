@@ -163,7 +163,7 @@ export function GraphSvg({
   )
 }
 
-const GLYPH: Record<GraphState, string> = { active: '◉', done: '●', muted: '○', danger: '✖', default: '•' }
+const GLYPH: Record<GraphState, string> = { active: '◉', done: '●', muted: '○', danger: '✗', default: '•' }
 
 /** `crates/surface::graph::adjacency_lines` in TS: what the card shows when the layout times out. */
 export function adjacencyText(g: GraphData): string {

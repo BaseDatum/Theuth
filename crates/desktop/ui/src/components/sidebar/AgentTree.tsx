@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { Hourglass, TriangleAlert } from 'lucide-react'
 import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 'react'
 import { counts } from '@/components/chat/broadcast'
 import { useSessionDrag } from '@/components/chat/Panes'
@@ -12,11 +13,11 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField, useSessions } from '@/store/sessions'
 
-export const GLYPH: Record<AgentState['state'], string> = {
+export const GLYPH: Record<AgentState['state'], ReactNode> = {
   running: '●',
   idle: '○',
-  awaiting: '⏳',
-  approval: '⚠',
+  awaiting: <Hourglass className="inline size-3" />,
+  approval: <TriangleAlert className="inline size-3 text-warning" />,
   error: '✗',
   cancelled: '■',
 }

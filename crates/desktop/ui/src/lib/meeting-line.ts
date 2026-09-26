@@ -1,7 +1,7 @@
 // 53 §4.4 / 02 §3: the `[meeting …]` user lines the daemon writes into a meeting's session — transcript
 // batches, requests, taps, dismissals, deeper asks, the start line. The marker is the text (45 §7.4's
 // pattern), so the transcript card recognises them by parsing, not by metadata. 57 §3.4: the oracle's
-// `⚡` status row text, and which batch stamps a batch card covers (its own plus the ones the oracle skipped
+// status row text (drawn under a Zap icon), and which batch stamps a batch card covers (its own plus the ones the oracle skipped
 // and the daemon carried into it).
 
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
@@ -27,8 +27,8 @@ export function batchStamps(line: MeetingLine): string[] {
 
 /**
  * One line per oracle-handled batch (57 §3.5): the stages in order, empty ones omitted —
- * `⚡ kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms`,
- * `⚡ kind: small talk 0.79 → skip · 78 ms`, `⚡ kind: subject 0.88 · brief: SRE-2386 0.91 → published · 81 ms`;
+ * `kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms`,
+ * `kind: small talk 0.79 → skip · 78 ms`, `kind: subject 0.88 · brief: SRE-2386 0.91 → published · 81 ms`;
  * shadow appends `✓ agreed` / `✗ model published HR-12`.
  */
 export function oracleRow(d: OracleDecision): string {
@@ -40,7 +40,7 @@ export function oracleRow(d: OracleDecision): string {
   if (d.tier2 !== null) parts.push(`tier 2: ${d.tier2}`)
   const disp = d.disposition
   const went = disp.kind === 'skip' ? 'skip' : disp.kind === 'brief' ? `published ${disp.title}` : 'model'
-  let s = `⚡ ${parts.join(' · ')} → ${went} · ${d.latency_ms} ms`
+  let s = `${parts.join(' · ')} → ${went} · ${d.latency_ms} ms`
   if (d.outcome) s += d.outcome.agreed ? ' · ✓ agreed' : d.outcome.published ? ` · ✗ model published ${d.outcome.published}` : ' · ✗ model did nothing'
   return s
 }

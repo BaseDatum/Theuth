@@ -90,6 +90,6 @@ test('closed-fence parsing rejects the broken graph fixtures at the Rust paths',
 
 test('adjacencyText matches the surface crate list at unbounded width', () => {
   expect(adjacencyText(graphOf('graph-architecture'))).toBe(
-    'Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (reads)\n  ◉ Worker → Postgres (writes), Mailer (notify)\n  • Postgres\n✖ Mailer',
+    'Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (reads)\n  ◉ Worker → Postgres (writes), Mailer (notify)\n  • Postgres\n✗ Mailer',
   )
 })

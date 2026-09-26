@@ -123,7 +123,7 @@ test('57 §3.4: OracleDeciding lights the chip; a verdict replaces it and an out
   expect(s.oracle[1]?.outcome?.published).toBe('HR-12')
   s = reduce(s, { type: 'OracleDecision', meeting: M, decision: verdict('00:14:32', 'skip', { agreed: true, published: null }) })
   expect(oracleCounters(s.oracle)).toEqual({ skipped: 1, briefs: 1, escalated: 1, tier2: 0, agreed: 50 })
-  expect(oracleSummary(s.oracle)).toBe('⚡ 1 skipped · 1 brief · 1 escalated · 0 tier 2 calls · agreed 50 %')
+  expect(oracleSummary(s.oracle)).toBe('1 skipped · 1 brief · 1 escalated · 0 tier 2 calls · agreed 50 %')
   // Another meeting's verdicts are ignored; the ring keeps the last ORACLE_KEEP.
   s = reduce(s, { type: 'OracleDecision', meeting: 'other', decision: verdict('00:16:00', 'skip') })
   expect(s.oracle.length).toBe(3)

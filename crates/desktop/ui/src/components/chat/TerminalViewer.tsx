@@ -119,7 +119,7 @@ export function Terminal({ session, job, label, popped = false }: JobRef & { lab
     term.open(el)
     termRef.current = term
     fit.fit()
-    // A phone's keyboard covers half the terminal: tap (or the ⌨ button) asks for it.
+    // A phone's keyboard covers half the terminal: tap (or the keyboard button) asks for it.
     if (!mobile) term.focus()
     const ta = term.textarea!
     const focused = () => setKeyboard(true)

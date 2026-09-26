@@ -15,6 +15,7 @@ import {
   PanelRight,
   Table,
   Workflow,
+  Wrench,
 } from "lucide-react";
 import {
   memo,
@@ -332,7 +333,7 @@ function Preview({ a, text }: { a: Artifact; text: string | null }) {
   );
 }
 
-/** The card frame — the same box as every other tool card (`MessageTool`): `⚙ <name>` header, then the preview
+/** The card frame — the same box as every other tool card (`MessageTool`): wrench + `<name>` header, then the preview
  * slot on the left and the body on the right; `onClick` opens the panel. */
 function Frame({
   name,
@@ -363,7 +364,7 @@ function Frame({
       onClick={click}
     >
       <div className="flex items-center gap-2 font-medium">
-        <span className="shrink-0 text-fg-secondary">⚙</span>
+        <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
         <span>{name}</span>
         {busy && (
           <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />

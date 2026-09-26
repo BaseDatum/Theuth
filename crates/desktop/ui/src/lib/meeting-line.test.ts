@@ -33,7 +33,7 @@ test('recognises every daemon line shape and nothing else', () => {
   expect(parseMeetingLine('[meeting] nonsense')).toBeNull()
 })
 
-// 57 §3.5: the `⚡` row text (stages in order, empty ones omitted) and which stamps a batch card owns.
+// 57 §3.5: the oracle row text (stages in order, empty ones omitted) and which stamps a batch card owns.
 test('oracle rows read as the design shows them; carried stamps attach to the delivering card', () => {
   const base: OracleDecision = {
     batch_id: '00:14:32',
@@ -49,7 +49,7 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
     tier: 1,
     outcome: null,
   }
-  expect(oracleRow(base)).toBe('⚡ kind: small talk 0.79 → skip · 78 ms')
+  expect(oracleRow(base)).toBe('kind: small talk 0.79 → skip · 78 ms')
   expect(
     oracleRow({
       ...base,
@@ -60,7 +60,7 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
       top: [['SRE-2386', 0.91], ['none', 0.05]],
       latency_ms: 81n,
     }),
-  ).toBe('⚡ kind: subject 0.88 · mentions: SRE-2386 · brief: SRE-2386 0.91 → published SRE-2386 · 81 ms')
+  ).toBe('kind: subject 0.88 · mentions: SRE-2386 · brief: SRE-2386 0.91 → published SRE-2386 · 81 ms')
   expect(
     oracleRow({
       ...base,
@@ -74,11 +74,11 @@ test('oracle rows read as the design shows them; carried stamps attach to the de
       latency_ms: 1442n,
       tier: 3,
     }),
-  ).toBe('⚡ kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms')
+  ).toBe('kind: subject 0.91 · mentions: Kuiper belt, Constantin · brief: none 0.57 · tier 2: "Planet Nine" → no cached brief → model · 1442 ms')
   expect(oracleRow({ ...base, tier: 2, tier2: 'nothing to look up', outcome: { agreed: true, published: null } })).toBe(
-    '⚡ kind: small talk 0.79 · tier 2: nothing to look up → skip · 78 ms · ✓ agreed',
+    'kind: small talk 0.79 · tier 2: nothing to look up → skip · 78 ms · ✓ agreed',
   )
-  expect(oracleRow({ ...base, mode: 'shadow', outcome: { agreed: false, published: 'HR-12' } })).toBe('⚡ kind: small talk 0.79 → skip · 78 ms · ✗ model published HR-12')
+  expect(oracleRow({ ...base, mode: 'shadow', outcome: { agreed: false, published: 'HR-12' } })).toBe('kind: small talk 0.79 → skip · 78 ms · ✗ model published HR-12')
 
   const plain = parseMeetingLine('[meeting 00:14:32] live: none · dismissed: none\nthem: hi')
   expect(plain && batchStamps(plain)).toEqual(['00:14:32'])
