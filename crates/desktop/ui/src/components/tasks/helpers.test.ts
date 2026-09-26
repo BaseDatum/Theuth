@@ -33,6 +33,7 @@ test('blockers parse by prefix; a bare id is a task', () => {
   expect(parseBlocker('decision:apr-1')).toMatchObject({ kind: 'decision', id: 'apr-1' })
   expect(parseBlocker('person:sky')).toMatchObject({ kind: 'person', id: 'sky' })
   expect(parseBlocker('engine:build-B').kind).toBe('other')
+  expect(parseBlocker('no continuation').kind).toBe('other')
 })
 
 test('queue predicates: human blockers and my reviews only', () => {
@@ -51,6 +52,9 @@ test('mark done is gated by the reviewer; cancel never from review; start and pu
   expect(actionsFor(task({ state: 'done' })).cancel).toBe(false)
   expect(actionsFor(task({ state: 'backlog' }))).toMatchObject({ start: true, toBacklog: false, cancel: true })
   expect(actionsFor(task({ state: 'todo' }))).toMatchObject({ start: false, toBacklog: true })
+  expect(actionsFor(task({ state: 'blocked', blockers: ['no continuation'] })).unblock).toBe(true)
+  expect(actionsFor(task({ state: 'blocked', blockers: ['no continuation', 'decision:d1'] })).unblock).toBe(false)
+  expect(actionsFor(task({ state: 'doing' })).unblock).toBe(false)
 })
 
 test('columns start with backlog, hide cancelled unless asked and keep order', () => {
