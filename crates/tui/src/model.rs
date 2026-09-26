@@ -9177,6 +9177,8 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             t.reveal_all();
             vec![Entry::Assistant(Box::new(t))]
         }
+        // 70 THINKING-TRACES: the reload shows the same one-line collapsed block the stream left.
+        HistoryEntry::Reasoning { text, .. } => vec![Entry::Reasoning { text, done: true }],
         HistoryEntry::Tool {
             call_id,
             name,

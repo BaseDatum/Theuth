@@ -1126,6 +1126,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             writeln!(out, "> {}{}", attach::display(&text), labels(context))
         }
         agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
+        agent::HistoryEntry::Reasoning { text, .. } => writeln!(out, "\x1b[2m💭 {text}\x1b[0m"),
         agent::HistoryEntry::Tool {
             name,
             args,
@@ -1162,7 +1163,16 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
 }
 
 fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
+    // Thinking streams dim under a `💭` header (70 THINKING-TRACES); anything else closes the block.
+    let thinking = matches!(model.entries.last(), Some(model::Entry::Reasoning { done: false, .. }));
+    if thinking && !matches!(ev, UiEvent::Agent(AgentEvent::ReasoningDelta { .. })) {
+        let _ = writeln!(out, "\x1b[0m");
+    }
     let _ = match ev {
+        UiEvent::Agent(AgentEvent::ReasoningDelta { text, .. }) => {
+            let head = if thinking { "" } else { "\x1b[2m💭 " };
+            write!(out, "{head}{text}").and_then(|()| out.flush())
+        }
         UiEvent::Agent(AgentEvent::SubagentSpawned { name, .. }) => {
             writeln!(out, "↳ spawned {name}")
         }

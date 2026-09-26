@@ -80,14 +80,15 @@ pub enum ReasoningOption {
 impl Model {
     /// Effort keywords the model accepts: the `effort` option's values verbatim, or
     /// `low|medium|high` for a `budget_tokens`-only model (genai maps them to budgets);
-    /// `off` is prepended when the model has a `toggle`, so toggle-only → `off|on`.
+    /// `off` is prepended for every steerable model (theuth enables thinking by default
+    /// on Anthropic, 70 THINKING-TRACES), so toggle-only → `off|on`.
     pub fn efforts(&self) -> Vec<String> {
         let mut out = Vec::new();
         let toggle = self
             .reasoning_options
             .iter()
             .any(|o| matches!(o, ReasoningOption::Toggle));
-        if toggle {
+        if !self.reasoning_options.is_empty() {
             out.push("off".to_owned());
         }
         let effort = self.reasoning_options.iter().find_map(|o| match o {
@@ -601,7 +602,7 @@ mod tests {
                 max: None,
             },
         ]);
-        assert_eq!(m.efforts(), ["low", "high", "max"]);
+        assert_eq!(m.efforts(), ["off", "low", "high", "max"]);
         // Anthropic rejects a budget inside `thinking.adaptive`; keyword-only.
         assert_eq!(m.budget(), None);
         assert!(m.validate_effort("4096").is_err());
@@ -620,7 +621,7 @@ mod tests {
             min: 1024,
             max: Some(81920),
         }]);
-        assert_eq!(m.efforts(), ["low", "medium", "high"]);
+        assert_eq!(m.efforts(), ["off", "low", "medium", "high"]);
         assert_eq!(m.budget(), Some((1024, Some(81920))));
     }
 

@@ -60,6 +60,26 @@ test('deltas append to one open assistant entry; a tool event closes it', () => 
   expect(s.waiting).toBe(false)
 })
 
+test('reasoning deltas stream into one entry that closes when the answer starts', () => {
+  const s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'Let me ' },
+    { type: 'ReasoningDelta', session: S, turn: T, text: 'think.' },
+  ])
+  expect(s.entries.map((e) => e.kind)).toEqual(['user', 'reasoning'])
+  expect(s.entries[1]).toMatchObject({ kind: 'reasoning', text: 'Let me think.', done: false })
+  expect(s.activity).toBe('reasoning')
+  const t = apply(s, { type: 'TextDelta', session: S, turn: T, text: 'Red.' }, ctx())
+  expect(t.entries.map((e) => e.kind)).toEqual(['user', 'reasoning', 'assistant'])
+  expect(t.entries[1]).toMatchObject({ kind: 'reasoning', done: true })
+  // A second thinking block (after a tool call) is its own entry, not appended to the closed one.
+  const u = apply(t, { type: 'ReasoningDelta', session: S, turn: T, text: 'More.' }, ctx())
+  expect(u.entries.map((e) => e.kind)).toEqual(['user', 'reasoning', 'assistant', 'reasoning'])
+  expect(u.entries[3]).toMatchObject({ kind: 'reasoning', text: 'More.', done: false })
+  // A reload rebuilds the same collapsed block from the stored row.
+  expect(fromHistory({ role: 'reasoning', text: 'Let me think.', turn: 1 })).toMatchObject([{ kind: 'reasoning', text: 'Let me think.', done: true }])
+})
+
 test('tool-only turns omit whitespace assistant rows', () => {
   const s = run([
     { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 },

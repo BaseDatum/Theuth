@@ -193,8 +193,12 @@ user's comments; a line edit is 15 lines and lossless.
 ### 2.1 Effort
 
 Reasoning effort is a **setting separate from the model id**. Precedence:
-session value > `agent.effort` (config) > provider default (unset, nothing
-sent). `subagents.effort` is the child default; `None` → `agent.effort`.
+session value > `agent.effort` (config) > theuth's per-model default
+(`frame::default_effort`, 70 THINKING-TRACES: `medium` for a catalog
+`reasoning: true` model on the Anthropic adapter or Bedrock's Anthropic
+publisher, whose API leaves thinking off unless asked; nothing sent for every
+other provider). `off` is accepted by every steerable model so the default can
+be undone. `subagents.effort` is the child default; `None` → `agent.effort`.
 
 ```rust
 pub struct AgentConfig { …, pub effort: Option<String> }

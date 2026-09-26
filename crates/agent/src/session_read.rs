@@ -196,7 +196,7 @@ fn outline_line(s: &mut String, n: usize, turn: &[HistoryEntry]) {
             HistoryEntry::Compacted { epoch, .. } => {
                 let _ = write!(s, " [compacted, epoch {epoch}]");
             }
-            HistoryEntry::Error { .. } => {}
+            HistoryEntry::Error { .. } | HistoryEntry::Reasoning { .. } => {}
         }
     }
     if let Some(a) = assistant {
@@ -250,6 +250,8 @@ fn turn_text(s: &mut String, n: usize, turn: &[HistoryEntry], with_tools: bool) 
             HistoryEntry::Error { text, .. } => {
                 let _ = writeln!(s, "#{n} error: {}", first_line(text, LINE));
             }
+            // Thinking is the model's scratch work, not part of the transcript another session reads.
+            HistoryEntry::Reasoning { .. } => {}
         }
     }
 }

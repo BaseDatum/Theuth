@@ -1434,6 +1434,22 @@ pub enum HistoryEntry {
         #[cfg_attr(feature = "ts", ts(optional))]
         context: Option<ContextEntry>,
     },
+    /// The thinking the assistant did before the reply or tool calls that
+    /// follow it (70 THINKING-TRACES): the stored row's `ReasoningContent`
+    /// parts, so a reload shows the same collapsed block the live
+    /// `ReasoningDelta` stream built.
+    Reasoning {
+        /// Text.
+        text: String,
+        /// Seq of the user row that opened the turn (design doc 29 §4.3).
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+        turn: Option<i64>,
+        /// Context membership of the assistant row that carries the thinking.
+        #[serde(default)]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        context: Option<ContextEntry>,
+    },
     /// A tool call and its result; `result` is `None` while the call is
     /// still running (a session loaded mid-turn), and `ToolCallFinished`
     /// with the same `call_id` completes it.
@@ -1491,6 +1507,7 @@ impl HistoryEntry {
         match self {
             Self::User { context, .. }
             | Self::Assistant { context, .. }
+            | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
             | Self::Error { context, .. } => context.as_ref(),
@@ -1502,6 +1519,7 @@ impl HistoryEntry {
         match self {
             Self::User { context, .. }
             | Self::Assistant { context, .. }
+            | Self::Reasoning { context, .. }
             | Self::Tool { context, .. }
             | Self::Compacted { context, .. }
             | Self::Error { context, .. } => context.as_mut(),
