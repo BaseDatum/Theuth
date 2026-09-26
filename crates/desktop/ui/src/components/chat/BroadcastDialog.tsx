@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { GLYPH, ago } from '@/components/sidebar/AgentTree'
+import { Branch, GLYPH, ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { childrenOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { Delivery } from '@/rpc/bindings/Delivery'
@@ -165,15 +166,19 @@ function Form({
             {groups.map((g) => (
               <li key={g.root.id}>
                 <Row row={g.root} checked={ids.has(g.root.id)} now={now} sessions={sessions} onToggle={toggle} />
-                {g.children.length > 0 && (
-                  <ul>
-                    {g.children.map((c) => (
-                      <li key={c.id}>
-                        <Row row={c} checked={ids.has(c.id)} now={now} sessions={sessions} onToggle={toggle} />
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <Branch
+                  parent={g.root.id}
+                  byParent={childrenOf(g.children)}
+                  sessions={sessions ?? []}
+                  unit={16}
+                  moreClass="flex min-h-11 w-full items-center rounded-lg py-2 pr-2 text-left text-fg-tertiary hover:bg-layer-2"
+                  render={(r, sub) => (
+                    <>
+                      <Row row={r} checked={ids.has(r.id)} now={now} sessions={sessions} onToggle={toggle} />
+                      {sub}
+                    </>
+                  )}
+                />
               </li>
             ))}
           </ul>

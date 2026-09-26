@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { memo, useEffect, useState } from 'react'
+import { Fragment, type ReactNode, memo, useEffect, useMemo, useState } from 'react'
 import { counts } from '@/components/chat/broadcast'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { cappedTree } from '@/lib/session-tree'
+import { cappedTree, childrenOf, live, withAncestors } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -86,30 +86,59 @@ const Row = memo(function Row({
   )
 })
 
-/** A subagent that still wants eyes: running, waiting on a peer, or blocked on an approval. Finished rows (idle, cancelled, error) are not. */
-export const live = (state: AgentState['state']): boolean => state === 'running' || state === 'awaiting' || state === 'approval'
-
 /**
- * A session's subtree: seeded from `list_agents` when it appears, live from events after; one indented row per
- * subagent. `liveOnly` keeps just the `live` rows — a desk that is not the open chat shows what is working, not its
- * history. With `cap` (the desk's rows from `list_sessions`, for `updated_at`) the tree shows `TREE_CAP` rows —
- * running first, newest next — and a `Show more` row for the rest; `Show less` folds it back. Nothing is persisted:
- * every mount starts folded.
+ * One parent's children under the one subagent-list rule (`cappedTree`): ranked live-first / most-recent, `TREE_CAP`
+ * at a time behind a `Show more (N)` row (`Show less` once open — component state, never persisted), the `keep` rows
+ * (the open chat and its ancestors) always shown. Each row renders through `render(row, sub)` where `sub` is the
+ * row's own `Branch`; the fold button takes `moreClass` and indents like a row of that depth (`unit` px per level).
  */
-export function AgentTree({
-  session,
-  active,
-  liveOnly = false,
-  cap,
+export function Branch({
+  parent,
+  byParent,
+  sessions,
+  keep,
+  unit,
+  moreClass,
+  render,
 }: {
-  session: string
-  active: string | undefined
-  liveOnly?: boolean
-  cap?: readonly SessionSummary[]
+  parent: string
+  byParent: ReadonlyMap<string, readonly AgentInfo[]>
+  sessions: readonly SessionSummary[]
+  keep?: ReadonlySet<string>
+  unit: number
+  moreClass: string
+  render(row: AgentInfo, sub: ReactNode): ReactNode
 }) {
   const [expanded, setExpanded] = useState(false)
+  const rows = byParent.get(parent)
+  if (!rows?.length) return null
+  const { shown, hidden } = cappedTree(rows, sessions, expanded, keep)
+  return (
+    <>
+      {shown.map((r) => (
+        <Fragment key={r.id}>
+          {render(r, <Branch parent={r.id} byParent={byParent} sessions={sessions} keep={keep} unit={unit} moreClass={moreClass} render={render} />)}
+        </Fragment>
+      ))}
+      {(hidden > 0 || expanded) && (
+        <button type="button" className={moreClass} style={{ paddingLeft: 8 + (rows[0]?.depth ?? 1) * unit }} onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Show less' : `Show more (${hidden})`}
+        </button>
+      )}
+    </>
+  )
+}
+
+/**
+ * A session's subtree: seeded from `list_agents` when it appears, live from events after; each parent's children as
+ * a `Branch` (ranked and capped on their own, the open chat's path always visible). `liveOnly` keeps just the `live`
+ * rows and their ancestors — a desk that is not the open chat shows what is working, not its history.
+ */
+export function AgentTree({ session, active, liveOnly = false }: { session: string; active: string | undefined; liveOnly?: boolean }) {
   const api = useApi()
   const children = useSessionField(session, 'children')
+  // The sidebar keeps `list_sessions` warm; it lends `updated_at`/`created_at` to the ranking.
+  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
@@ -121,28 +150,35 @@ export function AgentTree({
       () => {},
     )
   }, [api, session])
-  const all = children ? Object.values(children).filter((r) => !liveOnly || live(r.state.state)) : []
-  const { shown: rows, hidden } = cap ? cappedTree(all, cap, expanded) : { shown: all, hidden: 0 }
+  const { byParent, keep, some } = useMemo(() => {
+    const rows = children ?? {}
+    const all = Object.values(rows)
+    const wanted = liveOnly ? withAncestors(rows, all.filter((r) => live(r.state.state)).map((r) => r.id)) : null
+    const kept = wanted ? all.filter((r) => wanted.has(r.id)) : all
+    return { byParent: childrenOf(kept), keep: withAncestors(rows, active ? [active] : []), some: kept.length > 0 }
+  }, [children, liveOnly, active])
   const { data: cost } = useQuery({
     queryKey: queryKeys.sessionCost(session),
     queryFn: () => api.session_cost(session),
-    enabled: rows.length > 0,
+    enabled: some,
   })
-  if (all.length === 0) return null
+  if (!some) return null
   return (
     <div className="mx-1 mb-1 flex flex-col">
-      {rows.map((r) => (
-        <Row key={r.id} row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
-      ))}
-      {(hidden > 0 || expanded) && (
-        <button
-          type="button"
-          className="flex h-7 items-center gap-1.5 rounded-md pr-2 pl-5 text-xs text-fg-tertiary hover:bg-sidebar-accent"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {expanded ? 'Show less' : `Show ${hidden} more`}
-        </button>
-      )}
+      <Branch
+        parent={session}
+        byParent={byParent}
+        sessions={sessions}
+        keep={keep}
+        unit={12}
+        moreClass="flex h-7 items-center gap-1.5 rounded-md pr-2 text-xs text-fg-tertiary hover:bg-sidebar-accent"
+        render={(r, sub) => (
+          <>
+            <Row row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
+            {sub}
+          </>
+        )}
+      />
     </div>
   )
 }

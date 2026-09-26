@@ -1,8 +1,11 @@
+import { Fragment, createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
-import { live } from '@/components/sidebar/AgentTree'
+import { Branch } from '@/components/sidebar/AgentTree'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
+import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
 import type { AgentInfo } from '@/rpc/extra'
-import { TREE_CAP, cappedTree, rootOf, subtrees } from './session-tree'
+import { TREE_CAP, cappedTree, childrenOf, live, rankSummary, withAncestors, rootOf, subtrees } from './session-tree'
 
 const s = (id: string, parent: string | null = null, desk?: string): SessionSummary => ({
   id,
@@ -50,29 +53,82 @@ test('live subagent rows are the ones still working or waiting on someone; finis
   expect((['idle', 'cancelled', 'error'] as const).map(live)).toEqual([false, false, false])
 })
 
-test('a capped tree shows running rows first, then newest by updated_at, five at a time; expanded shows all and hidden is what Show more reveals', () => {
-  const row = (id: string, state: AgentInfo['state']['state'], started_at: string | null = null): AgentInfo => ({
-    id,
-    name: id,
-    parent: 'desk',
-    depth: 1,
-    agent: null,
-    model: 'm',
-    state: { state } as AgentInfo['state'],
-    started_at,
-    finished_at: null,
-    last: '',
-  })
-  const at = (id: string, day: number) => ({ ...s(id, 'desk'), updated_at: `2026-01-${String(day).padStart(2, '0')}T00:00:00Z` })
-  // Seven rows: two running (old and new), five finished with distinct days, one of them unknown to the list.
-  const rows = [row('f3', 'idle'), row('r-old', 'running'), row('f1', 'error'), row('f5', 'cancelled'), row('r-new', 'running'), row('f2', 'idle'), row('f4', 'idle', '2026-01-04T12:00:00Z')]
-  const sessions = [at('f1', 1), at('f2', 2), at('f3', 3), at('f5', 5), at('r-old', 1), at('r-new', 9)]
+const row = (id: string, state: AgentInfo['state']['state'], parent = 'root', extra: Partial<AgentInfo> = {}): AgentInfo => ({
+  id,
+  name: id,
+  parent,
+  depth: parent === 'root' ? 1 : 2,
+  agent: null,
+  model: 'm',
+  state: { state } as AgentInfo['state'],
+  started_at: null,
+  finished_at: null,
+  last: '',
+  ...extra,
+})
+const day = (n: number) => `2026-01-${String(n).padStart(2, '0')}T00:00:00Z`
+const at = (id: string, updated: number, created = 1) => ({ ...s(id, 'root'), updated_at: day(updated), created_at: day(created) })
+
+test('rank: live rows (running, awaiting, approval) beat a newer idle one; idle rows go newest activity first; created_at breaks ties', () => {
+  const sessions = [at('idle-new', 9), at('run-old', 1), at('wait', 2), at('appr', 3), at('idle-old', 4), at('tie-a', 5, 1), at('tie-b', 5, 2)]
+  const rows = [row('idle-new', 'idle'), row('run-old', 'running'), row('wait', 'awaiting'), row('appr', 'approval'), row('idle-old', 'idle'), row('tie-a', 'idle'), row('tie-b', 'idle')]
+  expect(cappedTree(rows, sessions, true).shown.map((r) => r.id)).toEqual(['appr', 'wait', 'run-old', 'idle-new', 'tie-b', 'tie-a', 'idle-old'])
+})
+
+test('rank: activity is the newest of activity.last_active, the list updated_at and the live started_at/finished_at', () => {
+  const sessions = [at('a', 2), at('b', 3), at('c', 1)]
+  const activity: SessionActivity = { state: { state: 'idle' }, last_active: day(8), turn_started_at: null, jobs: 0, ptys: 0, children: 0, asks: null, live: false }
+  const rows = [row('a', 'idle', 'root', { activity }), row('b', 'idle'), row('c', 'idle', 'root', { finished_at: day(5) }), row('d', 'idle', 'root', { started_at: day(4) })]
+  // a: last_active 8 beats updated_at 2; c: finished_at 5 beats updated_at 1; d is unknown to the list, ranks by started_at.
+  expect(cappedTree(rows, sessions, true).shown.map((r) => r.id)).toEqual(['a', 'c', 'd', 'b'])
+  expect(rankSummary({ ...at('x', 3, 2), running: true })).toEqual({ live: true, at: Date.parse(day(3)), created: Date.parse(day(2)) })
+})
+
+test('cap: five shown and hidden = the rest; a kept row (the open chat) outside the five is appended; expanded shows all', () => {
+  const rows = Array.from({ length: 7 }, (_, i) => row(`f${i + 1}`, 'idle'))
+  const sessions = rows.map((r, i) => at(r.id, i + 1))
   const folded = cappedTree(rows, sessions, false)
-  expect(folded.shown.map((r) => r.id)).toEqual(['r-new', 'r-old', 'f5', 'f4', 'f3'])
+  expect(folded.shown.map((r) => r.id)).toEqual(['f7', 'f6', 'f5', 'f4', 'f3'])
   expect(folded.hidden).toBe(2)
-  const open = cappedTree(rows, sessions, true)
-  expect(open.shown.map((r) => r.id)).toEqual(['r-new', 'r-old', 'f5', 'f4', 'f3', 'f2', 'f1'])
-  expect(open.hidden).toBe(0)
-  // At or under the cap nothing is hidden and the order still holds.
-  expect(cappedTree(rows.slice(0, TREE_CAP), sessions, false)).toEqual({ shown: [rows[4], rows[1], rows[3], rows[0], rows[2]], hidden: 0 })
+  const kept = cappedTree(rows, sessions, false, new Set(['f1']))
+  expect(kept.shown.map((r) => r.id)).toEqual(['f7', 'f6', 'f5', 'f4', 'f3', 'f1'])
+  expect(kept.hidden).toBe(1)
+  expect(cappedTree(rows, sessions, true, new Set(['f1']))).toEqual({ shown: [...rows].reverse(), hidden: 0 })
+  expect(cappedTree(rows.slice(0, TREE_CAP), sessions, false).hidden).toBe(0)
+})
+
+test('childrenOf keys rows by parent; withAncestors adds every ancestor found in the subtree', () => {
+  const rows = [row('a', 'idle'), row('a1', 'idle', 'a'), row('a11', 'idle', 'a1'), row('b', 'idle')]
+  const by = childrenOf(rows)
+  expect([...by.keys()]).toEqual(['root', 'a', 'a1'])
+  expect(by.get('root')?.map((r) => r.id)).toEqual(['a', 'b'])
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]))
+  expect([...withAncestors(byId, ['a11'])]).toEqual(['a11', 'a1', 'a'])
+  expect([...withAncestors(byId, ['b', 'a1'])]).toEqual(['b', 'a1', 'a'])
+  expect(withAncestors(byId, []).size).toBe(0)
+})
+
+test('a Branch renders five rows and "Show more (2)" for a parent with seven children; the open chat and its parent stay visible', () => {
+  const rows = [...Array.from({ length: 7 }, (_, i) => row(`f${i + 1}`, 'idle')), row('g', 'idle', 'f1')]
+  const sessions = rows.map((r, i) => at(r.id, i + 1))
+  const html = (keep?: Set<string>) =>
+    renderToStaticMarkup(
+      createElement(Branch, {
+        parent: 'root',
+        byParent: childrenOf(rows),
+        sessions,
+        keep,
+        unit: 12,
+        moreClass: 'more',
+        render: (r, sub) => createElement(Fragment, null, createElement('a', { 'data-row': r.id }), sub),
+      }),
+    )
+  const ids = (h: string) => [...h.matchAll(/data-row="([^"]+)"/g)].map((m) => m[1])
+  const folded = html()
+  expect(ids(folded)).toEqual(['f7', 'f6', 'f5', 'f4', 'f3'])
+  expect(folded).toContain('>Show more (2)</button>')
+  // The open chat is `g`, a grandchild: `f1` (its parent) is appended past the cap and `g` shows under it.
+  const kept = html(new Set(['g', 'f1']))
+  expect(ids(kept)).toEqual(['f7', 'f6', 'f5', 'f4', 'f3', 'f1', 'g'])
+  expect(kept).toContain('>Show more (1)</button>')
 })
