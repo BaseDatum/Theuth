@@ -9,10 +9,23 @@ import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import type { SearchRequest } from '@/lib/search'
+import { isPopout } from '@/lib/popout'
 import { isIsland } from '@/lib/tauri'
 
-/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route. */
-export const Route = createRootRoute({ component: isIsland() ? Outlet : Root })
+/** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route. A popout gets the routed column alone. */
+export const Route = createRootRoute({ component: isIsland() ? Outlet : isPopout() ? Popped : Root })
+
+/** One chat or one artifact in its own window: the column without sidebar, search, drag targets or the meeting bar.
+ * `SidebarProvider` stays (closed) because the chat header reads it. */
+function Popped() {
+  return (
+    <SidebarProvider open={false} className="h-band min-h-0">
+      <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
+        <Outlet />
+      </SidebarInset>
+    </SidebarProvider>
+  )
+}
 
 const WIDTH = { '--sidebar-width': '260px' } as CSSProperties
 

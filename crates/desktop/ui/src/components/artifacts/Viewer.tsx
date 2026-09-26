@@ -9,7 +9,7 @@ import { AppView } from '@/components/apps/AppView'
 import { ArchiveView } from '@/components/artifacts/ArchiveView'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { MermaidView } from '@/components/artifacts/MermaidView'
-import { ArtifactMenu, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
+import { ArtifactMenu, PopoutButton, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useFileUrl } from '@/components/chat/Attachments'
 import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
@@ -24,6 +24,7 @@ import { parseCsv } from '@/lib/csv'
 import { extOf, fmtBytes, isLocal, readBytes } from '@/lib/files'
 import { touch } from '@/lib/platform'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { cn } from '@/lib/utils'
@@ -351,7 +352,12 @@ export function Viewer() {
   const navigate = useNavigate()
   const mobile = useIsMobile()
   const origin = useSearchOrigin()
-  const [railOpen, setRailOpen] = useState(true)
+  // Its own window: the details rail starts closed and there is no popout button (it is one); the window carries the title.
+  const popped = isPopout()
+  const [railOpen, setRailOpen] = useState(!popped)
+  useEffect(() => {
+    if (popped && record.data) document.title = record.data.title
+  }, [popped, record.data])
 
   // Under `md` the viewer is the only pane; `Esc` is the back chevron.
   useEffect(() => {
@@ -425,7 +431,12 @@ export function Viewer() {
             </Select>
           )}
           <RevealButton artifact={a} />
-          <Action label="Open chat" icon={MessageSquare} onClick={() => void navigate({ to: '/c/$session', params: { session: a.session } })} />
+          <Action
+            label="Open chat"
+            icon={MessageSquare}
+            onClick={() => void (popped ? openPopout({ kind: 'chat', session: a.session }) : navigate({ to: '/c/$session', params: { session: a.session } }))}
+          />
+          {!popped && <PopoutButton artifact={a} />}
           <ArtifactMenu artifact={a} explorer />
           <Action
             label={railOpen ? 'Hide details' : 'Show details'}

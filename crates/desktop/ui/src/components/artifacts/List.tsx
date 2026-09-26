@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { memo, useMemo } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
-import { GLYPH, metaLine } from '@/components/chat/ArtifactCard'
+import { GLYPH, PopoutButton, metaLine } from '@/components/chat/ArtifactCard'
 import { chatName, toRef } from '@/lib/attach'
 import { Img } from '@/components/chat/Attachments'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -163,7 +163,7 @@ const Row = memo(function Row({ stack: s, active }: { stack: Stack; active: stri
       to="/artifacts/$callId"
       params={{ callId: a.call_id }}
       ref={on ? reveal : undefined}
-      className={cn('flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', on && 'bg-layer-3 hover:bg-layer-3')}
+      className={cn('group/row flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-sm hover:bg-layer-2', on && 'bg-layer-3 hover:bg-layer-3')}
       {...dragSource(() => toRef({ kind: 'artifact', artifact: a }))}
     >
       <Thumb a={a} />
@@ -176,6 +176,7 @@ const Row = memo(function Row({ stack: s, active }: { stack: Stack; active: stri
           {metaLine(a)} · {ago(new Date(a.created_at * 1000).toISOString())}
         </p>
       </div>
+      <PopoutButton artifact={a} className="shrink-0 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100" />
     </Link>
   )
 })

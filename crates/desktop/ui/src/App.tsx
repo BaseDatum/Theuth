@@ -16,12 +16,14 @@ import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
 import { container, isDesktop } from '@/lib/platform'
+import { POPOUT } from '@/lib/popout'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
 import {
   connection,
   isIsland,
+  isTauri,
   onCaptureHidden,
   onModelsProgress,
   onNavigate,
@@ -46,6 +48,8 @@ import { dispatch, on, useSessions } from '@/store/sessions'
 
 /** 03 §0.1: the island webview loads the same bundle and lives at `/island`; the browser history cannot read a window label. */
 const ISLAND = isIsland()
+/** A popout (`lib/popout.ts`) is a second shell at the route in its URL: it connects like main but registers none of main's singletons. */
+const AUX = ISLAND || POPOUT !== null
 
 const router = createRouter({
   routeTree,
@@ -219,11 +223,13 @@ async function cancelAll(): Promise<void> {
 
 /**
  * Tray / menu navigation, the quit handshake (macOS); notification permission (iOS); mounted once.
- * The island webview registers nothing: a second registration of a global shortcut throws, and the quit handshake is the main window's.
+ * The island and popout webviews register nothing: a second registration of a global shortcut throws, and the quit
+ * handshake is the main window's. A popout only re-applies capture hiding, since it did not exist at the last toggle.
  */
 function useTauri(): void {
   useEffect(() => {
-    if (ISLAND) return
+    if (POPOUT && isDesktop()) void setHiddenFromCapture(useMeetingSettings.getState().hidden)
+    if (AUX) return
     const unlistens = [
       onNavigate((path) => router.history.push(path)),
       onQuitRequested(() => void quit()),
@@ -261,7 +267,7 @@ function useGlobalShortcuts(): void {
   const toggle = useShortcuts((s) => s.chords['toggle-window'])
   const cancel = useShortcuts((s) => s.chords['cancel-all'])
   useEffect(() => {
-    if (ISLAND || !isDesktop()) return
+    if (AUX || !isDesktop()) return
     void register(toggle, async (e) => {
       if (e.state !== 'Pressed') return
       const win = getCurrentWindow()
@@ -285,11 +291,26 @@ function visible(session: string): boolean {
   return root !== null && leaves(root).includes(session)
 }
 
-/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads. */
+/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads; a popout also closes with its chat. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
-    if (ISLAND) return on('Lagged', () => reload(st))
+    if (AUX) {
+      const offs = [on('Lagged', () => reload(st))]
+      if (POPOUT?.kind === 'chat') {
+        const { session } = POPOUT
+        offs.push(
+          on('SessionDeleted', (e) => {
+            if (e.session !== session) return
+            if (isTauri()) void getCurrentWindow().close()
+            else window.close()
+          }),
+        )
+      }
+      return () => {
+        for (const off of offs) off()
+      }
+    }
     const offs = [
       on('Lagged', () => {
         reload(st)

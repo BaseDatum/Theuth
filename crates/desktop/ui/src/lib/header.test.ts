@@ -66,15 +66,17 @@ test('the title follows the model picker in the full bar and opens the compact b
     const order = headerOrder(panel)
     const full = ids(layout(order, 0).bar)
     expect(full.indexOf('title')).toBe(full.indexOf('model') + 1)
-    // Compact: the picker is behind the chevron; title · context · the one panel button · chevron · ⋯ stay inline.
+    // Compact: the picker is behind the chevron; title · context · the one panel button · popout · chevron · ⋯ stay inline.
     const t1 = layout(order, 1)
-    expect(ids(t1.bar)).toEqual(['sidebar', 'title', 'context', ...(panel ? [panel] : []), 'more', 'menu', 'close'])
+    expect(ids(t1.bar)).toEqual(['sidebar', 'title', 'context', ...(panel ? [panel] : []), 'popout', 'more', 'menu', 'close'])
     expect(ids(t1.menu)).not.toContain('title')
-    // Tier 2 sheds the context chip and the panel button, never the title.
+    // Tier 2 sheds the context chip and the panel button, never the title or the popout button.
     const t2 = layout(order, 2)
-    expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'more', 'menu', 'close'])
+    expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'popout', 'more', 'menu', 'close'])
     expect(ids(t2.menu)).not.toContain('title')
     expect(ids(t2.menu).indexOf('model')).toBe(1)
+    // Open in new window is reachable without opening the chevron at every tier.
+    for (let t = 0; t < TIERS; t++) expect(ids(layout(order, t).bar)).toContain('popout')
   }
 })
 

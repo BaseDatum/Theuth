@@ -31,6 +31,7 @@ import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { touch } from '@/lib/hotkeys'
+import { openPopout } from '@/lib/popout'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
 import { cn } from '@/lib/utils'
@@ -306,6 +307,7 @@ export const SessionItem = memo(function SessionItem({
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void openPopout({ kind: 'chat', session: id })}>Open in new window</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
               <DropdownMenuItem

@@ -32,7 +32,7 @@ import {
   useSessionField,
   useSessions,
 } from "@/store/sessions";
-import { ArtifactMenu, RevealButton } from "./ArtifactCard";
+import { ArtifactMenu, PopoutButton, RevealButton } from "./ArtifactCard";
 
 const MIN_W = 360;
 const DEFAULT_W = 640;
@@ -145,6 +145,7 @@ function Content({ session, callId }: { session: string; callId: string }) {
           </Select>
         )}
         {shown && <RevealButton artifact={shown} />}
+        {shown && <PopoutButton artifact={shown} />}
         {shown && <ArtifactMenu artifact={shown} />}
         <SheetClose asChild>
           <Button
