@@ -4,6 +4,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { container } from '@/lib/platform'
 import { isTauri } from '@/lib/tauri'
 
 export type PopoutTarget =
@@ -59,6 +60,14 @@ export const isPopout = (): boolean => POPOUT !== null
 /** The meeting a popped window is about (`meeting` or `meeting-note`), else `null`: a `Deleted` event for it closes the window. */
 export const popoutMeeting = (t: PopoutTarget | null): string | null =>
   t !== null && (t.kind === 'meeting' || t.kind === 'meeting-note') ? t.meeting : null
+
+/**
+ * Whether this container can open a second window at all: a desktop shell (`open_window`) or a plain browser
+ * (`window.open`). The iOS shell has one webview and no window manager, so every pop-out affordance — buttons, menu
+ * rows, ⌥-click, "in new window" text — is hidden there. A narrow layout is not the criterion: a narrow desktop
+ * window still pops out.
+ */
+export const canPopout = (): boolean => container() !== 'ios'
 
 /** Open `t` in its own window (or focus it); a browser gets a named `window.open`. */
 export function openPopout(t: PopoutTarget): Promise<void> {

@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { type AttachRef, subtitle } from '@/lib/attach'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
-import { closePopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, closePopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
 
@@ -138,7 +138,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
           <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} disabled={deleted} />
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
           <UndoAgentAction provider={live.provider} />
-          {!popped && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
+          {!popped && canPopout() && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
           <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />
           {!popped && <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />}
         </>

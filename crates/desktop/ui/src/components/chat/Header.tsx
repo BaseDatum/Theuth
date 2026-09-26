@@ -12,7 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -192,7 +192,7 @@ export function Header({
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : browser ? 'browser' : terminals ? 'terminals' : null
-  const { bar, menu } = layout(headerOrder(panel), tier)
+  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -273,7 +273,7 @@ export function Header({
         </HeaderMenu>
       ),
     popout: (mode) =>
-      !session || popped ? null : mode === 'row' ? (
+      !session ? null : mode === 'row' ? (
         <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout({ kind: 'chat', session })} />
       ) : (
         <Button

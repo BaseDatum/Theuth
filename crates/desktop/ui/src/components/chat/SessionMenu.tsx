@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/sheet'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { usePanes } from '@/lib/panes'
-import { openPopout } from '@/lib/popout'
+import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -273,7 +273,7 @@ export function SessionMenu({ session }: { session: string }) {
               <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
                 Open meeting
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>
+              {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>}
             </>
           )}
           <DropdownMenuItem

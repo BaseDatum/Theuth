@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionSlice } from '@/store/sessions'
 import { runningSubagents } from './SessionItem'
-import { buildRows, newChatLabel, type Row, subtrees } from './SessionList'
+import { buildRows, listOffset, newChatLabel, type Row, subtrees, watchListOffset } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => ({
   id,
@@ -94,4 +94,38 @@ test('running subagents: a live slice counts, so does the list snapshot for a ch
   expect(runningSubagents(subs, { live: slice(true), idle: slice(false) })).toBe(2)
   expect(runningSubagents(subs, { live: slice(false), idle: slice(false) })).toBe(1)
   expect(runningSubagents([], {})).toBe(0)
+})
+
+test('the virtualizer’s scrollMargin is the height of the content above the list, in scroll coordinates, and follows it as it grows', () => {
+  // A scroller at viewport y=100 holding a menu of `above` px, then the list.
+  let above = 200
+  let scrollTop = 0
+  const box = (top: () => number) => ({ getBoundingClientRect: () => ({ top: top() }) })
+  const menu = box(() => 100 - scrollTop) as unknown as Element
+  const list = box(() => 100 + above - scrollTop) as unknown as Element & { getBoundingClientRect(): { top: number } }
+  const scroller = { ...box(() => 100), get scrollTop() { return scrollTop }, children: [menu, list] }
+  // Scrolled or not, the offset is where the list starts in the scroller's own coordinates.
+  expect(listOffset(scroller, list)).toBe(200)
+  scrollTop = 450
+  expect(listOffset(scroller, list)).toBe(200)
+  // The observer watches only what is above the list — the list's own height changes with every row measured and
+  // must not feed back — and reports again when that content grows (agents resolving into Desks).
+  const observed: Element[] = []
+  let fire = () => {}
+  let disconnected = false
+  class RO {
+    constructor(cb: () => void) { fire = cb }
+    observe(el: Element) { observed.push(el) }
+    unobserve() {}
+    disconnect() { disconnected = true }
+  }
+  const seen: number[] = []
+  const stop = watchListOffset(scroller, list, (o) => seen.push(o), RO as unknown as typeof ResizeObserver)
+  expect(observed).toEqual([menu])
+  expect(seen).toEqual([200])
+  above = 520
+  fire()
+  expect(seen).toEqual([200, 520])
+  stop()
+  expect(disconnected).toBe(true)
 })

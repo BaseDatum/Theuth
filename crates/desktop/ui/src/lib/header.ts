@@ -59,9 +59,10 @@ export type HeaderItem = {
  * The header's items in display order. The title follows the model picker in the full bar and, with the picker behind
  * the chevron, opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
  * session's output surface, over the live browser over terminals); the other two move behind the chevron. `popout`
- * (open in a new window) stays inline at every tier: it is how a narrow pane gets room.
+ * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
+ * second window exists (`canPopout()` false, or this is already the popped window).
  */
-export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null): HeaderItem[] {
+export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null, popout: boolean): HeaderItem[] {
   return [
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
@@ -76,7 +77,7 @@ export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null)
     { id: 'artifacts', slot: panel === 'artifacts' ? 'bar' : 'menu', shed: true },
     { id: 'approvalsOff', slot: 'menu' },
     { id: 'pending', slot: 'menu' },
-    { id: 'popout', slot: 'bar' },
+    ...(popout ? [{ id: 'popout', slot: 'bar' } as const] : []),
     { id: 'more', slot: 'bar' },
     { id: 'menu', slot: 'bar' },
     { id: 'close', slot: 'bar' },

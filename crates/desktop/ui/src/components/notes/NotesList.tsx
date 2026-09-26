@@ -20,7 +20,7 @@ import {
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { openPopout } from '@/lib/popout'
+import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
@@ -138,15 +138,17 @@ function Row({ note }: { note: DocSummary }) {
           <span className="shrink-0 text-xs text-fg-tertiary">{ago(new Date(Number(note.updated_ms)).toISOString())}</span>
         </Link>
       )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label="Open in new window"
-        className="opacity-0 group-hover:opacity-100 focus:opacity-100"
-        onClick={() => void openPopout({ kind: 'note', doc: note.id })}
-      >
-        <AppWindow />
-      </Button>
+      {canPopout() && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Open in new window"
+          className="opacity-0 group-hover:opacity-100 focus:opacity-100"
+          onClick={() => void openPopout({ kind: 'note', doc: note.id })}
+        >
+          <AppWindow />
+        </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${note.title || 'Untitled'}`} className="opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100">
@@ -157,9 +159,11 @@ function Row({ note }: { note: DocSummary }) {
           <DropdownMenuItem onSelect={() => setRenaming(note.title)}>
             <Pencil /> Rename
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void openPopout({ kind: 'note', doc: note.id })}>
-            <AppWindow /> Open in new window
-          </DropdownMenuItem>
+          {canPopout() && (
+            <DropdownMenuItem onSelect={() => void openPopout({ kind: 'note', doc: note.id })}>
+              <AppWindow /> Open in new window
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem variant="destructive" disabled={del.isPending} onSelect={() => del.mutate()}>
             <Trash2 /> Delete now
           </DropdownMenuItem>

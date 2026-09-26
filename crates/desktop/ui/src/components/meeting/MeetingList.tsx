@@ -15,7 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useSidebar } from '@/components/ui/sidebar'
 import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
-import { isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
@@ -121,12 +121,13 @@ export async function deleteMeeting(api: Pick<Api, 'meeting_delete'>, id: string
   return true
 }
 
-/** One meeting: click opens it; hover shows attach · note in new window · delete; right-click (or ⋯ on touch) the same as a menu. */
+/** One meeting: click opens it; hover shows attach · note in new window · delete; right-click (or ⋯ on touch) the same as a menu. No "new window" where `canPopout()` is false. */
 function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
   const api = useApi()
   const navigate = useNavigate()
   const [menu, setMenu] = useState(false)
   const del = useAction(() => deleteMeeting(api, m.id), { keys: [queryKeys.meetings] })
+  const popout = canPopout()
   const note = () => void openPopout({ kind: 'meeting-note', meeting: m.id })
   const hover = 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100'
   return (
@@ -135,9 +136,11 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
         <Button variant="ghost" size="icon-sm" aria-label="Attach to chat…" className={hover} onClick={onAttach}>
           <Paperclip />
         </Button>
-        <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" className={hover} onClick={note}>
-          <AppWindow />
-        </Button>
+        {popout && (
+          <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" className={hover} onClick={note}>
+            <AppWindow />
+          </Button>
+        )}
         <Button variant="ghost" size="icon-sm" aria-label="Delete meeting" className={hover} disabled={del.isPending} onClick={() => del.mutate()}>
           <Trash2 />
         </Button>
@@ -149,8 +152,12 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}>Open</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting: m.id })}>Open in new window</DropdownMenuItem>
-            <DropdownMenuItem onSelect={note}>Open note in new window</DropdownMenuItem>
+            {popout && (
+              <>
+                <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting: m.id })}>Open in new window</DropdownMenuItem>
+                <DropdownMenuItem onSelect={note}>Open note in new window</DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuItem onSelect={onAttach}>Attach to chat…</DropdownMenuItem>
             <DropdownMenuItem variant="destructive" disabled={del.isPending} onSelect={() => del.mutate()}>
               Delete

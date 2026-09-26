@@ -5,7 +5,7 @@ import { Live } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
 import { Empty, errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
-import { isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 
@@ -13,14 +13,14 @@ import { cn } from '@/lib/utils'
  * The meeting's note (59 §7.4) in BlockNote: beside the live transcript while recording, the summary view once
  * the summary turn appended its sections. The same document, so what the user typed during the call is what the
  * agent regrouped — hover attribution tells the two apart. With `meeting`, a header offers the note in its own
- * window (the same document over the same actor: two editors on one doc, like two devices).
+ * window (the same document over the same actor: two editors on one doc, like two devices) — where `canPopout()`.
  */
 export function MeetingNote({ doc, meeting, className }: { doc: string; meeting?: string; className?: string }) {
   const target = useMemo(() => ({ doc }), [doc])
   const live = useDocument(target)
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border-subtle', className)}>
-      {meeting && !isPopout() && (
+      {meeting && canPopout() && !isPopout() && (
         <div className="flex h-8 shrink-0 items-center border-b border-border-subtle pr-1 pl-3 text-[12px] font-semibold text-fg-secondary">
           <span className="flex-1">Note</span>
           <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" onClick={() => void openPopout({ kind: 'meeting-note', meeting })}>
