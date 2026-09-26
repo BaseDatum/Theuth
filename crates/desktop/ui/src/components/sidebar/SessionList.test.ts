@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SessionSlice } from '@/store/sessions'
 import { runningSubagents } from './SessionItem'
-import { buildRows, listOffset, newChatLabel, type Row, subtrees, watchListOffset } from './SessionList'
+import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => ({
   id,
@@ -44,12 +44,15 @@ test('pinned lead above every project; projects in first-seen order of the newes
   expect(keys(buildRows([sessions[2]!], []))).toEqual(['h:pinned', 'c'])
 })
 
-test('a desk session never appears in the chat list: pinned, archived, in a project or ungrouped', () => {
+test('a desk session never appears in the chat list — pinned, archived, in a project or ungrouped — and neither does its tree, even with a subagent open', () => {
   const desk = (id: string, project: string | null, pinned: boolean, archived = false) => ({ ...s(id, project, '2026-01-05T00:00:00Z', pinned, archived), desk: 'theuth' })
   const sessions = [desk('d1', null, true), desk('d2', 'beta', false), desk('d3', null, false, true), s('a', 'beta', '2026-01-01T00:00:00Z')]
   const rows = buildRows(sessions, ['d1'], new Set(), true)
   expect(keys(rows).filter((k) => !k.startsWith('h:'))).toEqual(['p:beta', 'a'])
   expect(keys(buildRows(sessions.slice(0, 3), [], new Set(), true))).toEqual([])
+  const child = { ...s('d1c', null, '2026-01-06T00:00:00Z'), parent: 'd1' }
+  const grandchild = { ...s('d1cc', null, '2026-01-06T00:00:00Z'), parent: 'd1c' }
+  expect(keys(buildRows([...sessions, child, grandchild], ['d1cc'], new Set(), true)).filter((k) => !k.startsWith('h:'))).toEqual(['p:beta', 'a'])
 })
 
 test('archived roots leave the groups for one collapsed Archived header at the bottom; open, they list newest first with their open tree; no orphans', () => {
@@ -72,19 +75,6 @@ test('archived roots leave the groups for one collapsed Archived header at the b
 test('project header menu label names the project; the null bucket is the plain new chat', () => {
   expect(newChatLabel('alpha')).toBe('New chat in “alpha”')
   expect(newChatLabel(null)).toBe('New chat (no project)')
-})
-
-test('subtrees roll every depth up to the top-level row; a root without subagents has no entry', () => {
-  const sessions = [
-    s('a', null, '2026-01-01T00:00:00Z'),
-    s('b', null, '2026-01-01T00:00:00Z'),
-    { ...s('a1', null, '2026-01-01T00:00:00Z'), parent: 'a' },
-    { ...s('a11', null, '2026-01-01T00:00:00Z'), parent: 'a1' },
-  ]
-  const subs = subtrees(sessions)
-  expect(subs.get('a')?.map((d) => d.id)).toEqual(['a1', 'a11'])
-  expect(subs.has('b')).toBe(false)
-  expect(subs.has('a1')).toBe(false)
 })
 
 test('running subagents: a live slice counts, so does the list snapshot for a child this client has no slice for; idle ones do not', () => {

@@ -21,6 +21,7 @@ import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { leaves, usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { AgentTree } from './AgentTree'
@@ -95,30 +96,6 @@ function group(iso: string, now: number): string {
   if (t >= start - DAY) return 'Yesterday'
   if (t >= start - 7 * DAY) return 'Previous 7 days'
   return 'Older'
-}
-
-/** The top-level ancestor of `id` (itself when top-level or unknown). */
-function rootOf(sessions: SessionSummary[], id: string | undefined): string | undefined {
-  let cur = id
-  for (;;) {
-    const parent = sessions.find((s) => s.id === cur)?.parent
-    if (!parent) return cur
-    cur = parent
-  }
-}
-
-/** Every subagent under its top-level ancestor (all depths), for the collapsed row's subagent glyph. */
-export function subtrees(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
-  const out = new Map<string, SessionSummary[]>()
-  for (const s of sessions) {
-    if (s.parent === null) continue
-    const root = rootOf(sessions, s.id)
-    if (root === undefined) continue
-    const list = out.get(root)
-    if (list) list.push(s)
-    else out.set(root, [s])
-  }
-  return out
 }
 
 /**

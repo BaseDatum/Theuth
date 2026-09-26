@@ -1,7 +1,7 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -28,11 +28,15 @@ import { keys, useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { subtrees } from '@/lib/session-tree'
 import { useShortcuts } from '@/lib/shortcuts'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField } from '@/store/sessions'
+import { AgentTree } from './AgentTree'
 import { SearchTrigger } from './SearchTrigger'
+import { SessionSubagents } from './SessionItem'
 import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
@@ -56,13 +60,21 @@ const LIBRARY = [
   ['/artifacts', 'Artifacts', FolderOpen],
 ] as const
 
+/** A desk with no known subagents still gets a capped tree (a child spawned before the list refetched sorts by `started_at`). */
+const NONE: readonly SessionSummary[] = []
+
 /**
  * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
  * yet: a row with a desk (`AgentSummary.desk`, roster-owned) opens it; one without asks the roster to open it first.
- * Pinning has nothing to do with this group.
+ * Pinning has nothing to do with this group. A desk's subagents (any depth, from `list_sessions`) hang under its row
+ * like a chat row's tree: the live ones always, the finished ones while the desk or one of them is the open chat,
+ * `TREE_CAP` at a time behind `Show more`.
  */
-function Desks() {
+function Desks({ active }: { active: string | undefined }) {
+  const api = useApi()
   const agents = useAgents().data ?? []
+  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const subs = useMemo(() => subtrees(sessions), [sessions])
   const desks = agents
     .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
     .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
@@ -72,14 +84,29 @@ function Desks() {
     <>
       <SidebarGroupLabel className="mt-2">Desks</SidebarGroupLabel>
       {desks.map((d) => (
-        <DeskRow key={d.name} {...d} />
+        <DeskRow key={d.name} {...d} subagents={d.id === null ? undefined : subs.get(d.id)} active={active} />
       ))}
     </>
   )
 }
 
-/** Opens the desk session (creating it when there is none yet); the dot is green while the roster says working or the session has a turn in flight. */
-function DeskRow({ id, name, working }: { id: string | null; name: string; working: boolean }) {
+/**
+ * Opens the desk session (creating it when there is none yet); the dot is green while the roster says working or the
+ * session has a turn in flight. Highlighted, with its whole tree shown, while the desk or any of its subagents is open.
+ */
+function DeskRow({
+  id,
+  name,
+  working,
+  subagents,
+  active,
+}: {
+  id: string | null
+  name: string
+  working: boolean
+  subagents: readonly SessionSummary[] | undefined
+  active: string | undefined
+}) {
   const api = useApi()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -93,10 +120,11 @@ function DeskRow({ id, name, working }: { id: string | null; name: string; worki
     },
     onError: (e) => toast.error(errorText(e)),
   })
+  const isActive = id !== null && (id === active || (subagents?.some((d) => d.id === active) ?? false))
   const dot = <span className={cn('size-2 shrink-0 rounded-full', working || running ? 'bg-success' : 'bg-fg-tertiary/40')} aria-hidden />
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+      <SidebarMenuButton asChild isActive={isActive} className="h-9 rounded-[10px] px-2.5">
         {id === null ? (
           <button type="button" disabled={open.isPending} onClick={() => open.mutate()}>
             {dot}
@@ -105,10 +133,12 @@ function DeskRow({ id, name, working }: { id: string | null; name: string; worki
         ) : (
           <Link to="/c/$session" params={{ session: id }}>
             {dot}
+            <SessionSubagents subagents={subagents} />
             {name}
           </Link>
         )}
       </SidebarMenuButton>
+      {id !== null && <AgentTree session={id} active={active} liveOnly={!isActive} cap={subagents ?? NONE} />}
     </SidebarMenuItem>
   )
 }
@@ -210,7 +240,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
-          <Desks />
+          <Desks active={session} />
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>
