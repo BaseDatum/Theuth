@@ -1,0 +1,19 @@
+# UDP cannot go through the HTTP ingress: the QUIC address-discovery probe
+# gets its own LoadBalancer. Point the `iroh.relay.theuth.io` A record at the
+# ingress (443/tcp) *and* this address (7842/udp), or give both one IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: iroh-relay-quic
+  labels:
+    app.kubernetes.io/name: iroh-relay
+    app.kubernetes.io/part-of: theuth
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: iroh-relay
+  ports:
+    - name: quic
+      port: 7842
+      targetPort: quic
+      protocol: UDP

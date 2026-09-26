@@ -8,5 +8,7 @@ resources:
   - deployment.yaml
   - pdb.yaml
   - service.yaml
-  - iroh-relay.yaml
+  - iroh-relay-deployment.yaml
+  - iroh-relay-service.yaml
+  - iroh-relay-service-quic.yaml
 
