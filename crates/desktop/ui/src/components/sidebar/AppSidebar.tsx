@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
 import { Button } from '@/components/ui/button'
@@ -21,8 +22,9 @@ import { openNewChat } from '@/components/chat/NewChatPane'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { settings } from '@/components/chat/slash'
+import { errorText } from '@/components/settings/shared'
 import { THEUTH } from '@/components/tasks/helpers'
-import { useAgents } from '@/components/tasks/queries'
+import { keys, useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -54,39 +56,58 @@ const LIBRARY = [
   ['/artifacts', 'Artifacts', FolderOpen],
 ] as const
 
-/** One row per roster agent with an open desk (`AgentSummary.desk`, else the pinned root titled `agent:<name>`): theuth first, then roster order. */
+/**
+ * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
+ * yet: a row with a desk (`AgentSummary.desk`, roster-owned) opens it; one without asks the roster to open it first.
+ * Pinning has nothing to do with this group.
+ */
 function Desks() {
-  const api = useApi()
   const agents = useAgents().data ?? []
-  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const desks = agents
     .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
-    .flatMap((a) => {
-      const id = a.desk ?? sessions.find((s) => s.pinned && s.parent === null && s.title === `agent:${a.file.name}`)?.id
-      return id === undefined ? [] : [{ id, name: a.file.name, working: a.status === 'working' }]
-    })
+    .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
     .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
   if (desks.length === 0) return null
   return (
     <>
       <SidebarGroupLabel className="mt-2">Desks</SidebarGroupLabel>
       {desks.map((d) => (
-        <DeskRow key={d.id} {...d} />
+        <DeskRow key={d.name} {...d} />
       ))}
     </>
   )
 }
 
-/** Opens like any chat; the dot is green while the roster says working or the session has a turn in flight. */
-function DeskRow({ id, name, working }: { id: string; name: string; working: boolean }) {
-  const running = useSessionField(id, 'running')
+/** Opens the desk session (creating it when there is none yet); the dot is green while the roster says working or the session has a turn in flight. */
+function DeskRow({ id, name, working }: { id: string | null; name: string; working: boolean }) {
+  const api = useApi()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const running = useSessionField(id ?? '', 'running')
+  const open = useMutation({
+    mutationFn: () => api.desk_open(name),
+    onSuccess: (session) => {
+      void queryClient.invalidateQueries({ queryKey: keys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+      void navigate({ to: '/c/$session', params: { session } })
+    },
+    onError: (e) => toast.error(errorText(e)),
+  })
+  const dot = <span className={cn('size-2 shrink-0 rounded-full', working || running ? 'bg-success' : 'bg-fg-tertiary/40')} aria-hidden />
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-        <Link to="/c/$session" params={{ session: id }}>
-          <span className={cn('size-2 shrink-0 rounded-full', working || running ? 'bg-success' : 'bg-fg-tertiary/40')} aria-hidden />
-          {name}
-        </Link>
+        {id === null ? (
+          <button type="button" disabled={open.isPending} onClick={() => open.mutate()}>
+            {dot}
+            {name}
+          </button>
+        ) : (
+          <Link to="/c/$session" params={{ session: id }}>
+            {dot}
+            {name}
+          </Link>
+        )}
       </SidebarMenuButton>
     </SidebarMenuItem>
   )

@@ -207,6 +207,7 @@ mod tests {
             agent: None,
             cwd: None,
             harness_model: None,
+            desk: None,
             pinned: false,
             archived: true,
             project: None,

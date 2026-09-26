@@ -104,6 +104,13 @@ pub struct ProposeAgent {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct AgentOf(pub runtime::SessionId);
 
+/// `ask` → `Result<runtime::SessionId, String>`: the agent's desk session,
+/// opened now when it is not (the Desks row's click, UI-FIXES-3). `Err` when
+/// the agent is unknown, paused, a proposal, or this engine does not hold the
+/// hub lease.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenDesk(pub String);
+
 /// `ask` → `Result<(), String>`: close the agent's current episode (67 §6.2):
 /// one journal turn, the journal file, then a fresh desk. Sent by the mesh
 /// lease handler on a hub move (`reason: "lease"`) or by an operator.
@@ -320,9 +327,9 @@ impl Roster {
         }
     }
 
-    /// One pinned session named `agent:<name>` with the file's model and
-    /// tools ceiling; the episode row; the read model. Silently skipped when
-    /// the agent actor is not up yet (`Tick` retries).
+    /// One pinned session titled `<name> · desk`, marked as the agent's desk on
+    /// its row, with the file's model and tools ceiling; the episode row; the
+    /// read model. Silently skipped when the agent actor is not up yet (`Tick` retries).
     async fn open_desk(&mut self, f: &AgentFile) {
         let name = f.name.as_str();
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
@@ -347,11 +354,20 @@ impl Roster {
         if let Err(e) = agents
             .ask(agent::RenameSession {
                 session,
-                title: f.name.peer(),
+                title: format!("{name} · desk"),
             })
             .await
         {
             tracing::warn!(agent = %name, "desk not named: {e}");
+        }
+        if let Err(e) = agents
+            .ask(agent::MarkDesk {
+                session,
+                agent: Some(name.to_owned()),
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk not marked: {e}");
         }
         if let Err(e) = agents
             .ask(agent::PinSession {
@@ -398,6 +414,30 @@ impl Roster {
         tracing::info!(agent = %name, %session, "desk opened");
     }
 
+    /// [`OpenDesk`]: the open desk's session, else open one now (theuth's
+    /// lazily like [`DeliverWake`] does). The refusals name their gate.
+    async fn desk_or_open(&mut self, name: &str) -> Result<runtime::SessionId, String> {
+        if let Some(d) = self.desks.get(name) {
+            return Ok(d.session);
+        }
+        let file = if name == AgentName::DEFAULT { self.shared.theuth() } else { self.shared.file(name) }
+            .ok_or_else(|| "no such agent".to_owned())?;
+        if !self.lease.holding {
+            return Err("another engine holds the hub lease; desks open there".into());
+        }
+        if file.paused {
+            return Err("agent is paused".into());
+        }
+        if file.proposed_by.is_some() {
+            return Err("agent is a proposal awaiting approval".into());
+        }
+        if self.is_closing(name) {
+            return Err("desk is closing; try again in a moment".into());
+        }
+        self.open_desk(&file).await;
+        self.desks.get(name).map(|d| d.session).ok_or_else(|| "desk not opened (agent actor not running)".to_owned())
+    }
+
     /// Close the agent's episode (67 §6.2): the desk stops taking wakes now;
     /// a primed desk gets the journal turn and finishes in `finish_closing`,
     /// an empty one is put away at once.
@@ -434,7 +474,7 @@ impl Roster {
         if let Err(e) = agents
             .ask(agent::SendInput {
                 session: Some(d.session),
-                text: desk::CLOSING.to_owned(),
+                text: desk::notice("journal", desk::CLOSING),
                 files: vec![],
                 delivery: agent::Delivery::default(),
             })
@@ -561,7 +601,14 @@ impl Roster {
     /// rule (`blocked: no continuation`, manager woken). A handled wake clears
     /// `serving`; a turn that leaves a live child keeps it for the child's
     /// return, which lands in this same session (70 DESK-PROTOCOL 4).
-    async fn judge_turn(&mut self, name: &str) {
+    ///
+    /// Only a turn the model ended on its own is judged ([`desk::nudges::yielded`]):
+    /// a user cancel, the engine shutting down, a provider error or a timeout
+    /// leaves the task and `serving` as they are — the next wake resumes it.
+    async fn judge_turn(&mut self, name: &str, stop_reason: &str) {
+        if !desk::nudges::yielded(stop_reason) {
+            return;
+        }
         let Some(d) = self.desks.get(name) else { return };
         let Some(s) = d.serving.clone() else { return };
         let session = d.session;
@@ -611,7 +658,7 @@ impl Roster {
             if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
                 && a.ask(agent::SendInput {
                     session: Some(session),
-                    text: nudge,
+                    text: desk::notice("nudge", &nudge),
                     files: vec![],
                     delivery: agent::Delivery::default(),
                 })
@@ -1067,7 +1114,7 @@ impl Message<agent::AgentEvent> for Roster {
                 }
             }
             E::TurnFinished {
-                session, context, ..
+                session, context, stop_reason, ..
             } => {
                 if self.closing.contains_key(&session) {
                     self.finish_closing(session).await;
@@ -1085,7 +1132,7 @@ impl Message<agent::AgentEvent> for Roster {
                     d.model.clone()
                 };
                 // 70 DESK-PROTOCOL 3: the nudge point.
-                self.judge_turn(&name).await;
+                self.judge_turn(&name, &stop_reason).await;
                 if let Some(model) = model
                     && self.desks.contains_key(&name)
                 {
@@ -1247,6 +1294,14 @@ impl Message<AgentOf> for Roster {
 
     async fn handle(&mut self, m: AgentOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.shared.agent_of(m.0)
+    }
+}
+
+impl Message<OpenDesk> for Roster {
+    type Reply = Result<runtime::SessionId, String>;
+
+    async fn handle(&mut self, m: OpenDesk, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.desk_or_open(&m.0).await
     }
 }
 
@@ -1855,6 +1910,29 @@ mod tests {
         assert!(r.allowed("ops") && r.allowed("theuth"));
         r.lease.holding = false;
         assert!(!r.allowed("theuth") && r.wanted().is_empty(), "duties follow the lease");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[tokio::test]
+    async fn desk_or_open_returns_the_open_desk_and_names_its_refusals() {
+        let data = tmp("open-desk");
+        std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+        std::fs::write(data.join(file::DIR).join("nap.md"), "---\npaused: true\n---\nNap.\n").unwrap();
+        let mut r = roster(&data).await;
+        r.reconcile().await;
+        assert_eq!(r.desk_or_open("nobody").await, Err("no such agent".into()));
+        assert_eq!(r.desk_or_open("nap").await, Err("agent is paused".into()));
+        // no agent actor in this test: the open is attempted and reported, not silently swallowed
+        assert!(r.desk_or_open("theuth").await.unwrap_err().contains("not opened"));
+        let session = runtime::SessionId::new();
+        r.desks.insert(
+            "ops".into(),
+            desk::Desk { session, episode: String::new(), last_active_ms: 0, working: false, primed: false, model: None, serving: None },
+        );
+        assert_eq!(r.desk_or_open("ops").await, Ok(session));
+        r.lease.holding = false;
+        assert_eq!(r.desk_or_open("ops").await, Ok(session), "an open desk is returned regardless");
+        assert!(r.desk_or_open("theuth").await.unwrap_err().contains("lease"));
         let _ = std::fs::remove_dir_all(&data);
     }
 

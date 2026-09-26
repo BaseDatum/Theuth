@@ -44,6 +44,14 @@ test('pinned lead above every project; projects in first-seen order of the newes
   expect(keys(buildRows([sessions[2]!], []))).toEqual(['h:pinned', 'c'])
 })
 
+test('a desk session never appears in the chat list: pinned, archived, in a project or ungrouped', () => {
+  const desk = (id: string, project: string | null, pinned: boolean, archived = false) => ({ ...s(id, project, '2026-01-05T00:00:00Z', pinned, archived), desk: 'theuth' })
+  const sessions = [desk('d1', null, true), desk('d2', 'beta', false), desk('d3', null, false, true), s('a', 'beta', '2026-01-01T00:00:00Z')]
+  const rows = buildRows(sessions, ['d1'], new Set(), true)
+  expect(keys(rows).filter((k) => !k.startsWith('h:'))).toEqual(['p:beta', 'a'])
+  expect(keys(buildRows(sessions.slice(0, 3), [], new Set(), true))).toEqual([])
+})
+
 test('archived roots leave the groups for one collapsed Archived header at the bottom; open, they list newest first with their open tree; no orphans', () => {
   const sessions = [
     s('a', null, '2026-01-03T00:00:00Z'),

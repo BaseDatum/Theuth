@@ -84,7 +84,7 @@ use crate::{
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
+    MarkDesk, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SessionContextBreakdown,
     SearchSessionPage, SendInput, SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
@@ -5637,6 +5637,21 @@ impl Message<PinSession> for Agents {
     ) -> Result<(), String> {
         self.store_for(m.session)
             .set_pinned(m.session, m.pinned)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<MarkDesk> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: MarkDesk,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.store_for(m.session)
+            .set_desk(m.session, m.agent.as_deref())
             .await
             .map_err(|e| e.to_string())
     }

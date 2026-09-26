@@ -377,6 +377,11 @@ function Actions({ task: t }: { task: Task }) {
             Back to backlog
           </Button>
         )}
+        {a.unblock && (
+          <Button size="sm" disabled={busy} onClick={() => move.mutate({ id: t.id, state: 'todo' })}>
+            Unblock{t.owner.type === 'agent' && ` — wake ${t.owner.name}`}
+          </Button>
+        )}
         {a.sendBack && (
           <div className="flex flex-col gap-1.5">
             <Textarea rows={2} placeholder="Notes for the owner" value={notes} onChange={(e) => setNotes(e.target.value)} />

@@ -534,7 +534,8 @@ impl Tool for TaskMoveTool {
     fn description(&self) -> String {
         "Move a task between states when the user asks (\"start that\", \"put it back\", \"drop it\", \
          \"approve it\"): backlog ↔ todo, anything → cancelled, review → done | todo (reviewer), blocked → todo \
-         (owner, once its blockers are clear). `todo` from backlog wakes the owner. Illegal moves are refused \
+         (the user's move clears system blockers such as `no continuation`; a decision needs its answer, a task \
+         blocker its task). `todo` from backlog wakes the owner. Illegal moves are refused \
          with the list of states allowed from where the task is. Working a task yourself is `task_checkout`; \
          finishing one is `task_update` with a disposition."
             .into()

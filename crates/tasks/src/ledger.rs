@@ -22,6 +22,13 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// Blocker text of a task that its episode closed without a disposition (67 §7.3).
 pub const NO_CONTINUATION: &str = "no continuation";
 
+/// A blocker the system (or an agent's disposition) wrote, which a user's
+/// unblock clears: `no continuation`, `engine:*`, `person:*`. A `decision:*`
+/// needs its answer and a task id (no colon) its task; those stay.
+pub fn system_blocker(b: &str) -> bool {
+    b == NO_CONTINUATION || (b.contains(':') && !b.starts_with("decision:"))
+}
+
 /// Placeholder `claimed_by` between claim and a successful delivery when the
 /// agent has no desk yet; replaced by the desk id once delivery returns.
 pub const DISPATCHING: &str = "dispatching";
@@ -509,7 +516,8 @@ impl Ledger {
             }
             (Blocked, Doing | Todo) => {
                 if !blockers.is_empty() {
-                    Err(format!("still blocked on {}", blockers.join(", ")))
+                    let hint = if blockers.iter().any(|b| b.starts_with("decision:")) { "; a decision needs its answer" } else { "" };
+                    Err(format!("still blocked on {}{hint}", blockers.join(", ")))
                 } else if acts_for(actor, &t.owner) {
                     Ok(())
                 } else {
@@ -690,7 +698,7 @@ impl Ledger {
                         self.wake(&t, r, WakeReason::Review, actor).await;
                     }
                 }
-                TaskState::Doing | TaskState::Todo if before.state == TaskState::Review => {
+                TaskState::Doing | TaskState::Todo if matches!(before.state, TaskState::Review | TaskState::Blocked) => {
                     self.wake(&t, &t.owner, WakeReason::Resumed, actor).await;
                 }
                 TaskState::Todo if before.state == TaskState::Backlog => {
@@ -728,7 +736,19 @@ impl Ledger {
         actor: &str,
         session: Option<&str>,
     ) -> R<Task> {
-        let t = self.load(id).await?;
+        let mut t = self.load(id).await?;
+        // A user's blocked → todo|doing is an unblock: the system-owned blockers go
+        // first (`no continuation`, `engine:*`, `person:*`); a `decision:*` or a task
+        // blocker stays and the refusal names it. One place for the board, the
+        // Attention card and the chat tool.
+        let mut blockers = None;
+        if actor == "user" && t.state == TaskState::Blocked && matches!(to, TaskState::Todo | TaskState::Doing) {
+            let kept: Vec<String> = t.blockers.iter().filter(|b| !system_blocker(b)).cloned().collect();
+            if kept.len() != t.blockers.len() {
+                t.blockers = kept.clone();
+                blockers = Some(kept);
+            }
+        }
         if to != t.state
             && let Err(why) = Self::guard(&t, to, actor, &t.blockers)
         {
@@ -746,6 +766,7 @@ impl Ledger {
                 id,
                 TaskPatch {
                     state: Some(to),
+                    blockers,
                     done_because,
                     ..Default::default()
                 },
@@ -2134,6 +2155,41 @@ pub(crate) mod tests {
         let wakes = r.ledger.wakes().await.unwrap();
         assert!(wakes.iter().all(|x| x.id != w.id), "the desk's claimed wake is finished");
         assert!(wakes.iter().any(|x| x.agent == "lead" && x.reason == WakeReason::Review && x.task == Some(left.id.clone())));
+    }
+
+    #[tokio::test]
+    async fn user_unblock_clears_system_blockers_and_wakes_resumed() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        let mut left = r.ledger.get(&t.id).await.unwrap();
+        r.ledger.no_continuation(&mut left, "ops", "turn ended without a disposition").await.unwrap();
+        r.ledger.update(&t.id, TaskPatch { blockers: Some(vec![NO_CONTINUATION.into(), "engine:repo:/x".into()]), ..Default::default() }, "system", None).await.unwrap();
+        // an agent may not talk its way out
+        assert!(r.ledger.move_to(&t.id, TaskState::Todo, None, None, "agent:ops", None).await.unwrap_err().contains("still blocked"));
+        // the user's unblock clears both system blockers and lands in todo with a `resumed` wake
+        let u = r.ledger.move_to(&t.id, TaskState::Todo, Some("go again"), None, "user", None).await.unwrap();
+        assert_eq!((u.state, u.blockers.as_slice(), u.no_progress_count), (TaskState::Todo, &[][..], 0));
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(w.iter().any(|x| x.agent == "ops" && x.reason == WakeReason::Resumed && x.task == Some(t.id.clone())));
+        assert!(r.ledger.events(&t.id).await.unwrap().iter().any(|e| e.field == "blockers" && e.after.as_deref() == Some("")));
+    }
+
+    #[tokio::test]
+    async fn user_unblock_keeps_decision_and_task_blockers() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        let other = r.task("agent:ops").await;
+        let (decision, _) = r.ledger.escalate(&t.id, "which region?", &[], "agent:ops", None).await.unwrap();
+        let blockers: Vec<String> = vec![decision.clone(), NO_CONTINUATION.into(), other.id.0.clone()];
+        r.ledger.update(&t.id, TaskPatch { blockers: Some(blockers), ..Default::default() }, "system", None).await.unwrap();
+        let err = r.ledger.move_to(&t.id, TaskState::Todo, None, None, "user", None).await.unwrap_err();
+        assert!(err.contains(&decision) && err.contains("a decision needs its answer"), "{err}");
+        assert!(err.contains(&other.id.0) && !err.contains(NO_CONTINUATION), "{err}");
+        // a refused unblock changes nothing
+        let t2 = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!((t2.state, t2.blockers.len()), (TaskState::Blocked, 3));
+        assert!(!r.ledger.wakes().await.unwrap().iter().any(|x| x.reason == WakeReason::Resumed));
     }
 
     // ---- schedules (commit 4) -----------------------------------------------------

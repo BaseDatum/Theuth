@@ -411,12 +411,12 @@ function Runtime({ file: f }: { file: AgentFile }) {
   )
 }
 
-/** The agent's sessions, newest first: its desks (`agent:<name>`) and their children (the work sessions). */
+/** The agent's sessions, newest first: its desks (the row's `desk` mark) and their children (the work sessions). */
 function Runs({ name, desk }: { name: string; desk: string | null }) {
   const api = useApi()
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const all = sessions.data ?? []
-  const desks = all.filter((s) => s.title === `agent:${name}` || s.id === desk).map((s) => s.id)
+  const desks = all.filter((s) => s.desk === name || s.id === desk).map((s) => s.id)
   const runs = all.filter((s) => desks.includes(s.id) || (s.parent !== null && desks.includes(s.parent))).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   if (sessions.isPending) return <p className="p-4 text-sm text-fg-tertiary">Loading…</p>
   if (runs.length === 0) return <p className="p-4 text-sm text-fg-tertiary">No runs yet. A desk opens on the first wake addressed to this agent.</p>

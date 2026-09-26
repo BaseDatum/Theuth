@@ -1268,6 +1268,9 @@ pub trait Api {
     /// One agent file (67 §6.1). `Err` when unknown.
     #[method(name = "agent_get")]
     async fn agent_get(&self, name: String) -> RpcResult<roster::AgentFile>;
+    /// The agent's desk session id, opening the desk when it is not (the Desks row's click). `Err` when the agent is unknown, paused, a proposal, or this engine is not the hub.
+    #[method(name = "desk_open")]
+    async fn desk_open(&self, name: String) -> RpcResult<SessionId>;
     /// Write `agents/<name>.md` from `file` (create or replace) — the file editor's save (67 §12).
     #[method(name = "agent_put")]
     async fn agent_put(&self, file: roster::AgentFile) -> RpcResult<()>;
@@ -3952,6 +3955,10 @@ impl ApiServer for Server {
 
     async fn agent_get(&self, name: String) -> RpcResult<roster::AgentFile> {
         send(&roster_actor()?, roster::GetAgent(name)).await
+    }
+
+    async fn desk_open(&self, name: String) -> RpcResult<SessionId> {
+        send(&roster_actor()?, roster::OpenDesk(name)).await
     }
 
     async fn agent_put(&self, file: roster::AgentFile) -> RpcResult<()> {

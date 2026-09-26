@@ -559,6 +559,17 @@ pub struct PinSession {
     pub pinned: bool,
 }
 
+/// `ask` → `Result<(), String>`: mark a session as a roster agent's desk
+/// (67 §6.2) — `agent` is the bare name, `None` clears. The roster's write when
+/// it opens a desk; lists read it as [`SessionSummary::desk`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MarkDesk {
+    /// Target session.
+    pub session: SessionId,
+    /// Bare agent name, or `None`.
+    pub agent: Option<String>,
+}
+
 /// `ask` → `Result<(), String>`: archive or unarchive a root; archived trees
 /// leave the sidebar but stay in [`ListSessions`] and search (51 §3).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1293,6 +1304,11 @@ pub struct SessionSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub harness_model: Option<String>,
+    /// The roster agent whose desk this session is (67 §6.2); chat lists drop
+    /// these rows, the Desks group shows them.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub desk: Option<String>,
     /// Kept at the top of the list.
     #[serde(default)]
     pub pinned: bool,

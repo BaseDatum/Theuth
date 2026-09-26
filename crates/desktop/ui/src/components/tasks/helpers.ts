@@ -60,11 +60,11 @@ export function defaultReviewer(owner: Owner, agents: readonly AgentSummary[]): 
   return !mgr || mgr === THEUTH || mgr === 'user' ? USER : agent(mgr)
 }
 
-/** Blocker kinds (67 §7.1): a task id, `decision:<approval id>`, or `person:<name>`. */
+/** Blocker kinds (67 §7.1): a task id, `decision:<approval id>`, `person:<name>`, or a system phrase (`no continuation`, `engine:*`). */
 export type Blocker = { kind: 'task' | 'decision' | 'person' | 'other'; id: string; raw: string }
 export function parseBlocker(raw: string): Blocker {
   const i = raw.indexOf(':')
-  if (i === -1) return { kind: 'task', id: raw, raw }
+  if (i === -1) return { kind: raw.includes(' ') ? 'other' : 'task', id: raw, raw }
   const prefix = raw.slice(0, i)
   const id = raw.slice(i + 1)
   return prefix === 'decision' || prefix === 'person' ? { kind: prefix, id, raw } : { kind: 'other', id: raw, raw }
@@ -99,7 +99,7 @@ export function columns(tasks: readonly Task[], withCancelled: boolean): { state
 }
 
 /** Actions the detail page offers per state (67 §7.2 transitions the user may take, 69 backlog ↔ todo). */
-export function actionsFor(t: Task): { start: boolean; toBacklog: boolean; sendBack: boolean; markDone: boolean; cancel: boolean; canMarkDone: boolean } {
+export function actionsFor(t: Task): { start: boolean; toBacklog: boolean; sendBack: boolean; markDone: boolean; cancel: boolean; canMarkDone: boolean; unblock: boolean } {
   const open = t.state !== 'done' && t.state !== 'cancelled'
   return {
     start: t.state === 'backlog',
@@ -109,5 +109,7 @@ export function actionsFor(t: Task): { start: boolean; toBacklog: boolean; sendB
     // `done` needs a reviewer other than the owner unless the owner is the user (67 §7.2).
     canMarkDone: t.state === 'review' && awaitsMyReview(t),
     cancel: open && t.state !== 'review',
+    // A user's unblock clears system blockers; a decision needs its answer, so it is offered where one is pending.
+    unblock: t.state === 'blocked' && !t.blockers.some((b) => b.startsWith('decision:')),
   }
 }

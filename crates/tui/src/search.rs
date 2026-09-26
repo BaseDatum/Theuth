@@ -1347,7 +1347,7 @@ impl State {
                 match result {
                     Ok(list) => {
                         let mut list: Vec<SessionSummary> =
-                            list.into_iter().filter(|s| s.parent.is_none()).collect();
+                            list.into_iter().filter(|s| s.parent.is_none() && s.desk.is_none()).collect();
                         list.truncate(RECENT);
                         self.recent = Some(list);
                     }

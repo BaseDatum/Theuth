@@ -10,6 +10,8 @@ export const ENGINE_NOTICES = {
   todo: { title: 'Todo reminder', description: 'theuth reminded the model of its current plan.' },
   knowledge: { title: 'Knowledge reminder', description: 'theuth suggested relevant knowledge for the model to consult.' },
   vision: { title: 'Images unseen', description: 'theuth told the model no vision model is configured, so the pending images were not looked at.' },
+  nudge: { title: 'Nudge', description: 'theuth asked the desk to dispose of its task before the turn ends (70 DESK-PROTOCOL 3).' },
+  journal: { title: 'Journal', description: 'theuth asked the desk to write its episode journal before the desk closes.' },
 }
 
 /** One card an engine-wrapped input renders as. */
@@ -26,8 +28,9 @@ export type Injected =
   /** A desk episode's opening block (roster 67 §6.2): the agent's charter, its journal and the operating manual. */
   | { kind: 'desk'; agent: string; charter: string; journal: string; manual: string }
   /** A scoped wake (roster 67 §7.3). `id`/`title` name the task when there is one; `state`…`body` come from the
-   * `<task>` record that follows when the task was loaded; `count` when the wake was raised more than once. */
-  | { kind: 'wake'; id?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string }
+   * `<task>` record that follows when the task was loaded; `count` when the wake was raised more than once;
+   * `roster` is the fit-check block an assigned/reassigned wake carries (70 DESK-PROTOCOL). */
+  | { kind: 'wake'; id?: string; title?: string; reason: string; count?: number; state?: string; owner?: string; reviewer?: string; thread?: string; body?: string; roster?: string }
   | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
@@ -49,14 +52,14 @@ function inner(s: string, tag: string): string {
   return a < 0 || b < 0 ? '' : s.slice(a + tag.length + 2, b).trim()
 }
 
-/** `roster::desk::wake_text`: the header line, then the task record when the task was loaded. */
+/** `roster::desk::wake_text`: the header line, then the task record when the task was loaded, then the `<roster>` fit check on assigned/reassigned. */
 const WAKE =
-  /^Wake: (?:task (\S+)(?: — (.*?))?|no task)\. Reason: ([a-z]+)\.(?: \(Raised (\d+) times\.\))? Do not switch to another task until this wake is handled\.(?:\n\n<task ([^\n]*?)>\n([\s\S]*)\n<\/task>)?$/
+  /^Wake: (?:task (\S+)(?: — (.*?))?|no task)\. Reason: ([a-z_]+)\.(?: \(Raised (\d+) times\.\))? Do not switch to another task until this wake is handled\.(?:\n\n<task ([^\n]*?)>\n([\s\S]*)\n<\/task>)?(?:\n\n<roster>\n([\s\S]*?)\n<\/roster>)?$/
 
 function wake(text: string): Extract<Injected, { kind: 'wake' }> | null {
   const m = WAKE.exec(text)
   if (!m) return null
-  const [, id, title, reason = '', count, open = '', body] = m
+  const [, id, title, reason = '', count, open = '', body, roster] = m
   const w: Extract<Injected, { kind: 'wake' }> = { kind: 'wake', reason }
   if (id !== undefined) w.id = id
   if (title !== undefined) w.title = title
@@ -70,6 +73,7 @@ function wake(text: string): Extract<Injected, { kind: 'wake' }> | null {
     if (thread !== undefined) w.thread = thread
     w.body = body
   }
+  if (roster !== undefined) w.roster = roster
   return w
 }
 
