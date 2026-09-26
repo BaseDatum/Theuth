@@ -28,7 +28,14 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
     }
     // Tauri's file-drop interception swallows every in-page HTML5 drop in WKWebView (BLOCKNOTE-DRAG); the main
     // window turns it off in tauri.conf.json (`dragDropEnabled: false`), pop-outs here.
+    // Background: the page colour for the system appearance (DARK-FLASH), read off main since this window
+    // does not exist yet; `ThemeChanged` keeps it current afterwards.
+    let dark = app
+        .get_webview_window("main")
+        .and_then(|w| w.theme().ok())
+        .is_some_and(|t| t == tauri::Theme::Dark);
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .background_color(crate::page_background(dark))
         .disable_drag_drop_handler()
         .inner_size(960.0, 720.0)
         .min_inner_size(480.0, 360.0)

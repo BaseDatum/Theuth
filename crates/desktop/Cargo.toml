@@ -76,7 +76,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "block2"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "block2"] }
 
 [build-dependencies]
 tauri-build = { workspace = true }
