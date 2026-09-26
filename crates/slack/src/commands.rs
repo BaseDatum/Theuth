@@ -371,7 +371,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
                 .await
                 .map_err(err)?
                 .into_iter()
-                .filter(|s| s.parent.is_none())
+                .filter(|s| s.parent.is_none() && s.desk.is_none())
                 .collect();
             panel(ui::sessions(&rows, cx.page))
         }

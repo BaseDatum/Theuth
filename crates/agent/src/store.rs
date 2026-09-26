@@ -364,6 +364,7 @@ struct SessionRow {
     agent: Option<String>,
     cwd: Option<String>,
     harness_model: Option<String>,
+    desk: Option<String>,
     pinned: bool,
     archived: bool,
     project: Option<String>,
@@ -397,7 +398,7 @@ macro_rules! session_cols {
         concat!(
             "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.tags, sessions.model, \
              sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.harness_model, \
-             sessions.pinned, ",
+             sessions.desk, sessions.pinned, ",
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
@@ -429,6 +430,7 @@ impl SessionRow {
             agent: r.agent,
             cwd: r.cwd,
             harness_model: r.harness_model,
+            desk: r.desk,
             pinned: r.pinned,
             archived: r.archived,
             project: r.project,
@@ -929,6 +931,18 @@ impl Store {
         let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET pinned = ? WHERE id = ?")
             .bind(pinned)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Mark (or unmark) a session as `agent`'s desk (67 §6.2); the roster's write.
+    pub async fn set_desk(&self, id: SessionId, agent: Option<&str>) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET desk = ? WHERE id = ?")
+            .bind(agent)
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;

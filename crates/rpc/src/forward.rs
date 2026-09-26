@@ -145,9 +145,7 @@ pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
 
 /// Classify `session` from its row: `Here` when unknown, unowned or ours;
 /// `Forward(owner)` for an agent desk — an external harness (`agent` set) or
-/// a roster desk: a pinned root the roster titled `agent:<name>`
-/// (`roster::AgentName::peer`; the roster keeps its session → agent map in
-/// memory on the hub, so the title is the mark every replica can see);
+/// a roster desk (`desk` set by `roster::open_desk`, replicated with the row);
 /// `Take` for everything else (a user session).
 pub async fn classify(store: &Store, session: SessionId) -> anyhow::Result<Route> {
     let Some(row) = store.session(session).await? else {
@@ -156,9 +154,7 @@ pub async fn classify(store: &Store, session: SessionId) -> anyhow::Result<Route
     if row.owner.is_empty() || row.owner == store.engine() {
         return Ok(Route::Here);
     }
-    // ponytail: title match; a renamed desk falls back to take-on-write. A
-    // durable desk mark on the row (or a replicated roster map) replaces it.
-    let desk = row.agent.is_some() || (row.pinned && row.parent.is_none() && row.title.starts_with("agent:"));
+    let desk = row.agent.is_some() || row.desk.is_some();
     Ok(if desk { Route::Forward(PeerId(row.owner)) } else { Route::Take })
 }
 
@@ -534,10 +530,9 @@ mod tests {
         theirs.create_session(user, "m", None, None, None).await.unwrap();
         theirs.create_session(desk, "m", None, None, None).await.unwrap();
         theirs.set_acp(desk, "omp", None).await.unwrap();
-        // ... a roster desk: pinned root titled `agent:<name>` (roster::open_desk) ...
+        // ... a roster desk: the row's `desk` mark (roster::open_desk) ...
         theirs.create_session(roster, "m", None, None, None).await.unwrap();
-        theirs.set_title(roster, "agent:ops").await.unwrap();
-        theirs.set_pinned(roster, true).await.unwrap();
+        theirs.set_desk(roster, Some("ops")).await.unwrap();
         theirs.close().await;
         // ... seen from this engine ("me"), which also has a session of its own.
         let store = Store::open(&path, Some(mesh::EngineId("me".into()))).await.unwrap();

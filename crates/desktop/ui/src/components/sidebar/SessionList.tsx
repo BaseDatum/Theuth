@@ -142,7 +142,8 @@ export function buildRows(
     rows.push({ key: s.id, session: s })
     if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
   }
-  const all = sessions.filter((s) => s.parent === null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  // A roster desk (`desk` set) is never a chat row — pinned, archived or in a project; the Desks group is its place.
+  const all = sessions.filter((s) => s.parent === null && s.desk == null).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   const top = all.filter((s) => !s.archived)
   const pinned = top.filter((s) => s.pinned)
   if (pinned.length) {

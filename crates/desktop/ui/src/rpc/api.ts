@@ -405,6 +405,8 @@ export interface Api {
   agents_list(): Promise<AgentSummary[]>
   /** One agent file (67 §6.1). */
   agent_get(name: string): Promise<AgentFile>
+  /** The agent's desk session id, opening the desk when it is not (the Desks row). */
+  desk_open(name: string): Promise<string>
   /** Write `agents/<name>.md` from `file` (67 §12). */
   agent_put(file: AgentFile): Promise<null>
   /** Flip an agent's `paused:` line (67 §6.4). */
@@ -716,6 +718,7 @@ export const METHODS = [
   'delete_schedule',
   'delete_secret',
   'delete_session',
+  'desk_open',
   'device_pair_start',
   'device_rename',
   'device_revoke',

@@ -1811,8 +1811,10 @@ fn project_order<'a>(roots: impl Iterator<Item = Option<&'a str>>) -> Vec<Option
 
 /// `/sessions` rows: a heading per project in first-seen order of the roots
 /// (Ungrouped last), each root followed by its descendants, depth-first, in
-/// list order (51 §3).
-pub fn session_rows(list: Vec<SessionSummary>) -> Vec<Grouped<(SessionSummary, usize)>> {
+/// list order (51 §3). A roster desk (`desk` set) is not a chat: it and its
+/// tree (reached only through it) are left out.
+pub fn session_rows(mut list: Vec<SessionSummary>) -> Vec<Grouped<(SessionSummary, usize)>> {
+    list.retain(|s| s.desk.is_none());
     let mut children: HashMap<SessionId, Vec<usize>> = HashMap::new();
     for (i, s) in list.iter().enumerate() {
         if let Some(p) = s.parent {
@@ -15345,6 +15347,7 @@ mod tests {
             agent: None,
             cwd: None,
             harness_model: None,
+            desk: None,
             pinned: false,
             archived: false,
             project: project.map(str::to_owned),
