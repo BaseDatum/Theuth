@@ -5992,9 +5992,10 @@ impl Model {
             _ => {
                 let (text, files) = self.expand_pastes(line);
                 match self.session {
-                    // Mid-turn: the card waits below the transcript until
+                    // Mid-turn, or mid-`/compact` (a mini-turn without `TurnStarted`;
+                    // 07 §8.6): the card waits below the transcript until
                     // `InputInjected` says where in the conversation it landed.
-                    Some(session) if self.streaming => {
+                    Some(session) if self.streaming || self.compacting => {
                         let id = InputId::new();
                         self.queued.push(QueuedInput {
                             id,
@@ -6068,9 +6069,9 @@ impl Model {
         send(tx, Command::ListAgents(id));
     }
 
-    /// Cancel the current session's in-flight turn, if any.
+    /// Cancel the current session's in-flight turn or `/compact`, if any.
     pub fn cancel(&self, tx: &UnboundedSender<Command>) {
-        if let (Some(session), true) = (self.session, self.streaming) {
+        if let (Some(session), true) = (self.session, self.streaming || self.compacting) {
             send(tx, Command::Cancel(session));
         }
     }
