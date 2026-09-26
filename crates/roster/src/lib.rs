@@ -11,6 +11,7 @@
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
+pub mod attention;
 pub mod budget;
 pub mod config;
 pub mod desk;
@@ -861,6 +862,10 @@ impl Roster {
             external: vec![],
             done_when: None,
         };
+        if let Some(t) = budget::crossed(&f.budget, before, after) {
+            let pct = if t == budget::Threshold::Warn { "80 %" } else { "100 %, paused" };
+            tasks::activity::record(&self.rt, tasks::activity::ActivityKind::BudgetThreshold, "system", &name, format!("{name} at {pct} of budget ({after:.2} of {amount:.2} {currency})")).await;
+        }
         match budget::crossed(&f.budget, before, after) {
             None => {}
             Some(budget::Threshold::Warn) => {
@@ -1280,6 +1285,7 @@ impl Message<PauseAgent> for Roster {
             }
         }
         self.set_paused(&m.name, m.paused).await?;
+        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentPaused, "user", &m.name, format!("{} {}", if m.paused { "paused" } else { "un-paused" }, m.name)).await;
         let _ = ctx.actor_ref().tell(Reconcile).await;
         Ok(())
     }
@@ -1306,6 +1312,7 @@ impl Message<ApproveAgent> for Roster {
         let text = file::set_key(&text, "proposed_by", None);
         self.write_text(&m.0, &text).await?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
+        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentHired, "user", &m.0, format!("hired {}", m.0)).await;
         // 67 §6.5: the hire task was the approval; close it.
         if let Some(id) = approval {
             close_hire_task(&m.0, id, "approved").await;
@@ -1329,6 +1336,7 @@ impl Message<RemoveAgent> for Roster {
                 }
             });
         }
+        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentRemoved, "user", &m.name, format!("removed {}", m.name)).await;
         if let Some(id) = approval {
             let note = m.note.as_deref().map(str::trim).filter(|s| !s.is_empty());
             close_hire_task(&m.name, id, &note.map_or_else(|| "rejected".to_owned(), |n| format!("rejected: {n}"))).await;
@@ -1475,6 +1483,7 @@ impl Message<ProposeAgent> for Roster {
             .await
             .map_err(|e| e.to_string())?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
+        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentProposed, &m.proposed_by, f.name.as_str(), format!("proposed hiring {} ({})", f.name, f.title)).await;
         Ok(approval_id)
     }
 }
@@ -1645,6 +1654,7 @@ impl runtime::Plugin for RosterPlugin {
             Ok(_) => tracing::info!("roster: agents and budget replicate"),
             Err(e) => tracing::debug!("roster: local only ({e})"),
         }
+        let attention_store = store.clone();
         let shared = Arc::new(Shared::default());
         let max_rounds = cfg.max_rounds;
         let actor = Roster::spawn_with_mailbox(
@@ -1652,6 +1662,9 @@ impl runtime::Plugin for RosterPlugin {
             runtime::subscriber_mailbox(),
         );
         actor.register(ROSTER_ACTOR)?;
+        if let Err(e) = attention::Attention::start(rt, &attention_store).await {
+            tracing::warn!("attention inbox not started: {e:#}");
+        }
         rt.subscribe::<Roster, agent::AgentEvent>(&actor).await;
         // The charter document's exports become the file's body.
         rt.subscribe::<Roster, document::Exported>(&actor).await;

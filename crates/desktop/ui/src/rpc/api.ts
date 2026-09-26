@@ -128,6 +128,9 @@ import type { Task } from '@/rpc/bindings/Task'
 import type { TaskCreate } from '@/rpc/bindings/TaskCreate'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
+import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
+import type { ActivityFilter } from '@/rpc/bindings/ActivityFilter'
+import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
 import type { TaskState } from '@/rpc/bindings/TaskState'
 import type { RpcClient } from '@/rpc/client'
@@ -426,6 +429,16 @@ export interface Api {
   task_events(id: string): Promise<TaskEvent[]>
   /** Tasks whose `blockers` name `id` — the inverse link, computed (67 §7.1). */
   task_blocks(id: string): Promise<string[]>
+  /** The activity feed, newest first: `since_ms`, `kinds`, `limit` (default 50, max 500) (70 HUD). */
+  activity_list(filter: ActivityFilter): Promise<ActivityEntry[]>
+  /** The attention inbox — undismissed, unsnoozed, newest first; the badge is its length (70 HUD). */
+  attention_list(): Promise<AttentionItem[]>
+  /** Hide an attention item until `until_ms` (70 HUD). */
+  attention_snooze(id: string, until_ms: number): Promise<null>
+  /** Hide an attention item for good (70 HUD). */
+  attention_dismiss(id: string): Promise<null>
+  /** Answer the `decision:<id>` a task is blocked on, as the user (67 §11). */
+  task_decide(decision: string, answer: string): Promise<null>
   /** A fresh 31 §4.4 pairing string issued by the node, so a device pairs with it directly (32 §4.4). */
   invite_node(id: string): Promise<Pairing>
   /** Drop a node; the user's devices stay paired with it (32 §8.4). */
@@ -654,6 +667,7 @@ export interface Api {
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
 export const METHODS = [
   'a2a_status',
+  'activity_list',
   'add_acp',
   'add_mcp_repo',
   'add_mcp_server',
@@ -675,6 +689,9 @@ export const METHODS = [
   'app_close',
   'archive_session',
   'artifact_search_match',
+  'attention_dismiss',
+  'attention_list',
+  'attention_snooze',
   'brief_delete',
   'brief_get',
   'brief_list',
@@ -910,6 +927,7 @@ export const METHODS = [
   'task_blocks',
   'task_comment',
   'task_create',
+  'task_decide',
   'task_events',
   'task_get',
   'task_move',

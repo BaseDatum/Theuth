@@ -15,6 +15,7 @@
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
 
+pub mod activity;
 pub mod config;
 pub mod escalate;
 pub mod ledger;
@@ -799,6 +800,7 @@ impl runtime::Plugin for TasksPlugin {
                 return Ok(());
             }
         };
+        let actor_store = store.clone();
         match replica::attach(store.pool(), &["tasks", "wakes", "answered"]).await {
             Ok(_) => tracing::info!("tasks: tasks, wakes and answered replicate"),
             Err(e) => tracing::debug!("tasks: local only ({e})"),
@@ -828,6 +830,9 @@ impl runtime::Plugin for TasksPlugin {
             escalations: escalate::Escalations::default(),
         });
         actor.register(TASKS_ACTOR)?;
+        if let Err(e) = activity::Activity::start(rt, &actor_store).await {
+            tracing::warn!("activity feed not started: {e:#}");
+        }
 
         let me = actor.clone();
         tokio::spawn(async move {

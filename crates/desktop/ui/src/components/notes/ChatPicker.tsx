@@ -34,7 +34,7 @@ export function ChatPicker({
   const go = (session: string | null) => {
     prefillDraft(session, '', [item])
     onOpenChange(false)
-    void (session ? navigate({ to: '/c/$session', params: { session } }) : navigate({ to: '/' }))
+    void (session ? navigate({ to: '/c/$session', params: { session } }) : navigate({ to: '/new' }))
   }
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange} title="Attach to chat" description={`Pick the chat ${item.title} goes to`}>

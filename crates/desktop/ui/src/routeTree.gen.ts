@@ -11,9 +11,11 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
+import { Route as AttentionRouteImport } from './routes/attention'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LinkRouteImport } from './routes/link'
+import { Route as NewRouteImport } from './routes/new'
 import { Route as NotesRouteImport } from './routes/notes'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as ToolsRouteImport } from './routes/tools'
@@ -49,6 +51,11 @@ const ArtifactsRoute = ArtifactsRouteImport.update({
   path: '/artifacts',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AttentionRoute = AttentionRouteImport.update({
+  id: '/attention',
+  path: '/attention',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IslandRoute = IslandRouteImport.update({
   id: '/island',
   path: '/island',
@@ -62,6 +69,11 @@ const KnowledgeRoute = KnowledgeRouteImport.update({
 const LinkRoute = LinkRouteImport.update({
   id: '/link',
   path: '/link',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NewRoute = NewRouteImport.update({
+  id: '/new',
+  path: '/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotesRoute = NotesRouteImport.update({
@@ -188,9 +200,11 @@ const RoutinesNameSectionRoute = RoutinesNameSectionRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/new': typeof NewRoute
   '/notes': typeof NotesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -219,9 +233,11 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/new': typeof NewRoute
   '/notes': typeof NotesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -251,9 +267,11 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
+  '/attention': typeof AttentionRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/link': typeof LinkRoute
+  '/new': typeof NewRoute
   '/notes': typeof NotesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -284,9 +302,11 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/artifacts'
+    | '/attention'
     | '/island'
     | '/knowledge'
     | '/link'
+    | '/new'
     | '/notes'
     | '/secrets'
     | '/tools'
@@ -315,9 +335,11 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/artifacts'
+    | '/attention'
     | '/island'
     | '/knowledge'
     | '/link'
+    | '/new'
     | '/notes'
     | '/secrets'
     | '/tools'
@@ -346,9 +368,11 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/artifacts'
+    | '/attention'
     | '/island'
     | '/knowledge'
     | '/link'
+    | '/new'
     | '/notes'
     | '/secrets'
     | '/tools'
@@ -378,9 +402,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArtifactsRoute: typeof ArtifactsRouteWithChildren
+  AttentionRoute: typeof AttentionRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LinkRoute: typeof LinkRoute
+  NewRoute: typeof NewRoute
   NotesRoute: typeof NotesRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
@@ -421,6 +447,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ArtifactsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/attention': {
+      id: '/attention'
+      path: '/attention'
+      fullPath: '/attention'
+      preLoaderRoute: typeof AttentionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/island': {
       id: '/island'
       path: '/island'
@@ -440,6 +473,13 @@ declare module '@tanstack/react-router' {
       path: '/link'
       fullPath: '/link'
       preLoaderRoute: typeof LinkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/new': {
+      id: '/new'
+      path: '/new'
+      fullPath: '/new'
+      preLoaderRoute: typeof NewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/notes': {
@@ -640,9 +680,11 @@ const KnowledgeRouteWithChildren = KnowledgeRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtifactsRoute: ArtifactsRouteWithChildren,
+  AttentionRoute: AttentionRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LinkRoute: LinkRoute,
+  NewRoute: NewRoute,
   NotesRoute: NotesRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,

@@ -98,7 +98,7 @@ function Doc({
   // 59 §5.4: "Ask theuth…" opens a new chat with this document attached (and names a block).
   const ask = (block?: string) => {
     prefillDraft(null, block ? `about block ${block}: ` : '', [docRef()])
-    void rootNavigate({ to: '/' })
+    void rootNavigate({ to: '/new' })
   }
   // A `knowledge` hit lands on the editor column once the current text rendered (49 §7); refetches and ordinary visits leave focus alone.
   const column = useSearchFocus<HTMLDivElement>(
