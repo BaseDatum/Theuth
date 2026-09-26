@@ -867,6 +867,8 @@ impl runtime::Plugin for TasksPlugin {
             escalations: escalate::Escalations::default(),
         });
         actor.register(TASKS_ACTOR)?;
+        let pool = actor_store.pool().clone();
+        tokio::spawn(async move { thread::adopt_threads(&pool).await });
         if let Err(e) = activity::Activity::start(rt, &actor_store).await {
             tracing::warn!("activity feed not started: {e:#}");
         }

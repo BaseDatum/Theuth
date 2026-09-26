@@ -91,6 +91,9 @@ pub enum DocKind {
     Note,
     /// An agent's charter — the body of `agents/<name>.md` (67 §6.1); the roster copies each export into the file.
     AgentCharter,
+    /// A task's thread (67 §7.1): comments, answers and the event log of one task. Owned by the task,
+    /// so it never lists as a note.
+    TaskThread,
 }
 
 impl DocKind {
@@ -101,6 +104,7 @@ impl DocKind {
             Self::MeetingNote => "meeting_note",
             Self::Note => "note",
             Self::AgentCharter => "agent_charter",
+            Self::TaskThread => "task_thread",
         }
     }
 }
@@ -131,6 +135,8 @@ pub enum Binding {
     Note,
     /// An agent's charter by roster name (`ops`); the wizard binds the same way before the file exists.
     AgentCharter(String),
+    /// A task's thread by task id.
+    TaskThread(String),
 }
 
 impl Binding {
@@ -147,6 +153,7 @@ impl Binding {
             Self::MeetingNote(_) => DocKind::MeetingNote,
             Self::Note => DocKind::Note,
             Self::AgentCharter(_) => DocKind::AgentCharter,
+            Self::TaskThread(_) => DocKind::TaskThread,
         }
     }
 
@@ -161,6 +168,7 @@ impl Binding {
             Self::MeetingNote(m) => format!("meetings/{m}/notes.md"),
             Self::Note => format!("documents/{id}/note.md"),
             Self::AgentCharter(_) => format!("documents/{id}/charter.md"),
+            Self::TaskThread(_) => format!("documents/{id}/thread.md"),
         }
     }
 }
@@ -649,6 +657,11 @@ mod tests {
         assert_eq!(c.key(), r#"{"agent_charter":"ops"}"#);
         assert_eq!(c.kind(), DocKind::AgentCharter);
         assert_eq!(c.derived(&id), format!("documents/{id}/charter.md"));
+        let t = Binding::TaskThread("01a0".into());
+        assert_eq!(t.key(), r#"{"task_thread":"01a0"}"#);
+        assert_eq!(t.kind(), DocKind::TaskThread);
+        assert_eq!(t.kind().to_string(), "task_thread");
+        assert_eq!(t.derived(&id), format!("documents/{id}/thread.md"));
     }
 
     #[test]
