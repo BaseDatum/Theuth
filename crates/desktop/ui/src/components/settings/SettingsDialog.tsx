@@ -8,6 +8,7 @@ import {
   Keyboard,
   Link2,
   type LucideIcon,
+  MessageCircle,
   MessageSquare,
   Mic,
   Monitor,
@@ -22,6 +23,7 @@ import { useState } from 'react'
 import { Agents } from '@/components/settings/Agents'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
+import { Chat } from '@/components/settings/Chat'
 import { Communication } from '@/components/settings/Communication'
 import { Computer } from '@/components/settings/Computer'
 import { Connections } from '@/components/settings/Connections'
@@ -38,6 +40,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 
 const TABS = [
   ['general', 'General', Settings2],
+  ['chat', 'Chat', MessageCircle],
   ['loop', 'Agent loop', RefreshCw],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
@@ -72,6 +75,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
   return (
     <>
       {tab === 'general' && <General />}
+      {tab === 'chat' && <Chat />}
       {tab === 'loop' && <Loop />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}

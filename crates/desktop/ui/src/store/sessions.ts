@@ -95,6 +95,9 @@ export type Entry = { id: string; context?: ContextEntry } & (
       child: boolean;
       result?: ToolResult;
       job?: JobTail;
+      /** `Date.now()` at `ToolCallStarted` / `ToolCallFinished`; live cards only (history rows carry no times). */
+      startedAt?: number;
+      finishedAt?: number;
     }
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card

@@ -775,6 +775,7 @@ function turn(
         pending: false,
         // A `.` in the id marks a call made from inside a `python` cell (08 §4.1).
         child: e.call_id.includes("."),
+        startedAt: Date.now(),
       };
       const entries =
         at < 0 ? [...s.entries, tool] : replaceAt(s.entries, at, tool);
@@ -806,7 +807,7 @@ function turn(
       const next = patchTool(
         s,
         (t) => t.callId === e.call_id && !t.result,
-        (t) => ({ ...t, result }),
+        (t) => ({ ...t, result, finishedAt: Date.now() }),
       );
       const entries =
         next === s
