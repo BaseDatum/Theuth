@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -12,9 +13,10 @@ import { SearchSession } from '@/components/chat/SearchSession'
 import { TodoCard } from '@/components/chat/TodoCard'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
+import { chatName } from '@/lib/attach'
 import { isDraft, usePanes } from '@/lib/panes'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
-import { useApi } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
 import { useScope } from '@/store/engine-scope'
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
@@ -71,9 +73,12 @@ function LiveSession({ session, first }: { session: string; first: boolean }) {
   const destination = useMemo<SearchDestination>(() => ({ category: 'sessions', session, seq: null }), [session])
   const fromSearch = isSearchDestination(origin, destination)
 
+  // Same fallback as the header: the list row until `TitleChanged` fills the slice (the query is shared with it).
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const row = sessions.data?.find((s) => s.id === session)
   useEffect(() => {
-    if (focused) document.title = `${title ?? ''}${running ? ' ·' : ''}`
-  }, [title, running, focused])
+    if (focused) document.title = `${title || (row ? chatName(row) : '')}${running ? ' ·' : ''}`
+  }, [title, row, running, focused])
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
