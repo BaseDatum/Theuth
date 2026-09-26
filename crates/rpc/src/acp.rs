@@ -537,6 +537,9 @@ fn replay(i: usize, entry: HistoryEntry) -> SessionUpdate {
         HistoryEntry::Assistant { text, context, .. } => {
             SessionUpdate::AgentMessageChunk(ContentChunk::new(removed(text, &context).into()))
         }
+        HistoryEntry::Reasoning { text, .. } => {
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(text.into()))
+        }
         // A `show` / `app` entry replays as a plain tool card; the artifact
         // link it carried live (`ArtifactShown`) is a frontend join on
         // `list_artifacts` by `call_id`, any kind, not part of the history (35 §0.3).

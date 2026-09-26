@@ -6379,6 +6379,18 @@ pub(crate) fn render(
                 },
             )),
             ChatRole::Assistant => {
+                // 70 THINKING-TRACES: the thinking blocks precede the reply they led to.
+                let reasoning = m.content.reasoning_contents().concat();
+                if !reasoning.trim().is_empty() {
+                    out.push((
+                        *seq,
+                        HistoryEntry::Reasoning {
+                            text: reasoning,
+                            turn: current_turn,
+                            context: context.cloned(),
+                        },
+                    ));
+                }
                 let text = text_of(&m.content);
                 if !text.is_empty() {
                     out.push((

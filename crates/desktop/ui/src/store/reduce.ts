@@ -354,6 +354,8 @@ export function fromHistory(h: HistoryEntry): Entry[] {
             },
           ]
         : [];
+    case "reasoning":
+      return [{ id: nextId(), kind: "reasoning", text: h.text, done: true }];
     case "tool":
       return [
         {
