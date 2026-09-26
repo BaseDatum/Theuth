@@ -667,6 +667,23 @@ overflow and stop the turn.
   own mailbox deadlocked in testing. Side effects of the mini-turn shape:
   input arriving meanwhile queues as steering and starts a turn when the
   compaction hands back, and `IsRunning` is true during it.
+- **Input during a compaction queues; only an explicit stop cancels** (70
+  COMPACT-QUEUE, 2026-09-26). Every input kind — human text, `<job_result>`,
+  `<job_idle>`, reminders, peer `<message>`s, child results — reaches the
+  session actor as `UserInput`/`PeerInput`; while `inflight` is set (a turn,
+  a `/compact` mini-turn, an in-turn auto-compaction) it is pushed to the
+  steer queue in arrival order and never touches the compaction's token.
+  The queue drains at the next tool round or, after the epoch commits, as
+  the first inputs of the next turn (`TurnDone` → `next_batch`). A
+  summariser failure or a `CancelTurn` (⌘↩ interject, Stop, `/cancel`)
+  returns `Err` before the `epochs` insert: no head, no drain, epoch and
+  history untouched, the queue intact — the queued inputs open their turn
+  as if the compaction never ran (a store insert that fails after the
+  summary leaves only the pre-written `spill::epoch` file behind). Frontends must
+  therefore treat `Compacting`…`Compacted` as busy: a plain send is a
+  `steer` (so the queued-steer chip shows it), never a `cancel`; the desktop
+  composer derives `running` from `activity === 'compacting'` too, the TUI
+  from its `compacting` flag. Pinned by `loop_::compact_queue_tests`.
 - TUI `/compact [summary|cut|snap|style …]` (11) → `Command::Compact { session, style }` → `Info("context compacted
   (epoch n)")`; RPC `compact(session, style?)`. `/compact style` lists or
   persists the default and does not compact.
