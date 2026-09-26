@@ -19,6 +19,7 @@ const task = (id: string, state: Task['state'], extra: Partial<Task> = {}): Task
   title: id,
   brief: '',
   done_when: null,
+  attachments: [],
   owner: { type: 'agent', name: 'ops' },
   state,
   reviewer: null,

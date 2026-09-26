@@ -12,7 +12,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useApi } from '@/lib/rpc'
+import type { AttachRef } from '@/lib/attach'
 import type { Task } from '@/rpc/bindings/Task'
+import { AttachmentsEditor } from './Attachments'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
 import { USER, defaultReviewer, nodesOf, ownerText, parseOwner } from './helpers'
@@ -43,6 +45,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
   const [harness, setHarness] = useState('')
   const [blockedBy, setBlockedBy] = useState<Task[]>([])
   const [blocks, setBlocks] = useState<Task[]>([])
+  const [attachments, setAttachments] = useState<AttachRef[]>([])
   const effectiveReviewer = reviewer ?? ownerText(defaultReviewer(parseOwner(owner), agents.data ?? []))
 
   const reset = () => {
@@ -55,6 +58,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
     setHarness('')
     setBlockedBy([])
     setBlocks([])
+    setAttachments([])
   }
   const create = useMutation({
     mutationFn: async () => {
@@ -70,6 +74,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
         where: where || null,
         harness: harness || null,
         external: [],
+        attachments,
       })
       if (blockedBy.length) await api.task_update(t.id, { blockers: blockedBy.map((b) => b.id) })
       for (const b of blocks) await api.task_update(b.id, { blockers: [...b.blockers, t.id] })
@@ -108,6 +113,9 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
           </Field>
           <Field label="Brief" htmlFor="nt-brief" hint="Markdown; put links here">
             <Textarea id="nt-brief" rows={5} placeholder="Context, constraints, acceptance, links" value={brief} onChange={(e) => setBrief(e.target.value)} />
+          </Field>
+          <Field label="Attachments" hint="notes, chats, artifacts, meetings the owner should read">
+            <AttachmentsEditor value={attachments} onChange={setAttachments} />
           </Field>
           <Field label="Project" htmlFor="nt-project">
             <ProjectCombobox id="nt-project" value={project} onChange={setProject} />

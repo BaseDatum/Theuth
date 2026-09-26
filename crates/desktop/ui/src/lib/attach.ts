@@ -210,6 +210,33 @@ export function openAttachPicker(session: string | null): void {
 /** Drag payload type: a row dragged onto a composer attaches (§7.8). */
 export const DRAG_TYPE = 'application/x-theuth-attach'
 
+/** The ref a `DRAG_TYPE` drop carries, `null` when the drop is something else (files) or unreadable. */
+export function droppedRef(dt: DataTransfer): AttachRef | null {
+  const raw = dt.getData(DRAG_TYPE)
+  if (!raw) return null
+  try {
+    const r = JSON.parse(raw) as Partial<AttachRef>
+    return KINDS.includes(r.kind as Kind) && typeof r.id === 'string' && r.id !== ''
+      ? { kind: r.kind as Kind, id: r.id, title: r.title || r.id, meta: r.meta ?? '' }
+      : null
+  } catch {
+    return null
+  }
+}
+
+/** `current` plus the `added` refs it lacks (by kind + id), order kept. */
+export function addRefs(current: readonly AttachRef[], added: readonly AttachRef[]): AttachRef[] {
+  const seen = new Set(current.map(key))
+  const out = [...current]
+  for (const r of added) {
+    if (!seen.has(key(r))) {
+      seen.add(key(r))
+      out.push(r)
+    }
+  }
+  return out
+}
+
 // ---- `@` trigger (§7.8) --------------------------------------------------------------------------------------------
 
 /**

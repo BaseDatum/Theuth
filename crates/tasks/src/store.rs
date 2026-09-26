@@ -69,6 +69,7 @@ struct Row {
     no_progress_count: i64,
     next_wake_after_ms: Option<i64>,
     done_when: Option<String>,
+    attachments_json: String,
 }
 
 fn state_of(s: &str) -> TaskState {
@@ -130,13 +131,15 @@ impl From<Row> for Task {
             no_progress_count: r.no_progress_count as u32,
             next_wake_after_ms: r.next_wake_after_ms.map(|v| v as u64),
             done_when: r.done_when,
+            attachments: serde_json::from_str(&r.attachments_json).unwrap_or_default(),
         }
     }
 }
 
 const COLS: &str = "id, title, brief, owner, state, reviewer, blockers_json, parent, project, where_, \
                     harness, external_json, thread, checkout_json, schedule_name, schedule_fire_ms, \
-                    created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when";
+                    created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when, \
+                    attachments_json";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -167,7 +170,7 @@ impl Store {
     pub async fn put(&self, t: &Task) -> anyhow::Result<()> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT OR REPLACE INTO tasks ({COLS}, hlc) VALUES \
-             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"
         )))
         .bind(&t.id.0)
         .bind(&t.title)
@@ -191,6 +194,7 @@ impl Store {
         .bind(t.no_progress_count as i64)
         .bind(t.next_wake_after_ms.map(|v| v as i64))
         .bind(&t.done_when)
+        .bind(serde_json::to_string(&t.attachments)?)
         .bind(hlc(t.updated_ms))
         .execute(&self.pool)
         .await?;

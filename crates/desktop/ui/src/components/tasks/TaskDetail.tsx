@@ -25,9 +25,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
 import type { TaskPatch } from '@/rpc/bindings/TaskPatch'
+import { AttachmentsEditor } from './Attachments'
 import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip } from './helpers'
@@ -79,6 +81,7 @@ export function TaskDetail({ id }: { id: string }) {
                 {t.brief || '_No brief._'}
               </Streamdown>
             </Section>
+            <Attachments task={t} />
             <Relations task={t} />
             <Placement task={t} events={events.data ?? []} />
             <Section title="Thread">
@@ -93,11 +96,11 @@ export function TaskDetail({ id }: { id: string }) {
                     <span className="w-12 shrink-0 text-xs text-fg-tertiary tabular-nums">{age(e.at_ms)}</span>
                     <span className="text-fg-secondary">{e.actor}</span>
                     <span className="font-medium">{e.field}</span>
-                    {e.field === 'comment' ? (
-                      <span className="wrap-anywhere">{e.after}</span>
+                    {e.field === 'comment' || e.before === null ? (
+                      <span className={cn('wrap-anywhere', e.field !== 'comment' && 'text-fg-secondary')}>{e.after}</span>
                     ) : (
                       <span className="wrap-anywhere text-fg-secondary">
-                        {e.before ?? '—'} → {e.after ?? '—'}
+                        {e.before} → {e.after ?? '—'}
                       </span>
                     )}
                   </li>
@@ -160,6 +163,22 @@ function StateBadge({ task: t }: { task: Task }) {
     )
   }
   return <Badge variant="outline">{text}</Badge>
+}
+
+/** Chips + picker over `task_update {attachments}` (replace whole); each change is an `attached`/`detached` event. */
+function Attachments({ task: t }: { task: Task }) {
+  const api = useApi()
+  const invalidate = useInvalidateTasks()
+  const patch = useMutation({
+    mutationFn: (attachments: Task['attachments']) => api.task_update(t.id, { attachments }),
+    onSuccess: () => invalidate(t.id),
+    onError: (e) => toast.error(errorText(e)),
+  })
+  return (
+    <Section title={t.attachments.length ? `Attachments ${t.attachments.length}` : 'Attachments'}>
+      <AttachmentsEditor value={t.attachments} onChange={(next) => patch.mutate(next)} disabled={patch.isPending} />
+    </Section>
+  )
 }
 
 /**

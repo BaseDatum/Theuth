@@ -4,7 +4,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import { USER, actionsFor, age, agent, awaitsMyReview, canDrag, columns, defaultReviewer, needsPerson, nodesOf, ownerText, parseBlocker, parseOwner, stateChip } from './helpers'
 
 const task = (t: Partial<Task>): Task => ({
-  id: 'x', title: 't', brief: '', done_when: null, owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
+  id: 'x', title: 't', brief: '', done_when: null, attachments: [], owner: USER, state: 'todo', reviewer: null, blockers: [], blocks: [], parent: null, project: null,
   where: null, harness: null, external: [], thread: null, checkout: null, schedule: null, created_by: 'user',
   created_ms: 0, updated_ms: 0, no_progress_count: 0, next_wake_after_ms: null, ...t,
 })

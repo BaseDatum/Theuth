@@ -14,6 +14,7 @@ import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
+import { AttachmentCount } from './Attachments'
 import { NewTaskSheet } from './NewTaskSheet'
 import { Queue } from './Queue'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
@@ -317,6 +318,7 @@ export function TaskCard({ task: t, onStart, drag }: { task: Task; onStart?: () 
           {t.reviewer && <span className="text-fg-tertiary">→ {ownerLabel(t.reviewer)}</span>}
           {t.where && <Badge variant="outline">{t.where}</Badge>}
           {t.harness && <Badge variant="outline">{t.harness}</Badge>}
+          <AttachmentCount items={t.attachments} />
           <span className="ml-auto text-fg-tertiary tabular-nums">{age(t.updated_ms)}</span>
         </div>
         {t.blockers.length > 0 && (

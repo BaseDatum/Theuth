@@ -33,6 +33,20 @@ pub fn system_blocker(b: &str) -> bool {
 /// agent has no desk yet; replaced by the desk id once delivery returns.
 pub const DISPATCHING: &str = "dispatching";
 
+/// `<kind> "<title>"` — how an attachment is named in events and thread lines (the id when the title is empty).
+pub fn attachment_label(r: &agent::attach::AttachRef) -> String {
+    let title = if r.title.is_empty() { r.id.as_str() } else { r.title.as_str() };
+    format!("{} \"{}\"", r.kind, title)
+}
+
+/// Attachments deduplicated by kind + id, first occurrence kept, blank ids dropped.
+pub fn dedupe_attachments(refs: Vec<agent::attach::AttachRef>) -> Vec<agent::attach::AttachRef> {
+    let mut seen = HashSet::new();
+    refs.into_iter()
+        .filter(|r| !r.id.trim().is_empty() && seen.insert((r.kind, r.id.clone())))
+        .collect()
+}
+
 /// 68 §4.4: takes an orphaned checkout's session here before the `Resume`
 /// wake, so the resumed desk continues the replicated transcript instead of
 /// starting over from the progress note.
@@ -366,6 +380,7 @@ impl Ledger {
             no_progress_count: 0,
             next_wake_after_ms: None,
             done_when: input.done_when.map(|d| d.trim().to_owned()).filter(|d| !d.is_empty()),
+            attachments: dedupe_attachments(input.attachments),
             id,
         };
         t.thread = self
@@ -403,6 +418,7 @@ impl Ledger {
             harness: None,
             external: vec![],
             done_when: None,
+            attachments: vec![],
         };
         let mut t = self.create(input, "system", None, WakeReason::Schedule).await?;
         t.schedule = Some((schedule.to_owned(), fire_ms));
@@ -651,6 +667,18 @@ impl Ledger {
         {
             changes.push(("external", Some(t.external.join(", ")), Some(v.join(", "))));
             t.external = v;
+        }
+        if let Some(v) = patch.attachments {
+            let v = dedupe_attachments(v);
+            if v != t.attachments {
+                for r in t.attachments.iter().filter(|r| !v.contains(r)) {
+                    changes.push(("detached", None, Some(attachment_label(r))));
+                }
+                for r in v.iter().filter(|r| !t.attachments.contains(r)) {
+                    changes.push(("attached", None, Some(attachment_label(r))));
+                }
+                t.attachments = v;
+            }
         }
         set!(done_when, "done_when");
         if let Some(to) = patch.state
@@ -1451,6 +1479,7 @@ pub(crate) mod tests {
                         harness: None,
                         external: vec![],
                         done_when: None,
+                        attachments: vec![],
                     },
                     "user",
                     None,
@@ -1577,6 +1606,7 @@ pub(crate) mod tests {
             harness: None,
             external: vec![],
             done_when: None,
+            attachments: vec![],
         };
         let t = r.ledger.create(input.clone(), "user", None, WakeReason::Assigned).await.unwrap();
         assert_eq!(t.state, TaskState::Backlog);
@@ -1704,6 +1734,64 @@ pub(crate) mod tests {
         assert!(thread_of(&r, &c).contains(&format!("done because: follow-ups filed ({})", f.id)));
     }
 
+    /// 70 TASK-ATTACHMENTS: refs survive the sqlite round trip (migration 0005),
+    /// are deduplicated by kind + id, and each change is an `attached`/`detached`
+    /// event with a thread line naming the kind and title.
+    #[tokio::test]
+    async fn attachments_round_trip_and_events() {
+        use agent::attach::{AttachRef, Kind};
+        let note = AttachRef { kind: Kind::Note, id: "n1".into(), title: "Groceries".into(), meta: "updated Sep 24".into() };
+        let art = AttachRef { kind: Kind::Artifact, id: "toolu_1".into(), title: "Q3 report".into(), meta: String::new() };
+        let mut r = rig().await;
+        let t = r
+            .ledger
+            .create(
+                TaskCreate {
+                    state: TaskState::Backlog,
+                    title: "fold the report".into(),
+                    brief: String::new(),
+                    owner: Owner::User,
+                    reviewer: None,
+                    parent: None,
+                    project: None,
+                    where_: None,
+                    harness: None,
+                    external: vec![],
+                    done_when: None,
+                    attachments: vec![note.clone(), note.clone(), AttachRef { kind: Kind::Session, id: " ".into(), title: "x".into(), meta: String::new() }],
+                },
+                "user",
+                None,
+                WakeReason::Assigned,
+            )
+            .await
+            .unwrap();
+        assert_eq!(t.attachments, vec![note.clone()], "duplicates and blank ids are dropped");
+        assert_eq!(r.ledger.load(&t.id).await.unwrap().attachments, vec![note.clone()], "read back from sqlite");
+
+        // replace whole: one detached, one attached; order as given
+        let t = r
+            .ledger
+            .update(&t.id, TaskPatch { attachments: Some(vec![art.clone()]), ..Default::default() }, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(t.attachments, vec![art.clone()]);
+        let ev = r.ledger.events(&t.id).await.unwrap();
+        let names: Vec<(&str, &str)> = ev.iter().filter(|e| e.field == "attached" || e.field == "detached").map(|e| (e.field.as_str(), e.after.as_deref().unwrap())).collect();
+        assert_eq!(names, [("detached", "note \"Groceries\""), ("attached", "artifact \"Q3 report\"")]);
+        let thread = r.thread.0.lock().unwrap()[t.thread.as_ref().unwrap()].join("\n");
+        assert!(thread.contains("**user** detached: note \"Groceries\""), "{thread}");
+        assert!(thread.contains("**user** attached: artifact \"Q3 report\""), "{thread}");
+
+        // same set again = no change, no event
+        let before = ev.len();
+        r.ledger
+            .update(&t.id, TaskPatch { attachments: Some(vec![art.clone()]), ..Default::default() }, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(r.ledger.events(&t.id).await.unwrap().len(), before);
+    }
+
     /// 70 DESK-PROTOCOL (c): a closed child wakes the parent's owner
     /// `children_completed` once every child is closed; a resolved blocker
     /// wakes `blockers_resolved`.
@@ -1726,6 +1814,7 @@ pub(crate) mod tests {
                         harness: None,
                         external: vec![],
                         done_when: None,
+                        attachments: vec![],
                     },
                     "agent:lead",
                     None,
@@ -1801,6 +1890,7 @@ pub(crate) mod tests {
                     harness: None,
                     external: vec![],
                     done_when: None,
+                    attachments: vec![],
                 },
                 "user",
                 None,
@@ -1823,6 +1913,7 @@ pub(crate) mod tests {
                     harness: None,
                     external: vec![],
                     done_when: None,
+                    attachments: vec![],
                 },
                 "user",
                 None,

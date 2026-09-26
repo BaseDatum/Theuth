@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use agent::attach::AttachRef;
 use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::{Context, Message};
@@ -159,6 +160,11 @@ pub struct TaskCreateArgs {
     /// checkable lines); the reviewer judges `done` against them first.
     #[serde(default)]
     pub done_when: Option<String>,
+    /// Things the task is about, as references the owner reads with the per-kind tools (design 66):
+    /// `{kind: note|knowledge|artifact|session|meeting, id, title}`. Carry over the `[attached …]` lines of the
+    /// user's message when the task is drafted from it.
+    #[serde(default)]
+    pub attachments: Vec<AttachRef>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -210,6 +216,7 @@ impl Tool for TaskCreateTool {
             harness: a.harness,
             external: a.external,
             done_when: a.done_when,
+            attachments: a.attachments,
         };
         let r = flat(
             actor
@@ -291,12 +298,17 @@ impl Tool for TaskInboxTool {
                 (w, h) => format!("{}/{}", w.as_deref().unwrap_or("?"), h.as_deref().unwrap_or("?")),
             };
             text.push_str(&format!(
-                "- {} [{}] {} — {}{} — moved {}\n",
+                "- {} [{}] {} — {}{}{} — moved {}\n",
                 t.id,
                 t.state.as_str(),
                 t.title,
                 place,
                 if t.blockers.is_empty() { String::new() } else { format!(" — blocked on {}", t.blockers.join(", ")) },
+                if t.attachments.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — attached: {}", t.attachments.iter().map(crate::ledger::attachment_label).collect::<Vec<_>>().join(", "))
+                },
                 chrono::DateTime::from_timestamp_millis(t.updated_ms as i64)
                     .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_default()
@@ -328,7 +340,8 @@ impl Tool for TaskCheckoutTool {
     fn description(&self) -> String {
         "Check a task out: moves it `todo`/`blocked` → `doing` with this session as its checkout (session, \
          engine, epoch), so no other session can move it until you dispose of it. Refused if another live \
-         session holds it or you are not the owner. Returns the full record: brief, thread (comments, \
+         session holds it or you are not the owner. Returns the full record: brief, attachments as \
+         `[attached <kind> <id> \"<title>\"]` lines (read them with the tool for their kind), thread (comments, \
          answers, the last progress note), placement (`where`, `harness`) — open the work session exactly \
          as the placement says."
             .into()
@@ -350,6 +363,13 @@ impl Tool for TaskCheckoutTool {
             Err(e) => return Ok(ToolOutput::err(e)),
         };
         let mut text = serde_json::to_string_pretty(&t)?;
+        if !t.attachments.is_empty() {
+            text.push_str("\n\n--- attachments ---\n");
+            for r in &t.attachments {
+                text.push_str(&agent::attach::marker(r));
+                text.push('\n');
+            }
+        }
         if let Some(doc) = &t.thread
             && let Some(md) = crate::thread::DocThread.read(doc).await
         {
@@ -392,6 +412,9 @@ pub struct TaskUpdateArgs {
     /// Acceptance criteria (replaces `done_when`).
     #[serde(default)]
     pub done_when: Option<String>,
+    /// Attached references, replaced whole (pass the current list plus or minus the change).
+    #[serde(default)]
+    pub attachments: Option<Vec<AttachRef>>,
     /// With `disposition: done`: why — `criteria_met` (against `done_when`), `intent_met` (the user's
     /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
     #[serde(default)]
@@ -433,6 +456,7 @@ impl Tool for TaskUpdateTool {
             blockers: a.blockers,
             external: a.external,
             done_when: a.done_when,
+            attachments: a.attachments,
             done_because: a.done_because,
             ..Default::default()
         };

@@ -419,6 +419,7 @@ mod tests {
             title: title.into(),
             brief: String::new(),
             done_when: None,
+            attachments: vec![],
             owner,
             state,
             reviewer,

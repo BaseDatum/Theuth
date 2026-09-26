@@ -225,6 +225,13 @@ pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
         if !t.external.is_empty() {
             s.push_str(&format!("\n\nExternal: {}", t.external.join(", ")));
         }
+        if !t.attachments.is_empty() {
+            s.push_str("\n\nAttached (read with the tool for the kind, see Attachments):");
+            for r in &t.attachments {
+                s.push('\n');
+                s.push_str(&agent::attach::marker(r));
+            }
+        }
         s.push_str("\n</task>");
     }
     s
@@ -702,6 +709,12 @@ mod tests {
             no_progress_count: 0,
             next_wake_after_ms: None,
             done_when: Some("curl shows the new expiry".into()),
+            attachments: vec![agent::attach::AttachRef {
+                kind: agent::attach::Kind::Note,
+                id: "agqmlbgmk57ybm2rdgyj7kcery".into(),
+                title: "Cert runbook".into(),
+                meta: "updated Sep 24".into(),
+            }],
         };
         let wake = tasks::Wake {
             id: "w1".into(),
@@ -720,7 +733,9 @@ another task until this wake is handled.\n\n\
 <task id=\"12\" state=\"todo\" owner=\"agent:ops\" reviewer=\"agent:cto\" project=\"relay\" where=\"build-A\" \
 harness=\"omp\" thread=\"doc-7\">\nThe wildcard cert expires Friday.\nRenew and reload.\n\n\
 Done when: curl shows the new expiry\n\n\
-External: https://jira/SRE-1\n</task>"
+External: https://jira/SRE-1\n\n\
+Attached (read with the tool for the kind, see Attachments):\n\
+[attached note agqmlbgmk57ybm2rdgyj7kcery \"Cert runbook\" · updated Sep 24]\n</task>"
         );
         let manual = tasks::Wake {
             task: None,
@@ -817,6 +832,7 @@ External: https://jira/SRE-1\n</task>"
             no_progress_count: 0,
             next_wake_after_ms: None,
             done_when: None,
+            attachments: vec![],
         };
         let id = t.id.clone();
         let wake = move |reason| tasks::Wake {
