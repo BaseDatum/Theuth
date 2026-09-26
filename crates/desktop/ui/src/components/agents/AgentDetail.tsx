@@ -23,7 +23,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { rootOf } from '@/lib/session-tree'
+import { byRank, rankSummary, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
@@ -412,13 +412,13 @@ function Runtime({ file: f }: { file: AgentFile }) {
   )
 }
 
-/** The agent's sessions, newest first: its desks (the row's `desk` mark) and everything under them at any depth (the work sessions and their subagents). */
+/** The agent's sessions under the one list rule (running first, then most recently active): its desks (the row's `desk` mark) and everything under them at any depth (the work sessions and their subagents). */
 function Runs({ name, desk }: { name: string; desk: string | null }) {
   const api = useApi()
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const all = sessions.data ?? []
   const desks = all.filter((s) => s.desk === name || s.id === desk).map((s) => s.id)
-  const runs = all.filter((s) => desks.includes(rootOf(all, s.id) ?? s.id)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const runs = all.filter((s) => desks.includes(rootOf(all, s.id) ?? s.id)).sort((a, b) => byRank(rankSummary(a), rankSummary(b)))
   if (sessions.isPending) return <p className="p-4 text-sm text-fg-tertiary">Loading…</p>
   if (runs.length === 0) return <p className="p-4 text-sm text-fg-tertiary">No runs yet. A desk opens on the first wake addressed to this agent.</p>
   return (
