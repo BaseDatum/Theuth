@@ -4,10 +4,38 @@
 //! every container shares one path.
 
 #[cfg(desktop)]
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(desktop)]
 use crate::launch::{Connection, Launch};
+
+/// Window labels the UI opens on demand (a chat or an artifact in its own window). The label prefix is what
+/// `capabilities/default.json` grants (`popout-*`) and what `on_window_event` lets close for real.
+#[cfg(desktop)]
+pub const POPOUT_PREFIX: &str = "popout-";
+
+/// Open `url` (an app route with `?window=<label>`) in its own window, or focus the window already showing it.
+/// Size and position come back per label from `tauri-plugin-window-state` once the window was closed once.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), String> {
+    if !label.starts_with(POPOUT_PREFIX) {
+        return Err(format!("window label must start with `{POPOUT_PREFIX}`"));
+    }
+    if let Some(win) = app.get_webview_window(&label) {
+        win.show().map_err(|e| e.to_string())?;
+        return win.set_focus().map_err(|e| e.to_string());
+    }
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .inner_size(960.0, 720.0)
+        .min_inner_size(480.0, 360.0)
+        .on_document_title_changed(|win, title| {
+            let _ = win.set_title(&title);
+        })
+        .build()
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
 
 /// Connect (probe, else spawn on a pty and wait for the port); cached after the
 /// first success. Blocks up to 15 s on a cold start.

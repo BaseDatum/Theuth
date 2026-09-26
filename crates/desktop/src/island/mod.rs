@@ -205,11 +205,10 @@ mod generic {
         app.get_webview_window(LABEL).ok_or_else(|| "window `island`".into())
     }
 
+    /// Every window, so a popout opened later is covered by the next toggle (`open_window`'s webview re-applies on boot).
     fn set_hidden(app: &AppHandle, hidden: bool) -> anyhow::Result<()> {
-        for label in ["main", LABEL] {
-            app.get_webview_window(label)
-                .with_context(|| format!("window `{label}`"))?
-                .set_content_protected(hidden)
+        for (label, win) in app.webview_windows() {
+            win.set_content_protected(hidden)
                 .with_context(|| format!("set_content_protected on `{label}`"))?;
         }
         Ok(())

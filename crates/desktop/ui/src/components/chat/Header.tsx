@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { CornerLeftUp, Gauge, Globe, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, CornerLeftUp, Gauge, Globe, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -12,6 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { isPopout, openPopout } from '@/lib/popout'
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -183,7 +184,9 @@ export function Header({
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
   const title = parseNote(raw)?.body || raw
-  const nav = first && (!open || isMobile)
+  // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
+  const popped = isPopout()
+  const nav = first && (!open || isMobile) && !popped
   /**
    * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
    * live browser over terminals (a job detail); the others move behind the chevron.
@@ -268,6 +271,19 @@ export function Header({
             <Fragment key={i.id}>{render[i.id]('row')}</Fragment>
           ))}
         </HeaderMenu>
+      ),
+    popout: (mode) =>
+      !session || popped ? null : mode === 'row' ? (
+        <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout({ kind: 'chat', session })} />
+      ) : (
+        <Button
+          variant="ghost"
+          className="size-9 rounded-lg text-fg-secondary"
+          aria-label="Open in new window"
+          onClick={() => void openPopout({ kind: 'chat', session })}
+        >
+          <AppWindow className="size-5" />
+        </Button>
       ),
     menu: () => (session ? <SessionMenu session={session} /> : null),
     close: () =>

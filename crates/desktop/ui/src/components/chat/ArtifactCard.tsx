@@ -2,6 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  AppWindow,
   File,
   FileArchive,
   FileCode,
@@ -38,6 +39,7 @@ import {
 } from "@/components/ui/tooltip";
 import { fmtBytes, isLocal, readText, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
+import { openPopout } from "@/lib/popout";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { useEngines } from "@/link/engines";
@@ -233,6 +235,37 @@ export function RevealButton({ artifact: a }: { artifact: Artifact }) {
   );
 }
 
+/** Open the artifact in its own window (`lib/popout.ts`); `size` matches the toolbar it sits in. */
+export function PopoutButton({
+  artifact: a,
+  className,
+}: {
+  artifact: Artifact;
+  className?: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className={cn("text-fg-secondary", className)}
+          aria-label="Open in new window"
+          onClick={(e) => {
+            // Inside a card or a list row that is itself clickable.
+            e.preventDefault();
+            e.stopPropagation();
+            void openPopout({ kind: "artifact", callId: a.call_id });
+          }}
+        >
+          <AppWindow className="size-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Open in new window</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** The spinner row while a call's arguments stream (35 §0.7): `writing report.pdf… 3.2 KB` for a `show` carrying
  * `content`, `showing report.pdf…` for one naming a path, `drafting <app>… 3.2 KB` for an `app`, `preparing <tool>… 3.2 KB` otherwise. */
 export function progressLabel(
@@ -420,6 +453,7 @@ export const ArtifactCard = memo(function ArtifactCard({
             </TooltipTrigger>
             <TooltipContent>Open in panel</TooltipContent>
           </Tooltip>
+          <PopoutButton artifact={artifact} />
           <ArtifactMenu artifact={artifact} />
         </div>
       </Frame>

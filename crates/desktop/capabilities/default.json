@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/acl/capability/2",
   "identifier": "default",
-  "description": "The main and island windows on desktop: window show/hide/title/position, events, and the OS integration plugins.",
-  "windows": ["main", "island"],
+  "description": "The main, island and popout windows on desktop: window show/hide/title/position, events, and the OS integration plugins.",
+  "windows": ["main", "island", "popout-*"],
   "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",

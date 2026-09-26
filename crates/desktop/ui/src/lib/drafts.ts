@@ -86,6 +86,13 @@ export const useDrafts = create<Store>()((set, get) => ({
   },
 }))
 
+// Two windows on one chat (`lib/popout.ts`) share this key: a save in one replaces the other's copy, so the
+// next save there carries every draft forward — last writer wins, per keystroke, never a stale whole map.
+if (typeof window !== 'undefined')
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY || e.key === null) useDrafts.setState(load())
+  })
+
 type SkillStore = {
   by: Record<string, string>
   set(session: string, name: string | null): void
