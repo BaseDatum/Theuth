@@ -425,6 +425,15 @@ is re-placed by task_place.",
     pub fn for_reason(reason: WakeReason) -> Option<&'static Nudge> {
         TABLE.iter().find(|n| matches!(n, Nudge::TurnEnd { reasons, .. } if reasons.contains(&reason)))
     }
+
+    /// The turn ended by the model's own hand (`agent::AgentEvent::TurnFinished::stop_reason`
+    /// is a provider stop such as `end_turn`). A user cancel or the engine
+    /// shutting down (`cancelled`), a timeout (`timed_out`) or a provider
+    /// error (`error`) is not a yield: nothing is judged, the task keeps its
+    /// checkout and the next wake resumes it.
+    pub fn yielded(stop_reason: &str) -> bool {
+        !matches!(stop_reason, "cancelled" | "timed_out" | "error")
+    }
 }
 
 impl Desk {
@@ -764,6 +773,18 @@ External: https://jira/SRE-1\n</task>"
         assert!(!block.contains("mkt"), "paused agents are not offered: {block}");
         assert!(block.contains("`task_reassign`"));
         assert!(roster_block("karol", [karol].iter()).contains("(no other active agent)"));
+    }
+
+    /// A user's stop (or a shutdown, timeout, provider error) is not a model yield: nothing is judged.
+    #[test]
+    fn interrupted_turns_are_not_yields() {
+        use super::nudges::yielded;
+        for natural in ["end_turn", "stop", "STOP", "max_tokens", "length", ""] {
+            assert!(yielded(natural), "{natural}");
+        }
+        for interrupted in ["cancelled", "timed_out", "error"] {
+            assert!(!yielded(interrupted), "{interrupted}");
+        }
     }
 
     /// 70 DESK-PROTOCOL 3: the table's rows judge a turn end — an assigned wake

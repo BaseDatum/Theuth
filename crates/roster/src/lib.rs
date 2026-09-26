@@ -601,7 +601,14 @@ impl Roster {
     /// rule (`blocked: no continuation`, manager woken). A handled wake clears
     /// `serving`; a turn that leaves a live child keeps it for the child's
     /// return, which lands in this same session (70 DESK-PROTOCOL 4).
-    async fn judge_turn(&mut self, name: &str) {
+    ///
+    /// Only a turn the model ended on its own is judged ([`desk::nudges::yielded`]):
+    /// a user cancel, the engine shutting down, a provider error or a timeout
+    /// leaves the task and `serving` as they are — the next wake resumes it.
+    async fn judge_turn(&mut self, name: &str, stop_reason: &str) {
+        if !desk::nudges::yielded(stop_reason) {
+            return;
+        }
         let Some(d) = self.desks.get(name) else { return };
         let Some(s) = d.serving.clone() else { return };
         let session = d.session;
@@ -1107,7 +1114,7 @@ impl Message<agent::AgentEvent> for Roster {
                 }
             }
             E::TurnFinished {
-                session, context, ..
+                session, context, stop_reason, ..
             } => {
                 if self.closing.contains_key(&session) {
                     self.finish_closing(session).await;
@@ -1125,7 +1132,7 @@ impl Message<agent::AgentEvent> for Roster {
                     d.model.clone()
                 };
                 // 70 DESK-PROTOCOL 3: the nudge point.
-                self.judge_turn(&name).await;
+                self.judge_turn(&name, &stop_reason).await;
                 if let Some(model) = model
                     && self.desks.contains_key(&name)
                 {
