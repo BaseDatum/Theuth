@@ -65,7 +65,7 @@ export function AttachmentChips({ items, onRemove }: { items: readonly AttachRef
   )
 }
 
-/** The board card's paperclip: `📎 N`, nothing when empty. */
+/** The board card's paperclip count (Paperclip icon + N), nothing when empty. */
 export function AttachmentCount({ items }: { items: readonly AttachRef[] }) {
   if (items.length === 0) return null
   return (
