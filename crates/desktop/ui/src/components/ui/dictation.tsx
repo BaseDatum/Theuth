@@ -29,10 +29,13 @@ export function splitLayout(className?: string): [box: string, field: string] {
 }
 
 /**
- * Put `value` into a field the way typing would: the prototype setter dodges React's value tracker, so the
- * bubbled `input` event reaches a controlled field's `onChange`; a plain field just holds the value.
+ * Put `value` into a field the way typing would. React's value tracker (an instance-level `value` setter) fires
+ * `onChange` only when the DOM value differs from what it last saw; the field shows the live splice while
+ * dictating, so the tracker is first pointed at something else, then the prototype setter writes the real value
+ * behind its back and the bubbled `input` event lands. A plain field just holds the value.
  */
 export function setFieldValue(el: Field, value: string, caret: number): void {
+  el.value = value === '' ? ' ' : ''
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
   Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, value)
   el.dispatchEvent(new Event('input', { bubbles: true }))

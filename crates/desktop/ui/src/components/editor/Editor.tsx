@@ -187,6 +187,7 @@ export function Editor({
         {editable && (
           <DictationButton
             onText={(text) => {
+              if (!text) return
               editor.insertInlineContent(text)
               editor.focus()
             }}
