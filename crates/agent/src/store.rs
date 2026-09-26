@@ -950,6 +950,20 @@ impl Store {
         Ok(())
     }
 
+    /// The session marked as `agent`'s desk on this engine, if any
+    /// (STALE-WAKE-DESKS: at most one per `(desk, owner)`, archived or not —
+    /// a desk put away by an earlier build is still the desk).
+    pub async fn desk_session(&self, agent: &str) -> anyhow::Result<Option<SessionId>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM sessions WHERE desk = ? AND (owner = '' OR owner = ?) ORDER BY updated_at DESC, id DESC LIMIT 1",
+        )
+        .bind(agent)
+        .bind(&*self.me)
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.and_then(|(id,)| id.parse().ok()))
+    }
+
     /// Archive (or unarchive) a session: archived roots and their trees leave
     /// the sidebar but stay searchable (51 §3). Stored on the row; readers
     /// resolve the root's value, so call this on the root.
@@ -5048,6 +5062,73 @@ mod tests {
         let store = Store::open(&path, Some(mesh::EngineId("engine-b".into()))).await.unwrap();
         let s = store.session(forked).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("engine-a", false));
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// STALE-WAKE-DESKS: one desk row per agent per engine. `desk_session`
+    /// is what the roster reopens; a second mark for the same agent is refused
+    /// by the schema; an archived (put-away) desk is still the desk; another
+    /// engine's desk is not ours.
+    #[tokio::test]
+    async fn one_desk_per_agent_is_found_and_enforced() {
+        let dir = std::env::temp_dir().join(format!("theuth-desk-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.sqlite");
+        let theirs = Store::open(&path, Some(mesh::EngineId("them".into()))).await.unwrap();
+        let remote = SessionId::new();
+        theirs.create_session(remote, "m", None, None, None).await.unwrap();
+        theirs.set_desk(remote, Some("ops")).await.unwrap();
+        theirs.close().await;
+
+        let store = Store::open(&path, Some(mesh::EngineId("me".into()))).await.unwrap();
+        assert_eq!(store.desk_session("ops").await.unwrap(), None, "another engine's desk is not reopened here");
+        let (a, b) = (SessionId::new(), SessionId::new());
+        store.create_session(a, "m", None, None, None).await.unwrap();
+        store.create_session(b, "m", None, None, None).await.unwrap();
+        store.set_desk(a, Some("ops")).await.unwrap();
+        assert_eq!(store.desk_session("ops").await.unwrap(), Some(a));
+        assert!(store.set_desk(b, Some("ops")).await.is_err(), "a second desk for ops is refused");
+        store.set_archived(a, true).await.unwrap();
+        assert_eq!(store.desk_session("ops").await.unwrap(), Some(a), "a put-away desk is still the desk");
+        store.set_desk(a, None).await.unwrap();
+        store.set_desk(b, Some("ops")).await.unwrap();
+        assert_eq!(store.desk_session("ops").await.unwrap(), Some(b), "retired → the next one is the desk");
+        store.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Migration 0025 on a store with the duplicates a pre-fix engine left:
+    /// the most recently updated row per agent keeps the mark; the others are
+    /// unmarked, unpinned, archived and titled `<agent> · desk (superseded …)`.
+    #[tokio::test]
+    async fn migration_dedupes_desks_by_last_update() {
+        let dir = std::env::temp_dir().join(format!("theuth-dedupe-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("me".into()))).await.unwrap();
+        // The fixture predates the index: drop it, build the duplicates, replay the migration.
+        sqlx::query("DROP INDEX sessions_desk_owner").execute(&store.read).await.unwrap();
+        let rows = [("old-t", "theuth", "2026-09-26T10:06:48+00:00"), ("new-t", "theuth", "2026-09-26T11:43:05+00:00"),
+            ("old-s", "stas", "2026-09-26T10:27:45+00:00"), ("new-s", "stas", "2026-09-26T11:43:00+00:00"), ("only", "ops", "2026-09-26T09:00:00+00:00")];
+        for (id, desk, at) in rows {
+            sqlx::query("INSERT INTO sessions (id, created_at, updated_at, title, model, desk, pinned, owner) VALUES (?, ?, ?, ?, 'm', ?, 1, 'me')")
+                .bind(id).bind(at).bind(at).bind(format!("{desk} · desk")).bind(desk)
+                .execute(&store.read).await.unwrap();
+        }
+        sqlx::raw_sql(include_str!("../migrations/0025_one_desk_per_agent.sql")).execute(&store.read).await.unwrap();
+        let got: Vec<(String, Option<String>, bool, bool, String)> =
+            sqlx::query_as("SELECT id, desk, pinned, archived, title FROM sessions WHERE id IN ('old-t','new-t','old-s','new-s','only') ORDER BY id")
+                .fetch_all(&store.read).await.unwrap();
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let sup = |a: &str| format!("{a} · desk (superseded {date})");
+        assert_eq!(got, vec![
+            ("new-s".into(), Some("stas".into()), true, false, "stas · desk".into()),
+            ("new-t".into(), Some("theuth".into()), true, false, "theuth · desk".into()),
+            ("old-s".into(), None, false, true, sup("stas")),
+            ("old-t".into(), None, false, true, sup("theuth")),
+            ("only".into(), Some("ops".into()), true, false, "ops · desk".into()),
+        ]);
+        assert_eq!(store.desk_session("theuth").await.unwrap().map(|s| s.to_string()).as_deref(), None, "fixture ids are not uuids");
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

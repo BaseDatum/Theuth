@@ -329,45 +329,63 @@ impl Roster {
 
     /// One pinned session titled `<name> · desk`, marked as the agent's desk on
     /// its row, with the file's model and tools ceiling; the episode row; the
-    /// read model. Silently skipped when the agent actor is not up yet (`Tick` retries).
+    /// read model. One desk per agent (STALE-WAKE-DESKS): the session already
+    /// marked `desk = name` here is reopened — a new one is created only when
+    /// there is none (or the last was retired for context, [`Self::put_away`]).
+    /// Silently skipped when the agent actor is not up yet (`Tick` retries).
     async fn open_desk(&mut self, f: &AgentFile) {
         let name = f.name.as_str();
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
         };
-        let open = agents
-            .ask(agent::CreateSession {
-                options: agent::CreateSessionOptions {
-                    model: f.model.clone(),
-                    ..Default::default()
-                },
-                peer: None,
-            })
-            .await;
-        let session = match open {
-            Ok(o) => o.session,
-            Err(e) => {
-                tracing::warn!(agent = %name, "desk not opened: {e}");
-                return;
+        let existing = agents.ask(agent::DeskSession(name.to_owned())).await.ok().flatten();
+        let session = match existing {
+            Some(s) => s,
+            None => {
+                let open = agents
+                    .ask(agent::CreateSession {
+                        options: agent::CreateSessionOptions {
+                            model: f.model.clone(),
+                            ..Default::default()
+                        },
+                        peer: None,
+                    })
+                    .await;
+                let session = match open {
+                    Ok(o) => o.session,
+                    Err(e) => {
+                        tracing::warn!(agent = %name, "desk not opened: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = agents
+                    .ask(agent::RenameSession {
+                        session,
+                        title: format!("{name} · desk"),
+                    })
+                    .await
+                {
+                    tracing::warn!(agent = %name, "desk not named: {e}");
+                }
+                if let Err(e) = agents
+                    .ask(agent::MarkDesk {
+                        session,
+                        agent: Some(name.to_owned()),
+                    })
+                    .await
+                {
+                    tracing::warn!(agent = %name, "desk not marked: {e}");
+                }
+                session
             }
         };
-        if let Err(e) = agents
-            .ask(agent::RenameSession {
-                session,
-                title: format!("{name} · desk"),
-            })
-            .await
-        {
-            tracing::warn!(agent = %name, "desk not named: {e}");
-        }
-        if let Err(e) = agents
-            .ask(agent::MarkDesk {
-                session,
-                agent: Some(name.to_owned()),
-            })
-            .await
-        {
-            tracing::warn!(agent = %name, "desk not marked: {e}");
+        if existing.is_some() {
+            // A desk put away by an earlier build was archived; it is the desk again.
+            let _ = agents.ask(agent::ArchiveSession { session, archived: false }).await;
+            // Whatever turn claimed wakes on it died with the last process.
+            if let Some(t) = tasks::actor() {
+                let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
+            }
         }
         if let Err(e) = agents
             .ask(agent::PinSession {
@@ -440,12 +458,12 @@ impl Roster {
 
     /// Close the agent's episode (67 §6.2): the desk stops taking wakes now;
     /// a primed desk gets the journal turn and finishes in `finish_closing`,
-    /// an empty one is put away at once.
+    /// an empty one is put away at once. The agent → session mapping is kept
+    /// (STALE-WAKE-DESKS): the desk is closed in memory, not severed.
     async fn close_desk(&mut self, name: &str, reason: &str) {
         let Some(d) = self.desks.remove(name) else {
             return;
         };
-        self.shared.clear_desk(name);
         // 67 §7.3 last rule (70 DESK-PROTOCOL 3): a task the episode leaves in
         // `doing` with no continuation is blocked and the manager woken.
         if d.primed && let Some(t) = tasks::actor() {
@@ -505,6 +523,12 @@ impl Roster {
         self.put_away(&c.agent, session, &c.episode, &c.reason, Some(&c.text)).await;
     }
 
+    /// The episode is over. The session stays the agent's desk — pinned,
+    /// marked, mapped — for the next episode (STALE-WAKE-DESKS: one desk per
+    /// agent, across idle closes, lease moves and restarts). Only a `context`
+    /// close retires it: the mark moves off the row, which is archived under
+    /// `<name> · desk (superseded <date>)` so its transcript stays readable,
+    /// and the next episode opens a fresh session.
     async fn put_away(
         &mut self,
         name: &str,
@@ -524,21 +548,22 @@ impl Roster {
         {
             tracing::warn!(agent = %name, "episode not closed: {e:#}");
         }
-        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
-            let _ = agents
-                .ask(agent::PinSession {
-                    session,
-                    pinned: false,
-                })
-                .await;
-            let _ = agents
-                .ask(agent::ArchiveSession {
-                    session,
-                    archived: true,
-                })
-                .await;
+        if reason == "context" {
+            if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                let _ = agents.ask(agent::MarkDesk { session, agent: None }).await;
+                let date = chrono::Local::now().format("%Y-%m-%d");
+                let _ = agents
+                    .ask(agent::RenameSession {
+                        session,
+                        title: format!("{name} · desk (superseded {date})"),
+                    })
+                    .await;
+                let _ = agents.ask(agent::PinSession { session, pinned: false }).await;
+                let _ = agents.ask(agent::ArchiveSession { session, archived: true }).await;
+            }
+            self.shared.clear_desk(name);
+            self.shared.forget(session);
         }
-        self.shared.forget(session);
         tracing::info!(agent = %name, %session, %reason, "episode closed");
         if !self.desks.contains_key(name)
             && let Some(f) = self.wanted().into_iter().find(|f| f.name.as_str() == name)
@@ -573,9 +598,13 @@ impl Roster {
             .map(|(n, _)| n.clone())
     }
 
-    fn clear_serving(&mut self, name: &str) {
-        if let Some(d) = self.desks.get_mut(name) {
-            d.serving = None;
+    /// The wake the desk served is handled (or the task was blocked): the
+    /// row is deleted durably (STALE-WAKE-DESKS), so it can neither hold the
+    /// agent busy nor be re-armed by a later restart.
+    async fn clear_serving(&mut self, name: &str) {
+        let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.take()) else { return };
+        if let Some(t) = tasks::actor() {
+            let _ = t.tell(tasks::FinishWake(s.wake)).await;
         }
     }
 
@@ -613,12 +642,12 @@ impl Roster {
         let Some(s) = d.serving.clone() else { return };
         let session = d.session;
         let Some(id) = s.wake.task.clone() else {
-            self.clear_serving(name);
+            self.clear_serving(name).await;
             return;
         };
         let Some(tasks) = tasks::actor() else { return };
         let Some(row) = desk::nudges::for_reason(s.wake.reason) else {
-            self.clear_serving(name);
+            self.clear_serving(name).await;
             return;
         };
         let desk::nudges::Nudge::TurnEnd { name: rule, unhandled, text, .. } = row else { return };
@@ -640,7 +669,7 @@ impl Roster {
             None => false,
         };
         if !unhandled(&s, &task, &mine, live_child) {
-            self.clear_serving(name);
+            self.clear_serving(name).await;
             return;
         }
         if live_child {
@@ -686,7 +715,7 @@ impl Roster {
         {
             tracing::warn!(agent = %name, task = %id, "no-continuation not applied: {e}");
         }
-        self.clear_serving(name);
+        self.clear_serving(name).await;
     }
 
     /// Write the file, update the read model in place (so a `GetAgent` right
@@ -773,6 +802,18 @@ impl Roster {
     /// A wake is being handled on the desk.
     fn working(&self, desk: runtime::SessionId) -> bool {
         self.desks.values().any(|d| d.session == desk && d.working)
+    }
+
+    /// A lease event is acted on unless this engine is shutting down: the
+    /// desks then simply stop with the process and reopen on the same
+    /// sessions at the next start; their tasks are not blocked and their
+    /// wakes not released as if the hub had moved.
+    fn lease_event_applies(&self) -> bool {
+        if self.rt.shutdown.is_cancelled() {
+            tracing::info!("lease event during shutdown ignored: desks stay mapped, wakes stay claimed");
+            return false;
+        }
+        true
     }
 
     /// 67 §4.4: the hub duties move with the lease (mirrors [`lease::apply`]).
@@ -1079,16 +1120,15 @@ impl Message<DeliverWake> for Roster {
             .map_err(|e| e.to_string())?;
         d.primed = true;
         d.last_active_ms = now_ms();
-        if let Some(t) = &m.task {
-            d.serving = Some(desk::Serving {
-                wake: m.wake.clone(),
-                state: Some(t.state),
-                owner: Some(t.owner.clone()),
-                events,
-                nudged: false,
-                rounds: 0,
-            });
-        }
+        // Every wake is tracked, task or not, so its row is finished when the turn ends.
+        d.serving = Some(desk::Serving {
+            wake: m.wake.clone(),
+            state: m.task.as_ref().map(|t| t.state),
+            owner: m.task.as_ref().map(|t| t.owner.clone()),
+            events,
+            nudged: false,
+            rounds: 0,
+        });
         Ok(())
     }
 }
@@ -1181,11 +1221,17 @@ impl Message<agent::AgentEvent> for Roster {
 }
 
 /// 67 §4.4: the hub duties follow the lease. `Peer` events are not ours.
+/// Our own shutdown is not a lease loss (STALE-WAKE-DESKS): the mesh emits
+/// `Lease { holder: None, reason: "release" }` while tearing itself down,
+/// after `rt.shutdown` fired; acting on it closed every desk and blocked
+/// their tasks on the way out. See [`Roster::lease_event_applies`].
 impl Message<mesh::MeshEvent> for Roster {
     type Reply = ();
 
     async fn handle(&mut self, ev: mesh::MeshEvent, _: &mut Context<Self, Self::Reply>) {
-        if let mesh::MeshEvent::Lease(l) = ev {
+        if let mesh::MeshEvent::Lease(l) = ev
+            && self.lease_event_applies()
+        {
             let change = self.lease.observe(&l);
             self.lease_changed(change).await;
         }
@@ -1933,6 +1979,35 @@ mod tests {
         r.lease.holding = false;
         assert_eq!(r.desk_or_open("ops").await, Ok(session), "an open desk is returned regardless");
         assert!(r.desk_or_open("theuth").await.unwrap_err().contains("lease"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// STALE-WAKE-DESKS 3: the mesh's own teardown emits `Lease { holder: None }`
+    /// after `rt.shutdown` fired; the roster must not read it as "hub lease
+    /// elsewhere". Before shutdown the same event is a real loss.
+    #[tokio::test]
+    async fn lease_events_are_ignored_during_shutdown() {
+        let data = tmp("shutdown-lease");
+        let mut r = roster(&data).await;
+        r.lease.set_self("me".into());
+        assert!(r.lease.holding);
+        let release = mesh::LeaseState { holder: None, since_ms: 0, reason: "release".into() };
+        // Not shutting down: the loss is applied.
+        let actor = Roster::spawn(r);
+        actor.tell(mesh::MeshEvent::Lease(release.clone())).await.unwrap();
+        let err = actor.ask(OpenDesk("theuth".into())).await.unwrap_err().to_string();
+        assert!(err.contains("hub lease"), "{err}");
+        actor.kill();
+        // Shutting down: the same event changes nothing — the desks stay mapped for the next start.
+        let mut r = roster(&data).await;
+        r.lease.set_self("me".into());
+        r.rt.shutdown.cancel();
+        assert!(!r.lease_event_applies());
+        let actor = Roster::spawn(r);
+        actor.tell(mesh::MeshEvent::Lease(release)).await.unwrap();
+        let err = actor.ask(OpenDesk("theuth".into())).await.unwrap_err().to_string();
+        assert!(err.contains("not opened"), "still holding: {err}");
+        actor.kill();
         let _ = std::fs::remove_dir_all(&data);
     }
 

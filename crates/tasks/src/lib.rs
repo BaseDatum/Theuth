@@ -9,8 +9,8 @@
 //!   [`GetTask`], [`TaskBlocks`], [`CreateTask`], [`UpdateTask`], [`MoveTask`], [`CommentTask`],
 //!   [`TaskEvents`], [`CheckoutTask`], [`PlaceTask`], [`Escalate`],
 //!   [`AwaitDecision`], [`AnswerDecision`], [`Mention`], [`MarkAnswered`],
-//!   [`NoteDisposition`], [`EpisodeClosing`], [`SetDispatching`],
-//!   [`RegisterDeskRouter`]
+//!   [`NoteDisposition`], [`EpisodeClosing`], [`FinishWake`], [`ReleaseClaims`],
+//!   [`SetDispatching`], [`RegisterDeskRouter`]
 //! - trait [`DeskRouter`] (the roster implements it)
 //!
 //! The rules live in [`ledger`]; this file is the actor around them.
@@ -296,9 +296,9 @@ pub struct NoteDisposition {
 
 /// `ask` → `Result<Vec<TaskId>, String>`: the roster is about to close
 /// `agent`'s desk `session` (67 §7.3 last rule): its claimed wakes are
-/// finished; every `doing` task checked out by it or its children with no
-/// `continuing` disposition is `blocked: no continuation` and the manager is
-/// woken. Replies with the tasks it blocked.
+/// released for the next episode; every `doing` task checked out by it or
+/// its children with no `continuing` disposition is `blocked: no
+/// continuation` and the manager is woken. Replies with the tasks it blocked.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EpisodeClosing {
     /// Agent name.
@@ -306,6 +306,18 @@ pub struct EpisodeClosing {
     /// Desk session id.
     pub session: String,
 }
+
+/// `tell`: the desk turn that took this wake is over — the roster judged it
+/// handled, or blocked the task (STALE-WAKE-DESKS). The row is deleted
+/// whether or not the agent wrote the task.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FinishWake(pub Wake);
+
+/// `tell`: a desk (re)opened on this session (STALE-WAKE-DESKS: desks are
+/// reused across restarts); wakes still claimed by it belong to a turn that
+/// no longer runs and are released for dispatch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseClaims(pub String);
 
 /// `ask` → `Result<Task, String>`: the 67 §7.3 rule on one task (70
 /// DESK-PROTOCOL: a desk turn nudged once and still not moving it) —
@@ -628,6 +640,26 @@ impl Message<EpisodeClosing> for Tasks {
     }
 }
 
+impl Message<FinishWake> for Tasks {
+    type Reply = ();
+
+    async fn handle(&mut self, m: FinishWake, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Err(e) = self.ledger.finish_wake(&m.0).await {
+            tracing::error!(wake = %m.0.id, "wake not finished: {e}");
+        }
+    }
+}
+
+impl Message<ReleaseClaims> for Tasks {
+    type Reply = ();
+
+    async fn handle(&mut self, m: ReleaseClaims, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Err(e) = self.ledger.release_claims(&m.0).await {
+            tracing::error!(session = %m.0, "wake claims not released: {e}");
+        }
+    }
+}
+
 impl Message<NoContinuation> for Tasks {
     type Reply = Result<Task, String>;
 
@@ -824,6 +856,11 @@ impl runtime::Plugin for TasksPlugin {
             }),
             platform::process::hostname().to_owned(),
         );
+        // A `dispatching` placeholder claim only lives between one process's
+        // claim and its delivery; one found at start never returned.
+        if let Err(e) = ledger.release_claims(ledger::DISPATCHING).await {
+            tracing::warn!("orphan wake claims not released: {e}");
+        }
         let actor = Tasks::spawn(Tasks {
             ledger,
             dispatching: true,

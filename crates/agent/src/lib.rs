@@ -570,6 +570,12 @@ pub struct MarkDesk {
     pub agent: Option<String>,
 }
 
+/// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
+/// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
+/// episodes and restarts; `sessions_desk_owner` keeps it unique).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeskSession(pub String);
+
 /// `ask` → `Result<(), String>`: archive or unarchive a root; archived trees
 /// leave the sidebar but stay in [`ListSessions`] and search (51 §3).
 #[derive(Clone, Debug, Serialize, Deserialize)]

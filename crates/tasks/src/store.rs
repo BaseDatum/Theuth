@@ -398,10 +398,35 @@ impl Store {
         Ok(())
     }
 
-    /// Delete every wake claimed by `session` (its episode closed).
-    pub async fn finish_claimed_by(&self, session: &str) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM wakes WHERE claimed_by = ?")
-            .bind(session)
+    /// Delete one wake (its desk turn ended, or it was found stale).
+    pub async fn finish_wake(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM wakes WHERE id = ?").bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// STALE-WAKE-DESKS: delete every wake on `task` whose reason has no
+    /// purpose in `state` ([`WakeReason::applies_to`]); a closed task loses
+    /// them all. Returns how many went.
+    pub async fn drop_stale_wakes(&self, task: &TaskId, state: TaskState) -> anyhow::Result<u64> {
+        let stale: Vec<&str> = WakeReason::ALL.iter().filter(|r| !r.applies_to(state)).map(|r| r.as_str()).collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        let marks = vec!["?"; stale.len()].join(", ");
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM wakes WHERE task = ? AND reason IN ({marks})"))).bind(&task.0);
+        for r in stale {
+            q = q.bind(r);
+        }
+        Ok(q.execute(&self.pool).await?.rows_affected())
+    }
+
+    /// Un-claim every wake claimed by `by` (the desk turn that took them is
+    /// gone: an episode closed, a desk reopened, a delivery never returned).
+    /// They are dispatched again and validated then.
+    pub async fn release_claimed_by(&self, by: &str, now_ms: u64) -> anyhow::Result<()> {
+        sqlx::query("UPDATE wakes SET claimed_by = NULL, hlc = ? WHERE claimed_by = ?")
+            .bind(hlc(now_ms))
+            .bind(by)
             .execute(&self.pool)
             .await?;
         Ok(())
