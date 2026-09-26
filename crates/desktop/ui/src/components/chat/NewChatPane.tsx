@@ -9,7 +9,7 @@ import { draftProject, usePanes } from '@/lib/panes'
 import { usePrivate } from '@/lib/private'
 
 /**
- * The new-chat body shared by the `/` route and a draft pane: header, prompt, composer, create options.
+ * The new-chat body shared by the `/new` route and a draft pane: header, prompt, composer, create options.
  * Nothing exists until the first `send_input(null, …)` / `create_session` reply names the session.
  */
 export function NewChat({
@@ -46,12 +46,12 @@ export function NewChat({
 
 /**
  * The sidebar's New chat, ⇧⌘O and the project header's "New chat in <project>" (25 §12.3): with the view split, the
- * focused pane becomes a draft and the URL stays put; a single pane goes to the whole-window `/` as before.
+ * focused pane becomes a draft and the URL stays put; a single pane goes to the whole-window `/new`.
  */
 export function openNewChat(navigate: UseNavigateResult<string>, project?: string | null): void {
   const panes = usePanes.getState()
   const draft = panes.fresh(project)
-  if (!draft) void navigate({ to: '/', search: project ? { project } : {} })
+  if (!draft) void navigate({ to: '/new', search: project ? { project } : {} })
   // A new draft's pane takes the caret on mount; a kept one has to be told.
   else if (draft === panes.focused) window.dispatchEvent(new Event('theuth:focus-composer'))
 }

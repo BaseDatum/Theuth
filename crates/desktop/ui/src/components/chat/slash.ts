@@ -297,7 +297,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       await navigate({ to: '/c/$session', params: { session: arg } })
       return
     case '/new':
-      await navigate({ to: '/' })
+      await navigate({ to: '/new' })
       return
     case '/model':
       if (!arg) return openSurface('model')

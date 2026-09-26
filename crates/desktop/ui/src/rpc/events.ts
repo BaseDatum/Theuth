@@ -17,6 +17,7 @@ import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
 import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
 import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
+import type { ActivityAppended } from '@/rpc/bindings/ActivityAppended'
 import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
@@ -81,4 +82,6 @@ export type WireEvent =
   | PeerDelivered
   | A2aChanged
   | AppCallChanged
+  /** 70 HUD: a row was appended to the activity feed. */
+  | ActivityAppended
   | Lagged
