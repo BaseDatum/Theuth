@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
+import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { AgentInfo } from '@/rpc/extra'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
@@ -19,6 +20,7 @@ import {
 } from '@/store/sessions'
 import { Message, PromptCard } from './Message'
 import { Pulse } from './Pulse'
+import { foldRuns, type Run, ToolRunCard } from './ToolRunCard'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -37,16 +39,19 @@ const WORD: Record<Activity, string> = {
   vision: 'inspecting images…',
 }
 
-type Row = { key: string; entry: Entry; prompts: Prompt[] | null } | { key: string; prompt: Prompt; from?: AgentInfo }
+type Row =
+  | { key: string; entry: Entry; prompts: Prompt[] | null }
+  | { key: string; run: Run; prompts: Prompt[] | null }
+  | { key: string; prompt: Prompt; from?: AgentInfo }
 
-/** Entries, each with the prompts waiting on its (unfinished, same-named) tool call; prompts with no such row come last.
+/** Entries (consecutive tool calls folded into one run row when `collapse`, 70), each with the prompts waiting on its
+ * (unfinished, same-named) tool call; prompts with no such row come last.
  * A subagent's prompt (19 §3.4: `children` is the session's subtree) is a loose row too, labelled with the child. */
-function buildRows(entries: Entry[], pending: Prompt[], session: string, children: Record<string, AgentInfo> | undefined): Row[] {
-  const rows: Row[] = entries.map((entry) => ({
-    key: entry.id,
-    entry,
-    prompts: null,
-  }))
+function buildRows(entries: Entry[], pending: Prompt[], session: string, children: Record<string, AgentInfo> | undefined, collapse: boolean): Row[] {
+  const items = collapse ? foldRuns(entries) : entries
+  const rows: Row[] = items.map((item) =>
+    Array.isArray(item) ? { key: (item[0] as Entry).id, run: item, prompts: null } : { key: item.id, entry: item, prompts: null },
+  )
   const loose: Row[] = []
   for (const prompt of pending) {
     if (prompt.session !== session) {
@@ -56,14 +61,15 @@ function buildRows(entries: Entry[], pending: Prompt[], session: string, childre
     }
     const tool =
       prompt.type === 'ApprovalRequested' ? prompt.tool : prompt.type === 'AskRequested' ? 'ask_user' : 'secret_request'
-    let at = entries.length - 1
+    const waits = (e: Entry) => e.kind === 'tool' && e.name === tool && !e.result
+    let at = items.length - 1
     while (at >= 0) {
-      const e = entries[at]
-      if (e?.kind === 'tool' && e.name === tool && !e.result) break
+      const item = items[at] as Entry | Run
+      if (Array.isArray(item) ? item.some(waits) : waits(item)) break
       at--
     }
     const row = rows[at]
-    if (row && 'entry' in row) row.prompts = [...(row.prompts ?? []), prompt]
+    if (row && 'prompts' in row) row.prompts = [...(row.prompts ?? []), prompt]
     else loose.push({ key: prompt.id, prompt })
   }
   return rows.concat(loose)
@@ -161,7 +167,8 @@ export function Transcript({ session, compact = false }: { session: string; comp
   /** Row at the viewport's midpoint: the ruler's active turn while scrolled up. */
   const [at, setAt] = useState(0)
 
-  const rows = useMemo(() => buildRows(entries, pending, session, children), [entries, pending, session, children])
+  const collapse = useToolRuns((s) => s.collapse)
+  const rows = useMemo(() => buildRows(entries, pending, session, children, collapse), [entries, pending, session, children, collapse])
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
@@ -243,6 +250,8 @@ export function Transcript({ session, compact = false }: { session: string; comp
                 >
                   {'entry' in row ? (
                     <Message entry={row.entry} prompts={row.prompts} session={session} />
+                  ) : 'run' in row ? (
+                    <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
                   ) : (
                     <PromptCard prompt={row.prompt} from={row.from} />
                   )}
