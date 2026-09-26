@@ -2,19 +2,24 @@ import { syntaxHighlighter } from '@blocknote/code-block'
 import { withCollaboration } from '@blocknote/core/yjs'
 import { SideMenuExtension, filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
 import {
+  AddBlockButton,
+  DragHandleMenu,
   SideMenu,
   SideMenuController,
   type SideMenuProps,
   SuggestionMenuController,
   getDefaultReactSlashMenuItems,
+  useComponentsContext,
   useCreateBlockNote,
+  useDictionary,
+  useExtension,
   useExtensionState,
 } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
-import { Sparkles, Workflow } from 'lucide-react'
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { GripVertical, Sparkles, Workflow } from 'lucide-react'
+import { type SyntheticEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
@@ -56,10 +61,48 @@ const CURSOR_COLORS = ['#b4531e', '#1e6fb4', '#2e8b57', '#b41e7a', '#8a6d1e', '#
 
 const hhmm = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 
+/** Skips the Base UI handler merged onto the same element (`mergeProps`): only our handler runs. */
+const preventBaseUI = (e: SyntheticEvent) => (e as SyntheticEvent & { preventBaseUIHandler?(): void }).preventBaseUIHandler?.()
+
+/**
+ * BlockNote's `DragHandleButton`, except the block menu opens on click. The shadcn flavour makes the handle a Base UI
+ * `Menu.Trigger`, which opens on `mousedown`: a press-and-hold showed the menu and the drag started under it
+ * (BLOCKNOTE-DRAG). Swallowing Base UI's pointerdown/mousedown leaves its `click` path, so a press that moves is a
+ * native drag (no click follows a drag) and a press that does not is the menu.
+ */
+function DragHandle() {
+  const Components = useComponentsContext()!
+  const dict = useDictionary()
+  const sideMenu = useExtension(SideMenuExtension)
+  const block = useExtensionState(SideMenuExtension, { selector: (s) => s?.block })
+  if (!block) return null
+  return (
+    <Components.Generic.Menu.Root onOpenChange={(open: boolean) => (open ? sideMenu.freezeMenu() : sideMenu.unfreezeMenu())} position="left">
+      <Components.Generic.Menu.Trigger>
+        <Components.SideMenu.Button
+          label={dict.side_menu.drag_handle_label}
+          draggable
+          onDragStart={(e) => sideMenu.blockDragStart(e, block)}
+          onDragEnd={sideMenu.blockDragEnd}
+          className="bn-button"
+          icon={<GripVertical className="size-5" data-test="dragHandle" />}
+          {...({ onPointerDown: preventBaseUI, onMouseDown: preventBaseUI } as object)}
+        />
+      </Components.Generic.Menu.Trigger>
+      <DragHandleMenu />
+    </Components.Generic.Menu.Root>
+  )
+}
+
 /** The default side menu, except on the frontmatter block: no drag handle, no block menu, no "+" (59 §4.5). */
 function DocSideMenu(props: SideMenuProps) {
   const type = useExtensionState(SideMenuExtension, { selector: (s) => s?.block?.type })
-  return type === 'frontmatter' ? null : <SideMenu {...props} />
+  return type === 'frontmatter' ? null : (
+    <SideMenu {...props}>
+      <AddBlockButton />
+      <DragHandle />
+    </SideMenu>
+  )
 }
 
 /**

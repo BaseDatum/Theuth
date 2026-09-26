@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import { ArrowUp, AudioLines, FileUp, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
 import {
@@ -416,22 +415,9 @@ export function Composer({
     }
   }
 
-  // The macOS webview swallows HTML5 drops and reports host paths instead; one native listener for the component's life reads the latest handler through the ref.
-  const dropPaths = (paths: string[]) => {
-    if (hostFiles) addFiles(paths)
-    else toast.error('Dropped files stay on this Mac; use Attach to upload them')
-  }
-  const dropRef = useRef(dropPaths)
-  dropRef.current = dropPaths
-  useEffect(() => {
-    if (!isDesktop()) return
-    const un = getCurrentWebview().onDragDropEvent((e) => {
-      if (e.payload.type === 'drop') dropRef.current(e.payload.paths)
-    })
-    return () => void un.then((f) => f())
-  }, [])
-
-  // 66 §7.8: a dragged row (`application/x-theuth-attach`) attaches; anything else is files.
+  // 66 §7.8: a dragged row (`application/x-theuth-attach`) attaches; anything else is files. OS drops arrive here as
+  // `File`s and upload like the browser's (BLOCKNOTE-DRAG turned off Tauri's path-reporting drop hook, which also
+  // swallowed every in-page HTML5 drop in WKWebView); host paths still come from the Attach dialog.
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
     const ref = e.dataTransfer.getData(DRAG_TYPE)

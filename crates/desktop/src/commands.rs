@@ -26,7 +26,10 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
         win.show().map_err(|e| e.to_string())?;
         return win.set_focus().map_err(|e| e.to_string());
     }
+    // Tauri's file-drop interception swallows every in-page HTML5 drop in WKWebView (BLOCKNOTE-DRAG); the main
+    // window turns it off in tauri.conf.json (`dragDropEnabled: false`), pop-outs here.
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .disable_drag_drop_handler()
         .inner_size(960.0, 720.0)
         .min_inner_size(480.0, 360.0)
         .on_document_title_changed(|win, title| {
