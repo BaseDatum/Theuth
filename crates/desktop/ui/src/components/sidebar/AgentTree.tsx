@@ -5,8 +5,10 @@ import { counts } from '@/components/chat/broadcast'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { costLines, costShort } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { cappedTree } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 import { useSessionField, useSessions } from '@/store/sessions'
 
@@ -89,9 +91,23 @@ export const live = (state: AgentState['state']): boolean => state === 'running'
 
 /**
  * A session's subtree: seeded from `list_agents` when it appears, live from events after; one indented row per
- * subagent. `liveOnly` keeps just the `live` rows — a desk that is not the open chat shows what is working, not its history.
+ * subagent. `liveOnly` keeps just the `live` rows — a desk that is not the open chat shows what is working, not its
+ * history. With `cap` (the desk's rows from `list_sessions`, for `updated_at`) the tree shows `TREE_CAP` rows —
+ * running first, newest next — and a `Show more` row for the rest; `Show less` folds it back. Nothing is persisted:
+ * every mount starts folded.
  */
-export function AgentTree({ session, active, liveOnly = false }: { session: string; active: string | undefined; liveOnly?: boolean }) {
+export function AgentTree({
+  session,
+  active,
+  liveOnly = false,
+  cap,
+}: {
+  session: string
+  active: string | undefined
+  liveOnly?: boolean
+  cap?: readonly SessionSummary[]
+}) {
+  const [expanded, setExpanded] = useState(false)
   const api = useApi()
   const children = useSessionField(session, 'children')
   const [now, setNow] = useState(Date.now())
@@ -105,18 +121,28 @@ export function AgentTree({ session, active, liveOnly = false }: { session: stri
       () => {},
     )
   }, [api, session])
-  const rows = children ? Object.values(children).filter((r) => !liveOnly || live(r.state.state)) : []
+  const all = children ? Object.values(children).filter((r) => !liveOnly || live(r.state.state)) : []
+  const { shown: rows, hidden } = cap ? cappedTree(all, cap, expanded) : { shown: all, hidden: 0 }
   const { data: cost } = useQuery({
     queryKey: queryKeys.sessionCost(session),
     queryFn: () => api.session_cost(session),
     enabled: rows.length > 0,
   })
-  if (rows.length === 0) return null
+  if (all.length === 0) return null
   return (
     <div className="mx-1 mb-1 flex flex-col">
       {rows.map((r) => (
         <Row key={r.id} row={r} active={r.id === active} now={now} cost={cost?.children.find((c) => c.session === r.id)?.total} />
       ))}
+      {(hidden > 0 || expanded) && (
+        <button
+          type="button"
+          className="flex h-7 items-center gap-1.5 rounded-md pr-2 pl-5 text-xs text-fg-tertiary hover:bg-sidebar-accent"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Show less' : `Show ${hidden} more`}
+        </button>
+      )}
     </div>
   )
 }

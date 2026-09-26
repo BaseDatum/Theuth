@@ -60,11 +60,15 @@ const LIBRARY = [
   ['/artifacts', 'Artifacts', FolderOpen],
 ] as const
 
+/** A desk with no known subagents still gets a capped tree (a child spawned before the list refetched sorts by `started_at`). */
+const NONE: readonly SessionSummary[] = []
+
 /**
  * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
  * yet: a row with a desk (`AgentSummary.desk`, roster-owned) opens it; one without asks the roster to open it first.
  * Pinning has nothing to do with this group. A desk's subagents (any depth, from `list_sessions`) hang under its row
- * like a chat row's tree: the live ones always, the finished ones while the desk or one of them is the open chat.
+ * like a chat row's tree: the live ones always, the finished ones while the desk or one of them is the open chat,
+ * `TREE_CAP` at a time behind `Show more`.
  */
 function Desks({ active }: { active: string | undefined }) {
   const api = useApi()
@@ -134,7 +138,7 @@ function DeskRow({
           </Link>
         )}
       </SidebarMenuButton>
-      {id !== null && <AgentTree session={id} active={active} liveOnly={!isActive} />}
+      {id !== null && <AgentTree session={id} active={active} liveOnly={!isActive} cap={subagents ?? NONE} />}
     </SidebarMenuItem>
   )
 }
