@@ -24,5 +24,13 @@ test('⌥ on the selecting click pops the meeting out; a plain click or a key op
   openMeeting('m1', true, here)
   expect(here).toHaveBeenCalledTimes(1)
   expect(open).toHaveBeenCalledWith('/meetings/m1?window=popout-meeting-m1', 'popout-meeting-m1')
+  // The iOS shell has no second window: ⌥ (a hardware keyboard) is a plain open.
+  const invoke = vi.fn()
+  vi.stubGlobal('window', { open, __TAURI_INTERNALS__: { invoke } })
+  vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)', maxTouchPoints: 5 })
+  openMeeting('m1', true, here)
+  expect(here).toHaveBeenCalledTimes(2)
+  expect(open).toHaveBeenCalledTimes(1)
+  expect(invoke).not.toHaveBeenCalled()
   vi.unstubAllGlobals()
 })

@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/tooltip";
 import { fmtBytes, isLocal, readText, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
-import { openPopout } from "@/lib/popout";
+import { canPopout, openPopout } from "@/lib/popout";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { useEngines } from "@/link/engines";
@@ -235,7 +235,7 @@ export function RevealButton({ artifact: a }: { artifact: Artifact }) {
   );
 }
 
-/** Open the artifact in its own window (`lib/popout.ts`); `size` matches the toolbar it sits in. */
+/** Open the artifact in its own window (`lib/popout.ts`); `size` matches the toolbar it sits in. Nothing where there are no second windows. */
 export function PopoutButton({
   artifact: a,
   className,
@@ -243,6 +243,7 @@ export function PopoutButton({
   artifact: Artifact;
   className?: string;
 }) {
+  if (!canPopout()) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>

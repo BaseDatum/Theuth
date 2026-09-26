@@ -1,5 +1,7 @@
-import { expect, test } from 'vitest'
-import { popoutLabel, popoutMeeting, popoutTarget, popoutUrl } from './popout'
+import { afterEach, expect, test, vi } from 'vitest'
+import { canPopout, popoutLabel, popoutMeeting, popoutTarget, popoutUrl } from './popout'
+
+afterEach(() => vi.unstubAllGlobals())
 
 test('a window opened with ?window= shows only its chat or artifact; anything else is the ordinary shell', () => {
   expect(popoutTarget('tauri://localhost/c/abc?window=popout-chat-abc')).toEqual({ kind: 'chat', session: 'abc' })
@@ -44,4 +46,24 @@ test('the label names the target with only the characters a Tauri window label a
     // The url round-trips to the target it was built from.
     expect(popoutTarget(url)).toEqual(t)
   }
+})
+
+test('canPopout: a desktop shell or a plain browser has second windows; the iOS shell never does, whatever its width', () => {
+  const shell = (tauri: boolean, userAgent: string, maxTouchPoints = 0) => {
+    vi.stubGlobal('window', tauri ? { __TAURI_INTERNALS__: {}, innerWidth: 390 } : { innerWidth: 390 })
+    vi.stubGlobal('navigator', { userAgent, maxTouchPoints })
+  }
+  const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+  shell(true, mac)
+  expect(canPopout()).toBe(true)
+  shell(true, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+  expect(canPopout()).toBe(true)
+  // A narrow browser tab still has `window.open`.
+  shell(false, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148', 5)
+  expect(canPopout()).toBe(true)
+  // The iOS shell: iPhone UA, and the iPad's Macintosh UA told apart by touch points.
+  shell(true, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148', 5)
+  expect(canPopout()).toBe(false)
+  shell(true, mac, 5)
+  expect(canPopout()).toBe(false)
 })

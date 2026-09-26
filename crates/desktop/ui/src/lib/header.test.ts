@@ -63,7 +63,7 @@ test('tier 2 moves shed items out of the bar and into the menu, so nothing is lo
 
 test('the title follows the model picker in the full bar and opens the compact bar, whichever panel button the session has', () => {
   for (const panel of ['artifacts', 'browser', 'terminals', null] as const) {
-    const order = headerOrder(panel)
+    const order = headerOrder(panel, true)
     const full = ids(layout(order, 0).bar)
     expect(full.indexOf('title')).toBe(full.indexOf('model') + 1)
     // Compact: the picker is behind the chevron; title · context · the one panel button · popout · chevron · ⋯ stay inline.
@@ -77,6 +77,19 @@ test('the title follows the model picker in the full bar and opens the compact b
     expect(ids(t2.menu).indexOf('model')).toBe(1)
     // Open in new window is reachable without opening the chevron at every tier.
     for (let t = 0; t < TIERS; t++) expect(ids(layout(order, t).bar)).toContain('popout')
+  }
+})
+
+test('where no second window exists (iOS, or the popped window itself) the popout item is absent at every tier', () => {
+  for (const panel of ['artifacts', null] as const) {
+    const order = headerOrder(panel, false)
+    for (let t = 0; t < TIERS; t++) {
+      const l = layout(order, t)
+      expect(ids(l.bar)).not.toContain('popout')
+      expect(ids(l.menu)).not.toContain('popout')
+    }
+    // Everything else is where it was.
+    expect(ids(layout(order, 2).bar)).toEqual(['sidebar', 'title', 'more', 'menu', 'close'])
   }
 })
 
