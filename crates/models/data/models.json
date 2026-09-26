@@ -11611,34 +11611,6 @@
           }
         ]
       },
-      "accounts/fireworks/routers/deepseek-pro-latest": {
-        "id": "accounts/fireworks/routers/deepseek-pro-latest",
-        "name": "DeepSeek Pro Latest",
-        "limit": {
-          "context": 1000000,
-          "output": 384000
-        },
-        "cost": {
-          "input": 1.32,
-          "output": 3.96,
-          "cache_read": 0.044
-        },
-        "reasoning": true,
-        "tool_call": true,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "effort",
-            "values": [
-              "high",
-              "max"
-            ]
-          }
-        ]
-      },
       "accounts/fireworks/routers/glm-5p2-fast": {
         "id": "accounts/fireworks/routers/glm-5p2-fast",
         "name": "GLM 5.2 Fast",
@@ -19202,24 +19174,6 @@
         "image": false,
         "reasoning_options": []
       },
-      "anthropic/claude-3-haiku": {
-        "id": "anthropic/claude-3-haiku",
-        "name": "Claude 3 Haiku",
-        "limit": {
-          "context": 200000,
-          "output": 4096
-        },
-        "cost": {
-          "input": 0.25,
-          "output": 1.25,
-          "cache_read": 0.03,
-          "cache_write": 0.3
-        },
-        "reasoning": false,
-        "tool_call": true,
-        "image": true,
-        "reasoning_options": []
-      },
       "anthropic/claude-fable-5": {
         "id": "anthropic/claude-fable-5",
         "name": "Claude Fable 5",
@@ -20108,9 +20062,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.04872,
-          "output": 0.09744,
-          "cache_read": 0.009744
+          "input": 0.04704,
+          "output": 0.09408,
+          "cache_read": 0.009408
         },
         "reasoning": true,
         "tool_call": true,
@@ -20136,7 +20090,7 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.03,
+          "input": 0.021,
           "output": 0.32,
           "cache_read": 0.016
         },
@@ -20194,9 +20148,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.763686,
-          "output": 1.527372,
-          "cache_read": 0.06364
+          "input": 0.348,
+          "output": 0.696,
+          "cache_read": 0.029
         },
         "reasoning": true,
         "tool_call": true,
@@ -20222,9 +20176,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.34848,
-          "output": 1.04544,
-          "cache_read": 0.011616
+          "input": 0.264,
+          "output": 0.792,
+          "cache_read": 0.0088
         },
         "reasoning": true,
         "tool_call": true,
@@ -20248,12 +20202,12 @@
         "name": "DeepSeek V4.1 Flash",
         "limit": {
           "context": 1048576,
-          "output": 393216
+          "output": 943718
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.6,
-          "cache_read": 0.003
+          "input": 0.3,
+          "output": 1.2,
+          "cache_read": 0.006
         },
         "reasoning": true,
         "tool_call": true,
@@ -22576,10 +22530,10 @@
         "name": "Nemotron 3.5 Lightning 30B A3B",
         "limit": {
           "context": 1000000,
-          "output": 235929
+          "output": 131072
         },
         "cost": {
-          "input": 0.07,
+          "input": 0.08,
           "output": 0.2,
           "cache_read": 0.04
         },
@@ -24162,6 +24116,33 @@
           }
         ]
       },
+      "perceptron/perceptron-mk1.5": {
+        "id": "perceptron/perceptron-mk1.5",
+        "name": "Perceptron Mk1.5",
+        "limit": {
+          "context": 36864,
+          "output": 8192
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 1.5
+        },
+        "reasoning": true,
+        "tool_call": true,
+        "image": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      },
       "perplexity/sonar": {
         "id": "perplexity/sonar",
         "name": "Sonar",
@@ -25061,12 +25042,11 @@
         "name": "Qwen3.6 27B",
         "limit": {
           "context": 262144,
-          "output": 262140
+          "output": 81920
         },
         "cost": {
           "input": 0.32,
-          "output": 2.7,
-          "cache_read": 0.15
+          "output": 3.2
         },
         "reasoning": true,
         "tool_call": true,
@@ -25906,7 +25886,7 @@
         "id": "thinkingmachines/inkling",
         "name": "Inkling",
         "limit": {
-          "context": 1048576,
+          "context": 524288,
           "output": 471859
         },
         "cost": {
@@ -25935,7 +25915,7 @@
         "id": "thinkingmachines/inkling-small",
         "name": "Inkling Small",
         "limit": {
-          "context": 1048576,
+          "context": 524288,
           "output": 262144
         },
         "cost": {
@@ -26392,7 +26372,7 @@
         "id": "xiaomi/mimo-v2.6-pro",
         "name": "MiMo-V2.6-Pro",
         "limit": {
-          "context": 1048576,
+          "context": 1050000,
           "output": 131072
         },
         "cost": {
@@ -26667,44 +26647,17 @@
           }
         ]
       },
-      "z-ai/glm-5.2:free": {
-        "id": "z-ai/glm-5.2:free",
-        "name": "GLM 5.2 (free)",
-        "limit": {
-          "context": 32768,
-          "output": 29491
-        },
-        "cost": {
-          "input": 0.0,
-          "output": 0.0
-        },
-        "reasoning": true,
-        "tool_call": false,
-        "image": false,
-        "reasoning_options": [
-          {
-            "type": "toggle"
-          },
-          {
-            "type": "effort",
-            "values": [
-              "high",
-              "xhigh"
-            ]
-          }
-        ]
-      },
       "z-ai/glm-5.3": {
         "id": "z-ai/glm-5.3",
         "name": "GLM-5.3",
         "limit": {
           "context": 1310720,
-          "output": 943717
+          "output": 131072
         },
         "cost": {
-          "input": 1.4,
-          "output": 4.4,
-          "cache_read": 0.26
+          "input": 0.3794,
+          "output": 1.1924,
+          "cache_read": 0.07046
         },
         "reasoning": true,
         "tool_call": true,
@@ -26725,12 +26678,12 @@
         "name": "GLM-5.3-Flash",
         "limit": {
           "context": 1310720,
-          "output": 128000
+          "output": 131072
         },
         "cost": {
-          "input": 0.045,
-          "output": 0.14,
-          "cache_read": 0.01
+          "input": 0.04,
+          "output": 0.5,
+          "cache_read": 0.015
         },
         "reasoning": true,
         "tool_call": true,
@@ -26936,12 +26889,12 @@
         "name": "DeepSeek Flash Latest",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 384000
         },
         "cost": {
-          "input": 0.04,
-          "output": 0.49,
-          "cache_read": 0.01
+          "input": 0.035,
+          "output": 0.29,
+          "cache_read": 0.001
         },
         "reasoning": true,
         "tool_call": true,
@@ -26965,12 +26918,12 @@
         "name": "DeepSeek Pro Latest",
         "limit": {
           "context": 1048576,
-          "output": 943718
+          "output": 393216
         },
         "cost": {
-          "input": 0.2528,
-          "output": 1.9584,
-          "cache_read": 0.08832
+          "input": 0.24948,
+          "output": 0.74844,
+          "cache_read": 0.007938
         },
         "reasoning": true,
         "tool_call": true,
@@ -26997,7 +26950,7 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.03,
+          "input": 0.021,
           "output": 0.32,
           "cache_read": 0.016
         },
@@ -27080,9 +27033,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.8845,
-          "output": 10.5346,
-          "cache_read": 0.33
+          "input": 1.0301,
+          "output": 9.043,
+          "cache_read": 0.3
         },
         "reasoning": true,
         "tool_call": true,
@@ -27280,12 +27233,12 @@
         "name": "GLM Flash Latest",
         "limit": {
           "context": 1310720,
-          "output": 128000
+          "output": 131072
         },
         "cost": {
-          "input": 0.045,
-          "output": 0.14,
-          "cache_read": 0.01
+          "input": 0.04,
+          "output": 0.5,
+          "cache_read": 0.015
         },
         "reasoning": true,
         "tool_call": true,
@@ -27309,9 +27262,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 0.5614,
-          "output": 1.7644,
-          "cache_read": 0.10426
+          "input": 0.3794,
+          "output": 1.1924,
+          "cache_read": 0.07046
         },
         "reasoning": true,
         "tool_call": true,
