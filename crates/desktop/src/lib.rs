@@ -48,6 +48,17 @@ pub fn run() {
     app.run(|_, event| mobile::on_event(&event));
 }
 
+/// `--bg-page` from `ui/src/styles.css` as the native window + webview background, so the frames before the
+/// page's first paint are the page colour instead of WKWebView's opaque white (DARK-FLASH). `dark` is the
+/// system appearance at the call; once painted, the page follows `prefers-color-scheme` itself.
+fn page_background(dark: bool) -> tauri::window::Color {
+    if dark {
+        tauri::window::Color(0x12, 0x10, 0x0e, 0xff)
+    } else {
+        tauri::window::Color(0xe8, 0xdc, 0xc8, 0xff)
+    }
+}
+
 /// The phone (31 §8): plugins, the one window, and the background grace period.
 #[cfg(mobile)]
 mod mobile {
@@ -62,7 +73,8 @@ mod mobile {
             .invoke_handler(tauri::generate_handler![commands::connection])
             .setup(|app| {
                 let builder =
-                    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()));
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                        .background_color(crate::page_background(system_dark()));
                 // WKWebView paints a native "‹ › Done" bar above the keyboard for every
                 // focused input (and paints it light under a dark page); a chat composer
                 // has no use for it.
@@ -71,6 +83,22 @@ mod mobile {
                 builder.build()?;
                 Ok(())
             })
+    }
+
+    /// tao's iOS `Window::theme` is a constant `Light`; ask UIKit for the screen's appearance instead.
+    fn system_dark() -> bool {
+        #[cfg(target_os = "ios")]
+        {
+            use objc2::MainThreadMarker;
+            use objc2_ui_kit::{UIScreen, UITraitEnvironment, UIUserInterfaceStyle};
+            #[allow(deprecated)]
+            return MainThreadMarker::new().is_some_and(|mtm| {
+                let style = unsafe { UIScreen::mainScreen(mtm).traitCollection().userInterfaceStyle() };
+                style == UIUserInterfaceStyle::Dark
+            });
+        }
+        #[cfg(not(target_os = "ios"))]
+        false
     }
 
     /// `Suspended` is `applicationWillResignActive`, `Resumed` is `willEnterForeground`.
@@ -237,15 +265,21 @@ mod desktop {
         let builder = builder.menu(app_menu);
         builder
             .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
-            .on_window_event(|window, event| {
+            .on_window_event(|window, event| match event {
                 // Main and island hide on close (tray app); a popout is just a window and goes away.
-                if let WindowEvent::CloseRequested { api, .. } = event {
+                WindowEvent::CloseRequested { api, .. } => {
                     if window.label().starts_with(commands::POPOUT_PREFIX) {
                         return;
                     }
                     api.prevent_close();
                     log_err(window.hide(), "hide window");
                 }
+                WindowEvent::ThemeChanged(_) => {
+                    if let Some(win) = window.app_handle().get_webview_window(window.label()) {
+                        paint_page_background(&win);
+                    }
+                }
+                _ => {}
             })
             .setup(|app| {
                 #[cfg(target_os = "macos")]
@@ -262,6 +296,9 @@ mod desktop {
         app.asset_protocol_scope()
             .allow_directory(launch::data_dir(), true)
             .context("allow THEUTH_DATA_DIR in asset protocol")?;
+        if let Some(win) = main_window(app) {
+            paint_page_background(&win);
+        }
         let state_file = app
             .path()
             .app_config_dir()?
@@ -381,6 +418,17 @@ mod desktop {
 
     fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
         app.get_webview_window("main")
+    }
+
+    /// Native background = the page's, so no white frame before first paint (see [`crate::page_background`]).
+    /// Not the island: it is transparent. Popouts get theirs from `open_window`; every window re-paints on
+    /// `ThemeChanged`.
+    pub(crate) fn paint_page_background(win: &WebviewWindow) {
+        if win.label() == "island" {
+            return;
+        }
+        let dark = win.theme().is_ok_and(|t| t == tauri::Theme::Dark);
+        log_err(win.set_background_color(Some(crate::page_background(dark))), "window background");
     }
 
     fn toggle(app: &AppHandle) {
