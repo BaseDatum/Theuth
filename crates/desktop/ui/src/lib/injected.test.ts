@@ -125,12 +125,29 @@ test('wake without a loaded task keeps the id or names no task', () => {
   expect(classify('Wake: no task. Reason: manual. Do not switch to another task until this wake is handled.')).toEqual([{ kind: 'wake', reason: 'manual' }])
 })
 
-test('wake accepts every reason and a title with periods', () => {
-  for (const reason of ['assigned', 'comment', 'mention', 'schedule', 'answer', 'review', 'resume', 'resumed', 'manual']) {
+test('wake accepts every reason (70 DESK-PROTOCOL ones carry underscores) and a title with periods', () => {
+  for (const reason of ['assigned', 'reassigned', 'comment', 'mention', 'schedule', 'answer', 'review', 'resume', 'resumed', 'manual', 'blockers_resolved', 'children_completed']) {
     expect(classify(`Wake: task a1 — Ship v2.1. Really. Reason: ${reason}. Do not switch to another task until this wake is handled.`)).toEqual([
       { kind: 'wake', id: 'a1', title: 'Ship v2.1. Really', reason },
     ])
   }
+})
+
+const ROSTER = '<roster>\nFit check: hand the task over with `task_reassign` if one of these fits it better than your charter; otherwise work it.\n- `karol` (Infrastructure): k8s, networks\n</roster>'
+
+test('an assigned wake carries the roster fit check, with or without a task record', () => {
+  const head = 'Wake: task 12 — Rotate the relay certificate. Reason: assigned. Do not switch to another task until this wake is handled.'
+  expect(classify(`${head}\n\n${WAKE_TASK}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', id: '12', reason: 'assigned', state: 'todo', roster: ROSTER.slice('<roster>\n'.length, -'\n</roster>'.length) }])
+  expect(classify(`${head}\n\n${ROSTER}`)).toMatchObject([{ kind: 'wake', id: '12', reason: 'assigned', roster: expect.stringContaining('Fit check') }])
+  expect(classify(`${head}\n\n${WAKE_TASK}`)?.[0]).not.toHaveProperty('roster')
+})
+
+test('desk nudges and the journal prompt are engine notices, so they use the nudge card and its setting', () => {
+  const nudge = 'Task 12 needs a disposition before this turn can end. Move it — exactly one of: `task_update disposition: done` … One attempt: if the task is unchanged when this turn ends it is set `blocked: "no continuation"` and your manager is woken.'
+  expect(classify(`<nudge>\n${nudge}\n</nudge>`)).toEqual([{ kind: 'engine', notice: 'nudge', text: nudge }])
+  expect(classify('<journal>\nWrite your journal: Done / Open / Next / Notes, ≤ 8 KiB.\n</journal>')).toEqual([{ kind: 'engine', notice: 'journal', text: 'Write your journal: Done / Open / Next / Notes, ≤ 8 KiB.' }])
+  // Bare nudge prose is still a user line: the roster must wrap it.
+  expect(classify(nudge)).toBeNull()
 })
 
 test('desk opening followed by a wake is two cards', () => {

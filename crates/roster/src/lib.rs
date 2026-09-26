@@ -474,7 +474,7 @@ impl Roster {
         if let Err(e) = agents
             .ask(agent::SendInput {
                 session: Some(d.session),
-                text: desk::CLOSING.to_owned(),
+                text: desk::notice("journal", desk::CLOSING),
                 files: vec![],
                 delivery: agent::Delivery::default(),
             })
@@ -651,7 +651,7 @@ impl Roster {
             if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
                 && a.ask(agent::SendInput {
                     session: Some(session),
-                    text: nudge,
+                    text: desk::notice("nudge", &nudge),
                     files: vec![],
                     delivery: agent::Delivery::default(),
                 })

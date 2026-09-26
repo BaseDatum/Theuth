@@ -39,6 +39,13 @@ with `visibility: team` or `shared` for the items your team or everyone should k
 must already have its disposition. Answer with the journal text only: it is written to your journal file as is and \
 is what your next episode starts from.";
 
+/// A harness input to a desk as a `<kind>` notice (the shape `agent::loop_::note`
+/// uses): the desktop renders it as the nudge card, hidden unless "Show theuth
+/// nudges" is on, never as the user's words. `kind` is `nudge` or `journal`.
+pub fn notice(kind: &str, text: &str) -> String {
+    format!("<{kind}>\n{text}\n</{kind}>")
+}
+
 /// The desk's operating manual (67 §6.2, §7.3; 70 DESK-PROTOCOL): the part
 /// of the identity block after the charter and the journal. `max_rounds` is
 /// `roster.max_rounds`.

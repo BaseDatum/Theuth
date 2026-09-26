@@ -42,7 +42,7 @@ export function DeskCard({ agent, charter, journal, manual }: Extract<Entry, { k
   )
 }
 
-export function WakeCard({ id, title, reason, count, state, owner, reviewer, thread, body }: Extract<Entry, { kind: 'wake' }>) {
+export function WakeCard({ id, title, reason, count, state, owner, reviewer, thread, body, roster }: Extract<Entry, { kind: 'wake' }>) {
   return (
     <div className={SHELL}>
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-secondary">
@@ -70,6 +70,7 @@ export function WakeCard({ id, title, reason, count, state, owner, reviewer, thr
           {body}
         </Streamdown>
       )}
+      {roster !== undefined && <Section title="Fit check" text={roster} />}
     </div>
   )
 }

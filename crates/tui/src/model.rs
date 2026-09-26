@@ -1161,6 +1161,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
             "knowledge" => (None, "</knowledge>"),
+            "nudge" => (None, "</nudge>"),
+            "journal" => (None, "</journal>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
