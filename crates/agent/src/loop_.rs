@@ -628,7 +628,7 @@ struct Current {
     model: Resolved,
     backend: Backend,
     error: Option<String>,
-    /// Reasoning effort sent with every call; `None` = provider default.
+    /// Reasoning effort sent with every call; `None` = [`crate::frame::default_effort`].
     effort: Option<ReasoningEffort>,
 }
 
@@ -2819,7 +2819,11 @@ impl Turn {
         text: &mut String,
         calls: &mut bool,
     ) -> Result<StreamEnd, Abort> {
-        let (req, opts) = frame.request(transport, conversation, current.effort.clone());
+        let effort = current
+            .effort
+            .clone()
+            .or_else(|| crate::frame::default_effort(&current.model));
+        let (req, opts) = frame.request(transport, conversation, effort);
         let open = current
             .backend
             .stream(&current.model, req, &opts, conversation);
@@ -5231,6 +5235,10 @@ mod harvest_tests;
 /// 70 COMPACT-QUEUE: input during a compaction queues and never cancels it.
 #[cfg(test)]
 mod compact_queue_tests;
+
+/// 70 THINKING-TRACES: the `thinking` field per effort and the signed round trip, at a fake Anthropic.
+#[cfg(test)]
+mod thinking_tests;
 
 #[cfg(test)]
 mod tests {
