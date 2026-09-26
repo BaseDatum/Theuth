@@ -90,6 +90,7 @@ fn reason_of(s: &str) -> WakeReason {
         "answer" => WakeReason::Answer,
         "review" => WakeReason::Review,
         "resume" => WakeReason::Resume,
+        "resumed" => WakeReason::Resumed,
         "manual" => WakeReason::Manual,
         _ => WakeReason::Assigned,
     }
@@ -301,7 +302,8 @@ impl Store {
     }
 
     /// Raise a wake: a new row, or `count + 1` on the row with the same key
-    /// (67 §7.3 coalescing). Returns the row as it now is.
+    /// (67 §7.3 coalescing). A row already claimed by a desk is re-queued so
+    /// the new raise is delivered again. Returns the row as it now is.
     pub async fn raise(
         &self,
         agent: &str,
@@ -313,7 +315,7 @@ impl Store {
         sqlx::query(
             "INSERT INTO wakes (id, agent, task, reason, key, count, claimed_by, created_ms, hlc) \
              VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?) \
-             ON CONFLICT(key) DO UPDATE SET count = count + 1, hlc = excluded.hlc",
+             ON CONFLICT(key) DO UPDATE SET count = count + 1, claimed_by = NULL, hlc = excluded.hlc",
         )
         .bind(uuid::Uuid::now_v7().to_string())
         .bind(agent)

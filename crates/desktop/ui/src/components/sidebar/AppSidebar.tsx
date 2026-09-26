@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -19,23 +20,76 @@ import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/Broadcas
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { settings } from '@/components/chat/slash'
+import { THEUTH } from '@/components/tasks/helpers'
+import { useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { useShortcuts } from '@/lib/shortcuts'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
+import { useSessionField } from '@/store/sessions'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
 
-/** The Library group: what the harness can use (skills), reach (MCP tool servers) and hold (secrets). */
-const LIBRARY = [
-  ['/skills', 'Skills', Sparkles],
-  ['/tools', 'Tools', Wrench],
-  ['/secrets', 'Secrets', Lock],
+/** Top rail after New chat: who works (agents), on what (tasks), when (routines). */
+const TOP = [
+  ['/agents', 'Agents', Bot],
+  ['/tasks', 'Tasks', ListChecks],
+  ['/routines', 'Routines', CalendarClock],
 ] as const
+
+/** The Library group: what the harness knows, keeps, heard, can use, holds and reaches. Artifacts stays last: this is its only nav entry. */
+const LIBRARY = [
+  ['/knowledge', 'Knowledge', BookOpen],
+  ['/notes', 'Notes', StickyNote],
+  ['/meetings', 'Meetings', Mic],
+  ['/skills', 'Skills', Sparkles],
+  ['/secrets', 'Secrets', Lock],
+  ['/tools', 'Tools', Wrench],
+  ['/artifacts', 'Artifacts', FolderOpen],
+] as const
+
+/** One row per roster agent with an open desk (`AgentSummary.desk`, else the pinned root titled `agent:<name>`): theuth first, then roster order. */
+function Desks() {
+  const api = useApi()
+  const agents = useAgents().data ?? []
+  const { data: sessions = [] } = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const desks = agents
+    .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
+    .flatMap((a) => {
+      const id = a.desk ?? sessions.find((s) => s.pinned && s.parent === null && s.title === `agent:${a.file.name}`)?.id
+      return id === undefined ? [] : [{ id, name: a.file.name, working: a.status === 'working' }]
+    })
+    .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
+  if (desks.length === 0) return null
+  return (
+    <>
+      <SidebarGroupLabel className="mt-2">Desks</SidebarGroupLabel>
+      {desks.map((d) => (
+        <DeskRow key={d.id} {...d} />
+      ))}
+    </>
+  )
+}
+
+/** Opens like any chat; the dot is green while the roster says working or the session has a turn in flight. */
+function DeskRow({ id, name, working }: { id: string; name: string; working: boolean }) {
+  const running = useSessionField(id, 'running')
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+        <Link to="/c/$session" params={{ session: id }}>
+          <span className={cn('size-2 shrink-0 rounded-full', working || running ? 'bg-success' : 'bg-fg-tertiary/40')} aria-hidden />
+          {name}
+        </Link>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  )
+}
 
 /** ChatGPT's left rail: New chat, Knowledge, Artifacts, the chat list, Settings; Search sits in the header beside the toggle (49 §5.1). */
 export function AppSidebar({ session }: { session: string | undefined }) {
@@ -114,49 +168,15 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/tasks">
-                <ListChecks /> Tasks
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/agents">
-                <Bot /> Agents
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem><SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5"><Link to="/routines"><CalendarClock /> Routines</Link></SidebarMenuButton></SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/knowledge">
-                <BookOpen /> Knowledge
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/notes">
-                <StickyNote /> Notes
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/artifacts">
-                <FolderOpen /> Artifacts
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
-              <Link to="/meetings">
-                <Mic /> Meetings
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+          {TOP.map(([to, name, Icon]) => (
+            <SidebarMenuItem key={to}>
+              <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+                <Link to={to}>
+                  <Icon /> {name}
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
           <SidebarGroupLabel className="mt-2">Library</SidebarGroupLabel>
           {LIBRARY.map(([to, name, Icon]) => (
             <SidebarMenuItem key={to}>
@@ -167,6 +187,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
+          <Desks />
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
       </SidebarContent>

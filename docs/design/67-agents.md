@@ -260,7 +260,7 @@ reports_to: theuth           # an agent name, or `theuth` (the default)
 model: anthropic/claude-opus-5-5
 effort: high
 tools: mutating              # risk ceiling for every session it opens
-mcp: [grafana, argocd_prod, slack]   # MCP servers (or server.tool) it may see
+mcp: [grafana, argocd_prod, slack]   # MCP servers (or server.tool) it may see; key absent = every server, `[]` = none
 budget: 40 USD/month         # or `none` (default) — infinite; self-hosted inference is the normal case
 capabilities: >              # "when I am relevant", read by other agents when handing off
   Production health, incidents, Grafana and ArgoCD. Not code review.

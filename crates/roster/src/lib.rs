@@ -1021,7 +1021,7 @@ impl Message<ListAgents> for Roster {
                             model: None,
                             effort: None,
                             tools: None,
-                            mcp: Vec::new(),
+                            mcp: None,
                             budget: Budget::None,
                             capabilities: None,
                             paused: true,

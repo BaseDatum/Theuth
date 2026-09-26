@@ -1,8 +1,9 @@
 import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useHarnesses, useMcpServers, useModels } from './queries'
 import { type Draft, EFFORTS, TOOLS } from './wizard'
@@ -92,25 +93,44 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
   )
 }
 
-/** Paperclip's Tools tab: which MCP servers the agent's sessions see. Empty allowlist = every server. */
+/** Paperclip's Tools tab: which MCP servers the agent's sessions see. `null` = every server, `[]` = none, else an allowlist. */
 export function AccessFields({ d, set }: { d: Draft; set: Setter }) {
   const servers = useMcpServers()
-  const all = d.mcp.length === 0
-  const names = [...new Set([...(servers.data?.map((s) => s.name) ?? []), ...d.mcp.map((m) => m.replace(/\..*$/, ''))])].sort()
+  const mcp = d.mcp ?? []
+  // "Only these" with nothing checked yet is still `[]` on the wire; remember the user is picking so the list stays open.
+  const [picking, setPicking] = useState(mcp.length > 0)
+  const mode = d.mcp === null ? 'all' : picking || mcp.length > 0 ? 'some' : 'none'
+  const names = [...new Set([...(servers.data?.map((s) => s.name) ?? []), ...mcp.map((m) => m.replace(/\..*$/, ''))])].sort()
   return (
     <div className="flex flex-col gap-4">
-      <label className="flex items-center justify-between gap-4 rounded-lg border border-border-subtle p-3">
-        <span>
-          <span className="block text-sm">Every MCP server</span>
-          <span className="block text-xs text-fg-tertiary">Sessions see whatever servers this node has connected. Turn off to pick an allowlist.</span>
-        </span>
-        <Switch checked={all} onCheckedChange={(v) => set('mcp', v ? [] : names.slice(0, 1))} aria-label="Every MCP server" />
-      </label>
-      {!all && (
+      <div className="flex flex-col gap-1.5">
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={mode}
+          aria-label="MCP servers"
+          onValueChange={(v) => {
+            if (!v) return
+            setPicking(v === 'some')
+            set('mcp', v === 'all' ? null : v === 'none' ? [] : mcp)
+          }}
+        >
+          <ToggleGroupItem value="all">All servers</ToggleGroupItem>
+          <ToggleGroupItem value="none">None</ToggleGroupItem>
+          <ToggleGroupItem value="some">Only these</ToggleGroupItem>
+        </ToggleGroup>
+        <p className="text-xs text-fg-tertiary">
+          {mode === 'all' && 'Sessions see whatever servers this node has connected.'}
+          {mode === 'none' && 'Sessions see no MCP tools.'}
+          {mode === 'some' && (mcp.length === 0 ? 'Nothing checked yet: until you pick a server, sessions see no MCP tools.' : 'Sessions see only the checked servers.')}
+        </p>
+      </div>
+      {mode === 'some' && (
         <ul className="flex flex-col gap-1">
           {names.length === 0 && <li className="text-sm text-fg-tertiary">No MCP servers are configured on this node yet.</li>}
           {names.map((n) => {
-            const on = d.mcp.some((m) => m === n || m.startsWith(`${n}.`))
+            const on = mcp.some((m) => m === n || m.startsWith(`${n}.`))
             const s = servers.data?.find((x) => x.name === n)
             return (
               <li key={n}>
@@ -119,7 +139,7 @@ export function AccessFields({ d, set }: { d: Draft; set: Setter }) {
                     type="checkbox"
                     className="accent-primary"
                     checked={on}
-                    onChange={(e) => set('mcp', e.target.checked ? [...d.mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)), n] : d.mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)))}
+                    onChange={(e) => set('mcp', e.target.checked ? [...mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)), n] : mcp.filter((m) => m !== n && !m.startsWith(`${n}.`)))}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block font-medium">{n}</span>
@@ -135,16 +155,16 @@ export function AccessFields({ d, set }: { d: Draft; set: Setter }) {
           })}
         </ul>
       )}
-      {!all && (
+      {mode === 'some' && (
         <Field label="Narrow to tools" id="ac-tools" hint="Optional `server.tool` entries, comma-separated; they replace the whole-server grant for that server.">
           <Input
             id="ac-tools"
-            value={d.mcp.filter((m) => m.includes('.')).join(', ')}
+            value={mcp.filter((m) => m.includes('.')).join(', ')}
             placeholder="grafana.query, slack.read"
             onChange={(e) => {
               const fine = e.target.value.split(',').map((s) => s.trim()).filter((s) => s.includes('.'))
               const servers = fine.map((f) => f.replace(/\..*$/, ''))
-              set('mcp', [...d.mcp.filter((m) => !m.includes('.') && !servers.includes(m)), ...fine])
+              set('mcp', [...mcp.filter((m) => !m.includes('.') && !servers.includes(m)), ...fine])
             }}
           />
         </Field>

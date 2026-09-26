@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { HYSTERESIS, PANEL_GAP, PANEL_MAX, TIERS, decideTier, layout, panelGeometry } from './header'
+import { HYSTERESIS, PANEL_GAP, PANEL_MAX, TIERS, decideTier, headerOrder, layout, panelGeometry } from './header'
 
 test('the full bar holds until it overflows, then the compact bar; a tier never measured is never entered', () => {
   expect(decideTier(0, 900, [700])).toBe(0)
@@ -58,6 +58,23 @@ test('tier 2 moves shed items out of the bar and into the menu, so nothing is lo
   for (let t = 0; t < TIERS; t++) {
     const l = layout(items, t)
     expect([...new Set([...ids(l.bar), ...ids(l.menu)])].sort()).toEqual(ids(items).sort())
+  }
+})
+
+test('the title follows the model picker in the full bar and opens the compact bar, whichever panel button the session has', () => {
+  for (const panel of ['artifacts', 'browser', 'terminals', null] as const) {
+    const order = headerOrder(panel)
+    const full = ids(layout(order, 0).bar)
+    expect(full.indexOf('title')).toBe(full.indexOf('model') + 1)
+    // Compact: the picker is behind the chevron; title · context · the one panel button · chevron · ⋯ stay inline.
+    const t1 = layout(order, 1)
+    expect(ids(t1.bar)).toEqual(['sidebar', 'title', 'context', ...(panel ? [panel] : []), 'more', 'menu', 'close'])
+    expect(ids(t1.menu)).not.toContain('title')
+    // Tier 2 sheds the context chip and the panel button, never the title.
+    const t2 = layout(order, 2)
+    expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'more', 'menu', 'close'])
+    expect(ids(t2.menu)).not.toContain('title')
+    expect(ids(t2.menu).indexOf('model')).toBe(1)
   }
 })
 

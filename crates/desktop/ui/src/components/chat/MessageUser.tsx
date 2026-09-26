@@ -1,8 +1,9 @@
 import { GitFork, Mic, Pencil, X } from 'lucide-react'
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { type AttachRef, compose, parse } from '@/lib/attach'
+import { type Edit, useDrafts } from '@/lib/drafts'
 import { useApi } from '@/lib/rpc'
 import { parseNote } from '@/lib/voice-note'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
@@ -36,32 +37,33 @@ function ChipRow({ refs, session, onDrop }: { refs: AttachRef[]; session?: strin
   )
 }
 
-/** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Mounted only while editing, so
- * `text` seeds it once. Edits the body; the marker lines are re-prepended on send, minus any chip the `×` dropped (66 §7.9). */
+/** The bubble as a textarea: Enter sends, Shift+Enter breaks the line, Escape cancels. Its state is the store's `edit`
+ * (`lib/drafts`): a virtualised row scrolling out and back keeps the edit, and the composer draft is never involved.
+ * Edits the body; the marker lines are re-prepended on send, minus any chip the `×` dropped (66 §7.9). */
 function EditBubble({
-  refs,
-  text,
+  session,
+  edit,
   onSend,
   onCancel,
 }: {
-  refs: AttachRef[]
-  text: string
+  session: string
+  edit: Edit
   onSend: (text: string) => void
   onCancel: () => void
 }) {
-  const [value, setValue] = useState(text)
-  const [kept, setKept] = useState(refs)
+  const { text: value, refs: kept } = edit
+  const patch = (p: Partial<Omit<Edit, 'turn'>>) => useDrafts.getState().updateEdit(session, p)
   const send = () => {
     const t = value.trim()
     if (t || kept.length > 0) onSend(compose(kept, t))
   }
   return (
     <>
-      <ChipRow refs={kept} onDrop={(i) => setKept(kept.filter((_, j) => j !== i))} />
+      <ChipRow refs={kept} onDrop={(i) => patch({ refs: kept.filter((_, j) => j !== i) })} />
       <Textarea
         autoFocus
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => patch({ text: e.target.value })}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onCancel()
           else if (e.key === 'Enter' && !e.shiftKey) {
@@ -107,7 +109,8 @@ export const MessageUser = memo(function MessageUser({
   const api = useApi()
   const running = useSessionField(session, 'running')
   const fork = useFork(session)
-  const [editing, setEditing] = useState(false)
+  const edit = useDrafts((s) => s.edits[session])
+  const editing = !readOnly && turn != null && edit?.turn === turn
   // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike.
   const { refs, body } = parse(text)
   const note = parseNote(body)
@@ -121,13 +124,13 @@ export const MessageUser = memo(function MessageUser({
           <Mic className="size-3" /> {note.secs} s
         </span>
       )}
-      {editing && turn != null ? (
+      {editing ? (
         <EditBubble
-          refs={refs}
-          text={body}
-          onCancel={() => setEditing(false)}
+          session={session}
+          edit={edit}
+          onCancel={() => useDrafts.getState().endEdit(session)}
           onSend={(t) => {
-            setEditing(false)
+            useDrafts.getState().endEdit(session)
             rewind(session, turn, () => api.edit_turn(session, turn, t, []))
           }}
         />
@@ -142,7 +145,7 @@ export const MessageUser = memo(function MessageUser({
         <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           {turn != null && !running && (
             <>
-              <ActionButton icon={Pencil} label="Edit" onClick={() => setEditing(true)} />
+              <ActionButton icon={Pencil} label="Edit" onClick={() => useDrafts.getState().beginEdit(session, { turn, text: body, refs })} />
               <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
             </>
           )}

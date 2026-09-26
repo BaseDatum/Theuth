@@ -14,7 +14,11 @@ pub fn hire_task(file: &AgentFile, proposed_by: &str, manager: tasks::Owner) -> 
         file.reports_to,
         file.budget,
         file.tools.as_deref().unwrap_or("default"),
-        if file.mcp.is_empty() { "all".to_owned() } else { file.mcp.join(", ") },
+        match &file.mcp {
+            None => "all".to_owned(),
+            Some(l) if l.is_empty() => "none".to_owned(),
+            Some(l) => l.join(", "),
+        },
         file.body.trim(),
     );
     brief.push_str(&format!(

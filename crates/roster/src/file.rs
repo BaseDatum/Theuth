@@ -59,13 +59,12 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         model: trimmed(fm.model),
         effort: trimmed(fm.effort),
         tools,
-        mcp: fm
-            .mcp
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| m.trim().to_owned())
-            .filter(|m| !m.is_empty())
-            .collect(),
+        mcp: fm.mcp.map(|l| {
+            l.into_iter()
+                .map(|m| m.trim().to_owned())
+                .filter(|m| !m.is_empty())
+                .collect()
+        }),
         budget,
         capabilities: trimmed(fm.capabilities),
         paused: fm.paused.unwrap_or(false),
@@ -99,8 +98,8 @@ pub fn render(f: &AgentFile) -> String {
     if let Some(t) = &f.tools {
         s.push_str(&format!("tools: {}\n", t.trim()));
     }
-    if !f.mcp.is_empty() {
-        s.push_str(&format!("mcp: [{}]\n", f.mcp.join(", ")));
+    if let Some(m) = &f.mcp {
+        s.push_str(&format!("mcp: [{}]\n", m.join(", ")));
     }
     if f.budget != Budget::None {
         s.push_str(&format!("budget: {}\n", f.budget));
@@ -197,7 +196,7 @@ pub fn default_agent(data_dir: &Path) -> AgentFile {
         model: None,
         effort: None,
         tools: Some("destructive".to_owned()),
-        mcp: Vec::new(),
+        mcp: None,
         budget: Budget::None,
         capabilities: None,
         paused: false,
@@ -243,7 +242,7 @@ mod tests {
         assert_eq!(f.reports_to, "theuth");
         assert_eq!(f.model, None);
         assert_eq!(f.tools, None);
-        assert!(f.mcp.is_empty());
+        assert_eq!(f.mcp, None);
         assert_eq!(f.budget, Budget::None);
         assert!(!f.paused);
         assert_eq!(f.proposed_by, None);
@@ -274,7 +273,7 @@ mod tests {
         assert_eq!(f.model.as_deref(), Some("anthropic/claude-opus-5-5"));
         assert_eq!(f.effort.as_deref(), Some("high"));
         assert_eq!(f.tools.as_deref(), Some("mutating"));
-        assert_eq!(f.mcp, ["grafana", "argocd_prod", "slack"]);
+        assert_eq!(f.mcp, Some(vec!["grafana".into(), "argocd_prod".into(), "slack".into()]));
         assert_eq!(
             f.budget,
             Budget::Monthly {
@@ -303,6 +302,22 @@ mod tests {
     }
 
     #[test]
+    fn mcp_is_three_valued() {
+        assert_eq!(parse("ops", "---\nmcp: ~\n---\ncharter").unwrap().mcp, None);
+        assert_eq!(parse("ops", "charter").unwrap().mcp, None);
+        assert_eq!(parse("ops", "---\nmcp: []\n---\ncharter").unwrap().mcp, Some(vec![]));
+        assert_eq!(
+            parse("ops", "---\nmcp: [grafana]\n---\ncharter").unwrap().mcp,
+            Some(vec!["grafana".to_owned()])
+        );
+        let mut f = parse("ops", "charter").unwrap();
+        assert!(!render(&f).contains("mcp"));
+        f.mcp = Some(vec![]);
+        assert!(render(&f).contains("mcp: []\n"));
+        assert_eq!(parse("ops", &render(&f)).unwrap(), f);
+    }
+
+    #[test]
     fn render_parse_round_trip() {
         let f = AgentFile {
             name: AgentName::new("ops").unwrap(),
@@ -311,7 +326,7 @@ mod tests {
             model: Some("anthropic/claude-opus-5-5".into()),
             effort: Some("high".into()),
             tools: Some("mutating".into()),
-            mcp: vec!["grafana".into(), "argocd_prod.list_applications".into()],
+            mcp: Some(vec!["grafana".into(), "argocd_prod.list_applications".into()]),
             budget: Budget::Monthly {
                 amount: 40.0,
                 currency: "USD".into(),
@@ -351,7 +366,7 @@ mod tests {
         assert!(t.name.is_default());
         assert_eq!(t.reports_to, "user");
         assert_eq!(t.tools.as_deref(), Some("destructive"));
-        assert!(t.mcp.is_empty());
+        assert_eq!(t.mcp, None);
         assert!(!t.body.is_empty());
         std::fs::write(dir.join("prompt.md"), "Standing instructions.\n").unwrap();
         assert_eq!(default_agent(&dir).body, "Standing instructions.");

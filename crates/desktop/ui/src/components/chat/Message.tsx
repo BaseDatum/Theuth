@@ -9,6 +9,7 @@ import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
+import { DeskCard, WakeCard } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo } from './MessageInfo'
@@ -42,6 +43,10 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <MessagePeer from={entry.from} text={entry.text} origin={entry.origin} seq={entry.seq} session={session} />
     case 'engine':
       return <EngineNotice notice={entry.notice} text={entry.text} />
+    case 'desk':
+      return <DeskCard {...entry} />
+    case 'wake':
+      return <WakeCard {...entry} />
     case 'vision':
       return <MessageVision entry={entry} />
     case 'info':
@@ -118,6 +123,10 @@ function describe(entry: Entry): string {
       return `message from ${entry.from}`
     case 'engine':
       return ENGINE_NOTICES[entry.notice].title;
+    case 'desk':
+      return `desk ${entry.agent}`
+    case 'wake':
+      return `wake · ${entry.reason}`
     case 'compacted':
       return 'summary'
     case 'vision':
@@ -222,7 +231,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

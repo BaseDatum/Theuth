@@ -35,8 +35,9 @@ export const ownerLabel = (o: Owner | null): string => (o === null ? '—' : o.t
 
 /**
  * State chip text (Sky's rulings, 69 TASKS): `backlog` → "not started"; `todo` owned by an agent →
- * "queued for ‹agent›'s desk"; `doing` → "at ‹agent›'s desk · open session" (the user's own: "in progress · open
- * session"); every other state is its name. The UI says node where the record says engine.
+ * "queued for ‹agent›'s desk"; `doing` with a checkout → "at ‹agent›'s desk · open session" (the user's own:
+ * "in progress · open session"); `doing` without one (sent back from review, not yet picked up) → "queued for
+ * ‹agent›'s desk" / "in progress"; every other state is its name. The UI says node where the record says engine.
  */
 export function stateChip(t: Task): string {
   switch (t.state) {
@@ -45,7 +46,8 @@ export function stateChip(t: Task): string {
     case 'todo':
       return t.owner.type === 'agent' ? `queued for ${t.owner.name}'s desk` : 'todo'
     case 'doing':
-      return t.owner.type === 'agent' ? `at ${t.owner.name}'s desk · open session` : 'in progress · open session'
+      if (t.owner.type !== 'agent') return t.checkout ? 'in progress · open session' : 'in progress'
+      return t.checkout ? `at ${t.owner.name}'s desk · open session` : `queued for ${t.owner.name}'s desk`
     default:
       return t.state
   }

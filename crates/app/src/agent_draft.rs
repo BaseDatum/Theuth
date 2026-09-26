@@ -43,9 +43,9 @@ pub struct AgentDraft {
     /// Risk ceiling: `read_only` | `mutating` | `destructive` (default).
     #[serde(default)]
     pub tools: Option<String>,
-    /// MCP servers (or `server.tool`) it may see; empty = every server.
+    /// MCP servers (or `server.tool`) it may see; omit = every server, `[]` = none.
     #[serde(default)]
-    pub mcp: Vec<String>,
+    pub mcp: Option<Vec<String>>,
     /// `none` (default) or `<amount> <CUR>/month`.
     #[serde(default)]
     pub budget: Option<String>,
@@ -257,8 +257,10 @@ pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, 
             format!("tools `{}`", d.tools.as_deref().unwrap_or("destructive")),
             format!("budget `{}`", d.budget.as_deref().unwrap_or("none")),
         ];
-        if !d.mcp.is_empty() {
-            meta.push(format!("mcp {}", d.mcp.join(", ")));
+        match &d.mcp {
+            None => {}
+            Some(l) if l.is_empty() => meta.push("mcp none".to_owned()),
+            Some(l) => meta.push(format!("mcp {}", l.join(", "))),
         }
         let mut parts = vec![format!("{c}_head"), format!("{c}_charter"), format!("{c}_meta")];
         if d.capabilities.is_some() {
@@ -315,7 +317,7 @@ mod tests {
             model: None,
             effort: None,
             tools: None,
-            mcp: vec![],
+            mcp: None,
             budget: None,
             capabilities: None,
             charter: "You own \"prod\".\nNever deploy on Friday.".into(),
@@ -326,8 +328,8 @@ mod tests {
     fn card_buttons_carry_the_draft_id_and_choice_and_replace_when_the_name_exists() {
         let existing: BTreeSet<String> = ["cto".to_owned()].into();
         let drafts = vec![
-            AgentDraft { tools: Some("mutating".into()), capabilities: Some("prod incidents".into()), mcp: vec!["gh".into()], ..draft("ops", "cto") },
-            draft("cto", "theuth"),
+            AgentDraft { tools: Some("mutating".into()), capabilities: Some("prod incidents".into()), mcp: Some(vec!["gh".into()]), ..draft("ops", "cto") },
+            AgentDraft { mcp: Some(vec![]), ..draft("cto", "theuth") },
         ];
         let (src, ids) = source(&drafts, &existing, "ab12", None);
         assert_eq!(ids, ["a1-ab12", "a2-ab12"]);
@@ -345,6 +347,7 @@ mod tests {
         assert!(src.contains(r#"c1_head = CardHeader("Ops · `ops`", "agent draft a1-ab12")"#));
         assert!(src.contains(r#"c1_charter = TextContent("You own \"prod\".\nNever deploy on Friday.")"#));
         assert!(src.contains("reports to `cto` · model `default` · effort `default` · tools `mutating` · budget `none` · mcp gh"));
+        assert!(src.contains("budget `none` · mcp none"), "`mcp: []` reads as none: {src}");
         assert!(src.contains("**Hand off to it when:** prod incidents"));
         assert!(src.lines().all(|l| l.contains(" = ")));
         // a desk's set says who proposed and where the approval goes

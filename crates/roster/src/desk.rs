@@ -17,17 +17,19 @@ use crate::types::{AgentFile, AgentName};
 /// `<data_dir>/roster/journal/<name>.md` lives under this directory.
 pub const JOURNAL_DIR: &str = "roster/journal";
 
-/// 67 §6.3: may an agent see MCP `server`'s `tool`? An empty `mcp:` is no
-/// limit (`theuth`, files without the key); otherwise an entry names a whole
-/// server (`grafana`) or one tool (`argocd_prod.list_applications`).
+/// 67 §6.3: may an agent see MCP `server`'s `tool`? No `mcp:` key is no limit
+/// (`theuth`, files without the key), `mcp: []` hides every server; otherwise
+/// an entry names a whole server (`grafana`) or one tool
+/// (`argocd_prod.list_applications`).
 pub fn mcp_visible(agent: &AgentFile, server: &str, tool: &str) -> bool {
-    agent.mcp.is_empty()
-        || agent.mcp.iter().any(|m| {
+    agent.mcp.as_ref().is_none_or(|l| {
+        l.iter().any(|m| {
             m == server
                 || m
                     .split_once('.')
                     .is_some_and(|(s, t)| s == server && t == tool)
         })
+    })
 }
 
 /// The closing turn's prompt (67 §6.2, §9).
@@ -370,6 +372,8 @@ mod tests {
         assert!(mcp_visible(&open, "slack", "post"), "no `mcp:` = no limit");
         let theuth = crate::file::default_agent(std::path::Path::new("/nonexistent"));
         assert!(mcp_visible(&theuth, "argocd_prod", "sync_application"));
+        let none = parse("intern", "---\nmcp: []\n---\nIntern.").unwrap();
+        assert!(!mcp_visible(&none, "grafana", "query"), "`mcp: []` = nothing visible");
     }
 
     #[test]

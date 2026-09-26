@@ -12,7 +12,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { drafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
 
@@ -265,8 +265,8 @@ export async function draftSkill(
   const id = session ?? (await api.new_session())
   if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
   useSkillDraft.getState().set(id, name)
-  // Before `navigate`: the chat's composer reads its text from `drafts` as it mounts.
-  drafts.set(id, { text: words, pastes: new Map() })
+  // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
+  useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
   await navigate({ to: '/c/$session', params: { session: id } })
   return id
 }

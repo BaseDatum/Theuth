@@ -58,9 +58,9 @@ pub struct AgentProposeArgs {
     /// Risk ceiling for every session it opens: `read_only` | `mutating` | `destructive`.
     #[serde(default)]
     pub tools: Option<String>,
-    /// MCP servers (or `server.tool`) it may see; empty = every server.
+    /// MCP servers (or `server.tool`) it may see; omit = every server, `[]` = none.
     #[serde(default)]
-    pub mcp: Vec<String>,
+    pub mcp: Option<Vec<String>>,
     /// One paragraph on when this agent is the right one to hand off to.
     #[serde(default)]
     pub capabilities: Option<String>,
@@ -308,7 +308,7 @@ mod tests {
             effort: None,
             budget: Some("40 USD/month".into()),
             tools: Some("mutating".into()),
-            mcp: vec![],
+            mcp: None,
             capabilities: None,
         }
     }
@@ -327,6 +327,15 @@ mod tests {
         assert_eq!(file_of(args("ops", Some("")), "cto", &shared).unwrap().reports_to, "cto");
         assert!(file_of(args("ops", Some("theuth")), "cto", &shared).is_ok());
         assert!(file_of(AgentProposeArgs { budget: Some("lots".into()), ..args("ops", None) }, "cto", &shared).is_err());
+    }
+
+    #[test]
+    fn mcp_arg_omitted_is_all_and_empty_is_none() {
+        let base = r#""name":"ops","title":"Ops","charter":"You are Ops.""#;
+        let parse = |extra: &str| serde_json::from_str::<AgentProposeArgs>(&format!("{{{base}{extra}}}")).unwrap().mcp;
+        assert_eq!(parse(""), None);
+        assert_eq!(parse(r#","mcp":[]"#), Some(vec![]));
+        assert_eq!(parse(r#","mcp":["grafana"]"#), Some(vec!["grafana".to_owned()]));
     }
 
     #[test]

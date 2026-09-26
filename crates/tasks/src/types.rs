@@ -205,6 +205,8 @@ pub enum WakeReason {
     Review,
     /// Its checkout's engine was lost; resume elsewhere (67 §7.5).
     Resume,
+    /// Sent back from review to `doing`/`todo`; pick it up again.
+    Resumed,
     /// `/wake`, the board, the CLI.
     Manual,
 }
@@ -220,6 +222,7 @@ impl WakeReason {
             Self::Answer => "answer",
             Self::Review => "review",
             Self::Resume => "resume",
+            Self::Resumed => "resumed",
             Self::Manual => "manual",
         }
     }

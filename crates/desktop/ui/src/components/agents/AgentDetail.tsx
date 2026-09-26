@@ -238,7 +238,7 @@ function Overview({ file: f, summary: s, agents }: { file: AgentFile; summary: A
             ['Model', f.model ?? dim('node default')],
             ['Effort', f.effort ?? dim('default')],
             ['Tools ceiling', f.tools ?? dim('inherited')],
-            ['MCP', f.mcp.length === 0 ? dim('every server') : f.mcp.join(', ')],
+            ['MCP', f.mcp === null ? dim('every server') : f.mcp.length === 0 ? dim('none') : f.mcp.join(', ')],
             ['Desk', s?.desk ? <Link to="/c/$session" params={{ session: s.desk }} className="text-primary hover:underline">open session</Link> : dim('no desk open')],
           ]}
         />

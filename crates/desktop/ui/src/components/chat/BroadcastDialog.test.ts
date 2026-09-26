@@ -2,8 +2,9 @@ import { expect, test } from 'vitest'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { BroadcastRow } from '@/rpc/bindings/BroadcastRow'
 import type { SessionActivity } from '@/rpc/bindings/SessionActivity'
+import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { AgentInfo } from '@/rpc/extra'
-import { allRoots, groupRows, outcomeLines, runningRoots, summarize } from './broadcast'
+import { allRoots, groupRows, outcomeLines, runningRoots, summarize, title } from './broadcast'
 
 const activity = (p: Partial<SessionActivity> = {}): SessionActivity => ({
   state: { state: 'idle' },
@@ -81,7 +82,42 @@ test('dry-run label counts busy by state only: a PTY-owning idle root starts now
   expect(summarize(receipt([r.rows[0]!]))).toBe('1 session · 1 busy → queued, 0 idle → start now')
 })
 
-test('outcome lines put failures first and fall back to the short id when the title is withheld', () => {
+const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
+  id,
+  created_at: new Date(2026, 8, 18, 14, 5).toISOString(),
+  updated_at: new Date(2026, 8, 19).toISOString(),
+  title: '',
+  tags: [],
+  model: 'm',
+  parent: null,
+  name: null,
+  effort: null,
+  agent: null,
+  cwd: null,
+  pinned: false,
+  archived: false,
+  project: null,
+  retention: 'durable',
+  running: false,
+  owner: '',
+  epoch: 1,
+  here: true,
+  ...over,
+})
+
+const ID = '0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10'
+
+test('a recipient is named by the session list: title, else the engine-seeded `Untitled chat · date`; a subagent by its peer name; never the id', () => {
+  expect(title(ID, [summary(ID, { title: 'Fix relay reconnect loop' })])).toBe('Fix relay reconnect loop')
+  expect(title(ID, [summary(ID)])).toBe('Untitled chat · Sep 18')
+  expect(title(ID, [summary(ID, { title: 'Ignored', name: 'Scout', parent: 'p' })])).toBe('Scout')
+  // The list does not know it yet: the caller's own label, else the generic name.
+  expect(title(ID, undefined, 'Scout')).toBe('Scout')
+  expect(title(ID, [])).toBe('Untitled chat')
+  for (const sessions of [[summary(ID)], undefined]) expect(title(ID, sessions)).not.toContain(ID.slice(0, 8))
+})
+
+test('outcome lines put failures first and name rows like the picker: the list, else the receipt title, else `Untitled chat`', () => {
   const lines = outcomeLines(
     receipt([
       receiptRow('A', {}, { outcome: 'started' }),
@@ -89,10 +125,11 @@ test('outcome lines put failures first and fall back to the short id when the ti
       receiptRow('B', {}, { outcome: 'queued', input_id: 'i1', delivery: 'next_turn' }),
       receiptRow('C', {}, { outcome: 'skipped', reason: 'remote node' }),
     ]),
+    [summary('A', { title: 'Listed A' })],
   )
   expect(lines).toEqual([
-    'nameless — failed: unknown session',
-    'T A — started',
+    'Untitled chat — failed: unknown session',
+    'Listed A — started',
     'T B — queued (next turn)',
     'T C — skipped: remote node',
   ])
