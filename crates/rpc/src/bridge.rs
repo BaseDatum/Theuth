@@ -25,6 +25,7 @@ use serde::Serialize;
 use signal::SignalEvent;
 use slack::SlackEvent;
 use tokio::sync::broadcast;
+use tasks::activity::ActivityAppended;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
 };
@@ -114,7 +115,8 @@ forward!(
     VoiceEvent,
     MeetingEvent,
     BriefEvent,
-    AppCallChanged
+    AppCallChanged,
+    ActivityAppended
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -160,5 +162,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, MeetingEvent>(&actor).await;
     rt.subscribe::<Bridge, BriefEvent>(&actor).await;
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
+    rt.subscribe::<Bridge, ActivityAppended>(&actor).await;
     tx
 }
