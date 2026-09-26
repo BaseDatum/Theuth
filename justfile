@@ -263,12 +263,23 @@ relay-docker-push tag="":
 iroh-relay-docker-push tag="":
     #!/usr/bin/env bash
     set -euo pipefail
-    VERSION="${THEUTH_IROH_RELAY_VERSION:-$(grep -E '^iroh\s*=' Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)}"
-    VERSION="${VERSION:-1.2.0}"
+    # Pinned iroh line is "1.2" (two components); only a full x.y.z pin overrides the default.
+    PINNED="$( { grep -E '^iroh\s*=' Cargo.toml || true; } | { grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true; } | head -1)"
+    VERSION="${THEUTH_IROH_RELAY_VERSION:-${PINNED:-1.2.0}}"
     TAG="{{tag}}"
     if [ -z "$TAG" ]; then TAG="$VERSION"; fi
     IMAGE="${THEUTH_IROH_RELAY_IMAGE:-ghcr.io/skymoore/theuth/iroh-relay}"
     PLATFORM="${THEUTH_RELAY_PLATFORM:-linux/amd64,linux/arm64}"
+    # Fetch the official release tarballs on the host (containers behind a corporate proxy
+    # cannot reach crates.io, and this needs no Rust toolchain). Cached per version.
+    DL="deploy/relay/.iroh-relay"; mkdir -p "$DL"
+    for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+      f="iroh-relay-v${VERSION}-${triple}.tar.gz"
+      if [ ! -s "$DL/$f" ]; then
+        echo "==> fetching $f"
+        curl -fsSL -o "$DL/$f" "https://github.com/n0-computer/iroh/releases/download/v${VERSION}/${f}"
+      fi
+    done
     echo "==> buildx build+push ${IMAGE}:${TAG} (iroh-relay ${VERSION}, ${PLATFORM})"
     docker buildx build \
       --platform "${PLATFORM}" \

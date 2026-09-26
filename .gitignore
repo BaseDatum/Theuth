@@ -4,3 +4,4 @@
 /bindings
 .env.signing
 crates/desktop/ui/.link-smoke-identity.json
+deploy/relay/.iroh-relay/

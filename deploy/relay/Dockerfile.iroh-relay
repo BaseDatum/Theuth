@@ -1,14 +1,23 @@
-# iroh-relay for the engine mesh (design doc 67 §4.2). Upstream binary, no
-# theuth code: `cargo install iroh-relay --features server`, pinned to the
-# iroh line the `mesh` crate builds against (workspace Cargo.toml).
-#   docker build -f deploy/relay/Dockerfile.iroh-relay -t theuth-iroh-relay .
-FROM rust:1-bookworm AS build
+# iroh-relay for the engine mesh (design doc 67 §4.2). Upstream binary, no theuth
+# code — the official release tarballs from github.com/n0-computer/iroh, pinned to the
+# iroh line the `mesh` crate builds against (workspace Cargo.toml). The just recipe
+# `iroh-relay-docker-push` downloads them into deploy/relay/.iroh-relay/ (gitignored)
+# on the host, so the build needs no Rust toolchain and no crates.io access (corporate
+# proxies block it from containers).
+#   just iroh-relay-docker-push            # tag = pinned version
+#   docker build -f deploy/relay/Dockerfile.iroh-relay -t theuth-iroh-relay .   (after the recipe fetched the tarballs)
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS unpack
+ARG TARGETARCH
 ARG IROH_RELAY_VERSION=1.2.0
-RUN cargo install iroh-relay --version ${IROH_RELAY_VERSION} --features server --locked --root /out
+COPY deploy/relay/.iroh-relay/ /tarballs/
+RUN set -eu; \
+    case "$TARGETARCH" in amd64) triple=x86_64-unknown-linux-musl;; arm64) triple=aarch64-unknown-linux-musl;; *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1;; esac; \
+    mkdir -p /out && tar -xzf "/tarballs/iroh-relay-v${IROH_RELAY_VERSION}-${triple}.tar.gz" -C /out && \
+    find /out -type f -name iroh-relay -exec mv {} /out/iroh-relay \; && chmod +x /out/iroh-relay
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/bin/iroh-relay /usr/local/bin/iroh-relay
+COPY --from=unpack /out/iroh-relay /usr/local/bin/iroh-relay
 COPY deploy/relay/iroh-relay.toml /etc/iroh-relay.toml
 USER 65532:65532
 # 8080 http (portal/health), 8443 relay HTTPS+WS, 7842/udp QUIC probe, 9090 metrics
