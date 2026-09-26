@@ -83,8 +83,8 @@ const NONE: SessionSummary[] = []
 export const runningSubagents = (subagents: readonly SessionSummary[], slices: Record<string, SessionSlice>): number =>
   subagents.filter((d) => slices[d.id]?.running || d.running).length
 
-/** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row shows which. */
-function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {
+/** Subagent glyph: shown while any descendant (any depth) is running; the tree below a selected row (or a desk) shows which. */
+export function SessionSubagents({ subagents = NONE }: { subagents: readonly SessionSummary[] | undefined }) {
   const n = useSessions((s) => runningSubagents(subagents, s.sessions))
   if (n === 0) return null
   const label = `${n} subagent${n === 1 ? '' : 's'} running`

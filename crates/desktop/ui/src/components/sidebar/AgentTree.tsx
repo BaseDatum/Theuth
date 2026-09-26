@@ -84,8 +84,14 @@ const Row = memo(function Row({
   )
 })
 
-/** The active session's subtree: seeded from `list_agents` when it appears, live from events after; one indented row per subagent. */
-export function AgentTree({ session, active }: { session: string; active: string | undefined }) {
+/** A subagent that still wants eyes: running, waiting on a peer, or blocked on an approval. Finished rows (idle, cancelled, error) are not. */
+export const live = (state: AgentState['state']): boolean => state === 'running' || state === 'awaiting' || state === 'approval'
+
+/**
+ * A session's subtree: seeded from `list_agents` when it appears, live from events after; one indented row per
+ * subagent. `liveOnly` keeps just the `live` rows — a desk that is not the open chat shows what is working, not its history.
+ */
+export function AgentTree({ session, active, liveOnly = false }: { session: string; active: string | undefined; liveOnly?: boolean }) {
   const api = useApi()
   const children = useSessionField(session, 'children')
   const [now, setNow] = useState(Date.now())
@@ -99,7 +105,7 @@ export function AgentTree({ session, active }: { session: string; active: string
       () => {},
     )
   }, [api, session])
-  const rows = children ? Object.values(children) : []
+  const rows = children ? Object.values(children).filter((r) => !liveOnly || live(r.state.state)) : []
   const { data: cost } = useQuery({
     queryKey: queryKeys.sessionCost(session),
     queryFn: () => api.session_cost(session),
