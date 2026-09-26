@@ -1290,6 +1290,22 @@ pub trait Api {
     /// Tasks whose `blockers` name `id` (the inverse link, computed; 67 §7.1).
     #[method(name = "task_blocks")]
     async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>>;
+    /// The activity feed, newest first: `since_ms`, `kinds`, `limit` (default 50, max 500) (70 HUD).
+    #[method(name = "activity_list")]
+    async fn activity_list(&self, filter: tasks::activity::ActivityFilter) -> RpcResult<Vec<tasks::activity::ActivityEntry>>;
+    /// The attention inbox (70 HUD): approvals, decisions, hires, blocked / review tasks,
+    /// budgets, unreachable nodes — undismissed and unsnoozed, newest first. Badge = length.
+    #[method(name = "attention_list")]
+    async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>>;
+    /// Hide an attention item until `until_ms` (ms since epoch).
+    #[method(name = "attention_snooze")]
+    async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()>;
+    /// Hide an attention item for good.
+    #[method(name = "attention_dismiss")]
+    async fn attention_dismiss(&self, id: String) -> RpcResult<()>;
+    /// Answer the `decision:<id>` a task is blocked on, as the user (67 §11); the owner is re-woken.
+    #[method(name = "task_decide")]
+    async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()>;
     /// Every artifact shown in `session` (`null` = every session), newest
     /// first; `descendants: true` (default `false`) widens to the session's
     /// subtree (35 §3.5).
@@ -1523,6 +1539,11 @@ fn roster_actor() -> RpcResult<ActorRef<roster::Roster>> {
 /// The tasks actor; absent when the plugin is not loaded or its store failed (67 §7).
 fn tasks_actor() -> RpcResult<ActorRef<tasks::Tasks>> {
     lookup::<tasks::Tasks>(tasks::TASKS_ACTOR)
+}
+
+/// The attention actor; absent when the roster plugin is not loaded (70 HUD).
+fn attention_actor() -> RpcResult<ActorRef<roster::attention::Attention>> {
+    lookup::<roster::attention::Attention>(roster::attention::ATTENTION_ACTOR)
 }
 
 /// The update actor; absent when `update.enabled: false` or the plugin is not loaded.
@@ -3949,6 +3970,33 @@ impl ApiServer for Server {
 
     async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>> {
         send(&tasks_actor()?, tasks::TaskBlocks(tasks::TaskId(id))).await
+    }
+
+    async fn activity_list(&self, filter: tasks::activity::ActivityFilter) -> RpcResult<Vec<tasks::activity::ActivityEntry>> {
+        let actor = lookup::<tasks::activity::Activity>(tasks::activity::ACTIVITY_ACTOR)?;
+        send(&actor, tasks::activity::ListActivity(filter)).await
+    }
+
+    async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>> {
+        send(&attention_actor()?, roster::attention::ListAttention).await
+    }
+
+    async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()> {
+        send(&attention_actor()?, roster::attention::SnoozeAttention { id, until_ms }).await
+    }
+
+    async fn attention_dismiss(&self, id: String) -> RpcResult<()> {
+        send(&attention_actor()?, roster::attention::DismissAttention(id)).await
+    }
+
+    async fn task_decide(&self, decision: String, answer: String) -> RpcResult<()> {
+        let m = tasks::AnswerDecision {
+            decision,
+            answer,
+            actor: "user".into(),
+            session: None,
+        };
+        send(&tasks_actor()?, m).await
     }
 
     async fn list_artifacts(

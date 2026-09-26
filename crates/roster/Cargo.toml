@@ -31,6 +31,7 @@ ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 figment = { workspace = true }
+tempfile = "3"
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "tasks/ts", "agent/ts", "knowledge/ts"]
