@@ -522,10 +522,10 @@ impl Shared {
         s.sessions.insert(session, agent.to_owned());
     }
 
-    /// A desk closed. The session stays the agent's until it is deleted
-    /// ([`Self::forget`]): its closing turn still speaks and writes knowledge
-    /// as the agent. Its descendants keep their agent too (their work is
-    /// still the agent's).
+    /// The agent's desk session is retired (superseded for context) or gone.
+    /// A mere episode close does not call this: the mapping survives it, so
+    /// the row is reused (STALE-WAKE-DESKS). Descendants keep their agent
+    /// (their work is still the agent's).
     pub fn clear_desk(&self, agent: &str) -> Option<SessionId> {
         self.write().desks.remove(agent)
     }

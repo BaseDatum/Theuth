@@ -84,7 +84,7 @@ use crate::{
     HistoryEntry, ListAcp, ListAgents,
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    MarkDesk, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
+    DeskSession, MarkDesk, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
     RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SessionContextBreakdown,
     SearchSessionPage, SendInput, SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
@@ -5654,6 +5654,17 @@ impl Message<MarkDesk> for Agents {
             .set_desk(m.session, m.agent.as_deref())
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<DeskSession> for Agents {
+    type Reply = Option<SessionId>;
+
+    async fn handle(&mut self, m: DeskSession, _: &mut Context<Self, Self::Reply>) -> Option<SessionId> {
+        self.store.desk_session(&m.0).await.unwrap_or_else(|e| {
+            tracing::error!(agent = %m.0, "desk session lookup: {e:#}");
+            None
+        })
     }
 }
 
