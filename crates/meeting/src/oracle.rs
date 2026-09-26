@@ -96,7 +96,7 @@ pub struct OracleDecision {
     pub mode: Mode,
     /// Where the batch went.
     pub disposition: OracleDisposition,
-    /// The stages as the ⚡ row shows them, in order: `("kind: small talk", 0.79)`,
+    /// The stages as the oracle row shows them, in order: `("kind: small talk", 0.79)`,
     /// `("brief: none", 0.57)` — each the winning label of one tier-1 question and its P.
     pub stages: Vec<(String, f32)>,
     /// Step 0's deterministic mentions (`Kuiper belt`, `SRE-2386`, …).
@@ -356,7 +356,7 @@ fn brief_pick(brief: &Decision, titles: &HashMap<String, String>) -> Option<(Str
         .map(|(id, p)| (titles.get(id).cloned().unwrap_or_else(|| id.clone()), *p))
 }
 
-/// The ⚡ row's stages: `kind: small talk 0.79` / `kind: subject 0.88` (the winning side of the
+/// The oracle row's stages: `kind: small talk 0.79` / `kind: subject 0.88` (the winning side of the
 /// `Bool`), then `brief: <title|none> 0.57` when 1b ran. A question that never ran (timeout,
 /// model missing) shows as `kind: ? 0`.
 pub fn stages(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>) -> Vec<(String, f32)> {

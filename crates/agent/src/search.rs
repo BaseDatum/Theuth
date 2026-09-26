@@ -589,7 +589,7 @@ mod tests {
     fn ranges_survive_non_ascii_text() {
         let idx = index(
             &[(1, "misc")],
-            &[(1, 1, "naïve 👨\u{200d}👩 déploiement done")],
+            &[(1, 1, "naïve 👨\u{200d}👩 déploiement done")], // no-emoji: allow
         );
         let hits = idx.search("déploiement", 10);
         assert_eq!(hits.len(), 1);

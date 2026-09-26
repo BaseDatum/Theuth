@@ -129,7 +129,7 @@ fn glyph(state: Option<GraphState>) -> &'static str {
         GraphState::Active => "◉",
         GraphState::Done => "●",
         GraphState::Muted => "○",
-        GraphState::Danger => "✖",
+        GraphState::Danger => "✗",
         GraphState::Default => "•",
     }
 }
@@ -309,7 +309,7 @@ mod tests {
         let lines = adjacency_lines(&graph(VALID[0].1), 40);
         assert_eq!(
             plain_text(&lines),
-            "Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (r…\n  ◉ Worker → Postgres (writes), Mailer …\n  • Postgres\n✖ Mailer"
+            "Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (r…\n  ◉ Worker → Postgres (writes), Mailer …\n  • Postgres\n✗ Mailer"
         );
         assert!(lines.iter().all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= 40));
         assert!(lines[0][0].style.bold && !lines[1][0].style.bold);

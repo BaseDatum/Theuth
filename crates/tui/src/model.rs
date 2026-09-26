@@ -1006,7 +1006,7 @@ impl CardKind {
             CardKind::Peer => "⟵",
             CardKind::Skill => "◇",
             CardKind::Prompt => "§",
-            CardKind::Job => "⚙",
+            CardKind::Job => "▸",
             CardKind::Schedule => "◷",
             CardKind::Link | CardKind::Node => "⌁",
             CardKind::Artifact => "▣",
@@ -8318,7 +8318,7 @@ impl Model {
                 .is_some_and(|c| c.target == ContextTarget::Message { seq });
             if here {
                 target = Some(entries.len());
-                entries.push(Entry::Info(format!("▶ matched message · seq {seq}")));
+                entries.push(Entry::Info(format!("▸ matched message · seq {seq}")));
             }
             entries.extend(from_history(h, &opts));
         }

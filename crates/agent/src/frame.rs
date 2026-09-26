@@ -378,9 +378,9 @@ mod tests {
             ChatMessage::from(vec![call("c3", "todo")]),
             ChatMessage::from(vec![ToolResponse::new(
                 "c3",
-                "Todo (0/2 done):\n  ▶ a\n  ☐ b",
+                "Todo (0/2 done):\n  ▸ a\n  ☐ b",
             )]),
-            ChatMessage::user("<todo>Todo (0/2 done):\n  ▶ a\n  ☐ b</todo>"),
+            ChatMessage::user("<todo>Todo (0/2 done):\n  ▸ a\n  ☐ b</todo>"),
         ]
     }
 

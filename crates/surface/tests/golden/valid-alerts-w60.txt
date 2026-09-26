@@ -1,9 +1,9 @@
-ℹ The daemon restarts automatically after an update.
+i The daemon restarts automatically after an update.
 
 ✓ Migrated
 │ All 12 hosts are on the new schema.
 
-⚠ Canary
+! Canary
 │ p99 latency is up 8% on the canary.
 
 ✗ Notarization failed: certificate expired.

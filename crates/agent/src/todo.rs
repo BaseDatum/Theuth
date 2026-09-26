@@ -282,8 +282,8 @@ pub fn render(list: &[Todo]) -> String {
     for t in list {
         let glyph = match t.status {
             Status::Pending => "☐",
-            Status::InProgress => "▶",
-            Status::Done => "☑",
+            Status::InProgress => "▸",
+            Status::Done => "✓",
             Status::Dropped => "✗",
             Status::Blocked => "⊘",
         };
@@ -391,7 +391,7 @@ mod tests {
         apply(&mut list, args(Op::Done, &[], Some("a"))).unwrap();
         assert_eq!(list[0].status, Status::Done);
         assert_eq!(list[1].status, Status::InProgress);
-        assert_eq!(render(&list), "Todo (1/2 done):\n  ☑ a\n  ▶ b");
+        assert_eq!(render(&list), "Todo (1/2 done):\n  ✓ a\n  ▸ b");
     }
 
     #[test]
