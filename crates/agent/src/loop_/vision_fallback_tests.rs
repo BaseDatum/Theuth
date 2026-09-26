@@ -97,6 +97,10 @@ pub(super) struct Fake {
     truncate_until: Option<&'static str>,
     /// Hold the harvest reply ([`HARVEST_REPLY`]) this long (detached-harvest scenarios).
     harvest_delay: Option<Duration>,
+    /// Hold the summariser reply this long (compaction-queue scenarios).
+    compact_delay: Option<Duration>,
+    /// Answer the summariser with this HTTP status instead of a summary.
+    compact_status: Option<u16>,
 }
 
 /// The harvest call's reply: one well-formed concept.
@@ -141,7 +145,15 @@ impl Respond for Fake {
             };
         }
         if text.contains(compact::COMPACT_INSTRUCTION) {
-            return sse(&summary(), "stop", MAIN_USAGE);
+            if let Some(status) = self.compact_status {
+                return ResponseTemplate::new(status)
+                    .set_body_string("{\"error\":{\"message\":\"summariser refused\"}}");
+            }
+            let t = sse(&summary(), "stop", MAIN_USAGE);
+            return match self.compact_delay {
+                Some(d) => t.set_delay(d),
+                None => t,
+            };
         }
         if self.truncate_until.is_some_and(|t| !text.contains(t)) {
             return sse(TRUNCATED, "length", MAIN_USAGE);
@@ -247,13 +259,13 @@ impl Message<AgentEvent> for Sink {
 /// A fresh store, session, runtime bus and fake provider per scenario.
 pub(super) struct Harness {
     dir: PathBuf,
-    store: Store,
+    pub(super) store: Store,
     rt: Runtime,
     server: MockServer,
     client: Client,
     catalog: Arc<models::Catalog>,
     vision_model: Arc<RwLock<Option<Resolved>>>,
-    id: SessionId,
+    pub(super) id: SessionId,
     events: UnboundedReceiver<AgentEvent>,
     /// The synthetic attachments (red, blue) and their base64 as the provider must receive them.
     png: PathBuf,
@@ -388,6 +400,33 @@ impl Harness {
             session.state.take().unwrap(),
         );
         (turn, tid)
+    }
+
+    /// The session actor itself, as `Agents::session` spawns one over the
+    /// stored frame: the `UserInput`/`CompactNow`/`TurnDone` seam.
+    pub(super) async fn actor(&self, main: &str) -> ActorRef<Session> {
+        let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
+        Session::spawn(Session::new(
+            self.id,
+            0,
+            (self.resolve(main), None),
+            None,
+            SessionState::resume(epoch, head, history),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            self.vision_model.clone(),
+            Arc::default(),
+            Arc::default(),
+            self.store.clone(),
+            self.client.clone(),
+            Auth::stub(&self.dir),
+            self.rt.clone(),
+            self.catalog.clone(),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&self.dir),
+        ))
     }
 
     pub(super) fn input(&self, text: &str, with_image: bool) -> Input {
@@ -547,6 +586,8 @@ fn fake() -> Fake {
         question_seen: Arc::default(),
         truncate_until: None,
         harvest_delay: None,
+        compact_delay: None,
+        compact_status: None,
     }
 }
 
@@ -555,6 +596,23 @@ impl Fake {
     pub(super) fn harvest_held(hold: Duration) -> Self {
         Self {
             harvest_delay: Some(hold),
+            ..fake()
+        }
+    }
+
+    /// [`fake`] holding every summariser reply for `hold` (compaction-queue scenarios).
+    pub(super) fn compact_held(hold: Duration) -> Self {
+        Self {
+            compact_delay: Some(hold),
+            ..fake()
+        }
+    }
+
+    /// [`fake`] refusing every summariser call with a deterministic 400
+    /// (compaction-failure scenarios): no retry, no cut fallback.
+    pub(super) fn compact_refused() -> Self {
+        Self {
+            compact_status: Some(400),
             ..fake()
         }
     }

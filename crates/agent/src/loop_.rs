@@ -5127,6 +5127,10 @@ mod vision_fallback_tests;
 #[cfg(test)]
 mod harvest_tests;
 
+/// 70 COMPACT-QUEUE: input during a compaction queues and never cancels it.
+#[cfg(test)]
+mod compact_queue_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
