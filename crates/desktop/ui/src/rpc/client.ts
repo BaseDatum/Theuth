@@ -172,17 +172,24 @@ export class RpcClient {
       this.#timer = undefined
       this.#attempt = 0
       this.#t.connect().catch(() => this.#schedule())
-    } else if (this.#state === 'open' && !this.#probe) {
-      this.#probe = setTimeout(() => {
-        this.#probe = undefined
-        this.#t.reset()
-      }, PROBE_MS)
-      // Any reply, even an error, proves the socket; `reset()` fails the call and clears the timer.
-      void this.call('info', []).catch(() => undefined).finally(() => {
-        clearTimeout(this.#probe)
-        this.#probe = undefined
-      })
-    }
+    } else this.probe()
+  }
+
+  /**
+   * Prove an `open` socket with `info`, or reset it after `PROBE_MS`: a dead socket the OS never closed (iOS suspend,
+   * a Wi-Fi drop) otherwise looks open and every call hangs. Also what a timed-out send calls (70 SEND-NEVER-LOSES).
+   */
+  probe(): void {
+    if (this.#state !== 'open' || this.#probe) return
+    this.#probe = setTimeout(() => {
+      this.#probe = undefined
+      this.#t.reset()
+    }, PROBE_MS)
+    // Any reply, even an error, proves the socket; `reset()` fails the call and clears the timer.
+    void this.call('info', []).catch(() => undefined).finally(() => {
+      clearTimeout(this.#probe)
+      this.#probe = undefined
+    })
   }
 
   #schedule(): void {

@@ -184,6 +184,13 @@ pub enum UiEvent {
         /// Its text.
         text: String,
     },
+    /// A `Send`/`Steer` the engine refused or never got: the text goes back to the editor.
+    Unsent {
+        /// The steer's id; `None` for a `Send`.
+        id: Option<InputId>,
+        /// Its text.
+        text: String,
+    },
     /// Reply to [`Command::Undo`]: first line of the turn now hidden.
     Undone(String),
     /// Reply to [`Command::Redo`]: first line of the turn restored.
@@ -4762,6 +4769,24 @@ impl Model {
             ))),
             UiEvent::Withdrawn { id, text } => {
                 self.queued.retain(|q| q.id != id);
+                self.recall = Some(text);
+            }
+            UiEvent::Unsent { id, text } => {
+                match id {
+                    Some(id) => self.queued.retain(|q| q.id != id),
+                    // The optimistic row from `submit_with`.
+                    None => {
+                        if let Some(i) = self
+                            .entries
+                            .iter()
+                            .rposition(|e| matches!(e, Entry::User { turn: None, .. }))
+                        {
+                            self.entries.remove(i);
+                        }
+                        self.sent = None;
+                        self.awaiting_session = false;
+                    }
+                }
                 self.recall = Some(text);
             }
             // The transcript reload that follows pushes the notice (`History`).
@@ -14159,6 +14184,34 @@ mod tests {
         });
         assert_eq!(m.queued.len(), 1);
         assert_eq!(m.recall.take().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn unsent_text_leaves_the_transcript_and_returns_to_the_editor() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("m".into(), true);
+        m.submit("hello", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { .. })));
+        assert!(matches!(m.entries.last(), Some(Entry::User { turn: None, .. })));
+        assert!(m.awaiting_session);
+        m.apply(UiEvent::Unsent {
+            id: None,
+            text: "hello".into(),
+        });
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
+        assert!(m.sent.is_none() && !m.awaiting_session);
+        assert_eq!(m.recall.take().as_deref(), Some("hello"));
+        // A refused steer leaves the queue the same way.
+        m.session = Some(SessionId::new());
+        m.streaming = true;
+        m.submit("later", &tx);
+        let id = m.queued[0].id;
+        m.apply(UiEvent::Unsent {
+            id: Some(id),
+            text: "later".into(),
+        });
+        assert!(m.queued.is_empty());
+        assert_eq!(m.recall.take().as_deref(), Some("later"));
     }
 
     #[test]

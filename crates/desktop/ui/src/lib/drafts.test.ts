@@ -51,6 +51,38 @@ test('reload restores drafts and an open edit; an empty draft is not stored', ()
   expect(back.edits).toEqual({ c1: { turn: 2, text: 'editing', refs: [ref] } })
 })
 
+test('a send keeps the text until acked; the ack drops exactly what was sent', () => {
+  const s = useDrafts.getState()
+  s.set('c1', { text: 'long thought ⟦paste 1⟧', pastes: held })
+  s.sending('c1', 'id-1')
+  // In flight: still in the box, flagged, and persisted so a reload mid-send shows the banner.
+  expect(useDrafts.getState().by.c1).toEqual({ text: 'long thought ⟦paste 1⟧', pastes: held, unsent: 'id-1' })
+  expect(load().by.c1?.unsent).toBe('id-1')
+  // Typed during the flight: only the sent text leaves.
+  s.setText('c1', 'long thought ⟦paste 1⟧ and more')
+  s.acked('c1', 'long thought ⟦paste 1⟧')
+  expect(useDrafts.getState().by.c1).toEqual({ text: ' and more', pastes: EMPTY.pastes })
+  s.sending('c1', 'id-2')
+  s.acked('c1', ' and more')
+  expect(useDrafts.getState().by.c1).toEqual({ text: '', pastes: EMPTY.pastes })
+  expect(load().by.c1).toBeUndefined()
+})
+
+test('a failed send leaves the flagged draft through edits; emptying the box drops the flag', () => {
+  const s = useDrafts.getState()
+  s.set('c1', { text: 'kept', pastes: held })
+  s.sending('c1', 'id-1')
+  // Failure changes nothing in the store: the composer reads `unsent` for the banner and the retry id.
+  expect(useDrafts.getState().by.c1).toEqual({ text: 'kept', pastes: held, unsent: 'id-1' })
+  s.setText('c1', 'kept, edited')
+  expect(useDrafts.getState().by.c1?.unsent).toBe('id-1')
+  s.setText('c1', '')
+  // Chips still held: there is still something to retry.
+  expect(useDrafts.getState().by.c1).toEqual({ text: '', pastes: held, unsent: 'id-1' })
+  s.set('c1', EMPTY)
+  expect(useDrafts.getState().by.c1).toEqual({ text: '', pastes: EMPTY.pastes })
+})
+
 test('a corrupt store reads as empty', () => {
   localStorage.setItem('composer-drafts', '{not json')
   expect(load()).toEqual({ by: {}, edits: {} })

@@ -199,9 +199,15 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 m.search_tick(now, &commands);
                 m.terminal_tick(now, &commands);
-                // A withdrawn steer comes back into the (empty) editor.
+                // A withdrawn or unsent message comes back into the editor,
+                // above anything typed since it left.
                 if let Some(text) = m.recall.take() {
-                    input.set(text);
+                    let typed = std::mem::take(&mut *input.write());
+                    input.set(if typed.is_empty() {
+                        text
+                    } else {
+                        format!("{text}\n{typed}")
+                    });
                 }
                 // A dictation ended: the spliced value, then the caret in the
                 // same tick (an external value change alone sends it to the end).

@@ -76,3 +76,26 @@ test('foreground while reconnecting skips the backoff', () => {
   expect(t.connects).toBe(1)
   expect(t.resets).toBe(1)
 })
+
+test('a send in flight when the socket drops is rejected at once, not left hanging', async () => {
+  const t = new Fake()
+  const c = new RpcClient(t)
+  t.state('open')
+  const send = c.call('send_input', ['s1', 'long message', [], null, 'id-1'])
+  t.state('reconnecting')
+  await expect(send).rejects.toMatchObject({ code: -32300, message: 'connection closed' })
+  // While down, a retry fails fast too.
+  await expect(c.call('send_input', ['s1', 'long message', [], null, 'id-1'])).rejects.toMatchObject({ message: 'not connected' })
+})
+
+test('probe() on a silent socket resets it, which fails the call parked on it', async () => {
+  const t = new Fake()
+  const c = new RpcClient(t)
+  t.state('open')
+  const send = expect(c.call('send_input', ['s1', 'hello', [], null, 'id-1'])).rejects.toMatchObject({ code: -32300 })
+  c.probe()
+  expect(requests(t).map((r) => r.method)).toEqual(['send_input', 'info'])
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(t.resets).toBe(1)
+  await send
+})

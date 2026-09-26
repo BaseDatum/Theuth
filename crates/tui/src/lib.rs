@@ -330,7 +330,13 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             text,
             files,
-        } => UiEvent::SessionCreated(msg(api.send_input(session, text, files, None).await)?),
+        } => {
+            let r = msg(api.send_input(session, text.clone(), files, None, None).await);
+            if r.is_err() {
+                let _ = tx.send(UiEvent::Unsent { id: None, text });
+            }
+            UiEvent::SessionCreated(r?)
+        }
         Command::Steer {
             session,
             id,
@@ -338,12 +344,19 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             files,
             interject,
         } => {
-            // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
-            if interject {
-                msg(api.cancel(session).await)?;
+            let r: anyhow::Result<()> = async {
+                // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
+                if interject {
+                    msg(api.cancel(session).await)?;
+                }
+                msg(api.steer(session, text.clone(), Some(id), files, None).await)?;
+                Ok(())
             }
-            msg(api.steer(session, text, Some(id), files, None).await)?;
-            return Ok(());
+            .await;
+            if r.is_err() {
+                let _ = tx.send(UiEvent::Unsent { id: Some(id), text });
+            }
+            return r;
         }
         Command::Withdraw { session, id } => UiEvent::Withdrawn {
             id,
@@ -1299,6 +1312,8 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Computer(status) => writeln!(out, "{}", model::computer_line(status)),
         UiEvent::Job(_) => Ok(()),
         UiEvent::Withdrawn { text, .. } => writeln!(out, "withdrawn: {text}"),
+        // The `Error` line that follows names the failure; there is no editor to refill.
+        UiEvent::Unsent { .. } => Ok(()),
         UiEvent::Undone(text) => writeln!(out, "undone: {text} — /redo restores"),
         UiEvent::Redone(text) => writeln!(out, "restored: {text}"),
         UiEvent::Forked(id, _) => writeln!(out, "forked: {id}"),

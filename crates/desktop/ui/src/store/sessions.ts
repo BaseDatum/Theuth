@@ -266,6 +266,8 @@ type SessionsStore = {
   ): boolean;
   /** Show our own input at once and skip its echo. */
   markSent(id: string, text: string, files?: string[]): void;
+  /** The send failed: drop the row `markSent` showed and its echo skip. */
+  unmarkSent(id: string, text: string): void;
   /** Drop the turn opened at `turn` and everything after it (before `regenerate`/`edit_turn`); no-op when absent. */
   truncate(id: string, turn: number): void;
   ensure(id: string): void;
@@ -408,6 +410,20 @@ export const createSessions = (): SessionsApi =>
             },
           };
         });
+      },
+      unmarkSent(id, text) {
+        get().sent.delete(text);
+        const cur = get().sessions[id];
+        const at = cur?.entries.findLastIndex(
+          (e) => e.kind === "user" && e.turn === undefined && e.text === text,
+        );
+        if (!cur || at === undefined || at < 0) return;
+        set((st) => ({
+          sessions: {
+            ...st.sessions,
+            [id]: { ...cur, entries: cur.entries.toSpliced(at, 1) },
+          },
+        }));
       },
       truncate(id, turn) {
         const cur = get().sessions[id];

@@ -140,6 +140,10 @@ pub struct SendInput {
     /// How it lands on a busy session (62 §0.3).
     #[serde(default)]
     pub delivery: Delivery,
+    /// Client-minted idempotency key: a retry with the same id routes once
+    /// and returns the same session (send never loses, never doubles).
+    #[serde(default)]
+    pub id: Option<InputId>,
 }
 
 /// `ask` → `()`. Injected as a user message after the current tool batch
