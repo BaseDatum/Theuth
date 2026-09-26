@@ -1,6 +1,6 @@
-# UI-FIXES-3 as built — desk rows vs chat rows, board drop on release, unblock after "no continuation"
+# UI-FIXES-3 as built — desk rows vs chat rows, board drop on release, unblock after "no continuation", harness inputs as cards, user stop is not a yield
 
-Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Four fixes, three commits (items 1 and 4 share one), plus this report.
+Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Six fixes, five commits (items 1 and 4 share one), plus this report.
 
 ## Commits
 
@@ -47,6 +47,38 @@ Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Four 
 - **TUI / Slack** (one-line filters, disclosed): `crates/tui/src/model.rs` `session_rows` drops `desk` rows (their trees are only reachable through them); `crates/tui/src/search.rs` Recent drops them; `crates/slack/src/commands.rs` `/sessions` drops them.
 - Struct-literal additions `desk: None` in `crates/tui/src/attach.rs`, `crates/tui/src/model.rs` (test fixture), `crates/agent/src/session_read.rs`, `crates/slack/src/ui.rs` (test fixture).
 
+### `ebe7e42` fix(ui,roster,tui): every harness-injected input renders as a card; desk nudges use the nudge card and its setting (item 5)
+
+Audit of every user-role input the harness injects at HEAD, and what renders it on the desktop (`lib/injected.ts::classify` → `store/reduce.ts` → `chat/Message.tsx`):
+
+| kind | emitter | wrapper / marker | component before | after |
+|---|---|---|---|---|
+| desk wake (any reason) | `roster::DeliverWake` → `desk::wake_text` | `Wake: task … Reason: <r>. …` + `<task …>` | `WakeCard` — but `blockers_resolved` / `children_completed` fell to a **plain bubble** (reason regex `[a-z]+`) | `WakeCard` (`[a-z_]+`) |
+| assigned / reassigned wake + fit check | `DeliverWake` appends `desk::roster_block` | … `</task>\n\n<roster>…</roster>` | **plain bubble** (`$`-anchored wake regex, `<roster>` unknown) | `WakeCard` with a collapsed **Fit check** section (`wake.roster`) |
+| turn-end nudges `disposition` / `review` / `reply` | `Roster::judge_turn` ← `desk::nudges::TABLE` | was bare prose | **plain bubble** | `<nudge>…</nudge>` → `EngineNotice` "Nudge", hidden unless Settings › Agent loop › *Show theuth nudges* (`useNudges`, `show-harness-nudges`) |
+| journal (closing) prompt | `Roster::close_desk` ← `desk::CLOSING` | was bare prose | **plain bubble** | `<journal>…</journal>` → `EngineNotice` "Journal", same setting |
+| child result relayed to a desk; peer messages; `ask_desk` | `agent::loop_::peer_wrapper` | `<message from=… id=…>` | `MessagePeer` | unchanged |
+| schedule fire | `schedule::fire` | `<schedule name= at= quiet=>` | `MessagePeer` (name · time) | unchanged |
+| job result / job idle / reminder | `agent::supervisor` | `<job_result>` / `<job_idle>` / `<reminder>` | `MessagePeer` | unchanged |
+| engine notes (rounds, todo_continue, context_pressure, recovery, continue, steer, todo, knowledge, vision) | `agent::loop_::note` | `<kind>` | `EngineNotice` + setting | unchanged |
+| context summary / runtime / surface_error | agent | `<context_summary>` / `<runtime>` / `<surface_error>` | hidden (own divider) | unchanged |
+| skill injection (user-triggered) | `agent::skills::inject_text` | `<skill name=>` | user bubble + skill chip | unchanged |
+| `done because: …`, `reassigned to X: why`, `nudged: …`, `wake … held: …` | `tasks::ledger` / roster `thread_note` | task-thread lines, never session inputs | n/a | n/a |
+| desk opening block `<desk agent=>` | no longer emitted (DESK-PROTOCOL moved identity to the system prompt) | — | `DeskCard` (dead path) | left as is |
+| broadcast | `supervisor::broadcast` | none — the user's own words fanned out | user bubble | correct: it is user text |
+
+- `crates/roster/src/desk.rs`: `pub fn notice(kind, text) -> "<kind>\n{text}\n</kind>"` (the `agent::loop_::note` shape). `crates/roster/src/lib.rs`: the nudge `SendInput` sends `notice("nudge", …)`, the closing turn sends `notice("journal", CLOSING)`. Table texts are unchanged, so `nudge_table_judges_turn_ends` still holds.
+- `crates/desktop/ui/src/lib/injected.ts`: `ENGINE_NOTICES.nudge` / `.journal`; `WAKE` accepts underscore reasons and an optional trailing `<roster>` block into `wake.roster`. `chat/HarnessCards.tsx` `WakeCard` renders `roster` as a **Fit check** section.
+- `crates/tui/src/model.rs` `injected()`: `nudge` / `journal` join the harness notes that yield no card (one line each), so the TUI does not print them as the user's words either.
+- Vitest (`lib/injected.test.ts`): every wake reason incl. `reassigned` / `blockers_resolved` / `children_completed`; assigned wake with the roster block (with and without a task record; absent → no `roster` key); `<nudge>` and `<journal>` classify as engine notices; bare nudge prose stays `null` (so the roster must wrap it).
+
+### `2ceef95` fix(roster): a user stop, shutdown, provider error or timeout is not a model yield (item 6)
+
+- `crates/roster/src/desk.rs` `nudges::yielded(stop_reason) -> bool`: false for `cancelled` (user cancel and engine shutdown both cancel the turn's token — `agent::Cancel` docs: "each emits TurnFinished { stop_reason: "cancelled" }"), `timed_out`, `error`; true for every provider stop (`end_turn`, `stop`, `STOP`, `max_tokens`, `length`, …).
+- `crates/roster/src/lib.rs`: the `AgentEvent::TurnFinished` arm now reads `stop_reason` and passes it to `judge_turn(name, stop_reason)`, which returns before judging when `!yielded`. `serving` is left in place and the task keeps its `doing` checkout; the next wake (or the user's next input ending a natural turn) is judged as before. `working`/`last_active_ms`/context-close bookkeeping still runs.
+- Test `desk::tests::interrupted_turns_are_not_yields` (natural vs interrupted stop reasons). `judge_turn` itself needs the tasks and agent actors and is not unit-tested today; the pure gate is.
+- Not changed: an **episode close** (`lease`, `idle`, `context`, `paused`, `EpisodeClose`) still runs `tasks::EpisodeClosing` → `no continuation` on tasks left `doing` — that is 67 §7.3's episode rule, not a turn end, and Sky's rule speaks to the turn end. Nothing calls `close_desk("shutdown")`: an engine shutdown only cancels turns, which are now left alone.
+
 ## Deviations
 
 - `person:*` blockers are treated as system-owned and cleared by a user unblock: the brief names `no continuation` and "any other blocker the system wrote — not decision:*, not task blockers"; `person:` is written by an agent's `blocked` disposition and the user is the person in the room, so clearing it on a user unblock is the intended read. `engine:*` (placement missing) likewise.
@@ -55,6 +87,9 @@ Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Four 
 - No UI-side heuristic remains for "is a desk" (title or pin). A desk opened by a build before this migration keeps its old `agent:<name>` title and has no `desk` mark until the roster reopens it (next episode close / hub start); until then it shows once as an ordinary chat row. `sync_desks` reopens wanted desks on start, and theuth's on its first wake, so the window is one episode.
 - Board: no helper extracted for testing — the bug was an event-plumbing one, not logic.
 - Desktop smoke not run: it needs `cargo build` of the binary, which the working rules exclude.
+- Item 6: `CancelOrigin` (tools/jobs) is job-only and `agent::Cancel`/`CancelTurn` carry no origin, so user-cancel and shutdown are not told apart — both are `cancelled`, and the rule treats both the same, so no plumbing was added.
+- Item 5: the dead `<desk>` opening-block kind (`DeskCard`) is left in place — DESK-PROTOCOL's as-built keeps "restore the opening block in DeliverWake" open.
+- Item 5: TUI rendering of nudges was not in the brief; it got the two one-line "no card" entries so it matches the other harness notes rather than a full card.
 
 ## Not built
 
@@ -62,8 +97,8 @@ Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Four 
 
 ## Tests written
 
-- Rust: `tasks::ledger::tests::user_unblock_clears_system_blockers_and_wakes_resumed`, `tasks::ledger::tests::user_unblock_keeps_decision_and_task_blockers`, `roster::tests::desk_or_open_returns_the_open_desk_and_names_its_refusals`; `rpc::forward::tests::classify_user_vs_desk` adapted to the desk mark.
-- Vitest: `SessionList.test.ts` desk exclusion; `helpers.test.ts` `parseBlocker('no continuation')` and `actionsFor(...).unblock` cases.
+- Rust: `tasks::ledger::tests::user_unblock_clears_system_blockers_and_wakes_resumed`, `tasks::ledger::tests::user_unblock_keeps_decision_and_task_blockers`, `roster::tests::desk_or_open_returns_the_open_desk_and_names_its_refusals`, `roster::desk::tests::interrupted_turns_are_not_yields`; `rpc::forward::tests::classify_user_vs_desk` adapted to the desk mark.
+- Vitest: `SessionList.test.ts` desk exclusion; `helpers.test.ts` `parseBlocker('no continuation')` and `actionsFor(...).unblock` cases; `lib/injected.test.ts` wake reasons, roster fit check, nudge/journal notices (21 tests in the file).
 
 ## Verification run
 
@@ -74,5 +109,6 @@ Branch `fix/ui-dogfood-round-3`, worktree `theuth-uifix3`, base `ae467a8`. Four 
 - `cargo check --workspace --tests` → `Finished dev profile` (10m17s), no errors, no new warnings.
 - `cargo test -p tasks -p roster -p rpc --lib` → 40 + 30 + 48 passed, 0 failed.
 - `cargo check -p tasks --tests` after commit 1 → clean.
+- Round 2 (items 5, 6): `bunx tsc --noEmit` → 0 errors; `bunx vitest run` → 75 files, 478 tests green (`injected.test.ts` 21/21); `cargo test -p roster --lib` → 41 passed; `cargo check -p tui --tests` and `cargo check --workspace --tests` → clean.
 
 DONE UI-FIXES-3
