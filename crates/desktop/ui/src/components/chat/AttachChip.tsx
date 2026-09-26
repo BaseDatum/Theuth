@@ -1,11 +1,12 @@
 import { useNavigate } from '@tanstack/react-router'
-import { BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote } from 'lucide-react'
+import { AppWindow, BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { type AttachRef, DRAG_TYPE, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'
 import { touch } from '@/lib/platform'
+import { type PopoutTarget, canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 
 /** §7.5 icons; an artifact chip has no record, so it takes the generic file glyph (picker rows refine by artifact kind). */
@@ -53,11 +54,29 @@ export function useOpenRef(): (ref: AttachRef) => void {
   }
 }
 
+/** The window a reference can open alone (`lib/popout`), `null` for knowledge (no popped route). */
+export function popoutOf(ref: AttachRef): PopoutTarget | null {
+  switch (ref.kind) {
+    case 'note':
+      return { kind: 'note', doc: ref.id }
+    case 'artifact':
+      return { kind: 'artifact', callId: ref.id }
+    case 'session':
+      return { kind: 'chat', session: ref.id }
+    case 'meeting':
+      return { kind: 'meeting', meeting: ref.id }
+    case 'knowledge':
+      return null
+  }
+}
+
 /**
- * One attached reference as a pill: kind icon, title, muted kind. Click opens a small popover with the subtitle and
- * **Open**; `again` (a history chip, §7.9) adds **Attach again** (a chip in `again`'s composer) and **Copy id**.
+ * One attached reference as a pill: kind icon, title, muted kind. Click opens a small popover with the subtitle,
+ * **Open** and — where the container can and the kind has a popped route — **Pop out**; `again` (a history chip,
+ * §7.9) adds **Attach again** (a chip in `again`'s composer) and **Copy id**; `onRemove` puts a × on the pill.
  */
-export function AttachChip({ item: ref, again, className }: { item: AttachRef; again?: string | null; className?: string }) {
+export function AttachChip({ item: ref, again, onRemove, className }: { item: AttachRef; again?: string | null; onRemove?: () => void; className?: string }) {
+  const popout = popoutOf(ref)
   const open = useOpenRef()
   const Icon = KIND_ICON[ref.kind]
   return (
@@ -74,6 +93,27 @@ export function AttachChip({ item: ref, again, className }: { item: AttachRef; a
           <Icon className="size-3.5 shrink-0 text-fg-secondary" />
           <span className="truncate">{ref.title}</span>
           <span className="shrink-0 text-fg-tertiary">{KIND_LABEL[ref.kind]}</span>
+          {onRemove && (
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={`Remove ${ref.title}`}
+              className="-mr-1 ml-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-fg-tertiary hover:bg-layer-3 hover:text-fg pointer-coarse:size-6"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRemove()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onRemove()
+                }
+              }}
+            >
+              <X className="size-3" />
+            </span>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-auto max-w-80 p-2 text-sm">
@@ -85,6 +125,11 @@ export function AttachChip({ item: ref, again, className }: { item: AttachRef; a
           <Button variant="ghost" size="sm" onClick={() => open(ref)}>
             <ExternalLink /> Open
           </Button>
+          {popout && canPopout() && (
+            <Button variant="ghost" size="sm" onClick={() => void openPopout(popout)}>
+              <AppWindow /> Pop out
+            </Button>
+          )}
           {again !== undefined && (
             <Button variant="ghost" size="sm" onClick={() => attachTo(again, ref)}>
               <Paperclip /> Attach again
