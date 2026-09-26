@@ -30,7 +30,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { usePanes } from '@/lib/panes'
+import { openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -204,6 +206,8 @@ export function SessionMenu({ session }: { session: string }) {
   const row = sessions.data?.find((s) => s.id === session)
   const tags = liveTags ?? row?.tags ?? []
   const here = row?.here ?? true
+  // 70 POPOUT-2 item 3: the meeting this chat belongs to (its own session); no meeting, no items.
+  const meeting = useMeetingForSession(session)
   const [rename, setRename] = useState(false)
   const [sheet, setSheet] = useState<Surface | null>(null)
 
@@ -264,6 +268,14 @@ export function SessionMenu({ session }: { session: string }) {
             Copy id
           </DropdownMenuItem>
           {parent && <DropdownMenuItem onSelect={cmd('/parent')}>Open parent</DropdownMenuItem>}
+          {meeting && (
+            <>
+              <DropdownMenuItem onSelect={(e) => openMeeting(meeting, e, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
+                Open meeting
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>
+            </>
+          )}
           <DropdownMenuItem
             disabled={here}
             title={here ? 'This session already runs on this node' : undefined}
