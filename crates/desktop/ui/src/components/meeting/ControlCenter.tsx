@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArrowUp, Check, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { Divider } from '@/components/chat/Panes'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
 import { MeetingNote } from '@/components/meeting/Note'
 import { Review } from '@/components/meeting/Review'
@@ -21,8 +22,10 @@ import { Empty, Row, Section, errorText, useAction } from '@/components/settings
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { LiveSession } from '@/routes/c.$session'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
@@ -104,10 +107,12 @@ export function ControlCenter({ id }: { id: string }) {
   const summarize = useAction(() => api.meeting_summarize(id), { keys: [queryKeys.meeting(id)] })
   const note = manifest.data?.note ?? null
   const mobile = useIsMobile()
-  const [pane, setPane] = useState<'transcript' | 'note'>('transcript')
   const transcript = hasTranscript(cycle)
-  // The note is beside the live log or the transcript; under `md` the two are tabs.
-  const split = note !== null && (isLive || transcript)
+  // 70 POPOUT-2 item 4: left column = the transcript area over the meeting's own chat, split by a remembered
+  // divider; the note on the right. Narrow (under `md`, a small popped window): the three stack in one scroll.
+  const ratio = useMeetingSettings((s) => s.split)
+  const setSplit = useMeetingSettings((s) => s.setSplit)
+  const block = mobile ? 'h-[70dvh] flex-none' : 'min-h-0'
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -140,61 +145,59 @@ export function ControlCenter({ id }: { id: string }) {
       )}
       {(isLive || manifest.data) && (
         <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 pb-4">
-          {split && mobile && (
-            <div className="flex gap-1 text-[12px]" role="tablist">
-              {(['transcript', 'note'] as const).map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  role="tab"
-                  aria-selected={pane === p}
-                  className={cn('rounded-lg px-3 py-1', pane === p ? 'bg-accent font-semibold text-fg' : 'text-fg-tertiary')}
-                  onClick={() => setPane(p)}
-                >
-                  {p === 'transcript' ? 'Transcript' : 'Note'}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="flex min-h-0 flex-1 gap-4">
-            {(!split || !mobile || pane === 'transcript') &&
-              (isLive ? (
-                <div className="flex min-h-0 min-w-0 flex-1 gap-4">
-                  <LiveLog id={id} />
-                  <BriefLog id={id} cursor={current(store)?.id ?? null} />
-                </div>
-              ) : (
-                manifest.data && (
-                  <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-10">
-                    {state === 'Done' && <Summary id={id} note={note} />}
-                    {transcript ? (
-                      <Review id={id} readOnly={state !== 'Review'} />
-                    ) : (
-                      <Section title="Recording">
-                        <Row label="Started">{new Date(manifest.data.started_at).toLocaleString()}</Row>
-                        <Row label="Ended">{manifest.data.ended_at ? new Date(manifest.data.ended_at).toLocaleString() : '—'}</Row>
-                        <Row label="Duration">{manifest.data.duration_ms === null ? '—' : duration(Number(manifest.data.duration_ms))}</Row>
-                        <Row label="Meeting app">
-                          {manifest.data.process.name}
-                          {manifest.data.process.bundle_id ? ` (${manifest.data.process.bundle_id})` : ''}
-                        </Row>
-                        <Row label="Consent">{new Date(manifest.data.consent_at).toLocaleString()}</Row>
-                        <Row label="Pauses">
-                          {manifest.data.gaps.length === 0
-                            ? 'none'
-                            : manifest.data.gaps.map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ')}
-                        </Row>
-                        <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
-                        <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
-                        {manifest.data.failure && !cycle?.failure && <Row label="Failure">{manifest.data.failure}</Row>}
-                        {manifest.data.context && <Row label="Context">{manifest.data.context}</Row>}
-                      </Section>
-                    )}
-                    <BriefLog id={id} cursor={null} />
+          <div className={cn('flex min-h-0 flex-1 gap-4', mobile ? 'flex-col overflow-y-auto' : 'flex-row')}>
+            <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0 flex-1')}>
+              <div className={cn('flex min-w-0 flex-col', block)} style={mobile ? undefined : { flex: `${ratio} 1 0%` }}>
+                {isLive ? (
+                  <div className="flex min-h-0 min-w-0 flex-1 gap-4">
+                    <LiveLog id={id} />
+                    <BriefLog id={id} cursor={current(store)?.id ?? null} />
                   </div>
-                )
-              ))}
-            {split && note && (!mobile || pane === 'note') && <MeetingNote doc={note} className="md:w-[45%] md:flex-none" />}
+                ) : (
+                  manifest.data && (
+                    <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-4">
+                      {state === 'Done' && <Summary id={id} note={note} />}
+                      {transcript ? (
+                        <Review id={id} readOnly={state !== 'Review'} />
+                      ) : (
+                        <Section title="Recording">
+                          <Row label="Started">{new Date(manifest.data.started_at).toLocaleString()}</Row>
+                          <Row label="Ended">{manifest.data.ended_at ? new Date(manifest.data.ended_at).toLocaleString() : '—'}</Row>
+                          <Row label="Duration">{manifest.data.duration_ms === null ? '—' : duration(Number(manifest.data.duration_ms))}</Row>
+                          <Row label="Meeting app">
+                            {manifest.data.process.name}
+                            {manifest.data.process.bundle_id ? ` (${manifest.data.process.bundle_id})` : ''}
+                          </Row>
+                          <Row label="Consent">{new Date(manifest.data.consent_at).toLocaleString()}</Row>
+                          <Row label="Pauses">
+                            {manifest.data.gaps.length === 0
+                              ? 'none'
+                              : manifest.data.gaps.map((g) => `${hhmmss(Number(g.at_ms))} for ${Math.round(Number(g.dur_ms) / 1000)} s`).join(', ')}
+                          </Row>
+                          <Row label="Session model">{manifest.data.session_model ?? 'default'}</Row>
+                          <Row label="Tracks">{manifest.data.tracks.map((t) => t.file).join(', ')}</Row>
+                          {manifest.data.failure && !cycle?.failure && <Row label="Failure">{manifest.data.failure}</Row>}
+                          {manifest.data.context && <Row label="Context">{manifest.data.context}</Row>}
+                        </Section>
+                      )}
+                      <BriefLog id={id} cursor={null} />
+                    </div>
+                  )
+                )}
+              </div>
+              {session && (
+                <>
+                  {!mobile && <Divider dir="col" onRatio={setSplit} />}
+                  <div
+                    className={cn('flex min-w-0 flex-col rounded-xl border border-border-subtle', block, mobile && 'mt-4')}
+                    style={mobile ? undefined : { flex: `${1 - ratio} 1 0%` }}
+                  >
+                    <LiveSession session={session} first={false} />
+                  </div>
+                </>
+              )}
+            </div>
+            {note && <MeetingNote doc={note} meeting={id} className={cn(block, !mobile && 'w-[45%] flex-none')} />}
           </div>
         </div>
       )}

@@ -1,4 +1,8 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
+// The page embeds the chat pane, whose `nudges` store reads `localStorage` at import; no DOM in the runner.
+vi.hoisted(() => {
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
+})
 import { STEPS, lifecycle } from './ControlCenter'
 
 test('no strip while live, before the recording ended, or for an unfinished start', () => {

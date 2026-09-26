@@ -103,8 +103,8 @@ function Leaf({ session, first, render }: { session: string; first: boolean; ren
   )
 }
 
-/** Between two panes; drag to change the split. */
-function Divider({ dir, path }: { dir: 'row' | 'col'; path: Path }) {
+/** Between two flex children sized `flex: r 1 0%` / `flex: 1-r 1 0%`; drag reports the new first-child share (0.15–0.85) to `onRatio`. */
+export function Divider({ dir, onRatio }: { dir: 'row' | 'col'; onRatio: (ratio: number) => void }) {
   // ponytail: plain pointer events like ArtifactPanel's strip; react-resizable-panels if this grows.
   const drag = (e: PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.parentElement?.getBoundingClientRect()
@@ -113,7 +113,7 @@ function Divider({ dir, path }: { dir: 'row' | 'col'; path: Path }) {
     e.currentTarget.setPointerCapture(e.pointerId)
     const move = (ev: globalThis.PointerEvent) => {
       const r = dir === 'row' ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height
-      usePanes.getState().resize(path, Math.min(0.85, Math.max(0.15, r)))
+      onRatio(Math.min(0.85, Math.max(0.15, r)))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -142,7 +142,7 @@ function Branch({ node, path, render }: { node: Node; path: Path; render(session
       <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${node.ratio} 1 0%` }}>
         <Branch node={node.a} path={[...path, 'a']} render={render} />
       </div>
-      <Divider dir={node.dir} path={path} />
+      <Divider dir={node.dir} onRatio={(r) => usePanes.getState().resize(path, r)} />
       <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${1 - node.ratio} 1 0%` }}>
         <Branch node={node.b} path={[...path, 'b']} render={render} />
       </div>

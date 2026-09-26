@@ -58,8 +58,9 @@ function SessionRoute() {
 }
 
 /** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live.
- * `first`: the top-left pane, the only one that inserts the sidebar toggle and macOS traffic-light inset. */
-function LiveSession({ session, first }: { session: string; first: boolean }) {
+ * `first`: the top-left pane, the only one that inserts the sidebar toggle and macOS traffic-light inset. Also the chat a
+ * meeting page embeds under its transcript (`ControlCenter`), which passes `first={false}`. */
+export function LiveSession({ session, first }: { session: string; first: boolean }) {
   const api = useApi()
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
