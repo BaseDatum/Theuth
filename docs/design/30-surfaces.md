@@ -413,71 +413,22 @@ dim `◌ diagram omitted` line, never `✗ invalid …` plus the source.
   is attended-only. The flag is a property of the session, so the prompt
   stays a pure function of `(data_dir, attended, …)` and cache-stable.
 
-### 6.2 The prompt block (verbatim)
+### 6.2 The prompt block
 
-````
-## Show first, then tell
-This chat renders pictures, and a reader takes in a picture in one glance where the same content as prose takes ten. **Default to showing.** Words are for what a picture cannot carry: the reason, a caveat, an exact value the reader must copy, an instruction, the decision you need from them. Most substantive replies should contain at least one block; a reply that is only paragraphs and bullets should be the exception you chose, not the habit.
-
-Three fenced blocks render (the terminal and desktop draw them, other channels read them as text):
-- ```json-render: structured data and boxes-and-arrows. Catalog: {catalog}
-- ```openui: richer static cards with local interaction: Steps, Tabs, Callout, Card, Table, BarChart/LineChart, MetricIndicatorInline, Buttons with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence.
-- ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).
-
-Pick by the shape of the answer:
-| The answer is… | Draw |
-|---|---|
-| components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |
-| who calls whom in what order | mermaid sequenceDiagram |
-| lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |
-| schema, types, relationships | mermaid erDiagram / classDiagram |
-| how-to or explanation in steps | openui Steps |
-| options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |
-| a comparison, before/after, a matrix | json-render Table (Badge for verdict cells) |
-| status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress) |
-| what happened when: incident, history, plan | json-render Timeline (state per item) |
-| numbers, counts, durations, sizes | json-render MetricGrid / Bars, openui BarChart / LineChart for series |
-| a warning, a blocker, the one thing to act on | openui Callout or json-render Alert |
-| facts about one thing (config, host, PR) | json-render KeyValueList |
-
-Shapes for the replies you write most:
-- **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.
-- **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: "error") → Timeline if timing matters → prose for evidence you must quote exactly.
-- **Plan or proposal:** Steps or Timeline → Table of risks/choices → the question for the user in words.
-- **"How does X work":** Graph or sequenceDiagram first, then prose only for what the arrows don't say.
-- **Status check / "how's it going":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.
-
-Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, "first… then… finally", "if X then Y state", "A vs B": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.
-
-Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.
-Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.
-
-Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.
-
-When you report finished work, a subagent's result or an investigation, report visually first as above.
-
-Worked example. Instead of:
-> I updated the parser and the tests. All 412 tests pass, coverage went from 78% to 81%. The migration is done and staging is deployed, but prod is still pending approval.
-
-write the one-sentence takeaway, then:
-```json-render
-{"root":"r","elements":{"r":{"type":"Stack","children":["m","c"]},
-"m":{"type":"MetricGrid","props":{"items":[{"label":"Tests","value":"412/412"},{"label":"Coverage","value":"81%","delta":"+3%","trend":"up"}]}},
-"c":{"type":"Checklist","props":{"items":[{"text":"Parser updated","done":true},{"text":"Staging deployed","done":true},{"text":"Prod approval","done":false}]}}}}
-```
-````
-
-`{catalog}` is `catalog_compact()`; the block is built by concatenation
-(`crates/surface/src/prompt.rs`), not `format!`, so the example's braces
-are literal. It renders from `Spec`'s schema as one line per
-component, e.g. `Card(title?, description?) · Stack(direction?, gap?) ·
-Grid(columns) · Heading(text, level?) · Text(text, variant?) · Badge(text,
-variant?) · Alert(title?, message, type) · Separator · Table(columns,
-rows) · KeyValueList(items[{key,value}]) · Metric(label, value, trend?,
-delta?) · MetricGrid(items[Metric]) · Progress(value, max?, label?) ·
-Bars(items[{label,value}], max?) · Timeline(items[{when,title,detail?,state?}])
-· Checklist(items[{text,done}]) · Tabs(tabs[{label,children}]) ·
-Accordion(items[{title,children}])`.
+The block is `BLOCK_HEAD` + `catalog_compact()` + `BLOCK_TAIL` in
+`crates/surface/src/prompt.rs` — that file is the verbatim source; a copy
+here drifted twice, so this section now describes it. It says (2026-09-25
+ruling, as-built 70 SURFACES): most substantive replies contain at least one
+rendered block and a prose-only reply is the exception; all three fence
+kinds render *inline*, merged into the reply — an ```` ```openui ```` fence
+is not an app card, and the openui line names the explanatory set
+(Steps, Tabs, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series,
+MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion, CodeBlock,
+Chips, OptionCards, Buttons with @Set/@OpenUrl); the pick-by-shape table
+covers every catalog component (§10); the rules stay: one picture per idea,
+≤ ~12 nodes / ~15 rows per block, labels ≤ 4 words, complete strict JSON,
+`<surface_error>` correction. Unattended sessions (subagents, scheduled
+runs) do not receive it (§6.1).
 
 ### 6.3 The skill (`visualize.md`, abridged; the catalog section is generated)
 
@@ -716,11 +667,14 @@ a red card. From `FenceContext` (set by `MessageAssistant`: `running`,
 carries the fix → nothing; turn running → `animate-pulse` skeleton (`aria-busy`);
 the turn's last reply → `◌ diagram omitted · show source` (source in `<details>`,
 parser message as tooltip). `<surface_error …>` notes are `HIDDEN` in `lib/injected.ts`.
-```` ```openui ```` fences render inline via `surface/OpenUIFence.tsx`: `AppRenderer`
-(streaming while open) over a provider that rejects every call (`Open as app to run
-queries and actions`; `@ToAssistant` toasts the same); closed fences are `check`ed
-client-side. **Open as app** → `publish_app(session, name, source)`, `name` from the
-first `TextContent("## …")` else `reply-<id>`, then the record opens in the panel.
+```` ```openui ```` fences render inline via `surface/OpenUIFence.tsx` with the same
+margins as a json-render block — no card, no title bar (2026-09-25 ruling; it reverses
+the 09-23 "Open as app" card). `AppRenderer` (streaming while open) over a provider
+that rejects every call (`Open as app to run queries and actions`; `@ToAssistant`
+toasts the same); closed fences are `check`ed client-side. A hover/focus toolbar
+offers **Open as app** → `publish_app(session, name, source)`, `name` from the first
+`TextContent("## …")` else `reply-<id>`, then the record opens in the panel — and
+**Show source**. The `app` tool's output stays an app card.
 
 ## 9. Text channels: Slack, Signal, `message_user`
 
@@ -738,27 +692,31 @@ shows nothing.
 
 ## 10. Catalog v0
 
-Eighteen components, chosen for what an assistant *shows*: layout (Card,
+Thirty-six components, chosen for what an assistant *shows*: layout (Card,
 Stack, Grid, Separator, Tabs, Accordion), content (Heading, Text, Badge,
-Alert, Table, KeyValueList), quantities (Metric, MetricGrid, Progress,
-Bars), time and state (Timeline, Checklist). Not in v0: `Image`, `Link`,
-`Avatar`, `Carousel`, `Button`, `Input`, `Select`, `Dialog`, `Drawer`,
-`Tooltip`, `Popover`, `DropdownMenu`, `Skeleton`, `Spinner` — either they
-fetch or navigate (§11), take input (§14), or are meaningless in a
-transcript. jarvis's `Flow`, `Graph`, `RiskMatrix`, `Pie`, `TaskBoard`
-(`rich_content.rs:43-72`): flows and graphs are what Mermaid is for; a pie
-is `Bars`; a risk matrix is a `Table`; a task board is `Checklist` or
-`Timeline` with `state`. Adding a component = one enum variant + one TUI
-arm + one React component; the prompt, skill, validator and bindings
-regenerate.
+Alert, Table, KeyValueList), quantities (Metric with optional `spark`,
+MetricGrid, Progress, Bars), time and state (Timeline, Checklist), boxes and
+arrows (Graph, doc 65), and — added 2026-09-25 so a reply reaches for a
+block instead of prose — Steps, Callout (variant, not severity), Code, Diff,
+Tree, Glossary, Quote, Image, LinkList, Tags, Gauge, Sparkline, Heatmap,
+Person, FileList, Kanban (read-only), Calendar. Still not in v0: `Button`,
+`Input`, `Select`, `Dialog`, `Drawer`, `Tooltip`, `Popover`, `DropdownMenu`,
+`Skeleton`, `Spinner` — they take input (§14) or are meaningless in a
+transcript. Adding a component = one enum variant + one TUI arm + one React
+component + one `valid-*.json` fixture (golden files regenerate with
+`UPDATE_GOLDEN=1`); the prompt, skill, validator and bindings regenerate.
 
 ## 11. Security (28)
 
 - A `json-render` block is model output shaped by everything the model
-  read; under 28 it is a *sink* if any component can carry bytes out. v0
-  has no `Image`, no `Link`, no `href`, no `src`; `Text` and labels are
-  rendered as text nodes (React escapes; iocraft draws characters). No
-  `dangerouslySetInnerHTML` anywhere in our components.
+  read; under 28 it is a *sink* if any component can carry bytes out.
+  `Image.src` and `LinkList.url` are the two carriers: the validator admits
+  only `http(s)://` (and `data:image/` for `src`), a link opens only on the
+  reader's click (`rel="noopener noreferrer"`), and a remote image loads only
+  after the reader clicks *Load image* (an inline `data:` image shows at
+  once). `Text` and labels are rendered as text nodes (React escapes;
+  iocraft draws characters). No `dangerouslySetInnerHTML` anywhere in our
+  components.
 - Mermaid: `securityLevel: "strict"` disables `click` callbacks and
   `htmlLabels: false` keeps labels as text; `@streamdown/mermaid` renders
   into an SVG the way jarvis did but without DOMPurify — if step 6 shows
@@ -933,7 +891,7 @@ valid `||--o|` in `erDiagram`. Consequences below.
 - **Bindings**: `just ts` also writes `bindings/surface-catalog.json`
   (schemars) and `surface-catalog-compact.txt`; the desktop vitest
   `catalog.test.ts` normalises both the JSON schema and the zod catalog to
-  one shape tree and compares all 18 components (required/optional props,
+  one shape tree and compares all 36 components (required/optional props,
   enum values, `Grid.columns` 1..6, `Heading.level` 1..4, containers).
   Mutation check: dropping `Metric.delta` or renaming `Tabs.labels` fails
   exactly the affected components.
