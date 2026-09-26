@@ -279,6 +279,6 @@ mod tests {
         assert_eq!(refs, vec![note, art]);
         let d = Draft { title: "Fold it".into(), brief: "b".into(), attachments: refs, ..Default::default() };
         let (src, _) = source(&[d], "");
-        assert!(src.contains(r#"c1_brief = TextContent("b\n\n**Attached:** note \"Groceries\" · artifact \"Q3 \\\"report\\\"\"")"#), "{src}");
+        assert!(src.contains(r#"c1_brief = TextContent("b\n\n**Attached:** note \"Groceries\" · artifact \"Q3 \"report\"\"")"#), "{src}");
     }
 }
