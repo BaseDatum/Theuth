@@ -1,6 +1,6 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { Blocks, Circle, PanelLeft, Play, Plus } from 'lucide-react'
-import { type MutableRefObject, type PointerEvent, type SyntheticEvent, useRef, useState } from 'react'
+import { type DragEvent, type MutableRefObject, type PointerEvent, type SyntheticEvent, useEffect, useRef, useState } from 'react'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -42,23 +42,31 @@ function columnAt(x: number, y: number): TaskState | null {
  * native drag handler for file drops, which swallows `dragstart`, so `draggable` cards never moved in the app.
  * Spread on the card's `<li>`; a press that became a drag never follows the card's link. Without `drag` (a card on a
  * page that does not move tasks) the handlers do nothing.
+ *
+ * The card's `<a>` must not start a native drag of its href: that ends the pointer sequence without `pointerup`
+ * while the `<li>` keeps capture, so the drop only landed on the next click (UI-FIXES-3). The link is
+ * `draggable={false}` and `dragstart` is cancelled here as well.
  */
 function useCardDrag(task: Task, drag?: DragProps) {
   const press = useRef<{ x: number; y: number } | null>(null)
   const swallow = useRef(false)
   const finish = (e: PointerEvent<HTMLElement>, drop: boolean) => {
     press.current = null
-    const d = drag?.ref.current
-    if (!drag || !d) return
+    if (!drag || !e.currentTarget.hasPointerCapture(e.pointerId)) return
     e.currentTarget.releasePointerCapture(e.pointerId)
     // The click that follows this pointerup belongs to the drag.
     swallow.current = true
     setTimeout(() => (swallow.current = false), 0)
+    // `null` after Escape: the drag is already cancelled, only the capture is left to release.
+    const d = drag.ref.current
     drag.set(null)
-    if (drop && d.over && canDrag(d.task.state, d.over)) drag.onDrop(d.over)
+    if (drop && d?.over && canDrag(d.task.state, d.over)) drag.onDrop(d.over)
   }
   return {
     draggable: false,
+    onDragStart(e: DragEvent<HTMLElement>) {
+      e.preventDefault()
+    },
     onPointerDown(e: PointerEvent<HTMLElement>) {
       if (!drag || e.button !== 0 || touch() || e.metaKey || e.shiftKey) return
       press.current = { x: e.clientX, y: e.clientY }
@@ -108,6 +116,15 @@ export function Board() {
     dragRef.current = d
     setDragState(d)
   }
+  const dragging = drag !== null
+  useEffect(() => {
+    if (!dragging) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDrag(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dragging])
   // No `?project=` yet: the first known project; '' is the explicit "All projects".
   const project = search.project ?? projects[0] ?? ''
   const tasks = useTasks({
@@ -269,6 +286,7 @@ export function TaskCard({ task: t, onStart, drag }: { task: Task; onStart?: () 
       <Link
         to="/tasks/$id"
         params={{ id: t.id }}
+        draggable={false}
         className="block rounded-lg border border-border-subtle bg-background p-2.5 text-sm hover:bg-layer-2"
       >
         <div className="flex items-start gap-1.5">
