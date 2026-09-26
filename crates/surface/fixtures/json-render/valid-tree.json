@@ -1,0 +1,35 @@
+{
+  "root": "t",
+  "elements": {
+    "t": {
+      "type": "Tree",
+      "props": {
+        "items": [
+          {
+            "label": "crates/"
+          },
+          {
+            "label": "surface/",
+            "depth": 1,
+            "detail": "catalog + validator"
+          },
+          {
+            "label": "spec.rs",
+            "depth": 2
+          },
+          {
+            "label": "render.rs",
+            "depth": 2
+          },
+          {
+            "label": "desktop/",
+            "depth": 1
+          },
+          {
+            "label": "docs/"
+          }
+        ]
+      }
+    }
+  }
+}

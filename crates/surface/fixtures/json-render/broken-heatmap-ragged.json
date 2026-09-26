@@ -1,0 +1,27 @@
+{
+  "root": "h",
+  "elements": {
+    "h": {
+      "type": "Heatmap",
+      "props": {
+        "rows": [
+          "a",
+          "b"
+        ],
+        "cols": [
+          "x",
+          "y"
+        ],
+        "cells": [
+          [
+            1,
+            2
+          ],
+          [
+            3
+          ]
+        ]
+      }
+    }
+  }
+}

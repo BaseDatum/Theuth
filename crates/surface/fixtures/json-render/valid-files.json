@@ -1,0 +1,26 @@
+{
+  "root": "f",
+  "elements": {
+    "f": {
+      "type": "FileList",
+      "props": {
+        "items": [
+          {
+            "path": "crates/surface/",
+            "kind": "dir"
+          },
+          {
+            "path": "crates/surface/src/spec.rs",
+            "kind": "rust",
+            "size": "31 KB"
+          },
+          {
+            "path": "docs/design/30-surfaces.md",
+            "kind": "markdown",
+            "size": "64 KB"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "hash": "e8231c352d6a578d1638151649bb0aad63c5243d51d3eb982e2f5607cf717d72",
+  "hash": "4691f8041bf62892c0da90ab09d00d502488aca0fd5cd381e2051fe874c0b0f8",
   "pins": {
     "@openuidev/lang-core": "0.3.0",
     "@openuidev/react-headless": "0.16.1",
@@ -74,7 +74,9 @@
     "Slider",
     "Button",
     "Buttons",
-    "Graph"
+    "Graph",
+    "OptionCards",
+    "OptionCard"
   ],
   "componentGroups": [
     {
@@ -187,10 +189,13 @@
         "SwitchGroup",
         "SwitchItem",
         "Chips",
-        "ChipItem"
+        "ChipItem",
+        "OptionCards",
+        "OptionCard"
       ],
       "notes": [
         "- Chips: compact single/multiple selection pills. Use ChipItem references for each option.",
+        "- OptionCards: larger selectable cards with title, subtitle and an optional Icon or Image on top. Use OptionCard references for each option.",
         "- rules is an optional object: {required: true, email: true, minLength: 8, maxLength: 100}",
         "- Available rules: required, email, min, max, minLength, maxLength, pattern, url, numeric",
         "- The renderer shows error messages automatically — do NOT generate error text in the UI",
@@ -447,6 +452,14 @@
     "Graph": {
       "signature": "Graph(nodes: {id: string, label: string, kind?: \"box\" | \"rounded\" | \"pill\" | \"diamond\" | \"cylinder\" | \"actor\", group?: string, state?: \"default\" | \"active\" | \"done\" | \"muted\" | \"danger\"}[], edges: {from: string, to: string, label?: string, style?: \"solid\" | \"dashed\"}[], groups?: {id: string, label: string}[], direction?: \"LR\" | \"TB\", highlight?: $binding<string[]>, onSelect?: ActionExpression)",
       "description": "Typed boxes and arrows: nodes (id, label, kind?, group?, state?), directed edges (from, to, label?, style?), optional groups. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`)."
+    },
+    "OptionCards": {
+      "signature": "OptionCards(name: string, type?: \"single\" | \"multiple\", items?: OptionCard[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, defaultValue?: string | string[])",
+      "description": "A form field of selectable cards (title, optional subtitle, optional icon or image) laid out in a responsive grid for choosing one or many options; the selection is stored under `name`."
+    },
+    "OptionCard": {
+      "signature": "OptionCard(value: string, title: string, subtitle?: string, topContent?: Icon | Image | Graph, disabled?: boolean)",
+      "description": "A single selectable card inside an OptionCards group, with a value, title, optional subtitle and an optional Icon or Image on top."
     }
   },
   "reactive": {
@@ -643,6 +656,12 @@
       },
       "Graph": {
         "$ref": "#/$defs/Graph"
+      },
+      "OptionCards": {
+        "$ref": "#/$defs/OptionCards"
+      },
+      "OptionCard": {
+        "$ref": "#/$defs/OptionCard"
       }
     },
     "required": [
@@ -699,7 +718,9 @@
       "Slider",
       "Button",
       "Buttons",
-      "Graph"
+      "Graph",
+      "OptionCards",
+      "OptionCard"
     ],
     "additionalProperties": false,
     "$defs": {
@@ -2922,6 +2943,118 @@
         ],
         "additionalProperties": false,
         "description": "Numeric slider input; supports continuous and discrete (stepped) variants"
+      },
+      "OptionCards": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "default": "single",
+            "type": "string",
+            "enum": [
+              "single",
+              "multiple"
+            ]
+          },
+          "items": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/OptionCard"
+            }
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "email": {
+                "type": "boolean"
+              },
+              "url": {
+                "type": "boolean"
+              },
+              "numeric": {
+                "type": "boolean"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "minLength": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "defaultValue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "items"
+        ],
+        "additionalProperties": false,
+        "description": "A form field of selectable cards (title, optional subtitle, optional icon or image) laid out in a responsive grid for choosing one or many options; the selection is stored under `name`."
+      },
+      "OptionCard": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          },
+          "topContent": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Icon"
+              },
+              {
+                "$ref": "#/$defs/Image"
+              },
+              {
+                "$ref": "#/$defs/Graph"
+              }
+            ]
+          },
+          "disabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value",
+          "title"
+        ],
+        "additionalProperties": false,
+        "description": "A single selectable card inside an OptionCards group, with a value, title, optional subtitle and an optional Icon or Image on top."
       }
     }
   }

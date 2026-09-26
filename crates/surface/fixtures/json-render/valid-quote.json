@@ -1,0 +1,12 @@
+{
+  "root": "q",
+  "elements": {
+    "q": {
+      "type": "Quote",
+      "props": {
+        "text": "Show first, then tell.",
+        "source": "design doc 30 §6"
+      }
+    }
+  }
+}

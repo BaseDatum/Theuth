@@ -190,6 +190,39 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
                 ));
             }
             Component::Graph(g) => graph(g, &format!("{p}/props"), &mut errs),
+            Component::Heatmap(h) => {
+                if h.cells.len() != h.rows.len() {
+                    errs.push(err(
+                        &format!("{p}/props/cells"),
+                        format!("{} rows of cells, {} rows", h.cells.len(), h.rows.len()),
+                    ));
+                }
+                for (i, row) in h
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.len() != h.cols.len())
+                {
+                    errs.push(err(
+                        &format!("{p}/props/cells/{i}"),
+                        format!("{} cells, {} columns", row.len(), h.cols.len()),
+                    ));
+                }
+            }
+            Component::Image(i) if !is_image_src(&i.src) => {
+                errs.push(err(
+                    &format!("{p}/props/src"),
+                    "src must be http(s) or data:image",
+                ));
+            }
+            Component::LinkList(l) => {
+                for (i, _) in l.items.iter().enumerate().filter(|(_, l)| !is_http(&l.url)) {
+                    errs.push(err(
+                        &format!("{p}/props/items/{i}/url"),
+                        "url must be http(s)",
+                    ));
+                }
+            }
             _ => {}
         }
         elements.insert(
@@ -234,6 +267,17 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
         }),
         _ => Err(errs),
     }
+}
+
+/// `http://` or `https://`, case-insensitive.
+fn is_http(url: &str) -> bool {
+    let l = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+/// [`is_http`] or an inline `data:image/…` URL: what `<img src>` may load.
+fn is_image_src(src: &str) -> bool {
+    is_http(src) || src.get(..11).unwrap_or(src).eq_ignore_ascii_case("data:image/")
 }
 
 /// `Graph` checks serde cannot express (65 §3.2): unique node and group ids, edge endpoints and
@@ -658,5 +702,29 @@ mod tests {
         let errs = errors(&body.to_string());
         assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/edges/1/from: unknown node \"zz\""), "{errs:?}");
         assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/nodes/0/label: 81 characters, limit 80"), "{errs:?}");
+    }
+
+    #[test]
+    fn heatmap_shape_and_url_schemes() {
+        let body = json!({ "root": "s", "elements": {
+            "s": { "type": "Stack", "children": ["h", "i", "l"] },
+            "h": { "type": "Heatmap", "props": { "rows": ["a", "b"], "cols": ["x", "y"], "cells": [[1, 2], [3]] } },
+            "i": { "type": "Image", "props": { "src": "javascript:alert(1)", "alt": "x" } },
+            "l": { "type": "LinkList", "props": { "items": [{ "title": "ok", "url": "HTTPS://a.example" }, { "title": "no", "url": "file:///etc/passwd" }] } }
+        } });
+        let mut got = paths(&body.to_string());
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "/elements/h/props/cells/1",
+                "/elements/i/props/src",
+                "/elements/l/props/items/1/url",
+            ]
+        );
+        let ragged = json!({ "root": "h", "elements": { "h": { "type": "Heatmap", "props": { "rows": ["a"], "cols": ["x"], "cells": [[1], [2]] } } } });
+        assert_eq!(errors(&ragged.to_string())[0].to_string(), "/elements/h/props/cells: 2 rows of cells, 1 rows");
+        let ok = json!({ "root": "i", "elements": { "i": { "type": "Image", "props": { "src": "data:image/png;base64,AA==", "alt": "dot" } } } });
+        assert!(crate::parse(&ok.to_string()).is_ok());
     }
 }

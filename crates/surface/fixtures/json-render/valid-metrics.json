@@ -2,7 +2,7 @@
   "root": "row",
   "elements": {
     "row": {"type": "Stack", "props": {"direction": "horizontal", "gap": "lg"}, "children": ["m1", "m2", "m3", "m4"]},
-    "m1": {"type": "Metric", "props": {"label": "Requests / s", "value": "1 240", "trend": "up", "delta": "+12%"}},
+    "m1": {"type": "Metric", "props": {"label": "Requests / s", "value": "1 240", "trend": "up", "delta": "+12%", "spark": [900, 1050, 980, 1120, 1240]}},
     "m2": {"type": "Metric", "props": {"label": "Error rate", "value": "0.4%", "trend": "down", "delta": "-0.2 pt"}},
     "m3": {"type": "Metric", "props": {"label": "p99", "value": "180 ms", "trend": "flat"}},
     "m4": {"type": "Metric", "props": {"label": "Hosts", "value": "12"}}

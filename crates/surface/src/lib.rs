@@ -204,7 +204,7 @@ mod tests {
         };
     }
 
-    const VALID: [(&str, &str); 15] = [
+    const VALID: [(&str, &str); 32] = [
         fixture!("valid-release-readiness"),
         fixture!("valid-status-board"),
         fixture!("valid-stack-text"),
@@ -220,6 +220,23 @@ mod tests {
         fixture!("graph-architecture"),
         fixture!("graph-dependency-lr"),
         fixture!("graph-pipeline-tb"),
+        fixture!("valid-steps"),
+        fixture!("valid-callout"),
+        fixture!("valid-code"),
+        fixture!("valid-diff"),
+        fixture!("valid-tree"),
+        fixture!("valid-glossary"),
+        fixture!("valid-quote"),
+        fixture!("valid-image"),
+        fixture!("valid-links"),
+        fixture!("valid-tags"),
+        fixture!("valid-gauge"),
+        fixture!("valid-sparkline"),
+        fixture!("valid-heatmap"),
+        fixture!("valid-person"),
+        fixture!("valid-files"),
+        fixture!("valid-kanban"),
+        fixture!("valid-calendar"),
     ];
 
     const REPAIRABLE: [(&str, &str); 4] = [
@@ -231,7 +248,7 @@ mod tests {
 
     const TRUNCATED: (&str, &str) = fixture!("broken-truncated");
 
-    const LOCATED: [((&str, &str), &str); 7] = [
+    const LOCATED: [((&str, &str), &str); 10] = [
         (fixture!("broken-unknown-type"), "/elements/t/type"),
         (fixture!("broken-missing-child"), "/elements/r/children/1"),
         (fixture!("broken-shared-child"), "/"),
@@ -251,6 +268,9 @@ mod tests {
             fixture!("graph-broken-dup-id"),
             "/elements/g/props/nodes/2/group",
         ),
+        (fixture!("broken-heatmap-ragged"), "/elements/h/props/cells/1"),
+        (fixture!("broken-image-src"), "/elements/i/props/src"),
+        (fixture!("broken-link-url"), "/elements/l/props/items/0/url"),
     ];
 
     /// `broken-unknown-type`: fails at `/elements/t/type`.

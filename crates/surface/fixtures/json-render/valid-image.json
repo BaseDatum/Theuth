@@ -1,0 +1,13 @@
+{
+  "root": "i",
+  "elements": {
+    "i": {
+      "type": "Image",
+      "props": {
+        "src": "https://example.com/arch.png",
+        "alt": "Architecture diagram",
+        "caption": "Three crates, one bus"
+      }
+    }
+  }
+}

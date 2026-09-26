@@ -1,0 +1,20 @@
+{
+  "root": "g",
+  "elements": {
+    "g": {
+      "type": "Glossary",
+      "props": {
+        "items": [
+          {
+            "term": "Fence",
+            "text": "A triple-backtick block with a language tag."
+          },
+          {
+            "term": "Surface",
+            "text": "Anything a fence renders into: TUI lines, a desktop card, plain text."
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "LinkList",
+      "props": {
+        "items": [
+          {
+            "title": "Design doc 30",
+            "url": "https://example.com/docs/30",
+            "note": "Surfaces"
+          },
+          {
+            "title": "Tracking issue",
+            "url": "https://example.com/issues/67"
+          }
+        ]
+      }
+    }
+  }
+}

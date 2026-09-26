@@ -1,0 +1,6 @@
+├ crates/
+│ ├ surface/  catalog + validator
+│ │ ├ spec.rs
+│ │ ├ render.rs
+│ ├ desktop/
+├ docs/

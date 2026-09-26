@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 19] = [
+const EXAMPLES: [(&str, &str); 36] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -86,6 +86,74 @@ const EXAMPLES: [(&str, &str); 19] = [
         "Graph",
         r#"{"type": "Graph", "props": {"direction": "LR", "groups": [{"id": "edge", "label": "Edge"}], "nodes": [{"id": "web", "label": "Browser", "kind": "actor", "group": "edge"}, {"id": "api", "label": "API", "kind": "rounded", "state": "active"}, {"id": "db", "label": "Postgres", "kind": "cylinder"}], "edges": [{"from": "web", "to": "api", "label": "HTTPS"}, {"from": "api", "to": "db", "style": "dashed"}]}}"#,
     ),
+    (
+        "Steps",
+        r#"{"type": "Steps", "props": {"items": [{"title": "Install the CLI", "detail": "brew install theuth"}, {"title": "Sign in"}, {"title": "Run the first session"}]}}"#,
+    ),
+    (
+        "Callout",
+        r#"{"type": "Callout", "props": {"title": "Faster builds", "text": "Use cargo check while iterating.", "variant": "tip"}}"#,
+    ),
+    (
+        "Code",
+        r#"{"type": "Code", "props": {"lang": "toml", "title": "Cargo.toml", "text": "[dependencies]\nserde = \"1\""}}"#,
+    ),
+    (
+        "Diff",
+        r#"{"type": "Diff", "props": {"from": "v1.2", "to": "v1.3", "before": "timeout = 30", "after": "timeout = 60"}}"#,
+    ),
+    (
+        "Tree",
+        r#"{"type": "Tree", "props": {"items": [{"label": "crates/"}, {"label": "surface/", "depth": 1, "detail": "catalog"}, {"label": "spec.rs", "depth": 2}, {"label": "docs/"}]}}"#,
+    ),
+    (
+        "Glossary",
+        r#"{"type": "Glossary", "props": {"items": [{"term": "Fence", "text": "A triple-backtick block with a language tag."}, {"term": "Surface", "text": "What a fence renders into."}]}}"#,
+    ),
+    (
+        "Quote",
+        r#"{"type": "Quote", "props": {"text": "Show first, then tell.", "source": "design doc 30"}}"#,
+    ),
+    (
+        "Image",
+        r#"{"type": "Image", "props": {"src": "https://example.com/arch.png", "alt": "Architecture diagram", "caption": "Three crates, one bus"}}"#,
+    ),
+    (
+        "LinkList",
+        r#"{"type": "LinkList", "props": {"items": [{"title": "Design doc 30", "url": "https://example.com/docs/30", "note": "Surfaces"}, {"title": "Tracking issue", "url": "https://example.com/issues/67"}]}}"#,
+    ),
+    (
+        "Tags",
+        r#"{"type": "Tags", "props": {"items": [{"text": "rust"}, {"text": "reviewed", "variant": "success"}, {"text": "blocked", "variant": "destructive"}]}}"#,
+    ),
+    (
+        "Gauge",
+        r#"{"type": "Gauge", "props": {"value": 72, "max": 100, "label": "Disk used"}}"#,
+    ),
+    (
+        "Sparkline",
+        r#"{"type": "Sparkline", "props": {"label": "p99 ms", "values": [180, 175, 190, 210, 160, 150]}}"#,
+    ),
+    (
+        "Heatmap",
+        r#"{"type": "Heatmap", "props": {"rows": ["Mon", "Tue"], "cols": ["build", "test", "deploy"], "cells": [[3, 12, 1], [0, 8, 2]]}}"#,
+    ),
+    (
+        "Person",
+        r#"{"type": "Person", "props": {"name": "Ada Lovelace", "role": "Release owner", "contact": "ada@example.com"}}"#,
+    ),
+    (
+        "FileList",
+        r#"{"type": "FileList", "props": {"items": [{"path": "crates/surface/", "kind": "dir"}, {"path": "crates/surface/src/spec.rs", "kind": "rust", "size": "31 KB"}]}}"#,
+    ),
+    (
+        "Kanban",
+        r#"{"type": "Kanban", "props": {"columns": [{"title": "Todo", "cards": [{"title": "Golden files", "tag": "tests"}]}, {"title": "Doing", "cards": [{"title": "Renderer arms", "detail": "17 to go"}]}, {"title": "Done", "cards": [{"title": "Spec types"}]}]}}"#,
+    ),
+    (
+        "Calendar",
+        r#"{"type": "Calendar", "props": {"title": "Rollout week", "days": [{"day": "Mon 22", "label": "schema", "state": "done"}, {"day": "Wed 24", "label": "canary", "state": "active"}, {"day": "Fri 26", "label": "full", "state": "pending"}]}}"#,
+    ),
 ];
 
 /// The `## Show first, then tell` prompt block (doc §6.2): [`BLOCK_HEAD`], the compact
@@ -97,14 +165,14 @@ pub fn prompt_block() -> String {
 
 /// Everything of the block before the catalog line's `Catalog: `.
 const BLOCK_HEAD: &str = "## Show first, then tell\n\
-This chat renders pictures, and a reader takes in a picture in one glance where the same content as prose takes ten. **Default to showing.** Words are for what a picture cannot carry: the reason, a caveat, an exact value the reader must copy, an instruction, the decision you need from them. Most substantive replies should contain at least one block; a reply that is only paragraphs and bullets should be the exception you chose, not the habit.\n\
+This chat renders pictures, and a reader takes in a picture in one glance where the same content as prose takes ten. **Default to showing.** Most substantive replies contain at least one rendered block; a reply that is only paragraphs and bullets is the exception you chose for a reason, not the habit. Words are for what a picture cannot carry: the reason, a caveat, an exact value the reader must copy, an instruction, the decision you need from them.\n\
 \n\
-Three fenced blocks render (the terminal and desktop draw them, other channels read them as text):\n\
-- ```json-render: structured data and boxes-and-arrows. Catalog: ";
+Three fenced blocks render inline, merged into your reply with the same margins as your prose (the terminal draws json-render and mermaid; other channels read every block as text):\n\
+- ```json-render: structured data, boxes-and-arrows, and the small explanatory pieces. Catalog: ";
 
 /// Everything of the block after the catalog.
 const BLOCK_TAIL: &str = "\n\
-- ```openui: richer static cards with local interaction: Steps, Tabs, Callout, Card, Table, BarChart/LineChart, MetricIndicatorInline, Buttons with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence.\n\
+- ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
 - ```mermaid: sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, timeline, mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph).\n\
 \n\
 Pick by the shape of the answer:\n\
@@ -114,25 +182,34 @@ Pick by the shape of the answer:\n\
 | who calls whom in what order | mermaid sequenceDiagram |\n\
 | lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |\n\
 | schema, types, relationships | mermaid erDiagram / classDiagram |\n\
-| how-to or explanation in steps | openui Steps |\n\
+| how-to or explanation in steps | json-render Steps, or openui Steps |\n\
 | options with trade-offs, alternatives | openui Tabs (one per option), or json-render Table on shared criteria |\n\
-| a comparison, before/after, a matrix | json-render Table (Badge for verdict cells) |\n\
-| status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress) |\n\
-| what happened when: incident, history, plan | json-render Timeline (state per item) |\n\
-| numbers, counts, durations, sizes | json-render MetricGrid / Bars, openui BarChart / LineChart for series |\n\
-| a warning, a blocker, the one thing to act on | openui Callout or json-render Alert |\n\
+| a comparison, before/after, a matrix | json-render Table (Badge for verdict cells); two versions of text or config: Diff; rows × columns of intensity: Heatmap |\n\
+| status of work, checks, tests, a rollout | json-render MetricGrid + Checklist (or Progress); work in stages: Kanban |\n\
+| what happened when: incident, history, plan | json-render Timeline (state per item); days of a week or month: Calendar |\n\
+| numbers, counts, durations, sizes | json-render MetricGrid / Bars; one value against a limit: Gauge; a trend without axes: Sparkline or Metric with spark; openui BarChart / LineChart for full charts |\n\
+| a warning, a blocker, the one thing to act on | json-render Alert (severity) |\n\
+| an aside: a tip, a note, a question, a must-know | json-render Callout or openui Callout |\n\
 | facts about one thing (config, host, PR) | json-render KeyValueList |\n\
+| terms and what they mean | json-render Glossary |\n\
+| a snippet the reader will read, not run | json-render Code (copy button) — commands to run stay a plain code block |\n\
+| files, directories, a repository layout | json-render FileList (flat) or Tree (nested) |\n\
+| labels, categories, a set of states | json-render Tags |\n\
+| references, further reading | json-render LinkList |\n\
+| a picture you have a URL for | json-render Image |\n\
+| who: an owner, a contact, a reviewer | json-render Person |\n\
+| something someone said, verbatim | json-render Quote |\n\
 \n\
 Shapes for the replies you write most:\n\
 - **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
 - **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
-- **Plan or proposal:** Steps or Timeline → Table of risks/choices → the question for the user in words.\n\
+- **Plan or proposal:** Steps or Timeline (Calendar when dates matter) → Table of risks/choices → the question for the user in words.\n\
 - **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say.\n\
 - **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
 \n\
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
 \n\
-Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, code, commands, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
+Rules: one picture per idea, and a reply may hold several ideas; up to ~12 nodes or ~15 rows per block (split beyond that); labels ≤ 4 words; the takeaway goes in one sentence before the block, and prose never narrates what the picture already shows. Do not draw a one-line answer, commands to run, or text the user asked to copy. In a voice-note reply, draw nothing.\n\
 Mermaid styling: outline, never fill. Every classDef is `fill:none,stroke:<color>,stroke-width:2.5px` (add `stroke-dasharray:6 3` for a soft category); red #dc2626 gate/blocker, blue #2563eb mutation, amber #d97706 warning/non-gating, green #16a34a done, gray #6b7280 external; at most three classes; `rect rgba(0,0,0,0)` for sequence bands; put the category in the node text and end with a one-line legend. No `\"` or `;` inside labels, no parentheses inside `([...])`. Full guide: the visualize skill.\n\
 \n\
 Every block must be complete and closed. In json-render every `children` id must be an element, every `type` must be in the catalog, and the JSON must be strict (double quotes, no trailing commas, no comments). If a block fails to render you will receive a <surface_error> with the exact path of each error: answer with the corrected block only.\n\
@@ -293,7 +370,9 @@ mod tests {
             assert!(block.contains(&format!("{}(", e.name)), "{}", e.name);
         }
         assert!(block.contains("<surface_error>"));
-        assert!(block.contains("No Query/Mutation/@ToAssistant in a fence."));
+        assert!(block.contains("No Query/Mutation/@ToAssistant in a fence"));
+        assert!(block.contains("rendered inline exactly like json-render"));
+        assert!(block.contains("| terms and what they mean | json-render Glossary |"));
         assert!(block.contains("\nMermaid styling: outline, never fill. "));
         assert!(block.ends_with("}}}}\n```"));
 

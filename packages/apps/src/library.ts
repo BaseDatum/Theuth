@@ -96,6 +96,9 @@ export const CURATED_COMPONENTS = [
   "Buttons",
   // theuth (65 §3.5): the one display component no upstream component expresses.
   "Graph",
+  // forms (appended 2026-09-25; order is part of the hash)
+  "OptionCards",
+  "OptionCard",
 ] as const;
 
 export type CuratedComponentName = (typeof CURATED_COMPONENTS)[number];

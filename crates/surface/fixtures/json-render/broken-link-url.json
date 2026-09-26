@@ -1,0 +1,16 @@
+{
+  "root": "l",
+  "elements": {
+    "l": {
+      "type": "LinkList",
+      "props": {
+        "items": [
+          {
+            "title": "no",
+            "url": "file:///etc/passwd"
+          }
+        ]
+      }
+    }
+  }
+}

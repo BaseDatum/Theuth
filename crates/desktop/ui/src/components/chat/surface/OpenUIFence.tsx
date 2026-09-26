@@ -3,6 +3,8 @@
  * Open fence: progressive render (`isStreaming`). Closed fence: the static program — `$state`, `@Set`/`@Reset`/`@OpenUrl`
  * and inputs work; `Query`/`Mutation`/`@ToAssistant` are inert and say so. `Open as app` commits the source through
  * `publish_app` (no model turn) and opens the record in the artifact panel.
+ * 2026-09-25 ruling: a fence merges into the message flow like a json-render block — no card, no title bar, only a
+ * hover-revealed `Open as app` / `Show source` toolbar. An app (the published record) stays an app card.
  */
 import '@openuidev/react-ui/layered/styles/index.css'
 import { ThemeProvider } from '@openuidev/react-ui'
@@ -62,6 +64,7 @@ export function OpenUIFence({ code, isIncomplete }: CustomRendererProps) {
   const api = useApi()
   const dark = useDark()
   const [busy, setBusy] = useState(false)
+  const [source, setSource] = useState(false)
   // The closed program's first failure; tool availability is the engine's business (the transcript has no snapshot).
   const error = useMemo(
     () => (isIncomplete ? undefined : check(code, []).diagnostics.find((d) => d.code !== 'tool-unknown')?.message),
@@ -77,20 +80,23 @@ export function OpenUIFence({ code, isIncomplete }: CustomRendererProps) {
     }
   }
   return (
-    <div className="my-4 rounded-xl border bg-layer-1" data-streamdown="openui">
-      <div className="flex h-8 items-center justify-between pl-3 pr-1 font-mono text-xs text-fg-tertiary">
-        openui
+    <div className="group relative my-4 text-sm" data-streamdown="openui">
+      <div className="absolute top-0 right-0 z-10 flex gap-1 rounded-lg bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         {session !== undefined && (
           <Button variant="ghost" size="sm" disabled={isIncomplete || busy} onClick={() => void publish()}>
             Open as app
           </Button>
         )}
+        <Button variant="ghost" size="sm" onClick={() => setSource((s) => !s)}>
+          {source ? 'Hide source' : 'Show source'}
+        </Button>
       </div>
-      <div className="px-3 pb-3 text-sm [&_a]:underline">
+      <div className="[&_a]:underline">
         <ThemeProvider mode={dark ? 'dark' : 'light'}>
           <AppRenderer response={code} library={library} isStreaming={isIncomplete} generation={0} provider={staticProvider} paused={false} onAction={onAction} />
         </ThemeProvider>
       </div>
+      {source && <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{code}</pre>}
     </div>
   )
 }

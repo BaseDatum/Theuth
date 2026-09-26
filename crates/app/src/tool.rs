@@ -49,8 +49,9 @@ reset = Button(\"Reset\", Action([@Reset($stage)]), \"secondary\")\n\
 docs = Button(\"Runbook\", Action([@OpenUrl(\"https://example.com/runbook\")]))";
 
 /// Components whose compact signature the prompt block carries (46 §9 as-built): the
-/// ones a first attempt reaches for; the rest live in the `apps` skill's full catalog.
-const PROMPT_COMPONENTS: [&str; 23] = [
+/// ones a first attempt reaches for, including the explanatory set an inline ```openui
+/// reply fence uses; the rest live in the `apps` skill's full catalog.
+const PROMPT_COMPONENTS: [&str; 31] = [
     "Stack",
     "Card",
     "CardHeader",
@@ -74,6 +75,14 @@ const PROMPT_COMPONENTS: [&str; 23] = [
     "Input",
     "Select",
     "SelectItem",
+    "Tag",
+    "Accordion",
+    "AccordionItem",
+    "CodeBlock",
+    "Chips",
+    "ChipItem",
+    "OptionCards",
+    "OptionCard",
 ];
 
 /// Prompt block registered as `RegisterPrompt { plugin: "app" }` (46 §9):
@@ -85,7 +94,7 @@ const PROMPT_COMPONENTS: [&str; 23] = [
 pub fn prompt() -> String {
     let mut out = String::with_capacity(4096);
     out.push_str("## Interactive screens: `app`\n\
-Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for a static picture, `show` for files. OpenUI Lang: one `name = expression` per line; `root` is required; components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only the component names below exist (no Heading/Text/State/OpenURL). A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_get`/`http_post` for public HTTP APIs. Every statement must be complete on its own line; the receipt's `record_call_id` is what you pass back with `edit: true` to change the app instead of republishing it. Once the app is published, the user has it: do not describe it back.\n\
+Use `app {name, source}` for a clickable prototype or a live interactive screen (desktop/web, progressive). Surface fences are for a static picture (an ```openui fence in a reply renders inline in the message flow exactly like a json-render block: `$state`, @Set/@Reset/@OpenUrl and inputs work, Query/Mutation/@ToAssistant are inert); apps are for live data and actions; `show` for files. OpenUI Lang: one `name = expression` per line; `root` is required; components take POSITIONAL arguments in the signature order below (skip an optional one with `null`); `$name = literal` declares state; only the component names below exist (no Heading/Text/State/OpenURL). A button press approves its action: say the consequence in the label, never add a second confirmation. Links, external images and services are welcome. `Query(tool, args, defaults, refreshSeconds?)` reads an installed tool; `Mutation(tool, args)` runs only from `@Run` in an activated action. Prefer installed tools, then `http_get`/`http_post` for public HTTP APIs. Every statement must be complete on its own line; the receipt's `record_call_id` is what you pass back with `edit: true` to change the app instead of republishing it. Once the app is published, the user has it: do not describe it back.\n\
 Example:\n```openui\n");
     out.push_str(EXAMPLE);
     out.push_str("\n```\nComponents (positional args, `?` optional): ");
@@ -94,7 +103,7 @@ Example:\n```openui\n");
         "\nActions: @Run(queryOrMutation), @Set($var, value), @Reset($var), @OpenUrl(url), @ToAssistant(message, context?). \
          Builtins: @Each(array, item, template), @Count, @Sum, @Avg, @Min, @Max, @Sort(array, field, dir?), @Filter(array, field, op, value), @Round, @Abs, @Floor, @Ceil. \
          Results: query value is the tool's structured result; mutation exposes .status/.data/.error. \
-         Full catalog (charts, Accordion, Tag, Carousel, forms…): the `apps` skill.",
+         Full catalog (Carousel, ImageGallery, RadarChart, ScatterChart, forms…): the `apps` skill.",
     );
     out
 }
@@ -517,15 +526,18 @@ mod tests {
             sigs.iter().all(|s| !s.contains(':') && !s.contains('"')),
             "no types leak: {sigs:?}"
         );
-        // The rest of the catalog is the skill's.
-        assert!(!sigs.iter().any(|s| s.starts_with("Accordion(")), "{sigs:?}");
-        assert!(compact_signatures(&["Accordion"]) == vec!["Accordion(items)".to_owned()]);
+        // The explanatory set an inline reply fence reaches for is in the prompt; the rest is the skill's.
+        assert!(sigs.contains(&"Accordion(items)".to_owned()), "{sigs:?}");
+        assert!(sigs.iter().any(|s| s.starts_with("OptionCards(")), "{sigs:?}");
+        assert!(!sigs.iter().any(|s| s.starts_with("Carousel(")), "{sigs:?}");
+        assert!(compact_signatures(&["Carousel"]).len() == 1);
         let p = prompt();
         assert!(p.contains("```openui\nroot = Stack(["));
         assert!(p.contains("no Heading/Text/State/OpenURL"));
-        assert!(p.ends_with("Full catalog (charts, Accordion, Tag, Carousel, forms…): the `apps` skill."));
-        assert!(!p.contains("Accordion("));
-        assert!(crate::skill().contains("Accordion(items"));
+        assert!(p.ends_with("Full catalog (Carousel, ImageGallery, RadarChart, ScatterChart, forms…): the `apps` skill."));
+        assert!(p.contains("renders inline in the message flow exactly like a json-render block"));
+        assert!(!p.contains("Carousel("));
+        assert!(crate::skill().contains("Carousel("));
         assert!(
             p.len() < 6 * 1024,
             "prompt stays compact: {} bytes",

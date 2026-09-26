@@ -1,0 +1,43 @@
+{
+  "root": "c",
+  "elements": {
+    "c": {
+      "type": "Stack",
+      "children": [
+        "n",
+        "t",
+        "q",
+        "i"
+      ]
+    },
+    "n": {
+      "type": "Callout",
+      "props": {
+        "text": "Sessions are stored per plugin in sqlite."
+      }
+    },
+    "t": {
+      "type": "Callout",
+      "props": {
+        "title": "Faster builds",
+        "text": "Use cargo check while iterating.",
+        "variant": "tip"
+      }
+    },
+    "q": {
+      "type": "Callout",
+      "props": {
+        "text": "Should the cache survive a restart?",
+        "variant": "question"
+      }
+    },
+    "i": {
+      "type": "Callout",
+      "props": {
+        "title": "Back up first",
+        "text": "The migration rewrites every row.",
+        "variant": "important"
+      }
+    }
+  }
+}

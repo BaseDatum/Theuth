@@ -10,8 +10,8 @@ use markdown::{Line, Span, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::spec::{
-    AlertType, BadgeVariant, Component, Direction, Gap, MetricProps, TextVariant, TimelineState,
-    Trend,
+    AlertType, BadgeVariant, CalloutVariant, Component, Direction, Gap, MetricProps, TextVariant,
+    TimelineState, Trend,
 };
 use crate::{Spec, graph, mermaid_lines, parse};
 
@@ -288,7 +288,49 @@ fn metric(p: &MetricProps) -> Vec<Line> {
     if let Some(d) = &p.delta {
         value.push(span(format!(" {d}"), DIM));
     }
+    if let Some(s) = &p.spark {
+        value.push(span(format!(" {}", sparkline(s)), DIM));
+    }
     vec![vec![span(&p.label, DIM)], value]
+}
+
+/// Values as one block glyph each, `▁` for the smallest to `█` for the largest.
+fn sparkline(values: &[f64]) -> String {
+    const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    values
+        .iter()
+        .map(|v| {
+            let f = if hi > lo { (v - lo) / (hi - lo) } else { 0.5 };
+            GLYPHS[((f * 7.0).round() as usize).min(7)]
+        })
+        .collect()
+}
+
+/// `[label]` per item with the `Badge` mark, space-separated on one line.
+fn tag(text: &str, variant: Option<BadgeVariant>) -> String {
+    let mark = match variant {
+        Some(BadgeVariant::Success) => "✓ ",
+        Some(BadgeVariant::Destructive) => "✗ ",
+        Some(BadgeVariant::Warning) => "! ",
+        _ => "",
+    };
+    format!("[{mark}{text}]")
+}
+
+/// Bold `title` (or nothing) over the wrapped `text`, every line prefixed with `prefix`.
+fn titled(prefix: &str, title: Option<&str>, text: &str, width: usize) -> Vec<Line> {
+    let mut out = Vec::new();
+    if let Some(t) = title {
+        out.push(vec![span(prefix, DIM), span(t, BOLD)]);
+    }
+    out.extend(
+        wrap(text, sub(width, prefix.width()))
+            .into_iter()
+            .map(|l| vec![span(prefix, DIM), span(l, PLAIN)]),
+    );
+    out
 }
 
 /// Bar length when `width` is unbounded.
@@ -392,15 +434,7 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             };
             text_lines(&p.text, width, style)
         }
-        Component::Badge(p) => {
-            let mark = match p.variant {
-                Some(BadgeVariant::Success) => "✓ ",
-                Some(BadgeVariant::Destructive) => "✗ ",
-                Some(BadgeVariant::Warning) => "! ",
-                _ => "",
-            };
-            vec![vec![span(format!("[{mark}{}]", p.text), PLAIN)]]
-        }
+        Component::Badge(p) => vec![vec![span(tag(&p.text, p.variant), PLAIN)]],
         Component::Alert(p) => {
             let glyph = match p.kind.unwrap_or(AlertType::Info) {
                 AlertType::Info => "ℹ ",
@@ -555,6 +589,271 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
                 return lines;
             }
             graph::adjacency_lines(p, width)
+        }
+        Component::Steps(p) => {
+            let mut out = Vec::new();
+            for (n, s) in p.items.iter().enumerate() {
+                let head = format!("{}. ", n + 1);
+                out.push(vec![span(&head, DIM), span(&s.title, BOLD)]);
+                if let Some(d) = &s.detail {
+                    let pad = " ".repeat(head.width());
+                    out.extend(
+                        wrap(d, sub(width, head.width()))
+                            .into_iter()
+                            .map(|l| vec![span(format!("{pad}{l}"), PLAIN)]),
+                    );
+                }
+            }
+            out
+        }
+        Component::Callout(p) => {
+            let glyph = match p.variant.unwrap_or(CalloutVariant::Note) {
+                CalloutVariant::Note => "▍ ",
+                CalloutVariant::Tip => "▍💡 ",
+                CalloutVariant::Question => "▍? ",
+                CalloutVariant::Important => "▍! ",
+            };
+            let mut out = titled("▍ ", p.title.as_deref(), &p.text, width);
+            if let Some(first) = out.first_mut() {
+                first[0] = span(glyph, DIM);
+            }
+            out
+        }
+        Component::Code(p) => {
+            let mut out = Vec::new();
+            let head = [p.title.as_deref(), p.lang.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if !head.is_empty() {
+                out.push(vec![span(head, DIM)]);
+            }
+            out.extend(p.text.lines().map(|l| vec![span(l, CODE)]));
+            out
+        }
+        Component::Diff(p) => {
+            let side = |title: &str, text: &str| -> Vec<Line> {
+                let mut b = vec![vec![span(title, BOLD)]];
+                b.extend(text.lines().map(|l| vec![span(l, CODE)]));
+                b
+            };
+            let blocks = [
+                side(p.from.as_deref().unwrap_or("Before"), &p.before),
+                side(p.to.as_deref().unwrap_or("After"), &p.after),
+            ];
+            let widths: Vec<usize> = blocks.iter().map(|b| block_width(b)).collect();
+            if width == 0 || widths.iter().sum::<usize>() + 2 <= width {
+                beside(&blocks, &widths)
+            } else {
+                let [a, b] = blocks;
+                stack(vec![a, b], true)
+            }
+        }
+        Component::Tree(p) => p
+            .items
+            .iter()
+            .map(|i| {
+                let depth = usize::from(i.depth.unwrap_or(0));
+                let mut line = vec![
+                    span(format!("{}├ ", "│ ".repeat(depth)), DIM),
+                    span(&i.label, PLAIN),
+                ];
+                if let Some(d) = &i.detail {
+                    line.push(span(format!("  {d}"), DIM));
+                }
+                line
+            })
+            .collect(),
+        Component::Glossary(p) => {
+            let mut out = Vec::new();
+            for i in &p.items {
+                out.push(vec![span(&i.term, BOLD)]);
+                out.extend(
+                    wrap(&i.text, sub(width, 2))
+                        .into_iter()
+                        .map(|l| vec![span(format!("  {l}"), PLAIN)]),
+                );
+            }
+            out
+        }
+        Component::Quote(p) => {
+            let mut out: Vec<Line> = wrap(&p.text, sub(width, 2))
+                .into_iter()
+                .map(|l| vec![span("┃ ", DIM), span(l, PLAIN)])
+                .collect();
+            if let Some(s) = &p.source {
+                out.push(vec![span(format!("  — {s}"), DIM)]);
+            }
+            out
+        }
+        Component::Image(p) => {
+            let mut out = vec![vec![span("🖼 ", PLAIN), span(&p.alt, PLAIN)]];
+            if let Some(c) = &p.caption {
+                out.extend(text_lines(c, width, DIM));
+            }
+            out
+        }
+        Component::LinkList(p) => {
+            let mut out = Vec::new();
+            for l in &p.items {
+                out.push(vec![span("• ", DIM), span(&l.title, BOLD), span(format!("  {}", l.url), DIM)]);
+                if let Some(n) = &l.note {
+                    out.extend(indent(text_lines(n, sub(width, 2), PLAIN)));
+                }
+            }
+            out
+        }
+        Component::Tags(p) => {
+            let tags: Vec<String> = p.items.iter().map(|t| tag(&t.text, t.variant)).collect();
+            wrap(&tags.join(" "), width)
+                .into_iter()
+                .map(|l| vec![span(l, PLAIN)])
+                .collect()
+        }
+        Component::Gauge(p) => {
+            let min = p.min.unwrap_or(0.0);
+            let max = p.max.unwrap_or(100.0);
+            let f = frac(p.value - min, max - min);
+            let nums = format!("{}  ({}–{})", p.value, min, max);
+            let label = p.label.as_deref().unwrap_or("");
+            let cells = if width == 0 {
+                BAR_UNBOUNDED
+            } else {
+                width.saturating_sub(label.width() + nums.width() + 4).max(10)
+            };
+            let mut line = Line::new();
+            if !label.is_empty() {
+                line.push(span(format!("{label}  "), PLAIN));
+            }
+            line.extend(bar(f, cells));
+            line.push(span(format!("  {nums}"), PLAIN));
+            vec![line]
+        }
+        Component::Sparkline(p) => {
+            let mut line = Vec::new();
+            if let Some(l) = &p.label {
+                line.push(span(format!("{l}  "), DIM));
+            }
+            line.push(span(sparkline(&p.values), PLAIN));
+            vec![line]
+        }
+        Component::Heatmap(p) => {
+            const SHADES: [&str; 5] = ["·", "░", "▒", "▓", "█"];
+            let max = p.max.unwrap_or_else(|| {
+                p.cells.iter().flatten().copied().fold(0.0, f64::max)
+            });
+            let cell = |c: &String, style: Style| -> Line { vec![span(c, style)] };
+            let head = std::iter::once(String::new())
+                .chain(p.cols.iter().cloned())
+                .collect::<Vec<_>>();
+            let rows = std::iter::once(head.iter().map(|c| cell(c, BOLD)).collect())
+                .chain(p.rows.iter().zip(&p.cells).map(|(r, cs)| {
+                    std::iter::once(vec![span(r, BOLD)])
+                        .chain(cs.iter().map(|v| {
+                            let i = ((frac(*v, max) * 4.0).round() as usize).min(4);
+                            vec![span(format!("{} {v}", SHADES[i]), PLAIN)]
+                        }))
+                        .collect()
+                }))
+                .collect();
+            markdown::layout_table(rows, &[])
+        }
+        Component::Person(p) => {
+            let initials: String = p
+                .name
+                .split_whitespace()
+                .take(2)
+                .filter_map(|w| w.chars().next())
+                .flat_map(char::to_uppercase)
+                .collect();
+            let mut line = vec![span(format!("({initials}) "), DIM), span(&p.name, BOLD)];
+            for extra in [&p.role, &p.contact].into_iter().flatten() {
+                line.push(span(format!(" · {extra}"), DIM));
+            }
+            vec![line]
+        }
+        Component::FileList(p) => {
+            let pw = p.items.iter().map(|i| i.path.width()).max().unwrap_or(0);
+            p.items
+                .iter()
+                .map(|i| {
+                    let folder = i.kind.as_deref() == Some("dir") || i.path.ends_with('/');
+                    let mut line = vec![
+                        span(if folder { "▸ " } else { "· " }, DIM),
+                        span(format!("{}{}", i.path, " ".repeat(pw - i.path.width())), CODE),
+                    ];
+                    for extra in [&i.kind, &i.size].into_iter().flatten() {
+                        line.push(span(format!("  {extra}"), DIM));
+                    }
+                    line
+                })
+                .collect()
+        }
+        Component::Kanban(p) => {
+            let blocks: Vec<Vec<Line>> = p
+                .columns
+                .iter()
+                .map(|c| {
+                    let mut b = vec![vec![span(format!("{} ({})", c.title, c.cards.len()), BOLD)]];
+                    for card in &c.cards {
+                        let mut line = vec![span("• ", DIM), span(&card.title, PLAIN)];
+                        if let Some(t) = &card.tag {
+                            line.push(span(format!(" [{t}]"), DIM));
+                        }
+                        b.push(line);
+                        if let Some(d) = &card.detail {
+                            b.push(vec![span(format!("  {d}"), DIM)]);
+                        }
+                    }
+                    b
+                })
+                .collect();
+            let widths: Vec<usize> = blocks.iter().map(|b| block_width(b)).collect();
+            let total = widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1);
+            if width == 0 || total <= width {
+                beside(&blocks, &widths)
+            } else {
+                stack(blocks, true)
+            }
+        }
+        Component::Calendar(p) => {
+            let mut out = Vec::new();
+            if let Some(t) = &p.title {
+                out.push(vec![span(t, BOLD)]);
+            }
+            // One day per line when the strip would not fit: each day is a two-span cell.
+            let cells: Vec<Line> = p
+                .days
+                .iter()
+                .map(|d| {
+                    let glyph = match d.state {
+                        Some(TimelineState::Done) => "●",
+                        Some(TimelineState::Active) => "◉",
+                        Some(TimelineState::Pending) => "○",
+                        None => "·",
+                    };
+                    let mut cell = vec![span(format!("{glyph} {}", d.day), PLAIN)];
+                    if let Some(l) = &d.label {
+                        cell.push(span(format!(" {l}"), DIM));
+                    }
+                    cell
+                })
+                .collect();
+            let total: usize = cells.iter().map(line_width).sum::<usize>() + 2 * cells.len().saturating_sub(1);
+            if width == 0 || total <= width {
+                let mut line = Line::new();
+                for cell in cells {
+                    if !line.is_empty() {
+                        line.push(span("  ", PLAIN));
+                    }
+                    line.extend(cell);
+                }
+                out.push(line);
+            } else {
+                out.extend(cells);
+            }
+            out
         }
     }
 }

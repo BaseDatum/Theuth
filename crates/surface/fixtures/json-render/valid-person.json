@@ -1,0 +1,13 @@
+{
+  "root": "p",
+  "elements": {
+    "p": {
+      "type": "Person",
+      "props": {
+        "name": "Ada Lovelace",
+        "role": "Release owner",
+        "contact": "ada@example.com"
+      }
+    }
+  }
+}

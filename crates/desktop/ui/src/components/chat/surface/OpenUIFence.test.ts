@@ -15,11 +15,15 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), err
 const SRC = 'root = Stack([t])\nt = TextContent("hi")'
 const fence = (code: string, isIncomplete: boolean) => createElement(OpenUIFence, { code, isIncomplete, language: 'openui' })
 
-test('a closed two-statement program renders its text inside the frame', () => {
+test('a closed two-statement program renders its text merged into the flow: no card chrome, no title bar, hover toolbar', () => {
   const html = renderToStaticMarkup(fence(SRC, false))
   expect(html).toContain('data-streamdown="openui"')
   expect(html).toContain('hi')
+  expect(html).not.toContain('rounded-xl border')
+  expect(html).not.toContain('>openui<')
   expect(html).not.toContain('Open as app')
+  expect(html).toMatch(/group-hover:opacity-100[^>]*>.*>Show source<\/button>/)
+  expect(html).not.toContain('<pre')
 })
 
 test('inside a live transcript the frame offers Open as app; disabled while the fence streams', () => {
