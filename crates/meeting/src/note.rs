@@ -147,6 +147,15 @@ pub async fn set_summary_path(doc: &DocId, meeting: MeetingId) -> Result<(), Str
         .map_err(|e| e.to_string())
 }
 
+/// Drop the note with its meeting (the meeting owns it, so [`document::Delete`], not the UI's `DeleteNote`).
+pub async fn delete(doc: &DocId) -> Result<(), String> {
+    docs()?
+        .actor()
+        .ask(document::Delete { doc: doc.clone() })
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

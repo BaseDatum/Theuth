@@ -5,6 +5,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Streamdown } from 'streamdown'
+import { deleteMeeting } from '@/components/meeting/MeetingList'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -14,9 +15,9 @@ export function Summary({ id, note }: { id: string; note: string | null }) {
   const navigate = useNavigate()
   const summary = useQuery({ queryKey: queryKeys.meetingSummary(id), queryFn: () => api.meeting_summary(id), enabled: note === null })
   const retry = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })
-  const del = useAction(() => api.meeting_delete(id), {
+  const del = useAction(() => deleteMeeting(api, id), {
     keys: [queryKeys.meetings],
-    onSuccess: () => void navigate({ to: '/meetings' }),
+    onSuccess: (done) => done && void navigate({ to: '/meetings' }),
   })
   return (
     <div className="flex flex-col gap-4 py-2">
@@ -29,7 +30,7 @@ export function Summary({ id, note }: { id: string; note: string | null }) {
         >
           Re-run post pipeline
         </Button>
-        <Button size="sm" variant="destructive" disabled={del.isPending} onClick={() => confirm('Delete this meeting and its recording?') && del.mutate()}>
+        <Button size="sm" variant="destructive" disabled={del.isPending} onClick={() => del.mutate()}>
           Delete
         </Button>
       </div>

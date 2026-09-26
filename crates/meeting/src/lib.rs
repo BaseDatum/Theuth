@@ -2246,7 +2246,10 @@ impl Message<DeleteMeeting> for Meeting {
             tx.send(Err("that meeting is recording; stop it first".into()));
             return reply;
         }
-        let session = self.store.manifest(m.meeting).ok().map(|m| m.session);
+        let (session, note) = match self.store.manifest(m.meeting) {
+            Ok(manifest) => (Some(manifest.session), manifest.note),
+            Err(_) => (None, None),
+        };
         // A pipeline still working on it would only fail on the missing directory.
         self.post.retain(|j| {
             if j.meeting == m.meeting {
@@ -2265,6 +2268,12 @@ impl Message<DeleteMeeting> for Meeting {
                 && let Err(e) = agents.ask(agent::DeleteSession { session }).await
             {
                 tracing::warn!(%session, "delete meeting session: {e}");
+            }
+            // 59 §7.4: the note is the meeting's; without this it would linger in `/notes` as an orphan.
+            if let Some(doc) = note
+                && let Err(e) = note::delete(&doc).await
+            {
+                tracing::warn!(%doc, "delete meeting note: {e}");
             }
             rt.publish(MeetingEvent::Deleted { meeting: m.meeting })
                 .await;
