@@ -1217,7 +1217,12 @@ async fn cut_compaction_budgets_the_tail_and_folds_tool_results() {
         .count();
     assert!(folded > 0, "no tool result folded");
     let tail_est: u32 = tail.iter().map(|(_, m)| compact::est(m)).sum();
-    assert!(after > tail_est && after < before, "before {before} after {after} tail {tail_est}");
+    let budgets = AgentConfig::default().compaction;
+    assert!(tail_est <= budgets.tail_tokens, "tail {tail_est} over {}", budgets.tail_tokens);
+    // `before` is 0 for a manual `/compact` (no projection); `after` is the
+    // whole frame — head and system on top of the tail.
+    let head_est = compact::est(head.as_ref().unwrap());
+    assert!(after >= tail_est + head_est, "after {after} tail {tail_est} head {head_est} (before {before})");
     let raw = h.store.messages(h.id).await.unwrap();
     assert!(raw.iter().all(|(_, m)| m.content.tool_responses().iter().all(|r| !r.content.contains("folded"))));
 }

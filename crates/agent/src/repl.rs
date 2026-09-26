@@ -2060,10 +2060,10 @@ mod tests {
             out.content
         );
         let out = repl.run("c8", "ls = await list_dir(path='/')\nmsg = ''\ntry:\n    await read_file('/nonexistent')\nexcept RuntimeError as e:\n    msg = str(e)\n(type(ls).__name__, msg[:10])").await;
+        // c7's `import asyncio` bound a name on the way to its error, so the
+        // reopened Repl's one hint went out there; c8 is bare.
         assert!(
-            out.content.starts_with(
-                "→ ('str', 'read_file:')\nbindings (reuse, do not re-read; bindings() lists all): ls (str, "
-            ),
+            out.content.starts_with("→ ('str', 'read_file:')\nbindings: ls (str, "),
             "{}",
             out.content
         );
