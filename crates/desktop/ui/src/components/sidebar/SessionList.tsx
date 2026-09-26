@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import {
@@ -182,6 +182,34 @@ export function buildRows(
   return rows
 }
 
+type Box = { getBoundingClientRect(): { top: number } }
+
+/** Where the list starts inside its scroll container, in scroll coordinates: the height of everything above it. */
+export const listOffset = (scrollEl: Box & { scrollTop: number }, list: Box): number =>
+  Math.max(0, Math.round(list.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop))
+
+/**
+ * Feed `onChange` the list's offset now and whenever the content above it changes height — Desks filling in once
+ * the agents query resolves, a group collapsing, a resize rewrapping labels — by observing every sibling before the
+ * list. The virtualizer's `scrollMargin` must track this: it culls rows from the scroll offset, and a list that
+ * starts `offset` px down the scroller has its first `offset` px of visible rows below the window otherwise.
+ */
+export function watchListOffset(
+  scrollEl: Box & { scrollTop: number; children: ArrayLike<Element> },
+  list: Element & Box,
+  onChange: (offset: number) => void,
+  Observer: typeof ResizeObserver = ResizeObserver,
+): () => void {
+  const ro = new Observer(() => onChange(listOffset(scrollEl, list)))
+  for (let i = 0; i < scrollEl.children.length; i++) {
+    const el = scrollEl.children[i]
+    if (!el || el === list) break
+    ro.observe(el)
+  }
+  onChange(listOffset(scrollEl, list))
+  return () => ro.disconnect()
+}
+
 /**
  * The chat list (`list_sessions`), virtualized on the sidebar's scroll container.
  * ⌘-click toggles a chat into a selection, ⇧-click extends it from the last one
@@ -262,9 +290,19 @@ export function SessionList({
     void qc.invalidateQueries({ queryKey: queryKeys.sessions })
   }
 
+  // The list sits under the sidebar's menu (THEUTH · New chat · top · Attention · Library · Desks) in the same
+  // scroller: `scrollMargin` is that content's height, tracked live (`watchListOffset`), so the virtual window
+  // is culled from where the list really starts. Item starts include it; the translate takes it back out.
+  const list = useRef<HTMLUListElement>(null)
+  const [offset, setOffset] = useState(0)
+  useLayoutEffect(() => {
+    if (!scrollEl || !list.current) return
+    return watchListOffset(scrollEl, list.current, setOffset)
+  }, [scrollEl])
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollEl,
+    scrollMargin: offset,
     estimateSize: (i) => ('session' in (rows[i] ?? {}) || 'tree' in (rows[i] ?? {}) ? 40 : 36),
     overscan: 8,
     getItemKey: (i) => rows[i]?.key ?? i,
@@ -272,7 +310,7 @@ export function SessionList({
   return (
     <>
       {/* `shrink-0`: a flex item of the scroller; without it the column layout squeezes the measured height away. */}
-      <ul className="relative block shrink-0 px-1.5" style={{ height: v.getTotalSize() }}>
+      <ul ref={list} className="relative block shrink-0 px-1.5" style={{ height: v.getTotalSize() }}>
         {v.getVirtualItems().map((item) => {
           const row = rows[item.index]
           if (!row) return null
@@ -282,7 +320,7 @@ export function SessionList({
               data-index={item.index}
               ref={v.measureElement}
               className="absolute top-0 left-0 w-full"
-              style={{ transform: `translateY(${item.start}px)` }}
+              style={{ transform: `translateY(${item.start - offset}px)` }}
             >
               {'project' in row ? (
                 <ProjectHeader
