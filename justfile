@@ -254,6 +254,32 @@ relay-docker-push tag="":
       .
     echo "pushed ${IMAGE}:${TAG} and ${IMAGE}:latest"
 
+# Multi-arch build+push of the upstream iroh-relay (design doc 67 §4.2) for the engine mesh.
+# The image is the stock `iroh-relay` binary pinned to the workspace `iroh` line; the tag
+# defaults to that version so the deployed relay always matches the crate engines link.
+# Needs buildx + ghcr login. k8s base pulls ghcr.io/skymoore/theuth/iroh-relay:latest.
+# Usage: just iroh-relay-docker-push
+#        just iroh-relay-docker-push 1.2.0
+iroh-relay-docker-push tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    VERSION="${THEUTH_IROH_RELAY_VERSION:-$(grep -E '^iroh\s*=' Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)}"
+    VERSION="${VERSION:-1.2.0}"
+    TAG="{{tag}}"
+    if [ -z "$TAG" ]; then TAG="$VERSION"; fi
+    IMAGE="${THEUTH_IROH_RELAY_IMAGE:-ghcr.io/skymoore/theuth/iroh-relay}"
+    PLATFORM="${THEUTH_RELAY_PLATFORM:-linux/amd64,linux/arm64}"
+    echo "==> buildx build+push ${IMAGE}:${TAG} (iroh-relay ${VERSION}, ${PLATFORM})"
+    docker buildx build \
+      --platform "${PLATFORM}" \
+      -f deploy/relay/Dockerfile.iroh-relay \
+      --build-arg IROH_RELAY_VERSION="${VERSION}" \
+      -t "${IMAGE}:${TAG}" \
+      -t "${IMAGE}:latest" \
+      --push \
+      .
+    echo "pushed ${IMAGE}:${TAG} and ${IMAGE}:latest"
+
 # Refresh the bundled model catalog: models.dev api.json trimmed to `models::ROUTABLE`
 # providers and re-emitted through the crate's own types, so the field list lives in
 # `crates/models/src/lib.rs` (`Model`), not here (design doc 02 §1).
