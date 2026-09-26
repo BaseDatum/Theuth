@@ -138,7 +138,11 @@ export function Composer({
   const hostFiles = isDesktop() && active === LOCAL
   const fileInput = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
-  const running = useSessionField(session ?? '', 'running') ?? false
+  const turnRunning = useSessionField(session ?? '', 'running') ?? false
+  const activity = useSessionField(session ?? '', 'activity')
+  // A `/compact` mini-turn owns the session without a `TurnStarted` (07 §8.6): a plain send
+  // must queue (steer, shown as a chip), and only the explicit stop/interject may cancel it.
+  const running = turnRunning || activity === 'compacting'
   const queued = useSessionField(session ?? '', 'queued')
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
