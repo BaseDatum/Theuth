@@ -949,6 +949,7 @@ impl Roster {
             harness: None,
             external: vec![],
             done_when: None,
+            attachments: vec![],
         };
         if let Some(t) = budget::crossed(&f.budget, before, after) {
             let pct = if t == budget::Threshold::Warn { "80 %" } else { "100 %, paused" };

@@ -37,7 +37,8 @@ transcript above. If a tool reports the item missing, deleted or unreadable, say
 /// What a reference points at. `id` is whatever the read tool for the kind
 /// accepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,
 /// `SessionId`, `MeetingId`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "AttachKind"))]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// A free-standing note (`DocId`).
@@ -81,13 +82,15 @@ impl std::fmt::Display for Kind {
 
 /// One attached reference: `title`/`meta` are frozen at attach time and are
 /// display text only; `meta` may be empty.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttachRef {
     /// What it is.
     pub kind: Kind,
     /// The id the read tool for `kind` accepts.
     pub id: String,
-    /// Human name as the user saw it; never empty.
+    /// Human name as the user saw it; never empty (a missing one is filled from the id by whoever renders).
+    #[serde(default)]
     pub title: String,
     /// Display-only facts (`pdf v2 · 3 pages`); may be empty.
     #[serde(default)]

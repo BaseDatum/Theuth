@@ -190,6 +190,11 @@ pub struct Task {
     /// then self-review is not allowed.
     #[serde(default)]
     pub done_when: Option<String>,
+    /// Things attached to the task (70 TASK-ATTACHMENTS): the same references a chat
+    /// message carries (design 66) — notes, knowledge, artifacts, chats, meetings. A desk
+    /// sees them as `[attached …]` lines under the brief and reads them with the per-kind tools.
+    #[serde(default)]
+    pub attachments: Vec<agent::attach::AttachRef>,
 }
 
 /// Why an agent is woken (67 §7.3).
@@ -441,6 +446,9 @@ pub struct TaskCreate {
     /// Acceptance criteria; `None` = none stated (the creator should draft them from the brief).
     #[serde(default)]
     pub done_when: Option<String>,
+    /// Attached references (design 66 refs), deduplicated by kind + id.
+    #[serde(default)]
+    pub attachments: Vec<agent::attach::AttachRef>,
 }
 
 impl TaskCreate {
@@ -478,6 +486,8 @@ pub struct TaskPatch {
     pub external: Option<Vec<String>>,
     /// Acceptance criteria.
     pub done_when: Option<String>,
+    /// Attached references, replaced whole; each added/removed one is an `attached`/`detached` event.
+    pub attachments: Option<Vec<agent::attach::AttachRef>>,
     /// Required from an agent moving a task to `done`; `user`/`system` default to intent met.
     pub done_because: Option<DoneBecause>,
 }
@@ -518,6 +528,7 @@ mod tests {
             harness: None,
             external: vec![],
             done_when: None,
+            attachments: vec![],
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");
