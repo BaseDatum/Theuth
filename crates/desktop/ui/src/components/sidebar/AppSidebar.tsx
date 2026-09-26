@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
+import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
@@ -18,6 +18,7 @@ import {
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { useSessionDrag } from '@/components/chat/Panes'
+import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { settings } from '@/components/chat/slash'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
@@ -129,6 +130,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem><SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5"><Link to="/routines"><CalendarClock /> Routines</Link></SidebarMenuButton></SidebarMenuItem>
+          <SidebarMenuItem><SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5"><Link to="/attention"><Bell /> Attention<AttentionBadge /></Link></SidebarMenuButton></SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
               <Link to="/knowledge">
