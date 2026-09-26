@@ -30,9 +30,9 @@ export function ContextMeter({ session, compact }: { session: string; compact?: 
             ? 'border-warning-border bg-warning-bg text-warning'
             : 'border-danger-border bg-danger-bg text-danger',
       )}
-      title={`${estimated ? 'Estimated context window used' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}`}
+      title={`${estimated ? 'Estimated context (≈) until the provider reports' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}`}
     >
-      {estimated && '~'}
+      {estimated && '≈'}
       {pct === null ? k(used) : compact ? `${pct}%` : `${k(used)}/${k(limit)} · ${pct}%`}
       {cache !== null && !compact && ` · cache ${cache}%`}
     </span>

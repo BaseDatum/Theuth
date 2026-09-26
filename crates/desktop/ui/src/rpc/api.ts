@@ -21,6 +21,7 @@ import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
 import type { Concept } from '@/rpc/bindings/Concept'
 import type { ContextRemoval } from '@/rpc/bindings/ContextRemoval'
+import type { ContextBreakdown } from '@/rpc/bindings/ContextBreakdown'
 import type { ContextSnapshot } from '@/rpc/bindings/ContextSnapshot'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import type { DictationId } from '@/rpc/bindings/DictationId'
@@ -306,6 +307,8 @@ export interface Api {
   get_todos(session: SessionId): Promise<TodoSnapshot>
   /** Ledger summary of `session` (51 §6.5): returned money per currency, estimates for unavailable calls, coverage, children. */
   session_cost(session: SessionId): Promise<SessionCost>
+  /** Where the frame's tokens go (70 COMPACT-SIZE): head images/text, tail, system, the calibrated `≈` estimate and the provider's last context. */
+  session_context_breakdown(session: SessionId): Promise<ContextBreakdown>
   /** Take `session` here (68 §4.2): `user` at once, `orphan` for a resumed checkout, `write` after `takeover_secs`. `SessionOwnerChanged` follows. */
   session_take(session: SessionId, reason: 'user' | 'orphan' | 'write'): Promise<SessionOwner>
   /** Who owns `session` and whether that is this engine (68 §5). */
@@ -877,6 +880,7 @@ export const METHODS = [
   'search_refresh',
   'send_input',
   'session_cost',
+  'session_context_breakdown',
   'session_orphans',
   'session_owner',
   'session_take',

@@ -119,8 +119,8 @@ Binary parts inside the fold (an earlier snap head) print as
 
 ### 2.2 Budget → which lines
 
-`budget_tokens = limit / 8` (same `limit` `Turn::compact` computes:
-`compact_at × window`, or `window`). `frames_max = max(1, budget_tokens /
+`budget_tokens = agent.compaction.image_tokens` (default 30k; was `limit / 8`
+until 70 COMPACT-SIZE). `frames_max = max(1, budget_tokens /
 family.tokens_per_frame)`. `rows_max = frames_max × family.rows`.
 
 Take the **last** `rows_max` wrapped lines of the serialisation
@@ -225,10 +225,11 @@ the operator can tell why snap was refused.
 
 ## 5. Config
 
-None new. `agent.compact_style: snap` is already accepted. The budget is
-derived (`limit / 8`), the shape is derived from the adapter. A
-`snap_budget` knob returns only if a transcript shows the default too small
-or too costly; until then it would be a knob set wrong.
+`agent.compaction.image_tokens` (default 30k; 70 COMPACT-SIZE) is the archive
+budget — the `snap_budget` knob this section once deferred, added after a
+1M-window session put 22 frames (~99k billed tokens) in one head. The shape
+is still derived from the adapter. If `frames × tokens_per_frame` would
+exceed `agent.compaction.target_tokens`, the fold runs as `summary` instead.
 
 ## 6. Verification
 

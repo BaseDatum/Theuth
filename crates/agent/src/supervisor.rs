@@ -48,7 +48,7 @@ use crate::communication::{
 
 use crate::acp_child::AcpChild;
 use crate::context::{
-    ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget,
+    ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget,
     save_blob,
 };
 use crate::continuation::{
@@ -57,7 +57,7 @@ use crate::continuation::{
 };
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextHistoryNow,
-    ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs,
+    ContextBreakdownNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs,
     RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState, SetCompactionOverride,
     SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel, UndoTurn, UserInput,
     WithdrawInput, prompt_blocks, text_of,
@@ -85,7 +85,7 @@ use crate::{
     ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
     NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
-    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh,
+    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SessionContextBreakdown,
     SearchSessionPage, SendInput, SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
     SetMaxSalvages,
     SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
@@ -5517,6 +5517,37 @@ impl Message<ContextItems> for Agents {
                 Ok(s)
             }
         }
+    }
+}
+
+impl Message<SessionContextBreakdown> for Agents {
+    type Reply = Result<ContextBreakdown, String>;
+
+    async fn handle(
+        &mut self,
+        m: SessionContextBreakdown,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        if let Some(a) = self.live(m.session).and_then(|a| a.native().ok())
+            && let Ok(Some(b)) = a.ask(ContextBreakdownNow).await
+        {
+            return Ok(b);
+        }
+        // Busy or not running: the stored frame, without the live turn's
+        // system prompt, calibration and provider bill.
+        let (_, head, tail) = self
+            .store_for(m.session)
+            .frame(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(ContextBreakdown::build(
+            0,
+            head.as_ref(),
+            tail.iter().map(|(_, m)| m),
+            None,
+            None,
+        ))
     }
 }
 

@@ -15,7 +15,8 @@ use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
     Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets, Cancel,
-    CommunicationState, Compact, CompactStyle, ContextItems, ContextRemoval, Delivery,
+    CommunicationState, Compact, CompactStyle, ContextBreakdown, ContextItems, ContextRemoval, Delivery,
+    SessionContextBreakdown,
     ListActivity,
     ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
     GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
@@ -283,6 +284,12 @@ pub trait Api {
     /// protocol companions. No bodies. Native sessions only.
     #[method(name = "context_items", with_extensions)]
     async fn context_items(&self, session: SessionId) -> RpcResult<ContextSnapshot>;
+    /// Where the session's frame tokens go (70 COMPACT-SIZE): head images and
+    /// text, tail messages/tokens, system, the calibrated total estimate the
+    /// gauge shows after a compaction, and the provider's last billed context.
+    /// Live figures from an idle actor; the stored frame otherwise.
+    #[method(name = "session_context_breakdown", with_extensions)]
+    async fn session_context_breakdown(&self, session: SessionId) -> RpcResult<ContextBreakdown>;
     /// Remove `targets` from the active context at `expected_revision`
     /// (design doc 48 §3.2). Atomic: stale revision, unknown targets or an
     /// incomplete protocol group refuse and write nothing. Refused while a
@@ -2280,6 +2287,15 @@ impl ApiServer for Server {
     ) -> RpcResult<ContextSnapshot> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, ContextItems { session }).await
+    }
+
+    async fn session_context_breakdown(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<ContextBreakdown> {
+        self.authorize(ext, session).await?;
+        ask::<Agents, _>(agent::AGENT_ACTOR, SessionContextBreakdown { session }).await
     }
 
     async fn remove_context(

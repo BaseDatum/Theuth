@@ -654,6 +654,7 @@ async fn vision_scenarios() {
     steered_image_is_prepared_before_the_next_main_call().await;
     manual_summary_compaction_inspects_pending_images_first().await;
     leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
+    cut_compaction_budgets_the_tail_and_folds_tool_results().await;
 
     let _ = std::fs::remove_dir_all(&reg_dir);
 }
@@ -1168,6 +1169,57 @@ async fn manual_summary_compaction_inspects_pending_images_first() {
     let head = text_of(&head.expect("epoch head").content);
     assert!(head.contains("MEETING-HEAD-MARKER") && head.contains("Weekly sync"), "{head}");
     assert!(!head.contains("SUMMARY-EPOCH-HEAD"), "{head}");
+}
+
+/// 70 COMPACT-SIZE: an uncalibrated session (no provider usage yet) keeps at
+/// most `TAIL_MESSAGES_UNCALIBRATED` rows, folds oversize tool results in the
+/// kept tail (store rows stay whole), and `Compacted.after` is the whole-frame
+/// estimate — below `before`, above the bare tail.
+async fn cut_compaction_budgets_the_tail_and_folds_tool_results() {
+    let mut h = Harness::new(fake()).await;
+    let big = "y".repeat(compact::FOLD_CHARS * 2);
+    for i in 0..60 {
+        for m in [
+            ChatMessage::user(format!("u{i}")),
+            ChatMessage::from(vec![ToolCall {
+                call_id: format!("c{i}"),
+                fn_name: "shell".into(),
+                fn_arguments: serde_json::json!({ "cmd": "ls" }),
+                thought_signatures: None,
+            }]),
+            ChatMessage::from(vec![ToolResponse::new(format!("c{i}"), big.clone())]),
+            ChatMessage::assistant(MessageContent::from_text(format!("a{i}"))),
+        ] {
+            h.store.append(h.id, &m).await.unwrap();
+        }
+    }
+    let (epoch, events) = h.compact(CompactStyle::Cut).await;
+    assert_eq!(epoch, 1);
+    let (before, after) = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Compacted { before, after, .. } => Some((*before, *after)),
+            _ => None,
+        })
+        .expect("Compacted");
+    let (_, head, tail) = h.store.frame(h.id).await.unwrap();
+    assert!(head.is_some());
+    assert!(
+        tail.len() <= compact::TAIL_MESSAGES_UNCALIBRATED,
+        "tail {} rows",
+        tail.len()
+    );
+    assert_ne!(tail[0].1.role, genai::chat::ChatRole::Tool);
+    let folded = tail
+        .iter()
+        .flat_map(|(_, m)| m.content.tool_responses())
+        .filter(|r| r.content.contains("chars folded — read the archive]"))
+        .count();
+    assert!(folded > 0, "no tool result folded");
+    let tail_est: u32 = tail.iter().map(|(_, m)| compact::est(m)).sum();
+    assert!(after > tail_est && after < before, "before {before} after {after} tail {tail_est}");
+    let raw = h.store.messages(h.id).await.unwrap();
+    assert!(raw.iter().all(|(_, m)| m.content.tool_responses().iter().all(|r| !r.content.contains("folded"))));
 }
 
 /// 52 §5.3: a known secret the main quotes in its question is a placeholder

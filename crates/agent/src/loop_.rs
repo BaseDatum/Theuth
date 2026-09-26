@@ -64,7 +64,9 @@ use crate::backend::{Backend, natural_stop};
 use crate::communication::{
     Generation, PeerConsumed, PeerIntakeFailed, PeerRecord, PeerTurnFinished,
 };
-use crate::context::{ContextHistory, ContextRemoval, ContextSnapshot, ContextTarget};
+use crate::context::{
+    ContextBreakdown, ContextHistory, ContextRemoval, ContextSnapshot, ContextTarget,
+};
 use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::continuation::{
     self, DecideYield, InputConsumed, InputDropped, InputTicket, TurnEntered, TurnReturned,
@@ -91,6 +93,8 @@ pub(crate) const DISPLAY_OUTPUT_CHARS: usize = 2000;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Below this prompt size `cached == 0` is legitimate (07 §7).
 const CACHE_FLOOR: u32 = 4096;
+/// Frames priced below this by `est` are too small to calibrate the estimator on.
+const CALIBRATION_FLOOR: u32 = 2048;
 /// Backoff before each transient model-call resend, seconds; length = resends per call (36 §2.2).
 const RETRY_BACKOFF: [u64; 3] = [2, 10, 30];
 /// Transient resends allowed across one turn (36 §2.2).
@@ -355,6 +359,11 @@ pub struct HarvestNow;
 /// (48 §3.2). Not refused while busy: `editable`/`reason` say so instead.
 pub struct ContextItemsNow;
 
+/// `ask` → `Option<ContextBreakdown>` (70 COMPACT-SIZE): where the frame's
+/// tokens go, from the live state. `None` while a turn owns the state; the
+/// supervisor then answers from the store.
+pub struct ContextBreakdownNow;
+
 /// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the context
 /// (48 §4.3). Idle sessions only; no model call, no cut, no claim.
 /// `Err("Session is busy; …" | <store error: stale revision, unknown target, …>)`.
@@ -433,6 +442,16 @@ pub struct SessionState {
     pub files_written: BTreeSet<String>,
     /// Upper bound on the window learnt from an overflow when the catalog has none (36 §6.6); 0 = unknown.
     pub window_hint: u32,
+    /// Provider-reported prompt tokens ÷ `est_frame` of the same request, the
+    /// last time `usage` came back; scales `est` when a tail is budgeted.
+    /// `None` until the first reported usage of this process.
+    pub calibration: Option<f32>,
+    /// Prompt + completion the provider last reported this process; `used`
+    /// carries an estimate instead right after a compaction.
+    pub last_provider: Option<u32>,
+    /// `est` of system prompt + tool definitions at the last model call; the
+    /// idle actor's share of the breakdown (tools live on the turn).
+    pub system_tokens: u32,
     /// The detached title call of the last turn (07 §15, 51 §6.1): aborted
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
@@ -471,6 +490,9 @@ impl SessionState {
             fence_warned: false,
             files_written: BTreeSet::new(),
             window_hint: 0,
+            calibration: None,
+            last_provider: None,
+            system_tokens: 0,
             title_task: None,
             harvest_task: None,
         }
@@ -1747,6 +1769,27 @@ impl Message<ContextItemsNow> for Session {
     }
 }
 
+impl Message<ContextBreakdownNow> for Session {
+    type Reply = Option<ContextBreakdown>;
+
+    async fn handle(
+        &mut self,
+        _: ContextBreakdownNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let s = self.state.as_ref()?;
+        let mut b = ContextBreakdown::build(
+            s.system_tokens,
+            s.head.as_ref(),
+            s.history.iter().map(|(_, m)| m),
+            s.calibration,
+            s.last_provider,
+        );
+        b.live = true;
+        Some(b)
+    }
+}
+
 impl Message<RemoveContextNow> for Session {
     type Reply = Result<ContextRemoval, String>;
 
@@ -2486,18 +2529,28 @@ impl Turn {
         }
     }
 
-    /// chars/4 over everything the last call sent (tools, system, head, history);
-    /// used only when the provider returned no `usage` (07 §7).
-    fn est_frame(&self) -> u32 {
+    /// `est` of the system prompt plus this turn's tool definitions.
+    fn system_tokens(&self) -> u32 {
         let text = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
-        let tools = serde_json::to_string(&self.tools).map_or(0, |s| text(s.len()));
+        text(self.state.baseline.len())
+            .saturating_add(serde_json::to_string(&self.tools).map_or(0, |s| text(s.len())))
+    }
+
+    /// chars/4 over everything the last call sent (tools, system, head, history);
+    /// used when the provider returned no `usage` (07 §7) and, calibrated,
+    /// as the post-compaction seed.
+    fn est_frame(&self) -> u32 {
         self.state
             .history
             .iter()
             .map(|(_, m)| compact::est(m))
-            .fold(text(self.state.baseline.len()), u32::saturating_add)
-            .saturating_add(tools)
+            .fold(self.system_tokens(), u32::saturating_add)
             .saturating_add(self.state.head.as_ref().map_or(0, compact::est))
+    }
+
+    /// `tokens` in `est` units scaled by the session's calibration (70 COMPACT-SIZE).
+    fn calibrated(&self, tokens: u32) -> u32 {
+        compact::calibrated(tokens, self.state.calibration)
     }
 
     /// Append to the store and the history (07 §2.2.1: the only way in).
@@ -3539,6 +3592,7 @@ impl Turn {
             .captured_usage
             .as_ref()
             .filter(|u| u.prompt_tokens.is_some_and(|p| p > 0));
+        self.state.system_tokens = self.system_tokens();
         if reported.is_none() {
             self.state.used = self.est_frame().saturating_add(est_reply(&end));
         }
@@ -3555,6 +3609,14 @@ impl Turn {
             self.usage.completion += completion;
             self.usage.cached += cached;
             self.state.used = prompt + completion;
+            // 70 COMPACT-SIZE: the frame just sent priced by `est` against what
+            // the provider billed for it; the ratio budgets the next tail.
+            let estimated = self.est_frame();
+            if estimated >= CALIBRATION_FLOOR {
+                self.state.calibration =
+                    Some((prompt as f32 / estimated as f32).clamp(0.5, 4.0));
+            }
+            self.state.last_provider = Some(self.state.used);
             // 07 §7 miss detection: the design checking itself in production.
             if transport != Transport::Plain
                 && let Some((at, prev_prompt)) = self.state.prev_call
@@ -4116,10 +4178,6 @@ impl Turn {
         given: Option<String>,
         reason: compact::CompactReason,
     ) -> Result<u32, String> {
-        let window = self.window(&current.model);
-        // 07 §8.2: the kept tail is 1/8 of the *threshold* — a tail sized to the
-        // raw window would leave a small-threshold session re-compacting every round.
-        let limit = self.threshold(window).unwrap_or(window);
         let cfg_style = *self
             .shared
             .compact_style
@@ -4138,11 +4196,28 @@ impl Turn {
         let n_msgs = self.state.history.len();
         let (head, mut full) = self.projected(&images);
         full.reserve(1);
+        // 70 COMPACT-SIZE: the tail is budgeted in tokens — the configured
+        // `tail_tokens` in `est` units after the session's calibration, and
+        // clamped so head images plus tail stay under `target_tokens`; without
+        // a calibration the count is capped too.
+        let budgets = self.shared.cfg.compaction;
+        let images_cap = if style == CompactStyle::Snap {
+            budgets.image_tokens
+        } else {
+            0
+        };
+        let tail_tokens = budgets
+            .tail_tokens
+            .min(budgets.target_tokens.saturating_sub(images_cap));
+        let (tail_budget, max_msgs) = match self.state.calibration {
+            Some(ratio) => ((tail_tokens as f32 / ratio) as u32, usize::MAX),
+            None => (tail_tokens, compact::TAIL_MESSAGES_UNCALIBRATED),
+        };
         // `/clear` (11 §2.4): the fold is the whole frame, nothing is kept.
         let keep_from = if style == CompactStyle::Clear {
             n_msgs
         } else {
-            compact::keep_from(&full, limit)
+            compact::keep_from(&full, tail_budget, max_msgs)
         };
         if keep_from == 0 {
             return Err(if style == CompactStyle::Clear {
@@ -4177,7 +4252,7 @@ impl Turn {
         let cut_body = || format!("folded {k} messages; no summary. Recent turns follow verbatim.");
         // Snap: the body is the caption and `pngs` the frames it describes (13 §2.4).
         let mut pngs: Vec<Vec<u8>> = Vec::new();
-        let body = match style {
+        let mut body = match style {
             CompactStyle::Snap => {
                 let adapter = current.model.provider.as_deref().unwrap_or_default();
                 let shape = snap::shape(models::Catalog::adapter(adapter));
@@ -4186,12 +4261,21 @@ impl Turn {
                     &full[..keep_from],
                     snap::cols(&shape),
                 );
-                let (lines, dropped) = snap::budget_lines(lines, limit / 8, &shape);
+                // 70 COMPACT-SIZE: `image_tokens` of archive, oldest lines first out.
+                let (lines, dropped) = snap::budget_lines(lines, images_cap, &shape);
                 pngs = snap::rasterize(&lines, &shape);
+                let frame_tokens = (pngs.len() as u32).saturating_mul(shape.tokens_per_frame);
                 if pngs.is_empty() {
                     // 13 §2.2: nothing printable → degrade to cut.
                     style = CompactStyle::Cut;
                     cut_body()
+                } else if frame_tokens > budgets.target_tokens {
+                    // The archive alone would blow the post-compaction target
+                    // (`image_tokens` set above `target_tokens`): summarise instead.
+                    tracing::warn!(session = %session, frame_tokens, target = budgets.target_tokens, "snap head over target; compacting as summary");
+                    pngs.clear();
+                    style = CompactStyle::Summary;
+                    String::new()
                 } else {
                     let f = pngs.len();
                     let dropped = if dropped > 0 {
@@ -4212,32 +4296,33 @@ impl Turn {
             CompactStyle::Summary if given.is_some() => {
                 compact::neutralise(given.as_deref().unwrap_or_default())
             }
-            CompactStyle::Summary => {
-                // `full` is the text-only projection when the model cannot see
-                // images (52 §4.2); `Frame::request` still strips PDFs.
-                full.push(ChatMessage::user(self.compact_instruction()));
-                match self
-                    .summarise(current, transport, head.as_ref(), &mut full, keep_from)
-                    .await
-                {
-                    // 36 §6.1: the tag the model just saw must not prime its next reply.
-                    Ok(text) => compact::neutralise(&text),
-                    Err(e) if e.contains("cancelled") => return Err(e),
-                    Err(e)
-                        if compact::is_overflow(&e)
-                            || e.contains("no text twice")
-                            || e.contains("timed out")
-                            || e.contains("degenerate")
-                            || reason == compact::CompactReason::Overflow =>
-                    {
-                        tracing::warn!(session = %session, "summariser failed ({e}); compacting as cut");
-                        style = CompactStyle::Cut;
-                        cut_body()
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            CompactStyle::Summary => String::new(),
         };
+        if style == CompactStyle::Summary && given.is_none() {
+            // `full` is the text-only projection when the model cannot see
+            // images (52 §4.2); `Frame::request` still strips PDFs.
+            full.push(ChatMessage::user(self.compact_instruction()));
+            body = match self
+                .summarise(current, transport, head.as_ref(), &mut full, keep_from)
+                .await
+            {
+                // 36 §6.1: the tag the model just saw must not prime its next reply.
+                Ok(text) => compact::neutralise(&text),
+                Err(e) if e.contains("cancelled") => return Err(e),
+                Err(e)
+                    if compact::is_overflow(&e)
+                        || e.contains("no text twice")
+                        || e.contains("timed out")
+                        || e.contains("degenerate")
+                        || reason == compact::CompactReason::Overflow =>
+                {
+                    tracing::warn!(session = %session, "summariser failed ({e}); compacting as cut");
+                    style = CompactStyle::Cut;
+                    cut_body()
+                }
+                Err(e) => return Err(e),
+            };
+        }
 
         // 07 §8.4, 10 §7, 36 §6.3: harness truth the summariser cannot drift — roster,
         // todos, runtime inventory, concepts read, running jobs, files written, epoch file.
@@ -4365,15 +4450,20 @@ impl Turn {
         };
         // 07 §2.2.1: the one non-append mutation of history.
         self.state.history.drain(..keep_from);
-        let after = self
+        // 70 COMPACT-SIZE: oversize tool results in the kept tail travel folded;
+        // the store row and the archive keep them whole. `Store::frame` folds the
+        // same rows on resume (`Active::effective`).
+        let folded_results: usize = self
             .state
             .history
-            .iter()
-            .fold(compact::est(&head), |acc, (_, m)| {
-                acc.saturating_add(compact::est(m))
-            });
+            .iter_mut()
+            .map(|(_, m)| compact::fold_tool_results(m))
+            .sum();
         self.state.head = Some(head);
-        // 36 §6.5: seed with the estimate; the provider's number replaces it next call.
+        // 36 §6.5 / 70: seed with the whole-frame estimate (system, tools, head,
+        // tail) scaled by the session's calibration; the provider's number
+        // replaces it next call. This is the figure the UI shows as "≈".
+        let after = self.calibrated(self.est_frame());
         self.state.used = after;
         self.state.epoch = n;
         self.state.pressure_sent = false;
@@ -4387,7 +4477,7 @@ impl Turn {
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);
-        tracing::info!(session = %session, epoch = n, folded = keep_from, frames, before = projected, style = %style, "compaction");
+        tracing::info!(session = %session, epoch = n, folded = keep_from, frames, tail = self.state.history.len(), folded_results, before = projected, after, style = %style, "compaction");
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
