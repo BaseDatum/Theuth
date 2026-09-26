@@ -4,21 +4,25 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { PanelLeft, Paperclip } from 'lucide-react'
+import { AppWindow, MoreHorizontal, PanelLeft, Paperclip, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
 import { ChatPicker } from '@/components/notes/ChatPicker'
-import { Empty, errorText } from '@/components/settings/shared'
+import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
-import { isMacDesktop } from '@/lib/hotkeys'
+import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
+import { isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LOCAL, useEngines } from '@/link/engines'
 import { type AttachRef, toRef } from '@/lib/attach'
+import type { Api } from '@/rpc/api'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
+import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 
 /** `Post(Transcribing)` → `Transcribing`. */
 export const stateLabel = (s: MeetingState): string => (typeof s === 'string' ? s : s.Post)
@@ -28,16 +32,18 @@ export const duration = (ms: number): string => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
 
-/** The 52 px drag band every meetings page starts with: sidebar toggle when the rail is closed, a title (or the tab strip), actions. */
+/** The 52 px drag band every meetings page starts with: sidebar toggle when the rail is closed, a title (or the tab strip), actions.
+ * A popped window has no sidebar and a normal title bar: no toggle, no traffic-light inset. */
 export function MeetingHeader({ title, children }: { title: ReactNode; children?: ReactNode }) {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  const popped = isPopout()
   return (
     <header
       data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-1 px-3', !sidebar.open && mac && 'pl-20')}
+      className={cn('flex h-[52px] shrink-0 items-center gap-1 px-3', !sidebar.open && mac && !popped && 'pl-20')}
     >
-      {(!sidebar.open || sidebar.isMobile) && (
+      {(!sidebar.open || sidebar.isMobile) && !popped && (
         <div className="flex shrink-0 items-center">
           <SearchTrigger />
           <Button variant="ghost" size="icon-sm" aria-label="Show sidebar" onClick={sidebar.toggleSidebar}>
@@ -80,7 +86,6 @@ export function MeetingTabs() {
 
 export function MeetingList() {
   const api = useApi()
-  const navigate = useNavigate()
   const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
   const canRecord = useCanRecord()
   // 66 §7.8: a row's paperclip → "Attach to chat…"; rows drag onto a composer.
@@ -100,34 +105,78 @@ export function MeetingList() {
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
         <ul className="divide-y divide-border-subtle">
           {list.data?.map((m) => (
-            <li key={m.id} className="group/row relative">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Attach to chat…"
-                className="absolute top-1/2 right-0 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-                onClick={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))}
-              >
-                <Paperclip />
-              </Button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-4 py-3 pr-9 text-left text-sm hover:bg-accent/50"
-                onClick={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}
-                {...dragSource(() => toRef({ kind: 'meeting', meeting: m }))}
-              >
-                <span className="w-36 shrink-0 text-fg-secondary tabular-nums">{new Date(m.started_at).toLocaleString()}</span>
-                <span className="min-w-0 flex-1 truncate">{m.title ?? `Meeting with ${m.process_name}`}</span>
-                <span className="shrink-0 text-fg-tertiary">{m.process_name}</span>
-                <span className="w-20 shrink-0 text-right text-fg-secondary tabular-nums">
-                  {m.duration_ms === null ? '—' : duration(Number(m.duration_ms))}
-                </span>
-                <span className="w-24 shrink-0 text-right text-fg-tertiary">{stateLabel(m.state)}</span>
-              </button>
-            </li>
+            <Row key={m.id} m={m} onAttach={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))} />
           ))}
         </ul>
       </div>
     </div>
+  )
+}
+
+/** The list row's and the summary block's Delete: one confirm, one RPC (the engine drops the recording, transcript,
+ * summary, session and note, then publishes `Deleted`, which refreshes the list); `false` when declined. */
+export async function deleteMeeting(api: Pick<Api, 'meeting_delete'>, id: string): Promise<boolean> {
+  if (!confirm('Delete this meeting and its recording?')) return false
+  await api.meeting_delete(id)
+  return true
+}
+
+/** One meeting: click opens it; hover shows attach · note in new window · delete; right-click (or ⋯ on touch) the same as a menu. */
+function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
+  const api = useApi()
+  const navigate = useNavigate()
+  const [menu, setMenu] = useState(false)
+  const del = useAction(() => deleteMeeting(api, m.id), { keys: [queryKeys.meetings] })
+  const note = () => void openPopout({ kind: 'meeting-note', meeting: m.id })
+  const hover = 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100'
+  return (
+    <li className="group/row relative">
+      <div className="absolute top-1/2 right-0 flex -translate-y-1/2 items-center">
+        <Button variant="ghost" size="icon-sm" aria-label="Attach to chat…" className={hover} onClick={onAttach}>
+          <Paperclip />
+        </Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Open note in new window" className={hover} onClick={note}>
+          <AppWindow />
+        </Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Delete meeting" className={hover} disabled={del.isPending} onClick={() => del.mutate()}>
+          <Trash2 />
+        </Button>
+        <DropdownMenu open={menu} onOpenChange={setMenu}>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label="Meeting options" className={hover}>
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}>Open</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting: m.id })}>Open in new window</DropdownMenuItem>
+            <DropdownMenuItem onSelect={note}>Open note in new window</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onAttach}>Attach to chat…</DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" disabled={del.isPending} onSelect={() => del.mutate()}>
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <button
+        type="button"
+        className="flex w-full items-center gap-4 py-3 pr-32 text-left text-sm hover:bg-accent/50"
+        onClick={() => void navigate({ to: '/meetings/$id', params: { id: m.id } })}
+        onContextMenu={(e) => {
+          if (touch()) return
+          e.preventDefault()
+          setMenu(true)
+        }}
+        {...dragSource(() => toRef({ kind: 'meeting', meeting: m }))}
+      >
+        <span className="w-36 shrink-0 text-fg-secondary tabular-nums">{new Date(m.started_at).toLocaleString()}</span>
+        <span className="min-w-0 flex-1 truncate">{m.title ?? `Meeting with ${m.process_name}`}</span>
+        <span className="shrink-0 text-fg-tertiary">{m.process_name}</span>
+        <span className="w-20 shrink-0 text-right text-fg-secondary tabular-nums">
+          {m.duration_ms === null ? '—' : duration(Number(m.duration_ms))}
+        </span>
+        <span className="w-24 shrink-0 text-right text-fg-tertiary">{stateLabel(m.state)}</span>
+      </button>
+    </li>
   )
 }

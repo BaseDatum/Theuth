@@ -31,6 +31,7 @@ import { parseNote } from '@/lib/voice-note'
 import { Input } from '@/components/ui/input'
 import { SidebarMenuAction, SidebarMenuButton } from '@/components/ui/sidebar'
 import { touch } from '@/lib/hotkeys'
+import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { openPopout } from '@/lib/popout'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
@@ -174,6 +175,7 @@ export const SessionItem = memo(function SessionItem({
   const [confirming, setConfirming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [attaching, setAttaching] = useState(false)
+  const meeting = useMeetingForSession(id)
   /** 66 §7.8: this chat as a reference — the list row's record when the sessions query has it. */
   const asRef = (): AttachRef => {
     const row = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((x) => x.id === id)
@@ -308,6 +310,14 @@ export const SessionItem = memo(function SessionItem({
             <DropdownMenuContent side="right" align="start" className="w-48">
               <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void openPopout({ kind: 'chat', session: id })}>Open in new window</DropdownMenuItem>
+              {meeting && (
+                <>
+                  <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
+                    Open meeting
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>
+                </>
+              )}
               <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
               <DropdownMenuItem

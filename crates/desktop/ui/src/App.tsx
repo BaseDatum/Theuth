@@ -16,14 +16,13 @@ import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { leaves, usePanes } from '@/lib/panes'
 import { container, isDesktop } from '@/lib/platform'
-import { POPOUT } from '@/lib/popout'
+import { POPOUT, closePopout, popoutMeeting } from '@/lib/popout'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
 import {
   connection,
   isIsland,
-  isTauri,
   onCaptureHidden,
   onModelsProgress,
   onNavigate,
@@ -291,7 +290,7 @@ function visible(session: string): boolean {
   return root !== null && leaves(root).includes(session)
 }
 
-/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads; a popout also closes with its chat. */
+/** 25 §4.5 notifications, the `Lagged` reload and the tray badge; per active engine. The island only reloads; a popout also closes with its chat or meeting. */
 function useEventSideEffects(st: Stores): void {
   const qc = useQueryClient()
   useEffect(() => {
@@ -299,14 +298,10 @@ function useEventSideEffects(st: Stores): void {
       const offs = [on('Lagged', () => reload(st))]
       if (POPOUT?.kind === 'chat') {
         const { session } = POPOUT
-        offs.push(
-          on('SessionDeleted', (e) => {
-            if (e.session !== session) return
-            if (isTauri()) void getCurrentWindow().close()
-            else window.close()
-          }),
-        )
+        offs.push(on('SessionDeleted', (e) => e.session === session && closePopout()))
       }
+      const meeting = popoutMeeting(POPOUT)
+      if (meeting !== null) offs.push(on('Deleted', (e) => e.meeting === meeting && closePopout()))
       return () => {
         for (const off of offs) off()
       }

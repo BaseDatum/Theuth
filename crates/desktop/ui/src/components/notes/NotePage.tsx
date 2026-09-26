@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
+import { AppWindow, History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { prefillDraft } from '@/components/chat/Composer'
@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { type AttachRef, subtitle } from '@/lib/attach'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { EMPTY, useNoteChat } from '@/lib/note-chat'
+import { closePopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
 
@@ -96,7 +97,8 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.notes })
       toast(`Deleted ${title || 'the note'}`)
-      void navigate({ to: '/notes' })
+      if (isPopout()) closePopout()
+      else void navigate({ to: '/notes' })
     },
     onError: (e) => toast.error(e.message),
   })
@@ -111,6 +113,9 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
   }
   // A deleted note's page: the provider reports `closed · deleted` in the status line; say it plainly too.
   const deleted = live.status.kind === 'closed' && live.status.reason === 'deleted'
+  // Popped (`lib/popout.ts`): the editor alone — no chat panel, no second "new window"; the document is the one the
+  // main window edits, so both editors follow each other through the document actor like two devices.
+  const popped = isPopout()
 
   return (
     <DocumentPage
@@ -133,13 +138,14 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
           <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} disabled={deleted} />
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
           <UndoAgentAction provider={live.provider} />
+          {!popped && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
           <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />
-          <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />
+          {!popped && <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />}
         </>
       }
       live={deleted ? { ...live, error: new Error('This note was deleted.') } : live}
       onAsk={ask}
-      below={chat.open && !deleted ? <NoteChat note={id} doc={doc} /> : null}
+      below={chat.open && !deleted && !popped ? <NoteChat note={id} doc={doc} /> : null}
     >
       <ChatPicker open={attaching} onOpenChange={setAttaching} item={doc} />
       <Snapshots id={id} open={snapshots} onOpenChange={setSnapshots} />
