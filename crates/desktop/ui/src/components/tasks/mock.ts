@@ -21,6 +21,7 @@ const id = (n: number) => `0192a000-0000-7000-8000-${String(n).padStart(12, '0')
 
 const task = (n: number, t: Partial<Task> & Pick<Task, 'title' | 'owner' | 'state' | 'project'>): Task => ({
   id: id(n),
+  done_when: null,
   brief: `Brief for **${t.title}**.\n\n- step one\n- step two`,
   reviewer: null,
   blockers: [],

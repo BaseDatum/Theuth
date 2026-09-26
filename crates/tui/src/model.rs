@@ -12898,6 +12898,8 @@ mod tests {
                 runs,
                 approvals,
                 cwd: None,
+                agent: None,
+                project: None,
             };
         let rows = [
             info("plain", None, None, 0, true),
