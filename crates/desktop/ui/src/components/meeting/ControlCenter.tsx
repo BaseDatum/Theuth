@@ -113,6 +113,10 @@ export function ControlCenter({ id }: { id: string }) {
   const ratio = useMeetingSettings((s) => s.split)
   const setSplit = useMeetingSettings((s) => s.setSplit)
   const block = mobile ? 'h-[70dvh] flex-none' : 'min-h-0'
+  // The popped window's native title follows (`on_document_title_changed`); main hides its title bar.
+  useEffect(() => {
+    document.title = title
+  }, [title])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

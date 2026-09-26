@@ -18,12 +18,11 @@ export function useMeetingForSession(session: string): string | null {
 }
 
 /**
- * The "Open meeting" item: ⌥ on the selecting click opens the meeting in its own window, anything else (a plain
- * click, Enter) opens it here through `here`. `e` is the menu item's select event; Radix carries the pointer or
- * keyboard event that selected it in `detail.originalEvent`.
+ * The "Open meeting" item: ⌥ on the selecting click opens the meeting in its own window, anything else opens it
+ * here through `here`. Wired to the item's `onClick` (not `onSelect`, whose event carries no modifiers): Radix
+ * routes Enter/Space to `click()` too, with a modifier-less event.
  */
-export function openMeeting(meeting: string, e: Event, here: () => void): void {
-  const orig = (e as Partial<CustomEvent<{ originalEvent?: { altKey?: boolean } }>>).detail?.originalEvent
-  if (orig?.altKey === true) void openPopout({ kind: 'meeting', meeting })
+export function openMeeting(meeting: string, alt: boolean, here: () => void): void {
+  if (alt) void openPopout({ kind: 'meeting', meeting })
   else here()
 }

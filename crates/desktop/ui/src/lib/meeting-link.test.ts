@@ -16,16 +16,13 @@ test('a chat gets the meeting items only when a meeting names it as its session'
 
 test('⌥ on the selecting click pops the meeting out; a plain click or a key opens it here', () => {
   const here = vi.fn()
-  const select = (originalEvent?: unknown) => new CustomEvent('select', { detail: { originalEvent } })
-  openMeeting('m1', select({ altKey: false }), here)
-  openMeeting('m1', select({ key: 'Enter' }), here)
-  openMeeting('m1', select(), here)
-  expect(here).toHaveBeenCalledTimes(3)
+  openMeeting('m1', false, here)
+  expect(here).toHaveBeenCalledTimes(1)
   // Not in Tauri here, so the popout is a named `window.open`.
   const open = vi.fn()
   vi.stubGlobal('window', { open })
-  openMeeting('m1', select({ altKey: true }), here)
-  expect(here).toHaveBeenCalledTimes(3)
+  openMeeting('m1', true, here)
+  expect(here).toHaveBeenCalledTimes(1)
   expect(open).toHaveBeenCalledWith('/meetings/m1?window=popout-meeting-m1', 'popout-meeting-m1')
   vi.unstubAllGlobals()
 })

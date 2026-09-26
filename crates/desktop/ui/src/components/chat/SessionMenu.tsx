@@ -270,7 +270,7 @@ export function SessionMenu({ session }: { session: string }) {
           {parent && <DropdownMenuItem onSelect={cmd('/parent')}>Open parent</DropdownMenuItem>}
           {meeting && (
             <>
-              <DropdownMenuItem onSelect={(e) => openMeeting(meeting, e, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
+              <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
                 Open meeting
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>

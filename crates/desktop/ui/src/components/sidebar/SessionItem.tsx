@@ -312,7 +312,7 @@ export const SessionItem = memo(function SessionItem({
               <DropdownMenuItem onSelect={() => void openPopout({ kind: 'chat', session: id })}>Open in new window</DropdownMenuItem>
               {meeting && (
                 <>
-                  <DropdownMenuItem onSelect={(e) => openMeeting(meeting, e, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
+                  <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
                     Open meeting
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>
