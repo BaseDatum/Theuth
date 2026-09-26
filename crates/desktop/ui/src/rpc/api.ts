@@ -607,7 +607,14 @@ export interface Api {
   put_schedule(file: ScheduleFile): Promise<ScheduleInfo>
   /** Remove a schedule file; rejects with `no such schedule`. */
   delete_schedule(name: string): Promise<void>
-  send_input(session: SessionId | null, text: string, files: string[], delivery?: Delivery | null): Promise<SessionId>
+  /** `id`: the client input id (70 SEND-NEVER-LOSES); a retry with the same id within the engine's window is acked without a second row. */
+  send_input(
+    session: SessionId | null,
+    text: string,
+    files: string[],
+    delivery?: Delivery | null,
+    id?: string | null,
+  ): Promise<SessionId>
   /** Sign every Bedrock call on the engine as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>

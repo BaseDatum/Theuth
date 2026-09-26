@@ -494,6 +494,19 @@ test('store: Lagged counts, history replace then prepend keeps newer entries and
   expect(s?.entries).toHaveLength(3)
 })
 
+test('store: unmarkSent after a failed send drops the optimistic row and its echo skip; sent history rows stay', () => {
+  const st = useSessions.getState()
+  st.loadHistory(S, { ...loaded(), history: [{ role: 'user', text: 'same', turn: 1 }], first_seq: 1, more: false }, 'replace')
+  st.markSent(S, 'same')
+  expect(useSessions.getState().sessions[S]?.entries).toHaveLength(2)
+  st.unmarkSent(S, 'same')
+  const s = useSessions.getState().sessions[S]
+  expect(s?.entries.map((e) => (e.kind === 'user' ? e.turn : e.kind))).toEqual([1])
+  // The retry lands as a fresh echo, not a skipped one.
+  st.applyEvents([{ type: 'TurnStarted', session: S, turn: T, text: 'same', model: 'm', turn_seq: 9 }])
+  expect(useSessions.getState().sessions[S]?.entries.filter((e) => e.kind === 'user')).toHaveLength(2)
+})
+
 test('store: TurnStarted stamps the optimistic send and its reply with the turn; truncate drops from that turn', () => {
   const st = useSessions.getState()
   const page = { ...loaded(), first_seq: 1, more: false }

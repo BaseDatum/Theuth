@@ -2,17 +2,25 @@ import { Unplug } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { lastSeenText, ownerOfflineText, useEngineLabel } from '@/lib/owner'
+import { type OwnerUnreachable, lastSeenText, ownerOfflineText, useEngineLabel } from '@/lib/owner'
 import { useApi } from '@/lib/rpc'
-
-/** What a refused send left behind (68 §5): the unreachable owner and the input to resend after a take. */
-export type Offline = { owner: string; lastSeen: string | number | null; body: string; files: string[] }
 
 /**
  * Above the composer after `OwnerUnreachable` (68 §5): "Owned by <engine>, last seen <ago>. Continue here now?"
- * Continue = `session_take(id, "user")` then the input is sent again here; Wait dismisses and keeps the draft.
+ * Continue = `session_take(id, "user")` then `onResend` (the composer's retry: the input is still in its box, flagged
+ * unsent, so a second failure keeps it there); Wait dismisses and keeps the draft.
  */
-export function OwnerOfflineCard({ session, offline, onDone }: { session: string; offline: Offline; onDone(): void }) {
+export function OwnerOfflineCard({
+  session,
+  offline,
+  onDone,
+  onResend,
+}: {
+  session: string
+  offline: OwnerUnreachable
+  onDone(): void
+  onResend(): Promise<void>
+}) {
   const api = useApi()
   const engine = useEngineLabel(offline.owner)
   const [busy, setBusy] = useState(false)
@@ -20,8 +28,8 @@ export function OwnerOfflineCard({ session, offline, onDone }: { session: string
     setBusy(true)
     try {
       await api.session_take(session, 'user')
-      await api.send_input(session, offline.body, offline.files)
       onDone()
+      await onResend()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {

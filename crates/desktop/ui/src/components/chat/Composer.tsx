@@ -1,7 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, AudioLines, FileUp, Megaphone, Mic, Paperclip, Plus, Sparkles, Square, StickyNote, X } from 'lucide-react'
+import {
+  ArrowUp,
+  AudioLines,
+  CircleAlert,
+  FileUp,
+  Megaphone,
+  Mic,
+  Paperclip,
+  Plus,
+  Sparkles,
+  Square,
+  StickyNote,
+  X,
+} from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -24,7 +37,7 @@ import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRe
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
 import { attach, attachRef, drop, expand, type Pastes, reconcile, tokenize, untoken } from '@/lib/pastes'
 import { isDesktop, touch } from '@/lib/platform'
-import { ownerUnreachable } from '@/lib/owner'
+import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
@@ -44,7 +57,7 @@ import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { HeldStrip } from './HeldStrip'
-import { type Offline, OwnerOfflineCard } from './OwnerOfflineCard'
+import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { LevelMeter } from './LevelMeter'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
@@ -63,6 +76,25 @@ export function prefillDraft(session: string | null, text: string, refs: AttachR
 }
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
+/** A send's ack is one round trip ("returns once queued"): longer means a socket the OS never closed (70 SEND-NEVER-LOSES). */
+const SEND_TIMEOUT_MS = 15_000
+class SendTimeout extends Error {
+  constructor() {
+    super('Not sent: no reply from the engine')
+  }
+}
+/** `p`, or `SendTimeout` after `SEND_TIMEOUT_MS`; the caller probes the socket so a dead one reconnects. */
+async function deadline<T>(p: Promise<T>): Promise<T> {
+  let timer: number | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new SendTimeout()), SEND_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([p, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 /** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
 const BOX =
   'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
@@ -194,7 +226,7 @@ export function Composer({
   // A panel's composer (`onCreated`) keeps its own draft apart from the chat page's for the same session.
   // The draft is the store's (`lib/drafts`): durable across remounts, pane switches and a relaunch.
   const draftKey = `${onCreated ? 'panel:' : ''}${session ?? ''}`
-  const { text, pastes } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
+  const { text, pastes, unsent } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
   const setText = (t: string) => useDrafts.getState().setText(draftKey, t)
   const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
   /** Skill parked for the next send (`lib/skill-draft`): the send becomes `use_skill(session, skill, words)`. */
@@ -203,7 +235,7 @@ export function Composer({
   const [selected, setSelected] = useState(0)
   const [busy, setBusy] = useState(false)
   /** 68 §5: a send the owner could not take; the card above the composer offers to take the session here and resend. */
-  const [offline, setOffline] = useState<Offline | null>(null)
+  const [offline, setOffline] = useState<OwnerUnreachable | null>(null)
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
   const [recording, setRecording] = useState(false)
@@ -466,14 +498,19 @@ export function Composer({
   }
 
   /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2).
-   * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now. */
+   * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now.
+   * The box keeps its text until the engine acks (70 SEND-NEVER-LOSES): a failure leaves it flagged `unsent` with the
+   * banner, and the retry (Retry, or Enter again) reuses the client input id so the engine never takes it twice. */
   const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
     if ((!line && !skill && !held) || busy) return
     setBusy(true)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
-    // The input a refused send would resend after "Continue here" (68 §5).
-    let pending: { body: string; files: string[] } | null = null
+    const clientId = unsent ?? crypto.randomUUID()
+    /** The session the input went to (a new chat's once created), and how — for the rollback in `catch`. */
+    let target: string | null = session
+    let steered = false
+    let body = ''
     try {
       if (line.startsWith('/skill:')) {
         const [name = '', ...words] = line.slice('/skill:'.length).trim().split(/\s+/)
@@ -502,25 +539,26 @@ export function Composer({
       }
       const expanded = expand(line, pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
-      const body = pinned ? compose([pinned], expanded.text) : expanded.text
+      body = pinned ? compose([pinned], expanded.text) : expanded.text
       const { files } = expanded
-      pending = { body, files }
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
       // 66 §7.6: recents are recorded on send, not on pick.
       const sent = [...pastes.values()].flatMap((p) => (p.kind === 'ref' ? [p.ref] : []))
       if (sent.length > 0) saveRecents(active, pushRecents(loadRecents(active), sent))
-      reset()
+      // A voice note has no text in the box: park the line there so a failure has something to restore.
+      if (spoken && !text) setText(spoken)
+      useDrafts.getState().sending(draftKey, clientId)
       if (session && running) {
-        const id = crypto.randomUUID()
-        applyEvents([{ type: 'InputQueued', session, id, text: body, defer: false }])
+        steered = true
+        applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false }])
         mode(session)
         // Cancel first: its epoch bump would stale a steer admitted before it (todo auto-continue).
         if (interject) await api.cancel(session)
-        await api.steer(session, body, id, files)
+        await deadline(api.steer(session, body, clientId, files))
       } else if (session) {
         markSent(session, body, files)
         mode(session)
-        await api.send_input(session, body, files)
+        await deadline(api.send_input(session, body, files, null, clientId))
       } else {
         let id: string
         if (draftCreate?.private || draftCreate?.project) {
@@ -540,6 +578,7 @@ export function Composer({
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session
         } else id = await api.new_session()
+        target = id
         if (sessionTitle) await api.rename_session(id, sessionTitle)
         if (draftEffort !== undefined) await api.set_effort(id, draftEffort)
         // Seed before sending: a fast failure can finish before the RPC reply.
@@ -550,13 +589,34 @@ export function Composer({
         )
         markSent(id, body, files)
         mode(id)
-        await api.send_input(id, body, files)
-        if (onCreated) onCreated(id)
-        else await navigate({ to: '/c/$session', params: { session: id } })
+        await deadline(api.send_input(id, body, files, null, clientId))
+      }
+      useDrafts.getState().acked(draftKey, spoken ?? text)
+      setSelected(0)
+      // A retry the engine already had starts no turn, so the row shown at once would stay a ghost: drop it. A
+      // routed retry is either stamped by its `TurnStarted` already (then this is a no-op) or echoed by it after.
+      // A steer's chip self-heals: the engine's `InputInjected` for the same id removes it.
+      if (unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
+      if (target && !session) {
+        if (onCreated) onCreated(target)
+        else await navigate({ to: '/c/$session', params: { session: target } })
       }
     } catch (e) {
+      // The row shown at once comes back off; the text is still in the box, flagged `unsent` for the banner.
+      const st = useSessions.getState()
+      if (target && steered) st.applyEvents([{ type: 'InputWithdrawn', session: target, id: clientId }])
+      else if (target) st.unmarkSent(target, body)
+      if (target && !session) {
+        // The chat exists now: the unsent draft follows it, so Retry lands in that session.
+        const drafts = useDrafts.getState()
+        drafts.set(`${onCreated ? 'panel:' : ''}${target}`, drafts.by[draftKey] ?? EMPTY)
+        drafts.set(draftKey, EMPTY)
+        if (onCreated) onCreated(target)
+        else await navigate({ to: '/c/$session', params: { session: target } })
+      }
+      if (e instanceof SendTimeout) useConnection.getState().client?.probe()
       const unreachable = ownerUnreachable(e)
-      if (unreachable && session && pending) setOffline({ ...unreachable, ...pending })
+      if (unreachable && target) setOffline(unreachable)
       else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
@@ -725,7 +785,24 @@ export function Composer({
   return (
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
       {!compact && <CommunicationNotice session={session} state={comm} exports={exports} />}
-      {session && offline && <OwnerOfflineCard session={session} offline={offline} onDone={() => setOffline(null)} />}
+      {session && offline && (
+        <OwnerOfflineCard session={session} offline={offline} onDone={() => setOffline(null)} onResend={() => submit()} />
+      )}
+      {session && unsent && !busy && !offline && (
+        <div
+          role="alert"
+          className="mb-2 flex items-center gap-2 rounded-xl border border-warning-border/30 bg-warning-bg/40 px-3 py-2 text-sm"
+        >
+          <CircleAlert className="size-4 shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-fg-secondary">Not sent — your message is still here.</span>
+          <Button size="sm" variant="outline" onClick={() => useDrafts.getState().set(draftKey, EMPTY)}>
+            Discard
+          </Button>
+          <Button size="sm" onClick={() => void submit()}>
+            Retry
+          </Button>
+        </div>
+      )}
       {session && <QueuedChips session={session} onEdit={(t) => setText(t)} />}
       {skill && (
         <div className="flex justify-end pb-2">
