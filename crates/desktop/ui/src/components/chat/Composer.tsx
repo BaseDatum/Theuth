@@ -863,6 +863,7 @@ export function Composer({
               />
             ) : (
               <Textarea
+                dictate={false}
                 ref={ref}
                 value={text}
                 onChange={(e) => {

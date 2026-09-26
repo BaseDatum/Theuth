@@ -6,10 +6,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Check, ChevronDown, LoaderCircle, Mic, RefreshCw, X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { Check, ChevronDown, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { useState } from 'react'
 import { toast } from 'sonner'
-import { LevelMeter } from '@/components/chat/LevelMeter'
 import { ModelItems } from '@/components/chat/ModelMenu'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -19,11 +18,9 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import * as dictation from '@/lib/dictation'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { cn } from '@/lib/utils'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
 import { useConnection } from '@/store/connection'
 
@@ -98,7 +95,7 @@ export function StartForm() {
           <div className="mt-0.5 text-[13px] text-fg-secondary">
             What the meeting is about, who is in it — the first line the session reads. Type or dictate.
           </div>
-          <ContextBox value={context} onChange={setContext} />
+          <Textarea rows={3} className="mt-2" value={context} onChange={(e) => setContext(e.target.value)} />
         </div>
         <Row
           label="Session model"
@@ -170,34 +167,5 @@ function Permission({ label, state, pane }: { label: string; state: PermissionSt
         </Button>
       )}
     </Row>
-  )
-}
-
-/** Context textarea with dictation (54); see `dictation.useBox`. */
-function ContextBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const api = useApi()
-  const ref = useRef<HTMLTextAreaElement>(null)
-  const { dict, dictating, reason, toggle, shown } = dictation.useBox(api, value, onChange, ref, false)
-  return (
-    <div className="relative mt-2">
-      <Textarea
-        ref={ref}
-        rows={3}
-        className="pr-12"
-        value={shown}
-        readOnly={dictating}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <Button
-        variant="ghost"
-        className={cn('absolute right-1.5 bottom-1.5 rounded-full', dictating ? 'h-8 w-20 bg-fg-accent/10 p-0' : 'size-8', reason && !dictating && 'opacity-50')}
-        aria-label={dictating ? 'Stop dictation' : 'Dictate'}
-        aria-disabled={reason !== null && !dictating}
-        title={reason ?? undefined}
-        onClick={toggle}
-      >
-        {dictating && dict.active ? <LevelMeter levels={dict.active.levels} active /> : <Mic className="size-4" />}
-      </Button>
-    </div>
   )
 }

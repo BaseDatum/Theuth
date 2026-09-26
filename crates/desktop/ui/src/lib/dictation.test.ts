@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type State, applyEvent, splice } from './dictation'
+import { type State, anchor, applyEvent, splice } from './dictation'
 
 const said = (...texts: string[]) => texts.map((text) => ({ text, final: true }))
 
@@ -23,6 +23,14 @@ test('splice inserts the region at the caret with one separating space inside it
 test('splice leaves the value and caret alone when nothing was said', () => {
   expect(splice('hel', 'lo', [])).toEqual({ value: 'hello', caret: 3 })
   expect(splice('hel', 'lo', said('', ''))).toEqual({ value: 'hello', caret: 3 })
+})
+
+test('anchor splits at the caret, drops a selection, and defaults to the end', () => {
+  expect(anchor('hello world', 5, 5)).toEqual({ before: 'hello', after: ' world' })
+  expect(anchor('hello world', 0, 5)).toEqual({ before: '', after: ' world' })
+  expect(anchor('hello world', null, null)).toEqual({ before: 'hello world', after: '' })
+  // A backwards `end` (never from a browser, but cheap to pin) never duplicates text.
+  expect(anchor('abc', 2, 1)).toEqual({ before: 'ab', after: 'c' })
 })
 
 const idle: State = { model: { state: 'ready' }, active: null, phase: 'idle', elsewhere: false }
