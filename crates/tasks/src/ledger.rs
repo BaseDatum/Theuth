@@ -82,9 +82,10 @@ pub struct Ledger {
     pub engine: String,
     /// Takes a lost engine's session here before its `Resume` wake (68 §4.4).
     pub taker: Arc<dyn SessionTaker>,
-    /// `updated_ms` of a task when its wake was claimed: the no-progress
-    /// comparison point (67 §7.3). Local: a hub move restarts the count.
-    delivered: HashMap<TaskId, u64>,
+    /// `(agent, task)` → `updated_ms` of the task when the agent's wake on it
+    /// was claimed: the no-progress comparison point (67 §7.3). Local: a hub
+    /// move restarts the count.
+    delivered: HashMap<(String, TaskId), u64>,
     /// Delivery failures per wake id: `(attempts, not before ms)`.
     retry: HashMap<String, (u32, u64)>,
     /// Engine → first sweep that saw it unreachable (ms).
@@ -203,8 +204,14 @@ impl Ledger {
 
     /// Raise a wake for `who` about `t` (nothing for the user or the harness)
     /// and record it: a `wake` event and a `woke <agent> (<reason>)` thread line.
+    /// A reason with no purpose in the task's state (STALE-WAKE-DESKS:
+    /// a `comment` on a done task) raises nothing.
     pub async fn wake(&self, t: &Task, who: &Owner, reason: WakeReason, actor: &str) {
         let Some(agent) = agent_name(who) else { return };
+        if !reason.applies_to(t.state) {
+            tracing::debug!(agent, task = %t.id, reason = reason.as_str(), state = t.state.as_str(), "wake not raised: stale");
+            return;
+        }
         if let Err(e) = self.store.raise(agent, Some(&t.id), reason, self.now()).await {
             tracing::error!(agent, "wake not raised: {e:#}");
             return;
@@ -243,8 +250,17 @@ impl Ledger {
         self.store.get(id).await.map_err(db)?.ok_or_else(|| "no such task".to_owned())
     }
 
+    /// Write the row; wakes whose reason has no purpose in the saved state go
+    /// with it (STALE-WAKE-DESKS: every state transition routes through here,
+    /// so a `review` wake dies with `review → done`, whoever moved it).
     async fn save(&self, t: &Task) -> R<()> {
-        self.store.put(t).await.map_err(db)
+        self.store.put(t).await.map_err(db)?;
+        match self.store.drop_stale_wakes(&t.id, t.state).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(task = %t.id, state = t.state.as_str(), n, "stale wakes dropped"),
+            Err(e) => tracing::error!(task = %t.id, "stale wakes not dropped: {e:#}"),
+        }
+        Ok(())
     }
 
     /// The cross-task write cap (67 §7.3): a session writing to a task it
@@ -658,13 +674,16 @@ impl Ledger {
             }
         }
 
-        // 67 §7.3 back-off: the owner's write after a wake is that wake's completion.
+        // 67 §7.3 back-off: the acting agent's write after its wake is that wake's
+        // completion — the owner's, or a reviewer's (STALE-WAKE-DESKS: a reviewer's
+        // `review → done` used to leave its wake claimed for ever). Only the
+        // owner's unmoved write counts as no progress.
         let mut completed = false;
-        if let Some(agent) = agent_name(&before.owner).map(str::to_owned)
-            && actor == before.owner.to_string()
-            && let Some(at) = self.delivered.remove(id)
+        if let Some(agent) = actor.strip_prefix("agent:")
+            && let Some(at) = self.delivered.remove(&(agent.to_owned(), id.clone()))
         {
-            self.complete_wake(&mut t, &agent, at == before.updated_ms && changes.is_empty()).await;
+            let owner = actor == before.owner.to_string();
+            self.complete_wake(&mut t, agent, owner && at == before.updated_ms && changes.is_empty()).await;
             completed = true;
         }
 
@@ -814,11 +833,10 @@ impl Ledger {
             });
         }
         t.updated_ms = self.now();
-        if let Some(agent) = agent_name(&before.owner).map(str::to_owned)
-            && actor == before.owner.to_string()
-            && self.delivered.remove(id).is_some()
+        if let Some(agent) = actor.strip_prefix("agent:")
+            && self.delivered.remove(&(agent.to_owned(), id.clone())).is_some()
         {
-            self.complete_wake(&mut t, &agent, false).await;
+            self.complete_wake(&mut t, agent, false).await;
         }
         self.save(&t).await?;
         self.event(&t, actor, session, "owner", Some(before.owner.to_string()), Some(to.to_string())).await;
@@ -1024,7 +1042,11 @@ impl Ledger {
 
     /// One dispatch pass (67 §7.3): per agent with nothing claimed, the
     /// oldest unclaimed wake whose task is not in back-off is claimed by the
-    /// agent's desk and returned for delivery.
+    /// agent's desk and returned for delivery. A wake whose reason has no
+    /// purpose in its task's current state (STALE-WAKE-DESKS: a `review` wake
+    /// on a task already `done`) is dropped here with a thread line, not
+    /// dispatched — this is also the startup sweep over rows left by earlier
+    /// builds.
     pub async fn dispatch(&mut self) -> R<Vec<Delivery>> {
         let now = self.now();
         let wakes = self.store.wakes().await.map_err(db)?;
@@ -1041,6 +1063,20 @@ impl Ledger {
                 Some(id) => self.store.get(id).await.map_err(db)?,
                 None => None,
             };
+            if let Some(id) = &w.task {
+                let stale = match &task {
+                    Some(t) => (!w.reason.applies_to(t.state)).then(|| format!("task is {}", t.state.as_str())),
+                    None => Some("task is gone".to_owned()),
+                };
+                if let Some(why) = stale {
+                    tracing::info!(agent = %w.agent, task = %id, reason = w.reason.as_str(), "wake dropped: stale ({why})");
+                    if let Some(t) = &task {
+                        self.say(t, "system", &format!("wake `{}` for {} dropped: stale ({why})", w.reason.as_str(), w.agent)).await;
+                    }
+                    self.store.finish_wake(&w.id).await.map_err(db)?;
+                    continue;
+                }
+            }
             if task.as_ref().and_then(|t| t.next_wake_after_ms).is_some_and(|after| after > now) {
                 continue;
             }
@@ -1056,7 +1092,7 @@ impl Ledger {
             self.store.claim(&d.wake.id, Some(&desk), now).await.map_err(db)?;
             d.wake.claimed_by = Some(desk);
             if let Some(t) = &d.task {
-                self.delivered.insert(t.id.clone(), t.updated_ms);
+                self.delivered.insert((d.wake.agent.clone(), t.id.clone()), t.updated_ms);
             }
             out.push(d);
         }
@@ -1108,9 +1144,19 @@ impl Ledger {
         self.store.wakes().await.map_err(db)
     }
 
-    /// Forget the delivery snapshot of `id` (a wake completed without a task write).
-    pub fn forget_delivery(&mut self, id: &TaskId) {
-        self.delivered.remove(id);
+    /// The desk turn that took `wake` is over (the roster judged it handled or
+    /// blocked it): the row goes, whether or not the agent wrote the task.
+    pub async fn finish_wake(&mut self, wake: &Wake) -> R<()> {
+        if let Some(t) = &wake.task {
+            self.delivered.remove(&(wake.agent.clone(), t.clone()));
+        }
+        self.store.finish_wake(&wake.id).await.map_err(db)
+    }
+
+    /// A desk (re)opened on `session`: any wake still claimed by it belongs
+    /// to a turn that no longer runs — released for dispatch.
+    pub async fn release_claims(&self, session: &str) -> R<()> {
+        self.store.release_claimed_by(session, self.now()).await.map_err(db)
     }
 
     // ---- orphan sweep, disposition enforcement -----------------------------------------
@@ -1175,13 +1221,17 @@ impl Ledger {
             self.wake(&t, &t.owner, WakeReason::Resume, "system").await;
             orphaned.push(t.id);
         }
+        // A claim is only good while the claiming session is the agent's desk
+        // here: a moved desk, or none at all (a fresh hub before the agent's
+        // desk opened — theuth's opens on its first delivered wake, which a
+        // stale claim would otherwise hold back for ever), releases it.
         if let Some(router) = &self.router {
             for w in self.store.wakes().await.map_err(db)? {
                 let Some(by) = &w.claimed_by else { continue };
                 if by == DISPATCHING {
                     continue;
                 }
-                if router.desk_for(&w.agent).is_some_and(|d| d != *by) {
+                if !router.desk_for(&w.agent).is_some_and(|d| d == *by) {
                     self.store.claim(&w.id, None, now).await.map_err(db)?;
                 }
             }
@@ -1192,10 +1242,15 @@ impl Ledger {
     /// `EpisodeClosing` (67 §7.3 last rule): every `doing` task checked out
     /// by one of `sessions` with no `continuing` disposition since its
     /// checkout is `blocked: no continuation` and the manager is woken.
+    /// Wakes still claimed by the closing sessions are released, not deleted
+    /// (67 §4.6: a wake the closed desk did not finish is delivered again —
+    /// and validated then — by whoever holds the lease next).
     pub async fn episode_closing(&mut self, agent: &str, sessions: &[String]) -> R<Vec<TaskId>> {
+        let now = self.now();
         for s in sessions {
-            self.store.finish_claimed_by(s).await.map_err(db)?;
+            self.store.release_claimed_by(s, now).await.map_err(db)?;
         }
+        self.delivered.retain(|(a, _), _| a != agent);
         let doing = self
             .store
             .list(&TaskFilter { state: Some(vec![TaskState::Doing]), ..Default::default() })
@@ -1242,7 +1297,7 @@ impl Ledger {
         }
         self.say(t, "system", why).await;
         self.wake(t, &self.manager_of(agent), WakeReason::Review, "system").await;
-        self.delivered.remove(&t.id);
+        self.delivered.remove(&(agent.to_owned(), t.id.clone()));
         Ok(())
     }
 
@@ -2007,6 +2062,77 @@ pub(crate) mod tests {
         assert_eq!((d.len(), d[0].wake.count, d[0].wake.claimed_by.as_deref()), (1, 2, Some("d-ops")));
     }
 
+    /// STALE-WAKE-DESKS incident: the reviewer's `review → done` left its
+    /// `review` wake claimed; a restart re-armed it and the task was reviewed
+    /// twice. Now the terminal transition drops every wake on the task
+    /// (whoever moved it), a comment on the done task wakes nobody, and the
+    /// reviewer is no longer "busy" — its next wake goes out.
+    #[tokio::test]
+    async fn terminal_transition_drops_wakes_and_frees_the_reviewer() {
+        let mut r = rig().await;
+        r.router.desks.lock().unwrap().insert("ops".into(), "d-ops".into());
+        r.router.desks.lock().unwrap().insert("lead".into(), "d-lead".into());
+        let t = r.task("agent:ops").await;
+        r.ledger.update(&t.id, TaskPatch { reviewer: Some("agent:lead".parse().unwrap()), ..Default::default() }, "user", None).await.unwrap();
+        r.ledger.dispatch().await.unwrap();
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.iter().map(|d| (d.wake.agent.as_str(), d.wake.reason)).collect::<Vec<_>>(), vec![("lead", WakeReason::Review)]);
+        // the reviewer closes it (not the owner): its wake is finished with the transition
+        r.ledger.update(&t.id, TaskPatch { state: Some(TaskState::Done), done_because: Some(DoneBecause::IntentMet), ..Default::default() }, "agent:lead", Some("d-lead")).await.unwrap();
+        assert!(r.ledger.wakes().await.unwrap().is_empty(), "no wake outlives a done task");
+        // a comment on the done task raises nothing
+        r.ledger.comment(&t.id, "great work", false, "user", None).await.unwrap();
+        assert!(r.ledger.wakes().await.unwrap().is_empty());
+        // the reviewer is free: a new task for it is dispatched at once
+        r.task("agent:lead").await;
+        assert_eq!(r.ledger.dispatch().await.unwrap().len(), 1, "lead is not held busy by the finished review");
+    }
+
+    /// A wake whose reason no longer fits its task (rows left by earlier
+    /// builds, or a race) is dropped at dispatch with a thread line; a still
+    /// applicable one on the same task goes out.
+    #[tokio::test]
+    async fn stale_wake_is_dropped_at_dispatch_not_delivered() {
+        let mut r = rig().await;
+        r.router.desks.lock().unwrap().insert("lead".into(), "d-lead".into());
+        let t = r.task("agent:ops").await;
+        r.ledger.update(&t.id, TaskPatch { state: Some(TaskState::Cancelled), ..Default::default() }, "user", None).await.unwrap();
+        assert!(r.ledger.wakes().await.unwrap().is_empty(), "the assigned wake went with the transition");
+        // rows written by a pre-fix engine
+        let stale = r.ledger.store.raise("lead", Some(&t.id), WakeReason::Review, 0).await.unwrap();
+        r.ledger.store.raise("ops", Some(&t.id), WakeReason::Comment, 1).await.unwrap();
+        let gone = r.ledger.store.raise("ops", Some(&TaskId::new()), WakeReason::Manual, 2).await.unwrap();
+        let todo = r.task("agent:lead").await;
+        let d = r.ledger.dispatch().await.unwrap();
+        assert_eq!(d.iter().map(|d| d.wake.task.clone()).collect::<Vec<_>>(), vec![Some(todo.id.clone())], "only the live wake is delivered");
+        let left: Vec<String> = r.ledger.wakes().await.unwrap().into_iter().map(|w| w.id).collect();
+        assert!(!left.contains(&stale.id) && !left.contains(&gone.id) && left.len() == 1, "{left:?}");
+        let thread = r.thread.read(t.thread.as_deref().unwrap()).await.unwrap();
+        assert!(thread.contains("wake `review` for lead dropped: stale (task is cancelled)"), "{thread}");
+        assert!(thread.contains("wake `comment` for ops dropped: stale (task is cancelled)"), "{thread}");
+    }
+
+    /// The roster's turn-end verdict finishes the row even when the agent
+    /// never wrote the task (a comment answered with a comment); a reopened
+    /// desk releases what its dead turn had claimed.
+    #[tokio::test]
+    async fn finish_wake_and_release_claims() {
+        let mut r = rig().await;
+        r.router.desks.lock().unwrap().insert("ops".into(), "d-ops".into());
+        let t = r.task("agent:ops").await;
+        let d = r.ledger.dispatch().await.unwrap();
+        assert!(r.ledger.dispatch().await.unwrap().is_empty(), "claimed: ops is busy");
+        r.ledger.release_claims("d-ops").await.unwrap();
+        let again = r.ledger.dispatch().await.unwrap();
+        assert_eq!(again[0].wake.id, d[0].wake.id, "released → dispatched again");
+        r.ledger.finish_wake(&again[0].wake).await.unwrap();
+        assert!(r.ledger.wakes().await.unwrap().is_empty());
+        r.ledger.comment(&t.id, "ping", false, "user", None).await.unwrap();
+        assert_eq!(r.ledger.dispatch().await.unwrap().len(), 1, "ops is free again");
+    }
+
     #[tokio::test]
     async fn send_back_wakes_owner_resumed_and_clears_backoff() {
         let mut r = rig().await;
@@ -2153,7 +2279,8 @@ pub(crate) mod tests {
         assert_eq!(r.ledger.get(&cont.id).await.unwrap().state, TaskState::Doing);
         assert_eq!(r.ledger.get(&other.id).await.unwrap().state, TaskState::Doing);
         let wakes = r.ledger.wakes().await.unwrap();
-        assert!(wakes.iter().all(|x| x.id != w.id), "the desk's claimed wake is finished");
+        let w = wakes.iter().find(|x| x.id == w.id).expect("the desk's unfinished wake survives the episode");
+        assert_eq!(w.claimed_by, None, "released for the next episode (67 §4.6), validated at dispatch");
         assert!(wakes.iter().any(|x| x.agent == "lead" && x.reason == WakeReason::Review && x.task == Some(left.id.clone())));
     }
 

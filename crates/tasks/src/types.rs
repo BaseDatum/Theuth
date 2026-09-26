@@ -243,6 +243,39 @@ impl WakeReason {
             Self::ChildrenCompleted => "children_completed",
         }
     }
+
+    /// Every reason, for the store's "not applicable" filters.
+    pub const ALL: [Self; 12] = [
+        Self::Assigned,
+        Self::Comment,
+        Self::Mention,
+        Self::Schedule,
+        Self::Answer,
+        Self::Review,
+        Self::Resume,
+        Self::Resumed,
+        Self::Manual,
+        Self::Reassigned,
+        Self::BlockersResolved,
+        Self::ChildrenCompleted,
+    ];
+
+    /// Whether a wake with this reason still has a purpose on a task in
+    /// `state` (STALE-WAKE-DESKS). A closed task wants nobody; `review` is
+    /// the reviewer's move (and the manager's on a `blocked: no continuation`);
+    /// the "pick it up" reasons need the task open for work; the rest
+    /// (comment, mention, answer, manual, schedule) hold in any open state.
+    pub const fn applies_to(self, state: TaskState) -> bool {
+        use TaskState::*;
+        match self {
+            _ if matches!(state, Done | Cancelled) => false,
+            Self::Review => matches!(state, Review | Blocked),
+            Self::Assigned | Self::Reassigned | Self::Resume | Self::Resumed | Self::BlockersResolved | Self::ChildrenCompleted => {
+                matches!(state, Todo | Doing)
+            }
+            Self::Comment | Self::Mention | Self::Schedule | Self::Answer | Self::Manual => true,
+        }
+    }
 }
 
 /// One row of `wakes` (67 §7.3): coalesced on `key`.
