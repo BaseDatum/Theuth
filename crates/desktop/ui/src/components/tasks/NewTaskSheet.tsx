@@ -62,6 +62,7 @@ export function NewTaskSheet({ open, onOpenChange, project: boardProject }: { op
         state: 'backlog',
         title: title.trim(),
         brief,
+        done_when: null,
         owner: parseOwner(owner),
         reviewer: parseOwner(effectiveReviewer),
         parent: null,
