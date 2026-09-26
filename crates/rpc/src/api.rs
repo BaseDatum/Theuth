@@ -3965,6 +3965,7 @@ impl ApiServer for Server {
             id: tasks::TaskId(id),
             state,
             note,
+            done_because: None,
             actor: "user".into(),
             session: None,
         };

@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 
 pub use config::TasksConfig;
 pub use types::{
-    Checkout, Disposition, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch,
-    TaskState, Wake, WakeReason,
+    Checkout, Disposition, DoneBecause, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId,
+    TaskPatch, TaskState, Wake, WakeReason,
 };
 
 /// Registry name of the [`Tasks`] actor.
@@ -141,6 +141,26 @@ pub struct MoveTask {
     pub state: TaskState,
     /// Why, for the thread.
     pub note: Option<String>,
+    /// The verdict a move to `done` records (70 DESK-PROTOCOL); `None` from an agent is refused.
+    #[serde(default)]
+    pub done_because: Option<DoneBecause>,
+    /// `agent:<name>` | `user` | `system`.
+    pub actor: String,
+    /// Session doing it.
+    pub session: Option<String>,
+}
+
+/// `ask` → `Result<Task, String>`: `task_reassign` (70 DESK-PROTOCOL 1) — the
+/// owner hands the task to `to` with a reason; the thread says
+/// `reassigned to <to>: <why>` and `to` is woken `reassigned`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReassignTask {
+    /// Which.
+    pub id: TaskId,
+    /// New owner.
+    pub to: Owner,
+    /// The fit: why `to` is the one.
+    pub why: String,
     /// `agent:<name>` | `user` | `system`.
     pub actor: String,
     /// Session doing it.
@@ -286,6 +306,19 @@ pub struct EpisodeClosing {
     pub session: String,
 }
 
+/// `ask` → `Result<Task, String>`: the 67 §7.3 rule on one task (70
+/// DESK-PROTOCOL: a desk turn nudged once and still not moving it) —
+/// `blocked: no continuation`, `why` in the thread, the agent's manager woken.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoContinuation {
+    /// Which.
+    pub id: TaskId,
+    /// Whose desk failed to move it.
+    pub agent: String,
+    /// The thread line.
+    pub why: String,
+}
+
 /// `ask` → `()`: run (or stop running) the hub duties — wake dispatch and
 /// the orphan sweep — on this engine. Default on; the mesh lease flips it.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -425,7 +458,17 @@ impl Message<MoveTask> for Tasks {
     type Reply = Result<Task, String>;
 
     async fn handle(&mut self, m: MoveTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger.move_to(&m.id, m.state, m.note.as_deref(), &m.actor, m.session.as_deref()).await
+        self.ledger
+            .move_to(&m.id, m.state, m.note.as_deref(), m.done_because, &m.actor, m.session.as_deref())
+            .await
+    }
+}
+
+impl Message<ReassignTask> for Tasks {
+    type Reply = Result<Task, String>;
+
+    async fn handle(&mut self, m: ReassignTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.reassign(&m.id, m.to, &m.why, &m.actor, m.session.as_deref()).await
     }
 }
 
@@ -581,6 +624,14 @@ impl Message<EpisodeClosing> for Tasks {
             sessions.extend(kids.into_iter().map(|k| k.id.to_string()));
         }
         self.ledger.episode_closing(&m.agent, &sessions).await
+    }
+}
+
+impl Message<NoContinuation> for Tasks {
+    type Reply = Result<Task, String>;
+
+    async fn handle(&mut self, m: NoContinuation, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.ledger.no_continuation_by_id(&m.id, &m.agent, &m.why).await
     }
 }
 

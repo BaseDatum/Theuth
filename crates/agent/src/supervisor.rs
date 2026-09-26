@@ -228,6 +228,10 @@ pub struct Agents {
     /// tests. `None` until the mesh is up: every such message then fails
     /// `OwnerUnreachable`.
     transport: Option<Arc<dyn replica::Transport>>,
+    /// Who a session speaks as when it is not theuth (70 DESK-PROTOCOL): the
+    /// roster installs it with [`InstallIdentitySource`]. `None`: every
+    /// session is theuth's.
+    identity: Option<Arc<dyn IdentitySource>>,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -408,6 +412,62 @@ pub struct Resolve {
 pub struct PeerContext {
     /// Session.
     pub session: SessionId,
+}
+
+/// The identity block that leads a session's system prompt in theuth's place
+/// (70 DESK-PROTOCOL): a roster agent's desk speaks as that agent, its work
+/// sessions as "working for" it. `lineage` is the session first, then its
+/// parent, grandparent, … to the root, so a child is placed without waiting
+/// for any spawn event. `None`: the session is theuth's.
+#[async_trait::async_trait]
+pub trait IdentitySource: Send + Sync {
+    /// The block for the session `lineage[0]`, or `None` when it is theuth's.
+    async fn identity(&self, lineage: &[SessionId]) -> Option<String>;
+}
+
+/// `ask` → `()`: install the [`IdentitySource`]; installing again replaces it.
+pub struct InstallIdentitySource(pub Arc<dyn IdentitySource>);
+
+impl Message<InstallIdentitySource> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: InstallIdentitySource, _: &mut Context<Self, Self::Reply>) {
+        self.identity = Some(m.0);
+    }
+}
+
+/// `ask` → `Option<String>`: the session's identity block ([`IdentitySource`]
+/// over its lineage); `None` for a session of theuth's.
+#[derive(Clone, Copy, Debug)]
+pub struct Identity {
+    /// Session.
+    pub session: SessionId,
+}
+
+impl Message<Identity> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(&mut self, m: Identity, _: &mut Context<Self, Self::Reply>) -> Option<String> {
+        self.identity_of(m.session).await
+    }
+}
+
+impl Agents {
+    /// [`IdentitySource::identity`] over `session`'s lineage; `None` without a
+    /// source or for a session of theuth's.
+    async fn identity_of(&self, session: SessionId) -> Option<String> {
+        let source = self.identity.as_ref()?;
+        let mut lineage = vec![session];
+        let mut cur = session;
+        while let Some((parent, _)) = self.sessions.get(&cur).and_then(|l| l.parent.as_ref()) {
+            if lineage.contains(parent) {
+                break;
+            }
+            lineage.push(*parent);
+            cur = *parent;
+        }
+        source.identity(&lineage).await
+    }
 }
 
 /// `ask` → `String`: `"Subagents: a (running), b (idle)"` or `""` — harness
@@ -4802,8 +4862,13 @@ impl Message<ShowPrompt> for Agents {
             blocks = prompt_blocks(b, toolset.as_ref(), attended);
         }
         let subagent_model = self.subagent_model_id();
+        let identity = match m.session {
+            Some(s) => self.identity_of(s).await,
+            None => None,
+        };
         let mut prompt = frame::baseline(
             &self.rt.data_dir,
+            identity.as_deref(),
             &peers,
             &blocks,
             self.claude_code(&model),
@@ -6829,6 +6894,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             durable_resources: SessionResources::durable_arc(&rt.data_dir),
             private_grace: PRIVATE_GRACE,
             transport: None,
+            identity: None,
         },
         runtime::subscriber_mailbox(),
     );
@@ -8375,6 +8441,7 @@ pub(crate) mod tests {
             // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
             private_grace: Duration::from_millis(200),
             transport: None,
+            identity: None,
         }
     }
 

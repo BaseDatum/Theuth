@@ -11,8 +11,8 @@ use crate::config::TasksConfig;
 use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
-    Checkout, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake,
-    WakeReason,
+    Checkout, DoneBecause, Owner, Task, TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState,
+    Wake, WakeReason,
 };
 use crate::DeskRouter;
 
@@ -342,6 +342,7 @@ impl Ledger {
             updated_ms: now,
             no_progress_count: 0,
             next_wake_after_ms: None,
+            done_when: input.done_when.map(|d| d.trim().to_owned()).filter(|d| !d.is_empty()),
             id,
         };
         t.thread = self
@@ -378,6 +379,7 @@ impl Ledger {
             where_: None,
             harness: None,
             external: vec![],
+            done_when: None,
         };
         let mut t = self.create(input, "system", None, WakeReason::Schedule).await?;
         t.schedule = Some((schedule.to_owned(), fire_ms));
@@ -456,9 +458,11 @@ impl Ledger {
         Ok(())
     }
 
-    /// `t` reached `done`/`cancelled`: drop it from every blockers list; a
+    /// `t` reached `done`/`cancelled` (70 DESK-PROTOCOL (c): results come
+    /// back as wakes, never by polling): drop it from every blockers list — a
     /// task left with none returns to its previous state and its owner is
-    /// woken with `resume`.
+    /// woken `blockers_resolved`; when every child of its parent is now
+    /// closed, the parent's owner is woken `children_completed`.
     async fn on_closed(&self, t: &Task) -> R<()> {
         for mut b in self.store.blocked_on(&t.id.0).await.map_err(db)? {
             let before = b.blockers.join(", ");
@@ -467,7 +471,19 @@ impl Ledger {
             self.save(&b).await?;
             self.event(&b, "system", None, "blockers", Some(before), Some(b.blockers.join(", "))).await;
             if b.state == TaskState::Blocked && b.blockers.is_empty() {
-                self.unblock(&mut b, "system", WakeReason::Resume).await?;
+                self.unblock(&mut b, "system", WakeReason::BlockersResolved).await?;
+            }
+        }
+        if let Some(p) = &t.parent
+            && let Ok(parent) = self.load(p).await
+            && !matches!(parent.state, TaskState::Done | TaskState::Cancelled)
+        {
+            let open = self.store.children(p).await.map_err(db)?.into_iter().any(|c| {
+                c.id != t.id && !matches!(c.state, TaskState::Done | TaskState::Cancelled)
+            });
+            if !open {
+                self.say(&parent, "system", &format!("every child is closed (last: {} {})", short(&t.id), t.state.as_str())).await;
+                self.wake(&parent, &parent.owner, WakeReason::ChildrenCompleted, "system").await;
             }
         }
         Ok(())
@@ -508,8 +524,10 @@ impl Ledger {
             }
             (Review, Done) => {
                 let r = t.reviewer.clone().unwrap_or(Owner::User);
-                if r == t.owner && t.owner != Owner::User {
-                    return Err("done needs a reviewer other than the owner".into());
+                // 70 DESK-PROTOCOL: "assigning yourself plus a please-review comment is
+                // not a review path" — self-review only against explicit criteria.
+                if r == t.owner && t.owner != Owner::User && t.done_when.is_none() {
+                    return Err("done needs a reviewer other than the owner (self-review is only allowed against an explicit done_when)".into());
                 }
                 if acts_for(actor, &r) { Ok(()) } else { Err(format!("done is the reviewer's ({r}) move")) }
             }
@@ -535,6 +553,34 @@ impl Ledger {
             && to != t.state
         {
             Self::guard(&t, to, actor, &blockers)?;
+        }
+        // 70 DESK-PROTOCOL: `done` says why, judged against `done_when` first;
+        // a self-reviewer may only claim the criteria. `user`/`system` default to intent.
+        let done_because = match (patch.state, &patch.done_because) {
+            (Some(TaskState::Done), Some(b)) if t.state != TaskState::Done => {
+                if t.reviewer.as_ref().is_some_and(|r| *r == t.owner) && t.owner != Owner::User && *b != DoneBecause::CriteriaMet {
+                    return Err("a self-reviewed task is done only because its done_when criteria are met".into());
+                }
+                if *b == DoneBecause::CriteriaMet && t.done_when.is_none() && patch.done_when.is_none() {
+                    return Err("criteria met needs a done_when on the task".into());
+                }
+                Some(b.clone())
+            }
+            (Some(TaskState::Done), None) if t.state != TaskState::Done => {
+                if actor.starts_with("agent:") {
+                    return Err("done needs done_because: criteria_met | intent_met | follow_ups_filed{tasks}".into());
+                }
+                Some(DoneBecause::IntentMet)
+            }
+            _ => None,
+        };
+        if let Some(DoneBecause::FollowUpsFiled { tasks }) = &done_because {
+            if tasks.is_empty() {
+                return Err("follow_ups_filed names the follow-up tasks".into());
+            }
+            for f in tasks {
+                self.load(f).await.map_err(|_| format!("follow-up {f}: no such task"))?;
+            }
         }
 
         let mut changes: Vec<(&str, Option<String>, Option<String>)> = vec![];
@@ -582,6 +628,7 @@ impl Ledger {
             changes.push(("external", Some(t.external.join(", ")), Some(v.join(", "))));
             t.external = v;
         }
+        set!(done_when, "done_when");
         if let Some(to) = patch.state
             && to != t.state
         {
@@ -589,6 +636,17 @@ impl Ledger {
             t.state = to;
             if to == TaskState::Review || to == TaskState::Cancelled {
                 t.checkout = None;
+            }
+            // 70 DESK-PROTOCOL: without explicit criteria a desk cannot review itself;
+            // the review goes to its manager.
+            if to == TaskState::Review
+                && t.done_when.is_none()
+                && let Owner::Agent(a) = &t.owner
+                && t.reviewer.as_ref().is_none_or(|r| *r == t.owner)
+            {
+                let m = self.manager_of(a);
+                changes.push(("reviewer", t.reviewer.as_ref().map(ToString::to_string), Some(m.to_string())));
+                t.reviewer = Some(m);
             }
         }
 
@@ -617,6 +675,9 @@ impl Ledger {
         self.save(&t).await?;
         for (field, b, a) in changes {
             self.event(&t, actor, session, field, b, a).await;
+        }
+        if let Some(b) = &done_because {
+            self.say(&t, actor, &format!("done because: {b}")).await;
         }
 
         if t.owner != before.owner {
@@ -656,8 +717,17 @@ impl Ledger {
 
     /// `task_move`: a state change on `actor`'s intent (backlog ↔ todo, → cancelled,
     /// review → done | todo, blocked → todo …). Refuses with the allowed list;
-    /// `note` goes to the thread as a comment.
-    pub async fn move_to(&mut self, id: &TaskId, to: TaskState, note: Option<&str>, actor: &str, session: Option<&str>) -> R<Task> {
+    /// `note` goes to the thread as a comment; `done_because` is the verdict a
+    /// move to `done` records (70 DESK-PROTOCOL).
+    pub async fn move_to(
+        &mut self,
+        id: &TaskId,
+        to: TaskState,
+        note: Option<&str>,
+        done_because: Option<DoneBecause>,
+        actor: &str,
+        session: Option<&str>,
+    ) -> R<Task> {
         let t = self.load(id).await?;
         if to != t.state
             && let Err(why) = Self::guard(&t, to, actor, &t.blockers)
@@ -671,11 +741,77 @@ impl Ledger {
                 if allowed.is_empty() { "nothing".to_owned() } else { allowed.join(", ") }
             ));
         }
-        let t = self.update(id, TaskPatch { state: Some(to), ..Default::default() }, actor, session).await?;
+        let t = self
+            .update(
+                id,
+                TaskPatch {
+                    state: Some(to),
+                    done_because,
+                    ..Default::default()
+                },
+                actor,
+                session,
+            )
+            .await?;
         if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
             self.comment(id, n, false, actor, session).await?;
         }
         Ok(t)
+    }
+
+    /// `task_reassign` (70 DESK-PROTOCOL 1, the fit check): the owner (or the
+    /// user) hands a `todo`/`doing`/`blocked` task to `to`; a checkout is
+    /// released and the task returns to `todo` (or stays `blocked`), the
+    /// thread says `reassigned to <to>: <why>`, and `to` is woken `reassigned`.
+    pub async fn reassign(&mut self, id: &TaskId, to: Owner, why: &str, actor: &str, session: Option<&str>) -> R<Task> {
+        let mut t = self.load(id).await?;
+        if !acts_for(actor, &t.owner) {
+            return Err(format!("only the owner ({}) or the user reassigns", t.owner));
+        }
+        if !matches!(t.state, TaskState::Todo | TaskState::Doing | TaskState::Blocked) {
+            return Err(format!("a {} task is not reassigned", t.state.as_str()));
+        }
+        if to == t.owner {
+            return Err(format!("{to} already owns it"));
+        }
+        let why = why.trim();
+        if why.is_empty() {
+            return Err("reassign says why (the fit)".into());
+        }
+        self.charge(session, &t).await?;
+        self.check_epoch(session, &t).await?;
+        let before = t.clone();
+        t.owner = to.clone();
+        t.checkout = None;
+        if t.state == TaskState::Doing {
+            t.state = TaskState::Todo;
+        }
+        if t.reviewer.as_ref() == Some(&to) {
+            t.reviewer = Some(match &to {
+                Owner::Agent(a) => self.manager_of(a),
+                _ => Owner::User,
+            });
+        }
+        t.updated_ms = self.now();
+        if let Some(agent) = agent_name(&before.owner).map(str::to_owned)
+            && actor == before.owner.to_string()
+            && self.delivered.remove(id).is_some()
+        {
+            self.complete_wake(&mut t, &agent, false).await;
+        }
+        self.save(&t).await?;
+        self.event(&t, actor, session, "owner", Some(before.owner.to_string()), Some(to.to_string())).await;
+        if t.state != before.state {
+            self.event(&t, actor, session, "state", Some(before.state.as_str().into()), Some(t.state.as_str().into())).await;
+        }
+        if t.reviewer != before.reviewer {
+            self.event(&t, actor, session, "reviewer", before.reviewer.as_ref().map(ToString::to_string), t.reviewer.as_ref().map(ToString::to_string)).await;
+        }
+        self.say(&t, actor, &format!("reassigned to {to}: {why}")).await;
+        if t.state != TaskState::Blocked {
+            self.wake(&t, &to, WakeReason::Reassigned, actor).await;
+        }
+        self.with_blocks(t).await
     }
 
     /// `task_checkout`: `todo`/`blocked`/unheld `doing` → `doing` under
@@ -1059,17 +1195,41 @@ impl Ledger {
             if continuing {
                 continue;
             }
-            t.blockers.push(NO_CONTINUATION.to_owned());
-            t.state = TaskState::Blocked;
-            t.updated_ms = self.now();
-            self.save(&t).await?;
-            self.event(&t, "system", None, "state", Some("doing".into()), Some("blocked".into())).await;
-            self.say(&t, "system", &format!("episode of {agent} closed without a disposition")).await;
-            self.wake(&t, &self.manager_of(agent), WakeReason::Review, "system").await;
-            self.delivered.remove(&t.id);
+            self.no_continuation(&mut t, agent, &format!("episode of {agent} closed without a disposition")).await?;
             blocked.push(t.id);
         }
         Ok(blocked)
+    }
+
+    /// The 67 §7.3 rule on one task (70 DESK-PROTOCOL nudges: the second
+    /// unhandled turn): `blocked: no continuation`, `why` in the thread, the
+    /// agent's manager woken `review`. Any open state; `done`/`cancelled` are left.
+    pub async fn no_continuation(&mut self, t: &mut Task, agent: &str, why: &str) -> R<()> {
+        if matches!(t.state, TaskState::Done | TaskState::Cancelled) {
+            return Ok(());
+        }
+        let before = t.state;
+        if !t.blockers.iter().any(|b| b == NO_CONTINUATION) {
+            t.blockers.push(NO_CONTINUATION.to_owned());
+        }
+        t.state = TaskState::Blocked;
+        t.checkout = None;
+        t.updated_ms = self.now();
+        self.save(t).await?;
+        if before != TaskState::Blocked {
+            self.event(t, "system", None, "state", Some(before.as_str().into()), Some("blocked".into())).await;
+        }
+        self.say(t, "system", why).await;
+        self.wake(t, &self.manager_of(agent), WakeReason::Review, "system").await;
+        self.delivered.remove(&t.id);
+        Ok(())
+    }
+
+    /// [`Self::no_continuation`] by id (the actor's `NoContinuation`).
+    pub async fn no_continuation_by_id(&mut self, id: &TaskId, agent: &str, why: &str) -> R<Task> {
+        let mut t = self.load(id).await?;
+        self.no_continuation(&mut t, agent, why).await?;
+        self.with_blocks(t).await
     }
 
     /// Record a disposition that changes no field (`continuing`, `delegated`).
@@ -1214,6 +1374,7 @@ pub(crate) mod tests {
                         where_: None,
                         harness: None,
                         external: vec![],
+                        done_when: None,
                     },
                     "user",
                     None,
@@ -1238,6 +1399,16 @@ pub(crate) mod tests {
                 .update(
                     id,
                     TaskPatch { state: Some(TaskState::Blocked), blockers: Some(vec![on.into()]), ..Default::default() },
+                    actor,
+                    None,
+                )
+                .await
+        }
+        pub async fn done(&mut self, id: &TaskId, because: DoneBecause, actor: &str) -> R<Task> {
+            self.ledger
+                .update(
+                    id,
+                    TaskPatch { state: Some(TaskState::Done), done_because: Some(because), ..Default::default() },
                     actor,
                     None,
                 )
@@ -1300,7 +1471,10 @@ pub(crate) mod tests {
         assert_eq!(r.set_state(&id, TaskState::Doing, "agent:lead").await.unwrap().state, TaskState::Doing);
         r.set_state(&id, TaskState::Review, "agent:ops").await.unwrap();
         assert!(r.set_state(&id, TaskState::Done, "agent:ops").await.unwrap_err().contains("reviewer"));
-        assert_eq!(r.set_state(&id, TaskState::Done, "agent:lead").await.unwrap().state, TaskState::Done);
+        // an agent's `done` says why; the verdict lands in the thread
+        assert!(r.set_state(&id, TaskState::Done, "agent:lead").await.unwrap_err().contains("done_because"));
+        let t = r.done(&id, DoneBecause::IntentMet, "agent:lead").await.unwrap();
+        assert_eq!(t.state, TaskState::Done);
         // terminal
         assert!(r.set_state(&id, TaskState::Cancelled, "user").await.unwrap_err().contains("is done"));
         // * → cancelled
@@ -1326,6 +1500,7 @@ pub(crate) mod tests {
             where_: None,
             harness: None,
             external: vec![],
+            done_when: None,
         };
         let t = r.ledger.create(input.clone(), "user", None, WakeReason::Assigned).await.unwrap();
         assert_eq!(t.state, TaskState::Backlog);
@@ -1338,28 +1513,31 @@ pub(crate) mod tests {
         assert!(r.set_state(&t.id, TaskState::Review, "agent:ops").await.is_err());
         assert!(r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap_err().contains("is backlog"));
         // task_move refusal names the allowed list
-        let e = r.ledger.move_to(&t.id, TaskState::Done, None, "user", None).await.unwrap_err();
+        let e = r.ledger.move_to(&t.id, TaskState::Done, None, None, "user", None).await.unwrap_err();
         assert!(e.contains("backlog → done is not allowed") && e.contains("todo") && e.contains("cancelled"), "{e}");
         assert!(!e.contains("doing"), "{e}");
         // backlog → todo wakes the owner `assigned` (the note is a comment: its own wake); the note lands in the thread
-        let t = r.ledger.move_to(&t.id, TaskState::Todo, Some("go ahead"), "user", None).await.unwrap();
+        let t = r.ledger.move_to(&t.id, TaskState::Todo, Some("go ahead"), None, "user", None).await.unwrap();
         assert_eq!(t.state, TaskState::Todo);
         let w = r.ledger.wakes().await.unwrap();
         assert!(w.iter().any(|w| w.agent == "ops" && w.reason == WakeReason::Assigned), "{w:?}");
         let doc = t.thread.clone().unwrap();
         assert!(r.thread.0.lock().unwrap()[&doc].iter().any(|b| b.ends_with("go ahead")));
         // todo → backlog pulls it back; review → todo is the reviewer's send-back
-        assert_eq!(r.ledger.move_to(&t.id, TaskState::Backlog, None, "user", None).await.unwrap().state, TaskState::Backlog);
-        r.ledger.move_to(&t.id, TaskState::Todo, None, "user", None).await.unwrap();
+        assert_eq!(r.ledger.move_to(&t.id, TaskState::Backlog, None, None, "user", None).await.unwrap().state, TaskState::Backlog);
+        r.ledger.move_to(&t.id, TaskState::Todo, None, None, "user", None).await.unwrap();
         r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
         r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
-        assert!(r.ledger.move_to(&t.id, TaskState::Todo, None, "agent:ops", None).await.unwrap_err().contains("reviewer"));
-        assert_eq!(r.ledger.move_to(&t.id, TaskState::Todo, None, "agent:lead", None).await.unwrap().state, TaskState::Todo);
+        assert!(r.ledger.move_to(&t.id, TaskState::Todo, None, None, "agent:ops", None).await.unwrap_err().contains("reviewer"));
+        assert_eq!(r.ledger.move_to(&t.id, TaskState::Todo, None, None, "agent:lead", None).await.unwrap().state, TaskState::Todo);
         assert!(Ledger::allowed_moves(&r.ledger.get(&t.id).await.unwrap(), "user").contains(&TaskState::Backlog));
     }
 
+    /// 70 DESK-PROTOCOL (d): "assigning yourself plus a please-review comment is
+    /// not a review path". Without `done_when` a self-reviewed task goes to the
+    /// manager; with it the owner may close it, but only as `criteria met`.
     #[tokio::test]
-    async fn reviewer_must_differ_from_owner_unless_user() {
+    async fn self_review_only_against_explicit_criteria() {
         let mut r = rig().await;
         let t = r.task("agent:ops").await;
         r.ledger
@@ -1367,15 +1545,150 @@ pub(crate) mod tests {
             .await
             .unwrap();
         r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
-        r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
-        let e = r.set_state(&t.id, TaskState::Done, "agent:ops").await.unwrap_err();
-        assert!(e.contains("other than the owner"), "{e}");
-        assert!(r.set_state(&t.id, TaskState::Done, "user").await.unwrap_err().contains("other than the owner"));
+        let t = r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap();
+        assert_eq!(t.reviewer, Some(Owner::Agent("lead".into())), "no criteria: the manager reviews");
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(w.iter().any(|w| w.agent == "lead" && w.reason == WakeReason::Review), "{w:?}");
+        assert!(r.done(&t.id, DoneBecause::IntentMet, "agent:ops").await.unwrap_err().contains("reviewer"));
+
+        let t2 = r.task("agent:ops").await;
+        r.ledger
+            .update(
+                &t2.id,
+                TaskPatch {
+                    reviewer: Some(Owner::Agent("ops".into())),
+                    done_when: Some("the cert is renewed and curl shows the new expiry".into()),
+                    ..Default::default()
+                },
+                "user",
+                None,
+            )
+            .await
+            .unwrap();
+        r.ledger.checkout(&t2.id, "s-ops", "agent:ops").await.unwrap();
+        let t2 = r.set_state(&t2.id, TaskState::Review, "agent:ops").await.unwrap();
+        assert_eq!(t2.reviewer, Some(Owner::Agent("ops".into())), "explicit criteria: self-review stays");
+        let e = r.done(&t2.id, DoneBecause::IntentMet, "agent:ops").await.unwrap_err();
+        assert!(e.contains("criteria"), "{e}");
+        assert_eq!(r.done(&t2.id, DoneBecause::CriteriaMet, "agent:ops").await.unwrap().state, TaskState::Done);
+        let doc = r.ledger.get(&t2.id).await.unwrap().thread.unwrap();
+        let thread = r.thread.0.lock().unwrap()[&doc].join("\n");
+        assert!(thread.contains("done because: criteria met"), "{thread}");
 
         let u = r.task("user").await;
         r.ledger.checkout(&u.id, "s-user", "user").await.unwrap();
         r.set_state(&u.id, TaskState::Review, "user").await.unwrap();
         assert_eq!(r.set_state(&u.id, TaskState::Done, "user").await.unwrap().state, TaskState::Done);
+    }
+
+    /// Sky's ruling: done because the criteria are met, the intent is met, or
+    /// follow-ups carry the work on — each recorded in the thread; follow-ups
+    /// must exist; `criteria met` needs a `done_when`.
+    #[tokio::test]
+    async fn done_because_three_reasons() {
+        let mut r = rig().await;
+        async fn review(r: &mut Rig, done_when: Option<&str>) -> Task {
+            let t = r.task("agent:ops").await;
+            if let Some(dw) = done_when {
+                r.ledger
+                    .update(&t.id, TaskPatch { done_when: Some(dw.to_owned()), ..Default::default() }, "user", None)
+                    .await
+                    .unwrap();
+            }
+            r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+            r.set_state(&t.id, TaskState::Review, "agent:ops").await.unwrap()
+        }
+        let thread_of = |r: &Rig, t: &Task| r.thread.0.lock().unwrap()[t.thread.as_ref().unwrap()].join("\n");
+
+        // (1) criteria met — only with a done_when
+        let a = review(&mut r, None).await;
+        assert!(r.done(&a.id, DoneBecause::CriteriaMet, "agent:lead").await.unwrap_err().contains("done_when"));
+        let a = review(&mut r, Some("all three checks pass")).await;
+        let a = r.done(&a.id, DoneBecause::CriteriaMet, "agent:lead").await.unwrap();
+        assert!(thread_of(&r, &a).contains("**agent:lead**") && thread_of(&r, &a).contains("done because: criteria met"));
+
+        // (2) intent met — the user's approval defaults to it
+        let b = review(&mut r, None).await;
+        let b = r.ledger.move_to(&b.id, TaskState::Done, Some("good enough"), None, "user", None).await.unwrap();
+        assert_eq!(b.state, TaskState::Done);
+        assert!(thread_of(&r, &b).contains("done because: intent met"), "{}", thread_of(&r, &b));
+
+        // (3) follow-ups filed — they must exist and be named
+        let c = review(&mut r, None).await;
+        let e = r.done(&c.id, DoneBecause::FollowUpsFiled { tasks: vec![] }, "agent:lead").await.unwrap_err();
+        assert!(e.contains("names"), "{e}");
+        let e = r
+            .done(&c.id, DoneBecause::FollowUpsFiled { tasks: vec![TaskId("nope".into())] }, "agent:lead")
+            .await
+            .unwrap_err();
+        assert!(e.contains("no such task"), "{e}");
+        let f = r.task("agent:ops").await;
+        let c = r.done(&c.id, DoneBecause::FollowUpsFiled { tasks: vec![f.id.clone()] }, "agent:lead").await.unwrap();
+        assert_eq!(c.state, TaskState::Done);
+        assert!(thread_of(&r, &c).contains(&format!("done because: follow-ups filed ({})", f.id)));
+    }
+
+    /// 70 DESK-PROTOCOL (c): a closed child wakes the parent's owner
+    /// `children_completed` once every child is closed; a resolved blocker
+    /// wakes `blockers_resolved`.
+    #[tokio::test]
+    async fn children_completed_and_blockers_resolved_wakes() {
+        let mut r = rig().await;
+        let parent = r.task("agent:lead").await;
+        async fn child(r: &mut Rig, parent: &TaskId, title: &str) -> Task {
+            r.ledger
+                .create(
+                    TaskCreate {
+                        state: TaskState::Todo,
+                        title: title.to_owned(),
+                        brief: String::new(),
+                        owner: Owner::Agent("ops".into()),
+                        reviewer: Some(Owner::User),
+                        parent: Some(parent.clone()),
+                        project: None,
+                        where_: None,
+                        harness: None,
+                        external: vec![],
+                        done_when: None,
+                    },
+                    "agent:lead",
+                    None,
+                    WakeReason::Assigned,
+                )
+                .await
+                .unwrap()
+        }
+        let c1 = child(&mut r, &parent.id, "c1").await;
+        let c2 = child(&mut r, &parent.id, "c2").await;
+        r.ledger.checkout(&parent.id, "s-lead", "agent:lead").await.unwrap();
+        r.blocked(&parent.id, &c1.id.0, "agent:lead").await.unwrap();
+        r.set_state(&c1.id, TaskState::Cancelled, "user").await.unwrap();
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(w.iter().any(|w| w.agent == "lead" && w.reason == WakeReason::BlockersResolved), "{w:?}");
+        assert!(!w.iter().any(|w| w.reason == WakeReason::ChildrenCompleted), "c2 is still open: {w:?}");
+        r.set_state(&c2.id, TaskState::Cancelled, "user").await.unwrap();
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(w.iter().any(|w| w.agent == "lead" && w.task == Some(parent.id.clone()) && w.reason == WakeReason::ChildrenCompleted), "{w:?}");
+    }
+
+    /// 70 DESK-PROTOCOL 1: the fit check hands a task over — owner changes,
+    /// checkout released, back to `todo`, thread says why, new owner woken `reassigned`.
+    #[tokio::test]
+    async fn reassign_wakes_the_specialist() {
+        let mut r = rig().await;
+        let t = r.task("agent:ops").await;
+        assert!(r.ledger.reassign(&t.id, Owner::Agent("karol".into()), "", "agent:ops", None).await.unwrap_err().contains("why"));
+        assert!(r.ledger.reassign(&t.id, Owner::Agent("karol".into()), "k8s", "agent:lead", None).await.unwrap_err().contains("owner"));
+        r.ledger.checkout(&t.id, "s-ops", "agent:ops").await.unwrap();
+        let t = r.ledger.reassign(&t.id, Owner::Agent("karol".into()), "k8s cluster health is karol's capability", "agent:ops", Some("s-ops")).await.unwrap();
+        assert_eq!(t.owner, Owner::Agent("karol".into()));
+        assert_eq!(t.state, TaskState::Todo);
+        assert!(t.checkout.is_none());
+        let w = r.ledger.wakes().await.unwrap();
+        assert!(w.iter().any(|w| w.agent == "karol" && w.reason == WakeReason::Reassigned), "{w:?}");
+        let thread = r.thread.0.lock().unwrap()[t.thread.as_ref().unwrap()].join("\n");
+        assert!(thread.contains("reassigned to agent:karol: k8s cluster health is karol's capability"), "{thread}");
+        assert!(r.ledger.reassign(&t.id, Owner::Agent("karol".into()), "again", "user", None).await.unwrap_err().contains("already owns"));
     }
 
     #[tokio::test]
@@ -1411,6 +1724,7 @@ pub(crate) mod tests {
                     where_: None,
                     harness: None,
                     external: vec![],
+                    done_when: None,
                 },
                 "user",
                 None,
@@ -1432,6 +1746,7 @@ pub(crate) mod tests {
                     where_: None,
                     harness: None,
                     external: vec![],
+                    done_when: None,
                 },
                 "user",
                 None,
@@ -1490,8 +1805,8 @@ pub(crate) mod tests {
         let h = r.ledger.get(&held.id).await.unwrap();
         assert_eq!(h.state, TaskState::Doing);
         assert!(r.ledger.blocks_of(&dep.id).await.unwrap().is_empty());
-        let resumes = r.ledger.wakes().await.unwrap().into_iter().filter(|w| w.reason == WakeReason::Resume).count();
-        assert_eq!(resumes, 2, "one resume wake per freed task");
+        let resumes = r.ledger.wakes().await.unwrap().into_iter().filter(|w| w.reason == WakeReason::BlockersResolved).count();
+        assert_eq!(resumes, 2, "one blockers_resolved wake per freed task");
         // a task with two blockers waits for both
         let two = r.task("agent:ops").await;
         let d1 = r.task("user").await;
@@ -1681,7 +1996,7 @@ pub(crate) mod tests {
         backed.no_progress_count = 3;
         backed.next_wake_after_ms = Some(r.clock.load(Ordering::SeqCst) + 600_000);
         r.ledger.save(&backed).await.unwrap();
-        let t = r.ledger.move_to(&t.id, TaskState::Doing, None, "user", None).await.unwrap();
+        let t = r.ledger.move_to(&t.id, TaskState::Doing, None, None, "user", None).await.unwrap();
         assert_eq!((t.state, t.no_progress_count, t.next_wake_after_ms), (TaskState::Doing, 0, None));
         let reasons: Vec<_> = r.ledger.wakes().await.unwrap().into_iter().map(|w| (w.agent, w.reason)).collect();
         assert!(reasons.contains(&("ops".into(), WakeReason::Resumed)), "{reasons:?}");

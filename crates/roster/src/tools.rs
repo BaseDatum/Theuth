@@ -341,13 +341,13 @@ mod tests {
     #[test]
     fn hiring_block_reaches_theuth_and_the_desk_manual_points_at_propose() {
         let dir = std::env::temp_dir();
-        let attended = agent::frame::baseline(&dir, "", PROMPT, false, None, true);
-        let unattended = agent::frame::baseline(&dir, "", PROMPT, false, None, false);
+        let attended = agent::frame::baseline(&dir, None, "", PROMPT, false, None, true);
+        let unattended = agent::frame::baseline(&dir, None, "", PROMPT, false, None, false);
         for p in [&attended, &unattended] {
             assert!(p.contains("## Hiring\n"), "{p}");
             assert!(p.contains("`agent_draft`") && p.contains("`agent_put`") && p.contains("Never tell the user to write or edit a file"));
         }
-        let manual = crate::desk::manual(&file::default_agent(&dir));
+        let manual = crate::desk::manual(&file::default_agent(&dir), 3);
         assert!(manual.contains("`agent_propose`") && !manual.contains("agent_put"));
     }
 }

@@ -2570,14 +2570,24 @@ impl Turn {
                 Err(e) => tracing::warn!(session = %self.shared.id, "knowledge sync: {e:#}"),
             }
         }
-        let peer_line = match ActorRef::<Agents>::lookup(AGENT_ACTOR) {
-            Ok(Some(agents)) => agents
-                .ask(PeerContext {
-                    session: self.shared.id,
-                })
-                .await
-                .unwrap_or_default(),
-            _ => String::new(),
+        let agents = ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten();
+        let (peer_line, identity) = match &agents {
+            Some(agents) => (
+                agents
+                    .ask(PeerContext {
+                        session: self.shared.id,
+                    })
+                    .await
+                    .unwrap_or_default(),
+                agents
+                    .ask(crate::supervisor::Identity {
+                        session: self.shared.id,
+                    })
+                    .await
+                    .ok()
+                    .flatten(),
+            ),
+            None => (String::new(), None),
         };
         let specs = match registry.ask(ListTools(Some(self.shared.id))).await {
             Ok(specs) => specs,
@@ -2611,6 +2621,7 @@ impl Turn {
             .map(|r| r.id.clone());
         let mut baseline = frame::baseline(
             &self.shared.rt.data_dir,
+            identity.as_deref(),
             &peer_line,
             &blocks,
             claude_code,
@@ -5660,7 +5671,7 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
-        let bare = frame::baseline(&data_dir, "", "", false, None, true);
+        let bare = frame::baseline(&data_dir, None, "", "", false, None, true);
         assert!(bare.starts_with("You are theuth, a meta-harness"));
         assert!(!bare.contains("## Skills"));
 
@@ -5673,6 +5684,7 @@ mod tests {
         std::fs::write(skills_dir.join("later.md"), "Listed skill\n").unwrap();
         let full = frame::baseline(
             &data_dir,
+            None,
             "## Peers\npeer text",
             "Plugin block.",
             false,

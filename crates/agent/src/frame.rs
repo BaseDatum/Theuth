@@ -17,6 +17,11 @@ use crate::skills;
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/// theuth's own opening sentence: what a user session and theuth's desk are.
+const THEUTH_HEADER: &str = "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
+to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
+small direct actions and for verifying what others did.";
+
 /// Static working guidance (design doc 07 §4 part 8, §9, §10; 50 §2.2, §5,
 /// §9): never changes, so it never busts the system cache. The live roster is
 /// deliberately absent (§10); the configured external harnesses are named in
@@ -237,16 +242,21 @@ pub fn strip_images(m: &mut ChatMessage) {
 }
 
 /// The system prompt (design doc 07 §4), rendered once per turn: Claude Code
-/// identity (when `claude_code`), built-in header (with the user's preferred
-/// `subagent_model` when set), `<data_dir>/prompt.md` (its `root-only` spans
-/// resolved for `attended`, see [`root_only`]), `always` skill bodies,
-/// skills index, `peer_line` verbatim, `plugin_blocks` (registered
-/// `RegisterPrompt` texts, already joined and filtered for the audience by
-/// the caller), static guidance (its "report visually" sentence only when
-/// `attended`). Empty parts skipped, one blank line between the rest. A pure
-/// function of its inputs, so cache-stable for the session's lifetime.
+/// identity (when `claude_code`), then either theuth's own header +
+/// `<data_dir>/prompt.md` (its `root-only` spans resolved for `attended`, see
+/// [`root_only`]) or, for a roster agent's desk and its work sessions,
+/// `identity` verbatim in their place (70 DESK-PROTOCOL: the desk is that
+/// agent, not theuth; `prompt.md` is theuth's charter only), then the
+/// working-directory/date line (with the user's preferred `subagent_model`
+/// when set), `always` skill bodies, skills index, `peer_line` verbatim,
+/// `plugin_blocks` (registered `RegisterPrompt` texts, already joined and
+/// filtered for the audience by the caller), static guidance (its "report
+/// visually" sentence only when `attended`). Empty parts skipped, one blank
+/// line between the rest. A pure function of its inputs, so cache-stable for
+/// the session's lifetime.
 pub fn baseline(
     data_dir: &Path,
+    identity: Option<&str>,
     peer_line: &str,
     plugin_blocks: &str,
     claude_code: bool,
@@ -256,10 +266,18 @@ pub fn baseline(
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    let (persona, standing) = match identity {
+        Some(id) => (id, String::new()),
+        None => (
+            THEUTH_HEADER,
+            root_only(
+                &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
+                attended,
+            ),
+        ),
+    };
     let mut header = format!(
-        "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
-         to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
-         small direct actions and for verifying what others did.\nWorking directory: {cwd}\nDate: {}",
+        "{persona}\nWorking directory: {cwd}\nDate: {}",
         chrono::Local::now().format("%Y-%m-%d")
     );
     if let Some(m) = subagent_model {
@@ -268,10 +286,6 @@ pub fn baseline(
              `model` only when a task clearly needs something else)"
         ));
     }
-    let standing = root_only(
-        &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
-        attended,
-    );
     let skills = skills::index(&skills::dir(data_dir));
     let guidance = [
         GUIDANCE_HEAD,
@@ -592,8 +606,8 @@ mod tests {
                 attended,
             )
         };
-        let attended = baseline(&data_dir, "", &blocks(true), false, None, true);
-        let unattended = baseline(&data_dir, "", &blocks(false), false, None, false);
+        let attended = baseline(&data_dir, None, "", &blocks(true), false, None, true);
+        let unattended = baseline(&data_dir, None, "", &blocks(false), false, None, false);
         std::fs::remove_dir_all(&data_dir).unwrap();
 
         assert!(attended.contains("## Show first, then tell\n"));
@@ -609,5 +623,22 @@ mod tests {
         assert!(unattended.contains("Shared rule.\n\n## Tools\nT"));
         assert!(unattended.contains(&format!("## Tools\nT\n\n{UNATTENDED_LINE}\n\n## Guidance")));
         assert!(!unattended.contains(REPORT_VISUALLY));
+    }
+
+    /// 70 DESK-PROTOCOL: a roster agent's desk leads with its own identity and
+    /// carries none of theuth's persona or `prompt.md`; the harness mechanics
+    /// (cwd/date, plugin blocks, guidance) stay.
+    #[test]
+    fn identity_replaces_theuth_persona() {
+        let data_dir =
+            std::env::temp_dir().join(format!("theuth-identity-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("prompt.md"), "Theuth — home automation, chat anywhere.\n").unwrap();
+        let karol = "You are Infrastructure (`karol`), an agent on this theuth roster; you report to theuth.";
+        let p = baseline(&data_dir, Some(karol), "", "## Tools\nT", false, None, false);
+        std::fs::remove_dir_all(&data_dir).unwrap();
+        assert!(p.starts_with(&format!("{karol}\nWorking directory: ")), "{p}");
+        assert!(!p.contains("You are theuth") && !p.contains("Theuth —") && !p.contains("home automation"), "{p}");
+        assert!(p.contains("## Tools\nT\n\n## Guidance"));
     }
 }

@@ -12779,6 +12779,7 @@ mod tests {
             updated_ms: 0,
             no_progress_count: 0,
             next_wake_after_ms: None,
+            done_when: None,
         };
         assert_eq!(
             tasks_table(Some("sre"), &[task]),

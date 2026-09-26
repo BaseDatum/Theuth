@@ -68,6 +68,7 @@ struct Row {
     updated_ms: i64,
     no_progress_count: i64,
     next_wake_after_ms: Option<i64>,
+    done_when: Option<String>,
 }
 
 fn state_of(s: &str) -> TaskState {
@@ -92,6 +93,9 @@ fn reason_of(s: &str) -> WakeReason {
         "resume" => WakeReason::Resume,
         "resumed" => WakeReason::Resumed,
         "manual" => WakeReason::Manual,
+        "reassigned" => WakeReason::Reassigned,
+        "blockers_resolved" => WakeReason::BlockersResolved,
+        "children_completed" => WakeReason::ChildrenCompleted,
         _ => WakeReason::Assigned,
     }
 }
@@ -125,13 +129,14 @@ impl From<Row> for Task {
             updated_ms: r.updated_ms as u64,
             no_progress_count: r.no_progress_count as u32,
             next_wake_after_ms: r.next_wake_after_ms.map(|v| v as u64),
+            done_when: r.done_when,
         }
     }
 }
 
 const COLS: &str = "id, title, brief, owner, state, reviewer, blockers_json, parent, project, where_, \
                     harness, external_json, thread, checkout_json, schedule_name, schedule_fire_ms, \
-                    created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms";
+                    created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -162,7 +167,7 @@ impl Store {
     pub async fn put(&self, t: &Task) -> anyhow::Result<()> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT OR REPLACE INTO tasks ({COLS}, hlc) VALUES \
-             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
         )))
         .bind(&t.id.0)
         .bind(&t.title)
@@ -185,6 +190,7 @@ impl Store {
         .bind(t.updated_ms as i64)
         .bind(t.no_progress_count as i64)
         .bind(t.next_wake_after_ms.map(|v| v as i64))
+        .bind(&t.done_when)
         .bind(hlc(t.updated_ms))
         .execute(&self.pool)
         .await?;
@@ -248,6 +254,16 @@ impl Store {
             .map(Task::from)
             .filter(|t| t.blockers.iter().any(|b| b == blocker))
             .collect())
+    }
+
+    /// Direct children of `parent`, any state, oldest first.
+    pub async fn children(&self, parent: &TaskId) -> anyhow::Result<Vec<Task>> {
+        let rows: Vec<Row> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLS} FROM tasks WHERE parent = ? ORDER BY created_ms")))
+                .bind(&parent.0)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(Task::from).collect())
     }
 
     /// Append one event.

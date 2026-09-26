@@ -22,7 +22,7 @@ pub mod store;
 pub mod tools;
 pub mod types;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -196,6 +196,8 @@ pub struct Roster {
     lease: lease::Follower,
     /// 67 §6.4: per-session cost totals last seen.
     costs: budget::Tracker,
+    /// 70 DESK-PROTOCOL (f): wake keys whose hold was already written to the thread.
+    diagnosed: HashSet<String>,
 }
 
 /// ms since the Unix epoch.
@@ -218,6 +220,7 @@ impl Roster {
             windows: HashMap::new(),
             lease: lease::Follower::default(),
             costs: budget::Tracker::default(),
+            diagnosed: HashSet::new(),
         };
         // ponytail: the previous run's open episodes are closed without a
         // journal turn (their sessions may be gone); their journals are the
@@ -388,6 +391,7 @@ impl Roster {
                 working: false,
                 primed: false,
                 model: f.model.clone(),
+                serving: None,
             },
         );
         tracing::info!(agent = %name, %session, "desk opened");
@@ -401,6 +405,23 @@ impl Roster {
             return;
         };
         self.shared.clear_desk(name);
+        // 67 §7.3 last rule (70 DESK-PROTOCOL 3): a task the episode leaves in
+        // `doing` with no continuation is blocked and the manager woken.
+        if d.primed && let Some(t) = tasks::actor() {
+            match t
+                .ask(tasks::EpisodeClosing {
+                    agent: name.to_owned(),
+                    session: d.session.to_string(),
+                })
+                .await
+            {
+                Ok(blocked) if !blocked.is_empty() => {
+                    tracing::warn!(agent = %name, ?blocked, "episode closed with tasks left in doing: blocked, manager woken")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(agent = %name, "episode closing not applied to tasks: {e}"),
+            }
+        }
         if !d.primed {
             self.put_away(name, d.session, &d.episode, reason, None).await;
             return;
@@ -476,6 +497,7 @@ impl Roster {
                 })
                 .await;
         }
+        self.shared.forget(session);
         tracing::info!(agent = %name, %session, %reason, "episode closed");
         if !self.desks.contains_key(name)
             && let Some(f) = self.wanted().into_iter().find(|f| f.name.as_str() == name)
@@ -508,6 +530,115 @@ impl Roster {
             .iter()
             .find(|(_, d)| d.session == session)
             .map(|(n, _)| n.clone())
+    }
+
+    fn clear_serving(&mut self, name: &str) {
+        if let Some(d) = self.desks.get_mut(name) {
+            d.serving = None;
+        }
+    }
+
+    /// A system line in the task's thread that wakes nobody (a progress note).
+    async fn thread_note(&self, t: &tasks::Task, text: &str) {
+        if let Some(tasks) = tasks::actor() {
+            let _ = tasks
+                .ask(tasks::CommentTask {
+                    id: t.id.clone(),
+                    text: text.to_owned(),
+                    progress: true,
+                    actor: "system".into(),
+                    session: None,
+                })
+                .await;
+        }
+    }
+
+    /// 70 DESK-PROTOCOL 3: a desk turn ended. If it was woken for a task and
+    /// the row in [`desk::nudges::TABLE`] for its wake reason says the task is
+    /// still unhandled: the first time, log `nudged: …` in the thread and re-run
+    /// the turn with the nudge as input; the second time, apply the 67 §7.3
+    /// rule (`blocked: no continuation`, manager woken). A handled wake clears
+    /// `serving`; a turn that leaves a live child keeps it for the child's
+    /// return, which lands in this same session (70 DESK-PROTOCOL 4).
+    async fn judge_turn(&mut self, name: &str) {
+        let Some(d) = self.desks.get(name) else { return };
+        let Some(s) = d.serving.clone() else { return };
+        let session = d.session;
+        let Some(id) = s.wake.task.clone() else {
+            self.clear_serving(name);
+            return;
+        };
+        let Some(tasks) = tasks::actor() else { return };
+        let Some(row) = desk::nudges::for_reason(s.wake.reason) else {
+            self.clear_serving(name);
+            return;
+        };
+        let desk::nudges::Nudge::TurnEnd { name: rule, unhandled, text, .. } = row else { return };
+        let (Ok(task), Ok(events)) = (
+            tasks.ask(tasks::GetTask(id.clone())).await,
+            tasks.ask(tasks::TaskEvents(id.clone())).await,
+        ) else {
+            return;
+        };
+        let me = format!("agent:{name}");
+        let mine: Vec<tasks::TaskEvent> = events.into_iter().skip(s.events).filter(|e| e.actor == me).collect();
+        let live_child = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten() {
+            Some(a) => a
+                .ask(agent::ListAgents { session })
+                .await
+                // Running, or spawned this turn and not yet started: its result is still to come.
+                .map(|kids| kids.iter().any(|k| !matches!(k.state, agent::AgentState::Idle) || k.finished_at.is_none()))
+                .unwrap_or(false),
+            None => false,
+        };
+        if !unhandled(&s, &task, &mine, live_child) {
+            self.clear_serving(name);
+            return;
+        }
+        if live_child {
+            return; // the child's result continues this episode; judged again then
+        }
+        if !s.nudged {
+            let mut nudge = text(&task);
+            if s.rounds >= self.cfg.max_rounds {
+                nudge.push_str(&format!(
+                    " You have used {} of {} follow-up rounds on this task this episode: no more children — write the deliverable and dispose.",
+                    s.rounds, self.cfg.max_rounds
+                ));
+            }
+            self.thread_note(&task, &format!("nudged: {rule} — task {} still {} after the turn woken `{}`", task.id, task.state.as_str(), s.wake.reason.as_str())).await;
+            if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
+                && a.ask(agent::SendInput {
+                    session: Some(session),
+                    text: nudge,
+                    files: vec![],
+                    delivery: agent::Delivery::default(),
+                })
+                .await
+                .is_ok()
+                && let Some(d) = self.desks.get_mut(name)
+                && let Some(s) = d.serving.as_mut()
+            {
+                s.nudged = true;
+            }
+            return;
+        }
+        let why = format!(
+            "nudged once and still {} after the turn woken `{}`: blocked, manager woken",
+            task.state.as_str(),
+            s.wake.reason.as_str()
+        );
+        if let Err(e) = tasks
+            .ask(tasks::NoContinuation {
+                id: id.clone(),
+                agent: name.to_owned(),
+                why,
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, task = %id, "no-continuation not applied: {e}");
+        }
+        self.clear_serving(name);
     }
 
     /// Write the file, update the read model in place (so a `GetAgent` right
@@ -728,6 +859,7 @@ impl Roster {
             where_: None,
             harness: None,
             external: vec![],
+            done_when: None,
         };
         match budget::crossed(&f.budget, before, after) {
             None => {}
@@ -827,6 +959,34 @@ impl Message<DeliverWake> for Roster {
         {
             self.open_desk(&t).await;
         }
+        // 70 DESK-PROTOCOL (f): gates re-checked on every wake; a held wake
+        // records one diagnostic instead of starting a run.
+        let file = self.shared.file(&m.agent).ok_or_else(|| "no such agent".to_owned())?;
+        let gate = if file.paused {
+            Some("agent is paused".to_owned())
+        } else if let Some(t) = &m.task
+            && t.state == tasks::TaskState::Blocked
+            && !t.blockers.is_empty()
+            && !matches!(
+                m.wake.reason,
+                tasks::WakeReason::Comment | tasks::WakeReason::Mention | tasks::WakeReason::Answer | tasks::WakeReason::Manual
+            )
+        {
+            Some(format!("task is blocked on {}", t.blockers.join(", ")))
+        } else {
+            None
+        };
+        if let Some(why) = gate {
+            if self.diagnosed.insert(m.wake.key.clone())
+                && let Some(t) = &m.task
+            {
+                self.thread_note(t, &format!("wake `{}` for {} held: {why}", m.wake.reason.as_str(), m.agent)).await;
+            }
+            // `Err` leaves the wake unclaimed and retried by the ledger (5 s → 5 min):
+            // it is delivered once the gate opens; the diagnostic is written once.
+            return Err(format!("held: {why}"));
+        }
+        self.diagnosed.remove(&m.wake.key);
         let Some(d) = self.desks.get_mut(&m.agent) else {
             return Err(format!("no desk for {}", m.agent));
         };
@@ -834,17 +994,15 @@ impl Message<DeliverWake> for Roster {
             .ok()
             .flatten()
             .ok_or_else(|| "agent actor is not running".to_owned())?;
-        let mut text = String::new();
-        if !d.primed {
-            let f = self
-                .shared
-                .file(&m.agent)
-                .ok_or_else(|| "no such agent".to_owned())?;
-            let journal = desk::read_journal(&self.rt.data_dir, &m.agent);
-            text.push_str(&desk::opening(&f, journal.as_deref()));
+        // The charter, journal and manual lead the desk's system prompt
+        // (`Identities`, 70 DESK-PROTOCOL); the input is the wake, plus the
+        // fit-check roster on an assignment (70 (e)).
+        let mut text = desk::wake_text(&m.wake, m.task.as_ref());
+        if matches!(m.wake.reason, tasks::WakeReason::Assigned | tasks::WakeReason::Reassigned) {
+            let files: Vec<AgentFile> = self.shared.files().into_values().filter_map(Result::ok).collect();
             text.push_str("\n\n");
+            text.push_str(&desk::roster_block(&m.agent, files.iter()));
         }
-        text.push_str(&desk::wake_text(&m.wake, m.task.as_ref()));
         // 68 §4.4: a `Resume` whose checkout session was taken here (the
         // sweep re-pointed its engine at us) continues that session.
         let resumed = m
@@ -853,6 +1011,11 @@ impl Message<DeliverWake> for Roster {
             .and_then(|t| t.checkout.as_ref())
             .filter(|c| m.wake.reason == tasks::WakeReason::Resume && c.taken)
             .and_then(|c| c.session.parse().ok());
+        // 70 DESK-PROTOCOL 3: what this turn is for, judged at its end.
+        let events = match (&m.task, tasks::actor()) {
+            (Some(t), Some(tasks)) => tasks.ask(tasks::TaskEvents(t.id.clone())).await.map(|e| e.len()).unwrap_or(0),
+            _ => 0,
+        };
         agents
             .ask(agent::SendInput {
                 session: Some(resumed.unwrap_or(d.session)),
@@ -864,6 +1027,16 @@ impl Message<DeliverWake> for Roster {
             .map_err(|e| e.to_string())?;
         d.primed = true;
         d.last_active_ms = now_ms();
+        if let Some(t) = &m.task {
+            d.serving = Some(desk::Serving {
+                wake: m.wake.clone(),
+                state: Some(t.state),
+                owner: Some(t.owner.clone()),
+                events,
+                nudged: false,
+                rounds: 0,
+            });
+        }
         Ok(())
     }
 }
@@ -906,15 +1079,28 @@ impl Message<agent::AgentEvent> for Roster {
                     d.last_active_ms = now_ms();
                     d.model.clone()
                 };
-                if let Some(model) = model {
+                // 70 DESK-PROTOCOL 3: the nudge point.
+                self.judge_turn(&name).await;
+                if let Some(model) = model
+                    && self.desks.contains_key(&name)
+                {
                     let window = self.window(&model).await;
                     if desk::context_due(context, window, self.cfg.episode_context_pct) {
                         self.close_desk(&name, "context").await;
                     }
                 }
             }
-            // 67 §6.3: a child works for its parent's agent.
-            E::SubagentSpawned { parent, child, .. } => self.shared.inherit(parent, child),
+            // 67 §6.3: a child works for its parent's agent; 70 DESK-PROTOCOL 2:
+            // a desk's child is one follow-up round on the task it serves.
+            E::SubagentSpawned { parent, child, .. } => {
+                self.shared.inherit(parent, child);
+                if let Some(name) = self.desk_name(parent)
+                    && let Some(d) = self.desks.get_mut(&name)
+                    && let Some(s) = d.serving.as_mut()
+                {
+                    s.rounds += 1;
+                }
+            }
             // 67 §6.4: the session's spend moved.
             E::ModelUsageChanged { session, .. } => self.charge(session).await,
             // The thread ended under the desk: the episode is over, no journal possible.
@@ -1359,6 +1545,51 @@ impl ::tools::McpAccess for Desks {
     }
 }
 
+/// 70 DESK-PROTOCOL: who a session speaks as. A desk session leads its system
+/// prompt with the agent's identity ([`desk::identity`]: charter, capabilities,
+/// journal, manual) in place of theuth's persona and `prompt.md`; a session a
+/// desk spawned works *for* the agent ([`desk::child_identity`], naming the
+/// task the desk has checked out). The user's own sessions get `None`. The
+/// desk is found through the lineage (a child's root), so no spawn event has
+/// to arrive first. `theuth`'s charter is `prompt.md` with its root-only spans cut.
+pub struct Identities {
+    shared: Arc<Shared>,
+    data_dir: PathBuf,
+    max_rounds: u32,
+}
+
+#[async_trait::async_trait]
+impl agent::IdentitySource for Identities {
+    async fn identity(&self, lineage: &[runtime::SessionId]) -> Option<String> {
+        let agent = lineage.iter().find_map(|s| self.shared.agent_of(*s))?;
+        let mut f = self.shared.file(&agent)?;
+        if f.name.is_default() {
+            f.body = agent::frame::root_only(&f.body, false);
+        }
+        if lineage.len() == 1 {
+            let journal = desk::read_journal(&self.data_dir, &agent);
+            return Some(desk::identity(&f, journal.as_deref(), self.max_rounds));
+        }
+        let desk = lineage.last().map(|s| s.to_string());
+        let task = match tasks::actor() {
+            Some(t) => t
+                .ask(tasks::ListTasks(tasks::TaskFilter {
+                    owner: Some(f.name.peer()),
+                    state: Some(vec![tasks::TaskState::Doing]),
+                    ..Default::default()
+                }))
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.into_iter()
+                        .find(|t| t.checkout.as_ref().is_some_and(|c| Some(&c.session) == desk.as_ref()))
+                }),
+            None => None,
+        };
+        Some(desk::child_identity(&f, task.as_ref()))
+    }
+}
+
 /// 67 §9: a session of agent X reads and writes knowledge as `agent:X`, with
 /// X's reporting line (up and down) for `team` items. The user's sessions
 /// and `theuth`'s carry no scope and see everything.
@@ -1415,6 +1646,7 @@ impl runtime::Plugin for RosterPlugin {
             Err(e) => tracing::debug!("roster: local only ({e})"),
         }
         let shared = Arc::new(Shared::default());
+        let max_rounds = cfg.max_rounds;
         let actor = Roster::spawn_with_mailbox(
             Roster::load(rt.clone(), cfg, dir.clone(), store, shared.clone()).await,
             runtime::subscriber_mailbox(),
@@ -1489,6 +1721,20 @@ impl runtime::Plugin for RosterPlugin {
                     .ask(tasks::RegisterDeskRouter(Arc::new(Desks(desks))))
                     .await;
                 let _ = me.tell(TasksUp).await;
+            }
+        });
+        let rt2 = rt.clone();
+        let identities = Identities {
+            shared: shared.clone(),
+            data_dir: rt.data_dir.clone(),
+            max_rounds,
+        };
+        tokio::spawn(async move {
+            if let Some(a) = rt2
+                .lookup_when::<agent::Agents>(agent::AGENT_ACTOR)
+                .await
+            {
+                let _ = a.ask(agent::InstallIdentitySource(Arc::new(identities))).await;
             }
         });
         let rt2 = rt.clone();

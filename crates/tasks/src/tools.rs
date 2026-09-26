@@ -15,10 +15,10 @@ use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
 use crate::place;
 use crate::thread::Thread;
-use crate::types::{Disposition, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState};
+use crate::types::{DoneBecause, Disposition, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState};
 use crate::{
     AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, Escalate, GetTask,
-    ListTasks, MoveTask, NoteDisposition, PlaceTask, Tasks, UpdateTask, escalate,
+    ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, Tasks, UpdateTask, escalate,
 };
 
 /// `ask` → `String`: the actor text of `session`'s caller — `agent:<name>`
@@ -43,18 +43,23 @@ The board is for observation; work is filed from chat. When the user describes w
 with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft` with \
 the proposed tasks and wait for the user's approval, which arrives as their next message (`[app task-drafts …]` \
 naming a draft id and a choice). Then `task_create` with `state: backlog` for \"add to backlog\", `state: todo` \
-for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". A task created in `backlog` \
+for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". Every task carries \
+`done_when`, its acceptance criteria: take them from the user when stated, otherwise draft one to three \
+checkable lines from the brief. A task created in `backlog` \
 runs nothing until it is started. When the user asks to start, pull back, drop, approve or send back a task, \
-use `task_move` (it refuses illegal moves and lists what is allowed from the task's state). Your own work on a \
-task is `task_checkout`; finishing it is `task_update` with a disposition.";
+use `task_move` (it refuses illegal moves and lists what is allowed from the task's state); a move to `done` \
+says why (`done_because`: criteria met, intent met, or follow-ups filed). Your own work on a \
+task is `task_checkout`; finishing it is `task_update` with a disposition; handing it to the agent whose \
+capabilities fit it better is `task_reassign`.";
 
-/// Register the nine tools on `reg`.
+/// Register the ten tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>) {
     let _ = reg.ask(RegisterTool(Arc::new(TaskCreateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskInboxTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskCheckoutTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskUpdateTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskMoveTool))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(TaskReassignTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskNoteTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(TaskPlaceTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(EscalateTool))).await;
@@ -149,6 +154,11 @@ pub struct TaskCreateArgs {
     /// Linked external tickets (URLs).
     #[serde(default)]
     pub external: Vec<String>,
+    /// Acceptance criteria: the checkable conditions under which this task is done. Required in
+    /// spirit — when the user did not state them, draft them from the brief (one to three
+    /// checkable lines); the reviewer judges `done` against them first.
+    #[serde(default)]
+    pub done_when: Option<String>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -199,6 +209,7 @@ impl Tool for TaskCreateTool {
             where_: a.where_,
             harness: a.harness,
             external: a.external,
+            done_when: a.done_when,
         };
         let r = flat(
             actor
@@ -378,6 +389,13 @@ pub struct TaskUpdateArgs {
     /// External ticket URLs, replaced whole.
     #[serde(default)]
     pub external: Option<Vec<String>>,
+    /// Acceptance criteria (replaces `done_when`).
+    #[serde(default)]
+    pub done_when: Option<String>,
+    /// With `disposition: done`: why — `criteria_met` (against `done_when`), `intent_met` (the user's
+    /// evident intention), or `follow_ups_filed {tasks}` (the work continues in those tasks).
+    #[serde(default)]
+    pub done_because: Option<DoneBecause>,
 }
 
 /// `task_update`: change fields and state; every change is a thread event.
@@ -391,9 +409,11 @@ impl Tool for TaskUpdateTool {
 
     fn description(&self) -> String {
         "Update a task's fields or dispose of it. Dispositions: `review` when you finished (the reviewer \
-         is woken), `blocked` naming what you wait on, `delegated` naming the child task that now carries \
-         the work, `continuing` naming what will wake the task again, `done` (reviewers only; an owner \
-         cannot mark their own task done unless they are the user). `state: doing` sends a reviewed task \
+         is woken; without a `done_when` on the task the reviewer is your manager, never yourself), \
+         `blocked` naming what you wait on, `delegated` naming the child task that now carries \
+         the work, `continuing` naming what will wake the task again, `done` (reviewers only, with \
+         `done_because`; a desk that is its own reviewer marks done only against an explicit `done_when` and \
+         only as `criteria_met`). `state: doing` sends a reviewed task \
          back to its owner; `state: cancelled` drops it. A write by a session that does not hold the \
          checkout is refused once the checkout moved on (`superseded`). One session may write to at most 20 \
          tasks it does not own. Every change is logged to the thread with your session and before/after."
@@ -412,6 +432,8 @@ impl Tool for TaskUpdateTool {
             state: None,
             blockers: a.blockers,
             external: a.external,
+            done_when: a.done_when,
+            done_because: a.done_because,
             ..Default::default()
         };
         match a.state {
@@ -494,6 +516,10 @@ pub struct TaskMoveArgs {
     /// Why, for the thread (optional).
     #[serde(default)]
     pub note: Option<String>,
+    /// With `state: done`: why — `criteria_met`, `intent_met`, or `follow_ups_filed {tasks}`. Required
+    /// from an agent; the user's approval defaults to `intent_met`.
+    #[serde(default)]
+    pub done_because: Option<DoneBecause>,
 }
 
 /// `task_move`: a state change on the user's (or the caller's) intent.
@@ -523,6 +549,7 @@ impl Tool for TaskMoveTool {
                     id: a.task,
                     state: a.state,
                     note: a.note,
+                    done_because: a.done_because,
                     actor: me,
                     session: Some(cx.session.to_string()),
                 })
@@ -530,6 +557,58 @@ impl Tool for TaskMoveTool {
         );
         Ok(match r {
             Ok(t) => ToolOutput::ok(format!("task {} is now {} (owner {})", t.id, t.state.as_str(), t.owner)),
+            Err(e) => ToolOutput::err(e),
+        })
+    }
+}
+
+/// Arguments for [`TaskReassignTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TaskReassignArgs {
+    /// Task id.
+    pub task: TaskId,
+    /// New owner: `agent:<name>` (an active roster agent) or `user`.
+    pub to: String,
+    /// The fit: which of their capabilities match the task better than yours.
+    pub why: String,
+}
+
+/// `task_reassign`: the fit check's hand-off (70 DESK-PROTOCOL 1).
+pub struct TaskReassignTool;
+
+#[async_trait::async_trait]
+impl Tool for TaskReassignTool {
+    const NAME: &'static str = "task_reassign";
+    const RISK: Risk = Risk::Mutating;
+    type Args = TaskReassignArgs;
+
+    fn description(&self) -> String {
+        "Hand a task you own to the agent whose capabilities fit it better (see `agents_list`). The task \
+         returns to `todo`, its checkout is released, the thread records `reassigned to <agent>: <why>` and \
+         the new owner is woken with reason `reassigned`. Do this before any work when the fit check says \
+         someone else is the specialist; do not do it to get rid of a task nobody fits — work that yourself."
+            .into()
+    }
+
+    async fn call(&self, a: TaskReassignArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let actor = actor()?;
+        let me = caller(&actor, &cx).await;
+        let Some(to) = parse_owner(Some(&a.to))? else {
+            return Ok(ToolOutput::err("`to` names the new owner"));
+        };
+        let r = flat(
+            actor
+                .ask(ReassignTask {
+                    id: a.task,
+                    to,
+                    why: a.why,
+                    actor: me,
+                    session: Some(cx.session.to_string()),
+                })
+                .await,
+        );
+        Ok(match r {
+            Ok(t) => ToolOutput::ok(format!("task {} reassigned to {} ({})", t.id, t.owner, t.state.as_str())),
             Err(e) => ToolOutput::err(e),
         })
     }

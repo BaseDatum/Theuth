@@ -1355,6 +1355,7 @@ impl Channel {
                         where_: None,
                         harness: None,
                         external: vec![],
+                        done_when: None,
                     },
                     created_by: "user".into(),
                     session: None,
