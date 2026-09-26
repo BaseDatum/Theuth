@@ -153,6 +153,7 @@ impl Port for Actors {
                 text,
                 files,
                 delivery: agent::Delivery::default(),
+                id: None,
             })
             .await
             .map_err(|e| e.to_string())

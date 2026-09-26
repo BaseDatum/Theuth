@@ -661,6 +661,7 @@ impl Schedule {
                 text,
                 files: vec![],
                 delivery: agent::Delivery::default(),
+                id: None,
             })
             .await
             .map_err(|e| format!("agent: {e}"))?;

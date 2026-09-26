@@ -495,6 +495,7 @@ impl Roster {
                 text: desk::notice("journal", desk::CLOSING),
                 files: vec![],
                 delivery: agent::Delivery::default(),
+                id: None,
             })
             .await
         {
@@ -690,6 +691,7 @@ impl Roster {
                     text: desk::notice("nudge", &nudge),
                     files: vec![],
                     delivery: agent::Delivery::default(),
+                    id: None,
                 })
                 .await
                 .is_ok()
@@ -1116,6 +1118,7 @@ impl Message<DeliverWake> for Roster {
                 text,
                 files: vec![],
                 delivery: agent::Delivery::default(),
+                id: None,
             })
             .await
             .map_err(|e| e.to_string())?;

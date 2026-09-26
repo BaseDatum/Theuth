@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use genai::adapter::AdapterKind;
@@ -193,6 +193,9 @@ pub struct Agents {
     /// Last input routed into each session by this process (62 §0.5); with
     /// `last_stop` and the turn start it makes `SessionActivity.last_active`.
     last_input: HashMap<SessionId, DateTime<Utc>>,
+    /// Input ids routed by this process (idempotent retries): id -> (session, when).
+    // ponytail: process-local, lost on restart; persist beside the row if retries must survive engine restarts.
+    seen: HashMap<InputId, (SessionId, Instant)>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -925,6 +928,9 @@ impl Agents {
     /// [`SendInput`] / [`Steer`] from a human: routed as a fresh external
     /// request (47 §4.5). A pending peer wait is never answered implicitly;
     /// the owner answers a request by id with [`AnswerPeerRequest`] (50 §5.3).
+    /// An `id` seen within [`SEEN_TTL`] is a retry: the remembered session is
+    /// returned and nothing is routed. A routing failure is `Err` so the
+    /// caller keeps the text.
     async fn human_input(
         &mut self,
         session: Option<SessionId>,
@@ -932,13 +938,22 @@ impl Agents {
         text: String,
         files: Vec<PathBuf>,
         delivery: Delivery,
-    ) -> SessionId {
+    ) -> Result<SessionId, String> {
         let sid = session.unwrap_or_default();
-        // A failure was published as `AgentEvent::Error` on `sid` already.
-        let _ = self
-            .input(sid, id, text, files, InputOrigin::External, delivery)
-            .await;
-        sid
+        if let Some(id) = id {
+            self.seen.retain(|_, (_, t)| t.elapsed() < SEEN_TTL);
+            if let Some((sid, _)) = self.seen.get(&id) {
+                return Ok(*sid);
+            }
+        }
+        // A failure was published as `AgentEvent::Error` on `sid` already; it
+        // is not remembered, so the retry routes.
+        self.input(sid, id, text, files, InputOrigin::External, delivery)
+            .await?;
+        if let Some(id) = id {
+            self.seen.insert(id, (sid, Instant::now()));
+        }
+        Ok(sid)
     }
 
     /// A session-scoped failure outside any turn: recorded behind the last
@@ -2236,16 +2251,11 @@ fn attr(s: &str) -> String {
 }
 
 impl Message<SendInput> for Agents {
-    type Reply = Result<SessionId, kameo::error::Infallible>;
+    type Reply = Result<SessionId, String>;
 
-    async fn handle(
-        &mut self,
-        m: SendInput,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Result<SessionId, kameo::error::Infallible> {
-        Ok(self
-            .human_input(m.session, None, m.text, m.files, m.delivery)
-            .await)
+    async fn handle(&mut self, m: SendInput, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.human_input(m.session, m.id, m.text, m.files, m.delivery)
+            .await
     }
 }
 
@@ -2275,11 +2285,12 @@ impl Message<UseSkill> for Agents {
 }
 
 impl Message<Steer> for Agents {
-    type Reply = ();
+    type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.human_input(Some(m.session), Some(m.id), m.text, m.files, m.delivery)
-            .await;
+            .await
+            .map(|_| ())
     }
 }
 
@@ -6952,6 +6963,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
+            seen: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -7178,6 +7190,8 @@ const PRIVATE_GRACE: Duration = Duration::from_secs(30);
 /// Longest `Agents` waits for the owners' close acks before it gives up on
 /// them; the registry already times out each participant at 30 s.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a routed input id stays a recognised retry (`Agents::seen`).
+const SEEN_TTL: Duration = Duration::from_secs(600);
 
 /// `tell` (internal): a private owner's connection has been gone for the
 /// grace period; close the root if the same owner still holds it.
@@ -8498,6 +8512,7 @@ pub(crate) mod tests {
             owned_children: HashMap::new(),
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
+            seen: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),
@@ -9461,6 +9476,24 @@ pub(crate) mod tests {
         assert_eq!(a.ledger.activity(p), None);
     }
 
+    /// A retried `SendInput` id routes once and answers with the same session;
+    /// a fresh id routes again.
+    #[tokio::test]
+    async fn retried_input_id_routes_once() {
+        let mut a = agents().await;
+        let (p, _) = in_turn(&mut a).await;
+        let id = InputId::new();
+        let sid = a.human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer).await;
+        assert_eq!(sid.unwrap(), p);
+        a.last_input.clear();
+        let sid = a.human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer).await;
+        assert_eq!(sid.unwrap(), p);
+        assert!(a.last_input.is_empty(), "the retry routed nothing");
+        let fresh = Some(InputId::new());
+        a.human_input(Some(p), fresh, "x".into(), vec![], Delivery::Steer).await.unwrap();
+        assert!(a.last_input.contains_key(&p), "a fresh id routes");
+    }
+
     /// 62 §3.2: a root whose model is idle but that owns a running PTY is
     /// `Idle, ptys: 1, live: true` — the job, not the model, marks it as
     /// working. (`JobCounts` is fed as a synthetic reply: no `Jobs` actor is
@@ -9886,16 +9919,20 @@ pub(crate) mod tests {
         // closing/deleted events (RPC filter map is insert-only).
         assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 7)]);
         assert_eq!(refused(leave(7).await), "session closed");
-        // Input to the closed id is refused, not turned into a durable row.
-        agents
-            .ask(SendInput {
-                session: Some(root),
-                text: "hello".into(),
-                files: Vec::new(),
-                delivery: Delivery::default(),
-            })
-            .await
-            .unwrap();
+        // Input to the closed id is refused (the caller learns it), not turned
+        // into a durable row.
+        let e = refused(
+            agents
+                .ask(SendInput {
+                    session: Some(root),
+                    text: "hello".into(),
+                    files: Vec::new(),
+                    delivery: Delivery::default(),
+                    id: None,
+                })
+                .await,
+        );
+        assert!(e.contains("session closed"), "{e}");
         assert!(store.session(root).await.unwrap().is_none());
         assert!(
             !agents

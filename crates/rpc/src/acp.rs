@@ -366,7 +366,7 @@ async fn serve(
                 let (tx, rx) = oneshot::channel();
                 let _ = for_prompt.tell(Wait { session, tx }).await;
                 api_prompt
-                    .send_input(Some(session), text, files, None)
+                    .send_input(Some(session), text, files, None, None)
                     .await
                     .map_err(rpc_error)?;
                 cx.spawn(async move {

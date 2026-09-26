@@ -157,7 +157,8 @@ pub trait Api {
     async fn new_session(&self) -> RpcResult<SessionId>;
     /// Start a turn; `session: None` creates an `owner`-scope root first.
     /// `files` are image files (17 §2) attached to the message. `delivery`
-    /// (default `steer`) says how it lands on a busy session (62 §0.3).
+    /// (default `steer`) says how it lands on a busy session (62 §0.3). `id`
+    /// is the client's idempotency key: a retry with the same id routes once.
     /// Returns once queued.
     #[method(name = "send_input", with_extensions)]
     async fn send_input(
@@ -166,6 +167,7 @@ pub trait Api {
         text: String,
         files: Vec<PathBuf>,
         delivery: Option<Delivery>,
+        id: Option<InputId>,
     ) -> RpcResult<SessionId>;
     /// Queue a user message after the current tool batch (or, with
     /// `delivery: next_turn`, after the turn); returns the id (minted when
@@ -1910,13 +1912,14 @@ impl ApiServer for Server {
         text: String,
         files: Vec<PathBuf>,
         delivery: Option<Delivery>,
+        id: Option<InputId>,
     ) -> RpcResult<SessionId> {
         self.authorize_opt(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, forward::ByName(&files), &delivery)).await? {
+        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, forward::ByName(&files), &delivery, id)).await? {
             return Ok(r);
         }
         let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
@@ -1927,6 +1930,7 @@ impl ApiServer for Server {
                 text,
                 files,
                 delivery: delivery.unwrap_or_default(),
+                id,
             },
         )
         .await

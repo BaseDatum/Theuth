@@ -175,6 +175,7 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
                 text,
                 files: Vec::new(),
                 delivery: agent::Delivery::default(),
+                id: None,
             })
             .await
             .map(|_| ())
