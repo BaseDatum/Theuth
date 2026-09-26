@@ -192,7 +192,8 @@ impl Store {
 
     /// One-time convergence (69 §5): every live bound document sits at [`DocId::for_binding`]. A
     /// binding with several live rows keeps the newest (`updated_ms`), merges the others' state into
-    /// it as updates and trashes them; a lone row under a v7 id is moved. Notes are untouched.
+    /// it as updates and trashes them; a lone row under a v7 id is moved. Notes are untouched, and so
+    /// are task threads: `tasks.thread` holds their id, so it must not move under them.
     async fn migrate_ids(&self) -> anyhow::Result<()> {
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
             "SELECT id, binding, updated_ms FROM docs WHERE deleted_ms IS NULL ORDER BY binding, updated_ms DESC, id",
@@ -202,7 +203,7 @@ impl Store {
         let mut groups: Vec<(Binding, Vec<DocId>)> = Vec::new();
         for (id, binding, _) in rows {
             let Ok(binding) = serde_json::from_str::<Binding>(&binding) else { continue };
-            if binding == Binding::Note {
+            if matches!(binding, Binding::Note | Binding::TaskThread(_)) {
                 continue;
             }
             match groups.last_mut() {
@@ -268,6 +269,39 @@ impl Store {
         self.mirror_write(to)?;
         tracing::info!(from = %from, to = %to, binding = %binding.key(), "documents: id converged");
         Ok(())
+    }
+
+    /// Give `id` a new owner: `kind`, `binding` and `derived` follow `binding` in `meta.json`, the
+    /// index row and the mirror; the old derived file moves to the new path. `Ok(false)` when the
+    /// document is already bound so; fails when `binding` is bound to another document.
+    pub async fn bind(&self, id: &DocId, binding: &Binding) -> anyhow::Result<bool> {
+        let mut meta = self.read_meta(id)?;
+        if meta.binding == *binding {
+            return Ok(false);
+        }
+        if let Some(existing) = self.lookup(binding).await?
+            && existing != *id
+        {
+            bail!("{binding:?} is already document {existing}");
+        }
+        let data_dir = self.root.parent().unwrap_or(&self.root);
+        let old = data_dir.join(&meta.derived);
+        meta.kind = binding.kind();
+        meta.binding = binding.clone();
+        meta.derived = binding.derived(id);
+        if old.is_file() {
+            let _ = fs::rename(old, data_dir.join(&meta.derived));
+        }
+        write_atomic(&self.dir(id).join(META), serde_json::to_vec_pretty(&meta)?.as_slice())?;
+        sqlx::query("UPDATE docs SET kind = ?, binding = ? WHERE id = ?")
+            .bind(meta.kind.to_string())
+            .bind(binding.key())
+            .bind(id.as_str())
+            .execute(&self.db)
+            .await?;
+        self.mirror_write(id)?;
+        tracing::info!(doc = %id, kind = %meta.kind, binding = %binding.key(), "documents: rebound");
+        Ok(true)
     }
 
     /// `documents/`.
@@ -1187,6 +1221,38 @@ mod tests {
         again.id = want.clone();
         store.create(&again).await.unwrap();
         assert_eq!(store.lookup(&binding).await.unwrap(), Some(want));
+    }
+
+    /// TASK-NOTES-HIDDEN: a thread minted as a note is rebound to its task — off the notes list,
+    /// on the thread list, its derived file moved — and keeps its id across a reopen.
+    #[tokio::test]
+    async fn bind_rekinds_a_note_into_a_task_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let note = meta(Binding::Note);
+        let thread = meta(Binding::Note);
+        store.create(&note).await.unwrap();
+        store.create(&thread).await.unwrap();
+        let md = dir.path().join(&thread.derived);
+        fs::write(&md, "# Task 1\n").unwrap();
+        let binding = Binding::TaskThread("task-1".into());
+
+        assert!(store.bind(&thread.id, &binding).await.unwrap());
+        assert!(!store.bind(&thread.id, &binding).await.unwrap(), "idempotent");
+        let ids = |v: Vec<DocSummary>| v.into_iter().map(|d| d.id).collect::<Vec<_>>();
+        assert_eq!(ids(store.list(Some(DocKind::Note), 10).await.unwrap()), vec![note.id.clone()]);
+        assert_eq!(ids(store.list(Some(DocKind::TaskThread), 10).await.unwrap()), vec![thread.id.clone()]);
+        assert_eq!(store.lookup(&binding).await.unwrap(), Some(thread.id.clone()));
+        let m = store.read_meta(&thread.id).unwrap();
+        assert_eq!((m.kind, &m.binding, m.derived.as_str()), (DocKind::TaskThread, &binding, &*binding.derived(&thread.id)));
+        assert!(!md.exists() && dir.path().join(&m.derived).is_file(), "derived file followed");
+        // Another note cannot take a bound task; the thread's id is not converged on reopen.
+        let e = store.bind(&note.id, &binding).await.unwrap_err().to_string();
+        assert!(e.contains("already document"), "{e}");
+        drop(store);
+        let store = Store::open(dir.path()).await.unwrap();
+        assert_eq!(store.lookup(&binding).await.unwrap(), Some(thread.id.clone()));
+        assert!(store.dir(&thread.id).is_dir());
     }
 
     /// 69: engine A's mirror files, projected into engine B's `mirror/`, create the document on B;

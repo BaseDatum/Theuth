@@ -370,7 +370,7 @@ impl Ledger {
         };
         t.thread = self
             .thread
-            .create(&format!("Task {}: {}", short(&t.id), t.title), &t.brief)
+            .create(&t.id.0, &format!("Task {}: {}", short(&t.id), t.title), &t.brief)
             .await;
         self.save(&t).await?;
         self.event(&t, created_by, session, "created", None, Some(format!("owner {}", t.owner))).await;
@@ -1330,7 +1330,7 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl Thread for MemThread {
-        async fn create(&self, title: &str, body: &str) -> Option<String> {
+        async fn create(&self, _task: &str, title: &str, body: &str) -> Option<String> {
             let id = format!("doc-{}", self.0.lock().unwrap().len() + 1);
             self.0.lock().unwrap().insert(id.clone(), vec![format!("# {title}"), body.to_owned()]);
             Some(id)

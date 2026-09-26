@@ -1800,6 +1800,36 @@ impl Message<SetDerived> for DocumentActor {
     }
 }
 
+/// `ask` → `Result<bool, String>`: hand a document to a new owner — `kind`, `binding` and `derived`
+/// follow `binding` (the task threads minted as notes before TASK-NOTES-HIDDEN). `Ok(false)` when it
+/// was already bound so; fails when `binding` is bound to another document.
+#[derive(Clone, Debug)]
+pub struct Bind {
+    /// Document.
+    pub doc: DocId,
+    /// Its new owner.
+    pub binding: Binding,
+}
+
+impl Message<Bind> for DocumentActor {
+    type Reply = Result<bool, String>;
+
+    async fn handle(&mut self, m: Bind, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.hub.gate_str()?;
+        if !self.store.bind(&m.doc, &m.binding).await.map_err(|e| format!("{e:#}"))? {
+            return Ok(false);
+        }
+        let meta = self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?;
+        if let Some(o) = self.open.get_mut(&m.doc) {
+            o.meta.kind = meta.kind;
+            o.meta.binding = meta.binding.clone();
+            o.meta.derived = meta.derived.clone();
+        }
+        self.rt.publish(DocumentChanged::of(&meta, false)).await;
+        Ok(true)
+    }
+}
+
 /// `ask` → `Result<Vec<SnapshotInfo>, String>`.
 #[derive(Clone, Debug)]
 pub struct Snapshots {

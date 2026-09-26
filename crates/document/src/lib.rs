@@ -33,7 +33,7 @@ pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
+    ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
     EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
     Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit,
     with_heading,

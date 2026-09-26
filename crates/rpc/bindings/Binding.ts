@@ -11,4 +11,4 @@ session: string,
 /**
  * Artifact name (`report.md`).
  */
-name: string, } } | { "meeting_note": string } | "note" | { "agent_charter": string };
+name: string, } } | { "meeting_note": string } | "note" | { "agent_charter": string } | { "task_thread": string };
