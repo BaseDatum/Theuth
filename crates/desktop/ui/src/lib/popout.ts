@@ -1,4 +1,4 @@
-// A chat, an artifact, a note or a meeting in its own desktop window: the same bundle at the same route with
+// A chat, an artifact, a note, a meeting or a PTY in its own desktop window: the same bundle at the same route with
 // `?window=<label>`. The label (`popout-<kind>-<id>`) is what the Tauri host keys the window on (focus-if-open,
 // remembered size/position, the `popout-*` capability); in a browser it is the `window.open` name.
 
@@ -16,9 +16,19 @@ export type PopoutTarget =
   | { kind: 'meeting'; meeting: string }
   /** `/meetings/$id?pane=note`: the meeting's note editor alone (`?pane` is what tells it from `meeting`). */
   | { kind: 'meeting-note'; meeting: string }
+  /** `/pty/$session/$job`: one agent-started terminal alone (`components/chat/TerminalViewer.tsx`). */
+  | { kind: 'pty'; session: string; job: string }
 
 const idOf = (t: PopoutTarget): string =>
-  t.kind === 'chat' ? t.session : t.kind === 'artifact' ? t.callId : t.kind === 'note' ? t.doc : t.meeting
+  t.kind === 'chat'
+    ? t.session
+    : t.kind === 'artifact'
+      ? t.callId
+      : t.kind === 'note'
+        ? t.doc
+        : t.kind === 'pty'
+          ? `${t.session}-${t.job}`
+          : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'chat'
@@ -27,7 +37,9 @@ const pathOf = (t: PopoutTarget): string =>
       ? `/artifacts/${encodeURIComponent(t.callId)}`
       : t.kind === 'note'
         ? `/notes/${encodeURIComponent(t.doc)}`
-        : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
+        : t.kind === 'pty'
+          ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
+          : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
 
 /** Tauri window labels allow `[A-Za-z0-9/:_-]`; ids are passed through the same filter. */
 const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
@@ -40,8 +52,9 @@ export const popoutUrl = (t: PopoutTarget): string => `${pathOf(t)}${t.kind === 
 export function popoutTarget(href: string): PopoutTarget | null {
   const url = new URL(href, 'http://x')
   if (!url.searchParams.get('window')) return null
-  const [, head, id] = url.pathname.split('/')
+  const [, head, id, sub] = url.pathname.split('/')
   if (!id) return null
+  if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'artifacts') return { kind: 'artifact', callId: decodeURIComponent(id) }
   if (head === 'notes') return { kind: 'note', doc: decodeURIComponent(id) }
@@ -60,6 +73,9 @@ export const isPopout = (): boolean => POPOUT !== null
 /** The meeting a popped window is about (`meeting` or `meeting-note`), else `null`: a `Deleted` event for it closes the window. */
 export const popoutMeeting = (t: PopoutTarget | null): string | null =>
   t !== null && (t.kind === 'meeting' || t.kind === 'meeting-note') ? t.meeting : null
+
+/** The session a popped window belongs to (`chat`, or the PTY's owning session), else `null`: `SessionDeleted` for it closes the window. */
+export const popoutSession = (t: PopoutTarget | null): string | null => (t !== null && (t.kind === 'chat' || t.kind === 'pty') ? t.session : null)
 
 /**
  * Whether this container can open a second window at all: a desktop shell (`open_window`) or a plain browser

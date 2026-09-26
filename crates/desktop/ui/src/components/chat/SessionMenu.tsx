@@ -37,6 +37,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { type Ctx, openSurface, run, settings, type Surface, surfaceOf } from './slash'
+import { PopoutTerminalButton } from './TerminalViewer'
 
 const STYLES: CompactStyle[] = ['summary', 'cut', 'snap']
 
@@ -177,7 +178,8 @@ function JobsSheet({
                   </td>
                   <td className="py-2">{j.state}</td>
                   <td className="py-2 tabular-nums">{Number(j.secs)}</td>
-                  <td className="py-1 text-right">
+                  <td className="py-1 text-right whitespace-nowrap">
+                    {j.pty && <PopoutTerminalButton session={j.session} job={j.id} className="size-7" />}
                     {j.state === 'running' && (
                       <Button size="xs" variant="outline" onClick={() => void kill(j.id)}>
                         Kill
