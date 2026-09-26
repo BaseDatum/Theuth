@@ -222,6 +222,7 @@ mod desktop {
             commands::launch_log,
             commands::relaunch,
             commands::quit_ack,
+            commands::open_window,
             update::check_update,
             update::install_update,
             island::set_hidden_from_capture,
@@ -237,7 +238,11 @@ mod desktop {
         builder
             .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
             .on_window_event(|window, event| {
+                // Main and island hide on close (tray app); a popout is just a window and goes away.
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    if window.label().starts_with(commands::POPOUT_PREFIX) {
+                        return;
+                    }
                     api.prevent_close();
                     log_err(window.hide(), "hide window");
                 }
