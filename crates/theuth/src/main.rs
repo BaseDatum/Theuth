@@ -151,6 +151,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TasksCmd,
     },
+    /// One session's diagnostics.
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -248,6 +253,17 @@ enum TasksCmd {
     },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum SessionCmd {
+    /// Where the session's frame tokens go (70 COMPACT-SIZE): head images/text,
+    /// tail, system, the calibrated estimate the gauge shows after a
+    /// compaction, and the provider's last billed context.
+    Context {
+        /// Session id.
+        session: String,
+    },
+}
+
 /// `t mesh …` / `t tasks …`: one RPC call on the running engine, its JSON
 /// reply pretty-printed; the server's error message (today `not built`) on
 /// stderr, exit 1. No daemon → the `t --link` hint, exit 1.
@@ -341,6 +357,13 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     project,
                 };
                 client.request("tasks_list", rpc_params![filter]).await
+            }
+        },
+        Cmd::Session { cmd } => match cmd {
+            SessionCmd::Context { session } => {
+                client
+                    .request("session_context_breakdown", rpc_params![session])
+                    .await
             }
         },
     };

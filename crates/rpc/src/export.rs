@@ -25,6 +25,7 @@ async fn export_bindings() {
         agent::ContextKind,
         agent::ContextItem,
         agent::ContextSnapshot,
+        agent::ContextBreakdown,
         agent::ContextAttachment,
         agent::ContextEntry,
         agent::ContextRemoval,

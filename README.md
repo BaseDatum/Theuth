@@ -172,6 +172,10 @@ Config (`~/.theuth/`, created on first run; details in
     # aws_profile: work   # Bedrock inference; /aws or Settings → Connections selects it
     compact_at: 0.8        # compact when the context is this full; 0 disables
     compact_style: summary  # summary | cut | snap
+    compaction:            # post-compaction token budgets
+      tail_tokens: 40000   # history replayed verbatim after the head
+      image_tokens: 30000  # snap archive images in the head
+      target_tokens: 120000 # head + tail after a fold
     knowledge:             # how the loop uses the store
       hint_limit: 5        # lines per <knowledge> hint
       hint_rounds: 4       # mid-turn hint cadence in tool rounds

@@ -79,8 +79,8 @@ pub const PDF_PAGE_TOKENS: u32 = 2000;
 
 /// Token estimate of one message: serialised chars / 4 (07 §7). The only
 /// local estimate in the design; applied to appended slices, never the whole history.
-/// An image part counts a flat `IMAGE_TOKENS` — providers bill images by pixels
-/// (17 §3.4); a PDF part counts `PDF_PAGE_TOKENS` per page.
+/// An image part counts `w × h / 750` for a readable PNG, else a flat
+/// `IMAGE_TOKENS` (17 §3.4); a PDF part counts `PDF_PAGE_TOKENS` per page.
 pub fn est(m: &ChatMessage) -> u32 {
     est_content(&m.content)
 }
@@ -89,17 +89,52 @@ pub fn est(m: &ChatMessage) -> u32 {
 /// A tool response counts its text plus `IMAGE_TOKENS` per attached image
 /// (23 §5) rather than the serialised base64.
 pub fn est_content(c: &MessageContent) -> u32 {
+    c.iter().fold(0u32, |acc, part| acc.saturating_add(est_part(part)))
+}
+
+/// [`est`] of one content part.
+pub fn est_part(part: &ContentPart) -> u32 {
     let chars = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
-    c.iter().fold(0u32, |acc, part| {
-        acc.saturating_add(match part {
-            ContentPart::Text(t) => chars(t.len()),
-            ContentPart::Binary(b) if b.is_pdf() => pdf_pages(b).saturating_mul(PDF_PAGE_TOKENS),
-            ContentPart::Binary(_) => IMAGE_TOKENS,
-            ContentPart::ToolResponse(r) => chars(r.content.len())
-                .saturating_add((r.images.len() as u32).saturating_mul(IMAGE_TOKENS)),
-            other => chars(serde_json::to_string(other).map_or(0, |s| s.len())),
-        })
-    })
+    match part {
+        ContentPart::Text(t) => chars(t.len()),
+        ContentPart::Binary(b) if b.is_pdf() => pdf_pages(b).saturating_mul(PDF_PAGE_TOKENS),
+        ContentPart::Binary(b) => image_tokens(b),
+        ContentPart::ToolResponse(r) => chars(r.content.len())
+            .saturating_add((r.images.len() as u32).saturating_mul(IMAGE_TOKENS)),
+        other => chars(serde_json::to_string(other).map_or(0, |s| s.len())),
+    }
+}
+
+/// `tokens` in `est` units scaled to the provider's units by the session's
+/// calibration ratio (`None` = 1.0).
+pub fn calibrated(tokens: u32, calibration: Option<f32>) -> u32 {
+    match calibration {
+        Some(r) => (tokens as f32 * r) as u32,
+        None => tokens,
+    }
+}
+
+/// Tokens a provider bills for one image part: `w × h / 750` (Anthropic's
+/// formula; 13 §1) when the PNG header is readable, else the flat
+/// `IMAGE_TOKENS`. A full 1568² snap frame is ~3.3k.
+fn image_tokens(b: &Binary) -> u32 {
+    match png_dims(b) {
+        Some((w, h)) => u32::try_from(u64::from(w) * u64::from(h) / 750).unwrap_or(u32::MAX),
+        None => IMAGE_TOKENS,
+    }
+}
+
+/// Width and height from a base64 PNG's IHDR (bytes 16..24; 32 base64 chars = 24 bytes).
+fn png_dims(b: &Binary) -> Option<(u32, u32)> {
+    let BinarySource::Base64(data) = &b.source else {
+        return None;
+    };
+    let head = BASE64.decode(data.get(..32)?.as_bytes()).ok()?;
+    if head.len() < 24 || head[..8] != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+    Some((be(16), be(20)))
 }
 
 /// Page count of a base64 PDF part: `/Type /Page` objects (not `/Pages`), minimum 1.
@@ -124,18 +159,22 @@ fn pdf_pages(b: &Binary) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX).max(1)
 }
 
-/// Index of the first message kept verbatim (07 §8.2). `limit` is the token
-/// count compaction triggers at (`compact_at × window`, or the window when
-/// auto-compaction is off); the kept tail is at most `limit / 8`. Never an
-/// index whose message is `Tool`; 0 means nothing to fold.
-pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize {
-    let budget = limit / 8;
+/// Kept-tail budget when the estimator has never been calibrated against a
+/// provider's `usage`: at most this many messages, whatever `est` says.
+pub const TAIL_MESSAGES_UNCALIBRATED: usize = 60;
+
+/// Index of the first message kept verbatim (07 §8.2). `budget` is the tail's
+/// token budget in `est` units (the caller has already divided the configured
+/// `tail_tokens` by the session's calibration ratio) measured with
+/// [`est_kept`]; `max_msgs` caps the count. Never an index whose message is
+/// `Tool`; 0 means nothing to fold.
+pub fn keep_from(history: &[ChatMessage], budget: u32, max_msgs: usize) -> usize {
     let valid = |i: usize| history[i].role != ChatRole::Tool;
     let mut acc = 0u32;
     let mut keep = None;
     for i in (1..history.len()).rev() {
-        acc = acc.saturating_add(est(&history[i]));
-        if acc > budget {
+        acc = acc.saturating_add(est_kept(&history[i]));
+        if acc > budget || history.len() - i > max_msgs {
             break;
         }
         if valid(i) {
@@ -143,6 +182,57 @@ pub fn keep_from(history: &[ChatMessage], limit: u32) -> usize {
         }
     }
     keep.unwrap_or_else(|| (1..history.len()).rev().find(|&i| valid(i)).unwrap_or(0))
+}
+
+/// A tool result kept verbatim in the tail longer than this many chars
+/// (≈ 2k tokens) is folded to head + tail by [`fold_tool_results`]; the
+/// store row and the archive image keep the whole text.
+pub const FOLD_CHARS: usize = 8_000;
+const FOLD_HEAD: usize = 5_000;
+const FOLD_TAIL: usize = 2_000;
+
+/// `s` as the tail keeps it: `None` when it fits, else head + marker + tail.
+pub fn fold_text(s: &str) -> Option<String> {
+    let total = s.chars().count();
+    if total <= FOLD_CHARS {
+        return None;
+    }
+    let at = |n: usize| s.char_indices().nth(n).map_or(s.len(), |(i, _)| i);
+    Some(format!(
+        "{}\n[… {} chars folded — read the archive]\n{}",
+        &s[..at(FOLD_HEAD)],
+        total - FOLD_HEAD - FOLD_TAIL,
+        &s[at(total - FOLD_TAIL)..]
+    ))
+}
+
+/// Fold every oversize tool result in `m` in place; how many were folded.
+pub fn fold_tool_results(m: &mut ChatMessage) -> usize {
+    let mut n = 0;
+    for part in m.content.iter_mut() {
+        if let ContentPart::ToolResponse(r) = part
+            && let Some(folded) = fold_text(&r.content)
+        {
+            r.content = folded;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// [`est`] of `m` as the tail will carry it — oversize tool results folded.
+pub fn est_kept(m: &ChatMessage) -> u32 {
+    m.content.iter().fold(est(m), |acc, part| match part {
+        ContentPart::ToolResponse(r) => {
+            let total = r.content.chars().count();
+            if total > FOLD_CHARS {
+                acc.saturating_sub(((total - FOLD_HEAD - FOLD_TAIL) / 4) as u32)
+            } else {
+                acc
+            }
+        }
+        _ => acc,
+    })
 }
 
 /// Whether a provider error message means the request exceeded the context window (07 §8.5).
@@ -419,22 +509,21 @@ mod tests {
     fn cut_rules() {
         let h = history(6, 400);
         let total = kept(&h, 0);
-        for window in [total / 4, total, total * 2, total * 8, total * 64] {
-            let k = keep_from(&h, window);
-            assert_ne!(h[k].role, ChatRole::Tool, "window {window} cut at Tool");
-            let budget = window / 8;
+        for budget in [total / 32, total / 8, total / 4, total, total * 8] {
+            let k = keep_from(&h, budget, usize::MAX);
+            assert_ne!(h[k].role, ChatRole::Tool, "budget {budget} cut at Tool");
             let fits = (1..h.len()).any(|i| h[i].role != ChatRole::Tool && kept(&h, i) <= budget);
             if fits {
                 assert!(
                     k > 0 && kept(&h, k) <= budget,
-                    "window {window}: kept over budget"
+                    "budget {budget}: kept over budget"
                 );
             } else {
                 let largest = (1..h.len())
                     .rev()
                     .find(|&i| h[i].role != ChatRole::Tool)
                     .unwrap();
-                assert_eq!(k, largest, "window {window}: not the smallest tail");
+                assert_eq!(k, largest, "budget {budget}: not the smallest tail");
             }
         }
     }
@@ -446,15 +535,55 @@ mod tests {
             ChatMessage::user("q"),
             ChatMessage::from(vec![ToolResponse::new("c", "r")]),
         ];
-        assert_eq!(keep_from(&h, 0), 0);
-        assert_eq!(keep_from(&h, 1 << 20), 0);
-        assert_eq!(keep_from(&[ChatMessage::user("q")], 1 << 20), 0);
+        assert_eq!(keep_from(&h, 0, usize::MAX), 0);
+        assert_eq!(keep_from(&h, 1 << 20, usize::MAX), 0);
+        assert_eq!(keep_from(&[ChatMessage::user("q")], 1 << 20, usize::MAX), 0);
         // One valid index → never 0, even with a zero window.
         let h = vec![
             ChatMessage::user("q"),
             ChatMessage::assistant(MessageContent::from_text("a")),
         ];
-        assert_eq!(keep_from(&h, 0), 1);
+        assert_eq!(keep_from(&h, 0, usize::MAX), 1);
+    }
+
+    /// The message cap holds regardless of the token budget, and never lands on a Tool row.
+    #[test]
+    fn keep_from_honours_the_message_cap() {
+        let h = history(20, 10);
+        let k = keep_from(&h, u32::MAX, 7);
+        assert!(h.len() - k <= 7, "kept {}", h.len() - k);
+        assert_ne!(h[k].role, ChatRole::Tool);
+        assert_eq!(keep_from(&h, u32::MAX, usize::MAX), 1);
+    }
+
+    #[test]
+    fn fold_keeps_head_and_tail_and_est_kept_matches() {
+        assert_eq!(fold_text(&"x".repeat(FOLD_CHARS)), None);
+        let big = format!("{}{}{}", "h".repeat(FOLD_HEAD), "m".repeat(10_000), "t".repeat(FOLD_TAIL));
+        let f = fold_text(&big).unwrap();
+        assert!(f.starts_with(&"h".repeat(FOLD_HEAD)) && f.ends_with(&"t".repeat(FOLD_TAIL)));
+        assert!(f.contains("[… 10000 chars folded — read the archive]"), "{f}");
+        assert!(!f.contains('m'));
+        let mut m = ChatMessage::from(vec![
+            ToolResponse::new("c1", big.clone()),
+            ToolResponse::new("c2", "small"),
+        ]);
+        let kept = est_kept(&m);
+        assert_eq!(fold_tool_results(&mut m), 1);
+        assert_eq!(fold_tool_results(&mut m), 0, "idempotent");
+        assert!(est(&m) < est(&ChatMessage::from(vec![ToolResponse::new("c1", big)])));
+        assert!((est(&m) as i64 - kept as i64).abs() <= 16, "{} vs {kept}", est(&m));
+    }
+
+    #[test]
+    fn png_frames_are_priced_by_pixels() {
+        let png = crate::snap::rasterize(&["hello".to_owned()], &crate::snap::shape("anthropic"));
+        let m = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::from_binary_base64("image/png", BASE64.encode(&png[0]), None),
+        ]));
+        // 1568 wide × 16 tall (one row) → 33 tokens, not the flat 1600.
+        assert_eq!(est(&m), 1568 * 16 / 750);
+        assert_eq!(png_dims(&Binary::from_base64("image/png", "AAAA", None)), None);
     }
 
     #[test]

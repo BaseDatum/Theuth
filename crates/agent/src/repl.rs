@@ -66,7 +66,8 @@ imports persist across calls and across sessions. Tools are async functions name
 work on it in Python; run several at once with `await asyncio.gather(a(), b())`. The value of the last \
 expression is returned; stdout is returned too, capped - print only what you need to decide the next \
 step, never a whole file or result. `tools(query)` lists tools, `help(name)` shows one tool's full \
-parameters and description. `/cwd` is the working directory (read-only); write files with `write_file`.";
+parameters and description, `bindings()` lists your persisted globals. `/cwd` is the working \
+directory (read-only); write files with `write_file`.";
 
 const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
@@ -93,7 +94,9 @@ Print only what you need to decide the next step, never a whole file or a whole 
 the full value stays in the variable and survives compaction and restart. Use Python for
 loops, conditions and parsing; use `shell()` to run programs, not to write shell programs.
 Discover a tool's full parameters with `help(name)` - the index below is names and
-signatures only. The tools defined directly for you are awaitable here too, by the same name.
+signatures only. `bindings()` lists every persisted global with its type and length; a
+cell result only footers the names that cell bound or changed. The tools defined directly
+for you are awaitable here too, by the same name.
 
 Tools available only in the runtime (all `async`):
 ";
@@ -342,6 +345,7 @@ pub fn stubs(specs: &[ToolSpec]) -> String {
     }
     out.push_str("def tools(query: str | None = None) -> list[str]: ...\n");
     out.push_str("def help(name: str) -> str: ...\n");
+    out.push_str("def bindings() -> list[str]: ...\n");
     // monty implements `open()` but its trimmed typeshed omits it.
     out.push_str("def open(file: str, mode: str = 'r', encoding: str | None = None) -> Any: ...\n");
     out
@@ -683,13 +687,53 @@ struct Entry {
 }
 
 fn render_slots<'a>(it: impl Iterator<Item = (&'a String, &'a Slot)>) -> Option<String> {
-    let parts: Vec<String> = it
-        .map(|(n, s)| match s.len {
-            Some(l) => format!("{n} ({}, {l})", s.kind),
-            None => format!("{n} ({})", s.kind),
-        })
-        .collect();
+    let parts = slot_items(it);
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn slot_items<'a>(it: impl Iterator<Item = (&'a String, &'a Slot)>) -> Vec<String> {
+    it.map(|(n, s)| match s.len {
+        Some(l) => format!("{n} ({}, {l})", s.kind),
+        None => format!("{n} ({})", s.kind),
+    })
+    .collect()
+}
+
+/// Byte cap on a cell result's bindings footer (08 §3.3). The namespace lives
+/// in the runtime (`bindings()`), not in every transcript row: one session
+/// measured 402 cells × ~2.3k chars of footer ≈ 230k tokens, 66% of all its
+/// tool-result text.
+pub const FOOTER_CHARS: usize = 300;
+const FOOTER_HINT: &str = "bindings (reuse, do not re-read; bindings() lists all): ";
+const FOOTER_BARE: &str = "bindings: ";
+
+/// The footer for the names this cell bound or changed, never longer than
+/// [`FOOTER_CHARS`]: items that do not fit collapse into `… +n more`. `hint`
+/// spells out the reuse rule; the caller sends it once per turn.
+fn footer(items: &[String], hint: bool) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut out = String::from(if hint { FOOTER_HINT } else { FOOTER_BARE });
+    let more_len = format!(" … +{} more", items.len()).len();
+    let mut shown = 0;
+    for item in items {
+        let sep = if shown == 0 { "" } else { " · " };
+        let reserve = if shown + 1 < items.len() { more_len } else { 0 };
+        if out.len() + sep.len() + item.len() + reserve > FOOTER_CHARS {
+            break;
+        }
+        out.push_str(sep);
+        out.push_str(item);
+        shown += 1;
+    }
+    if shown < items.len() {
+        if shown > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("… +{} more", items.len() - shown));
+    }
+    Some(out)
 }
 
 /// The tracked inventory and its import statements from `.names.json`
@@ -859,6 +903,8 @@ pub struct Repl {
     lost: Option<String>,
     /// Inner calls the last `drive` finished as not run (created, never awaited).
     unawaited: usize,
+    /// The reuse hint went out in a cell footer this turn (one `Repl` = one turn).
+    hinted: bool,
 }
 
 impl Repl {
@@ -943,6 +989,7 @@ impl Repl {
             out_seq: 0,
             lost: None,
             unawaited: 0,
+            hinted: false,
         };
         if let Err(e) = repl.ensure_checkout().await {
             tracing::warn!("python runtime checkout failed: {e}");
@@ -1024,6 +1071,7 @@ impl Repl {
         }
         let cell_names = candidates(code);
         self.candidates.extend(cell_names.iter().cloned());
+        let before = self.names.clone();
         // Imports from earlier cells that this cell uses go in front of the
         // checked source (08 §4.6): the checker only knows what it checked.
         let prelude = prelude(&self.imports, code, &cell_names);
@@ -1167,25 +1215,18 @@ impl Repl {
             self.probe(inputs).await;
             self.imports.retain(|n, _| self.names.contains_key(n));
         }
-        if let Some(bound) =
-            render_slots(self.names.iter().filter(|(n, _)| cell_names.contains(*n)))
-        {
+        // Names this cell assigned, plus any tracked slot whose type or length
+        // moved (a mutation through a call); the rest is one `bindings()` away.
+        let changed = self
+            .names
+            .iter()
+            .filter(|(n, s)| cell_names.contains(*n) || before.get(*n) != Some(s));
+        if let Some(line) = footer(&slot_items(changed), !self.hinted) {
+            self.hinted = true;
             if !body.is_empty() {
                 body.push('\n');
             }
-            body.push_str("bindings (reuse, do not re-read): ");
-            body.push_str(&bound);
-            // The rest of the live inventory by name, so nothing is lost track of.
-            let rest: Vec<&str> = self
-                .names
-                .keys()
-                .filter(|n| !cell_names.contains(*n))
-                .map(String::as_str)
-                .collect();
-            if !rest.is_empty() {
-                body.push_str(" · also ");
-                body.push_str(&rest.join(", "));
-            }
+            body.push_str(&line);
         }
         self.dump().await;
         self.finish_output(body, is_error, files)
@@ -1307,6 +1348,7 @@ impl Repl {
             mounts,
             spill,
             unawaited,
+            names,
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
@@ -1338,7 +1380,7 @@ impl Repl {
                     TurnEvent::Complete(v) => return Ok(v),
                     TurnEvent::NameLookup { name, .. } => {
                         let answer = match name.as_str() {
-                            "tools" | "help" => {
+                            "tools" | "help" | "bindings" => {
                                 NameLookupResult::Value(MontyObject::function(name, None))
                             }
                             _ => match find_tool(&cx.registry, cx.session, &name).await {
@@ -1373,6 +1415,10 @@ impl Repl {
                                         .map(MontyObject::string),
                                 ))
                             }
+                            // The whole inventory as the footer would have listed it (08 §3.3).
+                            "bindings" => ResumeValue::Return(MontyObject::list(
+                                slot_items(names.iter()).into_iter().map(MontyObject::string),
+                            )),
                             "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
                                 Some(name) => {
                                     match find_tool(&cx.registry, cx.session, name).await {
@@ -1721,6 +1767,42 @@ mod tests {
         );
     }
 
+    /// The footer never outgrows [`FOOTER_CHARS`], whatever the namespace
+    /// holds; the overflow is a count, and the hint is the caller's choice.
+    #[test]
+    fn footer_is_capped_regardless_of_namespace_size() {
+        for n in [1usize, 5, 40, 600, 5000] {
+            let names: BTreeMap<String, Slot> = (0..n)
+                .map(|i| {
+                    (
+                        format!("w_result_{i}"),
+                        Slot {
+                            kind: "str".into(),
+                            len: Some(30_000 + i),
+                        },
+                    )
+                })
+                .collect();
+            let items = slot_items(names.iter());
+            for hint in [true, false] {
+                let line = footer(&items, hint).unwrap();
+                assert!(line.len() <= FOOTER_CHARS, "{n}/{hint}: {} chars: {line}", line.len());
+                assert_eq!(line.starts_with(FOOTER_HINT), hint, "{line}");
+                assert!(line.contains("w_result_0 (str, 30000)"), "{line}");
+                if n >= 600 {
+                    assert!(line.contains(" more"), "{line}");
+                } else if n == 1 {
+                    assert!(!line.contains(" more"), "{line}");
+                }
+            }
+        }
+        assert_eq!(footer(&[], true), None);
+        // one oversize item still yields a bounded line, not an empty prefix
+        let huge = vec!["x".repeat(FOOTER_CHARS * 2)];
+        let line = footer(&huge, false).unwrap();
+        assert!(line.len() <= FOOTER_CHARS && line.ends_with("… +1 more"), "{line}");
+    }
+
     /// A tool is defined for the model exactly once: direct tools are absent
     /// from the runtime index; with `runtime_only: false` the index is empty.
     #[test]
@@ -1907,7 +1989,7 @@ mod tests {
         assert!(out.content.starts_with("line 0000\n"));
         assert!(
             out.content.ends_with(
-                "line 2999\nbindings (reuse, do not re-read): n (int) · out1 (str, 30000)"
+                "line 2999\nbindings (reuse, do not re-read; bindings() lists all): n (int) · out1 (str, 30000)"
             ),
             "{}",
             out.content
@@ -1925,9 +2007,14 @@ mod tests {
             out.content
         );
         let out = repl.run("c4", "r = [1, 2, 3]\nr").await;
+        // second footer of the turn: bare, and only the names this cell touched
+        assert_eq!(out.content, "→ [1, 2, 3]\nbindings: r (list, 3)");
+        let out = repl.run("c4a", "bindings()").await;
         assert_eq!(
             out.content,
-            "→ [1, 2, 3]\nbindings (reuse, do not re-read): r (list, 3) · also n, out1"
+            "→ ['n (int)', 'out1 (str, 30000)', 'r (list, 3)']",
+            "{}",
+            out.content
         );
         assert_eq!(
             repl.render_inventory().as_deref(),
@@ -1973,10 +2060,10 @@ mod tests {
             out.content
         );
         let out = repl.run("c8", "ls = await list_dir(path='/')\nmsg = ''\ntry:\n    await read_file('/nonexistent')\nexcept RuntimeError as e:\n    msg = str(e)\n(type(ls).__name__, msg[:10])").await;
+        // c7's `import asyncio` bound a name on the way to its error, so the
+        // reopened Repl's one hint went out there; c8 is bare.
         assert!(
-            out.content.starts_with(
-                "→ ('str', 'read_file:')\nbindings (reuse, do not re-read): ls (str, "
-            ),
+            out.content.starts_with("→ ('str', 'read_file:')\nbindings: ls (str, "),
             "{}",
             out.content
         );
@@ -2280,7 +2367,10 @@ mod tests {
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nre.compile('a').pattern").await;
-            assert_eq!(out.content, "→ 'a'\nbindings (reuse, do not re-read): re (module)");
+            assert_eq!(
+                out.content,
+                "→ 'a'\nbindings (reuse, do not re-read; bindings() lists all): re (module)"
+            );
             let out = repl.run("c2", "re.compile('b').pattern").await;
             assert_eq!(out.content, "→ 'b'", "{}", out.content);
             // a diagnostic in the model's own line numbers, not the prelude's
@@ -2315,13 +2405,16 @@ mod tests {
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nm = re.match('a', 'a')").await;
             assert!(!out.is_error, "{}", out.content);
+            // `for` targets are not candidates, but the probe sees `m`'s type
+            // move (Match → int): a changed slot is footered, without the hint
+            // the first cell already carried.
             let out = repl.run("c2", "for m in [1, 2]:\n    pass\nm + 1").await;
-            assert_eq!(out.content, "→ 3", "{}", out.content);
+            assert_eq!(out.content, "→ 3\nbindings: m (int)", "{}", out.content);
             // the checker follows: later cells see the new type, no `_Any` leaks
             let out = repl.run("c3", "m = 'x'\nm * 2").await;
             assert_eq!(
                 out.content,
-                "→ 'xx'\nbindings (reuse, do not re-read): m (str, 1) · also re",
+                "→ 'xx'\nbindings: m (str, 1)",
                 "{}",
                 out.content
             );

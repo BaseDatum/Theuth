@@ -889,12 +889,15 @@ function turn(
     case "Compacting":
       return { ...s, activity: "compacting" };
     case "Compacted":
+      // `after` is the engine's calibrated whole-frame estimate (70 COMPACT-SIZE):
+      // shown as `≈` until the provider's next `ContextUsed`/`TurnFinished` replaces it.
       // Clear is a clean slate on screen too; `load_session` still shows everything.
       return e.style === "clear"
         ? {
             ...s,
             activity: idle,
             context: e.after,
+            contextEstimated: true,
             entries: [
               {
                 id: nextId(),
@@ -904,7 +907,7 @@ function turn(
             ],
           }
         : interject(
-            { ...s, activity: idle, context: e.after },
+            { ...s, activity: idle, context: e.after, contextEstimated: true },
             { id: nextId(), kind: "compacted", epoch: e.epoch, style: e.style },
           );
     // 10 §5.2 as built: the harvest runs detached — may start after `TurnFinished`, may outlive the next

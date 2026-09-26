@@ -84,8 +84,8 @@ pub use communication::{
 };
 pub use compact::CompactStyle;
 pub use context::{
-    ContextAttachment, ContextEntry, ContextItem, ContextKind, ContextOwner, ContextRemoval,
-    ContextSnapshot, ContextTarget,
+    ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
+    ContextRemoval, ContextSnapshot, ContextTarget,
 };
 pub use supervisor::{
     Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity, RegisterNode,
@@ -604,6 +604,16 @@ pub struct SearchRefresh;
 /// and creates nothing. No message bodies.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ContextItems {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<ContextBreakdown, String>` (70 COMPACT-SIZE): where the
+/// session's frame tokens go — head images/text, tail, system — beside the
+/// provider's last bill. From the live actor when idle, else from the store
+/// (`system_tokens: 0`, no calibration). `Err("unknown session")`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionContextBreakdown {
     /// Target session.
     pub session: SessionId,
 }
@@ -1698,7 +1708,9 @@ pub enum AgentEvent {
         epoch: u32,
         /// Projected tokens before the cut.
         before: u32,
-        /// Estimated tokens the new epoch holds (head plus kept tail).
+        /// Estimated tokens of the whole next request (system, tools, head,
+        /// kept tail), scaled by the session's calibration: what the gauge
+        /// shows as `≈` until the provider's next usage (70 COMPACT-SIZE).
         after: u32,
         /// Messages folded into the summary.
         folded: u32,
@@ -1954,6 +1966,8 @@ pub struct AgentConfig {
     pub knowledge: KnowledgeUse,
     /// Human broadcast limits (62 §7).
     pub broadcast: BroadcastConfig,
+    /// Post-compaction token budgets (tail, archive images, total).
+    pub compaction: CompactionConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -1980,6 +1994,7 @@ impl Default for AgentConfig {
             escalate_model: None,
             knowledge: KnowledgeUse::default(),
             broadcast: BroadcastConfig::default(),
+            compaction: CompactionConfig::default(),
             surface: SurfaceConfig::default(),
         }
     }
@@ -1996,6 +2011,29 @@ pub struct BroadcastConfig {
 impl Default for BroadcastConfig {
     fn default() -> Self {
         Self { max_targets: 32 }
+    }
+}
+
+/// `agent.compaction`: token budgets the fold must land under (70 COMPACT-SIZE).
+/// Measured with `compact::est` scaled by the session's provider calibration.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    /// Most tokens of history replayed verbatim after the head.
+    pub tail_tokens: u32,
+    /// Most tokens of archive images in a `snap` head; oldest lines drop first.
+    pub image_tokens: u32,
+    /// Head plus tail after a fold; a snap head over this falls back to `summary`.
+    pub target_tokens: u32,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            tail_tokens: 40_000,
+            image_tokens: 30_000,
+            target_tokens: 120_000,
+        }
     }
 }
 

@@ -3032,6 +3032,9 @@ pub struct Model {
     pub catalog: Option<Arc<Catalog>>,
     /// Tokens the shown session's window held after its last turn.
     pub context: u32,
+    /// `context` is the engine's estimate (after a compaction or a load), shown
+    /// as `≈` until the provider's next usage replaces it (70 COMPACT-SIZE).
+    pub context_estimated: bool,
     /// Open menu.
     pub menu: Option<Menu>,
     /// Pending approvals for the current session or its subtree, oldest first; the front is shown.
@@ -3316,6 +3319,7 @@ impl Model {
         self.refresh_cost = true;
         if let Some(n) = loaded.context_estimate {
             self.context = n;
+            self.context_estimated = true;
         }
         self.loaded_todos(loaded.todos);
         // The load carries the switches too; a `get_communication` reply
@@ -5541,11 +5545,15 @@ impl Model {
                 self.entries.retain(|e| !matches!(e, Entry::Pending { .. }));
                 self.usage = Some(usage);
                 self.context = context;
+                self.context_estimated = false;
                 self.compacting = false;
                 self.vision = None;
             }
             // The gauge moves per round, with the cost (51 §6.4).
-            AgentEvent::ContextUsed { context, .. } => self.context = context,
+            AgentEvent::ContextUsed { context, .. } => {
+                self.context = context;
+                self.context_estimated = false;
+            }
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
                 self.model_id = model;
@@ -5578,6 +5586,7 @@ impl Model {
             } => {
                 self.compacting = false;
                 self.context = after;
+                self.context_estimated = true;
                 if style == CompactStyle::Clear {
                     // A clean slate on screen too; `/resume` still shows everything.
                     // Compaction only runs between turns, so nothing is streaming.
@@ -6382,7 +6391,7 @@ impl Model {
     /// prefix-cache hit ratio of the last finished turn (design doc 07 §7),
     /// omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
-        let used = k(self.context);
+        let used = format!("{}{}", if self.context_estimated { "≈" } else { "" }, k(self.context));
         let cache = match self.usage {
             Some(u) if u.prompt > 0 => {
                 format!(

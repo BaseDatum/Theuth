@@ -269,7 +269,10 @@ test('Compacted: clear wipes, other styles add a divider after the closed tail',
   expect(div.entries.map((e) => e.kind)).toEqual(['assistant', 'compacted'])
   expect(div.entries[0]).toMatchObject({ open: false })
   expect(div.entries[1]).toMatchObject({ epoch: 2, style: 'summary' })
-  expect(div.context).toBe(400)
+  // 70 COMPACT-SIZE: `after` is the engine's estimate → `≈` until the provider's next number.
+  expect([div.context, div.contextEstimated]).toEqual([400, true])
+  const billed = apply(div, { type: 'ContextUsed', session: S, turn: T, context: 410 }, ctx())
+  expect([billed.context, billed.contextEstimated]).toEqual([410, false])
   const cleared = apply(streaming, { type: 'Compacted', session: S, turn: null, epoch: 3, before: 1, after: 50, folded: 3, style: 'clear' }, ctx())
   expect(cleared.entries).toHaveLength(1)
   expect(cleared.entries[0]).toMatchObject({ kind: 'info', text: 'context cleared (epoch 3)' })

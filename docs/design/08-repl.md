@@ -298,8 +298,18 @@ registered like any other native tool and appear in this index the same way
 ```
 <stdout, capped at 8 000 chars>
 → <repr of the last expression, capped at 8 000 chars>      (omitted when None)
-bindings (reuse, do not re-read): r (list, 42) · total (int) · summarise (function) · also n, hits  (names bound by this cell, then the rest of the live inventory by name)
+bindings (reuse, do not re-read; bindings() lists all): r (list, 42) · total (int) · summarise (function)
 ```
+
+The footer lists only the names this cell bound (`candidates`) or whose
+probed type/length moved (a mutation through a call), never the whole
+namespace, and is capped at `FOOTER_CHARS = 300` bytes — items past the cap
+collapse into `… +n more`. The reuse hint is sent once per turn (first
+footer of the `Repl`); later cells in the turn say `bindings: …`. The full
+inventory is `bindings()` (a `list[str]` in the same `name (kind, len)`
+form). Why: one session measured 402 cells × ~2.3k chars of footer
+(`… · also <500 names>`) ≈ 230k tokens, 66 % of all its tool-result text,
+all of it kept verbatim through compaction.
 
 - Empty everything → `(no output)`.
 - Uncaught exception → stdout so far, then the monty traceback

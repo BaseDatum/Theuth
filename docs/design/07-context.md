@@ -467,26 +467,37 @@ threshold ignored.
 
 ### 8.2 Cut
 
-`history` is `M[0..n)`. `compact::keep_from(&M, limit)` with `limit =
-compact_at × window` (the raw `window` when `compact_at == 0`, i.e. a
-manual or overflow compaction with auto off):
+`history` is `M[0..n)`. `compact::keep_from(&M, budget, max_msgs)` where,
+since 70 COMPACT-SIZE, the budget is a configured token count rather than a
+fraction of the threshold:
 
 ```
-budget    = limit / 8
+budget    = agent.compaction.tail_tokens (40k) / calibration     // in est units
+            clamped to target_tokens − image_tokens for a snap fold
+max_msgs  = ∞ when calibrated, TAIL_MESSAGES_UNCALIBRATED (60) before the
+            first provider `usage` of the process
 valid(i)  = M[i].role != Tool             // never orphan a tool_result from its tool_use
-walk i from n-1 down to 1, acc += est(M[i]):
-    acc > budget               → stop
+walk i from n-1 down to 1, acc += est_kept(M[i]):
+    acc > budget or n-i > max_msgs → stop
     valid(i)                   → keep_from = i   (keep walking: a larger tail may still fit)
 no keep_from recorded          → keep_from = largest valid i in 1..n   (smallest possible tail)
 no valid i in 1..n             → keep_from = 0: nothing to fold; skip ("nothing to compact")
 ```
 
-The budget is an eighth of the *threshold*, not of the window. The draft
-said `window / 8`; testing at `compact_at: 0.02` on a 1M-context model
-showed why that is wrong: the tail budget (125k) exceeded the threshold
-(20k), so every compaction folded exactly one message and the next round
-compacted again. Sizing the tail to the threshold keeps the post-compaction
-frame well under it at any `compact_at`.
+`calibration` is the provider's last `prompt_tokens` ÷ `est` of the frame
+that request sent (clamped 0.5–4, `SessionState::calibration`); `est` is
+chars/4 and undercounts code and JSON by 1.3–2×, which is how a 1M-window
+session (`limit/8 = 100k` estimated) replayed 226 messages and landed at
+289k billed after its fold. `est_kept` prices a tool result as the tail
+carries it: results over `FOLD_CHARS` (8k chars ≈ 2k tokens) are folded to
+head 5k + tail 2k with a `[… n chars folded — read the archive]` marker
+(`compact::fold_tool_results`) — in the actor's memory at the cut and by
+`Active::effective` for rows `≤ at_seq` on every `Store::frame`, so a resume
+sends the same bytes. The store row and the spill file keep the whole text.
+
+The previous rule (`limit / 8`, an eighth of the *threshold*) is why a
+small `compact_at` did not re-compact every round; a fixed budget has the
+same property as long as `tail_tokens < compact_at × window`.
 
 The fallback keeps the last assistant message and its results even when
 they alone exceed the budget; if they alone exceed the *window* the

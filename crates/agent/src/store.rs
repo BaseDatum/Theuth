@@ -1109,9 +1109,9 @@ impl Store {
         let mut tx = self.read.begin().await?;
         let revision = revision_in(&mut tx, &sid).await?.to_string();
         let latest = epochs_in(&mut tx, &sid).await?.pop();
-        let (epoch, tail_from, head) = match latest {
-            Some((e, mask)) => (e.n, e.tail_from, Some((e.head, mask))),
-            None => (0, 0, None),
+        let (epoch, tail_from, at_seq, head) = match latest {
+            Some((e, mask)) => (e.n, e.tail_from, e.at_seq, Some((e.head, mask))),
+            None => (0, 0, -1, None),
         };
         let rows = rows_in(&mut tx, id, tail_from).await?;
         drop(tx);
@@ -1133,6 +1133,7 @@ impl Store {
         let active = Active {
             epoch,
             tail_from,
+            at_seq,
             head,
             rows: rows.into_iter().map(Row::into_active).collect(),
         };
@@ -1934,11 +1935,12 @@ impl Store {
         let rows = rows_in(&mut tx, id, 0).await?;
         let epochs = epochs_in(&mut tx, &sid).await?;
         drop(tx);
-        let latest = epochs.last().map(|(e, _)| (e.n, e.tail_from));
-        let (epoch, tail_from) = latest.unwrap_or((0, 0));
+        let latest = epochs.last().map(|(e, _)| (e.n, e.tail_from, e.at_seq));
+        let (epoch, tail_from, at_seq) = latest.unwrap_or((0, 0, -1));
         let active = Active {
             epoch,
             tail_from,
+            at_seq,
             head: epochs
                 .last()
                 .map(|(e, mask)| (e.head.clone(), mask.clone())),
@@ -2562,13 +2564,14 @@ async fn epochs_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<Vec
 /// before any projection) and the raw rows from its `tail_from`, with masks.
 async fn active_in(conn: &mut SqliteConnection, id: SessionId) -> anyhow::Result<Active> {
     let latest = epochs_in(conn, &id.to_string()).await?.pop();
-    let (epoch, tail_from, head) = match latest {
-        Some((e, mask)) => (e.n, e.tail_from, Some((e.head, mask))),
-        None => (0, 0, None),
+    let (epoch, tail_from, at_seq, head) = match latest {
+        Some((e, mask)) => (e.n, e.tail_from, e.at_seq, Some((e.head, mask))),
+        None => (0, 0, -1, None),
     };
     Ok(Active {
         epoch,
         tail_from,
+        at_seq,
         head,
         rows: rows_in(conn, id, tail_from)
             .await?
@@ -2925,6 +2928,43 @@ mod tests {
             (epochs[0].n, epochs[0].at_seq, epochs[0].tail_from),
             (1, 5, 4)
         );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 70 COMPACT-SIZE: a tool result that was in the kept tail at the cut
+    /// comes back folded from `frame` (as the actor folded it in memory); one
+    /// appended after the cut is whole, and so is the raw row.
+    #[tokio::test]
+    async fn frame_folds_oversize_tool_results_in_the_compaction_tail() {
+        let (store, id, dir) = fresh().await;
+        let big = "x".repeat(compact::FOLD_CHARS * 3);
+        let tool = |c: &str| ChatMessage::from(vec![ToolResponse::new(c, big.clone())]);
+        store.append(id, &ChatMessage::user("u0")).await.unwrap();
+        store.append(id, &ChatMessage::user("u1")).await.unwrap(); // seq 1: tail_from
+        store.append(id, &tool("c1")).await.unwrap(); // seq 2: in the tail at the cut
+        let head = ChatMessage::user("<context_summary epoch=\"1\">s</context_summary>");
+        store.compact(id, 1, 2, 1, &head).await.unwrap();
+        store.append(id, &tool("c2")).await.unwrap(); // seq 3: after the cut
+        let (_, _, tail) = store.frame(id).await.unwrap();
+        let texts: Vec<(i64, String)> = tail
+            .iter()
+            .map(|(s, m)| {
+                let body = m.content.tool_responses().first().map_or("", |r| r.content.as_str());
+                (*s, body.to_owned())
+            })
+            .collect();
+        assert_eq!(texts[0], (1, String::new()));
+        assert_eq!(texts[1].0, 2);
+        assert!(
+            texts[1].1.contains("chars folded — read the archive]") && texts[1].1.len() < big.len(),
+            "{}",
+            texts[1].1.len()
+        );
+        assert_eq!(texts[2], (3, big.clone()));
+        // The stored row is untouched.
+        let raw = store.messages(id).await.unwrap();
+        assert_eq!(raw[2].1.content.tool_responses()[0].content, big);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

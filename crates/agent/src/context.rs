@@ -151,6 +151,73 @@ pub struct ContextSnapshot {
     pub estimated_tokens: u32,
 }
 
+/// Where the tokens of the model's frame go (70 COMPACT-SIZE): the estimate
+/// the engine drives compaction and the post-compaction gauge with, beside
+/// the provider's last bill, so the two can be compared without sqlite.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ContextBreakdown {
+    /// Archive frames and other binaries in the head.
+    pub head_images_tokens: u32,
+    /// Head text: caption/summary plus harness lines.
+    pub head_text_tokens: u32,
+    /// Messages replayed verbatim after the head.
+    pub tail_messages: u32,
+    /// `compact::est` over the tail (tool results as folded).
+    pub tail_tokens: u32,
+    /// System prompt plus tool definitions; 0 when answered from the store
+    /// (no live actor).
+    pub system_tokens: u32,
+    /// Everything above, scaled by `calibration`: what the gauge shows as "≈".
+    pub total_estimate: u32,
+    /// Prompt + completion the provider last billed, if any this process.
+    pub last_provider_context: Option<u32>,
+    /// Provider tokens ÷ `est` for the last billed frame; `None` = uncalibrated.
+    pub calibration: Option<f32>,
+    /// Answered by the live session actor (system and calibration known).
+    pub live: bool,
+}
+
+impl ContextBreakdown {
+    /// Price `head` + `tail` with `compact::est`, `system_tokens` on top,
+    /// the total scaled by `calibration`.
+    pub fn build<'a>(
+        system_tokens: u32,
+        head: Option<&ChatMessage>,
+        tail: impl Iterator<Item = &'a ChatMessage>,
+        calibration: Option<f32>,
+        last_provider_context: Option<u32>,
+    ) -> Self {
+        let head_images_tokens = head.map_or(0, |h| {
+            h.content
+                .iter()
+                .filter(|p| matches!(p, ContentPart::Binary(_)))
+                .fold(0u32, |acc, p| acc.saturating_add(compact::est_part(p)))
+        });
+        let head_text_tokens = head
+            .map_or(0, compact::est)
+            .saturating_sub(head_images_tokens);
+        let (tail_messages, tail_tokens) = tail.fold((0u32, 0u32), |(n, t), m| {
+            (n + 1, t.saturating_add(compact::est(m)))
+        });
+        let raw = system_tokens
+            .saturating_add(head_images_tokens)
+            .saturating_add(head_text_tokens)
+            .saturating_add(tail_tokens);
+        Self {
+            head_images_tokens,
+            head_text_tokens,
+            tail_messages,
+            tail_tokens,
+            system_tokens,
+            total_estimate: compact::calibrated(raw, calibration),
+            last_provider_context,
+            calibration,
+            live: false,
+        }
+    }
+}
+
 /// One binary occurrence of a history row, for transcript controls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -508,6 +575,9 @@ pub struct Active {
     pub epoch: u32,
     /// First seq of the tail.
     pub tail_from: i64,
+    /// Last message seq when the epoch was cut; rows at or before it were the
+    /// kept tail. `-1` without an epoch, so no row folds.
+    pub at_seq: i64,
     /// Head row and its mask.
     pub head: Option<(ChatMessage, Mask)>,
     /// Raw tail rows with their masks, seq ascending.
@@ -561,7 +631,16 @@ impl Active {
         let tail = self
             .rows
             .iter()
-            .filter_map(|(seq, m, mask)| project(m, mask).map(|m| (*seq, m)))
+            .filter_map(|(seq, m, mask)| {
+                let mut m = project(m, mask)?;
+                // 70 COMPACT-SIZE: rows that were the kept tail when the epoch
+                // was cut travel with oversize tool results folded, exactly as
+                // the actor folded them in memory; rows appended since do not.
+                if *seq <= self.at_seq {
+                    compact::fold_tool_results(&mut m);
+                }
+                Some((*seq, m))
+            })
             .collect();
         (head, tail)
     }
@@ -1076,6 +1155,7 @@ mod tests {
         Active {
             epoch: 0,
             tail_from: 0,
+            at_seq: -1,
             head: None,
             rows: vec![
                 row(0, user),
@@ -1432,6 +1512,7 @@ mod tests {
         let f = Active {
             epoch: 1,
             tail_from: 4,
+            at_seq: 5,
             head: Some((head, Mask::default())),
             rows: vec![
                 row(4, ChatMessage::user("u")),
