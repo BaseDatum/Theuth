@@ -38,6 +38,7 @@ import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
+import { Route as PtySessionJobRouteImport } from './routes/pty.$session.$job'
 import { Route as RoutinesNameIndexRouteImport } from './routes/routines.$name.index'
 import { Route as RoutinesNameSectionRouteImport } from './routes/routines.$name.$section'
 
@@ -186,6 +187,11 @@ const AgentsNameTabRoute = AgentsNameTabRouteImport.update({
   path: '/agents/$name/$tab',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PtySessionJobRoute = PtySessionJobRouteImport.update({
+  id: '/pty/$session/$job',
+  path: '/pty/$session/$job',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RoutinesNameIndexRoute = RoutinesNameIndexRouteImport.update({
   id: '/routines/$name/',
   path: '/routines/$name/',
@@ -226,6 +232,7 @@ export interface FileRoutesByFullPath {
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -259,6 +266,7 @@ export interface FileRoutesByTo {
   '/skills': typeof SkillsIndexRoute
   '/tasks': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name': typeof AgentsNameIndexRoute
   '/routines/$name': typeof RoutinesNameIndexRoute
@@ -293,6 +301,7 @@ export interface FileRoutesById {
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -328,6 +337,7 @@ export interface FileRouteTypes {
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -361,6 +371,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/tasks'
     | '/agents/$name/$tab'
+    | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name'
     | '/routines/$name'
@@ -394,6 +405,7 @@ export interface FileRouteTypes {
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -426,6 +438,7 @@ export interface RootRouteChildren {
   SkillsIndexRoute: typeof SkillsIndexRoute
   TasksIndexRoute: typeof TasksIndexRoute
   AgentsNameTabRoute: typeof AgentsNameTabRoute
+  PtySessionJobRoute: typeof PtySessionJobRoute
   RoutinesNameSectionRoute: typeof RoutinesNameSectionRoute
   AgentsNameIndexRoute: typeof AgentsNameIndexRoute
   RoutinesNameIndexRoute: typeof RoutinesNameIndexRoute
@@ -636,6 +649,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsNameTabRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pty/$session/$job': {
+      id: '/pty/$session/$job'
+      path: '/pty/$session/$job'
+      fullPath: '/pty/$session/$job'
+      preLoaderRoute: typeof PtySessionJobRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/routines/$name/': {
       id: '/routines/$name/'
       path: '/routines/$name'
@@ -704,6 +724,7 @@ const rootRouteChildren: RootRouteChildren = {
   SkillsIndexRoute: SkillsIndexRoute,
   TasksIndexRoute: TasksIndexRoute,
   AgentsNameTabRoute: AgentsNameTabRoute,
+  PtySessionJobRoute: PtySessionJobRoute,
   RoutinesNameSectionRoute: RoutinesNameSectionRoute,
   AgentsNameIndexRoute: AgentsNameIndexRoute,
   RoutinesNameIndexRoute: RoutinesNameIndexRoute,

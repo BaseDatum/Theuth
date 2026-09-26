@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { canPopout, popoutLabel, popoutMeeting, popoutTarget, popoutUrl } from './popout'
+import { canPopout, popoutLabel, popoutMeeting, popoutSession, popoutTarget, popoutUrl } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -35,6 +35,22 @@ test('a note or a meeting pops out too; `?pane=note` on a meeting is its note ed
   expect(popoutMeeting({ kind: 'meeting-note', meeting: 'm1' })).toBe('m1')
   expect(popoutMeeting({ kind: 'chat', session: 'm1' })).toBeNull()
   expect(popoutMeeting(null)).toBeNull()
+})
+
+test('a PTY pops out at /pty/$session/$job; its label names both ids and its session closes it', () => {
+  const t = { kind: 'pty', session: '01J8ZK-abc', job: 'j.1' } as const
+  expect(popoutLabel(t)).toBe('popout-pty-01J8ZK-abc-j_1')
+  expect(popoutUrl(t)).toBe('/pty/01J8ZK-abc/j.1?window=popout-pty-01J8ZK-abc-j_1')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget(popoutUrl({ kind: 'pty', session: 'a/b', job: 'c d' }))).toEqual({ kind: 'pty', session: 'a/b', job: 'c d' })
+  // A session without a job is not a terminal window.
+  expect(popoutTarget('/pty/s1?window=x')).toBeNull()
+  expect(popoutTarget('/pty/s1/j1')).toBeNull()
+  // `SessionDeleted` closes a chat's window and a PTY's; a meeting's or note's is not a session.
+  expect(popoutSession(t)).toBe('01J8ZK-abc')
+  expect(popoutSession({ kind: 'chat', session: 's1' })).toBe('s1')
+  expect(popoutSession({ kind: 'meeting', meeting: 'm1' })).toBeNull()
+  expect(popoutSession(null)).toBeNull()
 })
 
 test('the label names the target with only the characters a Tauri window label allows, and the url carries it back', () => {
