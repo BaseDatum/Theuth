@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronRight, Info } from 'lucide-react'
+import { ChevronRight, Info, Timer } from 'lucide-react'
 import { memo, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { Badge } from '@/components/ui/badge'
@@ -159,6 +159,7 @@ export const MessagePeer = memo(function MessagePeer({
         aria-expanded={open}
       >
         <ChevronRight className={more ? `size-4 transition-transform ${open ? 'rotate-90' : ''}` : 'invisible size-4'} />
+        {from.startsWith('Reminder ') ? <Timer className="size-3.5 shrink-0" /> : null}
         <span className="truncate">⟵ {from}</span>
       </button>
       {open ? (

@@ -1117,7 +1117,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             text.lines().next().unwrap_or_default()
         ),
         agent::HistoryEntry::Tool { name, context, .. } if removed(context) => {
-            writeln!(out, "⊘ removed from context: ⚙ {name}")
+            writeln!(out, "⊘ removed from context: ▸ {name}")
         }
         agent::HistoryEntry::Compacted { epoch, context, .. } if removed(context) => {
             writeln!(out, "⊘ removed from context: summary (epoch {epoch})")
@@ -1126,7 +1126,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             writeln!(out, "> {}{}", attach::display(&text), labels(context))
         }
         agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
-        agent::HistoryEntry::Reasoning { text, .. } => writeln!(out, "\x1b[2m💭 {text}\x1b[0m"),
+        agent::HistoryEntry::Reasoning { text, .. } => writeln!(out, "\x1b[2m┆ {text}\x1b[0m"),
         agent::HistoryEntry::Tool {
             name,
             args,
@@ -1135,7 +1135,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             ..
         } => writeln!(
             out,
-            "⚙ {name}\n{}{}\n{}",
+            "▸ {name}\n{}{}\n{}",
             model::describe(name, args).join("\n"),
             labels(context),
             match result {
@@ -1163,14 +1163,14 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
 }
 
 fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
-    // Thinking streams dim under a `💭` header (70 THINKING-TRACES); anything else closes the block.
+    // Thinking streams dim under a `┆` header (70 THINKING-TRACES); anything else closes the block.
     let thinking = matches!(model.entries.last(), Some(model::Entry::Reasoning { done: false, .. }));
     if thinking && !matches!(ev, UiEvent::Agent(AgentEvent::ReasoningDelta { .. })) {
         let _ = writeln!(out, "\x1b[0m");
     }
     let _ = match ev {
         UiEvent::Agent(AgentEvent::ReasoningDelta { text, .. }) => {
-            let head = if thinking { "" } else { "\x1b[2m💭 " };
+            let head = if thinking { "" } else { "\x1b[2m┆ " };
             write!(out, "{head}{text}").and_then(|()| out.flush())
         }
         UiEvent::Agent(AgentEvent::SubagentSpawned { name, .. }) => {
@@ -1194,7 +1194,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }) => {
             writeln!(
                 out,
-                "\n⚙ {}{name}\n{}",
+                "\n▸ {}{name}\n{}",
                 if call_id.contains('.') { "↳ " } else { "" },
                 model::describe(name, args).join("\n")
             )

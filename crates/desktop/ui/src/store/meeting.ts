@@ -73,7 +73,7 @@ export type MeetingSlice = {
   progress: { stage: PostStage; pct: number } | null
   /** 57 §3.4: the last `ORACLE_KEEP` oracle verdicts, oldest first; an outcome update replaces its batch's row. */
   oracle: OracleDecision[]
-  /** The batch the oracle is deciding right now (`⚡ deciding`), until its verdict lands. */
+  /** The batch the oracle is deciding right now (the island's `deciding` flash), until its verdict lands. */
   deciding: string | null
   /** The last `LINES_KEEP` live transcript rows, oldest first; at most one `open` row per track. */
   lines: Line[]
@@ -108,7 +108,7 @@ const EMPTY: MeetingSlice = {
   lines: [],
 }
 
-/** 57 §3.4 / §3.5 counters: `⚡ 14 skipped · 3 briefs · 2 escalated · 5 tier 2 calls · agreed 92 %`. */
+/** 57 §3.4 / §3.5 counters: `14 skipped · 3 briefs · 2 escalated · 5 tier 2 calls · agreed 92 %` (the UI draws a Zap icon before it). */
 export function oracleCounters(oracle: OracleDecision[]): { skipped: number; briefs: number; escalated: number; tier2: number; agreed: number | null } {
   let skipped = 0
   let briefs = 0
@@ -135,7 +135,7 @@ export function oracleSummary(oracle: OracleDecision[]): string | null {
   const c = oracleCounters(oracle)
   const parts = [`${c.skipped} skipped`, `${c.briefs} brief${c.briefs === 1 ? '' : 's'}`, `${c.escalated} escalated`, `${c.tier2} tier 2 call${c.tier2 === 1 ? '' : 's'}`]
   if (c.agreed !== null) parts.push(`agreed ${c.agreed} %`)
-  return `⚡ ${parts.join(' · ')}`
+  return parts.join(' · ')
 }
 
 /** The recording clock is on while recording (pauses are gaps, 01 §3). */

@@ -84,8 +84,8 @@ pub fn since(d: chrono::Duration) -> String {
 pub fn glyph<'a>(state: &AgentState, spinner: &'a str) -> &'a str {
     match state {
         AgentState::Running => spinner,
-        AgentState::Awaiting { .. } => "⏳",
-        AgentState::Approval { .. } => "⚠",
+        AgentState::Awaiting { .. } => "◔",
+        AgentState::Approval { .. } => "!",
         AgentState::Error => "✗",
         AgentState::Cancelled => "∅",
         AgentState::Idle => "·",

@@ -15,7 +15,7 @@ use crate::question::{Decision, Disposition, LogId};
 /// The family tier-2 subject rows are logged under (`decision_stats`, the `meeting` switch).
 pub const FAMILY: &str = "meeting.subject";
 
-/// Longest subject kept (the log's `note`, the ⚡ row).
+/// Longest subject kept (the log's `note`, the oracle row).
 pub const MAX_SUBJECT: usize = 80;
 
 /// The system prompt: the contract, nothing about the batch.

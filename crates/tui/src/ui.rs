@@ -1804,7 +1804,7 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
             };
             element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: TOOL, padding_left: 1, padding_right: 1, margin_top: 1, margin_bottom: 1) {
-                    Text(content: format!("⚙ {name}"), color: TOOL, weight: Weight::Bold)
+                    Text(content: format!("▸ {name}"), color: TOOL, weight: Weight::Bold)
                     #(args.iter().map(|l| element!(Text(content: l.clone(), wrap: TextWrap::Wrap))))
                     Text(content: summary.0, color: summary.1, wrap: TextWrap::Wrap)
                     #(expanded.as_ref().map(|t| element!(View(flex_direction: FlexDirection::Column, margin_top: 1) {

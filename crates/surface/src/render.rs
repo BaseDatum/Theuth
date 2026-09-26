@@ -281,7 +281,7 @@ fn metric(p: &MetricProps) -> Vec<Line> {
         let glyph = match t {
             Trend::Up => " ▲",
             Trend::Down => " ▼",
-            Trend::Flat => " ▶",
+            Trend::Flat => " ▸",
         };
         value.push(span(glyph, PLAIN));
     }
@@ -437,9 +437,9 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::Badge(p) => vec![vec![span(tag(&p.text, p.variant), PLAIN)]],
         Component::Alert(p) => {
             let glyph = match p.kind.unwrap_or(AlertType::Info) {
-                AlertType::Info => "ℹ ",
+                AlertType::Info => "i ",
                 AlertType::Success => "✓ ",
-                AlertType::Warning => "⚠ ",
+                AlertType::Warning => "! ",
                 AlertType::Error => "✗ ",
             };
             let mut msg = wrap(&p.message, sub(width, 2)).into_iter();
@@ -609,7 +609,7 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::Callout(p) => {
             let glyph = match p.variant.unwrap_or(CalloutVariant::Note) {
                 CalloutVariant::Note => "▍ ",
-                CalloutVariant::Tip => "▍💡 ",
+                CalloutVariant::Tip => "▍◇ ",
                 CalloutVariant::Question => "▍? ",
                 CalloutVariant::Important => "▍! ",
             };
@@ -688,7 +688,7 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             out
         }
         Component::Image(p) => {
-            let mut out = vec![vec![span("🖼 ", PLAIN), span(&p.alt, PLAIN)]];
+            let mut out = vec![vec![span("▣ ", PLAIN), span(&p.alt, PLAIN)]];
             if let Some(c) = &p.caption {
                 out.extend(text_lines(c, width, DIM));
             }

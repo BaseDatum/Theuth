@@ -378,7 +378,7 @@ pub enum MeetingEvent {
         /// The meeting.
         meeting: MeetingId,
     },
-    /// 57 §3.4: the decision oracle is deciding a batch (the island's `⚡ deciding` flash).
+    /// 57 §3.4: the decision oracle is deciding a batch (the island's `deciding` flash).
     OracleDeciding {
         /// The meeting.
         meeting: MeetingId,
@@ -422,7 +422,7 @@ pub struct Topic {
     #[serde(default)]
     pub cached: Option<BriefId>,
     /// 57 §7: what put it on the island — `Auto` (the model), `Cache` (the alias scan),
-    /// `Oracle` (the decision oracle, marked `⚡`). Absent on rows written before step 4.
+    /// `Oracle` (the decision oracle, marked with the Zap icon). Absent on rows written before step 4.
     #[serde(default)]
     pub source: Option<BriefSource>,
 }

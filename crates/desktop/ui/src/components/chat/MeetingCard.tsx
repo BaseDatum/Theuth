@@ -1,10 +1,10 @@
 // 53 §4.4: the `[meeting …]` lines in a meeting's session get their own card — a left-aligned notice with a
 // chip naming what it is (transcript batch, request, tap, dismissal, deeper, start) instead of a user bubble,
 // as engine nudges do. The text stays literal; nothing is hidden from the record. 57 §3.4: a transcript
-// batch the decision oracle handled gets one dim `⚡` status row under it (expandable to the probabilities),
+// batch the decision oracle handled gets one dim Zap status row under it (expandable to the probabilities),
 // from the live meeting store — batches of past meetings show none.
 
-import { Mic } from 'lucide-react'
+import { Mic, Zap } from 'lucide-react'
 import { type MeetingLine, batchStamps, oracleRow } from '@/lib/meeting-line'
 import { cn } from '@/lib/utils'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
@@ -23,11 +23,12 @@ function BatchRow({ line }: { line: string }) {
   )
 }
 
-/** 57 §3.4: `⚡ topic 0.12 · skip · 78 ms`; open for every label's probability. */
+/** 57 §3.4: Zap + `topic 0.12 · skip · 78 ms`; open for every label's probability. */
 export function OracleRow({ decision }: { decision: OracleDecision }) {
   return (
     <details className="mt-1 text-[11px] leading-5 text-fg-tertiary">
       <summary className="cursor-pointer list-none truncate [&::-webkit-details-marker]:hidden" title={`${decision.mode} · ${decision.family}`}>
+        <Zap className="mr-1 inline size-3" />
         {decision.batch_id !== '' && <span className="mr-1 tabular-nums">{decision.batch_id}</span>}
         {oracleRow(decision)}
       </summary>

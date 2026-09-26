@@ -1,4 +1,4 @@
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { ChevronRight, Loader2, Wrench } from 'lucide-react'
 import { resultLine } from '@/lib/describe'
 import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
@@ -80,7 +80,7 @@ export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prom
         <button type="button" className="flex w-full min-w-0 flex-col gap-1 text-left" aria-expanded={open} onClick={() => toggle(first.callId)}>
           <div className={cn('flex items-center gap-2 font-medium', failed && 'text-danger')}>
             <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
-            <span className="shrink-0 text-fg-secondary">⚙</span>
+            <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
             <span className="min-w-0 truncate">{text}</span>
             {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
           </div>

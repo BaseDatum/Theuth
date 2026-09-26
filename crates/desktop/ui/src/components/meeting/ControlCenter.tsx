@@ -11,7 +11,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUp, Check, LoaderCircle } from 'lucide-react'
+import { ArrowUp, Check, LoaderCircle, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Divider } from '@/components/chat/Panes'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
@@ -123,7 +123,8 @@ export function ControlCenter({ id }: { id: string }) {
       <MeetingHeader title={title}>
         {state && !isLive && <span className="text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
         {isLive && oracleSummary(store.oracle) && (
-          <span className="text-[12px] text-fg-tertiary" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
+          <span className="flex items-center gap-1 text-[12px] text-fg-tertiary" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
+            <Zap className="size-3" />
             {oracleSummary(store.oracle)}
           </span>
         )}
