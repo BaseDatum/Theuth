@@ -3,6 +3,7 @@
 //! and the HTTP status → `ProviderError` mapping.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use search_providers::brave::Brave;
 use search_providers::firecrawl::Firecrawl;
@@ -10,7 +11,7 @@ use search_providers::openserp::Openserp;
 use search_providers::searxng::Searxng;
 use serde_json::json;
 use web::{Category, FeatureKind, Provider, ProviderError, Query, Recency};
-use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+use wiremock::matchers::{body_partial_json, header, method, path, query_param, query_param_contains};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn query(category: Category) -> Query {
@@ -22,6 +23,8 @@ fn query(category: Category) -> Query {
         recent: Some(Recency::Week),
     }
 }
+
+const T: Duration = Duration::from_millis(4000);
 
 fn json_body(fixture: &'static str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(fixture, "application/json")
@@ -44,7 +47,7 @@ async fn brave_maps_results_features_and_statuses() {
         .expect(1)
         .mount(&server)
         .await;
-    let brave = Brave::new("test-key").with_url(&format!("{}/res/v1/web/search", server.uri()));
+    let brave = Brave::new("test-key", T).with_url(&format!("{}/res/v1/web/search", server.uri()));
     let client = reqwest::Client::new();
 
     let (results, features) = brave
@@ -57,7 +60,7 @@ async fn brave_maps_results_features_and_statuses() {
         results[0].snippet,
         "Type erasure for async trait methods & more."
     );
-    assert_eq!(results[1].published.as_deref(), Some("2023-12-21T00:00:00"));
+    assert_eq!(results[1].published.as_deref(), Some("2023-12-21T00:00:00"), "page_age (ISO) preferred over age");
     assert_eq!(
         kinds(&features),
         BTreeSet::from([
@@ -137,7 +140,7 @@ async fn firecrawl_search_render_and_statuses() {
         .expect(1)
         .mount(&server)
         .await;
-    let fc = Firecrawl::new(&format!("{}/", server.uri()), "fc-key");
+    let fc = Firecrawl::new(&format!("{}/", server.uri()), "fc-key", T);
     assert!(fc.meta().renders);
     let client = reqwest::Client::new();
 
@@ -224,7 +227,8 @@ async fn searxng_maps_results_and_features() {
         .expect(1)
         .mount(&server)
         .await;
-    let sx = Searxng::new(&server.uri());
+    let sx = Searxng::new(&server.uri(), T);
+    assert_eq!(sx.timeout(), Some(T));
     assert!(!sx.meta().billable);
 
     let (results, features) = sx
@@ -294,6 +298,7 @@ async fn openserp_maps_serp_features_and_renders() {
         &server.uri(),
         &["google".into(), "bing".into()],
         Some("os-key"),
+        T,
     );
     assert!(os.meta().renders);
     let client = reqwest::Client::new();
@@ -349,4 +354,22 @@ async fn openserp_maps_serp_features_and_renders() {
         os.search(&client, &query(Category::General)).await,
         Err(ProviderError::Blocked(_))
     ));
+
+    // A valid envelope in which every upstream engine failed is the failure,
+    // not an empty SERP; `recent` becomes a `date` range.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/mega/search"))
+        .and(query_param_contains("date", ".."))
+        .respond_with(json_body(
+            r#"{"results":[],"serp_features":[],"meta":{"engines_responded":[],"engines_failed":["google"],"engine_errors":[{"engine":"google","error":"captcha_detected","message":"captcha detected"}]}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = os
+        .search(&client, &query(Category::General))
+        .await
+        .expect_err("all engines failed");
+    assert!(matches!(&err, ProviderError::Blocked(d) if d.contains("captcha")), "{err}");
 }

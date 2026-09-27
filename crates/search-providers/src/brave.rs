@@ -4,6 +4,8 @@
 //! `query.altered`. JSON fields only, no scraping. Provider name `brave_api`:
 //! `brave` is the keyless `search.brave.com` scraper built into `web`.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use web::{
     Category, Feature, FeatureItem, FeatureKind, Link, Provider, ProviderError, ProviderMeta,
@@ -24,15 +26,17 @@ const MAX_COUNT: usize = 20;
 pub struct Brave {
     key: String,
     url: String,
+    timeout: Duration,
 }
 
 impl Brave {
     /// Provider against the hosted endpoint.
     #[must_use]
-    pub fn new(key: &str) -> Self {
+    pub fn new(key: &str, timeout: Duration) -> Self {
         Self {
             key: key.to_string(),
             url: SEARCH_URL.to_string(),
+            timeout,
         }
     }
 
@@ -88,8 +92,10 @@ struct Hit {
 }
 
 impl Hit {
+    /// `page_age` is ISO-8601; `age` is "2 days ago" or a printed date. Both
+    /// normalise downstream; the machine one wins.
     fn date(&self) -> Option<String> {
-        non_empty(self.age.clone()).or_else(|| non_empty(self.page_age.clone()))
+        non_empty(self.page_age.clone()).or_else(|| non_empty(self.age.clone()))
     }
 
     fn snippet(&self) -> String {
@@ -246,6 +252,10 @@ fn map(body: Response) -> (Vec<RawResult>, Vec<Feature>) {
 
 #[async_trait::async_trait]
 impl Provider for Brave {
+    fn timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta {
             name: NAME,
@@ -279,6 +289,7 @@ impl Provider for Brave {
         }
         let resp = client
             .get(&self.url)
+            .timeout(self.timeout)
             .header("Accept", "application/json")
             .header("X-Subscription-Token", &self.key)
             .query(&params)

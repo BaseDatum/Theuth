@@ -96,6 +96,10 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
+  /** `search_settings_get()` (16 §8): Settings › Search providers and defaults. */
+  searchSettings: ['search-settings'] as const,
+  /** `search_status()` (16 §8): per-engine health from the last calls. */
+  searchStatus: ['search-status'] as const,
   /** `meeting_live_diarization()` (07 §6): the Settings › Meetings switch. */
   meetingLiveDiarization: ['meeting-live-diarization'] as const,
   // 57 §3.4 / §7.1: the decision oracle — `decision_mode(prefix)` (Labs switches, the Meetings pointer, the island's

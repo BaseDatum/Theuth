@@ -14,8 +14,10 @@ pub struct SearchDefaults {
     /// Hits `search_web` reads when the call passes no `read`, 0..=8.
     pub read_top: usize,
     /// Whole read-phase deadline in milliseconds.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub read_budget_ms: u64,
     /// Cap on one browser-rendered read in milliseconds.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub render_cap_ms: u64,
     /// `recent` used when the call passes none.
     pub recent_default: Option<Recency>,
@@ -91,11 +93,25 @@ pub struct ProviderProbe {
     /// The provider answered.
     pub ok: bool,
     /// Wall time in milliseconds.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub took_ms: u64,
     /// Rows it returned.
     pub rows: usize,
     /// Error text (or the failure kind) when not ok; first hit title when ok.
     pub detail: String,
+}
+
+/// One full `search_web` run from Settings › Search ("Run a test search").
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SearchTestResult {
+    /// The tool text the model would see.
+    pub text: String,
+    /// The tool flagged the run as an error (all providers failed, or degraded with `degraded_is_error`).
+    pub is_error: bool,
+    /// The structured `SearchResponse` as JSON (`degraded`, `reasons`, `notes`, `results`, `pages`).
+    #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+    pub structured: serde_json::Value,
 }
 
 /// `ask` → [`SearchDefaults`] from the live config.

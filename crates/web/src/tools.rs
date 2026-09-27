@@ -37,7 +37,7 @@ need one specific page in full, scrape_url/crawl for whole sites.";
 pub const MAX_READ: usize = 8;
 
 /// Appended to the search description when only built-in engines are registered.
-pub const NO_EXTERNAL_PROVIDER: &str = "Search runs on the built-in keyless engines; a SearXNG instance or a brave_api/firecrawl secret under search_providers adds SERP features.";
+pub const NO_EXTERNAL_PROVIDER: &str = "Search runs on the built-in keyless engines; a SearXNG or OpenSERP instance, or a brave_api/firecrawl secret, under Settings > Search (search_providers) adds a provider that does not rate-limit.";
 
 /// Arguments for [`SearchTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -105,7 +105,10 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
         "Search the web and read the top results in one call: a ranked list (title, URL, snippet) \
          with the passages of each read page most relevant to the query, then any SERP features. \
          Use it whenever the answer needs current or external information; set read: 0 for a \
-         cheaper SERP-only pass.",
+         cheaper SERP-only pass. site= and recent= filter the returned rows; the top hits are read \
+         in rank order and every unread row says why (not-relevant, budget). A result that starts \
+         with `WARNING: degraded search` (degraded: true) came from too few engines: say so rather \
+         than answering from it.",
     );
     if metas.is_empty() {
         s.push_str(" No providers are registered; searches fail until one is.");

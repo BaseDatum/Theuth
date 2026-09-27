@@ -3,6 +3,8 @@
 //! `infoboxes[]` (KnowledgePanel), `suggestions[]` (Related) and
 //! `corrections[]` (Spelling). Keyless: the instance is the trust boundary.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use web::{
     Category, Feature, FeatureItem, FeatureKind, Link, Provider, ProviderError, ProviderMeta,
@@ -17,14 +19,16 @@ const NAME: &str = "searxng";
 #[derive(Debug, Clone)]
 pub struct Searxng {
     base: String,
+    timeout: Duration,
 }
 
 impl Searxng {
     /// `base` is the instance root without a trailing slash.
     #[must_use]
-    pub fn new(base: &str) -> Self {
+    pub fn new(base: &str, timeout: Duration) -> Self {
         Self {
             base: base.trim_end_matches('/').to_string(),
+            timeout,
         }
     }
 }
@@ -199,6 +203,10 @@ fn map(body: Response, limit: usize) -> (Vec<RawResult>, Vec<Feature>) {
 
 #[async_trait::async_trait]
 impl Provider for Searxng {
+    fn timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta {
             name: NAME,
@@ -235,6 +243,7 @@ impl Provider for Searxng {
         }
         let resp = client
             .get(format!("{}/search", self.base))
+            .timeout(self.timeout)
             .query(&params)
             .send()
             .await?;

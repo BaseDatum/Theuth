@@ -27,6 +27,7 @@ pub enum Category {
 
 /// Recency filter; each provider maps it to its own date syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Recency {
     /// Past 24 hours.

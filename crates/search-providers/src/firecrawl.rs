@@ -2,6 +2,8 @@
 //! images; `POST {base}/v2/scrape` as the `rendered` fetch path. Hosted or
 //! self-hosted (`base_url`); `Authorization: Bearer <key>`.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde_json::json;
 use web::{
@@ -18,15 +20,17 @@ const NAME: &str = "firecrawl";
 pub struct Firecrawl {
     base: String,
     key: String,
+    timeout: Duration,
 }
 
 impl Firecrawl {
     /// `base` is the API root without a trailing slash (`https://api.firecrawl.dev`).
     #[must_use]
-    pub fn new(base: &str, key: &str) -> Self {
+    pub fn new(base: &str, key: &str, timeout: Duration) -> Self {
         Self {
             base: base.trim_end_matches('/').to_string(),
             key: key.to_string(),
+            timeout,
         }
     }
 
@@ -38,6 +42,7 @@ impl Firecrawl {
     ) -> Result<String, ProviderError> {
         let resp = client
             .post(format!("{}{path}", self.base))
+            .timeout(self.timeout)
             .bearer_auth(&self.key)
             .json(body)
             .send()
@@ -206,6 +211,10 @@ fn map(data: SearchData, category: Category) -> (Vec<RawResult>, Vec<Feature>) {
 
 #[async_trait::async_trait]
 impl Provider for Firecrawl {
+    fn timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta {
             name: NAME,

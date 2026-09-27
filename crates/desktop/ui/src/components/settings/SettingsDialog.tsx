@@ -14,6 +14,7 @@ import {
   Monitor,
   Radio,
   RefreshCw,
+  Search as SearchIcon,
   Settings2,
   Share2,
   ShieldCheck,
@@ -32,6 +33,7 @@ import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Meetings } from '@/components/settings/Meetings'
+import { Search } from '@/components/settings/Search'
 import { Mesh } from '@/components/settings/Mesh'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -46,6 +48,7 @@ const TABS = [
   ['communication', 'Communication', Radio],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
+  ['search', 'Search', SearchIcon],
   ['labs', 'Labs', FlaskConical],
   ['agents', 'Harnesses', Bot],
   ['mesh', 'Mesh', Share2],
@@ -81,6 +84,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
+      {tab === 'search' && <Search />}
       {tab === 'labs' && <Labs />}
       {tab === 'agents' && <Agents />}
       {tab === 'mesh' && <Mesh />}
