@@ -36,7 +36,13 @@ pub(crate) fn mermaid_ids<'a>(raw: impl IntoIterator<Item = &'a str>) -> BTreeMa
         }
         let mut base: String = id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         if base.is_empty() || RESERVED.contains(&base.as_str()) {
             base.push('_');
@@ -100,11 +106,11 @@ pub fn to_mermaid(p: &GraphProps) -> String {
         }
         out.push_str("  end\n");
     }
-    for n in p
-        .nodes
-        .iter()
-        .filter(|n| !n.group.as_deref().is_some_and(|g| groups.iter().any(|x| x.id == g)))
-    {
+    for n in p.nodes.iter().filter(|n| {
+        !n.group
+            .as_deref()
+            .is_some_and(|g| groups.iter().any(|x| x.id == g))
+    }) {
         out.push_str(&format!("  {}\n", node_decl(id(&n.id), &n.label, n.kind)));
     }
     for e in &p.edges {
@@ -193,11 +199,11 @@ pub fn adjacency_lines(p: &GraphProps, width: usize) -> Vec<Line> {
             out.push(node_line(n, 2));
         }
     }
-    for n in p
-        .nodes
-        .iter()
-        .filter(|n| !n.group.as_deref().is_some_and(|g| groups.iter().any(|x| x.id == g)))
-    {
+    for n in p.nodes.iter().filter(|n| {
+        !n.group
+            .as_deref()
+            .is_some_and(|g| groups.iter().any(|x| x.id == g))
+    }) {
         out.push(node_line(n, 0));
     }
     if out.is_empty() {
@@ -314,10 +320,16 @@ mod tests {
             plain_text(&lines),
             "Edge\n  • Browser → API (HTTPS), CDN\n  ○ CDN → API (origin)\nCore\n  • API → Worker (enqueue), Postgres (r…\n  ◉ Worker → Postgres (writes), Mailer …\n  • Postgres\n✗ Mailer"
         );
-        assert!(lines.iter().all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= 40));
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= 40)
+        );
         assert!(lines[0][0].style.bold && !lines[1][0].style.bold);
         assert_eq!(
-            plain_text(&adjacency_lines(&graph(VALID[0].1), 0)).lines().nth(4),
+            plain_text(&adjacency_lines(&graph(VALID[0].1), 0))
+                .lines()
+                .nth(4),
             Some("  • API → Worker (enqueue), Postgres (reads)")
         );
     }
