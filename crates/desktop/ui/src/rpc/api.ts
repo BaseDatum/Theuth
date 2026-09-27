@@ -98,6 +98,11 @@ import type { ArchiveListing } from '@/rpc/bindings/ArchiveListing'
 import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
+import type { ProviderProbe } from '@/rpc/bindings/ProviderProbe'
+import type { ProviderStatus } from '@/rpc/bindings/ProviderStatus'
+import type { SearchSettings } from '@/rpc/bindings/SearchSettings'
+import type { SearchTestResult } from '@/rpc/bindings/SearchTestResult'
+import type { Recency } from '@/rpc/bindings/Recency'
 import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
@@ -521,6 +526,16 @@ export interface Api {
   meeting_live_diarization(): Promise<boolean>
   /** Persist `meeting.live_diarization`; applies from the next meeting start. */
   set_meeting_live_diarization(on: boolean): Promise<boolean>
+  /** 16 §8: Settings › Search — the four external providers plus the `web` read/budget defaults. */
+  search_settings_get(): Promise<SearchSettings>
+  /** Persist to config.yaml and apply live (providers re-registered, next search uses the limits). */
+  search_settings_set(settings: SearchSettings): Promise<SearchSettings>
+  /** One probe query through one registered provider: ok, latency, rows, error. */
+  search_provider_test(name: string, query: string): Promise<ProviderProbe>
+  /** Per-provider health from the last calls, registration order. */
+  search_status(): Promise<ProviderStatus[]>
+  /** Run the whole `search_web` tool once; the model-facing text plus the JSON. */
+  search_test(query: string, site: string | null, recent: Recency | null): Promise<SearchTestResult>
   /** 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`, `browser`): `mode` as configured, `effective` with a `reason` when forced off, `enabled` (the plugin), `installed` (the checkpoint). */
   decision_mode(prefix: string): Promise<ModeInfo>
   /** Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective from the next ask. `browser` off ↔ on also changes whether `browser_run` is registered — that part takes a restart. */
@@ -898,7 +913,12 @@ export const METHODS = [
   'resume_private',
   'schedule_history',
   'search',
+  'search_provider_test',
   'search_refresh',
+  'search_settings_get',
+  'search_settings_set',
+  'search_status',
+  'search_test',
   'send_input',
   'session_context_breakdown',
   'session_cost',

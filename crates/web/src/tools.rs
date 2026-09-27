@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tools::{Activity, Risk, Tool, ToolCx, ToolOutput, Tracked, activity};
 
-use crate::WebConfig;
+use crate::SharedConfig;
 use crate::actor::{ProviderMetas, Read, Render, Search, WebActor};
 use crate::aggregate::{RankedResult, ReadPage, category_name};
 use crate::engines::BUILTIN;
@@ -37,7 +37,7 @@ need one specific page in full, scrape_url/crawl for whole sites.";
 pub const MAX_READ: usize = 8;
 
 /// Appended to the search description when only built-in engines are registered.
-pub const NO_EXTERNAL_PROVIDER: &str = "Search runs on the built-in keyless engines; a SearXNG instance or a brave_api/firecrawl secret under search_providers adds SERP features.";
+pub const NO_EXTERNAL_PROVIDER: &str = "Search runs on the built-in keyless engines; a SearXNG or OpenSERP instance, or a brave_api/firecrawl secret, under Settings > Search (search_providers) adds a provider that does not rate-limit.";
 
 /// Arguments for [`SearchTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -105,7 +105,10 @@ pub fn search_description(all: &[ProviderMeta]) -> String {
         "Search the web and read the top results in one call: a ranked list (title, URL, snippet) \
          with the passages of each read page most relevant to the query, then any SERP features. \
          Use it whenever the answer needs current or external information; set read: 0 for a \
-         cheaper SERP-only pass.",
+         cheaper SERP-only pass. site= and recent= filter the returned rows; the top hits are read \
+         in rank order and every unread row says why (not-relevant, budget). A result that starts \
+         with `WARNING: degraded search` (degraded: true) came from too few engines: say so rather \
+         than answering from it.",
     );
     if metas.is_empty() {
         s.push_str(" No providers are registered; searches fail until one is.");
@@ -185,10 +188,14 @@ pub struct SearchTool {
     pub fetcher: Arc<Fetcher>,
     /// Live provider set, for the description.
     pub providers: ProviderMetas,
-    /// Limits.
-    pub cfg: WebConfig,
+    /// Live limits (Settings › Search edits them).
+    pub cfg: SharedConfig,
     /// Bus for [`crate::progress::ScrapeProgress`]; `None` in library use.
     pub rt: Option<Runtime>,
+}
+
+fn snapshot(cfg: &SharedConfig) -> crate::WebConfig {
+    cfg.read().map(|c| c.clone()).unwrap_or_default()
 }
 
 fn elapsed_ms(start: Instant) -> u64 {
@@ -201,12 +208,13 @@ fn elapsed_ms(start: Instant) -> u64 {
 const MIN_PROSE: usize = 100;
 
 /// Read `url` through the render provider ([`Read`]: its cheapest tier that
-/// yields real content) within `deadline`; excerpt the page for `query`. A
-/// provider error falls back to the raw fetcher; a timeout does not - the
-/// provider already tried the fetch tier and found it thin, so the raw page
-/// is the same shell, and the model is told the page needs the browser.
-/// `activity` is the invocation's guard, carried explicitly because this runs
-/// in a spawned task: the actor's detached read holds it past the timeout.
+/// yields real content) within `render_cap`; excerpt the page for `query`. A
+/// provider error falls back to the raw fetcher under what is left of
+/// `budget`; a render timeout does not - the provider already tried the
+/// fetch tier and found it thin, so the raw page is the same shell, and the
+/// model is told the page needs the browser. `activity` is the invocation's
+/// guard, carried explicitly because this runs in a spawned task: the
+/// actor's detached read holds it past the timeout.
 async fn read_page(
     actor: ActorRef<WebActor>,
     activity: Option<Activity>,
@@ -214,13 +222,14 @@ async fn read_page(
     url: String,
     query: String,
     chars: usize,
-    deadline: Duration,
+    render_cap: Duration,
+    budget: Duration,
 ) -> ReadPage {
     let start = Instant::now();
     let page = match url::Url::parse(&url) {
         Err(e) => Err(format!("bad url: {e}")),
         Ok(parsed) => match tokio::time::timeout(
-            deadline,
+            render_cap.min(budget),
             actor.ask(Tracked {
                 message: Read(parsed),
                 activity,
@@ -230,12 +239,12 @@ async fn read_page(
         {
             Ok(Ok(r)) => Ok((r.title, r.markdown, r.tier)),
             Err(_) => Err(format!(
-                "timed out after {}s rendering a JavaScript page; read_url with rendered: true waits for it",
-                deadline.as_secs()
+                "render cap of {:.1}s exceeded (JavaScript page); read_url with rendered: true waits for it",
+                render_cap.as_secs_f32()
             )),
             Ok(Err(e)) => {
                 tracing::debug!(url = %url, error = %e, "read provider failed; raw fetch");
-                let remaining = deadline.saturating_sub(start.elapsed());
+                let remaining = budget.saturating_sub(start.elapsed());
                 match tokio::time::timeout(
                     remaining,
                     fetcher.fetch(&url, FetchFormat::Markdown, render::SEARCH_MAX_CHARS),
@@ -244,7 +253,10 @@ async fn read_page(
                 {
                     Ok(Ok(f)) => Ok((f.title, f.content, "fetch".to_owned())),
                     Ok(Err(e)) => Err(e.to_string()),
-                    Err(_) => Err(format!("timed out after {}s", deadline.as_secs())),
+                    Err(_) => Err(format!(
+                        "read budget of {:.1}s exceeded",
+                        budget.as_secs_f32()
+                    )),
                 }
             }
         },
@@ -255,6 +267,7 @@ async fn read_page(
             title: None,
             excerpts: Vec::new(),
             error: Some("no readable text (JavaScript-only page or bot wall)".into()),
+            skipped: None,
             took_ms: elapsed_ms(start),
             tier,
         },
@@ -263,6 +276,7 @@ async fn read_page(
             title: title.filter(|t| !t.trim().is_empty()),
             excerpts: crate::excerpt::best_passages(&markdown, &query, chars),
             error: None,
+            skipped: None,
             took_ms: elapsed_ms(start),
             tier,
         },
@@ -271,47 +285,62 @@ async fn read_page(
             title: None,
             excerpts: Vec::new(),
             error: Some(e),
+            skipped: None,
             took_ms: elapsed_ms(start),
             tier: String::new(),
         },
     }
 }
 
-/// Up to `read` hit URLs worth a read slot, in rank order. A hit whose title,
-/// snippet and URL share fewer than two query tokens (one for a one-token
-/// query) is a decoy or a homonym. Two passes: hits whose *title* alone
-/// matches first (an encyclopedia page whose snippet happens to mention the
-/// terms should not take a slot from the page that is about them), then, if
-/// slots remain, hits matching on title + snippet + URL. Non-http and
-/// duplicate URLs are skipped.
-fn pick_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<String> {
-    let need = terms.len().min(2);
-    let hits = |hay: &str| {
-        let hay = hay.to_lowercase();
-        terms.iter().filter(|t| hay.contains(t.as_str())).count() >= need
-    };
-    let mut picked: Vec<String> = Vec::with_capacity(read);
-    for title_only in [true, false] {
-        for r in results {
-            if picked.len() == read {
-                return picked;
-            }
-            if !(r.url.starts_with("http://") || r.url.starts_with("https://"))
-                || picked.contains(&r.url)
-            {
-                continue;
-            }
-            let on_topic = if title_only {
-                hits(&r.title)
-            } else {
-                hits(&format!("{} {} {}", r.title, r.snippet, r.url))
-            };
-            if on_topic {
-                picked.push(r.url.clone());
-            }
-        }
+/// A page that was not read, with the reason.
+fn skipped(url: &str, why: impl Into<String>) -> ReadPage {
+    ReadPage {
+        url: url.to_owned(),
+        title: None,
+        excerpts: Vec::new(),
+        error: None,
+        skipped: Some(why.into()),
+        took_ms: 0,
+        tier: String::new(),
     }
-    picked
+}
+
+/// Which rows to read, in rank order: the first `read` hits whose title,
+/// snippet and URL share enough query tokens - half of them, at most two, at
+/// least one; a row two or more providers agree on needs only one, since a
+/// decoy comes from one flagged engine (measured 2026-09-27: "Anthropic
+/// announcement" rows say "Anthropic", never "announcement"; "PrintToPdf"
+/// pages say "Print to PDF", so tokens also match the text with spaces
+/// removed; the Bun releases page says neither "latest" nor "version"). The
+/// rest are `not-relevant` (decoys, homonyms), non-http URLs are `error: …`,
+/// and rows past the slots are `budget`. Returns one `Ok(url)` (read it) or
+/// `Err(page)` (already explained) per row.
+fn plan_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<Result<String, ReadPage>> {
+    let need_alone = terms.len().div_ceil(2).clamp(1, 2);
+    let mut slots = read;
+    results
+        .iter()
+        .map(|r| {
+            if !(r.url.starts_with("http://") || r.url.starts_with("https://")) {
+                return Err(skipped(&r.url, "error: not an http(s) URL"));
+            }
+            if slots == 0 {
+                return Err(skipped(&r.url, "budget"));
+            }
+            let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
+            let squashed: String = hay.chars().filter(|c| !c.is_whitespace()).collect();
+            let matched = terms
+                .iter()
+                .filter(|t| hay.contains(t.as_str()) || squashed.contains(t.as_str()))
+                .count();
+            let need = if r.providers.len() >= 2 { 1 } else { need_alone };
+            if matched < need {
+                return Err(skipped(&r.url, "not-relevant"));
+            }
+            slots -= 1;
+            Ok(r.url.clone())
+        })
+        .collect()
 }
 
 #[async_trait::async_trait]
@@ -326,6 +355,7 @@ impl Tool for SearchTool {
     }
 
     async fn call(&self, a: SearchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let cfg = snapshot(&self.cfg);
         let text = a.query.trim();
         if text.is_empty() {
             return Ok(ToolOutput::err("query must not be empty"));
@@ -343,14 +373,14 @@ impl Tool for SearchTool {
                 )));
             }
             Some(r) => usize::from(r),
-            None => self.cfg.read_top.min(MAX_READ),
+            None => cfg.read_top.min(MAX_READ),
         };
         let q = Query {
             text: text.to_owned(),
             category: a.category.unwrap_or(Category::General),
             limit: usize::from(limit),
             site: a.site.filter(|s| !s.trim().is_empty()),
-            recent: a.recent,
+            recent: a.recent.or(cfg.recent_default),
         };
         let pcx = ProgressCx {
             session: cx.session,
@@ -371,12 +401,14 @@ impl Tool for SearchTool {
             Err(e) => anyhow::bail!("web actor unavailable: {e}"),
         };
 
-        let terms = crate::excerpt::tokens(text);
-        let mut inflight = pick_reads(&resp.results, &terms, read);
-        if !inflight.is_empty() {
+        if read > 0 && !resp.results.is_empty() {
+            let terms = crate::excerpt::tokens(text);
+            let plan = plan_reads(&resp.results, &terms, read);
+            let mut inflight: Vec<String> = plan.iter().filter_map(|p| p.clone().ok()).collect();
             let mut done: Vec<String> = Vec::with_capacity(inflight.len());
             report(self.rt.as_ref(), Some(&pcx), &inflight, &done, read).await;
-            let deadline = Duration::from_millis(self.cfg.read_timeout_ms.max(1));
+            let budget = Duration::from_millis(cfg.read_budget_ms.max(1));
+            let render_cap = Duration::from_millis(cfg.render_cap_ms.max(1));
             let activity = activity::current();
             let mut set = JoinSet::new();
             for (i, url) in inflight.iter().enumerate() {
@@ -386,28 +418,50 @@ impl Tool for SearchTool {
                     Arc::clone(&self.fetcher),
                     url.clone(),
                     text.to_owned(),
-                    self.cfg.read_chars,
-                    deadline,
+                    cfg.read_chars,
+                    render_cap,
+                    budget,
                 );
                 set.spawn(async move { (i, fut.await) });
             }
-            let mut slots: Vec<Option<ReadPage>> = vec![None; inflight.len()];
-            while let Some(joined) = set.join_next().await {
+            let phase = Instant::now();
+            let mut finished: Vec<Option<ReadPage>> = vec![None; inflight.len()];
+            loop {
+                let remaining = budget.saturating_sub(phase.elapsed());
+                let Ok(joined) = tokio::time::timeout(remaining, set.join_next()).await else {
+                    set.abort_all();
+                    break;
+                };
+                let Some(joined) = joined else { break };
                 let Ok((i, page)) = joined else { continue };
                 inflight.retain(|u| *u != page.url);
                 done.push(page.url.clone());
-                if let Some(slot) = slots.get_mut(i) {
+                if let Some(slot) = finished.get_mut(i) {
                     *slot = Some(page);
                 }
                 report(self.rt.as_ref(), Some(&pcx), &inflight, &done, read).await;
             }
-            resp.pages = slots.into_iter().flatten().collect();
+            let mut finished = finished.into_iter();
+            resp.pages = plan
+                .into_iter()
+                .map(|p| match p {
+                    Err(page) => page,
+                    Ok(url) => finished
+                        .next()
+                        .flatten()
+                        .unwrap_or_else(|| skipped(&url, "budget")),
+                })
+                .collect();
         }
         resp.took_ms = elapsed_ms(started);
 
         let all_failed = resp.ok.is_empty() && !resp.failed.is_empty();
-        let text = render::search_text(&resp, self.cfg.feature_max_chars);
-        Ok(structured(text, &resp, all_failed))
+        let text = render::search_text(&resp, cfg.feature_max_chars);
+        Ok(structured(
+            text,
+            &resp,
+            all_failed || (resp.degraded && cfg.degraded_is_error),
+        ))
     }
 }
 
@@ -419,8 +473,8 @@ pub struct FetchTool {
     pub fetcher: Arc<Fetcher>,
     /// Live provider set, for the description.
     pub providers: ProviderMetas,
-    /// Limits.
-    pub cfg: WebConfig,
+    /// Live limits.
+    pub cfg: SharedConfig,
 }
 
 #[async_trait::async_trait]
@@ -436,7 +490,7 @@ impl Tool for FetchTool {
 
     async fn call(&self, a: FetchArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let max_chars = match a.max_chars {
-            None => self.cfg.fetch_max_chars,
+            None => snapshot(&self.cfg).fetch_max_chars,
             Some(m) if (200..=16000).contains(&m) => usize::try_from(m).unwrap_or(usize::MAX),
             Some(m) => {
                 return Ok(ToolOutput::err(format!(
@@ -546,61 +600,136 @@ mod tests {
         crate::excerpt::tokens(q)
     }
 
-    #[test]
-    fn title_matches_beat_snippet_matches_regardless_of_rank() {
-        let results = [
-            hit(1, "Best Monitors 2026", "https://a.example/", "monitors"),
-            hit(
-                2,
-                "Encyclopedia: Monitor",
-                "https://b.example/",
-                "rtings monitor review methodology",
-            ),
-            hit(3, "Unrelated", "https://c.example/", "nothing here"),
-            hit(4, "RTINGS monitor review", "https://d.example/", ""),
-        ];
-        let picked = pick_reads(&results, &terms("rtings monitor review"), 1);
-        assert_eq!(picked, vec!["https://d.example/".to_owned()]);
+    fn plan(results: &[RankedResult], q: &str, read: usize) -> Vec<String> {
+        plan_reads(results, &terms(q), read)
+            .into_iter()
+            .map(|p| match p {
+                Ok(url) => format!("read {url}"),
+                Err(page) => format!("{} {}", page.skipped.unwrap_or_default(), page.url),
+            })
+            .collect()
     }
 
     #[test]
-    fn fills_from_snippet_matches_when_titles_are_too_few() {
+    fn reads_in_rank_order_and_explains_every_skip() {
         let results = [
-            hit(1, "Best Monitors 2026", "https://a.example/", "monitors"),
-            hit(
-                2,
-                "Encyclopedia: Monitor",
-                "https://b.example/",
-                "rtings monitor review methodology",
-            ),
-            hit(3, "Unrelated", "https://c.example/", "nothing here"),
-            hit(4, "RTINGS monitor review", "https://d.example/", ""),
+            hit(1, "RTINGS monitor review", "https://d.example/", ""),
+            hit(2, "Unrelated", "https://c.example/", "nothing here"),
+            hit(3, "Encyclopedia: Monitor", "https://b.example/", "rtings monitor review methodology"),
+            hit(4, "rtings monitor", "ftp://a.example/", ""),
+            hit(5, "RTINGS monitor review 2", "https://e.example/", ""),
         ];
-        let picked = pick_reads(&results, &terms("rtings monitor review"), 3);
         assert_eq!(
-            picked,
-            vec![
-                "https://d.example/".to_owned(),
-                "https://b.example/".to_owned()
+            plan(&results, "rtings monitor review", 2),
+            [
+                "read https://d.example/",
+                "not-relevant https://c.example/",
+                "read https://b.example/",
+                "error: not an http(s) URL ftp://a.example/",
+                "budget https://e.example/",
             ]
         );
     }
 
     #[test]
-    fn skips_non_http_and_duplicate_urls() {
+    fn one_token_query_needs_one_match() {
         let results = [
-            hit(1, "rust borrow checker", "ftp://a.example/", ""),
-            hit(2, "rust borrow checker", "https://b.example/", ""),
-            hit(3, "rust borrow checker again", "https://b.example/", ""),
-            hit(4, "rust borrow checker", "https://c.example/", ""),
+            hit(1, "Bun releases", "https://github.com/oven-sh/bun/releases", ""),
+            hit(2, "Android 17", "https://en.wikipedia.org/wiki/Android_17", ""),
         ];
-        let picked = pick_reads(&results, &terms("rust borrow checker"), 8);
         assert_eq!(
-            picked,
-            vec![
-                "https://b.example/".to_owned(),
-                "https://c.example/".to_owned()
+            plan(&results, "bun", 8),
+            [
+                "read https://github.com/oven-sh/bun/releases",
+                "not-relevant https://en.wikipedia.org/wiki/Android_17",
             ]
         );
+    }
+
+    #[test]
+    fn two_token_queries_need_one_match_and_camel_case_matches_spaced_text() {
+        let results = [
+            hit(1, "Introducing Claude Opus 5.5 - Anthropic", "https://www.anthropic.com/claude-opus-5-5", "5 days ago"),
+            hit(2, "How to print to PDF - Microsoft Q&A", "https://learn.microsoft.com/en-us/answers/q/1", "Microsoft Print to PDF"),
+            hit(3, "Unrelated", "https://c.example/", "nothing"),
+        ];
+        assert_eq!(plan(&results, "Anthropic announcement", 8)[0], "read https://www.anthropic.com/claude-opus-5-5");
+        assert_eq!(plan(&results, "PrintToPdf", 8)[1], "read https://learn.microsoft.com/en-us/answers/q/1");
+        assert_eq!(plan(&results, "PrintToPdf", 8)[2], "not-relevant https://c.example/");
+        let agreed = RankedResult {
+            providers: vec!["a".into(), "b".into()],
+            ..hit(1, "Releases: oven-sh/bun - GitHub", "https://github.com/oven-sh/bun/releases", "")
+        };
+        assert_eq!(plan(&[agreed.clone()], "bun latest version", 8)[0], "read https://github.com/oven-sh/bun/releases");
+        assert_eq!(
+            plan(&[RankedResult { providers: vec!["a".into()], ..agreed }], "bun latest version", 8)[0],
+            "not-relevant https://github.com/oven-sh/bun/releases"
+        );
+    }
+
+    /// Renderer that takes 10 s: the search reader must cut it at the cap.
+    struct Slow;
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Slow {
+        fn meta(&self) -> ProviderMeta {
+            ProviderMeta {
+                name: "slow",
+                categories: &[],
+                features: &[],
+                renders: true,
+                billable: false,
+            }
+        }
+
+        async fn search(
+            &self,
+            _: &reqwest::Client,
+            _: &Query,
+        ) -> Result<(Vec<crate::provider::RawResult>, Vec<crate::provider::Feature>), crate::provider::ProviderError>
+        {
+            Err(crate::provider::ProviderError::Unsupported)
+        }
+
+        async fn render(
+            &self,
+            _: &reqwest::Client,
+            url: &url::Url,
+        ) -> Result<crate::provider::Rendered, crate::provider::ProviderError> {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(crate::provider::Rendered {
+                url: url.to_string(),
+                markdown: "x".repeat(500),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn ten_second_render_is_cut_at_the_cap() {
+        use kameo::actor::Spawn as _;
+        let actor = WebActor::spawn(WebActor::with_config(
+            crate::WebConfig::default(),
+            reqwest::Client::new(),
+            vec![Arc::new(Slow)],
+            ProviderMetas::default(),
+        ));
+        let fetcher = Arc::new(Fetcher::new("test", 1024, 1).unwrap());
+        let start = Instant::now();
+        let page = read_page(
+            actor,
+            None,
+            fetcher,
+            "https://example.com/app".into(),
+            "query".into(),
+            2500,
+            Duration::from_millis(300),
+            Duration::from_secs(6),
+        )
+        .await;
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        let err = page.error.expect("capped read is an error");
+        assert!(err.starts_with("render cap of 0.3s exceeded"), "{err}");
+        assert!(page.excerpts.is_empty() && page.skipped.is_none());
     }
 }

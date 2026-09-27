@@ -1,12 +1,13 @@
 {
-  "_fixture": "OpenSERP v2.1 GET /mega/search envelope (github.com/karust/openserp docs/openapi.yaml), assembled 2026-09-12",
+  "_fixture": "OpenSERP v2.1 GET /mega/search envelope (github.com/karust/openserp docs/openapi.yaml), assembled 2026-09-12, meta shape re-checked against a live 2.1 server 2026-09-27",
   "query": { "text": "rust async trait", "engines_requested": ["google", "bing"] },
   "meta": {
     "request_id": "019ecdc0-a66d-79a4-9d2b-9e9b480d495e",
     "requested_at": "2026-09-12T00:06:55Z",
     "took_ms": 720,
     "engines_responded": ["google"],
-    "engines_failed": [{ "engine": "bing", "error": "captcha" }],
+    "engines_failed": ["bing"],
+    "engine_errors": [{ "engine": "bing", "error": "captcha_detected", "message": "captcha detected" }],
     "version": "2.1"
   },
   "results": [

@@ -3,17 +3,21 @@
 //! order and answers `Search` / `Read` / `Render` off the mailbox, so a slow
 //! provider never blocks a `RegisterProvider` from `search-providers`.
 
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
 use tools::{Activity, Tracked};
 
-use crate::WebConfig;
-use crate::aggregate::{self, Drift, SearchResponse};
+use crate::aggregate::{self, Drift, SearchResponse, is_external};
+use crate::health::{Health, ProviderStatus};
 use crate::provider::{
-    Provider, ProviderMeta, Query, RegisterProvider, Rendered, UnregisterProvider,
+    Category, Provider, ProviderMeta, Query, RegisterProvider, Rendered, UnregisterProvider,
 };
+use crate::settings::{GetDefaults, Probe, ProviderProbe, SearchDefaults, SetDefaults, Status};
+use crate::{SharedConfig, WebConfig};
 
 /// Live provider metadata in registration order, shared with the tools so
 /// `Tool::description` (sync) reflects the current set without a mailbox hop.
@@ -26,32 +30,53 @@ pub const NO_RENDERER: &str =
 /// The provider registry actor, registered as [`crate::provider::WEB_ACTOR`].
 #[derive(kameo::Actor)]
 pub struct WebActor {
-    cfg: WebConfig,
+    cfg: SharedConfig,
+    /// `config.yaml` for [`SetDefaults`]; `None` in library use (apply only).
+    config_path: Option<PathBuf>,
     client: reqwest::Client,
     /// Registration order; re-registering a name replaces in place.
     providers: Vec<Arc<dyn Provider>>,
     metas: ProviderMetas,
     drift: Arc<Drift>,
+    health: Arc<Health>,
 }
 
 impl WebActor {
     /// Build with the built-in engines; `metas` is filled from `providers`.
     #[must_use]
     pub fn new(
-        cfg: WebConfig,
+        cfg: SharedConfig,
+        config_path: Option<PathBuf>,
         client: reqwest::Client,
         providers: Vec<Arc<dyn Provider>>,
         metas: ProviderMetas,
     ) -> Self {
         let a = Self {
             cfg,
+            config_path,
             client,
             providers,
             metas,
             drift: Arc::default(),
+            health: Arc::default(),
         };
         a.publish();
         a
+    }
+
+    /// Library-use constructor: defaults, no config file.
+    #[must_use]
+    pub fn with_config(
+        cfg: WebConfig,
+        client: reqwest::Client,
+        providers: Vec<Arc<dyn Provider>>,
+        metas: ProviderMetas,
+    ) -> Self {
+        Self::new(Arc::new(RwLock::new(cfg)), None, client, providers, metas)
+    }
+
+    fn config(&self) -> WebConfig {
+        self.cfg.read().map(|c| c.clone()).unwrap_or_default()
     }
 
     fn publish(&self) {
@@ -79,8 +104,9 @@ impl WebActor {
     ) {
         let providers = self.providers.clone();
         let client = self.client.clone();
-        let cfg = self.cfg.clone();
+        let cfg = self.config();
         let drift = Arc::clone(&self.drift);
+        let health = Arc::clone(&self.health);
         spawn_under(activity, async move {
             tx.send(
                 aggregate::search(
@@ -90,6 +116,7 @@ impl WebActor {
                     m.providers.as_deref(),
                     &cfg,
                     &drift,
+                    &health,
                 )
                 .await,
             );
@@ -299,6 +326,131 @@ impl Message<Tracked<Read>> for WebActor {
     }
 }
 
+impl Message<GetDefaults> for WebActor {
+    type Reply = SearchDefaults;
+
+    async fn handle(&mut self, _: GetDefaults, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        SearchDefaults::from(&self.config())
+    }
+}
+
+impl Message<SetDefaults> for WebActor {
+    type Reply = Result<SearchDefaults, String>;
+
+    async fn handle(&mut self, m: SetDefaults, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        m.0.validate()?;
+        if let Some(path) = &self.config_path {
+            for (key, value) in m.0.yaml_pairs() {
+                runtime::write_config_value(path, "web", key, &value)
+                    .map_err(|e| format!("config.yaml: {e}"))?;
+            }
+        }
+        let mut cfg = self.cfg.write().map_err(|_| "config lock poisoned".to_owned())?;
+        m.0.apply(&mut cfg);
+        tracing::info!(defaults = ?m.0, "search defaults updated");
+        Ok(m.0)
+    }
+}
+
+impl Message<Status> for WebActor {
+    type Reply = Vec<ProviderStatus>;
+
+    async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.providers
+            .iter()
+            .map(|p| {
+                let meta = p.meta();
+                let mut s = self.health.get(meta.name).unwrap_or_default();
+                s.name = meta.name.to_owned();
+                s.external = is_external(meta.name);
+                s.searches = !meta.categories.is_empty();
+                s
+            })
+            .collect()
+    }
+}
+
+impl Message<Probe> for WebActor {
+    type Reply = DelegatedReply<Result<ProviderProbe, String>>;
+
+    async fn handle(&mut self, m: Probe, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else {
+            return reply;
+        };
+        let Some(p) = self
+            .providers
+            .iter()
+            .find(|p| p.meta().name == m.name)
+            .cloned()
+        else {
+            let known: Vec<&str> = self.providers.iter().map(|p| p.meta().name).collect();
+            tx.send(Err(format!(
+                "provider {} is not registered (enabled with a key?); registered: {}",
+                m.name,
+                known.join(", ")
+            )));
+            return reply;
+        };
+        let client = self.client.clone();
+        let cfg = self.config();
+        let health = Arc::clone(&self.health);
+        tokio::spawn(async move {
+            let name = p.meta().name.to_owned();
+            let category = p
+                .meta()
+                .categories
+                .first()
+                .copied()
+                .unwrap_or(Category::General);
+            let q = Query {
+                text: m.query,
+                category,
+                limit: 5,
+                site: None,
+                recent: None,
+            };
+            let start = Instant::now();
+            let r = tokio::time::timeout(
+                p.timeout()
+                    .unwrap_or(Duration::from_millis(cfg.timeout_ms.max(1))),
+                p.search(&client, &q),
+            )
+            .await
+            .unwrap_or(Err(crate::provider::ProviderError::Timeout));
+            let took_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let mut outcome = aggregate::FanoutOutcome::default();
+            let probe = match r {
+                Ok((hits, _)) => {
+                    let detail = hits.first().map(|h| h.title.clone()).unwrap_or_default();
+                    outcome.ok.push(name.clone());
+                    outcome.hits.push((name.clone(), hits.clone()));
+                    ProviderProbe {
+                        name,
+                        ok: true,
+                        took_ms,
+                        rows: hits.len(),
+                        detail,
+                    }
+                }
+                Err(e) => {
+                    outcome.failed.push((name.clone(), e.to_string()));
+                    ProviderProbe {
+                        name,
+                        ok: false,
+                        took_ms,
+                        rows: 0,
+                        detail: e.to_string(),
+                    }
+                }
+            };
+            health.observe(&outcome);
+            tx.send(Ok(probe));
+        });
+        reply
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::OnceLock;
@@ -368,7 +520,7 @@ mod tests {
             finished: Arc::clone(&finished),
             ran_under: Arc::clone(&ran_under),
         });
-        let actor = WebActor::spawn(WebActor::new(
+        let actor = WebActor::spawn(WebActor::with_config(
             WebConfig::default(),
             reqwest::Client::new(),
             vec![held],

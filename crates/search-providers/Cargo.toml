@@ -18,9 +18,16 @@ tracing = { workspace = true }
 kameo = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+chrono = { workspace = true }
+schemars = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "web/ts"]
 
 [lints]
 workspace = true

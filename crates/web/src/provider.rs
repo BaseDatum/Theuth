@@ -27,6 +27,7 @@ pub enum Category {
 
 /// Recency filter; each provider maps it to its own date syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Recency {
     /// Past 24 hours.
@@ -274,6 +275,12 @@ impl From<reqwest::Error> for ProviderError {
 pub trait Provider: Send + Sync + 'static {
     /// Static facts: name, categories, feature kinds, render/billing flags.
     fn meta(&self) -> ProviderMeta;
+
+    /// Own deadline for one `search`, when configured (external providers
+    /// carry `timeout_ms`); `None` = the aggregator's `web.timeout_ms`.
+    fn timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
 
     /// Run one query; at most `q.limit` results plus any SERP features.
     async fn search(

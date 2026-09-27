@@ -15,7 +15,11 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::WebConfig;
-use crate::provider::{Category, Feature, FeatureKind, Provider, ProviderError, Query, RawResult};
+use crate::engines::{BUILTIN, KEYLESS_GENERAL};
+use crate::health::{Health, error_kind};
+use crate::provider::{
+    Category, Feature, FeatureKind, Provider, ProviderError, Query, RawResult, Recency,
+};
 
 /// RRF constant \(k\) (Cormack et al.).
 pub const RRF_K: f64 = 60.0;
@@ -40,13 +44,13 @@ pub struct RankedResult {
     pub snippet: String,
     /// Providers that returned this URL, sorted.
     pub providers: Vec<String>,
-    /// Publication date if any provider gave one.
+    /// Publication date as RFC 3339 UTC, when a provider gave a parseable one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
 }
 
-/// One top hit `search_web` read: the passages of its page most relevant to
-/// the query, or why it could not be read.
+/// One ranked hit as the reader saw it: the passages of its page most
+/// relevant to the query, why it could not be read, or why it was not read.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ReadPage {
     /// The hit's URL as searched (joins [`RankedResult::url`]).
@@ -57,10 +61,14 @@ pub struct ReadPage {
     pub excerpts: Vec<String>,
     /// Why the page could not be read.
     pub error: Option<String>,
+    /// Why the page was not read: `not-relevant`, `budget`, `error: <text>`
+    /// (bad URL); `None` when it was read or the read failed (see `error`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
     /// Wall time of the read in milliseconds.
     pub took_ms: u64,
     /// How the page was obtained: `fetch` (plain HTTP), `render` (a browser),
-    /// empty on error.
+    /// empty on error or skip.
     pub tier: String,
 }
 
@@ -79,8 +87,17 @@ pub struct SearchResponse {
     pub ok: Vec<String>,
     /// `(provider, why)` for every provider that did not, sorted.
     pub failed: Vec<(String, String)>,
-    /// Top hits read by the tool, in rank order; empty from [`search`] and when `read: 0`.
+    /// One entry per ranked row when the tool read: excerpts for the read
+    /// ones, `skipped` for the rest, in rank order; empty from [`search`] and when `read: 0`.
     pub pages: Vec<ReadPage>,
+    /// No configured external provider answered and at most one general
+    /// keyless engine returned rows (Wikipedia alone does not count): the
+    /// list may be junk. Automated callers should treat it as a failure.
+    pub degraded: bool,
+    /// Per-engine failure status behind `degraded`: `"brave: rate_limited"`.
+    pub reasons: Vec<String>,
+    /// What post-processing dropped or reordered, one line each.
+    pub notes: Vec<String>,
 }
 
 /// Raw outcome of [`fan_out`], before merging.
@@ -149,13 +166,48 @@ pub fn category_name(c: Category) -> &'static str {
     }
 }
 
+/// Wire name of a recency (`Recency`'s serde form).
+#[must_use]
+pub fn recency_name(r: Recency) -> &'static str {
+    match r {
+        Recency::Day => "day",
+        Recency::Week => "week",
+        Recency::Month => "month",
+        Recency::Year => "year",
+    }
+}
+
+/// `true` for a provider registered from outside the built-in engines.
+#[must_use]
+pub fn is_external(name: &str) -> bool {
+    !BUILTIN.contains(&name)
+}
+
+/// The degraded rule on a fan-out: no external provider in `ok`, and at most
+/// one [`KEYLESS_GENERAL`] engine returned rows.
+#[must_use]
+pub fn is_degraded(outcome: &FanoutOutcome) -> bool {
+    if outcome.ok.iter().any(|n| is_external(n)) {
+        return false;
+    }
+    let general = outcome
+        .hits
+        .iter()
+        .filter(|(n, hits)| KEYLESS_GENERAL.contains(&n.as_str()) && !hits.is_empty())
+        .count();
+    general <= 1
+}
+
 /// Providers for a query: those serving `category`, narrowed by `names`.
-/// Registration order is kept. Errors name unknown providers and the known
-/// set, or say when nothing serves the category.
+/// With `keyless_fallback` off, built-in engines are left out whenever an
+/// external provider serves the category (they only fill in when nothing
+/// else is configured). Registration order is kept. Errors name unknown
+/// providers and the known set, or say when nothing serves the category.
 pub fn select(
     providers: &[Arc<dyn Provider>],
     category: Category,
     names: Option<&[String]>,
+    keyless_fallback: bool,
 ) -> Result<Vec<Arc<dyn Provider>>, String> {
     if let Some(names) = names {
         let unknown: Vec<&str> = names
@@ -172,12 +224,15 @@ pub fn select(
             ));
         }
     }
-    let selected: Vec<Arc<dyn Provider>> = providers
+    let mut selected: Vec<Arc<dyn Provider>> = providers
         .iter()
         .filter(|p| p.meta().categories.contains(&category))
         .filter(|p| names.is_none_or(|ns| ns.iter().any(|n| n == p.meta().name)))
         .cloned()
         .collect();
+    if !keyless_fallback && names.is_none() && selected.iter().any(|p| is_external(p.meta().name)) {
+        selected.retain(|p| is_external(p.meta().name));
+    }
     if selected.is_empty() {
         return Err(match names {
             Some(ns) => format!(
@@ -217,6 +272,7 @@ pub async fn fan_out(
             let Ok(_permit) = sem.acquire().await else {
                 return (name, Err(ProviderError::Timeout));
             };
+            let per_provider = p.timeout().unwrap_or(per_provider);
             match tokio::time::timeout(per_provider, p.search(&client, &q)).await {
                 Ok(r) => (name, r),
                 Err(_) => (
@@ -327,9 +383,14 @@ fn score(m: &Merged) -> f64 {
 /// by score, then shorter URL, then title; at most `limit`.
 #[must_use]
 pub fn merge_rank_dedupe(hits: &[(String, Vec<RawResult>)], limit: usize) -> Vec<RankedResult> {
+    let now = chrono::Utc::now();
     let mut map: HashMap<String, Merged> = HashMap::new();
     for (provider, list) in hits {
         for (i, raw) in list.iter().enumerate() {
+            let published = raw
+                .published
+                .as_deref()
+                .and_then(|p| crate::date::normalize(p, now));
             let rank = u32::try_from(i + 1).unwrap_or(u32::MAX);
             let Some(canon) = crate::url::canonicalize(&raw.url) else {
                 continue;
@@ -340,7 +401,7 @@ pub fn merge_rank_dedupe(hits: &[(String, Vec<RawResult>)], limit: usize) -> Vec
                         pretty: canon.pretty,
                         title: raw.title.clone(),
                         snippet: raw.snippet.clone(),
-                        published: raw.published.clone(),
+                        published: published.clone(),
                         ranks: HashMap::from([(provider.clone(), rank)]),
                         best_rank: rank,
                     });
@@ -358,8 +419,8 @@ pub fn merge_rank_dedupe(hits: &[(String, Vec<RawResult>)], limit: usize) -> Vec
                 if !raw.snippet.is_empty() {
                     m.snippet.clone_from(&raw.snippet);
                 }
-                if raw.published.is_some() {
-                    m.published.clone_from(&raw.published);
+                if published.is_some() {
+                    m.published = published;
                 }
             } else {
                 if m.title.is_empty() {
@@ -369,7 +430,7 @@ pub fn merge_rank_dedupe(hits: &[(String, Vec<RawResult>)], limit: usize) -> Vec
                     m.snippet.clone_from(&raw.snippet);
                 }
                 if m.published.is_none() {
-                    m.published.clone_from(&raw.published);
+                    m.published = published;
                 }
             }
         }
@@ -430,9 +491,11 @@ pub fn merge_features(features: Vec<Feature>, provider_order: &[String]) -> Vec<
     out
 }
 
-/// The whole pipeline: select, fan out, drift-check, merge, rank.
-/// `Err` only for a bad selection (unknown name, nothing serves the category);
-/// provider failures are reported in `SearchResponse::failed`.
+/// The whole pipeline: select, fan out, drift-check, health, merge, rank,
+/// refine ([`crate::rank::refine`]: `site`/`recent` on the rows, mirrors,
+/// forks, off-topic panels), degraded detection. `Err` only for a bad
+/// selection (unknown name, nothing serves the category); provider failures
+/// are reported in `SearchResponse::failed` / `reasons`.
 pub async fn search(
     providers: &[Arc<dyn Provider>],
     client: &reqwest::Client,
@@ -440,8 +503,9 @@ pub async fn search(
     names: Option<&[String]>,
     cfg: &WebConfig,
     drift: &Drift,
+    health: &Health,
 ) -> Result<SearchResponse, String> {
-    let selected = select(providers, q.category, names)?;
+    let selected = select(providers, q.category, names, cfg.keyless_fallback)?;
     let order: Vec<String> = selected.iter().map(|p| p.meta().name.to_owned()).collect();
     let start = Instant::now();
     let mut outcome = fan_out(
@@ -456,13 +520,26 @@ pub async fn search(
         drift.observe(&mut outcome);
         outcome.failed.sort();
     }
+    health.observe(&outcome);
+    let terms = crate::excerpt::tokens(&q.text);
+    let merged = merge_rank_dedupe(&outcome.hits, q.limit);
+    let (results, notes) = crate::rank::refine(merged, q, &terms, chrono::Utc::now());
+    let degraded = is_degraded(&outcome);
+    let reasons = outcome
+        .failed
+        .iter()
+        .map(|(n, why)| format!("{n}: {}", error_kind(why)))
+        .collect();
     Ok(SearchResponse {
         query: q.text.clone(),
         took_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-        results: merge_rank_dedupe(&outcome.hits, q.limit),
+        results,
         features: merge_features(outcome.features, &order),
         ok: outcome.ok,
         failed: outcome.failed,
         pages: Vec::new(),
+        degraded,
+        reasons,
+        notes,
     })
 }

@@ -479,13 +479,17 @@ agent:
 #   correct: true            # <surface_error> fix-up rounds when a json-render/mermaid/openui block is invalid
 #   correct_rounds: 3        # rounds per turn before the model is told to move on
 
-# web:                       # search_web / read_url (design doc 16)
+# web:                       # search_web / read_url (design doc 16); Settings > Search edits the read/budget keys live
 #   enabled: true
-#   engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless built-ins
+#   engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # keyless built-ins; `bing` is opt-in (serves flagged clients empty pages)
 #   fetch_max_chars: 4000
 #   read_top: 5              # search_web reads this many top hits
 #   read_chars: 2500         # passage budget per read page
-#   read_timeout_ms: 25000        # a client-rendered page takes obscura ~20s
+#   read_budget_ms: 6000     # whole read phase; pages still loading are `skipped: budget`
+#   render_cap_ms: 3000      # one browser-rendered page inside a search
+#   recent_default: null     # day | week | month | year applied when a call passes none
+#   keyless_fallback: true   # false: built-ins run only when no external provider serves the category
+#   degraded_is_error: false # true: a degraded search (no external, <= 1 general engine) is an error result
 
 # scrape:                    # scrape_url / crawl / map_site (design doc 38)
 #   concurrency: 5
@@ -504,16 +508,21 @@ agent:
 #   cochange_commits: 300    # first-parent commits walked for co-change; 0 disables the git walk
 #   languages: [rust, typescript, javascript, python, go]   # subset to parse; others are files only
 
-# search_providers:          # optional external engines registered with `web` (design doc 16 §3); the
-#                            # built-in keyless engines above need none of these
-#   firecrawl:               # inert until the `firecrawl` secret exists (`t --secret-set firecrawl`)
+# search_providers:          # optional external engines registered with `web` (design doc 16 §3, §8); the
+#                            # built-in keyless engines above need none of these. Settings > Search edits this live.
+#   firecrawl:               # inert until its secret exists (`t --secret-set firecrawl` or Settings > Search)
+#     enabled: true
 #     base_url: https://api.firecrawl.dev
-#   searxng:                 # a SearXNG instance you run
+#     secret: firecrawl      # vault key
+#     timeout_ms: 8000
+#     priority: 30           # registration order among external providers, lower first
+#   searxng:                 # a SearXNG instance you run (json format enabled)
 #     base_url: http://127.0.0.1:8080
-#   openserp:
+#   openserp:                # a karust/openserp server (docker: karust/openserp serve)
 #     base_url: http://127.0.0.1:7000
-#     engines: [google, bing]
-#   brave: {}                # Brave Search API (provider `brave_api`); needs the `brave` secret
+#     engines: [google, bing, duckduckgo]
+#   brave:                   # Brave Search API (provider `brave_api`); needs the `brave` secret
+#     enabled: true
 
 # browser:                   # embedded headless browser, browser_* tools (design doc 23)
 #   enabled: true

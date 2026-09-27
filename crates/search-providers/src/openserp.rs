@@ -4,6 +4,8 @@
 //! `GET {base}/extract?url=` (JSON `ExtractResult`). Hosted instances take
 //! `Authorization: Bearer <key>`.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use web::{
     Category, Feature, FeatureItem, FeatureKind, Link, Provider, ProviderError, ProviderMeta,
@@ -20,17 +22,19 @@ pub struct Openserp {
     base: String,
     engines: String,
     key: Option<String>,
+    timeout: Duration,
 }
 
 impl Openserp {
     /// `base` is the server root without a trailing slash; `engines` are
     /// upstream engine names for `/mega/search`; `key` only for the hosted API.
     #[must_use]
-    pub fn new(base: &str, engines: &[String], key: Option<&str>) -> Self {
+    pub fn new(base: &str, engines: &[String], key: Option<&str>, timeout: Duration) -> Self {
         Self {
             base: base.trim_end_matches('/').to_string(),
             engines: engines.join(","),
             key: key.map(str::to_string),
+            timeout,
         }
     }
 
@@ -40,7 +44,10 @@ impl Openserp {
         path: &str,
         params: &[(&str, &str)],
     ) -> Result<String, ProviderError> {
-        let mut req = client.get(format!("{}{path}", self.base)).query(params);
+        let mut req = client
+            .get(format!("{}{path}", self.base))
+            .timeout(self.timeout)
+            .query(params);
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);
         }
@@ -86,7 +93,17 @@ struct Response {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Meta {
+    engines_responded: Vec<String>,
+    /// Engine names (v2.1 live); older builds sent `{engine, error}` objects.
     engines_failed: Vec<serde_json::Value>,
+    engine_errors: Vec<EngineError>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct EngineError {
+    engine: String,
+    error: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -131,9 +148,45 @@ struct Extracted {
     markdown: Option<String>,
 }
 
-fn map(body: Response, limit: usize) -> (Vec<RawResult>, Vec<Feature>) {
+/// Every upstream engine failed: the body is a valid, empty envelope, but
+/// reporting it as `Ok([])` would count as drift / "no results" instead of
+/// the captcha or block it actually was.
+fn all_engines_failed(meta: &Meta) -> Option<ProviderError> {
+    if meta.engines_failed.is_empty() || !meta.engines_responded.is_empty() {
+        return None;
+    }
+    let detail: Vec<String> = meta
+        .engine_errors
+        .iter()
+        .map(|e| format!("{}: {}", e.engine, e.error))
+        .collect();
+    let detail = if detail.is_empty() {
+        meta.engines_failed
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        detail.join(", ")
+    };
+    Some(if detail.contains("captcha") {
+        ProviderError::Blocked(format!("captcha at upstream ({detail})"))
+    } else if detail.contains("rate") || detail.contains("429") {
+        ProviderError::RateLimited
+    } else {
+        ProviderError::Http(format!("all engines failed ({detail})"))
+    })
+}
+
+fn map(body: Response, limit: usize) -> Result<(Vec<RawResult>, Vec<Feature>), ProviderError> {
+    if let Some(e) = all_engines_failed(&body.meta) {
+        return Err(e);
+    }
     if !body.meta.engines_failed.is_empty() {
-        tracing::debug!(engines = ?body.meta.engines_failed, "openserp: engines failed");
+        tracing::debug!(engines = ?body.meta.engines_failed, "openserp: some engines failed");
     }
     let results = body
         .results
@@ -192,11 +245,15 @@ fn map(body: Response, limit: usize) -> (Vec<RawResult>, Vec<Feature>) {
             })
         })
         .collect();
-    (results, features)
+    Ok((results, features))
 }
 
 #[async_trait::async_trait]
 impl Provider for Openserp {
+    fn timeout(&self) -> Option<Duration> {
+        Some(self.timeout)
+    }
+
     fn meta(&self) -> ProviderMeta {
         ProviderMeta {
             name: NAME,
@@ -231,8 +288,16 @@ impl Provider for Openserp {
         if let Some(site) = &q.site {
             params.push(("site", site.as_str()));
         }
+        let date = q.recent.map(|r| {
+            let now = chrono::Utc::now();
+            let from = now - web::date::window(r);
+            format!("{}..{}", from.format("%Y%m%d"), now.format("%Y%m%d"))
+        });
+        if let Some(d) = &date {
+            params.push(("date", d.as_str()));
+        }
         let body = self.get(client, "/mega/search", &params).await?;
-        Ok(map(parse(&body)?, q.limit))
+        map(parse(&body)?, q.limit)
     }
 
     async fn render(

@@ -86,15 +86,35 @@ pub fn search_text(resp: &SearchResponse, feature_max_chars: usize) -> String {
 /// `keep`: how many of `resp.pages` (rank order) show their excerpts; the rest
 /// get an `[N excerpts omitted]` line instead.
 fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -> String {
-    let read = resp.pages.iter().filter(|p| p.error.is_none()).count();
-    let mut s = format!(
-        "Searched \"{}\": {} results, {} pages read, {}.{}s\n",
+    let read = resp
+        .pages
+        .iter()
+        .filter(|p| p.error.is_none() && p.skipped.is_none())
+        .count();
+    let mut s = String::new();
+    if resp.degraded {
+        let _ = writeln!(
+            s,
+            "WARNING: degraded search - no external provider answered and at most one general engine returned rows ({}); results may be unreliable.",
+            if resp.reasons.is_empty() {
+                "no engine failures reported".to_owned()
+            } else {
+                resp.reasons.join(", ")
+            }
+        );
+    }
+    let _ = writeln!(
+        s,
+        "Searched \"{}\": {} results, {} pages read, {}.{}s",
         resp.query,
         resp.results.len(),
         read,
         resp.took_ms / 1000,
         resp.took_ms % 1000 / 100
     );
+    for n in &resp.notes {
+        let _ = writeln!(s, "Note: {n}");
+    }
     for r in &resp.results {
         let page = resp.pages.iter().enumerate().find(|(_, p)| p.url == r.url);
         s.push('\n');
@@ -117,7 +137,9 @@ fn render_search(resp: &SearchResponse, feature_max_chars: usize, keep: usize) -
         let Some((i, page)) = page else {
             continue;
         };
-        if let Some(e) = &page.error {
+        if let Some(why) = &page.skipped {
+            let _ = writeln!(s, "(not read: {why})");
+        } else if let Some(e) = &page.error {
             let _ = writeln!(s, "(could not read: {e})");
         } else if i < keep {
             for ex in &page.excerpts {
@@ -189,6 +211,7 @@ mod tests {
             title: None,
             excerpts: excerpts.iter().map(|e| (*e).to_owned()).collect(),
             error: None,
+            skipped: None,
             took_ms: 0,
             tier: "fetch".into(),
         }
@@ -226,6 +249,9 @@ mod tests {
             ok: vec!["a".into(), "b".into()],
             failed: vec![("c".into(), "rate limited".into())],
             pages: Vec::new(),
+            degraded: false,
+            reasons: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -292,6 +318,33 @@ mod tests {
         let s = search_text(&r, 600);
         assert!(s.contains("\nexample.com · rendered\nsa\n"), "{s}");
         assert!(s.contains("\nb.example\nsb\n"), "{s}");
+    }
+
+    #[test]
+    fn degraded_warns_first_and_skips_are_explained() {
+        let mut r = resp();
+        r.features.clear();
+        r.failed.clear();
+        r.degraded = true;
+        r.reasons = vec!["brave: rate_limited".into(), "google: http".into()];
+        r.notes = vec!["2 off-site rows dropped (site=x.example)".into()];
+        r.results = vec![
+            hit(1, "A", "https://a.example/", "sa"),
+            hit(2, "B", "https://b.example/", "sb"),
+        ];
+        r.pages = vec![
+            page("https://a.example/", &["para"]),
+            ReadPage {
+                skipped: Some("not-relevant".into()),
+                ..page("https://b.example/", &[])
+            },
+        ];
+        let s = search_text(&r, 600);
+        assert!(s.starts_with("WARNING: degraded search"), "{s}");
+        assert!(s.contains("(brave: rate_limited, google: http)"), "{s}");
+        assert!(s.contains("1 pages read"), "{s}");
+        assert!(s.contains("\nNote: 2 off-site rows dropped (site=x.example)\n"), "{s}");
+        assert!(s.contains("\nsb\n(not read: not-relevant)"), "{s}");
     }
 
     #[test]
