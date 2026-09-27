@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
+import { LinkBanner } from '@/components/link/LinkFailure'
 import { lastCode } from '@/components/chat/MessageAssistant'
 import { NewChatPane } from '@/components/chat/NewChatPane'
 import { OrphansBanner } from '@/components/chat/OrphansBanner'
@@ -211,6 +212,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
   return (
     <>
       <Header session={session} first={first} onClose={split ? close : undefined} />
+      <LinkBanner />
       <PrivateStrip session={session} />
       <OrphansBanner session={session} />
       {fromSearch && (

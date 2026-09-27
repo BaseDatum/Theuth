@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useLinkFailure } from '@/components/link/LinkFailure'
 import { cn } from '@/lib/utils'
 import { type Engine, LOCAL, LOCAL_NAME, type Presence, hasLocal, useEngineTree, useEngines } from '@/link/engines'
 import { retryPair } from '@/link/nodes'
@@ -118,7 +119,7 @@ export function EngineSwitcher({ className }: { className?: string }) {
               ) : h.id === active ? (
                 <Check className={cn('size-4', h.kind === 'mesh' ? 'ml-1' : 'ml-auto')} />
               ) : (
-                h.kind !== 'mesh' && (p === 'offline' || p === 'refused') && <span className="ml-auto text-xs text-fg-tertiary">{p}</span>
+                h.kind !== 'mesh' && (p === 'offline' || p === 'refused') && <Trail id={h.id} presence={p} />
               )}
             </DropdownMenuItem>
           )
@@ -140,4 +141,14 @@ function Members({ id, presence }: { id: string; presence: Presence }) {
   const line = useMembersLine(id)
   const text = meshChip(presence) ?? line
   return text ? <span className="ml-auto truncate pl-2 text-xs text-fg-tertiary">{text}</span> : null
+}
+
+/** An engine row's trailing text while not online: the named failure's title (LINK-MSG), else the presence word. */
+function Trail({ id, presence }: { id: string; presence: Presence }) {
+  const f = useLinkFailure(id)
+  return (
+    <span className="ml-auto max-w-[50%] truncate pl-2 text-xs text-fg-tertiary" title={f ? `${f.title}. ${f.detail}` : undefined}>
+      {f?.title ?? presence}
+    </span>
+  )
 }

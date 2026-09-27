@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
+import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Editable } from '@/components/settings/Link'
 import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
@@ -386,7 +387,7 @@ function Reachable() {
                   <span className="text-[13px] text-fg-tertiary">{h.kind === 'mesh' ? `mesh${h.meshName && h.meshName !== h.name ? ` · ${h.meshName}` : ''}` : 'node'}</span>
                 </span>
               }
-              description={h.kind === 'mesh' ? <MeshLine engine={h} presence={p} paired={paired} /> : `${h.relayHost} · ${paired} · ${p}`}
+              description={<EngineLine engine={h} presence={p} paired={paired} />}
             >
               <Button variant="ghost" size="icon-sm" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp />
@@ -424,9 +425,21 @@ function Reachable() {
   )
 }
 
-/** `relay · paired … · 2 of 3 nodes online · relay connected` — or the failover chip instead of the last two. */
-function MeshLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
+/**
+ * `relay · paired … · 2 of 3 nodes online · relay connected` (mesh) or `relay · paired … · online` (node) — with the
+ * named failure and its Re-pair (LINK-MSG) instead of the trailing state while the socket is failing.
+ */
+function EngineLine({ engine: h, presence, paired }: { engine: Engine; presence: Presence; paired: string }) {
+  const navigate = useNavigate()
   const members = useMembersLine(h.id)
-  const chip = meshChip(presence)
-  return <>{[h.relayHost, paired, chip ?? members, chip ? null : 'relay connected'].filter(Boolean).join(' · ')}</>
+  const failure = useLinkFailure(h.id)
+  const chip = h.kind === 'mesh' ? meshChip(presence) : presence
+  if (failure)
+    return (
+      <span className="flex flex-col gap-0.5">
+        <span>{[h.relayHost, paired].join(' · ')}</span>
+        <FailureText compact failure={failure} onRepair={() => void navigate({ to: '/link', search: { repair: h.id } })} />
+      </span>
+    )
+  return <>{[h.relayHost, paired, chip ?? members, h.kind === 'mesh' && !chip ? 'relay connected' : null].filter(Boolean).join(' · ')}</>
 }

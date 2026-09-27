@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import { container, isDesktop } from '@/lib/platform'
+import type { LinkState } from '@/lib/link-status'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
 import { idbGet, idbPut } from './idb'
 
@@ -47,6 +48,8 @@ type EnginesStore = {
   engines: Engine[]
   active: string
   presence: Record<string, Presence>
+  /** Per link engine, what its socket last saw (`lib/link-status`); the UI names the failure from it. */
+  link: Record<string, LinkState>
   /** Auto-pair with a node failed (32 §8.2): the message, until retried. */
   pairError: Record<string, string>
   /** Engine answers `list_nodes` (32 §8.3); absent until its first connect. */
@@ -62,6 +65,7 @@ type EnginesStore = {
   setActive(id: string): void
   reorder(ids: string[]): void
   setPresence(id: string, p: Presence): void
+  setLink(id: string, s: LinkState): void
   setPairError(id: string, error: string | undefined): void
   setNodes(id: string, on: boolean): void
   setMesh(id: string, meshName: string | undefined, members: MeshMembers): void
@@ -98,6 +102,7 @@ export const useEngines = create<EnginesStore>()((set) => ({
   engines: [],
   active: LOCAL,
   presence: {},
+  link: {},
   pairError: {},
   nodes: {},
   members: {},
@@ -108,8 +113,9 @@ export const useEngines = create<EnginesStore>()((set) => ({
       const engines = s.engines.filter((x) => x.id !== id)
       const { [id]: _, ...presence } = s.presence
       const { [id]: __, ...pairError } = s.pairError
+      const { [id]: ___, ...link } = s.link
       const active = s.active === id ? (hasLocal() ? LOCAL : (engines[0]?.id ?? LOCAL)) : s.active
-      return { engines, presence, pairError, active }
+      return { engines, presence, pairError, link, active }
     }),
   rename: (id, name) => set((s) => ({ engines: s.engines.map((x) => (x.id === id ? { ...x, name } : x)) })),
   setParent: (id, parent) =>
@@ -122,6 +128,7 @@ export const useEngines = create<EnginesStore>()((set) => ({
   reorder: (ids) =>
     set((s) => ({ engines: byOrder(s.engines.map((x) => ({ ...x, order: ids.indexOf(x.id) < 0 ? ids.length : ids.indexOf(x.id) }))) })),
   setPresence: (id, p) => set((s) => (s.presence[id] === p ? s : { presence: { ...s.presence, [id]: p } })),
+  setLink: (id, l) => set((s) => ({ link: { ...s.link, [id]: l } })),
   setPairError: (id, error) =>
     set((s) => {
       if (s.pairError[id] === error) return s
