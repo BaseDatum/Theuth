@@ -19,6 +19,7 @@ import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
 import { useUpdate } from '@/lib/update'
+import { INITIAL, diagnostics } from '@/lib/link-status'
 import { LOCAL, useEngines } from '@/link/engines'
 import { type Theme, currentTheme, setTheme } from '@/lib/theme'
 import { useConnection } from '@/store/connection'
@@ -166,6 +167,27 @@ export function General() {
           )}
         </Section>
       )}
+      <LinkDiagnostics />
     </>
+  )
+}
+
+/** Settings › General › Connection (LINK-MSG): the active link engine's socket as text, with "Copy diagnostics". */
+function LinkDiagnostics() {
+  const engine = useEngines((s) => s.engines.find((h) => h.id === s.active))
+  const link = useEngines((s) => s.link[s.active]) ?? INITIAL
+  if (!engine) return null
+  const text = diagnostics(link, Date.now(), engine)
+  return (
+    <Section
+      title="Connection"
+      actions={
+        <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(text).then(() => toast.message('Copied'), () => toast.error('Copy failed'))}>
+          Copy diagnostics
+        </Button>
+      }
+    >
+      <pre className="font-mono text-[13px] whitespace-pre-wrap break-all text-fg-secondary">{text}</pre>
+    </Section>
   )
 }

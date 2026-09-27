@@ -16,8 +16,8 @@ export class RpcError extends Error {
 }
 
 const TRANSPORT = -32300
-const BACKOFF_MIN_MS = 500
-const BACKOFF_MAX_MS = 10_000
+/** Redial delay after `attempt` failed sockets in a row: 500 ms doubling to 10 s. `link-status` shows it. */
+export const backoff = (attempt: number): number => Math.min(10_000, 500 * 2 ** attempt)
 /** A foreground probe unanswered for this long means the socket died while the phone slept. */
 const PROBE_MS = 5_000
 
@@ -194,7 +194,7 @@ export class RpcClient {
 
   #schedule(): void {
     if (this.#closed || this.#timer) return
-    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.#attempt++)
+    const delay = backoff(this.#attempt++)
     this.#timer = setTimeout(() => {
       this.#timer = undefined
       if (this.#closed) return

@@ -2,6 +2,7 @@ import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { useEffect, useId, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
+import { LinkBanner } from '@/components/link/LinkFailure'
 import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -35,6 +36,7 @@ export function NewChat({
   return (
     <>
       <Header session={null} draftEffort={effort} onDraftEffort={setEffort} first={first} onClose={onClose} />
+      <LinkBanner />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
         <Composer session={null} pane={pane} draftEffort={effort} draftCreate={draft} onCreated={onCreated} />

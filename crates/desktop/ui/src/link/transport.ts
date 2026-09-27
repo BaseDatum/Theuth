@@ -3,6 +3,7 @@
 // `RpcClient`'s; this class only reports `reconnecting` and lets `connect()` be
 // called again (a parked socket is reused until the engine comes back).
 
+import { INITIAL, type LinkEvent, type LinkState, reduce } from '@/lib/link-status'
 import type { ConnState, Transport } from '@/rpc/transport'
 import { CLOSE_REFUSED, Reassembler, decodeFrame, encodeData, splitRecords } from './frames'
 import { type Engine, useEngines } from './engines'
@@ -33,6 +34,8 @@ export class LinkTransport implements Transport {
   #refused = false
   /** The engine answered our handshake with `CLOSE refused`: it no longer knows this device's key. Sticky until a handshake succeeds. */
   #rejected = false
+  /** What this socket saw, for `lib/link-status` (mirrored into `useEngines.link`). */
+  #link: LinkState = INITIAL
   #message: (t: string) => void = () => {}
   #state: (s: ConnState) => void = () => {}
   /** Last `SessionHello`, for the switcher. */
@@ -100,6 +103,11 @@ export class LinkTransport implements Transport {
     const pending = this.#pending
     this.#pending = null
     if (!this.#closed) {
+      // The relay served this page (31 §7.6), so it is reachable: a refused upgrade is its rate limit
+      // (or a stale cookie, which the refetch in `#open` cures). Cross-origin, the browser hides the
+      // HTTP status; every never-opened socket reads as unreachable.
+      // ponytail: no probe request from the app shell; add one if 429 on iOS ever needs naming.
+      this.#event({ type: 'lost', at: Date.now(), opened, reachable: globalThis.location?.host === this.engine.relayHost })
       this.#presence('offline')
       this.#state('reconnecting')
     }
@@ -112,6 +120,11 @@ export class LinkTransport implements Transport {
     useEngines.getState().setPresence(this.engine.id, p)
   }
 
+  #event(e: LinkEvent): void {
+    this.#link = reduce(this.#link, e)
+    useEngines.getState().setLink(this.engine.id, this.#link)
+  }
+
   #drop(): void {
     this.#session = null
     this.#hs = null
@@ -121,6 +134,7 @@ export class LinkTransport implements Transport {
   async #open(): Promise<void> {
     this.#state('connecting')
     this.#presence('connecting')
+    this.#event({ type: 'connecting', at: Date.now() })
     // Served by the relay (31 §7.6) the upgrade needs its `__Host-link` cookie, which a relay
     // restart invalidates (secret random per start → 403 forever). Any page fetch re-issues it.
     if (this.#refused && globalThis.location?.host === this.engine.relayHost) {
@@ -149,6 +163,7 @@ export class LinkTransport implements Transport {
     const f = decodeFrame(bytes)
     if (!f || this.#ws !== ws) return
     if (f.op === 'presence') {
+      this.#event({ type: 'presence', online: f.online, at: Date.now() })
       if (f.online) {
         this.#presence('connecting')
         const identity = await (this.#opts.identity ?? getIdentity)(this.engine.kind === 'mesh' ? this.engine.id : undefined)
@@ -164,6 +179,7 @@ export class LinkTransport implements Transport {
       // `refused` while our handshake is out = the engine does not know this device (revoked, or its
       // devices.yaml is gone). Every other reason — idle, engine gone (4), hub moved (5, 69 decision 6) —
       // is transient; the client retries against the same id and the new hub answers.
+      this.#event({ type: 'close', reason: f.reason, at: Date.now(), handshake: this.#hs !== null })
       if (f.reason === CLOSE_REFUSED && this.#hs) {
         this.#rejected = true
         this.#presence('refused')
@@ -184,6 +200,7 @@ export class LinkTransport implements Transport {
       // is `hello.name` / `info.name`, shown by the switcher. Never overwrite.
       add({ ...cur, lastSeen: Date.now() })
       this.#rejected = false
+      this.#event({ type: 'ready', at: Date.now() })
       this.#presence('online')
       this.#state('open')
       this.#pending?.resolve()

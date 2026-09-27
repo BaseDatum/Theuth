@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Button } from '@/components/ui/button'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { INITIAL, diagnostics } from '@/lib/link-status'
 import { launchLog, onLaunchLog } from '@/lib/tauri'
 import { LOCAL, hasLocal, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
@@ -25,42 +28,50 @@ export function StartupScreen(props: Props) {
  */
 function LinkStartup({ id }: { id: string }) {
   const { engines, presence: all, setActive, remove } = useEngines()
-  const [pairing, setPairing] = useState(false)
-  const presence = all[id]
+  const [pairing, setPairing] = useState<'new' | 'repair' | null>(null)
   const row = engines.find((h) => h.id === id)
   const mesh = row?.kind === 'mesh'
   const infoName = useConnection((s) => s.info?.name)
   const name = (mesh && row.meshName) || infoName || row?.name || id
+  const failure = useLinkFailure(id)
   // ponytail: one button to the local daemon, else another paired engine (online first); a picker if people pair many.
   const others = engines.filter((h) => h.id !== id)
   const next = hasLocal() ? LOCAL : (others.find((h) => all[h.id] === 'online') ?? others[0])?.id
 
-  if (pairing) return <PairScreen onPaired={() => setPairing(false)} onBack={() => setPairing(false)} />
+  if (pairing) return <PairScreen replace={pairing === 'repair' ? row : undefined} onPaired={() => setPairing(null)} onBack={() => setPairing(null)} />
 
-  const refused = presence === 'refused'
+  const copyDiagnostics = () =>
+    row &&
+    navigator.clipboard
+      .writeText(diagnostics(useEngines.getState().link[id] ?? INITIAL, Date.now(), row))
+      .then(() => toast.message('Copied'), () => toast.error('Copy failed'))
+  // `presence === 'refused'` is `failure.kind === 'revoked'` now; the plain text below covers a first connect and short blips.
   return (
     <div
       className="flex h-band items-center justify-center bg-background px-4 text-foreground"
       data-tauri-drag-region={isMacDesktop() || undefined}
     >
       <div className="flex w-full max-w-[640px] flex-col gap-4 rounded-xl border border-border-subtle bg-elevated p-6">
-        <p className="text-fg-secondary">{refused ? (mesh ? `${name} revoked this device — pair again` : `${name} refused this device`) : `Reconnecting to ${name}…`}</p>
-        {presence === 'offline' && <p className="text-xs text-fg-secondary">{mesh ? 'Hub offline — waiting for a node to take over' : 'Node offline'}</p>}
-        {presence === 'connecting' && <p className="text-xs text-fg-secondary">Relay unreachable</p>}
-        <p className="text-sm text-fg-secondary">
-          {refused
-            ? mesh
-              ? 'The mesh no longer knows this device (revoked on any of its nodes). Show a new pairing code there (Settings › Link, or `t mesh devices add`), pair again, then forget this entry.'
-              : 'The node no longer knows this device (revoked, or its device list was reset). Show a new pairing code there (Settings › Link, or `t --link`), pair again, then forget this entry.'
-            : mesh
-              ? 'The hub is offline or the relay is unreachable. Another node of the mesh takes over within about half a minute; this screen closes when it answers.'
-              : 'The node is offline or the relay is unreachable. This screen closes when it is back.'}
-        </p>
+        {failure ? (
+          <FailureText failure={failure} onRepair={() => setPairing('repair')} />
+        ) : (
+          <>
+            <p className="text-fg-secondary">Connecting to {name}…</p>
+            <p className="text-sm text-fg-secondary">
+              {mesh
+                ? 'The hub is offline or the relay is unreachable. Another node of the mesh takes over within about half a minute; this screen closes when it answers.'
+                : 'The node is offline or the relay is unreachable. This screen closes when it is back.'}
+            </p>
+          </>
+        )}
         <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" className="min-h-11" onClick={() => void copyDiagnostics()}>
+            Copy diagnostics
+          </Button>
           <Button variant="ghost" className="min-h-11" onClick={() => remove(id)}>
             Forget this node
           </Button>
-          <Button variant="secondary" className="min-h-11" onClick={() => setPairing(true)}>
+          <Button variant="secondary" className="min-h-11" onClick={() => setPairing('new')}>
             Pair with a mesh…
           </Button>
           {next !== undefined && (

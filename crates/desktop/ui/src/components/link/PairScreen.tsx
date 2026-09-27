@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { container, deviceName } from '@/lib/platform'
-import { LOCAL, useEngines } from '@/link/engines'
+import { type Engine, LOCAL, useEngines } from '@/link/engines'
 import { adopt } from '@/link/nodes'
 import { pair, parsePairingKey } from '@/link/pairing'
 import { useConnection } from '@/store/connection'
@@ -25,8 +25,9 @@ function takeHashKey(): string | null {
  * so navigation is the caller's (`onPaired`); the engine switch itself routes to `/`.
  * With an active engine that answers `list_nodes`, a key first asks: pair here, or
  * add the engine as a node of the active one and auto-pair with it (32 §8.3).
+ * `replace`: re-pairing an existing entry (LINK-MSG) — the new row takes its name and order, the old id goes.
  */
-export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack?: () => void }) {
+export function PairScreen({ replace, onPaired, onBack }: { replace?: Engine; onPaired?: () => void; onBack?: () => void }) {
   const [key, setKey] = useState('')
   const [pairingWith, setPairingWith] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -45,7 +46,7 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
       return
     }
     // A mesh key (4 parts, 69 §5) is this device's own pairing; `add_node` takes engine keys only.
-    if (parent && api && parsed.pending === undefined) setChoice({ key: raw.trim(), name: parsed.name })
+    if (parent && api && parsed.pending === undefined && !replace) setChoice({ key: raw.trim(), name: parsed.name })
     else await pairHere(raw.trim(), parsed.name)
   }
 
@@ -53,8 +54,13 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
     setPairingWith(name)
     try {
       const h = await pair(k, deviceName())
+      const { add, remove, setActive } = useEngines.getState()
+      if (replace) {
+        if (replace.id !== h.id) remove(replace.id)
+        add({ ...h, name: replace.name, order: replace.order })
+      }
       toast.success(h.kind === 'mesh' ? `Paired with mesh ${h.meshName ?? h.name}` : `Paired ${h.name}`)
-      useEngines.getState().setActive(h.id)
+      setActive(h.id)
       onPaired?.()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -144,7 +150,8 @@ export function PairScreen({ onPaired, onBack }: { onPaired?: () => void; onBack
             <ChevronLeft className="size-5" /> Back
           </Button>
         )}
-        <h1 className="text-2xl font-semibold">Pair with a mesh</h1>
+        <h1 className="text-2xl font-semibold">{replace ? `Re-pair ${replace.name}` : 'Pair with a mesh'}</h1>
+        {replace && <p className="text-sm text-fg-secondary">Show a new pairing code on the engine (Settings › Link, or `t --link`) and paste or scan it here.</p>}
         {pairingWith !== null ? (
           <p className="flex items-center gap-2 text-fg-secondary">
             <Loader2 className="size-4 animate-spin" /> Pairing with {pairingWith}…
