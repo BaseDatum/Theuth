@@ -104,7 +104,7 @@ export function failure(s: LinkState, now: number, engine: { name: string; relay
   const terminal = s.sticky === 'stale-pairing' || s.sticky === 'revoked'
   const kind = s.sticky !== null && (terminal || !parked) ? s.sticky : parked ? 'engine-offline' : null
   if (kind === null) return null
-  const retry = s.retryAt === null ? '' : ` Retrying in ${secs(s.retryAt - now)}.`
+  const retry = s.retryAt === null ? '' : s.retryAt > now ? ` Retrying in ${secs(s.retryAt - now)}.` : ' Retrying…'
   switch (kind) {
     case 'engine-offline':
       return {
