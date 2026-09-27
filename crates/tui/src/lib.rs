@@ -39,6 +39,7 @@ mod clip;
 pub mod dictation;
 pub mod model;
 pub mod attach;
+pub mod pathac;
 pub mod search;
 mod ui;
 
@@ -563,6 +564,13 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Search(search::Request { generation, kind }) => {
             UiEvent::Search(generation, search_request(api, kind).await)
         }
+        // Failures show nothing: the list simply does not open (PATH-AC).
+        Command::PathComplete {
+            session,
+            input,
+            cursor,
+            generation,
+        } => UiEvent::PathComplete(generation, api.path_complete(session, input, cursor).await.ok()),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::ListActivity => UiEvent::Activity(msg(api.list_activity().await)?),
         // The menu shows the refusal on its error line; not an `Error` entry.
@@ -1287,7 +1295,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
-        UiEvent::Models(_) | UiEvent::Mcp(_) => writeln!(out, "menus need a TTY"),
+        UiEvent::Models(_) | UiEvent::Mcp(_) | UiEvent::PathComplete(..) => writeln!(out, "menus need a TTY"),
         UiEvent::Logins(rows) => rows
             .iter()
             .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),

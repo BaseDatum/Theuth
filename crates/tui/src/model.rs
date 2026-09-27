@@ -40,6 +40,7 @@ use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
 use crate::dictation::{Dictating, Phase};
 use crate::search;
+use crate::pathac::PathState;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -95,6 +96,8 @@ pub enum UiEvent {
     SessionCreated(SessionId),
     /// Reply to [`Command::ListModels`].
     Models(Vec<ModelInfo>),
+    /// Reply to [`Command::PathComplete`]: the generation that asked, `None` when the call failed.
+    PathComplete(u64, Option<rpc::pathac::PathCompletion>),
     /// Reply to [`Command::SetModel`].
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.
@@ -472,6 +475,17 @@ pub enum Command {
     },
     /// `list_models`.
     ListModels,
+    /// `path_complete` (PATH-AC): the token under `cursor` in `input`, listed by `session`'s engine.
+    PathComplete {
+        /// The listing session (`None`: this engine, its cwd).
+        session: Option<SessionId>,
+        /// The editor's text.
+        input: String,
+        /// Byte offset of the caret in `input`.
+        cursor: usize,
+        /// Echoed in the reply so a superseded request is inert.
+        generation: u64,
+    },
     /// `set_model`.
     SetModel {
         /// Session to switch now (`None`: only the default).
@@ -3048,6 +3062,8 @@ pub struct Model {
     pub context_estimated: bool,
     /// Open menu.
     pub menu: Option<Menu>,
+    /// Path autocomplete under the editor (PATH-AC).
+    pub path: PathState,
     /// Pending approvals for the current session or its subtree, oldest first; the front is shown.
     pub approvals: VecDeque<ApprovalRequested>,
     /// Pending `ask_user` calls for the current session or its subtree, oldest first; the front is shown.
@@ -4334,6 +4350,7 @@ impl Model {
                     });
                 }
             }
+            UiEvent::PathComplete(generation, reply) => self.path.reply(generation, reply),
             // Chained picker: a model with effort levels asks for one right away (Esc skips).
             UiEvent::ModelSet(info) => {
                 self.model_id = info.id;
@@ -10137,7 +10154,7 @@ pub fn computer_line(s: &computer::PermissionStatus) -> String {
     line
 }
 
-fn send(tx: &UnboundedSender<Command>, cmd: Command) {
+pub(crate) fn send(tx: &UnboundedSender<Command>, cmd: Command) {
     // The receiver lives as long as the UI; a closed channel means shutdown.
     let _ = tx.send(cmd);
 }

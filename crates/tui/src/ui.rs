@@ -19,6 +19,7 @@ use crate::model::{
 };
 use crate::model::{Grouped, session_row, terminal_row};
 use crate::search::{self, Focus, Preview};
+use crate::pathac;
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -184,7 +185,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // poll (51 §7.3) wakes an idle loop.
                 let now = now_ms();
                 let due = model.read().search_wake().is_some_and(|t| t <= now)
-                    || model.read().terminal_wake().is_some_and(|t| t <= now);
+                    || model.read().terminal_wake().is_some_and(|t| t <= now)
+                    || model.read().path.wake().is_some_and(|t| t <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
                     continue;
                 }
@@ -199,6 +201,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 m.search_tick(now, &commands);
                 m.terminal_tick(now, &commands);
+                let session = m.session;
+                m.path.tick(now, session, &commands);
                 // A withdrawn or unsent message comes back into the editor,
                 // above anything typed since it left.
                 if let Some(text) = m.recall.take() {
@@ -494,6 +498,24 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
+            // Path autocomplete (PATH-AC): Tab on a path token opens the list
+            // under the editor; the slash popup's Tab wins while it has matches.
+            if m.input_focused() {
+                let text = input.read().to_string();
+                let cursor = handle.read().cursor_offset().min(text.len());
+                let slash_busy = matches!(m.menu, Some(Menu::Slash { .. }))
+                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled).is_empty();
+                let session = m.session;
+                match m.path.key(code, &text, cursor, slash_busy, session, &commands) {
+                    pathac::Key::Pass => {}
+                    pathac::Key::Consumed => return,
+                    pathac::Key::Input(text, caret) => {
+                        m.sync_slash(&text);
+                        m.pending_input = Some((text, caret));
+                        return;
+                    }
+                }
+            }
             if m.menu.is_some() {
                 let text = input.read().to_string();
                 if let MenuKey::Input(text) = m.menu_key(code, &text, &commands) {
@@ -702,13 +724,21 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         newline_modifiers: KeyModifiers::SHIFT,
                         mask,
                         on_change: move |v: String| {
-                            model.write().sync_slash(&v);
+                            let mut m = model.write();
+                            m.sync_slash(&v);
+                            // `TextInput` reports the new text before its cursor state moves,
+                            // so the caret is read off the edit itself: the end of the
+                            // inserted run, or the point of deletion.
+                            let caret = pathac::caret_after_edit(&input.read(), &v);
+                            m.path.edit(&v, caret, now_ms());
+                            drop(m);
                             input.set(v);
                         },
                     )
                 }
                 #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
             }
+            #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 Text(content: m.status(), color: SAND)
                 Text(content: m.mcp_status(), color: SAND)
@@ -1183,6 +1213,34 @@ fn menu(m: &Model, input: &str, width: u16, height: u16) -> Option<AnyElement<'s
                         weight,
                     ))
                 }))
+            }
+        }
+        .into_any(),
+    )
+}
+
+/// The path completion list under the editor (PATH-AC): a window of rows
+/// around the highlighted one, `…` when the engine cut the listing.
+fn path_box(m: &Model, width: u16) -> Option<AnyElement<'static>> {
+    let popup = m.path.open.as_ref().filter(|p| !p.items.is_empty())?;
+    let shown = window(popup.items.len(), popup.cursor, pathac::ROWS);
+    let fit = usize::from(width).saturating_sub(7);
+    let more = popup.truncated || shown.end < popup.items.len();
+    Some(
+        element! {
+            View(border_style: BorderStyle::Round, border_color: SAND, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
+                Text(content: "↑↓ move  ⇥ accept  esc close", color: SAND)
+                #(popup.items[shown.clone()].iter().enumerate().map(|(i, c)| {
+                    let here = shown.start + i == popup.cursor;
+                    let text: String = c.display.chars().take(fit).collect();
+                    element!(Text(
+                        content: format!("{} {text}", if here { "›" } else { " " }),
+                        wrap: TextWrap::NoWrap,
+                        color: if here { BONE } else { BONE_DIM },
+                        weight: if here { Weight::Bold } else { Weight::Normal },
+                    ))
+                }))
+                #(more.then(|| element!(Text(content: "  …", color: SAND))))
             }
         }
         .into_any(),

@@ -16,6 +16,8 @@ async fn export_bindings() {
     export!(
         crate::api::Info,
         crate::api::PendingPrompts,
+        crate::pathac::PathCompletion,
+        crate::pathac::PathCandidate,
         agent::AgentEvent,
         agent::SessionSummary,
         agent::ProjectStyle,

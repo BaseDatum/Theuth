@@ -41,6 +41,8 @@ import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
 import * as speech from '@/lib/speech'
 import { label as chordLabel, matches as chord } from '@/lib/chord'
@@ -155,6 +157,36 @@ function SlashList({
           <span className="ml-auto truncate text-fg-secondary">{c.desc}</span>
         </button>
       ))}
+    </div>
+  )
+}
+
+/** PATH-AC: the path list anchored at the token; on a phone a chip row above the box. `…` when the engine cut the listing. */
+function PathList({ popup, mobile, onPick }: { popup: PathPopup; mobile: boolean; onPick(i: number): void }) {
+  return (
+    <div
+      className={cn(
+        'absolute bottom-full left-0 mb-2 w-full rounded-xl border bg-popover p-1 font-mono text-sm shadow-md',
+        mobile ? 'flex gap-1 overflow-x-auto' : 'max-h-72 overflow-y-auto',
+      )}
+    >
+      {popup.items.map((c, i) => (
+        <button
+          type="button"
+          key={c.insert}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onPick(i)}
+          className={cn(
+            'rounded-lg px-3 py-2 text-left',
+            mobile ? 'shrink-0 whitespace-nowrap border' : 'flex w-full',
+            i === popup.selected && 'bg-accent',
+            c.is_dir && 'text-fg-secondary',
+          )}
+        >
+          {c.display}
+        </button>
+      ))}
+      {popup.truncated && <span className="px-3 py-2 text-fg-tertiary">…</span>}
     </div>
   )
 }
@@ -422,6 +454,62 @@ export function Composer({
     setAtWord(null)
     ref.current?.focus()
   }
+
+  // PATH-AC: `path` is the open list; `pathAsk` the debounced request behind it. The engine running the session
+  // lists (`path_complete`), so a remote session completes on its own machine; a failure or empty listing shows nothing.
+  const [path, setPath] = useState<PathPopup | null>(null)
+  const [pathAsk, setPathAsk] = useState<{ text: string; caret: number; now: boolean } | null>(null)
+  /** The token start the user closed with Esc: it stays as typed until edited past. */
+  const pathDismissed = useRef<number | null>(null)
+  /** The listing engine is Windows (its last reply), so `C:\` triggers too. */
+  const pathWindows = useRef(false)
+  const pathSeq = useRef(0)
+  const isMobile = useIsMobile()
+  const pathChanged = (next: string, caret: number) => {
+    const t = pathTrigger(next, caret, pathWindows.current)
+    const slashNow = /^\/\S*$/.test(next) && matches(next).length > 0
+    if (!t || slashNow || picking !== null) {
+      pathDismissed.current = null
+      setPath(null)
+      setPathAsk(null)
+      return
+    }
+    if (pathDismissed.current === t.start) return
+    setPathAsk({ text: next, caret, now: false })
+  }
+  useEffect(() => {
+    if (!pathAsk) return
+    const seq = ++pathSeq.current
+    const run = async () => {
+      const t = pathTrigger(pathAsk.text, pathAsk.caret, pathWindows.current)
+      if (!t) return
+      const cursor = new TextEncoder().encode(pathAsk.text.slice(0, pathAsk.caret)).length
+      const r = await api.path_complete(session, pathAsk.text, cursor).catch(() => null)
+      if (seq !== pathSeq.current) return
+      pathWindows.current = r?.platform === 'windows'
+      setPath(r && r.candidates.length > 0 ? { start: t.start, end: t.end, items: r.candidates, truncated: r.truncated, selected: 0 } : null)
+    }
+    if (pathAsk.now) {
+      void run()
+      return
+    }
+    const timer = setTimeout(run, PATH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [pathAsk, session, api])
+  /** Accept row `i`: only the remainder past the typed prefix lands; a directory keeps completing. */
+  const pickPath = (i: number) => {
+    if (!path) return
+    const item = path.items[i]
+    if (!item) return
+    const next = acceptPath(text, path, item)
+    setText(next.text)
+    setPastes(reconcile(next.text, pastes))
+    setPendingCaret(next.caret)
+    setPath(null)
+    setPathAsk(item.is_dir ? { text: next.text, caret: next.caret, now: true } : null)
+  }
+  /** The list is for the draft as it stands: a send or a recall (programmatic text) leaves no stale rows. */
+  const pathOpen = path !== null && picking === null && pathTrigger(text, path.end, pathWindows.current)?.start === path.start
 
   // Uploads `blobs` through `put_attachment` (31 §9) — or `put_session_attachment` for a private tree — then attaches the engine paths; image dims for the first image.
   const addBlobs = async (blobs: (File | Blob)[]) => {
@@ -750,6 +838,20 @@ export function Composer({
         return
       }
     }
+    if (path && pathOpen) {
+      const action = pathKey(e, e.currentTarget.selectionStart === text.length)
+      if (action) {
+        e.preventDefault()
+        if (action === 'up' || action === 'down') setPath(stepPath(path, action === 'up' ? -1 : 1))
+        else if (action === 'accept') pickPath(path.selected)
+        else {
+          pathDismissed.current = path.start
+          setPath(null)
+          setPathAsk(null)
+        }
+        return
+      }
+    }
     const k = e.nativeEvent
     if (session && running && chord(keys.stop, k)) {
       e.preventDefault()
@@ -847,6 +949,7 @@ export function Composer({
         onDrop={onDrop}
       >
         {slash && slashWord && <SlashList word={slashWord} selected={selected} onPick={pick} />}
+        {path && pathOpen && <PathList popup={path} mobile={isMobile} onPick={pickPath} />}
         <HeldStrip
           pastes={pastes}
           pinned={pinned}
@@ -934,6 +1037,7 @@ export function Composer({
                   setPastes(reconcile(e.target.value, pastes))
                   setSelected(0)
                   changed(e.target.value, e.target.selectionStart)
+                  pathChanged(e.target.value, e.target.selectionStart)
                 }}
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}
