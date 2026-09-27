@@ -410,7 +410,9 @@ smoke below (2026-09-17, author's network, debug build).
   pick"), PCMag/Wirecutter `fetch`; Banco Best/Bestway rows shown but not
   read. Obscura settles rtings.com in 19.9-20.7 s under `load`,
   `domcontentloaded` and `networkidle0` alike - the per-page floor for a
-  heavy client-rendered page and the reason `web.read_timeout_ms` is 25 000;
+  heavy client-rendered page and the reason `web.read_timeout_ms` was 25 000
+  (2026-09-27, 16 §3.3: `search_web` now caps a render at `render_cap_ms` 3 s
+  and points at `read_url {rendered: true}` for such pages);
   the settle budget is an obscura knob, not ours. Wirecutter's compact
   keyboards page read fine from this network (41 400 prose chars), so the
   bot wall the agent hit is network-dependent; it now surfaces as `(could not

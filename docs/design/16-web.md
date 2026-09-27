@@ -40,6 +40,16 @@ google `Blocked (HTTP 429 sorry)`, qwant `Blocked (captcha)`, bing `Blocked
 (decoy results)` — the last only after `reject_decoys` landed; before it Bing
 returned five confidently unrelated hits (§10).
 
+2026-09-27 (SEARCH-1, `docs/design/70-as-built-SEARCH-1.md`): the four
+external providers are exercised live (SearXNG and OpenSERP in Docker; Brave
+API and Firecrawl by wiremock contract until a key exists), each with
+`{enabled, base_url, secret, timeout_ms, priority}` that Settings › Search
+edits at runtime; `search_web` carries `degraded` / `reasons` / `notes` and
+one `pages[]` entry per row (`skipped: not-relevant | budget | error: …`);
+`site=` / `recent=` apply to the returned rows; reads are rank-faithful under
+a 6 s budget with a 3 s render cap; `published` is RFC 3339 or absent; Bing
+left the default engine list (§3.3, §6, §13.18).
+
 2026-09-17, later the same day: `search_web` became one call modelled on
 LibreChat's `web_search` (SERP → read the top 5 hits in parallel → the
 passages of each page relevant to the query → one document). The model no
@@ -251,6 +261,77 @@ requested one; `providers:` narrows. Fan-out is jarvis's
 (`aggregate/fanout.rs:77-235`): `JoinSet`, semaphore, per-provider and
 overall timeouts, partial failure reported, never fatal unless all fail.
 
+### 3.3 Providers and Settings › Search (2026-09-27, SEARCH-1)
+
+Measured on 2026-09-27 (22 calls, knowledge fact
+`theuth-search-web-evaluation-2026-09-27`): the keyless engines collapse after
+about eight calls in a few minutes (Brave HTML rate-limit, DDG 202 challenge,
+Google 429, Qwant captcha, Bing "no results" pages), after which the tool
+returned confident Wikipedia junk; `site=` dropped rows before reading but
+not from the list ("8 sources, 0 read"); the reader was not rank-faithful and
+read forks and mirrors over the canonical page; `published` sometimes held
+snippet text; one 9.7 s render stalled a call. What changed:
+
+- **External providers are first-class.** Each `search_providers` block is
+  `{enabled, base_url?, secret?, timeout_ms, priority}`
+  (`crates/search-providers/src/lib.rs`); `build` sorts by priority and
+  skips a keyed block without its secret or a SearXNG block without a URL.
+  `Provider::timeout()` lets the aggregator honour the block's deadline
+  (OpenSERP drives real browsers: 8 s default). SearXNG maps `categories` /
+  `time_range`; OpenSERP maps `site` and turns `recent` into its
+  `date=YYYYMMDD..YYYYMMDD`; Firecrawl uses `includeDomains` / `tbs`; Brave
+  `freshness`. A valid OpenSERP envelope whose every upstream engine failed
+  is the failure it names (`Blocked(captcha…)`), not an empty SERP. The
+  `search-providers` plugin stays alive as the `SearchProviders` actor
+  (`SEARCH_PROVIDERS_ACTOR`): `GetProviders` / `SetProviders` persist and
+  re-register with `web` (`RegisterProvider` / `UnregisterProvider`), and a
+  `SecretsEvent::Changed` re-syncs so a key stored from Settings registers
+  its provider without a restart.
+- **Health and the degraded signal.** `web::health::Health` records per
+  provider `ok`, a failure `kind` (`rate_limited | captcha | challenge |
+  blocked | parse_error | timeout | unauthorized | http`, from the error
+  text), `detail`, `last_ok_at`, `last_error_at`; `WebActor::Status` returns
+  it as `Vec<ProviderStatus>`. `SearchResponse.degraded` is true when no
+  external provider answered and at most one `KEYLESS_GENERAL` engine
+  (google, bing, brave, qwant, duckduckgo — Wikipedia, arXiv and GitHub do
+  not count) returned rows; `reasons` lists `"<engine>: <kind>"`; the tool
+  text then starts with one `WARNING: degraded search …` line, and
+  `web.degraded_is_error` makes the call an error result for routines.
+- **Bing left the default engine list.** A fresh probe (3 of 4 queries)
+  showed HTTP 200 `class="b_no"` "There are no results" pages for queries
+  that plainly have results; the parser is intact and `bing` stays in
+  `BUILTIN` for opt-in, its classifier now reports that page as `Blocked`.
+- **Reader that tells the truth.** `rank::refine` runs after merging:
+  `site=` drops off-site rows (subdomains allowed), `recent=` drops rows
+  dated outside the window and lists undated rows after dated ones, an
+  encyclopedia row whose title shares no token with the query is dropped,
+  `deepwiki.com`-style mirrors of a `github.com/<owner>/<repo>` already in
+  the list are dropped, other owners of the same repository name sink behind
+  the canonical (the owner the query names, else the best-ranked), and
+  version-aggregator hosts (`what-version.com`, …) sink last; every drop or
+  reorder is one line in `notes`, rendered as `Note: …`. `tools::plan_reads`
+  walks the rows in rank order and reads the first `read` hits whose
+  title/snippet/URL share two query tokens (one for a one-token query);
+  every other row gets a `pages[]` entry with `skipped: not-relevant |
+  budget | error: …`. The read phase runs under `web.read_budget_ms` (6 s):
+  a browser-rendered read is cut at `render_cap_ms` (3 s, reported as
+  `render cap of 3.0s exceeded`), and pages still in flight when the budget
+  lapses are `skipped: budget`. `date::normalize` turns whatever a provider
+  gave into RFC 3339 UTC or `None` (absolute formats, RFC 2822, "2 days
+  ago"; a bare year or a sentence is not a date), so `published` never holds
+  snippet text.
+- **Settings › Search** (`crates/desktop/ui/src/components/settings/Search.tsx`,
+  tab `search`): a card per provider (enable, URL, timeout, OpenSERP engines,
+  key name with `set` / `not set` and a masked "Set key…" that stores through
+  `set_secret` and never reads the value back, Test = one probe query, up /
+  down = priority), Defaults (`read_top`, budget, render cap, default recency,
+  keyless-fallback-only, degraded-as-error), Status (per-engine health from
+  the last calls, refreshed every 15 s, plus "Run a test search"). RPCs:
+  `search_settings_get`, `search_settings_set` (persist, then apply live),
+  `search_provider_test(name, query)`, `search_status`, `search_test(query)`
+  (the whole tool through `ToolRegistry::Invoke`, `quiet`). Works at 390 px:
+  the dialog is already a sheet under 768 px, the cards wrap.
+
 ## 4. SERP features — the contract
 
 ```rust
@@ -383,8 +464,9 @@ are the best-tested part of the crate. `fetch/clean.rs` is replaced by
   `Rendered` carries `tier: "fetch" | "render"` naming which one answered
   (`browser`, Firecrawl and OpenSERP always `"render"`).
 - `search_web` reads its top `read` hits (0..=8, default `read_top: 5`,
-  `tools.rs`) through `Read` (not `Render`), all pages concurrently, each
-  under `read_timeout_ms` (default 25000, §6): a static page never opens a
+  `tools.rs`) through `Read` (not `Render`), all pages concurrently, the
+  whole phase under `read_budget_ms` (default 6000) and each browser render
+  under `render_cap_ms` (default 3000, §3.3, §6): a static page never opens a
   browser, a shell does; a plain markdown fetch is the fallback when the
   provider fails (`tier: "fetch"`), and a page that fails both is reported
   inline as `(could not read: …)` rather than failing the call. A page whose
@@ -440,31 +522,45 @@ Two sections, one per plugin (00 §5: every plugin reads its own).
 ```yaml
 web:                          # design doc 16 - built-in engines, fetch, tools
   enabled: true
-  engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # engines::BUILTIN
-  timeout_ms: 4000            # per provider, built-in or registered
+  engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # engines::DEFAULT_ENGINES; `bing` is opt-in (§3.3)
+  timeout_ms: 4000            # per provider unless the provider carries its own `timeout_ms`
   overall_timeout_ms: 6000
   fetch_max_chars: 4000
   read_top: 5                 # search_web reads this many top hits (`read` overrides per call)
   read_chars: 2500            # passage budget per read page (§4.7)
-  read_timeout_ms: 25000      # per-page read deadline: obscura needs ~20s on a heavy client-rendered page (rtings.com, measured 2026-09-17); was 8000, §13.17
+  read_budget_ms: 6000        # the whole read phase; pages still loading are `skipped: budget` (§3.3)
+  render_cap_ms: 3000         # one browser-rendered read inside search_web; `read_url {rendered: true}` is uncapped
+  recent_default: null        # day | week | month | year when a call passes no `recent`
+  keyless_fallback: true      # false: built-ins run only when no external provider serves the category
+  degraded_is_error: false    # true: a degraded search is an error result (routines treat it as a failure)
   feature_max_chars: 600
   user_agent: "theuth/0.1 (+https://github.com/skymoore/theuth)"
 
 search_providers:             # design doc 16 §3 - external engines; each block's presence enables it
-  firecrawl:                  # the one block present by default; inert without the `firecrawl` secret
+  firecrawl:                  # the one block present by default; inert without its secret
+    enabled: true
     base_url: https://api.firecrawl.dev   # self-hosted: http://127.0.0.1:3002
-  # searxng:                  # opt-in: no default base_url (search-providers/src/lib.rs:36-44)
+    secret: firecrawl         # vault key; every keyed block names its own
+    timeout_ms: 8000
+    priority: 30              # registration order among external providers, lower first
+  # searxng:                  # opt-in: skipped while base_url is empty
   #   base_url: http://127.0.0.1:8080
-  # openserp:
+  # openserp:                 # karust/openserp; browsers upstream, so seconds per query
   #   base_url: http://127.0.0.1:7000
-  #   engines: [google, bing]
-  # brave: {}                 # Brave Search API; registers as `brave_api`, needs the `brave` secret
+  #   engines: [google, bing, duckduckgo]
+  # brave:                    # Brave Search API; registers as `brave_api`, needs the `brave` secret
+  #   enabled: true
 ```
 
-Defaults are `WebConfig::default()` (`crates/web/src/lib.rs:57-72`) and
-`SearchProvidersConfig::default()` (`crates/search-providers/src/lib.rs:36-44`):
+Defaults are `WebConfig::default()` (`crates/web/src/lib.rs`) and
+`SearchProvidersConfig::default()` (`crates/search-providers/src/lib.rs`):
 only `firecrawl` is on, and only once its secret exists. The built-in engines
-need no block under `search_providers`.
+need no block under `search_providers`. Settings › Search (§3.3) writes both
+sections one scalar at a time (`runtime::write_config_value` /
+`write_nested_config_value`, comments elsewhere in the file survive) and
+applies them live; the `read_*`, `render_cap_ms`, `recent_default`,
+`keyless_fallback` and `degraded_is_error` keys are read from the shared
+`web::SharedConfig` per call, everything else at start.
 
 Keys are secrets in the encrypted vault next to the provider keys (37;
 `/secrets add`, Settings › Secrets or `t --secret-set`), under the names
@@ -738,3 +834,14 @@ Each step leaves `theuth` runnable.
     §12.15). (g) `read_timeout_ms` default 8000 → 25000: obscura settles rtings.com in 19.9-20.7s whatever `waitUntil` is passed (`load`, `domcontentloaded`, `networkidle0` all measured), so a 12s deadline would have cut every heavy render and handed back the shell; a timed-out read is now reported as an error naming `read_url rendered: true` instead of falling back to the raw fetch of the same shell. Alternative beaten:
     Firecrawl's browser-first engine order (§5, last bullet) — correct by
     construction, but every SSR page pays a render and a search pays five.
+18. **SEARCH-1: real providers, honest reader, Settings › Search**
+    (2026-09-27; §3.3, §6, `70-as-built-SEARCH-1.md`). `read_timeout_ms`
+    is gone: the per-page deadline became the phase budget `read_budget_ms`
+    (6 s) plus `render_cap_ms` (3 s) — one 20 s render was exactly the stall
+    the measurement caught, and `read_url {rendered: true}` remains the
+    uncapped path for a page that needs it. `pick_reads`' two-pass
+    title-first selection became rank order with explained skips: the pass
+    order was what read ranks 3, 7, 8, 2, 6 and skipped the #1 hit. `Search`
+    / `Read` / `Render` now read the live `SharedConfig` per call so Settings
+    edits apply without a restart; the reqwest client's own timeout is still
+    built once from `web.timeout_ms`.
