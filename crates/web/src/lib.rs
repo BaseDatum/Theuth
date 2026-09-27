@@ -9,13 +9,17 @@
 
 pub mod actor;
 pub mod aggregate;
+pub mod date;
 pub mod engines;
 pub mod excerpt;
 pub mod fetch;
+pub mod health;
 pub mod http;
 pub mod progress;
 pub mod provider;
+pub mod rank;
 pub mod render;
+pub mod settings;
 pub mod tools;
 pub mod url;
 
@@ -26,7 +30,7 @@ pub use provider::{
 };
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use ::tools::{REGISTRY_ACTOR, RegisterPrompt, RegisterTool, ToolRegistry};
@@ -40,7 +44,7 @@ use serde::{Deserialize, Serialize};
 pub struct WebConfig {
     /// `false`: no actor, no tools.
     pub enabled: bool,
-    /// Built-in engines to run (`crate::engines::BUILTIN` names).
+    /// Built-in engines to run (`crate::engines::BUILTIN` names; default [`engines::DEFAULT_ENGINES`]).
     pub engines: Vec<String>,
     /// Per-provider timeout.
     pub timeout_ms: u64,
@@ -52,9 +56,19 @@ pub struct WebConfig {
     pub read_top: usize,
     /// Passage budget in characters per read page.
     pub read_chars: usize,
-    /// Per-page read deadline for `search_web`. Covers a plain fetch plus the
-    /// browser render that follows when the fetch is thin (client-rendered page).
-    pub read_timeout_ms: u64,
+    /// Deadline for the whole read phase of `search_web`; pages still in
+    /// flight when it lapses are reported as `skipped: "budget"`.
+    pub read_budget_ms: u64,
+    /// Cap on one browser-rendered read inside `search_web` (a stalled render
+    /// must not eat the budget); `read_url {rendered: true}` is uncapped.
+    pub render_cap_ms: u64,
+    /// `recent` used when the call passes none.
+    pub recent_default: Option<provider::Recency>,
+    /// `false`: the keyless built-in engines run only when no external
+    /// provider serves the category.
+    pub keyless_fallback: bool,
+    /// `true`: a degraded search is an error result (routines treat it as a failure).
+    pub degraded_is_error: bool,
     /// Per-feature cap in the search text (16 §4.4).
     pub feature_max_chars: usize,
     /// Body cap of the fetcher.
@@ -69,13 +83,20 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            engines: engines::BUILTIN.iter().map(|s| (*s).to_owned()).collect(),
+            engines: engines::DEFAULT_ENGINES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
             timeout_ms: 4000,
             overall_timeout_ms: 6000,
             fetch_max_chars: 4000,
             read_top: 5,
             read_chars: 2500,
-            read_timeout_ms: 25000,
+            read_budget_ms: 6000,
+            render_cap_ms: 3000,
+            recent_default: None,
+            keyless_fallback: true,
+            degraded_is_error: false,
             feature_max_chars: 600,
             max_fetch_bytes: 2_097_152,
             max_redirects: 5,
@@ -83,6 +104,10 @@ impl Default for WebConfig {
         }
     }
 }
+
+/// The live `web` config, shared by the actor (which applies
+/// [`settings::SetDefaults`]) and the tools (which read limits per call).
+pub type SharedConfig = Arc<RwLock<WebConfig>>;
 
 /// The plugin: reads `web`, then in a task waits for the secrets vault (37
 /// §3.6: the `github` key), spawns [`WebActor`] as [`WEB_ACTOR`] with the
@@ -151,8 +176,10 @@ impl runtime::Plugin for WebPlugin {
                 })
                 .collect();
             let metas = actor::ProviderMetas::default();
+            let shared: SharedConfig = Arc::new(RwLock::new(cfg.clone()));
             let actor = WebActor::spawn(WebActor::new(
-                cfg.clone(),
+                Arc::clone(&shared),
+                Some(rt.data_dir.join("config.yaml")),
                 client,
                 providers,
                 Arc::clone(&metas),
@@ -167,7 +194,7 @@ impl runtime::Plugin for WebPlugin {
                         actor: actor.clone(),
                         fetcher: Arc::clone(&fetcher),
                         providers: Arc::clone(&metas),
-                        cfg: cfg.clone(),
+                        cfg: Arc::clone(&shared),
                         rt: Some(rt.clone()),
                     })))
                     .await;
@@ -176,7 +203,7 @@ impl runtime::Plugin for WebPlugin {
                         actor,
                         fetcher,
                         providers: metas,
-                        cfg,
+                        cfg: shared,
                     })))
                     .await;
                 let _ = reg

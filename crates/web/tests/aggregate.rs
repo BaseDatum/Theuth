@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use web::aggregate::{self, Drift, merge_features, merge_rank_dedupe};
+use web::health::Health;
 use web::{
     Category, Feature, FeatureItem, FeatureKind, Provider, ProviderError, ProviderMeta, Query,
     RawResult, WebConfig,
@@ -136,6 +137,7 @@ async fn run(
         None,
         cfg,
         &Drift::default(),
+        &Health::default(),
     )
     .await
     .expect("selection ok")
@@ -353,6 +355,7 @@ async fn selection_by_category_and_name() {
         Some(&nope[..]),
         &c,
         &Drift::default(),
+        &Health::default(),
     )
     .await
     .expect_err("unknown name");
@@ -369,6 +372,7 @@ async fn selection_by_category_and_name() {
         Some(&sci[..]),
         &c,
         &Drift::default(),
+        &Health::default(),
     )
     .await
     .expect_err("category mismatch");
@@ -435,13 +439,13 @@ async fn drift_detector_fires_on_third_empty_call_and_resets() {
     let client = reqwest::Client::new();
     let drift = Drift::default();
     for call in 1..=2 {
-        let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift)
+        let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
             .await
             .expect("ok");
         assert_eq!(r.ok, vec!["empty"], "call {call} still ok");
         assert!(r.failed.is_empty());
     }
-    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift)
+    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
         .await
         .expect("ok");
     assert!(r.ok.is_empty());
@@ -455,11 +459,11 @@ async fn drift_detector_fires_on_third_empty_call_and_resets() {
 
     // A yield resets the counter for the same name.
     let yielding = [MockProvider::ok("empty", vec![hit("Y", "https://example.com/y", "s")]).arc()];
-    let r = aggregate::search(&yielding, &client, &query("q"), None, &c, &drift)
+    let r = aggregate::search(&yielding, &client, &query("q"), None, &c, &drift, &Health::default())
         .await
         .expect("ok");
     assert_eq!(r.ok, vec!["empty"]);
-    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift)
+    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
         .await
         .expect("ok");
     assert_eq!(
@@ -467,4 +471,94 @@ async fn drift_detector_fires_on_third_empty_call_and_resets() {
         vec!["empty"],
         "one empty call after a yield is not drift"
     );
+}
+
+// ── degraded (16 §4.6, measured 2026-09-27) ───────────────────────────────
+
+#[tokio::test]
+async fn degraded_when_only_wikipedia_or_one_general_engine_answers() {
+    let c = cfg(1000, 2000);
+    let wiki = hit("Tokio", "https://en.wikipedia.org/wiki/Tokio", "");
+    let providers = [
+        MockProvider::ok("wikipedia", vec![wiki.clone()]).arc(),
+        MockProvider::ok("google", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::fail("brave", "rate limited").arc(),
+        MockProvider::fail("duckduckgo", "blocked: HTTP 202 challenge").arc(),
+    ];
+    let r = run(&providers, &query("tokio JoinSet"), &c).await;
+    assert!(r.degraded, "one general engine + wikipedia is degraded");
+    assert_eq!(
+        r.reasons,
+        ["brave: rate_limited", "duckduckgo: challenge"]
+    );
+
+    let providers = [
+        MockProvider::ok("google", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::ok("qwant", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+    ];
+    let r = run(&providers, &query("tokio JoinSet"), &c).await;
+    assert!(!r.degraded, "two general engines answering is fine");
+
+    let providers = [
+        MockProvider::ok("searxng", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::fail("google", "HTTP 429").arc(),
+    ];
+    let r = run(&providers, &query("tokio JoinSet"), &c).await;
+    assert!(!r.degraded, "an external provider answering is never degraded");
+    assert_eq!(r.reasons, ["google: rate_limited"]);
+}
+
+#[tokio::test]
+async fn keyless_fallback_off_skips_builtins_when_an_external_serves() {
+    let c = WebConfig {
+        keyless_fallback: false,
+        ..cfg(1000, 2000)
+    };
+    let providers = [
+        MockProvider::ok("google", vec![hit("g", "https://g.example/", "")]).arc(),
+        MockProvider::ok("searxng", vec![hit("s", "https://s.example/", "")]).arc(),
+    ];
+    let r = run(&providers, &query("q"), &c).await;
+    assert_eq!(r.ok, ["searxng"]);
+
+    let only_builtin = [MockProvider::ok("google", vec![hit("g", "https://g.example/", "")]).arc()];
+    let r = run(&only_builtin, &query("q"), &c).await;
+    assert_eq!(r.ok, ["google"], "nothing external: builtins still run");
+}
+
+#[test]
+fn published_is_rfc3339_or_absent() {
+    let dated = RawResult {
+        published: Some("March 12, 2024".into()),
+        ..hit("A", "https://a.example/", "")
+    };
+    let junk = RawResult {
+        published: Some("Install Bun with curl and read the release notes".into()),
+        ..hit("B", "https://b.example/", "")
+    };
+    let ranked = merge_rank_dedupe(&[("p".to_owned(), vec![dated, junk])], 8);
+    assert_eq!(ranked[0].published.as_deref(), Some("2024-03-12T00:00:00Z"));
+    assert_eq!(ranked[1].published, None);
+}
+
+#[tokio::test]
+async fn site_applies_to_the_returned_rows() {
+    let c = cfg(1000, 2000);
+    let providers = [MockProvider::ok(
+        "google",
+        vec![
+            hit("PDF", "https://en.wikipedia.org/wiki/PDF", ""),
+            hit("PrintToPdf", "https://learn.microsoft.com/x", ""),
+        ],
+    )
+    .arc()];
+    let q = Query {
+        site: Some("learn.microsoft.com".into()),
+        ..query("PrintToPdf")
+    };
+    let r = run(&providers, &q, &c).await;
+    assert_eq!(r.results.len(), 1);
+    assert_eq!(r.results[0].url, "https://learn.microsoft.com/x");
+    assert_eq!(r.results[0].rank, 1);
+    assert_eq!(r.notes, ["1 off-site rows dropped (site=learn.microsoft.com)"]);
 }

@@ -22947,6 +22947,7 @@ version = "2.0.4"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "figment",
  "flate2",
  "html-to-markdown-rs",

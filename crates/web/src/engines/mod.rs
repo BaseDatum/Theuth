@@ -30,7 +30,7 @@ pub use google::Google;
 pub use qwant::Qwant;
 pub use wikipedia::Wikipedia;
 
-/// Default `web.engines` list; every name [`builtin`] accepts.
+/// Every name [`builtin`] accepts.
 pub const BUILTIN: &[&str] = &[
     "google",
     "bing",
@@ -41,6 +41,24 @@ pub const BUILTIN: &[&str] = &[
     "arxiv",
     "github",
 ];
+
+/// Default `web.engines` list: [`BUILTIN`] minus `bing`, whose HTML endpoint
+/// answers a flagged client with a genuine-looking "There are no results"
+/// page (2026-09-27: 14 of 22 calls, 3 of 4 in a fresh probe). Opt back in
+/// with `web.engines`.
+pub const DEFAULT_ENGINES: &[&str] = &[
+    "google",
+    "brave",
+    "qwant",
+    "duckduckgo",
+    "wikipedia",
+    "arxiv",
+    "github",
+];
+
+/// The general-web keyless engines; the degraded rule counts these
+/// (Wikipedia, arXiv and GitHub are indexes of one kind of thing).
+pub const KEYLESS_GENERAL: &[&str] = &["google", "bing", "brave", "qwant", "duckduckgo"];
 
 /// Identifiable user agent for APIs that require one (Wikimedia, GitHub).
 pub const USER_AGENT: &str = "theuth/0.1 (+https://github.com/skymoore/theuth)";

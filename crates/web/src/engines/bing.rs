@@ -96,7 +96,9 @@ impl Provider for Bing {
 }
 
 /// Final URL + status + body → parsed hits, `Blocked`, or an HTTP error.
-/// An empty SERP (2xx, zero rows) is `Ok([])`.
+/// A `b_no` ("There are no results") page is `Blocked`: Bing serves it to
+/// flagged clients for queries that plainly have results (2026-09-27), and
+/// a genuine empty SERP for a real query is rarer than the flag.
 fn classify(url: &Url, status: u16, body: &str) -> Result<Vec<RawResult>, ProviderError> {
     let path = url.path();
     if path.starts_with("/rewardsapp") || path.starts_with("/challenge") {
@@ -111,7 +113,13 @@ fn classify(url: &Url, status: u16, body: &str) -> Result<Vec<RawResult>, Provid
     if !(200..300).contains(&status) {
         return Err(ProviderError::Http(format!("HTTP {status}")));
     }
-    Ok(parse_results(body))
+    let results = parse_results(body);
+    if results.is_empty() && body.contains("class=\"b_no\"") {
+        return Err(ProviderError::Blocked(
+            "empty 'no results' page served to a flagged client".to_owned(),
+        ));
+    }
+    Ok(results)
 }
 
 /// Organic rows: each `li` whose class contains the token `b_algo` and has

@@ -275,6 +275,12 @@ pub trait Provider: Send + Sync + 'static {
     /// Static facts: name, categories, feature kinds, render/billing flags.
     fn meta(&self) -> ProviderMeta;
 
+    /// Own deadline for one `search`, when configured (external providers
+    /// carry `timeout_ms`); `None` = the aggregator's `web.timeout_ms`.
+    fn timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Run one query; at most `q.limit` results plus any SERP features.
     async fn search(
         &self,
