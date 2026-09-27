@@ -34,7 +34,7 @@ python3 `http.server` fake origin: LFS files answer 302 with `x-repo-commit` / `
 
 ## Not done / ceilings
 
-- `cargo test -p desktop models::` — see the report for the run (the desktop crate is heavy; the new test is a pure `serde_json::from_str`).
+- `cargo test -p desktop models::`: 3 passed (`platform_and_key_fields`, `manifest_ignores_unknown_fields`, `verified_file_lands_and_a_bad_one_leaves_nothing`).
 - Desktop `present()` is size-only (its own comment: hashing 2 GB per start is not worth it), so a same-size replacement reaches fresh installs only. A `revision` compare against the record would fix it; not asked.
 - `kept` needs both the manifest row and a matching `head-object`; when `head-object` fails (creds, network) the file is re-uploaded — the safe direction, same as the old size check failing closed.
 - `https:` origins are never re-checked (GitHub release assets are pinned by tag). `--force` covers them.
