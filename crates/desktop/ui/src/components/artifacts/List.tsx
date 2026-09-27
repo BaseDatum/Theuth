@@ -21,8 +21,13 @@ export function useArtifactList() {
   return useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null) })
 }
 
-/** The session's name (`chatName`), or "Unknown chat" when the list does not know it (a deleted or foreign session). */
+/** 72 §2: the nil session note exports are recorded under — no chat owns them. */
+export const EXPORT_SESSION = '00000000-0000-0000-0000-000000000000'
+export const EXPORTS = 'Exports'
+
+/** The session's name (`chatName`), "Exports" for note exports, or "Unknown chat" when the list does not know it (a deleted or foreign session). */
 export function sessionLabel(id: string, sessions: SessionSummary[] | undefined): string {
+  if (id === EXPORT_SESSION) return EXPORTS
   const s = sessions?.find((x) => x.id === id)
   return s ? chatName(s) : 'Unknown chat'
 }
@@ -80,15 +85,15 @@ export function sections(groups: Group[], sessions: SessionSummary[] | undefined
   const by = new Map<string, Group[]>()
   for (const g of groups) {
     const owner = sessions.find((s) => s.id === g.session)
-    const title = owner ? (owner.project ?? UNGROUPED) : UNAVAILABLE
+    const title = g.session === EXPORT_SESSION ? EXPORTS : owner ? (owner.project ?? UNGROUPED) : UNAVAILABLE
     const list = by.get(title)
     if (list) list.push(g)
     else by.set(title, [g])
   }
   if (by.size === 1 && by.has(UNGROUPED)) return null
   const out: Section[] = []
-  for (const [title, list] of by) if (title !== UNGROUPED && title !== UNAVAILABLE) out.push({ title, groups: list })
-  for (const title of [UNGROUPED, UNAVAILABLE]) {
+  for (const [title, list] of by) if (title !== UNGROUPED && title !== UNAVAILABLE && title !== EXPORTS) out.push({ title, groups: list })
+  for (const title of [UNGROUPED, EXPORTS, UNAVAILABLE]) {
     const list = by.get(title)
     if (list) out.push({ title, groups: list })
   }

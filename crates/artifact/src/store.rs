@@ -1404,7 +1404,10 @@ impl State {
     /// was disabled are therefore invisible.
     pub async fn get(&self, call_id: &str) -> Result<Artifact, String> {
         let artifact = self.record(call_id).await?;
-        if !search::alive_sessions().await?.contains(&artifact.session) {
+        // Note exports (72) are recorded under `EXPORT_SESSION`, which is no chat and never dies.
+        if artifact.session != crate::EXPORT_SESSION
+            && !search::alive_sessions().await?.contains(&artifact.session)
+        {
             return Err(format!("{call_id}: owning session no longer exists"));
         }
         Ok(artifact)

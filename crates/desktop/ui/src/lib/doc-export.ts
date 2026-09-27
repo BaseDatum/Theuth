@@ -13,17 +13,30 @@ export interface MountedDiagram {
 }
 
 /** The DOM subset `mountedDiagrams` reads, so tests need no jsdom. */
+interface Svg {
+  outerHTML: string
+  getAttribute(name: string): string | null
+  closest(selector: string): unknown | null
+}
 interface Root {
-  querySelectorAll(selector: string): Iterable<{ getAttribute(name: string): string | null; querySelector(selector: string): { outerHTML: string } | null }>
+  querySelectorAll(selector: string): Iterable<{ getAttribute(name: string): string | null; querySelectorAll(selector: string): Iterable<Svg> }>
 }
 
-/** Every `.board-diagram[data-block]` frame under `root` that holds an `<svg>`. */
+/**
+ * Every `.board-diagram[data-block]` frame under `root` with its diagram `<svg>`: the first one with a `viewBox`
+ * that is not an icon inside a button (the frame's Tour button carries one).
+ */
 export function mountedDiagrams(root: Root): MountedDiagram[] {
   const out: MountedDiagram[] = []
   for (const frame of root.querySelectorAll('.board-diagram[data-block]')) {
     const id = frame.getAttribute('data-block')
-    const svg = frame.querySelector('svg')
-    if (id && svg) out.push({ id, markup: svg.outerHTML })
+    if (!id) continue
+    for (const svg of frame.querySelectorAll('svg')) {
+      if (svg.getAttribute('viewBox') && !svg.closest('button')) {
+        out.push({ id, markup: svg.outerHTML })
+        break
+      }
+    }
   }
   return out
 }

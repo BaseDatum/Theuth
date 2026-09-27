@@ -18,14 +18,20 @@ const DARK: DiagramTokens = {
 // Light foreground equals dark primary's hue family but not its value; background/foreground cross over on purpose.
 const LIGHT: DiagramTokens = { ...DARK, background: '#f3eadf', foreground: '#1a1612', primary: '#1a1612', card: '#ffffff', border: '#d4c4a8' }
 
-const frame = (id: string, svg: string | null) => ({
+const svg = (viewBox: string | null, inButton = false) => ({
+  outerHTML: viewBox ? `<svg viewBox="${viewBox}"/>` : '<svg/>',
+  getAttribute: (name: string) => (name === 'viewBox' ? viewBox : null),
+  closest: (sel: string) => (sel === 'button' && inButton ? {} : null),
+})
+const frame = (id: string, svgs: ReturnType<typeof svg>[]) => ({
   getAttribute: (name: string) => (name === 'data-block' ? id : null),
-  querySelector: () => (svg === null ? null : { outerHTML: svg }),
+  querySelectorAll: () => svgs,
 })
 
-test('mountedDiagrams keys each framed svg by its block id and skips frames without one', () => {
+test('mountedDiagrams keys the diagram svg by block id, skipping button icons and frames without a diagram', () => {
   const root = {
-    querySelectorAll: () => [frame('g1', '<svg viewBox="0 0 10 10"/>'), frame('s2', null), frame('s3', '<svg viewBox="0 0 4 4"/>')],
+    // g1: the Tour button's icon comes first in DOM order; the diagram is the second svg.
+    querySelectorAll: () => [frame('g1', [svg('0 0 24 24', true), svg('0 0 10 10')]), frame('s2', []), frame('s3', [svg(null), svg('0 0 4 4')])],
   }
   expect(mountedDiagrams(root)).toEqual([
     { id: 'g1', markup: '<svg viewBox="0 0 10 10"/>' },

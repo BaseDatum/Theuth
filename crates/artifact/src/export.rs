@@ -86,7 +86,7 @@ async fn print_source(m: &ExportDoc, scratch: &Path) -> Result<String, String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         images.insert(a.id.clone(), path);
     }
-    let body = strip_front_matter(&m.markdown);
+    let body = without_title_heading(strip_front_matter(&m.markdown), &m.title);
     let toc = surface::export::heading_count(body) >= 3;
     let title = serde_json::to_string(&m.title).map_err(|e| e.to_string())?;
     Ok(format!(
@@ -105,6 +105,28 @@ fn strip_front_matter(text: &str) -> &str {
         Some(i) => &rest[i + 5..],
         None => text,
     }
+}
+
+/// `body` without its first block when that is `# <title>` (a note is headed by its title, which the
+/// PDF's title block already shows); an `<!-- id -->` annotation before it goes too.
+fn without_title_heading<'a>(body: &'a str, title: &str) -> &'a str {
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        let t = line.trim();
+        if t.is_empty() || (t.starts_with("<!--") && t.ends_with("-->")) {
+            at += line.len();
+            continue;
+        }
+        return if t
+            .strip_prefix("# ")
+            .is_some_and(|h| h.trim() == title.trim())
+        {
+            &body[at + line.len()..]
+        } else {
+            body
+        };
+    }
+    body
 }
 
 /// `title` as a file stem: path separators and control characters out, `note` when nothing is left.
@@ -203,6 +225,19 @@ mod tests {
         );
         assert_eq!(file_stem("  ..  "), "note");
         assert_eq!(file_stem("a\nb"), "a b");
+    }
+
+    #[test]
+    fn the_title_heading_is_dropped_from_the_body() {
+        assert_eq!(
+            without_title_heading("<!-- a -->\n# T\n\n<!-- b -->\npara\n", "T"),
+            "\n<!-- b -->\npara\n"
+        );
+        assert_eq!(
+            without_title_heading("# Other\npara\n", "T"),
+            "# Other\npara\n"
+        );
+        assert_eq!(without_title_heading("para\n# T\n", "T"), "para\n# T\n");
     }
 
     #[test]
