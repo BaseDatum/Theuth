@@ -11,6 +11,25 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::model::{send, Command};
 
+/// Where the caret sits after `old` became `new` by one edit: the end of
+/// the inserted run, or the deletion point (typing, Backspace, Delete, paste).
+pub fn caret_after_edit(old: &str, new: &str) -> usize {
+    let common = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut common = common.min(new.len());
+    while !new.is_char_boundary(common) {
+        common -= 1;
+    }
+    if new.len() > old.len() {
+        (common + new.len() - old.len()).min(new.len())
+    } else {
+        common
+    }
+}
+
 /// Quiet typing before a re-ask.
 pub const DEBOUNCE_MS: u64 = 120;
 /// Rows the list shows at most.
@@ -249,6 +268,16 @@ mod tests {
         );
         assert!(s.open.is_none());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn caret_follows_the_edit() {
+        assert_eq!(caret_after_edit("~/De", "~/Dev"), 5, "typed at the end");
+        assert_eq!(caret_after_edit("see  x", "see ~/ x"), 6, "inserted mid-line");
+        assert_eq!(caret_after_edit("~/Dev", "~/De"), 4, "backspace");
+        assert_eq!(caret_after_edit("~/Dev x", "~/Devx"), 5, "delete mid-line");
+        assert_eq!(caret_after_edit("", "~/Develop/"), 10, "paste into empty");
+        assert_eq!(caret_after_edit("é", "éa"), 3, "multibyte");
     }
 
     #[test]

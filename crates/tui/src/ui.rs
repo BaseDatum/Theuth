@@ -726,13 +726,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         on_change: move |v: String| {
                             let mut m = model.write();
                             m.sync_slash(&v);
-                            // The handle still holds the pre-edit caret: shift it by the
-                            // edit's length (right for typing and Backspace).
-                            // ponytail: Delete lands one char short; the debounced re-ask heals it.
-                            let old = input.read();
-                            let caret = handle.read().cursor_offset().min(old.len()) as isize + v.len() as isize - old.len() as isize;
-                            let caret = usize::try_from(caret).unwrap_or(0).min(v.len());
-                            drop(old);
+                            // `TextInput` reports the new text before its cursor state moves,
+                            // so the caret is read off the edit itself: the end of the
+                            // inserted run, or the point of deletion.
+                            let caret = pathac::caret_after_edit(&input.read(), &v);
                             m.path.edit(&v, caret, now_ms());
                             drop(m);
                             input.set(v);
