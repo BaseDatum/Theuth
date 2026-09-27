@@ -50,7 +50,7 @@ pub const MODEL_SUBDIR: &str = "decision";
 /// = `model_dir`).
 pub const DEFAULT_CHECKPOINT: &str = "default";
 
-/// The browser head's checkpoint name (57 §4.1 item 6): cklxx/laya-browser v10 under
+/// The browser head's checkpoint name (57 §4.1 item 6): cklxx/laya-browser v17s under
 /// `<data_dir>/models/decision-browser/` unless `decision.checkpoints.browser` says otherwise.
 pub const BROWSER_CHECKPOINT: &str = "browser";
 

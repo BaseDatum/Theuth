@@ -1,19 +1,24 @@
 //! The browser System-1 loop's perception and rendering (design doc 57 §4.1): one
 //! [`Observation`] of the session's page in jev-ultrafast's reader shape, rendered into the
 //! **exact** three questions `browser-use/jev-ultrafast`'s `model.choose()` sends to
-//! `/v1/systemone` after `cklxx/laya-browser`'s format-v2 transform — the shape their v10 head
-//! was fine-tuned on. Drift here is the fastest way to lose their 0.66 element top-1, so:
+//! `/v1/systemone` after `cklxx/laya-browser`'s format-v3 transform (`laya_fmt` of their v10s …
+//! v17s heads; v10 was v2 — 1500 chars of text, uncut labels). Drift here is the fastest way to
+//! lose their element top-1, so:
 //!
 //! - the rule texts ([`RULES`], [`TARGET_RULES`]) and operation criteria are jev's verbatim;
-//! - an element is an option `"[i] label (role)"` (`" = 'value'"` when it has one,
-//!   `" checked=…"` etc. when it says so), and **only** an option — the state carries the page,
-//!   not the element table;
+//! - an element is an option `"[i] label (role)"` — `[i] label` cut to [`LABEL_MAX`] chars by
+//!   their `_cut` ([`cut_label`]) — then `" = 'value'"` when it has one, `" checked=…"` etc.
+//!   when it says so, and **only** an option — the state carries the page, not the element table;
 //! - the state is Python's `json.dumps(state, ensure_ascii=False)` of
-//!   `{page: {url, title, text ≤ 1500 chars}, recent_actions: [{action, kind, text, page_changed}]}`,
+//!   `{page: {url, title, text ≤ 1200 chars}, recent_actions: [{action, kind, text, page_changed}]}`,
 //!   the instructions Python's `json.dumps(dict)` (ASCII-escaped) — laya's `predict` does
 //!   `str`/`json.dumps` on both, and the tokenizer sees those bytes ([`py_json_str`]);
 //! - the click list names an editable field `Open <label>` (jev's `snapshot.js` adds a second,
 //!   click-kind action for every editable so the model can focus a field without typing).
+//!
+//! Not offered (so never in the `operation` criteria, which is a shape the head was trained
+//! on): `SELECT` (obscura's reader does not expand `<select>` options into `[i:k] Field → Option`
+//! actions) and `PRESS_ENTER` (obscura's Enter does not submit a form).
 //!
 //! The parity test in `tests/systemone.rs` renders the Wikipedia observation reconstructed from
 //! their `code/sample_request.json` and compares option texts and instruction strings byte for
@@ -63,8 +68,10 @@ Use the user's entire goal, field values, nearby text, and recent actions. This 
 a target for that operation; another question decides which operation to execute. Do not choose
 a field that already contains the requested value. Choose only an offered element index.";
 
-/// Page text kept in the state: cklxx format v2 (`v10`'s `laya_fmt`) cuts to 1500 chars.
-pub const TEXT_MAX: usize = 1500;
+/// Page text kept in the state: cklxx format v3 (`v17s`'s `laya_fmt`) cuts to 1200 chars.
+pub const TEXT_MAX: usize = 1200;
+/// Chars of `[i] label` an option keeps (format v3, their `_cut`); see [`cut_label`].
+pub const LABEL_MAX: usize = 50;
 /// Interactive elements offered per step — jev lists what is in the viewport (30–65 on their
 /// pages); obscura has no layout, so a step sees a window of this many elements in DOM order
 /// and `SCROLL_DOWN` advances it (see [`Scroll`]).
@@ -185,10 +192,10 @@ pub struct Element {
 }
 
 impl Element {
-    /// jev's `action_space` + cklxx's `compact()` for format v2: `[i] label (role)`, then
-    /// ` = 'value'` (Python `repr`, value cut at 30) when the field has one, then
-    /// ` checked=…`/` selected=…`/` expanded=…` when present. `click` names an editable field
-    /// `Open <label>` (its click-kind action in `snapshot.js`).
+    /// jev's `action_space` + cklxx's `compact()` for format v3: `[i] label` cut to
+    /// [`LABEL_MAX`] ([`cut_label`]), ` (role)`, then ` = 'value'` (Python `repr`, value cut at
+    /// 30) when the field has one, then ` checked=…`/` selected=…`/` expanded=…` when present.
+    /// `click` names an editable field `Open <label>` (its click-kind action in `snapshot.js`).
     pub fn option_text(&self, click: bool) -> String {
         let mut s = String::with_capacity(self.label.len() + 24);
         s.push('[');
@@ -198,6 +205,7 @@ impl Element {
             s.push_str("Open ");
         }
         s.push_str(&self.label);
+        cut_label(&mut s, LABEL_MAX);
         if !self.role.is_empty() {
             s.push_str(" (");
             s.push_str(&self.role);
@@ -547,6 +555,27 @@ pub fn py_repr(s: &str) -> String {
     }
     out.push(quote);
     out
+}
+
+/// cklxx's `_cut(el, n)` (format v3), in place: an `[i] label` longer than `n` chars is cut to
+/// `n`; when it names a `<select>` option (`… → Option`) the option keeps its name — the part
+/// after the last ` → `, whitespace-collapsed, ≤ 40 chars — and the head gets what is left
+/// (`max(12, n − len(option) − 3)` chars, whitespace-collapsed). Char counts, as Python's.
+pub fn cut_label(s: &mut String, n: usize) {
+    if s.chars().count() <= n {
+        return;
+    }
+    let collapse = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((head, opt)) = s.rsplit_once(" → ") {
+        let opt: String = collapse(opt).chars().take(40).collect();
+        let keep = n.saturating_sub(opt.chars().count() + 3).max(12);
+        let mut out: String = collapse(head).chars().take(keep).collect();
+        out.push_str(" → ");
+        out.push_str(&opt);
+        *s = out;
+    } else {
+        *s = s.chars().take(n).collect();
+    }
 }
 
 /// 57 §4.1 item 3, the deterministic half of `TYPE_TEXT`'s value: the first quoted string in the
@@ -1240,6 +1269,42 @@ mod tests {
         c.checked = Some("false".into());
         assert_eq!(c.option_text(true), "[5] Remember me (checkbox) checked=false");
         assert_eq!(el(1, "Go", "", false).option_text(true), "[1] Go");
+    }
+
+    /// Expected strings are cklxx's `_cut(el, 50)` run in Python (format v3): the cut counts
+    /// chars including the `[i] ` prefix, keeps a `<select>` option's name, and applies before
+    /// the role / value suffixes.
+    #[test]
+    fn labels_are_cut_like_format_v3() {
+        let cut = |s: &str| {
+            let mut s = s.to_owned();
+            cut_label(&mut s, LABEL_MAX);
+            s
+        };
+        assert_eq!(cut("[4] short"), "[4] short");
+        assert_eq!(
+            cut("[12] Open Search Wikipedia, the free encyclopedia that anyone can edit"),
+            "[12] Open Search Wikipedia, the free encyclopedia "
+        );
+        assert_eq!(
+            cut("[3:2] Please  select an option Option 1 Option 2 → Option 2"),
+            "[3:2] Please select an option Option 1  → Option 2"
+        );
+        assert_eq!(
+            cut("[7:1] Trip type → Some very long option name that goes on and on and on forever"),
+            "[7:1] Trip t → Some very long option name that goes on "
+        );
+        assert_eq!(
+            cut("[1] Café — naïve résumé ünïcödé label that is long enough to be cut"),
+            "[1] Café — naïve résumé ünïcödé label that is long"
+        );
+        let mut e = el(12, "Search Wikipedia, the free encyclopedia that anyone can edit", "searchbox", true);
+        e.value = "python".into();
+        assert_eq!(
+            e.option_text(true),
+            "[12] Open Search Wikipedia, the free encyclopedia  (searchbox) = 'python'"
+        );
+        assert_eq!(TEXT_MAX, 1200);
     }
 
     #[test]

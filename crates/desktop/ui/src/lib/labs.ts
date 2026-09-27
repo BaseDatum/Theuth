@@ -48,7 +48,7 @@ export function blockedReason(info: ModeInfo | undefined, prefix: Prefix, error?
   if (!info || info.effective === info.mode || info.mode === 'off') return undefined
   if (!info.enabled) return info.reason ?? 'the decision plugin is disabled'
   if (!info.installed && prefix === 'browser')
-    return 'the decision-browser checkpoint is not installed. Run scripts/fetch-laya-browser.sh (0.8 GB into ~/.theuth/models/decision-browser); once it is on the release bucket the app downloads it at start.'
+    return 'the decision-browser checkpoint is not installed. Run scripts/fetch-laya-browser.sh (0.7 GB, cklxx/laya-browser v17s, into ~/.theuth/models/decision-browser); once it is on the release bucket the app downloads it at start.'
   return info.reason ?? `running as ${info.effective}`
 }
 

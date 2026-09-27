@@ -22,7 +22,7 @@ use self::model::DecisionModel;
 use self::weights::{SanitizedBackend, sanitize_name};
 
 use crate::engine::{ModelSha, Oracle};
-use crate::laya::{Batch, LayaConfig, RowOut, Sequence, build_sequence, collate, postprocess};
+use crate::laya::{Batch, LayaConfig, RowOut, Sequence, Special, build_sequence, collate, postprocess};
 use crate::question::Question;
 
 /// One entry of the safetensors header: `(name, dtype, shape)`.
@@ -179,8 +179,10 @@ impl Loaded {
         let agent_raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("rl_agent_config.json"))?)
                 .map_err(|e| anyhow::anyhow!("rl_agent_config.json: {e}"))?;
-        let laya: LayaConfig = serde_json::from_value(agent_raw.clone())
+        let mut laya: LayaConfig = serde_json::from_value(agent_raw.clone())
             .map_err(|e| anyhow::anyhow!("rl_agent_config.json: {e}"))?;
+        laya.special = Special::from_tokenizer(&tokenizer)
+            .map_err(|e| anyhow::anyhow!("tokenizer/tokenizer.json: {e}"))?;
         let encoder_raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("encoder/config.json"))?)
                 .map_err(|e| anyhow::anyhow!("encoder/config.json: {e}"))?;
@@ -248,7 +250,7 @@ impl Loaded {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
-        let batch = collate(rows, Some((0, 2)));
+        let batch = collate(rows, Some((0, 2)), self.laya.special.pad);
         let [ids, attn, pos, mask, qtype] = inputs(&batch, &self.device)?;
         let out = self.model.forward(&ids, &attn, &pos, &mask, &qtype)?;
         let logits: Vec<f32> = out.logits.flatten_all()?.to_vec1()?;
@@ -335,7 +337,7 @@ fn sha256_cached(weights: &Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::laya::{CLS, MASK, SEP};
+    use crate::laya::{CLS, MASK, PAD, SEP};
 
     fn row(len: usize, markers: &[i64], qtype: i64) -> Sequence {
         let mut input_ids = vec![CLS];
@@ -360,7 +362,7 @@ mod tests {
     #[test]
     fn inputs_match_the_forward_signature() {
         let rows = [row(12, &[3], 1), row(20, &[3, 7, 11], 0)];
-        let batch = collate(&rows, Some((0, 2)));
+        let batch = collate(&rows, Some((0, 2)), PAD);
         let [ids, attn, pos, mask, qtype] = inputs(&batch, &Device::Cpu).unwrap();
         assert_eq!(ids.dims(), &[2, 20]);
         assert_eq!(attn.dims(), &[2, 20]);
@@ -384,7 +386,7 @@ mod tests {
         assert_eq!(mask.to_vec2::<u8>().unwrap(), [[1, 0, 0], [1, 1, 1]]);
         assert_eq!(qtype.to_vec1::<u32>().unwrap(), [1, 0]);
 
-        let one = collate(&rows[..1], Some((0, 2)));
+        let one = collate(&rows[..1], Some((0, 2)), PAD);
         let [_, _, pos, mask, _] = inputs(&one, &Device::Cpu).unwrap();
         assert_eq!(pos.dims(), &[1, 2]);
         assert_eq!(mask.to_vec2::<u8>().unwrap(), [[1, 0]]);

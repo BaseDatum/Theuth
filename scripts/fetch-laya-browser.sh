@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the browser decision checkpoint — cklxx/laya-browser v10 (design doc 57 §4.1 item 6) —
+# Fetch the browser decision checkpoint — cklxx/laya-browser v17s (design doc 57 §4.1 item 6) —
 # into <data_dir>/models/decision-browser/, the layout `decision::engine::MODEL_FILES` loads
 # (`decision.checkpoints.browser`). Interim path until `release-models.sh` publishes the same
 # four files under `decision-browser/` and the desktop downloader fetches them (54 §9).
@@ -7,20 +7,20 @@
 #   scripts/fetch-laya-browser.sh [DEST]      DEST default: ${THEUTH_DATA_DIR:-~/.theuth}/models/decision-browser
 #
 # Files already present with the expected size are kept; anything else is re-downloaded with
-# `curl -L` and its size checked against the hub's listing (sizes below, read 2026-09-21).
+# `curl -L` and its size checked against the hub's listing (sizes below, read 2026-09-27).
 set -euo pipefail
 
 REPO="https://huggingface.co/cklxx/laya-browser/resolve/main"
-REV="v10"
+REV="v17s"
 DEST="${1:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models/decision-browser}"
 
 # <remote path under $REV>  <expected bytes>
 FILES=(
-  "model.safetensors 842609220"
-  "encoder/config.json 2084"
-  "rl_agent_config.json 633"
-  "tokenizer/tokenizer.json 3583228"
-  "tokenizer/tokenizer_config.json 337"
+  "model.safetensors 643835524"
+  "encoder/config.json 1939"
+  "rl_agent_config.json 561"
+  "tokenizer/tokenizer.json 34363188"
+  "tokenizer/tokenizer_config.json 624"
 )
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
