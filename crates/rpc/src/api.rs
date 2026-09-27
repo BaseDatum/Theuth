@@ -76,8 +76,9 @@ use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
 use tools::git::SyncResult;
 use tools::{
-    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalsState, AskId, CancelJob,
-    CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR, JobId, JobView, Jobs,
+    AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
+    AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
+    JobId, JobView, Jobs,
     ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress,
     RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp,
     ToolRegistry, ToolSpec,
@@ -1409,20 +1410,73 @@ pub trait Api {
     #[method(name = "delete_secret")]
     async fn delete_secret(&self, name: String) -> RpcResult<()>;
     /// Answer a `SecretsEvent::Requested`: `value: Some` stores it as
-    /// `source: user`, `None` declines. `Err` when `id` is unknown or expired.
+    /// `source: user`, `None` declines. `true` if it was still pending.
     #[method(name = "answer_secret")]
-    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<()>;
+    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<bool>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
-    /// `SubagentSpawned` whose `parent` is in it (19 §2.2). A slow client sees
-    /// `{"type":"Lagged","count":n}` where `n` events were dropped.
+    /// `SubagentSpawned` whose `parent` is in it (19 §2.2). The first item is
+    /// always a [`PendingPrompts`] snapshot; a client replaces its pending
+    /// prompt set with it. A slow client sees `{"type":"Lagged","count":n}`
+    /// where `n` events were dropped, followed by a fresh snapshot.
     #[subscription(name = "subscribe_events", unsubscribe = "unsubscribe_events", item = serde_json::Value, with_extensions)]
     async fn subscribe_events(
         &self,
         session: Option<SessionId>,
         descendants: Option<bool>,
     ) -> SubscriptionResult;
+}
+
+/// The first item of every `subscribe_events` stream: every approval,
+/// `ask_user` and `secret_request` still waiting on a user, filtered like the
+/// live events. A client subscribing (or reconnecting over the relay) after
+/// the `*Requested` broadcast still gets the card, and one that missed the
+/// `*Resolved` drops it: after this item the client's pending set is exactly
+/// what the engine reports (31 §7.3).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "type")]
+pub struct PendingPrompts {
+    /// Pending approvals.
+    pub approvals: Vec<ApprovalRequested>,
+    /// Pending `ask_user` calls.
+    pub asks: Vec<AskRequested>,
+    /// Pending `secret_request` calls (`SecretRequested` variants only).
+    pub secrets: Vec<secrets::SecretsEvent>,
+}
+
+impl PendingPrompts {
+    /// The engine's pending prompts that `keep` admits (one item at a time, as
+    /// its `{"type": …}` JSON). An actor that is not running contributes none.
+    pub async fn collect(mut keep: impl FnMut(&serde_json::Value) -> bool) -> Self {
+        let mut out = Self::default();
+        fn admit<T: Serialize>(
+            items: Vec<T>,
+            keep: &mut impl FnMut(&serde_json::Value) -> bool,
+        ) -> Vec<T> {
+            items
+                .into_iter()
+                .filter(|i| serde_json::to_value(i).is_ok_and(|v| keep(&v)))
+                .collect()
+        }
+        if let Ok(Some(a)) = ActorRef::<Approval>::lookup(tools::APPROVAL_ACTOR)
+            && let Ok(v) = a.ask(tools::PendingApprovals).await
+        {
+            out.approvals = admit(v, &mut keep);
+        }
+        if let Ok(Some(a)) = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)
+            && let Ok(v) = a.ask(tools::PendingAsks).await
+        {
+            out.asks = admit(v, &mut keep);
+        }
+        if let Ok(Some(a)) = ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
+            && let Ok(v) = a.ask(secrets::PendingRequests).await
+        {
+            out.secrets = admit(v, &mut keep);
+        }
+        out
+    }
 }
 
 /// Members of private trees this process knows: `member → (root, owner
@@ -4200,10 +4254,10 @@ impl ApiServer for Server {
         send(&secrets()?, secrets::Delete { name }).await
     }
 
-    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<()> {
+    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<bool> {
         send(&secrets()?, secrets::Answer { id, value })
             .await
-            .map(|_| ())
+            .map(|session| session.is_some())
     }
 
     async fn put_attachment(&self, bytes: String, ext: String) -> RpcResult<PathBuf> {
@@ -4356,24 +4410,17 @@ impl ApiServer for Server {
         let follow = session.and_then(sessionsync::events::follow);
         let session = session.map(|s| s.to_string());
         let private = self.private.clone();
-        // Replay in-flight asks so a client that subscribes (or reconnects over
-        // the relay) *after* the AskRequested broadcast still gets the card,
-        // rather than a card that never arrives and a tool that blocks until
-        // its human timeout (31 §7.3).
-        if let Ok(Some(actor)) = ActorRef::<tools::AskUser>::lookup(tools::ASK_ACTOR)
-            && let Ok(asks) = actor.ask(tools::PendingAsks).await
+        // The snapshot goes first, always (empty too): the client replaces its
+        // pending set with it, so a card whose `*Resolved` was missed in a
+        // relay gap is dropped and one whose `*Requested` was missed appears.
+        let snapshot = PendingPrompts::collect(|v| {
+            wanted(v, session.as_deref(), tree.as_mut()) && admitted(v, peer, &private)
+        })
+        .await;
+        if let Ok(raw) = serde_json::value::to_raw_value(&snapshot)
+            && sink.send(SubscriptionMessage::from(raw)).await.is_err()
         {
-            for a in asks {
-                let Ok(v) = serde_json::to_value(&a) else {
-                    continue;
-                };
-                if !wanted(&v, session.as_deref(), tree.as_mut()) || !admitted(&v, peer, &private) {
-                    continue;
-                }
-                if let Ok(raw) = serde_json::value::to_raw_value(&v) {
-                    let _ = sink.send(SubscriptionMessage::from(raw)).await;
-                }
-            }
+            return Ok(());
         }
         tokio::spawn(async move {
             let _follow = follow;
@@ -4390,7 +4437,19 @@ impl ApiServer for Server {
                             serde_json::value::to_raw_value(&*ev)
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            serde_json::value::to_raw_value(&serde_json::json!({ "type": "Lagged", "count": n }))
+                            // Dropped events may include a `*Resolved`: the snapshot after
+                            // `Lagged` puts the client's pending set right again.
+                            let lagged = serde_json::json!({ "type": "Lagged", "count": n });
+                            if let Ok(raw) = serde_json::value::to_raw_value(&lagged)
+                                && sink.send(SubscriptionMessage::from(raw)).await.is_err()
+                            {
+                                return;
+                            }
+                            let snapshot = PendingPrompts::collect(|v| {
+                                wanted(v, session.as_deref(), tree.as_mut()) && admitted(v, peer, &private)
+                            })
+                            .await;
+                            serde_json::value::to_raw_value(&snapshot)
                         }
                         Err(broadcast::error::RecvError::Closed) => return,
                     },
@@ -4602,5 +4661,152 @@ mod tests {
     async fn dictation_status_reaches_relay_peers() {
         let v = remote_dictation_call("dictation_status", "[]").await;
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+    }
+
+    /// The next `subscribe_events` item, decoded.
+    async fn next(sub: &mut jsonrpsee::core::server::Subscription) -> serde_json::Value {
+        let item = tokio::time::timeout(std::time::Duration::from_secs(5), sub.next())
+            .await
+            .expect("an event within 5s")
+            .expect("stream open")
+            .expect("decodable");
+        item.0
+    }
+
+    /// Items until one of `ty` (inclusive), or panic after 5s.
+    async fn until(sub: &mut jsonrpsee::core::server::Subscription, ty: &str) -> serde_json::Value {
+        loop {
+            let v = next(sub).await;
+            if v["type"] == ty {
+                return v;
+            }
+        }
+    }
+
+    /// Ids named in `snapshot[kind]`.
+    fn ids(snapshot: &serde_json::Value, kind: &str) -> Vec<String> {
+        snapshot[kind]
+            .as_array()
+            .expect(kind)
+            .iter()
+            .map(|p| p["id"].as_str().expect("id").to_owned())
+            .collect()
+    }
+
+    /// Prompts stay consistent across subscribers (31 §7.3): a prompt answered
+    /// through one connection is `*Resolved` on every other; a subscriber that
+    /// arrives while prompts are pending gets them in the `PendingPrompts`
+    /// snapshot that opens its stream; one that arrives after the answers gets
+    /// an empty snapshot; a second answer is refused with `false`.
+    #[tokio::test]
+    async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
+        use kameo::actor::Spawn;
+        use std::time::Duration;
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let events = crate::bridge::start(&rt).await;
+        let ask = tools::AskUser::spawn(tools::AskUser::new(rt.clone(), Duration::from_secs(30)));
+        ask.register(tools::ASK_ACTOR).unwrap();
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(30)));
+        approval.register(tools::APPROVAL_ACTOR).unwrap();
+        let mut methods: jsonrpsee::Methods = Server {
+            events,
+            rt: rt.clone(),
+            private: PRIVATE.clone(),
+        }
+        .into_rpc()
+        .into();
+        let (peer, _guard) = link::RpcPeer::open();
+        methods.extensions_mut().insert(peer);
+        let subscribe = || {
+            methods.subscribe_unbounded(
+                "subscribe_events",
+                jsonrpsee::rpc_params![serde_json::Value::Null, serde_json::Value::Null],
+            )
+        };
+        let call = |req: String| {
+            let methods = &methods;
+            async move {
+                let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
+                serde_json::from_str::<serde_json::Value>(resp.get()).unwrap()["result"].clone()
+            }
+        };
+
+        // A: nothing pending yet, an empty snapshot opens the stream.
+        let mut a = subscribe().await.unwrap();
+        let empty = next(&mut a).await;
+        assert_eq!(empty["type"], "PendingPrompts");
+        assert!(ids(&empty, "asks").is_empty() && ids(&empty, "approvals").is_empty());
+
+        let session = SessionId::new();
+        let asked = tokio::spawn({
+            let ask = ask.clone();
+            async move {
+                ask.ask(tools::ask::Request {
+                    session,
+                    questions: vec![tools::Question {
+                        id: "q".into(),
+                        question: "which?".into(),
+                        options: vec![],
+                        recommended: None,
+                    }],
+                })
+                .await
+                .unwrap()
+            }
+        });
+        let approved = tokio::spawn({
+            let approval = approval.clone();
+            async move {
+                approval
+                    .ask(tools::approval::RequestApproval {
+                        session,
+                        tool: "shell".into(),
+                        args: serde_json::json!({ "command": "rm x" }),
+                        risk: tools::Risk::Destructive,
+                    })
+                    .await
+                    .unwrap()
+            }
+        });
+        let ask_id = until(&mut a, "AskRequested").await["id"].as_str().unwrap().to_owned();
+        let approval_id = until(&mut a, "ApprovalRequested").await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // B: subscribes while both are pending; the snapshot carries both.
+        let mut b = subscribe().await.unwrap();
+        let pending = next(&mut b).await;
+        assert_eq!(pending["type"], "PendingPrompts");
+        assert_eq!(ids(&pending, "asks"), [ask_id.clone()]);
+        assert_eq!(ids(&pending, "approvals"), [approval_id.clone()]);
+
+        // Answered once: `true`; again: `false`, nothing else happens.
+        let answer = |id: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"answer_ask","params":["{id}",[{{"kind":"text","text":"this"}}]],"id":1}}"#
+            )
+        };
+        assert_eq!(call(answer(&ask_id)).await, true);
+        assert_eq!(call(answer(&ask_id)).await, false);
+        let decide = |id: &str| {
+            format!(r#"{{"jsonrpc":"2.0","method":"resolve_approval","params":["{id}","allow"],"id":1}}"#)
+        };
+        assert_eq!(call(decide(&approval_id)).await, true);
+        assert_eq!(call(decide(&approval_id)).await, false);
+        assert!(asked.await.unwrap().answers.is_some());
+        assert_eq!(approved.await.unwrap().decision, Decision::Allow);
+
+        // Both live subscribers see both resolutions, keyed by the request id.
+        for sub in [&mut a, &mut b] {
+            assert_eq!(until(sub, "AskResolved").await["id"], ask_id);
+            assert_eq!(until(sub, "ApprovalResolved").await["id"], approval_id);
+        }
+
+        // C: subscribes after the answers; the snapshot is empty again.
+        let mut c = subscribe().await.unwrap();
+        let after = next(&mut c).await;
+        assert_eq!(after["type"], "PendingPrompts");
+        assert!(ids(&after, "asks").is_empty() && ids(&after, "approvals").is_empty());
     }
 }

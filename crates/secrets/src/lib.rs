@@ -12,7 +12,7 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
-//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`Handle`]
+//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`PendingRequests`], [`Handle`]
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
@@ -192,8 +192,9 @@ pub enum SecretsEvent {
 /// Internal `tell`: drop a pending entry whose waiter gave up.
 struct Expire(RequestId);
 
-/// A waiting `secret_request`: its session and where the value goes.
-type Waiter = (SessionId, oneshot::Sender<Option<String>>);
+/// A waiting `secret_request`: its session, the `Requested` event (replayed to
+/// late subscribers) and where the value goes.
+type Waiter = (SessionId, SecretsEvent, oneshot::Sender<Option<String>>);
 
 /// The [`SECRETS_ACTOR`] actor: the vault plus the requests waiting on a user.
 #[derive(kameo::Actor)]
@@ -276,26 +277,26 @@ impl Message<Request> for SecretsActor {
         }
         let id = RequestId(uuid::Uuid::now_v7());
         let (atx, arx) = oneshot::channel();
-        self.pending.insert(id, (m.session, atx));
         let current = self
             .vault
             .list()
             .into_iter()
             .find(|s| s.name == m.name)
             .map(|s| s.current);
+        let requested = SecretsEvent::Requested {
+            id,
+            session: m.session,
+            name: m.name.clone(),
+            note: m.note.clone(),
+            current,
+        };
+        self.pending.insert(id, (m.session, requested.clone(), atx));
         let rt = self.rt.clone();
         let vault = self.vault.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            rt.publish(SecretsEvent::Requested {
-                id,
-                session: m.session,
-                name: m.name.clone(),
-                note: m.note.clone(),
-                current,
-            })
-            .await;
+            rt.publish(requested).await;
             let (value, timed_out) = match tokio::time::timeout(timeout, arx).await {
                 Ok(Ok(v)) => (v, false),
                 // Sender dropped: actor died; treat as declined.
@@ -342,7 +343,7 @@ impl Message<Answer> for SecretsActor {
     type Reply = Option<SessionId>;
 
     async fn handle(&mut self, m: Answer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (session, tx) = self.pending.remove(&m.id)?;
+        let (session, _requested, tx) = self.pending.remove(&m.id)?;
         tx.send(m.value).ok().map(|()| session)
     }
 }
@@ -352,6 +353,18 @@ impl Message<Expire> for SecretsActor {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         self.pending.remove(&m.0);
+    }
+}
+
+/// `ask` → the still-pending [`SecretsEvent::Requested`]s, for the
+/// `subscribe_events` snapshot a client gets on (re)subscribe (31 §7.3).
+pub struct PendingRequests;
+
+impl Message<PendingRequests> for SecretsActor {
+    type Reply = Vec<SecretsEvent>;
+
+    async fn handle(&mut self, _: PendingRequests, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.pending.values().map(|(_, r, _)| r.clone()).collect()
     }
 }
 

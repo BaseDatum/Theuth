@@ -93,7 +93,7 @@ struct Expire(ApprovalId);
 pub struct Approval {
     rt: Runtime,
     timeout: Duration,
-    pending: HashMap<ApprovalId, oneshot::Sender<Decision>>,
+    pending: HashMap<ApprovalId, (ApprovalRequested, oneshot::Sender<Decision>)>,
 }
 
 impl Approval {
@@ -118,19 +118,19 @@ impl Message<RequestApproval> for Approval {
         let (reply, tx) = ctx.reply_sender();
         let id = ApprovalId(uuid::Uuid::now_v7());
         let (dtx, drx) = oneshot::channel();
-        self.pending.insert(id, dtx);
+        let requested = ApprovalRequested {
+            id,
+            session: m.session,
+            tool: m.tool,
+            args: m.args,
+            risk: m.risk,
+        };
+        self.pending.insert(id, (requested.clone(), dtx));
         let rt = self.rt.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            rt.publish(ApprovalRequested {
-                id,
-                session: m.session,
-                tool: m.tool,
-                args: m.args,
-                risk: m.risk,
-            })
-            .await;
+            rt.publish(requested).await;
             let (decision, timed_out) = match tokio::time::timeout(timeout, drx).await {
                 Ok(Ok(d)) => (d, false),
                 // Sender dropped: actor died; treat as deny.
@@ -159,7 +159,7 @@ impl Message<Resolve> for Approval {
 
     async fn handle(&mut self, m: Resolve, _: &mut Context<Self, Self::Reply>) -> bool {
         match self.pending.remove(&m.id) {
-            Some(tx) => tx.send(m.decision).is_ok(),
+            Some((_, tx)) => tx.send(m.decision).is_ok(),
             None => false,
         }
     }
@@ -170,5 +170,21 @@ impl Message<Expire> for Approval {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         self.pending.remove(&m.0);
+    }
+}
+
+/// `ask` → the still-pending approvals, for the `subscribe_events` snapshot a
+/// client gets on (re)subscribe (31 §7.3).
+pub struct PendingApprovals;
+
+impl Message<PendingApprovals> for Approval {
+    type Reply = Vec<ApprovalRequested>;
+
+    async fn handle(
+        &mut self,
+        _: PendingApprovals,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.pending.values().map(|(r, _)| r.clone()).collect()
     }
 }
