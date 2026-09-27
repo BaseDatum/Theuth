@@ -698,6 +698,156 @@ async fn notes_create_list_rename_delete() {
     stop(actor).await;
 }
 
+/// 71 §2.1 / §5 row 2: `doc_create(kind="board", root)` makes a `DocKind::Board` note whose first block is
+/// the frontmatter `root:`; it lists by kind, reads back with the header, takes a valid `Excerpt` block,
+/// and is renamed and deleted like a note.
+#[tokio::test]
+async fn boards_create_with_root_list_by_kind_and_edit() {
+    let _serial = SERIAL.lock().await;
+    let _ = tracing_subscriber::fmt().with_env_filter("document=debug").with_test_writer().try_init();
+    let bin = helper_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    // 71 step 7b: the board's root is a git top-level with the file its excerpts quote, and the codeindex
+    // actor is registered so `doc_insert`/`doc_replace` verify every `Excerpt` against the tree.
+    std::fs::create_dir_all(dir.path().join("repo/src")).unwrap();
+    let repo = dir.path().join("repo").canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    std::fs::write(repo.join("src/lib.rs"), "// 1\n// 2\n// 3\n// 4\n// 5\n// 6\n// 7\n// 8\na\nb\n// 11\n").unwrap();
+    let ix = std::sync::Arc::new(codeindex::Codeindex::new(codeindex::CodeindexConfig::default(), &dir.path().join("codeindex")).unwrap());
+    let code = codeindex::CodeindexActor::spawn(codeindex::CodeindexActor::new(ix));
+    code.register(codeindex::CODEINDEX_ACTOR).unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let session = uuid::Uuid::now_v7();
+    let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
+
+    let r = CreateTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({
+                "title": "How a fence is parsed", "kind": "board", "root": repo, "markdown": "## What and why\n\nOne parse.\n"
+            }))
+            .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let out = r.structured.unwrap();
+    assert_eq!(out["kind"], "board");
+    let id = out["doc"].as_str().unwrap().to_owned();
+    assert!(r.content.starts_with(&format!("created board {id} (theuth://notes/{id})")), "{}", r.content);
+
+    // Listed as a board, not as a note; the summary carries the kind and the note binding.
+    let boards = actor.ask(ListDocs { kind: Some(DocKind::Board), limit: None }).await.unwrap();
+    assert_eq!(boards.len(), 1);
+    assert_eq!((boards[0].id.as_str(), boards[0].kind, &boards[0].binding), (id.as_str(), DocKind::Board, &Binding::Note));
+    assert!(actor.ask(ListDocs { kind: Some(DocKind::Note), limit: None }).await.unwrap().is_empty());
+
+    // The derived file: frontmatter `root:`, then the heading the title gave, then the body.
+    let md = dir.path().join(format!("documents/{id}/note.md"));
+    let text = wait_for(&md, |s| s.contains("One parse."), Duration::from_secs(3)).await;
+    assert_eq!(text, format!("---\nroot: {}\n---\n# How a fence is parsed\n\n## What and why\n\nOne parse.\n", repo.display()));
+
+    // doc_read: the frontmatter is the first block; markdown format carries the header.
+    let read = ReadTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(read.content.lines().next().unwrap().starts_with("[fm]"), "{}", read.content);
+    let read = ReadTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "format": "markdown" })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(read.content.contains(&format!("root: {}", repo.display())), "{}", read.content);
+
+    // A valid, verbatim Excerpt lands as one json-render code block; a broken one is refused with its path.
+    let excerpt = "```json-render\n{\"root\":\"e\",\"elements\":{\"e\":{\"type\":\"Excerpt\",\"props\":{\"path\":\"src/lib.rs\",\"start\":9,\"text\":\"a\\nb\",\"mark\":[[9,10]]}}}}\n```\n";
+    let r = InsertTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "markdown": excerpt })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    let inserted = r.structured.unwrap()["inserted"][0].as_str().unwrap().to_owned();
+    let read = ReadTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    let line = read.content.lines().find(|l| l.starts_with(&inserted)).expect("inserted block in outline");
+    assert!(line.contains("[code:json-render]"), "{line}");
+    let r = ReplaceTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id, "blocks": [inserted], "markdown": excerpt.replace("[[9,10]]", "[[3,4]]") }))
+                .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(r.is_error && r.content.contains("/props/mark/0: "), "{}", r.content);
+
+    // 71 step 7b: an Excerpt that does not quote the tree is refused with the current lines (insert and
+    // replace alike); a file the tree does not have is `missing`; nothing changed in the document.
+    let before = actor.ask(Outline { doc: document::DocId::parse(&id).unwrap(), depth: None }).await.unwrap().outline;
+    let retyped = excerpt.replace("a\\nb", "a\\nc");
+    let r = InsertTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "markdown": retyped })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(r.is_error, "{}", r.content);
+    assert!(r.content.starts_with("nothing changed: an anchor does not match the tree"), "{}", r.content);
+    assert!(r.content.contains("json-render block 1:\n- /elements/e/props/text: not verbatim, current lines are src/lib.rs L9-L10:\n       9  a\n      10  b\n"), "{}", r.content);
+    let r = ReplaceTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "blocks": [inserted], "markdown": retyped })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(r.is_error && r.content.contains("not verbatim, current lines are src/lib.rs L9-L10"), "{}", r.content);
+    let gone = excerpt.replace("src/lib.rs", "src/gone.rs");
+    let r = InsertTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "markdown": gone })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(r.is_error && r.content.contains("/elements/e/props/text: not verbatim, src/gone.rs L9-L10 is missing"), "{}", r.content);
+    let after = actor.ask(Outline { doc: document::DocId::parse(&id).unwrap(), depth: None }).await.unwrap().outline;
+    assert_eq!(before, after, "a refused Excerpt lands nothing");
+    // 71 step 9: a `code:` link or unit `ref` whose file or range is not in the tree is refused the same way
+    // (existence only); one that exists lands. `src/lib.rs` has 11 lines in this repo.
+    let r = InsertTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "doc": id, "markdown": "See [b](code:src/lib.rs#L9-L40) and [x](code:src/nope.rs).\n" })).unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(r.is_error, "{}", r.content);
+    assert!(r.content.contains("- `src/lib.rs#L9-L40` is a dead anchor"), "{}", r.content);
+    assert!(r.content.contains("- `src/nope.rs` is a dead anchor"), "{}", r.content);
+    let r = InsertTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": id, "markdown": "See [b](code:src/lib.rs#L9-L10).\n" })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    // A plain note (no root) with the same retyped Excerpt is not checked: the tree is not its subject.
+    let note = CreateTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "title": "N", "markdown": "text\n" })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    let note_id = note.structured.unwrap()["doc"].as_str().unwrap().to_owned();
+    let r = InsertTool(docs.clone())
+        .call(serde_json::from_value(serde_json::json!({ "doc": note_id, "markdown": retyped })).unwrap(), cx(session))
+        .await
+        .unwrap();
+    assert!(!r.is_error, "{}", r.content);
+    actor.ask(DeleteNote { doc: document::DocId::parse(&note_id).unwrap() }).await.unwrap();
+
+    // A board is free-standing: renamed and deleted directly, the title kept across exports.
+    let doc = document::DocId::parse(&id).unwrap();
+    actor.ask(Rename { doc: doc.clone(), title: "Renamed board".into() }).await.unwrap();
+    wait_for(&md, |s| s.starts_with("---\nroot:") && s.contains("# Renamed board"), Duration::from_secs(3)).await;
+    assert_eq!(actor.ask(ListDocs { kind: Some(DocKind::Board), limit: None }).await.unwrap()[0].title, "Renamed board");
+    actor.ask(DeleteNote { doc: doc.clone() }).await.unwrap();
+    assert!(actor.ask(ListDocs { kind: Some(DocKind::Board), limit: None }).await.unwrap().is_empty());
+    stop(actor).await;
+    code.kill();
+}
+
 /// Design 59 §8 / §14 row 7, the authority's half: a link, a join with the connection-bound proof, a
 /// bad proof, an expired link, the 65th member, a viewer's write, demote → `Closed{demoted}` then a
 /// read-only reopen, revoke → `Closed{revoked}` and no membership left.

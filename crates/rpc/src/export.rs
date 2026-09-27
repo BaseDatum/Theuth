@@ -111,6 +111,8 @@ async fn export_bindings() {
         knowledge::Revision,
         knowledge::ChangedFile,
         codeindex::IndexStats,
+        codeindex::LocateAnchor,
+        codeindex::Located,
         knowledge::ChangeStatus,
         knowledge::KnowledgeChanged,
         document::DocId,

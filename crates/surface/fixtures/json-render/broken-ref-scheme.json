@@ -1,0 +1,58 @@
+{
+  "root": "r",
+  "elements": {
+    "r": {
+      "type": "Stack",
+      "children": [
+        "g",
+        "s"
+      ]
+    },
+    "g": {
+      "type": "Graph",
+      "props": {
+        "nodes": [
+          {
+            "id": "a",
+            "label": "A",
+            "ref": "http://example.com/a.rs"
+          },
+          {
+            "id": "b",
+            "label": "B",
+            "ref": "crates/surface/src/lib.rs#L1"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          }
+        ]
+      }
+    },
+    "s": {
+      "type": "Sequence",
+      "props": {
+        "actors": [
+          {
+            "id": "a",
+            "label": "A"
+          },
+          {
+            "id": "b",
+            "label": "B"
+          }
+        ],
+        "steps": [
+          {
+            "from": "a",
+            "to": "b",
+            "label": "go",
+            "ref": "../x"
+          }
+        ]
+      }
+    }
+  }
+}

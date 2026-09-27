@@ -6,7 +6,7 @@
 import { ServerBlockNoteEditor } from "@blocknote/server-util";
 import * as Y from "yjs";
 import type { Anchor, Edit, EditError, EditResult, ImportMode, ImportResult, OutlineBlock, Restore } from "./protocol.ts";
-import { type DocBlock, type DocumentSchema, FRAGMENT, schema } from "./schema.ts";
+import { type DocBlock, type DocumentSchema, FRAGMENT, links, schema } from "./schema.ts";
 import { emitHeader, get, parseHeader, splitFrontmatter } from "./yaml.ts";
 
 /** Transaction origin of every change this module makes; the helper forwards only these (§3.2 `ev: update`). */
@@ -15,7 +15,7 @@ export const isOurs = (origin: unknown): origin is Origin =>
   typeof origin === "object" && origin !== null && "helper" in origin && origin.helper === true;
 
 /** The one headless editor: schema-aware conversions, no view, no persistence. */
-export const editor = ServerBlockNoteEditor.create({ schema });
+export const editor = ServerBlockNoteEditor.create({ schema, links });
 
 type Editor = ServerBlockNoteEditor<
   DocumentSchema["blockSchema"],

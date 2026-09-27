@@ -1,14 +1,25 @@
+import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { JsonRenderFence } from './JsonRenderFence'
+import { SequenceSvg } from './Sequence'
 
 // The `Code` copy button toasts; none of that exists in a node test.
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+// `DiagramFrame` (around `Sequence`) reads the connection, the CSS tokens and the tooltip provider; none exist off the DOM.
+vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
+vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
+vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))
+vi.mock('@/lib/diagram-theme', () => ({
+  diagramTokens: () => ({ background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif' }),
+}))
+
+const RUST = new URL('../../../../../../surface/fixtures/json-render/', import.meta.url)
+const fence = (code: string) => renderToStaticMarkup(createElement(JsonRenderFence, { code, isIncomplete: false, language: 'json-render' }))
 
 /** A closed one-element fence through the real path: parse → registry → markup. */
-const render = (type: string, props: unknown) =>
-  renderToStaticMarkup(createElement(JsonRenderFence, { code: JSON.stringify({ root: 'x', elements: { x: { type, props } } }), isIncomplete: false, language: 'json-render' }))
+const render = (type: string, props: unknown) => fence(JSON.stringify({ root: 'x', elements: { x: { type, props } } }))
 
 test('Steps numbers items from 1', () => {
   const html = render('Steps', { items: [{ title: 'Clone' }, { title: 'Build', detail: 'cargo build' }] })
@@ -131,4 +142,53 @@ test('Calendar marks the active day and titles the strip', () => {
   expect(html).toMatch(/ring-fg-accent\/30" aria-label="active"/)
   expect(html.match(/aria-label="pending"/g)).toHaveLength(1)
   expect(html).toContain('demo')
+})
+
+test('Excerpt (valid-excerpt fixture): mono header path:start-end · symbol · lang, gutter from start, marked rows, caption', () => {
+  const html = fence(readFileSync(new URL('valid-excerpt.json', RUST), 'utf8'))
+  expect(html).toContain('crates/surface/src/validate.rs:26-29</span> · esc · rust')
+  expect(html.match(/data-line="(\d+)"/g)).toEqual(['data-line="26"', 'data-line="27"', 'data-line="28"', 'data-line="29"'])
+  expect(html.match(/data-line="\d+" class="[^"]*bg-fg-accent\/10/g)).toEqual(['data-line="28" class="grid min-h-5 grid-cols-[42px_14px_1fr] pr-3 bg-fg-accent/10'])
+  expect(html).toContain('every error path goes through one escape')
+  expect(html).toContain('aria-label="Copy excerpt"')
+  expect(html).not.toContain('Show all')
+})
+
+test('Excerpt marks every row inside each [from, to] pair and caps at 18 rows with Show all', () => {
+  const two = render('Excerpt', { path: 'a.rs', text: 'x\ny\nz', start: 10, mark: [[11, 12]] })
+  expect(two.match(/data-line="(\d+)" class="[^"]*bg-fg-accent\/10/g)?.map((m) => m.slice(11, 13))).toEqual(['11', '12'])
+  const long = render('Excerpt', { path: 'a.rs', text: Array.from({ length: 30 }, (_, i) => `l${i}`).join('\n') })
+  expect(long).toContain('max-height:360px')
+  expect(long).toContain('Show all 30 lines')
+  expect(long.match(/data-line="/g)).toHaveLength(30)
+})
+
+test('Sequence (valid-sequence fixture): one focusable button per step with its ref as aria-description, actors as lanes', () => {
+  const html = fence(readFileSync(new URL('valid-sequence.json', RUST), 'utf8'))
+  const steps = html.match(/<g data-step="\d+" role="button" tabindex="0"[^>]*>/g) ?? []
+  expect(steps).toHaveLength(6)
+  expect(steps[0]).toContain('aria-label="1. Model → parse: fence body"')
+  expect(steps[0]).toContain('aria-description="crates/surface/src/lib.rs#L90"')
+  expect(steps[5]).not.toContain('aria-description')
+  expect(html.match(/data-actor="/g)).toHaveLength(4)
+  expect(html.match(/stroke-dasharray="6 4"/g)).toHaveLength(2)
+  expect(html.match(/marker-end="url\(#seq-[0-9a-f]+-open-fg\)"/g)).toHaveLength(1)
+  expect(html.match(/stroke-width="18"/g)).toHaveLength(6)
+  expect(html).toContain('One json-render fence, model to picture')
+})
+
+test('Sequence highlight: the active step goes accent 2.4 with an accent dot, every other step goes muted; onSelect makes steps pointers', () => {
+  const data = { actors: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], steps: [{ from: 'a', to: 'b', label: 'x' }, { from: 'b', to: 'a', label: 'y', style: 'async' as const }] }
+  const t = { background: '#fff', foreground: '#111', primary: '#111', muted: '#ddd', mutedForeground: '#666', border: '#ccc', card: '#fafafa', accent: '#b4531e', success: '#2f5d4a', danger: '#9b2d1f', font: 'sans-serif' }
+  const html = renderToStaticMarkup(createElement(SequenceSvg, { data, tokens: t, markerId: 'm', highlight: [1], onSelect: () => {} }))
+  const step = (i: number) => /<g data-step="I"[^>]*>(.*?)<\/g>/.exec(html.replace(`data-step="${i}"`, 'data-step="I"'))?.[1] ?? ''
+  expect(step(1)).toContain('stroke="#b4531e" stroke-width="2.4"')
+  expect(step(1)).toContain('marker-end="url(#m-open-accent)"')
+  expect(step(1)).toContain('<circle cx="276" cy="188" r="5.5" fill="#b4531e"')
+  expect(step(0)).toContain('stroke="#666" stroke-width="1.25"')
+  expect(step(0)).toContain('marker-end="url(#m-closed-muted)"')
+  expect(html.match(/cursor:pointer/g)).toHaveLength(2)
+  const rest = renderToStaticMarkup(createElement(SequenceSvg, { data, tokens: t, markerId: 'm' }))
+  expect(rest.match(/stroke="#111" stroke-width="1.25"/g)).toHaveLength(2)
+  expect(rest).not.toContain('cursor:pointer')
 })

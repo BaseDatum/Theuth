@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { AppWindow, History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
+import { AppWindow, BookOpen, History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, PenLine, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { BoardReader } from '@/components/board/BoardReader'
 import { prefillDraft } from '@/components/chat/Composer'
 import { Action, DocumentPage } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
@@ -116,6 +117,13 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
   // Popped (`lib/popout.ts`): the editor alone — no chat panel, no second "new window"; the document is the one the
   // main window edits, so both editors follow each other through the document actor like two devices.
   const popped = isPopout()
+  // 71 §2.2: a board opens in its own read mode; **Edit** toggles to BlockNote (a board is still a note). Until
+  // `meta` lands with `doc_open` the kind is unknown, so the page shows nothing rather than an editor that flips.
+  const kind = live.provider?.meta?.kind
+  const [editing, setEditing] = useState(false)
+  const board = kind === 'board' && !deleted
+  const fallback =
+    board && !editing && live.provider ? <BoardReader provider={live.provider} /> : live.provider && !kind && live.status.kind === 'connecting' ? <div /> : undefined
 
   return (
     <DocumentPage
@@ -134,6 +142,8 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
       }
       actions={
         <>
+          {board && <span className="mr-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-[0.08em] text-fg-tertiary uppercase">board</span>}
+          {board && <Action label={editing ? 'Read' : 'Edit'} icon={editing ? BookOpen : PenLine} onClick={() => setEditing((e) => !e)} pressed={editing} />}
           <Action label="Rename" icon={Pencil} onClick={() => titleInput.current?.select()} disabled={deleted} />
           <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} disabled={deleted} />
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
@@ -144,6 +154,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
         </>
       }
       live={deleted ? { ...live, error: new Error('This note was deleted.') } : live}
+      fallback={fallback}
       onAsk={ask}
       below={chat.open && !deleted && !popped ? <NoteChat note={id} doc={doc} /> : null}
     >

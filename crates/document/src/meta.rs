@@ -94,6 +94,10 @@ pub enum DocKind {
     /// A task's thread (67 §7.1): comments, answers and the event log of one task. Owned by the task,
     /// so it never lists as a note.
     TaskThread,
+    /// A board (71 §2.1): a note the agent draws for a reader — sections, anchored prose, `Excerpt`s and
+    /// diagrams — bound like a note (`Binding::Note`, `documents/<id>/note.md`); its first block is the
+    /// frontmatter carrying `root:`, the absolute repository root every `code:` link and `ref` resolves against.
+    Board,
 }
 
 impl DocKind {
@@ -105,7 +109,14 @@ impl DocKind {
             Self::Note => "note",
             Self::AgentCharter => "agent_charter",
             Self::TaskThread => "task_thread",
+            Self::Board => "board",
         }
+    }
+
+    /// A note or a board: owned by nobody else, so it is renamed and deleted directly, keeps the title it was
+    /// created with, and lists among the notes.
+    pub fn free_standing(self) -> bool {
+        matches!(self, Self::Note | Self::Board)
     }
 }
 

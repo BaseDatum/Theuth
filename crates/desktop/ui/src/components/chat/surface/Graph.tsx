@@ -111,7 +111,7 @@ export function GraphSvg({
   const groups: Record<string, string> = {}
   for (const g of graph.groups ?? []) groups[g.id] = g.label
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ maxWidth: '100%', height: 'auto' }} role="img" aria-label="Graph">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ maxWidth: '100%', height: 'auto' }} role={onSelect ? 'group' : 'img'} aria-label="Graph">
       <defs>
         <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0 0 L10 5 L0 10 z" fill={t.foreground} />
@@ -151,6 +151,7 @@ export function GraphSvg({
               key={n.id}
               opacity={s.opacity}
               data-node={n.id}
+              aria-description={node.ref ?? undefined}
               {...(onSelect ? { role: 'button', tabIndex: 0, style: { cursor: 'pointer' }, onClick: () => onSelect(n.id), onKeyDown: (ev: React.KeyboardEvent) => (ev.key === 'Enter' || ev.key === ' ') && onSelect(n.id) } : {})}
             >
               <Shape kind={node.kind} x={n.x} y={n.y} w={n.w} h={n.h} fill={s.fill} fillOpacity={s.fillOpacity} stroke={s.stroke} strokeWidth={s.strokeWidth} />

@@ -1,0 +1,833 @@
+/*
+ * Design 71 §2.6 / §2.7 — the board reader's geometry and its two type registers. Step 4: columns, anchors, side
+ * pane. Step 6: prose in `--font-serif` (Newsreader, §0 Q1; `boards.serif` off → `--font-sans`), chrome in
+ * `--font-mono` 11 px (`.board-chrome`), sections + chevron, the TOC rail (≥ 1360 px) / pill, the drawing badge,
+ * block rise + unit stagger (none under `prefers-reduced-motion`). Values R §B.1/§B.3/§B.5/§B.7 unless noted.
+ */
+
+.board-shell {
+  position: relative;
+  container-type: inline-size;
+  /* §2.7: `--marker-tint` = accent at 14 % (light 8 %); the open-link wash at 15 %; muted edges while a unit is lit. */
+  --marker-tint: color-mix(in srgb, var(--fg-accent) 8%, transparent);
+  --link-wash: color-mix(in srgb, var(--fg-accent) 15%, transparent);
+  --edge-muted: color-mix(in srgb, var(--fg-secondary) 45%, transparent);
+  --board-pad: clamp(20px, calc((100cqi - 720px) * 0.122 + 20px), 64px);
+  --board-wide-max: 1120px;
+  /* The TOC rail column: 248 px while `.board-page[data-rail]` (≥ 1360 px viewport, R §B.3 "wide shell"; the open
+     pane yields it below 1940 px — `useRail`), else 0 and the TOC is a pill. */
+  --board-rail: 0px;
+}
+.board-shell[data-serif='false'] {
+  --font-serif: var(--font-sans);
+}
+.dark .board-shell {
+  --marker-tint: color-mix(in srgb, var(--fg-accent) 14%, transparent);
+}
+
+/* [rail | column | resizer | pane]: `0 minmax(0,1fr) 0 0` at rest, `… 10px var(--board-pane-width)` pinned. */
+.board-page {
+  display: grid;
+  grid-template-columns: var(--board-rail) minmax(0, 1fr) 0 0;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.board-page[data-pinned] {
+  grid-template-columns: var(--board-rail) minmax(0, 1fr) 10px var(--board-pane-width, 560px);
+  --board-wide-max: 1000px;
+}
+
+.board-scroll {
+  grid-column: 2;
+  container-type: inline-size;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.board-column {
+  max-width: 860px;
+  margin: 0 auto 96px;
+  padding: 28px var(--board-pad) 0;
+  --board-wide: min(var(--board-wide-max), calc(100cqi - 2 * var(--board-pad)));
+}
+
+/* Prose and every non-diagram block: 720 px; a diagram may run to `--board-wide`, centred on the column. Blocks sit
+   either directly in the column (preamble) or in a section body. */
+.board-column > *,
+.board-section-body > * {
+  width: min(100%, 720px);
+  margin-inline: auto;
+}
+.board-column > .board-wide,
+.board-section-body > .board-wide {
+  width: var(--board-wide);
+  margin-left: calc(50% - var(--board-wide) / 2);
+}
+
+/* M8: two registers. Prose (`h1,h2,h3,p,li,blockquote`) in the prose face; everything else the board draws in mono. */
+.board-prose {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.72;
+}
+.board-chrome {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+.board-micro {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.board-prose p,
+.board-prose blockquote,
+.board-prose ul,
+.board-prose ol {
+  margin-block: 0 14px;
+}
+.board-prose ul,
+.board-prose ol {
+  padding-left: 1.4em;
+}
+.board-prose ul {
+  list-style: disc;
+}
+.board-prose ol {
+  list-style: decimal;
+}
+.board-prose li + li {
+  margin-top: 8px;
+}
+.board-prose blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 14px;
+  color: var(--fg-secondary);
+}
+.board-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--bg-layer-2);
+  border-radius: 4px;
+  padding: 0.05em 0.3em;
+}
+.board-column h1 {
+  font-size: 34px;
+  line-height: 40px;
+  font-weight: 500;
+  margin: 28px auto 18px;
+}
+.board-column h2 {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 500;
+  margin: 40px auto 12px;
+}
+.board-column h3 {
+  font-size: 17px;
+  line-height: 23px;
+  font-weight: 600;
+  margin: 30px auto 10px;
+}
+.board-column h1,
+.board-column h2,
+.board-column h3 {
+  scroll-margin-top: 24px;
+}
+.board-column hr {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  margin-block: 24px;
+}
+.board-table {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border-collapse: collapse;
+  margin-block: 0 14px;
+}
+.board-table th,
+.board-table td {
+  border: 1px solid var(--border-default);
+  padding: 4px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.board-table th {
+  background: var(--bg-layer-2);
+  font-weight: 600;
+}
+.board-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 10px 14px;
+  overflow: auto;
+  margin-block: 0 14px;
+}
+.board-block {
+  margin-block: 0 14px;
+}
+.board-block [data-streamdown] {
+  margin-block: 0;
+}
+
+/* M4: a `code:` span. Dotted at rest, tinted while its anchor is active, washed while it is the pin. */
+.board-anchor {
+  color: inherit;
+  text-decoration: underline dotted var(--fg-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  border-radius: 3px;
+  padding-inline: 1px;
+  cursor: pointer;
+  transition: background-color 80ms linear;
+}
+.board-anchor:hover,
+.board-anchor[data-anchor-active] {
+  background: var(--marker-tint);
+  text-decoration-style: solid;
+}
+.board-anchor[data-anchor-pinned] {
+  background: var(--link-wash);
+}
+.board-anchor:focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .board-anchor {
+    transition: none;
+  }
+}
+
+/* The in-flow Excerpt: the frame lights when the active anchor overlaps its range; rows light by intersection. */
+.board-excerpt {
+  border-radius: 6px;
+  outline: 0 solid transparent;
+}
+.board-excerpt[data-anchor-active] > [data-streamdown='excerpt'] {
+  border-color: var(--fg-accent);
+  box-shadow: inset 2px 0 0 0 var(--fg-accent);
+}
+.board-excerpt:focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 2px;
+}
+.board-excerpt [data-line] {
+  cursor: pointer;
+}
+.board-excerpt [data-line]:hover {
+  background: var(--marker-tint);
+}
+
+/* Resizer and pane. */
+.board-resizer {
+  grid-column: 3;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border-default);
+  touch-action: none;
+}
+.board-resizer:hover,
+.board-resizer[data-dragging] {
+  background: var(--bg-layer-2);
+}
+.board-pane {
+  grid-column: 4;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-page);
+}
+.board-pane-head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.board-pane-body {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+  padding: 12px 14px 24px;
+}
+
+/* ≤ 1080 px container: the pane becomes a bottom sheet at 40 % and the grid drops its right columns (R §B.6). */
+@container (max-width: 1080px) {
+  .board-page[data-pinned] {
+    grid-template-columns: var(--board-rail) minmax(0, 1fr) 0 0;
+    --board-wide-max: 1120px;
+  }
+  .board-resizer {
+    display: none;
+  }
+  .board-pane {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 40%;
+    border-top: 1px solid var(--border-default);
+    box-shadow: 0 -8px 24px rgb(0 0 0 / 0.12);
+    z-index: 30;
+  }
+}
+
+/* M14: units are objects. The wide diagram block carries a mono chrome row with **Tour** when a unit has a `ref`. */
+.board-diagram-head {
+  display: flex;
+  justify-content: flex-end;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-tertiary);
+}
+.board-tour-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.board-tour-button:hover {
+  background: var(--marker-tint);
+  color: var(--fg-accent);
+}
+.board-tour-button:focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 2px;
+}
+.board-tour-button svg {
+  width: 12px;
+  height: 12px;
+}
+/* Focus ring on an svg unit (Whiteboard's hover ring, R §B.5); hover/active recolouring is the view's `highlight`. */
+.board-diagram :is([data-node], [data-step]):focus-visible,
+.board-tour-stage :is([data-node], [data-step]):focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+/* M6 / §2.6: the tour portal — `[stage | 10px | pane]`, pane 594 px (360–760), stage ≥ 480. */
+.board-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10px var(--board-tour-pane, 594px);
+  grid-template-rows: minmax(0, 1fr);
+  background: var(--bg-page);
+  color: var(--fg-primary);
+  outline: 0;
+  --marker-tint: color-mix(in srgb, var(--fg-accent) 8%, transparent);
+  --link-wash: color-mix(in srgb, var(--fg-accent) 15%, transparent);
+}
+.dark .board-tour {
+  --marker-tint: color-mix(in srgb, var(--fg-accent) 14%, transparent);
+}
+.board-tour-stage {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px;
+}
+.board-tour-stage [data-streamdown] {
+  margin-block: 0;
+}
+.board-tour-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-tertiary);
+}
+.board-tour-resizer {
+  cursor: col-resize;
+  border-left: 1px solid var(--border-default);
+  touch-action: none;
+}
+.board-tour-resizer:hover,
+.board-tour-resizer[data-dragging] {
+  background: var(--bg-layer-2);
+}
+.board-tour-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.board-tour-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-tertiary);
+}
+.board-tour-count {
+  flex: 1;
+}
+.board-tour-feed {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 80vh; /* the last stop can always reach the scroller top, so the scroll rule can pick it */
+}
+.tour-stop {
+  margin-bottom: 20px;
+  border-radius: 8px;
+  padding: 4px;
+  transition: background-color 120ms linear;
+}
+.tour-stop[data-active] {
+  background: var(--marker-tint);
+}
+.tour-stop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 6px 8px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.tour-stop-head:focus-visible {
+  outline: 2px solid var(--fg-accent);
+}
+.tour-stop-badge {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-default);
+  font-weight: 600;
+  color: var(--fg-tertiary);
+  background: var(--bg-layer-1);
+}
+.tour-stop[data-active] .tour-stop-badge {
+  color: var(--bg-page);
+  background: var(--fg-accent);
+  border-color: var(--fg-accent);
+}
+.tour-stop-label {
+  color: var(--fg-primary);
+  font-weight: 600;
+}
+.tour-stop-detail {
+  color: var(--fg-tertiary);
+}
+.tour-stop-note {
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-tertiary);
+}
+.tour-stop [data-streamdown] {
+  margin-block: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-stop {
+    transition: none;
+  }
+}
+/* ≤ 1080 px: the tour stacks — stage above (40 %, ≥ 180 px), stops below (R §B.6 flow tour). */
+@media (max-width: 1080px) {
+  .board-tour {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 40%) 1fr;
+  }
+  .board-tour-resizer {
+    display: none;
+  }
+  .board-tour-pane {
+    border-top: 1px solid var(--border-default);
+  }
+}
+
+/* M9 sections: header flex baseline gap 10, `margin-block: 40px 12px`; chevron 18×18 at `left: -24px`, rest opacity
+   .45; a collapsed heading dims and the summary ("N blocks · M anchors") sits beside it in the mono register. */
+.board-section-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-block: 40px 12px;
+}
+.board-section-head > h2 {
+  margin: 0;
+  min-width: 0;
+}
+.board-section-toggle {
+  position: absolute;
+  left: -24px;
+  top: 5px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-secondary);
+  opacity: 0.45;
+  border-radius: 4px;
+  transition:
+    opacity 120ms linear,
+    transform 160ms ease-out;
+}
+.board-section-head:hover .board-section-toggle,
+.board-section-toggle:focus-visible,
+.board-section[data-collapsed] .board-section-toggle {
+  opacity: 1;
+}
+.board-section-toggle:focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 2px;
+}
+.board-section[data-collapsed] .board-section-toggle {
+  transform: rotate(-90deg);
+}
+.board-section[data-collapsed] h2 {
+  color: var(--muted-foreground);
+}
+.board-section-meta {
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+@container (max-width: 720px) {
+  /* §2.10: no room in the gutter — the chevron sits inline before the heading. */
+  .board-section-toggle {
+    position: static;
+    align-self: center;
+    flex: none;
+  }
+}
+
+/* M9 TOC: a 32×32 pill at `top: 32px; left: 24px` that grows to a 248 px card; at ≥ 1360 px viewport an always-open
+   rail in the grid's first column. Active entry accent (R §B.3, §C.4). */
+.board-toc {
+  position: absolute;
+  top: 32px;
+  left: 24px;
+  z-index: 20;
+  color: var(--fg-secondary);
+}
+.board-toc-pill {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-page);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.board-toc-pill:hover {
+  background: var(--bg-layer-2);
+}
+.board-toc-card {
+  display: none;
+  width: 248px;
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  padding: 10px 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-page);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+}
+.board-toc[data-open] .board-toc-pill {
+  display: none;
+}
+.board-toc[data-open] .board-toc-card {
+  display: block;
+}
+.board-toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.board-toc-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+.board-toc-close:hover {
+  background: var(--bg-layer-2);
+}
+.board-toc-tour {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.board-toc-tour:hover {
+  background: var(--marker-tint);
+  color: var(--fg-accent);
+}
+.board-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.board-toc-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 5px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-toc-entry:hover {
+  background: var(--bg-layer-2);
+}
+.board-toc-entry[data-active] {
+  color: var(--fg-accent);
+  background: var(--marker-tint);
+}
+.board-toc-list [data-level='1'] .board-toc-entry {
+  font-weight: 600;
+}
+.board-toc-list [data-level='3'] .board-toc-entry {
+  padding-left: 20px;
+}
+@container (max-width: 720px) {
+  /* §2.10: the open card is a bottom sheet. */
+  .board-toc[data-open] {
+    inset: auto 0 0 0;
+  }
+  .board-toc[data-open] .board-toc-card {
+    width: 100%;
+    max-height: 60%;
+    border-radius: 12px 12px 0 0;
+    border-bottom: 0;
+    padding-bottom: calc(12px + var(--safe-bottom, 0px));
+  }
+}
+.board-page[data-rail] {
+  --board-rail: 248px;
+}
+.board-page[data-rail] .board-toc {
+  position: static;
+  grid-column: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 32px 0 24px 24px;
+}
+.board-page[data-rail] .board-toc-pill,
+.board-page[data-rail] .board-toc-close {
+  display: none;
+}
+.board-page[data-rail] .board-toc-card {
+  display: block;
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* M7 drawing badge: mono chip pinned to the column's top right while the bound session runs. */
+.board-badge {
+  position: sticky;
+  top: 12px;
+  z-index: 20;
+  width: max-content;
+  margin: 12px 16px -22px auto;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-page);
+  color: var(--fg-secondary);
+}
+.board-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-accent);
+  animation: board-pulse 1.2s ease-in-out infinite;
+}
+
+/* M7 motion: a new block rises (opacity 0→1, 6 px, 240 ms); a new diagram's units follow 40 ms apart. */
+@keyframes board-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes board-unit {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes board-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.board-column [data-rise] {
+  animation: board-rise 240ms ease-out both;
+}
+.board-column [data-rise] [data-node],
+.board-column [data-rise] [data-step] {
+  opacity: 0;
+  animation: board-unit 240ms ease-out both;
+  animation-delay: calc(var(--unit-i, 0) * 40ms);
+}
+/* Catalog blocks (`Checklist`, `Callout`, `Table`…) and Sequence labels join the chrome register (R §B.5 mono 11.5);
+   Graph labels keep `--font-sans` — the face its layout measured (`diagramTokens().font`), so boxes stay fitted. */
+.board-block > [data-streamdown='json-render'],
+.board-wide [data-streamdown='sequence-block'] svg text {
+  font-family: var(--font-mono);
+}
+@media (prefers-reduced-motion: reduce) {
+  .board-column [data-rise],
+  .board-column [data-rise] [data-node],
+  .board-column [data-rise] [data-step],
+  .board-badge-dot {
+    animation: none;
+  }
+  .board-column [data-rise] [data-node],
+  .board-column [data-rise] [data-step] {
+    opacity: 1;
+  }
+  .board-section-toggle {
+    transition: none;
+  }
+}
+
+/* §2.9 / M10: the floating **Ask**, positioned inside `.board-scroll` under the selection (R §C.1 anchors theirs in
+   the document); mono register (`.board-chrome`). */
+.board-ask {
+  position: absolute;
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-page);
+  color: var(--fg-primary);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.board-ask svg {
+  width: 12px;
+  height: 12px;
+}
+.board-ask:hover {
+  background: var(--marker-tint);
+  color: var(--fg-accent);
+}
+.board-ask:focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 2px;
+}
+
+/* §2.10 mobile — one column, the same anchors. 44 px targets on a coarse pointer (tap = pin; no hover). */
+@media (pointer: coarse) {
+  .board-ask {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 12px;
+  }
+  .board-toc-pill {
+    width: 44px;
+    height: 44px;
+  }
+  .board-toc-close,
+  .board-toc-tour,
+  .board-toc-entry,
+  .board-tour-button,
+  .tour-stop-head,
+  .board-pane-head button,
+  .board-tour-head button,
+  .board-diagram-head button {
+    min-height: 44px;
+  }
+  .board-toc-close {
+    width: 44px;
+  }
+  .board-section-toggle {
+    width: 44px;
+    height: 44px;
+    left: -48px;
+    top: -8px;
+    opacity: 1;
+  }
+  .board-excerpt [data-line] {
+    min-height: 28px;
+    align-items: center;
+  }
+}
+/* §2.10: excerpt gutter 3 ch and paths that wrap `anywhere` once the column is the whole screen. */
+@container (max-width: 720px) {
+  .board-excerpt [data-line] {
+    grid-template-columns: 3ch 8px 1fr;
+    padding-right: 8px;
+  }
+  .board-excerpt [data-streamdown='excerpt'] .truncate,
+  .board-pane-head .truncate {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+}
+/* The header chrome (`N anchors · M stale`) shares the column's top with the absolute TOC pill on narrow shells:
+   clear the pill (24 px in + 32 px, 44 px on a coarse pointer). */
+@container (max-width: 720px) {
+  .board-column > .board-chrome[data-anchors] {
+    padding-left: 44px;
+  }
+}
+@media (pointer: coarse) {
+  @container (max-width: 720px) {
+    .board-column > .board-chrome[data-anchors] {
+      padding-left: 56px;
+    }
+  }
+}

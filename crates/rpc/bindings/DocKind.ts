@@ -3,4 +3,4 @@
 /**
  * What a document is (§4.2 `kind`).
  */
-export type DocKind = "knowledge" | "artifact" | "meeting_note" | "note" | "agent_charter" | "task_thread";
+export type DocKind = "knowledge" | "artifact" | "meeting_note" | "note" | "agent_charter" | "task_thread" | "board";

@@ -1,0 +1,24 @@
+{
+  "root": "x",
+  "elements": {
+    "x": {
+      "type": "Excerpt",
+      "props": {
+        "path": "crates/surface/src/validate.rs",
+        "start": 26,
+        "lang": "rust",
+        "text": "fn esc(token: &str) -> String {\n    token.replace('~', \"~0\").replace('/', \"~1\")\n}",
+        "mark": [
+          [
+            27,
+            27
+          ],
+          [
+            40,
+            41
+          ]
+        ]
+      }
+    }
+  }
+}

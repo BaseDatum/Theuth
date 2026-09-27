@@ -10,6 +10,7 @@
 //! ([`catalog_compact`], [`catalog_schema`]) is read off the same types.
 //! UI-agnostic: the TUI, the text channels and (via ts-rs) the desktop consume this.
 
+pub mod anchor;
 mod catalog;
 mod fences;
 mod flatten;
@@ -17,6 +18,7 @@ mod graph;
 mod mermaid;
 pub mod prompt;
 mod render;
+mod sequence;
 mod spec;
 mod validate;
 
@@ -47,6 +49,14 @@ pub const MAX_GRAPH_EDGES: usize = 240;
 pub const MAX_GRAPH_GROUPS: usize = 12;
 /// Longest `Graph` node, edge or group label, in characters.
 pub const MAX_GRAPH_LABEL_CHARS: usize = 80;
+/// Fewest and most `Sequence` actors.
+pub const SEQUENCE_ACTORS: std::ops::RangeInclusive<usize> = 2..=12;
+/// Fewest and most `Sequence` steps.
+pub const SEQUENCE_STEPS: std::ops::RangeInclusive<usize> = 1..=40;
+/// Most lines in one `Excerpt`.
+pub const MAX_EXCERPT_LINES: usize = 120;
+/// Largest `Excerpt.text`, in bytes.
+pub const MAX_EXCERPT_BYTES: usize = 16 * 1024;
 
 /// One located validation failure; `path` is a JSON Pointer into the fence body
 /// (`""` = the whole body, `"/"` = the element graph as a whole).
@@ -184,6 +194,17 @@ pub fn quote_line(body: &str, path: &str) -> Option<String> {
     Some(format!("line {n}: {}", line.trim()))
 }
 
+/// The mermaid source of a diagram component — `flowchart` for a `Graph`, `sequenceDiagram`
+/// for a `Sequence` (`ref`s dropped) — for channels that carry mermaid but not `json-render`
+/// (Slack, Signal, markdown export). `None` for every other component.
+pub fn to_mermaid(c: &Component) -> Option<String> {
+    match c {
+        Component::Graph(g) => Some(graph::to_mermaid(g)),
+        Component::Sequence(s) => Some(sequence::to_mermaid(s)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -204,7 +225,7 @@ mod tests {
         };
     }
 
-    const VALID: [(&str, &str); 32] = [
+    const VALID: [(&str, &str); 34] = [
         fixture!("valid-release-readiness"),
         fixture!("valid-status-board"),
         fixture!("valid-stack-text"),
@@ -237,6 +258,8 @@ mod tests {
         fixture!("valid-files"),
         fixture!("valid-kanban"),
         fixture!("valid-calendar"),
+        fixture!("valid-excerpt"),
+        fixture!("valid-sequence"),
     ];
 
     const REPAIRABLE: [(&str, &str); 4] = [
@@ -248,7 +271,7 @@ mod tests {
 
     const TRUNCATED: (&str, &str) = fixture!("broken-truncated");
 
-    const LOCATED: [((&str, &str), &str); 10] = [
+    const LOCATED: [((&str, &str), &str); 14] = [
         (fixture!("broken-unknown-type"), "/elements/t/type"),
         (fixture!("broken-missing-child"), "/elements/r/children/1"),
         (fixture!("broken-shared-child"), "/"),
@@ -271,6 +294,13 @@ mod tests {
         (fixture!("broken-heatmap-ragged"), "/elements/h/props/cells/1"),
         (fixture!("broken-image-src"), "/elements/i/props/src"),
         (fixture!("broken-link-url"), "/elements/l/props/items/0/url"),
+        (fixture!("broken-excerpt-mark"), "/elements/x/props/mark/1"),
+        (
+            fixture!("broken-sequence-actor"),
+            "/elements/s/props/steps/1/to",
+        ),
+        (fixture!("broken-ref-scheme"), "/elements/g/props/nodes/0/ref"),
+        (fixture!("broken-ref-scheme"), "/elements/s/props/steps/0/ref"),
     ];
 
     /// `broken-unknown-type`: fails at `/elements/t/type`.

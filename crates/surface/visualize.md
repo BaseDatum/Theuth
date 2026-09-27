@@ -18,6 +18,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 |---|---|---|
 | components, dependencies, data flow, a pipeline, a call graph | `json-render` `Graph` (`direction: "TB"` for a hierarchy; a state per node for health/progress) | a bullet list of arrows, or a mermaid flowchart |
 | who calls whom in what order | `sequenceDiagram` | numbered prose steps |
+| participants exchanging messages over time, each step tied to code | `json-render` `Sequence` (`ref` on every step that runs code) | a `sequenceDiagram` whose arrows cannot point at a file |
 | a lifecycle, modes, retries, transitions | `stateDiagram-v2` | "when X it becomes Y, unless…" |
 | schema, types, relationships | `erDiagram` or `classDiagram` | field lists |
 | a how-to or an explanation in steps | `json-render` `Steps`, or `openui` `Steps` | "first… then… finally" |
@@ -31,6 +32,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | facts about one thing (a config, a host, a PR) | `json-render` `KeyValueList` | a colon-separated list |
 | terms and their meanings | `Glossary` | "X means…; Y means…" |
 | a snippet to read, not run | `Code` (copy button); commands to run stay a plain code block | inline backticks for six lines |
+| a passage of real code with its location | `Excerpt` (`path`, 1-based `start`, `mark` the rows that carry the claim, `symbol`); text from `read_file`, never retyped | a `Code` block with the path in `title` |
 | files, directories, a repository layout | `FileList` (flat) or `Tree` (nested by `depth`) | a bullet list of paths |
 | labels, categories, states | `Tags` | comma-separated words |
 | references, further reading | `LinkList` | bare URLs in a sentence |
@@ -38,10 +40,12 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | an owner, a contact, a reviewer | `Person` | "talk to Ada (release owner, ada@…)" |
 | something someone said, verbatim | `Quote` | quotation marks inside a paragraph |
 | a schedule, a chronology, a topic map | mermaid `gantt`, `timeline`, `mindmap` | dated bullets |
+| an explanation with three or more parts, or one the reader will return to | a board (board.md) | a long reply of fences and prose |
 
 Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
-json-render block; it draws on every surface and an app can highlight it. Mermaid stays for
-sequence, state, class and ER diagrams, gantt, timeline and mindmap, and for anything that
+json-render block; it draws on every surface and an app can highlight it. Messages between
+actors whose steps point at code are a `Sequence`. Mermaid stays for un-anchored sequence
+sketches, state, class and ER diagrams, gantt, timeline and mindmap, and for anything that
 needs mermaid's own syntax.
 
 ## Shapes for common replies
@@ -89,6 +93,9 @@ Example:
 - Prefer flat: a `Card` with a `Table` beats nested `Stack`s. ≤ 256 elements.
 - `Graph`: every `edges[].from`/`to` and `nodes[].group` names an existing `nodes[].id` / `groups[].id`; ids unique; ≤ 120 nodes, ≤ 240 edges, ≤ 12 groups; labels ≤ 80 characters. `from == to` is a self-loop.
 - `Heatmap.cells` has one row per `rows` entry and one value per `cols` entry. `Image.src` is `http(s)://` or `data:image/`; `LinkList` urls are `http(s)://`.
+- `Sequence`: 2–12 `actors` with unique ids, 1–40 `steps`; every `steps[].from`/`to` names an `actors[].id`; labels ≤ 80 characters.
+- `Excerpt`: `path` is repository-relative (no leading `/`, no `..`, no `http:`); `text` is 1–120 lines and ≤ 16 KiB; every `mark` pair `[from, to]` is ordered and inside `start..start+lines-1`.
+- `ref` (on `Graph` nodes and `Sequence` steps): `path`, `path#L10` or `path#L10-L24` — repository-relative, 1-based, inclusive — or `block:<id>`. No `..`, no scheme, no URL.
 
 ## Catalog
 <!-- generated from crates/surface: names, props, one example each -->

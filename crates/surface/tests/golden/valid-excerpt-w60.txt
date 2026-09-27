@@ -1,0 +1,7 @@
+crates/surface/src/validate.rs:26-29 · esc · rust
+  26 │ /// JSON Pointer escaping of one reference token.
+  27 │ fn esc(token: &str) -> String {
+▸ 28 │     token.replace('~', "~0").replace('/', "~1")
+  29 │ }
+every error path goes through one escape; `~` first, then
+`/`

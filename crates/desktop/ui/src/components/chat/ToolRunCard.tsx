@@ -4,6 +4,7 @@ import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
+import { isBoardCreate } from './BoardCard'
 import { Message, PromptCard } from './Message'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
@@ -12,20 +13,21 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 export type Run = Entry[]
 
 /** Entries with every maximal run of two or more tool cards (reasoning between them rides along; any other row,
- * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. */
+ * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A board
+ * create (71 §2.11) is the turn's deliverable — its card ("drawing · section", Open) stays out of every run. */
 export function foldRuns(entries: Entry[]): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
-    if (e.kind !== 'tool') {
+    if (e.kind !== 'tool' || isBoardCreate(e)) {
       out.push(e)
       i++
       continue
     }
     let end = i + 1
     let lastTool = i
-    while (end < entries.length && (entries[end]?.kind === 'tool' || entries[end]?.kind === 'reasoning')) {
+    while (end < entries.length && ((entries[end]?.kind === 'tool' && !isBoardCreate(entries[end] as Tool)) || entries[end]?.kind === 'reasoning')) {
       if (entries[end]?.kind === 'tool') lastTool = end
       end++
     }

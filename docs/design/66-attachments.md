@@ -281,6 +281,12 @@ Versioning, per kind:
   `agent::attach::{marker, parse}` (Rust, used by `session_read`'s outline to
   show attachments as chips-in-text, by the TUI later, and by any channel that
   wants to render). Same fixtures on both sides.
+- **71 §2.9 (step 8):** a select-to-ask message from a board carries a second
+  header line *after* the markers — `[board <doc> · block <id> · path:a-b |
+  node <id> | step <n> | stale <k>]`, then `> quote` lines, then the
+  question — beside `[app …]` (70-AGENTS-UI) and `[attached …]`. It is body
+  text to this grammar (`parse` stops at it); `lib/board-ask.ts` parses the
+  body's first line and the transcript renders a `BoardQuoteCard`.
 
 Why not a structured `attachments: Vec<AttachRef>` on `send_input`/`steer`/
 `edit_turn` plus a `messages.attachments` column (the `vision` pattern)?

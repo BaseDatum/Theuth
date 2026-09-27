@@ -110,8 +110,8 @@ fn fields(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// The contract's thirty-six names, in catalog order.
-    const NAMES: [&str; 36] = [
+    /// The contract's thirty-eight names, in catalog order.
+    const NAMES: [&str; 38] = [
         "Card",
         "Stack",
         "Grid",
@@ -131,10 +131,12 @@ mod tests {
         "Tabs",
         "Accordion",
         "Graph",
+        "Sequence",
         "Steps",
         "Callout",
         "Code",
         "Diff",
+        "Excerpt",
         "Tree",
         "Glossary",
         "Quote",
@@ -165,7 +167,7 @@ mod tests {
     fn compact_lists_every_component_with_props() {
         let compact = catalog_compact();
         let parts: Vec<&str> = compact.split(" · ").collect();
-        assert_eq!(parts.len(), 36, "{compact}");
+        assert_eq!(parts.len(), 38, "{compact}");
         assert!(compact.starts_with("Card(description?, title?) · Stack(direction?, gap?) · Grid(columns) · Separator() · Heading(text, level?)"), "{compact}");
         assert!(
             compact.contains("KeyValueList(items[{key, value}])"),
@@ -177,7 +179,11 @@ mod tests {
         );
         assert!(compact.contains("Table(columns, rows)"), "{compact}");
         assert!(
-            compact.contains("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?) · Steps(items[{title, detail?}]) · Callout(text, title?, variant?)"),
+            compact.contains("Tabs(labels) · Accordion(titles) · Graph(nodes[{id, label, group?, kind?, ref?, state?}], edges[{from, to, label?, style?}], direction?, groups[{id, label}]?) · Sequence(actors[{id, label}], steps[{from, to, label, ref?, style?}], title?) · Steps(items[{title, detail?}]) · Callout(text, title?, variant?)"),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("Diff(before, after, from?, to?) · Excerpt(path, text, caption?, lang?, mark?, start?, symbol?) · Tree("),
             "{compact}"
         );
         assert!(

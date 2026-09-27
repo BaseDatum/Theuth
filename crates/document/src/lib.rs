@@ -33,10 +33,10 @@ pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateNote, Delete, DeleteNote, DocumentActor, Edit,
-    EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
+    ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote, DocumentActor,
+    Edit, EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
     Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit,
-    with_heading,
+    board_frontmatter, with_heading,
 };
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,

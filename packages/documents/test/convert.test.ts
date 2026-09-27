@@ -37,6 +37,8 @@ describe("markdown round trip per block type", () => {
     ["table", "| a | b |\n| --- | --- |\n| 1 | 2 |", /\| a\s+\| b\s+\|\n\| -+ \| -+ \|\n\| 1\s+\| 2\s+\|/],
     ["quote", "> quoted", "> quoted"],
     ["divider", "para\n\n---\n\npara2", /para\n\n(\*\*\*|---)\n\npara2/],
+    // 71 §2.3: a board's prose anchor survives BlockNote's link gate; an unknown scheme still does not.
+    ["code: link", "See [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).", "See [parse()](code:crates/surface/src/lib.rs#L71-L84) and x."],
   ];
   for (const [name, md, expected] of cases) {
     test(name, async () => {

@@ -187,6 +187,31 @@
   --font-sans: -apple-system-body, ui-sans-serif, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
+/* 71 §2.7 / §0 Q1: the prose register of a board (`.board-prose`, step 6). `static` so the variable is emitted before
+   its first consumer exists (Tailwind drops unused theme variables). */
+@theme static {
+  --font-serif: "Newsreader", Georgia, serif;
+}
+
+/* Newsreader (SIL OFL 1.1, public/fonts/newsreader-OFL.txt): the upright file is the variable `wght` axis, so one face
+   covers 400 and 600; italic 400 is static. Latin subset only; other scripts fall through to Georgia. */
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/newsreader-400-600.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Newsreader";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/newsreader-400i.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 /* `animate-indeterminate`: the thin bar under a tool call whose arguments are still streaming (35 §7.1). */
 @theme {
   --animate-indeterminate: indeterminate 1.2s ease-in-out infinite;

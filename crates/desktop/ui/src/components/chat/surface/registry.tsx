@@ -25,7 +25,9 @@ import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { catalog } from './catalog'
+import { Excerpt } from './Excerpt'
 import { GraphView } from './Graph'
+import { SequenceView } from './Sequence'
 
 // Every string is a React text node — no `dangerouslySetInnerHTML` (design 30 §11). Text, lists and headings are
 // `div`s with ARIA roles because the Streamdown wrapper styles `p`/`li`/`h1-h4` descendants for prose.
@@ -358,6 +360,8 @@ const components: Components<typeof catalog> = {
   ),
   // 65: the one component with a renderer of ours; `loading` = the fence is still streaming (dangling edges dropped).
   Graph: ({ props, loading }) => <GraphView props={props} loading={loading} />,
+  // 71 §2.4: actors and addressable steps; `ref` is inert here (no board, no root) and surfaces only as `aria-description`.
+  Sequence: ({ props }) => <SequenceView props={props} />,
   Steps: ({ props }) => (
     <div role="list" className="flex flex-col gap-2 text-sm">
       {props.items.map((it, i) => (
@@ -414,6 +418,8 @@ const components: Components<typeof catalog> = {
       </div>
     )
   },
+  // 71 §2.5: real code pinned to `path:start`; renders in chat and artifacts too, so the board reader reuses it as the code window.
+  Excerpt: ({ props }) => <Excerpt {...props} />,
   Tree: ({ props }) => (
     <div className="flex flex-col gap-0.5 text-sm">
       <TreeRows nodes={nest(props.items)} />

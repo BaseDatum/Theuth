@@ -37,6 +37,8 @@ import type { InputId } from '@/rpc/bindings/InputId'
 import type { LinkStatus } from '@/rpc/bindings/LinkStatus'
 import type { JobId } from '@/rpc/bindings/JobId'
 import type { IndexStats } from '@/rpc/bindings/IndexStats'
+import type { LocateAnchor } from '@/rpc/bindings/LocateAnchor'
+import type { Located } from '@/rpc/bindings/Located'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
@@ -217,6 +219,8 @@ export interface Api {
   compact(session: SessionId, style: CompactStyle | null): Promise<number>
   /** Row counts and freshness of the code index for `root` (default: the git top-level of the process cwd; 60 §10). */
   codeindex_stats(root: string | null): Promise<IndexStats>
+  /** Verify board anchors against the working tree under `root` (71 §2.5): one `Located` per anchor, in order; errors when `root` is not a git top-level or a path escapes it. */
+  code_locate(root: string, anchors: LocateAnchor[]): Promise<Located[]>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
@@ -714,6 +718,7 @@ export const METHODS = [
   'browser_screenshot',
   'cancel',
   'cancel_job',
+  'code_locate',
   'codeindex_stats',
   'compact',
   'compact_style',

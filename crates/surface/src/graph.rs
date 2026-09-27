@@ -11,7 +11,7 @@ use crate::render::{BOLD, DIM, PLAIN, span};
 use crate::spec::{GraphDirection, GraphEdgeStyle, GraphKind, GraphProps, GraphState};
 
 /// Mermaid keywords an id must not be; they get a `_` suffix.
-const RESERVED: [&str; 9] = [
+const RESERVED: [&str; 11] = [
     "end",
     "subgraph",
     "graph",
@@ -21,19 +21,15 @@ const RESERVED: [&str; 9] = [
     "class",
     "classDef",
     "click",
+    "participant",
+    "actor",
 ];
 
-/// Ids of nodes and groups as mermaid identifiers: `[A-Za-z0-9_]` only (others become `_`),
-/// keywords suffixed, collisions disambiguated with `_2`, `_3`, … in first-seen order.
-fn mermaid_ids(p: &GraphProps) -> BTreeMap<&str, String> {
+/// `raw` ids as mermaid identifiers: `[A-Za-z0-9_]` only (others become `_`), keywords
+/// suffixed, collisions disambiguated with `_2`, `_3`, … in first-seen order.
+pub(crate) fn mermaid_ids<'a>(raw: impl IntoIterator<Item = &'a str>) -> BTreeMap<&'a str, String> {
     let mut out = BTreeMap::new();
     let mut taken = std::collections::BTreeSet::new();
-    let raw = p
-        .groups
-        .iter()
-        .flatten()
-        .map(|g| g.id.as_str())
-        .chain(p.nodes.iter().map(|n| n.id.as_str()));
     for id in raw {
         if out.contains_key(id) {
             continue;
@@ -57,7 +53,7 @@ fn mermaid_ids(p: &GraphProps) -> BTreeMap<&str, String> {
 }
 
 /// A label inside `"…"`: the quote and angle brackets as mermaid entity codes.
-fn quoted(label: &str) -> String {
+pub(crate) fn quoted(label: &str) -> String {
     let escaped = label
         .replace('"', "#quot;")
         .replace('<', "#lt;")
@@ -83,7 +79,13 @@ fn node_decl(id: &str, label: &str, kind: Option<GraphKind>) -> String {
 /// The graph as `flowchart LR|TB` source: one `subgraph` per group with its members declared
 /// inside, ungrouped nodes after, then the edges.
 pub fn to_mermaid(p: &GraphProps) -> String {
-    let ids = mermaid_ids(p);
+    let ids = mermaid_ids(
+        p.groups
+            .iter()
+            .flatten()
+            .map(|g| g.id.as_str())
+            .chain(p.nodes.iter().map(|n| n.id.as_str())),
+    );
     let id = |raw: &str| ids.get(raw).map(String::as_str).unwrap_or("_");
     let dir = match p.direction.unwrap_or(GraphDirection::LR) {
         GraphDirection::LR => "LR",
@@ -246,6 +248,7 @@ mod tests {
             kind: None,
             group: group.map(Into::into),
             state: None,
+            r#ref: None,
         }
     }
 

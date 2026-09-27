@@ -12,8 +12,8 @@
         "nodes": [
           {"id": "browser", "label": "Browser", "kind": "actor", "group": "edge"},
           {"id": "cdn", "label": "CDN", "group": "edge", "state": "muted"},
-          {"id": "api", "label": "API", "kind": "rounded", "group": "core"},
-          {"id": "worker", "label": "Worker", "group": "core", "state": "active"},
+          {"id": "api", "label": "API", "kind": "rounded", "group": "core", "ref": "crates/rpc/src/api.rs#L1-L40"},
+          {"id": "worker", "label": "Worker", "group": "core", "state": "active", "ref": "crates/agent/src/loop_.rs"},
           {"id": "db", "label": "Postgres", "kind": "cylinder", "group": "core"},
           {"id": "mailer", "label": "Mailer", "kind": "pill", "state": "danger"}
         ],

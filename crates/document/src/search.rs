@@ -60,10 +60,14 @@ pub async fn search_notes(store: &Store, query: &str, limit: Option<u32>) -> Sea
     if query.is_empty() {
         return SearchPage::ready(Vec::new(), limit);
     }
-    let notes = match store.list(Some(DocKind::Note), MAX_NOTES).await {
-        Ok(n) => n,
-        Err(e) => return SearchPage::error(format!("{e:#}")),
-    };
+    // Boards are notes with a `root:` (71 §2.1): same file, same list.
+    let mut notes = Vec::new();
+    for kind in [DocKind::Note, DocKind::Board] {
+        match store.list(Some(kind), MAX_NOTES).await {
+            Ok(n) => notes.extend(n),
+            Err(e) => return SearchPage::error(format!("{e:#}")),
+        }
+    }
     let root = store.root().to_path_buf();
     let matched = tokio::task::spawn_blocking(move || {
         let mut m = FuzzyMatcher::new(&query);

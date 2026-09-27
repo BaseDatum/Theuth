@@ -12,7 +12,7 @@ const SKILL: &str = include_str!("../visualize.md");
 
 /// One minimal element per component, in catalog order; the `### Name` example in the skill.
 /// Containers reference children `a`/`b`, which the example leaves to the reader.
-const EXAMPLES: [(&str, &str); 36] = [
+const EXAMPLES: [(&str, &str); 38] = [
     (
         "Card",
         r#"{"type": "Card", "props": {"title": "Release readiness"}, "children": ["a", "b"]}"#,
@@ -87,6 +87,10 @@ const EXAMPLES: [(&str, &str); 36] = [
         r#"{"type": "Graph", "props": {"direction": "LR", "groups": [{"id": "edge", "label": "Edge"}], "nodes": [{"id": "web", "label": "Browser", "kind": "actor", "group": "edge"}, {"id": "api", "label": "API", "kind": "rounded", "state": "active"}, {"id": "db", "label": "Postgres", "kind": "cylinder"}], "edges": [{"from": "web", "to": "api", "label": "HTTPS"}, {"from": "api", "to": "db", "style": "dashed"}]}}"#,
     ),
     (
+        "Sequence",
+        r#"{"type": "Sequence", "props": {"title": "One fence", "actors": [{"id": "model", "label": "Model"}, {"id": "parse", "label": "surface::parse"}, {"id": "validate", "label": "validate"}], "steps": [{"from": "model", "to": "parse", "label": "fence body", "ref": "crates/surface/src/lib.rs#L90-L112"}, {"from": "parse", "to": "validate", "label": "check(value)", "ref": "crates/surface/src/validate.rs#L32"}, {"from": "validate", "to": "parse", "label": "Spec | errors", "style": "return"}]}}"#,
+    ),
+    (
         "Steps",
         r#"{"type": "Steps", "props": {"items": [{"title": "Install the CLI", "detail": "brew install theuth"}, {"title": "Sign in"}, {"title": "Run the first session"}]}}"#,
     ),
@@ -101,6 +105,10 @@ const EXAMPLES: [(&str, &str); 36] = [
     (
         "Diff",
         r#"{"type": "Diff", "props": {"from": "v1.2", "to": "v1.3", "before": "timeout = 30", "after": "timeout = 60"}}"#,
+    ),
+    (
+        "Excerpt",
+        r#"{"type": "Excerpt", "props": {"path": "crates/surface/src/lib.rs", "start": 90, "lang": "rust", "symbol": "parse", "text": "pub fn parse(body: &str) -> Result<Parsed, Vec<SpecError>> {\n    if body.len() > MAX_FENCE_BYTES {\n        return Err(vec![err(\n            \"\",", "mark": [[91, 92]], "caption": "the byte cap runs before any JSON work"}}"#,
     ),
     (
         "Tree",
@@ -179,6 +187,7 @@ Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
 |---|---|\n\
 | components, dependencies, data flow, pipeline, call graph | json-render Graph (state per node for health/progress) |\n\
+| how code in this repository works, or what a change did, in three or more parts | a board (see Boards) — not an inline fence |\n\
 | who calls whom in what order | mermaid sequenceDiagram |\n\
 | lifecycle, modes, retries, transitions | mermaid stateDiagram-v2 |\n\
 | schema, types, relationships | mermaid erDiagram / classDiagram |\n\
@@ -204,7 +213,7 @@ Shapes for the replies you write most:\n\
 - **Finished work / a subagent's result:** one sentence on the outcome → MetricGrid (files, tests, cost/time) + Checklist of what was done and verified → a short prose line per caveat or open item.\n\
 - **Investigation / root cause:** one-sentence verdict → Graph or sequenceDiagram marking where it breaks (state: \"error\") → Timeline if timing matters → prose for evidence you must quote exactly.\n\
 - **Plan or proposal:** Steps or Timeline (Calendar when dates matter) → Table of risks/choices → the question for the user in words.\n\
-- **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say.\n\
+- **\"How does X work\":** Graph or sequenceDiagram first, then prose only for what the arrows don't say — unless X is code in this repository and the answer has three or more parts: that is a board (see Boards).\n\
 - **Status check / \"how's it going\":** MetricGrid + Checklist/Progress; prose only for what changed or is stuck.\n\
 \n\
 Before you send, scan your draft. Three or more parallel bullets, a pipe table of statuses or comparisons, numbers in a sentence, \"first… then… finally\", \"if X then Y state\", \"A vs B\": turn each into its block and delete the prose it replaces. Keep a markdown table or list only when the reader will copy it, or when it is plain reference data with no status, verdict or number to see.\n\
@@ -345,8 +354,11 @@ fn ty(s: &Value) -> String {
     match t {
         "array" => format!("{}[]", ty(&s["items"])),
         "object" => format!("{{{}}}", fields(s)),
-        "integer" if s["minimum"].is_number() => {
+        "integer" if s["minimum"].is_number() && s["maximum"].is_number() => {
             format!("integer {}..{}", s["minimum"], s["maximum"])
+        }
+        "integer" if s["minimum"].as_f64().is_some_and(|m| m > 0.0) => {
+            format!("integer ≥ {}", s["minimum"])
         }
         other => other.to_owned(),
     }

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
+import { AppWindow, LayoutPanelTop, MoreHorizontal, PanelLeft, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
@@ -111,7 +111,7 @@ function Row({ note }: { note: DocSummary }) {
   }
   return (
     <li className="group flex items-center gap-2 rounded-[10px] px-2.5 hover:bg-layer-2">
-      <StickyNote className="size-4 shrink-0 text-fg-tertiary" />
+      {note.kind === 'board' ? <LayoutPanelTop className="size-4 shrink-0 text-fg-tertiary" aria-label="Board" /> : <StickyNote className="size-4 shrink-0 text-fg-tertiary" />}
       {renaming !== null ? (
         <>
           <input

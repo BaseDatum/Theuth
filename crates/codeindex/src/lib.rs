@@ -7,8 +7,9 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`CODEINDEX_ACTOR`] actor ([`CodeindexActor`]): [`Handle`],
-//!   [`Stats`], [`Reconcile`]
-//! - the `codeindex_stats` RPC method answers [`Stats`] (60 §10)
+//!   [`Stats`], [`Reconcile`], [`Locate`] (71 §2.5)
+//! - the `codeindex_stats` RPC method answers [`Stats`], `code_locate` answers
+//!   [`Locate`] (60 §10)
 //! - no events in v1 (60 §10)
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 pub mod git;
 pub mod index;
 pub mod lang;
+pub mod locate;
 pub mod outline_hook;
 pub mod parse;
 pub mod rank;
@@ -33,6 +35,7 @@ pub mod tools;
 pub mod walk;
 
 pub use index::{Codeindex, Reconciled, RootIndex};
+pub use locate::{Locate, LocateAnchor, LocateStatus, Located};
 
 /// Registry name of the [`CodeindexActor`].
 pub const CODEINDEX_ACTOR: &str = "codeindex";
@@ -116,6 +119,13 @@ pub struct CodeindexActor {
     ix: Arc<Codeindex>,
 }
 
+impl CodeindexActor {
+    /// Over an open index; the plugin spawns one at start, tests spawn their own.
+    pub fn new(ix: Arc<Codeindex>) -> Self {
+        Self { ix }
+    }
+}
+
 /// `ask` → `Arc<Codeindex>`: the tools' hot path (no mailbox hop per call).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Handle;
@@ -164,6 +174,14 @@ impl Message<Reconcile> for CodeindexActor {
             .await
             .map_err(|e| format!("{e:#}"))?;
         self.ix.stats(&ri).await.map_err(|e| format!("{e:#}"))
+    }
+}
+
+impl Message<Locate> for CodeindexActor {
+    type Reply = Result<Vec<Located>, String>;
+
+    async fn handle(&mut self, m: Locate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        locate::locate(&self.ix, m).await.map_err(|e| format!("{e:#}"))
     }
 }
 

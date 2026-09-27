@@ -266,6 +266,8 @@ Prompt paragraph (registered once, plugin `codeindex`):
 
 Skill `codeindex.md` (optional, in `~/.theuth/skills/`): the brief-then-verify recipe, how to read `ambiguous`, when `stale` matters.
 
+*Amended by 71 §4 (2026-09-27, BOARDS step 9):* `code_symbol.definition` (`path`, `line_start`, `line_end`, `name`) is what a board's `Excerpt` quotes from — `start` = `line_start`, `symbol` = `name`, text from `read_file` at that offset — and `code_impact(git_range)` seeds a diff board's Map (`changed` → `state: danger`, `direct` → `active`, `transitive` → `muted`) and Checks (`tests`). The recipes are in `crates/document/board.md`; `scripts/board-check.py` re-verifies every excerpt and anchor against the tree.
+
 ## 9. Config
 
 ```yaml
@@ -282,6 +284,8 @@ Skill `codeindex.md` (optional, in `~/.theuth/skills/`): the brief-then-verify r
 ## 10. Commands, events, RPC, UI
 
 Actor `CodeindexActor` registered as `CODEINDEX_ACTOR = "codeindex"`. Messages (`ask`): `Handle → Arc<Codeindex>` (the same pattern knowledge uses, `knowledge/src/lib.rs:288-294`), `Stats { root: Option<PathBuf> } → IndexStats { root, files, symbols, refs, resolved, ambiguous, last_reconcile, stale }`, `Reconcile { root } → IndexStats` (force). No bus events in v1 (nothing subscribes; add `CodeindexChanged` when something does — a `forward!` line in `rpc/src/bridge.rs:88-116`). RPC: one method, `codeindex_stats(root?)`, following `api.rs:1285-1290`, so the desktop can show "index: 290 files, 11k symbols, 2 min ago" on a project card; no other UI in v1 (no slash command, no TUI panel).
+
+*Amended by 71 §2.5 (2026-09-26):* one more message and one more RPC. `Locate { root: PathBuf, anchors: Vec<LocateAnchor{path, start?, end?, symbol?, text_sha?}> } → Result<Vec<Located{status: same|changed|moved|missing, start, end, text?}>, String>` reads each range from the working tree (never `symbols.body`), compares `sha256(text)` to `text_sha`, and consults the index only to find where a named `Definition` now starts (`moved`). Read-only; `root` must be a git top-level; a `path` that is absolute, contains `..`, or canonicalises outside `root` fails the whole batch (§11). RPC `code_locate(root, anchors)` → `Vec<Located>`; bindings `LocateAnchor.ts`, `Located.ts`, `LocateStatus.ts`. Built in BOARDS step 7a (`docs/design/70-as-built-BOARDS-step-7a.md`).
 
 ## 11. Threats and limits
 

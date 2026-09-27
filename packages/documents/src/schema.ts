@@ -24,6 +24,16 @@ import {
 /** Name of the `Y.XmlFragment` a document's blocks live in (59 §4.2 `fragment`). */
 export const FRAGMENT = "document-store";
 
+/**
+ * The link gate of every editor over this schema (design 71 §2.3): BlockNote drops hrefs outside its URI allowlist
+ * at import, paste and export, which would strip a board's `code:` anchors on `doc_insert`. Its default list plus
+ * `code:` — `code:<path>[#L…]` is a root-relative reference the board reader resolves, never navigation; relative
+ * hrefs (no scheme) stay allowed as before. (`isAllowedUri` is typed but not exported by 0.54.2's runtime.)
+ */
+export const links = {
+  isValidLink: (href: string) => !/^[a-z][a-z0-9+.-]*:/i.test(href) || /^(?:https?|ftps?|mailto|tel|callto|sms|cid|xmpp|code):/i.test(href),
+};
+
 /** The frontmatter block's config: one prop, the YAML header text (authoritative). */
 export const frontmatterConfig = createBlockConfig(() => ({
   type: "frontmatter" as const,

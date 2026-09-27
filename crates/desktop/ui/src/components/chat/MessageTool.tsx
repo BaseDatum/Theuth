@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { type Entry, type JobTail, useSessions } from '@/store/sessions'
 import { ArtifactCard, Progress } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
+import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
@@ -132,6 +133,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <ScrapeCard tool={tool} session={session} />
     ) : tool.name === 'remind_me_in' ? (
       <ReminderCard tool={tool} session={session} />
+    ) : isBoardCreate(tool) ? (
+      <BoardCard tool={tool} session={session} readOnly={readOnly} />
     ) : null
   if (!card) return <PlainTool tool={tool} session={session} readOnly={readOnly} />
   return (

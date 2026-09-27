@@ -560,10 +560,30 @@ edits knowledge metadata with `knowledge_put` as today (which imports,
 ### 5.3 `doc_create` — `Mutating`
 
 ```
-doc_create(title: str, markdown: str | None = None) -> {doc: str, url: "theuth://notes/<id>"}
+doc_create(title: str, markdown: str | None = None, kind: "note" | "board" = "note", root: str | None = None)
+  -> {doc: str, url: "theuth://notes/<id>", kind}
 ```
 
-Always `kind: note`. Knowledge and artifact documents are created by their
+`kind: note` unless `kind="board"` (71 §2.1, step 2): a board is a note bound
+`Binding::Note` with `DocKind::Board`, whose first block is the frontmatter
+`root: <absolute repo root>` — the directory its `code:` links, `ref`s and
+`Excerpt.path`s resolve against; `root` is required for a board (absolute,
+existing directory) and refused for a note. A `DocKind::Board` is
+free-standing like a note (renamed, deleted, listed and searched with them; the
+title is kept across exports); its reading mode is `BoardReader` (71 §2.2),
+Edit is this note editor. `doc_insert`/`doc_replace` run `surface::check` on
+every `json-render` fence of any document and refuse the edit with the located
+error (`json-render block 1:\n- /elements/e/props/mark/0: …`) so the model gets
+its correction round; the same check refuses a fence whose language is a
+catalog component name (` ```Excerpt `) and a `[label](path#L10)` link without
+the `code:` scheme — both would land as dead text on a board. On a board (a
+document whose frontmatter carries `root:`) the same path also runs
+`codeindex::Locate` on every `Excerpt` of the edit (71 §2.5, step 7b): a
+`changed`/`moved`/`missing` range is refused as
+`/elements/e/props/text: not verbatim, current lines are <path> L9-L10: …` with
+the tree's lines, so the read-back happens before the block lands; the check
+fails open when the codeindex is disabled or `root` is not a git top-level.
+Knowledge and artifact documents are created by their
 owners (`knowledge_put`, `show`); meeting notes by `meeting_start`. There is
 no `doc_delete_document` tool and no `doc_share` tool (decision 15);
 deleting a note is UI.
@@ -938,6 +958,15 @@ Curated to the schema above plus "Ask theuth…" which focuses the note's
 chat panel (or the session composer) with the current block id quoted —
 that is the whole AI surface. Side menu: drag handle + block menu on
 pointer-fine only.
+
+**Boards (71 §2.9, §0 Q5; step 8):** a board's questions go to the session
+that drew it — `BoardCard` (the `doc_create(kind="board")` tool card) binds the
+board to its session in the `note-chat` store when no binding exists; **Ask**
+on the board (a selection, excerpt rows, a unit, the stale list, ⌘⇧A) prefills
+the panel composer with the `[board …]` header and opens the panel. A board with
+no bound session takes this section's path: the first message creates a session
+titled like the board and the panel keeps it. "New chat" is respected — a
+binding the user cleared is not re-bound by the card.
 
 ### 9.4 Status line
 

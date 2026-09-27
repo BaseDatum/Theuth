@@ -1,0 +1,22 @@
+{
+  "root": "x",
+  "elements": {
+    "x": {
+      "type": "Excerpt",
+      "props": {
+        "path": "crates/surface/src/validate.rs",
+        "start": 26,
+        "lang": "rust",
+        "symbol": "esc",
+        "text": "/// JSON Pointer escaping of one reference token.\nfn esc(token: &str) -> String {\n    token.replace('~', \"~0\").replace('/', \"~1\")\n}",
+        "mark": [
+          [
+            28,
+            28
+          ]
+        ],
+        "caption": "every error path goes through one escape; `~` first, then `/`"
+      }
+    }
+  }
+}

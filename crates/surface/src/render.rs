@@ -13,7 +13,7 @@ use crate::spec::{
     AlertType, BadgeVariant, CalloutVariant, Component, Direction, Gap, MetricProps, TextVariant,
     TimelineState, Trend,
 };
-use crate::{Spec, graph, mermaid_lines, parse};
+use crate::{Spec, graph, mermaid_lines, parse, sequence};
 
 /// Render a spec to lines at `width` columns (0 = unbounded); `None` if any line would be
 /// wider than `width`, so the caller falls back to the source block.
@@ -590,6 +590,8 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             }
             graph::adjacency_lines(p, width)
         }
+        // 71 §2.4: the numbered step list on every text surface; the steps keep their `ref`s.
+        Component::Sequence(p) => sequence::steps_lines(p, width),
         Component::Steps(p) => {
             let mut out = Vec::new();
             for (n, s) in p.items.iter().enumerate() {
@@ -649,6 +651,44 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
                 let [a, b] = blocks;
                 stack(vec![a, b], true)
             }
+        }
+        // 71 §2.5: `path:start-end · symbol · lang` over a numbered gutter, `▸` on marked rows,
+        // the caption under.
+        Component::Excerpt(p) => {
+            let start = p.start.unwrap_or(1);
+            let lines: Vec<&str> = p.text.lines().collect();
+            let end = start + u32::try_from(lines.len().saturating_sub(1)).unwrap_or(u32::MAX);
+            let marked = |n: u32| {
+                p.mark
+                    .iter()
+                    .flatten()
+                    .any(|[from, to]| (*from..=*to).contains(&n))
+            };
+            let head = [
+                Some(format!("{}:{start}-{end}", p.path)),
+                p.symbol.clone(),
+                p.lang.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+            let mut out = vec![vec![span(head, DIM)]];
+            let digits = end.to_string().len();
+            for (i, l) in lines.iter().enumerate() {
+                let n = start + u32::try_from(i).unwrap_or(u32::MAX);
+                out.push(vec![
+                    span(
+                        format!("{}{n:>digits$} │ ", if marked(n) { "▸ " } else { "  " }),
+                        DIM,
+                    ),
+                    span(*l, CODE),
+                ]);
+            }
+            if let Some(c) = &p.caption {
+                out.extend(text_lines(c, width, DIM));
+            }
+            out
         }
         Component::Tree(p) => p
             .items

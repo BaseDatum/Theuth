@@ -1,0 +1,32 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Sequence",
+      "props": {
+        "actors": [
+          {
+            "id": "model",
+            "label": "Model"
+          },
+          {
+            "id": "parse",
+            "label": "parse"
+          }
+        ],
+        "steps": [
+          {
+            "from": "model",
+            "to": "parse",
+            "label": "fence body"
+          },
+          {
+            "from": "parse",
+            "to": "validator",
+            "label": "check(value)"
+          }
+        ]
+      }
+    }
+  }
+}

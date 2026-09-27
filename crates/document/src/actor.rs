@@ -9,7 +9,7 @@
 //! and returns as a message.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -505,7 +505,7 @@ impl DocumentActor {
             o.export_due = None;
             o.export_first = None;
         }
-        let frontmatter = o.meta.kind == DocKind::Knowledge;
+        let frontmatter = matches!(o.meta.kind, DocKind::Knowledge | DocKind::Board);
         let pending = self.helper.import(doc, &markdown, mode, frontmatter);
         let req = pending.id();
         self.imports.insert(
@@ -1222,8 +1222,8 @@ impl Message<ExportDone> for DocumentActor {
         match m.result {
             Ok((sha, title)) => {
                 o.meta.last_export = Some(sha);
-                // A note keeps the title it was created with; the others follow their text.
-                if !title.is_empty() && o.meta.kind != DocKind::Note {
+                // A note or board keeps the title it was created with; the others follow their text.
+                if !title.is_empty() && !o.meta.kind.free_standing() {
                     o.meta.title = title;
                 }
                 let meta = o.meta.clone();
@@ -1523,6 +1523,49 @@ pub fn with_heading(title: &str, markdown: &str) -> String {
     }
 }
 
+/// `ask` → `Result<DocSummary, String>`: a new `kind: board` document (71 §2.1) — a note whose first
+/// block is the frontmatter `root: <root>`, the absolute repository root its anchors resolve against.
+#[derive(Clone, Debug)]
+pub struct CreateBoard {
+    /// Display title.
+    pub title: String,
+    /// Initial body; empty → the heading alone.
+    pub markdown: String,
+    /// Absolute repository root; the caller has checked it is a directory.
+    pub root: PathBuf,
+    /// Who created it.
+    pub by: Principal,
+}
+
+/// The YAML header for a board's frontmatter block: `root:` as a plain scalar, double-quoted (JSON
+/// escaping, which the helper's YAML reader accepts) when the path carries a character YAML would
+/// misread.
+pub fn board_frontmatter(root: &Path) -> String {
+    let root = root.to_string_lossy();
+    let plain = !root.starts_with([' ', '-', '?', '[', '{', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`'])
+        && !root.contains(['"', '\\', '\n', '\r', '\t', '#'])
+        && !root.contains(": ")
+        && !root.ends_with([':', ' ']);
+    let value = if plain { root.into_owned() } else { serde_json::to_string(&*root).unwrap_or_default() };
+    format!("---\nroot: {value}\n---\n")
+}
+
+impl Message<CreateBoard> for DocumentActor {
+    type Reply = DelegatedReply<Result<DocSummary, String>>;
+
+    async fn handle(&mut self, m: CreateBoard, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if let Err(e) = self.hub.gate_str() {
+            tx.send(Err(e));
+            return reply;
+        }
+        self.create_doc(Binding::Note, Some(&m.root), m.title, m.markdown, m.by, tx)
+            .await;
+        reply
+    }
+}
+
 impl Message<CreateNote> for DocumentActor {
     type Reply = DelegatedReply<Result<DocSummary, String>>;
 
@@ -1533,7 +1576,7 @@ impl Message<CreateNote> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        self.create_doc(Binding::Note, m.title, m.markdown, m.by, tx)
+        self.create_doc(Binding::Note, None, m.title, m.markdown, m.by, tx)
             .await;
         reply
     }
@@ -1549,17 +1592,19 @@ impl Message<Create> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        self.create_doc(m.binding, m.title, m.markdown, m.by, tx)
+        self.create_doc(m.binding, None, m.title, m.markdown, m.by, tx)
             .await;
         reply
     }
 }
 
 impl DocumentActor {
-    /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import.
+    /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import. `board_root`
+    /// makes the document a `DocKind::Board` headed by [`board_frontmatter`] (71 §2.1).
     async fn create_doc(
         &mut self,
         binding: Binding,
+        board_root: Option<&Path>,
         title: String,
         markdown: String,
         by: Principal,
@@ -1570,7 +1615,7 @@ impl DocumentActor {
         let meta = DocMeta {
             derived: binding.derived(&id),
             id: id.clone(),
-            kind: binding.kind(),
+            kind: if board_root.is_some() { DocKind::Board } else { binding.kind() },
             title,
             binding,
             fragment: FRAGMENT.to_owned(),
@@ -1589,7 +1634,10 @@ impl DocumentActor {
             return;
         }
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
-        let markdown = with_heading(&meta.title, &markdown);
+        let mut markdown = with_heading(&meta.title, &markdown);
+        if let Some(root) = board_root {
+            markdown.insert_str(0, &board_frontmatter(root));
+        }
         self.start_import(
             &id,
             markdown,
@@ -1627,7 +1675,7 @@ impl Message<Rename> for DocumentActor {
             return reply;
         }
         let meta = match self.load(&m.doc) {
-            Ok(o) if o.meta.kind != DocKind::Note => {
+            Ok(o) if !o.meta.kind.free_standing() => {
                 tx.send(Err("title_owned_by_binding".into()));
                 return reply;
             }
@@ -1652,7 +1700,8 @@ impl Message<Rename> for DocumentActor {
                 Ok(o) => o,
                 Err(e) => return tx.send(Err(e.to_string())),
             };
-            let Some(first) = outline.blocks.first() else {
+            // A board's first block is its frontmatter (`root:`); the heading follows it.
+            let Some(first) = outline.blocks.iter().find(|b| b["type"] != "frontmatter") else {
                 return tx.send(Ok(()));
             };
             let is_h1 = first["type"] == "heading"
@@ -1693,7 +1742,7 @@ impl Message<DeleteNote> for DocumentActor {
             Some(o) => o.meta.kind,
             None => self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?.kind,
         };
-        if kind != DocKind::Note {
+        if !kind.free_standing() {
             return Err("delete_via_owner".into());
         }
         self.delete_doc(&m.doc).await

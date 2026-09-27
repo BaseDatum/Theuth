@@ -4,11 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
+use crate::anchor;
 use crate::catalog::catalog;
-use crate::spec::{Component, Element, GraphProps, Spec};
+use crate::spec::{Component, Element, ExcerptProps, GraphProps, SequenceProps, Spec};
 use crate::{
-    MAX_DEPTH, MAX_ELEMENTS, MAX_GRAPH_EDGES, MAX_GRAPH_GROUPS, MAX_GRAPH_LABEL_CHARS,
-    MAX_GRAPH_NODES, SpecError,
+    MAX_DEPTH, MAX_ELEMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPT_LINES, MAX_GRAPH_EDGES,
+    MAX_GRAPH_GROUPS, MAX_GRAPH_LABEL_CHARS, MAX_GRAPH_NODES, SEQUENCE_ACTORS, SEQUENCE_STEPS,
+    SpecError,
 };
 
 /// Components whose `children` may be non-empty.
@@ -190,6 +192,8 @@ pub(crate) fn validate(v: &Value) -> Result<Spec, Vec<SpecError>> {
                 ));
             }
             Component::Graph(g) => graph(g, &format!("{p}/props"), &mut errs),
+            Component::Sequence(s) => sequence(s, &format!("{p}/props"), &mut errs),
+            Component::Excerpt(x) => excerpt(x, &format!("{p}/props"), &mut errs),
             Component::Heatmap(h) => {
                 if h.cells.len() != h.rows.len() {
                     errs.push(err(
@@ -280,18 +284,29 @@ fn is_image_src(src: &str) -> bool {
     is_http(src) || src.get(..11).unwrap_or(src).eq_ignore_ascii_case("data:image/")
 }
 
+/// A `Graph` or `Sequence` label: ≤ [`MAX_GRAPH_LABEL_CHARS`].
+fn label(path: String, text: &str, errs: &mut Vec<SpecError>) {
+    let n = text.chars().count();
+    if n > MAX_GRAPH_LABEL_CHARS {
+        errs.push(err(
+            &path,
+            format!("{n} characters, limit {MAX_GRAPH_LABEL_CHARS}"),
+        ));
+    }
+}
+
+/// A `ref` (71 §2.3): an anchor string, or a located error.
+fn anchor_ref(path: String, r: Option<&str>, errs: &mut Vec<SpecError>) {
+    if let Some(r) = r
+        && let Err(msg) = anchor::parse(r)
+    {
+        errs.push(err(&path, msg));
+    }
+}
+
 /// `Graph` checks serde cannot express (65 §3.2): unique node and group ids, edge endpoints and
-/// node groups that exist, the caps and the label length. Self-loops are fine.
+/// node groups that exist, the caps, the label length and the `ref` grammar. Self-loops are fine.
 fn graph(g: &GraphProps, p: &str, errs: &mut Vec<SpecError>) {
-    let label = |path: String, text: &str, errs: &mut Vec<SpecError>| {
-        let n = text.chars().count();
-        if n > MAX_GRAPH_LABEL_CHARS {
-            errs.push(err(
-                &path,
-                format!("{n} characters, limit {MAX_GRAPH_LABEL_CHARS}"),
-            ));
-        }
-    };
     if g.nodes.len() > MAX_GRAPH_NODES {
         errs.push(err(
             &format!("{p}/nodes"),
@@ -338,6 +353,7 @@ fn graph(g: &GraphProps, p: &str, errs: &mut Vec<SpecError>) {
             ));
         }
         label(format!("{p}/nodes/{i}/label"), &n.label, errs);
+        anchor_ref(format!("{p}/nodes/{i}/ref"), n.r#ref.as_deref(), errs);
     }
     for (i, e) in g.edges.iter().enumerate() {
         for (end, id) in [("from", &e.from), ("to", &e.to)] {
@@ -350,6 +366,93 @@ fn graph(g: &GraphProps, p: &str, errs: &mut Vec<SpecError>) {
         }
         if let Some(l) = &e.label {
             label(format!("{p}/edges/{i}/label"), l, errs);
+        }
+    }
+}
+
+/// `Sequence` checks (71 §2.4): 2..=12 actors with unique ids, 1..=40 steps whose `from`/`to`
+/// name an actor, the label length and the `ref` grammar.
+fn sequence(s: &SequenceProps, p: &str, errs: &mut Vec<SpecError>) {
+    if !SEQUENCE_ACTORS.contains(&s.actors.len()) {
+        errs.push(err(
+            &format!("{p}/actors"),
+            format!(
+                "{} actors, expected {}..={}",
+                s.actors.len(),
+                SEQUENCE_ACTORS.start(),
+                SEQUENCE_ACTORS.end()
+            ),
+        ));
+    }
+    if !SEQUENCE_STEPS.contains(&s.steps.len()) {
+        errs.push(err(
+            &format!("{p}/steps"),
+            format!(
+                "{} steps, expected {}..={}",
+                s.steps.len(),
+                SEQUENCE_STEPS.start(),
+                SEQUENCE_STEPS.end()
+            ),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for (i, a) in s.actors.iter().enumerate() {
+        if !ids.insert(a.id.as_str()) {
+            errs.push(err(
+                &format!("{p}/actors/{i}/id"),
+                format!("duplicate actor id {:?}", a.id),
+            ));
+        }
+        label(format!("{p}/actors/{i}/label"), &a.label, errs);
+    }
+    for (i, st) in s.steps.iter().enumerate() {
+        for (end, id) in [("from", &st.from), ("to", &st.to)] {
+            if !ids.contains(id.as_str()) {
+                errs.push(err(
+                    &format!("{p}/steps/{i}/{end}"),
+                    format!("unknown actor {id:?}"),
+                ));
+            }
+        }
+        label(format!("{p}/steps/{i}/label"), &st.label, errs);
+        anchor_ref(format!("{p}/steps/{i}/ref"), st.r#ref.as_deref(), errs);
+    }
+}
+
+/// `Excerpt` checks (71 §2.5): a root-relative path, 1..=120 lines and ≤ 16 KiB of text,
+/// every `mark` pair ordered and inside `start..=end`.
+fn excerpt(x: &ExcerptProps, p: &str, errs: &mut Vec<SpecError>) {
+    if let Err(msg) = anchor::check_path(&x.path) {
+        errs.push(err(&format!("{p}/path"), msg));
+    }
+    let lines = x.text.lines().count();
+    if lines == 0 {
+        errs.push(err(&format!("{p}/text"), "empty"));
+    } else if lines > MAX_EXCERPT_LINES {
+        errs.push(err(
+            &format!("{p}/text"),
+            format!("{lines} lines, limit {MAX_EXCERPT_LINES}"),
+        ));
+    }
+    if x.text.len() > MAX_EXCERPT_BYTES {
+        errs.push(err(
+            &format!("{p}/text"),
+            format!("{} bytes, limit {MAX_EXCERPT_BYTES}", x.text.len()),
+        ));
+    }
+    let start = x.start.unwrap_or(1);
+    let end = start.saturating_add(u32::try_from(lines.saturating_sub(1)).unwrap_or(u32::MAX));
+    for (i, [from, to]) in x.mark.iter().flatten().enumerate() {
+        if from > to {
+            errs.push(err(
+                &format!("{p}/mark/{i}"),
+                format!("[{from}, {to}] is not ordered"),
+            ));
+        } else if *from < start || *to > end {
+            errs.push(err(
+                &format!("{p}/mark/{i}"),
+                format!("[{from}, {to}] is outside the quoted lines {start}-{end}"),
+            ));
         }
     }
 }
@@ -725,6 +828,64 @@ mod tests {
         let ragged = json!({ "root": "h", "elements": { "h": { "type": "Heatmap", "props": { "rows": ["a"], "cols": ["x"], "cells": [[1], [2]] } } } });
         assert_eq!(errors(&ragged.to_string())[0].to_string(), "/elements/h/props/cells: 2 rows of cells, 1 rows");
         let ok = json!({ "root": "i", "elements": { "i": { "type": "Image", "props": { "src": "data:image/png;base64,AA==", "alt": "dot" } } } });
+        assert!(crate::parse(&ok.to_string()).is_ok());
+    }
+
+    #[test]
+    fn sequence_and_excerpt_errors_are_located_with_messages() {
+        let body = json!({ "root": "r", "elements": {
+            "r": { "type": "Stack", "children": ["s", "x", "g"] },
+            "s": { "type": "Sequence", "props": {
+                "actors": [{ "id": "a", "label": "A" }, { "id": "a", "label": "A again" }, { "id": "b", "label": "B" }],
+                "steps": [
+                    { "from": "a", "to": "zz", "label": "go", "ref": "a/b.rs#L9-L3" },
+                    { "from": "b", "to": "a", "label": "ok", "style": "return", "ref": "block:p1" }
+                ] } },
+            "x": { "type": "Excerpt", "props": {
+                "path": "/abs/x.rs", "start": 10, "text": "a\nb\nc",
+                "mark": [[10, 12], [12, 11], [9, 10], [11, 13]] } },
+            "g": { "type": "Graph", "props": { "nodes": [{ "id": "n", "label": "N", "ref": "http://x/y.rs" }], "edges": [] } }
+        } });
+        let errs = errors(&body.to_string());
+        let mut got: Vec<String> = errs.iter().map(ToString::to_string).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "/elements/g/props/nodes/0/ref: path must not carry a scheme: http:",
+                "/elements/s/props/actors/1/id: duplicate actor id \"a\"",
+                "/elements/s/props/steps/0/ref: L3 is before L9",
+                "/elements/s/props/steps/0/to: unknown actor \"zz\"",
+                "/elements/x/props/mark/1: [12, 11] is not ordered",
+                "/elements/x/props/mark/2: [9, 10] is outside the quoted lines 10-12",
+                "/elements/x/props/mark/3: [11, 13] is outside the quoted lines 10-12",
+                "/elements/x/props/path: path must be root-relative, not absolute: \"/abs/x.rs\"",
+            ]
+        );
+
+        let one_actor = json!({ "root": "s", "elements": { "s": { "type": "Sequence", "props": {
+            "actors": [{ "id": "a", "label": "A" }], "steps": [] } } } });
+        let mut got = errors(&one_actor.to_string()).iter().map(ToString::to_string).collect::<Vec<_>>();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "/elements/s/props/actors: 1 actors, expected 2..=12",
+                "/elements/s/props/steps: 0 steps, expected 1..=40",
+            ]
+        );
+
+        let long = (0..=MAX_EXCERPT_LINES).map(|_| "x").collect::<Vec<_>>().join("\n");
+        let big = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": long } } } });
+        assert_eq!(
+            errors(&big.to_string())[0].to_string(),
+            format!("/elements/x/props/text: {} lines, limit {MAX_EXCERPT_LINES}", MAX_EXCERPT_LINES + 1)
+        );
+        let empty = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "" } } } });
+        assert_eq!(errors(&empty.to_string())[0].to_string(), "/elements/x/props/text: empty");
+        let zero = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "a", "start": 0 } } } });
+        assert_eq!(paths(&zero.to_string()), ["/elements/x/props/start"]);
+        let ok = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "one\n", "mark": [[1, 1]] } } } });
         assert!(crate::parse(&ok.to_string()).is_ok());
     }
 }

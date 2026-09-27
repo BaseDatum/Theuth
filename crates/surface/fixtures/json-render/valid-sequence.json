@@ -1,0 +1,69 @@
+{
+  "root": "s",
+  "elements": {
+    "s": {
+      "type": "Sequence",
+      "props": {
+        "title": "One json-render fence, model to picture",
+        "actors": [
+          {
+            "id": "model",
+            "label": "Model"
+          },
+          {
+            "id": "parse",
+            "label": "parse"
+          },
+          {
+            "id": "validate",
+            "label": "validate"
+          },
+          {
+            "id": "render",
+            "label": "render"
+          }
+        ],
+        "steps": [
+          {
+            "from": "model",
+            "to": "parse",
+            "label": "fence body",
+            "ref": "crates/surface/src/lib.rs#L90"
+          },
+          {
+            "from": "parse",
+            "to": "parse",
+            "label": "jsonrepair on failure",
+            "style": "async",
+            "ref": "crates/surface/src/lib.rs#L100-L110"
+          },
+          {
+            "from": "parse",
+            "to": "validate",
+            "label": "check(value)",
+            "ref": "crates/surface/src/validate.rs#L32"
+          },
+          {
+            "from": "validate",
+            "to": "parse",
+            "label": "Spec or located errors",
+            "style": "return",
+            "ref": "crates/surface/src/validate.rs#L267-L273"
+          },
+          {
+            "from": "parse",
+            "to": "render",
+            "label": "spec_lines(spec, width)",
+            "ref": "crates/surface/src/render.rs#L20"
+          },
+          {
+            "from": "render",
+            "to": "model",
+            "label": "lines, or the source block",
+            "style": "return"
+          }
+        ]
+      }
+    }
+  }
+}

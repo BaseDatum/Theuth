@@ -15,7 +15,9 @@ const metric = z.strictObject({
 const badgeVariant = z.enum(['default', 'secondary', 'success', 'warning', 'destructive']).optional()
 const dayState = z.enum(['done', 'active', 'pending']).optional()
 const graphLabel = str
-/** `Graph` props (65 §3.1); the id/endpoint/cap rules live in `parse.ts` like the Rust `validate.rs` ones. */
+/** A `ref` (71 §2.3) is a plain string here; the grammar is checked in `parse.ts` like the Rust `validate.rs`. */
+const ref = str.optional()
+/** `Graph` props (65 §3.1, 71 §2.4); the id/endpoint/cap rules live in `parse.ts` like the Rust `validate.rs` ones. */
 export const graphProps = z.strictObject({
   nodes: z.array(
     z.strictObject({
@@ -24,14 +26,31 @@ export const graphProps = z.strictObject({
       kind: z.enum(['box', 'rounded', 'pill', 'diamond', 'cylinder', 'actor']).optional(),
       group: str.optional(),
       state: z.enum(['default', 'active', 'done', 'muted', 'danger']).optional(),
+      ref,
     }),
   ),
   edges: z.array(z.strictObject({ from: str, to: str, label: graphLabel.optional(), style: z.enum(['solid', 'dashed']).optional() })),
   groups: z.array(z.strictObject({ id: str, label: graphLabel })).optional(),
   direction: z.enum(['LR', 'TB']).optional(),
 })
+/** `Sequence` props (71 §2.4): actors, steps between them, optional title. */
+export const sequenceProps = z.strictObject({
+  actors: z.array(z.strictObject({ id: str, label: str })),
+  steps: z.array(z.strictObject({ from: str, to: str, label: str, style: z.enum(['call', 'return', 'async']).optional(), ref })),
+  title: str.optional(),
+})
+/** `Excerpt` props (71 §2.5): quoted lines pinned to `path` from `start`; `mark` pairs are line numbers, `symbol` names the definition. */
+export const excerptProps = z.strictObject({
+  path: str,
+  text: str,
+  start: z.number().int().min(1).optional(),
+  lang: str.optional(),
+  caption: str.optional(),
+  mark: z.array(z.array(z.number().int().min(0)).length(2)).optional(),
+  symbol: str.optional(),
+})
 
-/** The 36 v0 components with their zod prop schemas; containers declare `slots: ['default']`. */
+/** The 38 v0 components with their zod prop schemas; containers declare `slots: ['default']`. */
 export const catalog = defineCatalog(schema, {
   components: {
     Card: { props: z.strictObject({ title: str.optional(), description: str.optional() }), slots: ['default'] },
@@ -78,12 +97,14 @@ export const catalog = defineCatalog(schema, {
     Tabs: { props: z.strictObject({ labels: z.array(str) }), slots: ['default'] },
     Accordion: { props: z.strictObject({ titles: z.array(str) }), slots: ['default'] },
     Graph: { props: graphProps },
+    Sequence: { props: sequenceProps },
     Steps: { props: z.strictObject({ items: z.array(z.strictObject({ title: str, detail: str.optional() })) }) },
     Callout: {
       props: z.strictObject({ text: str, title: str.optional(), variant: z.enum(['note', 'tip', 'question', 'important']).optional() }),
     },
     Code: { props: z.strictObject({ text: str, lang: str.optional(), title: str.optional() }) },
     Diff: { props: z.strictObject({ before: str, after: str, from: str.optional(), to: str.optional() }) },
+    Excerpt: { props: excerptProps },
     Tree: {
       props: z.strictObject({
         items: z.array(z.strictObject({ label: str, depth: z.number().int().min(0).max(6).optional(), detail: str.optional() })),
@@ -118,7 +139,7 @@ export const COMPONENTS: Record<string, z.ZodType> = Object.fromEntries(
   Object.entries(catalog.data.components).map(([name, def]) => [name, def.props]),
 )
 
-/** The 36 component names, catalog order. */
+/** The 38 component names, catalog order. */
 export const COMPONENT_NAMES = Object.keys(COMPONENTS)
 
 /** True for the five containers (the ones declaring a default slot); only they may have `children`. */

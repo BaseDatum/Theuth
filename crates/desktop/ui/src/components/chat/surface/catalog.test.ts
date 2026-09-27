@@ -76,13 +76,10 @@ function fromZod(s: z.ZodType): Shape {
     case 'boolean':
       return { kind: 'boolean' }
     case 'number': {
-      // Unbounded zod numbers report ±Infinity; schemars omits the bound.
+      // Unbounded zod numbers report ±Infinity (`.int()` reports ±MAX_SAFE_INTEGER); schemars omits the bound.
       const { minValue, maxValue } = s as z.ZodNumber
-      return {
-        kind: 'number',
-        min: minValue != null && Number.isFinite(minValue) ? minValue : undefined,
-        max: maxValue != null && Number.isFinite(maxValue) ? maxValue : undefined,
-      }
+      const bound = (v: number | null | undefined) => (v != null && Number.isFinite(v) && Math.abs(v) !== Number.MAX_SAFE_INTEGER ? v : undefined)
+      return { kind: 'number', min: bound(minValue), max: bound(maxValue) }
     }
     case 'enum':
       return { kind: 'enum', values: (s as z.ZodEnum).options }
@@ -122,7 +119,7 @@ const rust = rustComponents()
 
 test('same component names as the Rust catalog', () => {
   expect([...COMPONENT_NAMES].sort()).toEqual(Object.keys(rust).sort())
-  expect(COMPONENT_NAMES).toHaveLength(36)
+  expect(COMPONENT_NAMES).toHaveLength(38)
 })
 
 test.each(Object.keys(rust))('%s props match the Rust catalog', (name) => {

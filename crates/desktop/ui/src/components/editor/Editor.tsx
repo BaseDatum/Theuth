@@ -17,7 +17,7 @@ import {
 } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
-import { FRAGMENT, createDocumentSchema } from '@theuth/documents/schema'
+import { FRAGMENT, createDocumentSchema, links } from '@theuth/documents/schema'
 import { GripVertical, Sparkles, Workflow } from 'lucide-react'
 import { type SyntheticEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { codeBlock } from '@/components/editor/CodeBlock'
@@ -139,6 +139,8 @@ export function Editor({
   const editor = useCreateBlockNote(
     withCollaboration({
       schema,
+      // 71 §2.3: `code:` anchors keep their href in the editor too (render, paste) — the same gate as the helper's.
+      links,
       collaboration: {
         provider,
         fragment: provider.doc.getXmlFragment(FRAGMENT),

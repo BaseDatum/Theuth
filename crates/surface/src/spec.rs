@@ -30,7 +30,7 @@ pub struct Element {
     pub children: Vec<String>,
 }
 
-/// Catalog v0: thirty-six components, adjacently tagged as `{"type": Name, "props": {...}}`.
+/// Catalog v0: thirty-eight components, adjacently tagged as `{"type": Name, "props": {...}}`.
 ///
 /// Declaration order is the catalog order shown to the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -75,6 +75,8 @@ pub enum Component {
     Accordion(AccordionProps),
     /// Typed boxes and arrows: nodes, edges, optional groups (design doc 65).
     Graph(GraphProps),
+    /// Actors exchanging messages over time; every step addressable and optionally bound to code by `ref` (design doc 71 §2.4).
+    Sequence(SequenceProps),
     /// Numbered how-to steps.
     Steps(StepsProps),
     /// An aside with a variant icon: note, tip, question, important (not a severity; that is `Alert`).
@@ -83,6 +85,8 @@ pub enum Component {
     Code(CodeProps),
     /// Before/after text side by side.
     Diff(DiffProps),
+    /// A passage of real code pinned to its location: `path`, 1-based `start`, marked rows, the symbol it quotes (design doc 71 §2.5).
+    Excerpt(ExcerptProps),
     /// Nested labels, expandable; nesting by `depth`.
     Tree(TreeProps),
     /// Terms and their definitions.
@@ -482,6 +486,8 @@ pub struct GraphNode {
     pub group: Option<String>,
     /// Semantic state; default default.
     pub state: Option<GraphState>,
+    /// Code this node explains: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
 }
 
 /// `GraphNode.kind`.
@@ -567,6 +573,60 @@ pub enum GraphDirection {
     TB,
 }
 
+/// `Sequence` props (design doc 71 §2.4).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SequenceProps {
+    /// Lanes, left to right; 2 to 12.
+    pub actors: Vec<SequenceActor>,
+    /// Messages in time order; 1 to 40.
+    pub steps: Vec<SequenceStep>,
+    /// Title above the lanes.
+    pub title: Option<String>,
+}
+
+/// One `Sequence` actor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SequenceActor {
+    /// Unique within the sequence; referenced by steps.
+    pub id: String,
+    /// Lane title; ≤ 80 characters.
+    pub label: String,
+}
+
+/// One `Sequence` step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct SequenceStep {
+    /// Sending actor id.
+    pub from: String,
+    /// Receiving actor id; may equal `from`.
+    pub to: String,
+    /// Text on the arrow; ≤ 80 characters.
+    pub label: String,
+    /// Arrow style; default call.
+    pub style: Option<SequenceStyle>,
+    /// Code this step runs: `path`, `path#L10` or `path#L10-L24` (root-relative), or `block:<id>`.
+    pub r#ref: Option<String>,
+}
+
+/// `SequenceStep.style`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum SequenceStyle {
+    /// Solid arrow, closed head.
+    Call,
+    /// Dashed arrow: a reply.
+    Return,
+    /// Open arrowhead: fire and forget.
+    Async,
+}
+
 /// `Steps` props.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -641,6 +701,28 @@ pub struct DiffProps {
     pub from: Option<String>,
     /// Right heading; default After.
     pub to: Option<String>,
+}
+
+/// `Excerpt` props (design doc 71 §2.5): ≤ 120 lines and ≤ 16 KiB of `text`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct ExcerptProps {
+    /// Root-relative file path; no `..`, no scheme.
+    pub path: String,
+    /// The quoted lines, verbatim.
+    pub text: String,
+    /// 1-based line number of the first quoted line; default 1.
+    #[schemars(range(min = 1))]
+    pub start: Option<u32>,
+    /// Language name, e.g. `rust`.
+    pub lang: Option<String>,
+    /// One line under the code: the claim these lines carry.
+    pub caption: Option<String>,
+    /// Marked rows as `[from, to]` line-number pairs, inclusive, inside the quoted range.
+    pub mark: Option<Vec<[u32; 2]>>,
+    /// Name of the definition the range quotes; enables `moved` detection.
+    pub symbol: Option<String>,
 }
 
 /// `Tree` props.

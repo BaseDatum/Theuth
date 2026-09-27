@@ -1,7 +1,9 @@
 import type { Spec, UIElement } from '@json-render/core'
 import { jsonrepair } from 'jsonrepair'
 import type { GraphData } from '@/lib/graph-layout'
-import { COMPONENT_NAMES, COMPONENTS, isContainer } from './catalog'
+import type { z } from 'zod'
+import { checkPath, parseAnchor } from './anchor'
+import { COMPONENT_NAMES, COMPONENTS, type excerptProps, isContainer, type sequenceProps } from './catalog'
 
 // Mirrors `crates/surface::parse` (design 30 §3.2, §4 R3/R4): strict JSON → jsonrepair → JSON, then the same
 // structural checks with the same JSON-Pointer error paths, so the desktop and the TUI reject the same bodies.
@@ -12,6 +14,10 @@ export const MAX_ELEMENTS = 256
 export const MAX_DEPTH = 32
 /** `crates/surface::MAX_GRAPH_*`. */
 export const MAX_GRAPH = { nodes: 120, edges: 240, groups: 12, label: 80 }
+/** `crates/surface::SEQUENCE_ACTORS` / `SEQUENCE_STEPS`, inclusive. */
+export const SEQUENCE = { actors: [2, 12], steps: [1, 40] } as const
+/** `crates/surface::MAX_EXCERPT_LINES` / `MAX_EXCERPT_BYTES`. */
+export const MAX_EXCERPT = { lines: 120, bytes: 16 * 1024 }
 
 type Obj = Record<string, unknown>
 type Element = UIElement & { props: Obj; children: string[] }
@@ -50,6 +56,8 @@ function element(id: string, raw: unknown): Element {
   const issue = COMPONENTS[type]!.safeParse(props).error?.issues[0]
   if (issue) throw new SpecError([`${at}/props`, ...issue.path.map(String)].join('/'), issue.message)
   if (type === 'Graph') graph(props as unknown as GraphData, `${at}/props`)
+  if (type === 'Sequence') sequence(props as unknown as z.infer<typeof sequenceProps>, `${at}/props`)
+  if (type === 'Excerpt') excerpt(props as unknown as z.infer<typeof excerptProps>, `${at}/props`)
   if (type === 'Heatmap') {
     const { rows, cols, cells } = props as { rows: string[]; cols: string[]; cells: number[][] }
     if (cells.length !== rows.length) throw new SpecError(`${at}/props/cells`, `${cells.length} rows of cells, ${rows.length} rows`)
@@ -73,16 +81,25 @@ function element(id: string, raw: unknown): Element {
   return { type, props, children: children as string[] }
 }
 
-/** `crates/surface::validate::graph`, same paths: caps, unique ids, known endpoints and groups, label length. */
+/** A `Graph`/`Sequence` label: ≤ `MAX_GRAPH.label` characters (`crates/surface::validate::label`). */
+function label(path: string, text: string): void {
+  const n = [...text].length
+  if (n > MAX_GRAPH.label) throw new SpecError(path, `${n} characters, limit ${MAX_GRAPH.label}`)
+}
+
+/** A `ref` (71 §2.3): parses as an anchor or is a located error (`crates/surface::validate::anchor_ref`). */
+function anchorRef(path: string, r: string | undefined): void {
+  if (r == null) return
+  const a = parseAnchor(r)
+  if (typeof a === 'string') throw new SpecError(path, a)
+}
+
+/** `crates/surface::validate::graph`, same paths: caps, unique ids, known endpoints and groups, label length, `ref` grammar. */
 function graph(g: GraphData, at: string): void {
   if (g.nodes.length > MAX_GRAPH.nodes) throw new SpecError(`${at}/nodes`, `${g.nodes.length} nodes, limit ${MAX_GRAPH.nodes}`)
   if (g.edges.length > MAX_GRAPH.edges) throw new SpecError(`${at}/edges`, `${g.edges.length} edges, limit ${MAX_GRAPH.edges}`)
   const groups = g.groups ?? []
   if (groups.length > MAX_GRAPH.groups) throw new SpecError(`${at}/groups`, `${groups.length} groups, limit ${MAX_GRAPH.groups}`)
-  const label = (path: string, text: string) => {
-    const n = [...text].length
-    if (n > MAX_GRAPH.label) throw new SpecError(path, `${n} characters, limit ${MAX_GRAPH.label}`)
-  }
   const gids: Record<string, true> = {}
   groups.forEach((grp, i) => {
     if (gids[grp.id]) throw new SpecError(`${at}/groups/${i}/id`, `duplicate group id ${JSON.stringify(grp.id)}`)
@@ -95,6 +112,7 @@ function graph(g: GraphData, at: string): void {
     nids[n.id] = true
     if (n.group != null && !gids[n.group]) throw new SpecError(`${at}/nodes/${i}/group`, `unknown group ${JSON.stringify(n.group)}`)
     label(`${at}/nodes/${i}/label`, n.label)
+    anchorRef(`${at}/nodes/${i}/ref`, n.ref ?? undefined)
   })
   g.edges.forEach((e, i) => {
     for (const end of ['from', 'to'] as const) {
@@ -102,6 +120,52 @@ function graph(g: GraphData, at: string): void {
     }
     if (e.label != null) label(`${at}/edges/${i}/label`, e.label)
   })
+}
+
+/** `crates/surface::validate::sequence`, same paths: actor/step counts, unique actor ids, known endpoints, labels, `ref`s. */
+function sequence(s: z.infer<typeof sequenceProps>, at: string): void {
+  const [minA, maxA] = SEQUENCE.actors
+  if (s.actors.length < minA || s.actors.length > maxA) throw new SpecError(`${at}/actors`, `${s.actors.length} actors, expected ${minA}..=${maxA}`)
+  const [minS, maxS] = SEQUENCE.steps
+  if (s.steps.length < minS || s.steps.length > maxS) throw new SpecError(`${at}/steps`, `${s.steps.length} steps, expected ${minS}..=${maxS}`)
+  const ids: Record<string, true> = {}
+  s.actors.forEach((a, i) => {
+    if (ids[a.id]) throw new SpecError(`${at}/actors/${i}/id`, `duplicate actor id ${JSON.stringify(a.id)}`)
+    ids[a.id] = true
+    label(`${at}/actors/${i}/label`, a.label)
+  })
+  s.steps.forEach((st, i) => {
+    for (const end of ['from', 'to'] as const) {
+      if (!ids[st[end]]) throw new SpecError(`${at}/steps/${i}/${end}`, `unknown actor ${JSON.stringify(st[end])}`)
+    }
+    label(`${at}/steps/${i}/label`, st.label)
+    anchorRef(`${at}/steps/${i}/ref`, st.ref)
+  })
+}
+
+/** `crates/surface::validate::excerpt`, same paths: root-relative path, 1..=120 lines and ≤ 16 KiB, ordered in-range marks. */
+function excerpt(x: z.infer<typeof excerptProps>, at: string): void {
+  const badPath = checkPath(x.path)
+  if (badPath) throw new SpecError(`${at}/path`, badPath)
+  const lines = excerptLines(x.text).length
+  if (lines === 0) throw new SpecError(`${at}/text`, 'empty')
+  if (lines > MAX_EXCERPT.lines) throw new SpecError(`${at}/text`, `${lines} lines, limit ${MAX_EXCERPT.lines}`)
+  const bytes = new TextEncoder().encode(x.text).length
+  if (bytes > MAX_EXCERPT.bytes) throw new SpecError(`${at}/text`, `${bytes} bytes, limit ${MAX_EXCERPT.bytes}`)
+  const start = x.start ?? 1
+  const end = start + lines - 1
+  ;(x.mark ?? []).forEach(([from, to], i) => {
+    if (from! > to!) throw new SpecError(`${at}/mark/${i}`, `[${from}, ${to}] is not ordered`)
+    if (from! < start || to! > end) throw new SpecError(`${at}/mark/${i}`, `[${from}, ${to}] is outside the quoted lines ${start}-${end}`)
+  })
+}
+
+/** Rust `str::lines`: split on `\n`, drop one trailing `\r` per line, and no empty final line after a trailing newline. */
+export function excerptLines(text: string): string[] {
+  if (text === '') return []
+  const out = text.split('\n').map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l))
+  if (out.length > 1 && out[out.length - 1] === '' && text.endsWith('\n')) out.pop()
+  return out
 }
 
 /** Tree checks after every element is typed: ids resolve, ≤ 1 parent, root exists, no cycle, limits. */

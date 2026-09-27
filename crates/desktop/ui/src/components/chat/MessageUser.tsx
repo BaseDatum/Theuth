@@ -3,12 +3,14 @@ import { memo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { type AttachRef, compose, parse } from '@/lib/attach'
+import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
 import { useApi } from '@/lib/rpc'
 import { parseNote } from '@/lib/voice-note'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import { useSessionField } from '@/store/sessions'
 import { AttachChip } from './AttachChip'
+import { BoardQuoteCard } from './BoardQuoteCard'
 import { Attachments } from './Attachments'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 import { SkillCard } from './SkillCard'
@@ -114,6 +116,8 @@ export const MessageUser = memo(function MessageUser({
   // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike.
   const { refs, body } = parse(text)
   const note = parseNote(body)
+  // 71 §2.9: a `[board …]` header behind the markers is a place on a board — the quote card, not a bubble.
+  const ask = note ? null : parseAsk(body)
   return (
     <div className="group flex flex-col items-end gap-2 py-2">
       {skill && <SkillCard name={skill} />}
@@ -135,11 +139,14 @@ export const MessageUser = memo(function MessageUser({
           }}
         />
       ) : (
-        body && (
+        body &&
+        (ask ? (
+          <BoardQuoteCard ask={ask} />
+        ) : (
           <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
             {note ? note.body : body}
           </div>
-        )
+        ))
       )}
       {!readOnly && !editing && !context?.removed && (context || (turn != null && !running)) && (
         <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">

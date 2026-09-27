@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { expect, test } from 'vitest'
-import { parsePartial, parseSpec } from './parse'
+import { excerptLines, parsePartial, parseSpec } from './parse'
+
+const RUST = new URL('../../../../../../surface/fixtures/json-render/', import.meta.url)
+const fixture = (name: string) => readFileSync(new URL(`${name}.json`, RUST), 'utf8')
 
 const ok = (body: string) => {
   const r = parseSpec(body)
@@ -67,6 +71,32 @@ test('cross-field rules: Heatmap grid shape, Image src scheme, LinkList url sche
   const links = (url: string) => `{"root":"l","elements":{"l":{"type":"LinkList","props":{"items":[{"title":"t","url":"${url}"}]}}}}`
   expect(ok(links('http://x.test')).repaired).toBe(false)
   expect(err(links('javascript:alert(1)'))).toBe('/elements/l/props/items/0/url: url must be http(s)')
+})
+
+test('Sequence and Excerpt: the broken fixtures fail at the Rust paths with the Rust messages; the valid ones parse', () => {
+  expect(ok(fixture('valid-sequence')).spec.elements.s?.type).toBe('Sequence')
+  expect(ok(fixture('valid-excerpt')).spec.elements.x?.type).toBe('Excerpt')
+  expect(err(fixture('broken-excerpt-mark'))).toMatch(/^\/elements\/x\/props\/mark\/1: /)
+  expect(err(fixture('broken-sequence-actor'))).toBe('/elements/s/props/steps/1/to: unknown actor "validator"')
+  expect(err(fixture('broken-ref-scheme'))).toBe('/elements/g/props/nodes/0/ref: path must not carry a scheme: http:')
+  const seq = (steps: string, actors = '[{"id":"a","label":"A"},{"id":"b","label":"B"}]') =>
+    `{"root":"s","elements":{"s":{"type":"Sequence","props":{"actors":${actors},"steps":${steps}}}}}`
+  expect(err(seq('[]'))).toBe('/elements/s/props/steps: 0 steps, expected 1..=40')
+  expect(err(seq('[{"from":"a","to":"b","label":"x"}]', '[{"id":"a","label":"A"}]'))).toBe('/elements/s/props/actors: 1 actors, expected 2..=12')
+  expect(err(seq('[{"from":"a","to":"b","label":"x"}]', '[{"id":"a","label":"A"},{"id":"a","label":"B"}]'))).toBe('/elements/s/props/actors/1/id: duplicate actor id "a"')
+  expect(err(seq('[{"from":"a","to":"b","label":"x","ref":"../x"}]'))).toBe('/elements/s/props/steps/0/ref: path must not contain "..": "../x"')
+  expect(err(seq('[{"from":"a","to":"b","label":"x","ref":"a#L9-L3"}]'))).toBe('/elements/s/props/steps/0/ref: L3 is before L9')
+  const ex = (props: string) => `{"root":"x","elements":{"x":{"type":"Excerpt","props":${props}}}}`
+  expect(err(ex('{"path":"/etc/passwd","text":"a"}'))).toBe('/elements/x/props/path: path must be root-relative, not absolute: "/etc/passwd"')
+  expect(err(ex('{"path":"a.rs","text":""}'))).toBe('/elements/x/props/text: empty')
+  expect(err(ex(`{"path":"a.rs","text":${JSON.stringify(Array(121).fill('x').join('\n'))}}`))).toBe('/elements/x/props/text: 121 lines, limit 120')
+  expect(err(ex(`{"path":"a.rs","text":${JSON.stringify('é'.repeat(9000))}}`))).toBe('/elements/x/props/text: 18000 bytes, limit 16384')
+  expect(err(ex('{"path":"a.rs","text":"a\\nb","start":5,"mark":[[6,5]]}'))).toBe('/elements/x/props/mark/0: [6, 5] is not ordered')
+  expect(err(ex('{"path":"a.rs","text":"a\\nb","start":5,"mark":[[5,6],[4,5]]}'))).toBe('/elements/x/props/mark/1: [4, 5] is outside the quoted lines 5-6')
+  expect(err(ex('{"path":"a.rs","text":"a","mark":[[1]]}'))).toMatch(/^\/elements\/x\/props\/mark\/0: /)
+  expect(err(ex('{"path":"a.rs","text":"a","start":0}'))).toMatch(/^\/elements\/x\/props\/start: /)
+  expect(excerptLines('a\r\nb\n')).toEqual(['a', 'b'])
+  expect(excerptLines('a\n\n')).toEqual(['a', ''])
 })
 
 test('parsePartial renders the finished elements and drops the half-written one', () => {

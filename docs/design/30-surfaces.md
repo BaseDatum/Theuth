@@ -706,6 +706,11 @@ transcript. Adding a component = one enum variant + one TUI arm + one React
 component + one `valid-*.json` fixture (golden files regenerate with
 `UPDATE_GOLDEN=1`); the prompt, skill, validator and bindings regenerate.
 
+*Amended by 71 §6.4 (steps 1 and 3, 2026-09-27): thirty-eight.* `Sequence` (actors and addressable steps with an
+optional code `ref`) after `Graph`, `Excerpt` (real code pinned to `path:start`, marked rows, `symbol`) after `Diff`;
+`GraphNode.ref` joins the Graph props. The anchor grammar they share is 71 §2.3 (`crates/surface/src/anchor.rs`,
+mirrored in `components/chat/surface/anchor.ts`); `ref` is inert in chat and apps and a binding only inside a board.
+
 ## 11. Security (28)
 
 - A `json-render` block is model output shaped by everything the model

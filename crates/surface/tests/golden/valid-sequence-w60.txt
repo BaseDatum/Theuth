@@ -1,0 +1,11 @@
+One json-render fence, model to picture
+1. Model → parse  fence body   crates/surface/src/lib.rs#L90
+2. parse ⇾ parse  jsonrepair on failure
+   crates/surface/src/lib.rs#L100-L110
+3. parse → validate  check(value)
+   crates/surface/src/validate.rs#L32
+4. validate ⇢ parse  Spec or located errors
+   crates/surface/src/validate.rs#L267-L273
+5. parse → render  spec_lines(spec, width)
+   crates/surface/src/render.rs#L20
+6. render ⇢ Model  lines, or the source block

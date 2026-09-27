@@ -44,7 +44,7 @@ use app::{
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
-use codeindex::{CODEINDEX_ACTOR, CodeindexActor, IndexStats};
+use codeindex::{CODEINDEX_ACTOR, CodeindexActor, IndexStats, LocateAnchor, Located};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -842,6 +842,13 @@ pub trait Api {
     /// index without reconciling it.
     #[method(name = "codeindex_stats")]
     async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats>;
+    /// Verify board anchors against the working tree under `root` (71 §2.5,
+    /// M11): one `Located` per anchor, in order — `same` / `changed` /
+    /// `moved` (new range) / `missing`. Read-only; `root` must be a git
+    /// top-level and every `path` must stay under it (the whole batch errors
+    /// otherwise).
+    #[method(name = "code_locate")]
+    async fn code_locate(&self, root: String, anchors: Vec<LocateAnchor>) -> RpcResult<Vec<Located>>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -3388,6 +3395,10 @@ impl ApiServer for Server {
 
     async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats> {
         send(&codeindex()?, codeindex::Stats { root: root.map(PathBuf::from) }).await
+    }
+
+    async fn code_locate(&self, root: String, anchors: Vec<LocateAnchor>) -> RpcResult<Vec<Located>> {
+        send(&codeindex()?, codeindex::Locate { root: PathBuf::from(root), anchors }).await
     }
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {

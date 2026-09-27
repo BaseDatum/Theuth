@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { useBoards } from '@/lib/boards'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
@@ -38,6 +39,7 @@ export function General() {
   // Autostart and the window hotkey belong to the desktop shell with its own daemon (31 §9).
   const desktop = useEngines((s) => s.active) === LOCAL && isDesktop()
   const [theme, setThemeState] = useState(currentTheme)
+  const serif = useBoards((s) => s.serif)
   const autostart = useQuery({
     queryKey: AUTOSTART,
     queryFn: isEnabled,
@@ -94,6 +96,9 @@ export function General() {
               ))}
             </SelectContent>
           </Select>
+        </Row>
+        <Row label="Serif prose on boards" description="Board prose in Newsreader; off uses the interface face. Paths, captions and gutters stay mono.">
+          <Switch checked={serif} onCheckedChange={useBoards.getState().setSerif} />
         </Row>
         {desktop && (
           <>
