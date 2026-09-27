@@ -194,7 +194,10 @@ mod tests {
             Kind::File,
         ] {
             assert_eq!(Kind::parse(k.as_str()), Some(k));
-            assert_eq!(serde_json::to_string(&k).unwrap(), format!("\"{}\"", k.as_str()));
+            assert_eq!(
+                serde_json::to_string(&k).unwrap(),
+                format!("\"{}\"", k.as_str())
+            );
         }
         assert_eq!(Kind::parse("zip"), None);
     }

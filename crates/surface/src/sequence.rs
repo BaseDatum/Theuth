@@ -85,7 +85,13 @@ pub fn steps_lines(p: &SequenceProps, width: usize) -> Vec<Line> {
         let mut line = vec![
             span(&head, DIM),
             span(
-                format!("{} {} {}  {}", name(&s.from), arrow(s.style), name(&s.to), s.label),
+                format!(
+                    "{} {} {}  {}",
+                    name(&s.from),
+                    arrow(s.style),
+                    name(&s.to),
+                    s.label
+                ),
                 PLAIN,
             ),
         ];
@@ -132,7 +138,13 @@ mod tests {
         }
     }
 
-    fn step(from: &str, to: &str, label: &str, style: Option<SequenceStyle>, r: Option<&str>) -> SequenceStep {
+    fn step(
+        from: &str,
+        to: &str,
+        label: &str,
+        style: Option<SequenceStyle>,
+        r: Option<&str>,
+    ) -> SequenceStep {
         SequenceStep {
             from: from.into(),
             to: to.into(),
@@ -178,7 +190,13 @@ mod tests {
             title: None,
             actors: vec![actor("p", "parser"), actor("v", "validator")],
             steps: vec![
-                step("p", "v", "check(spec)", None, Some("crates/surface/src/validate.rs:12-40")),
+                step(
+                    "p",
+                    "v",
+                    "check(spec)",
+                    None,
+                    Some("crates/surface/src/validate.rs:12-40"),
+                ),
                 step("v", "p", "errors", Some(SequenceStyle::Return), None),
                 step("p", "p", "repair", Some(SequenceStyle::Async), Some("a.rs")),
             ],

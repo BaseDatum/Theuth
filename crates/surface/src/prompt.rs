@@ -422,7 +422,9 @@ mod tests {
         assert!(msg.starts_with("<surface_error>\nYour reply contains 2 `json-render`"));
         assert!(msg.ends_with("</surface_error>"));
         assert!(msg.contains("\nBlock 1 (json-render), errors:\n- /elements/t/type: unknown component \"DataTable\"\n- /root: \"main\" is not an element id\n"));
-        assert!(msg.contains("\nBlock 1 (mermaid), errors:\n- line:2: Parse error on line 2\nline 2: A --> B[\n"));
+        assert!(msg.contains(
+            "\nBlock 1 (mermaid), errors:\n- line:2: Parse error on line 2\nline 2: A --> B[\n"
+        ));
         assert!(msg.contains(&format!("\nCatalog: {}\n", catalog_compact())));
         // No json-render among the failures: no json-render catalog.
         let msg = surface_error(&fences[1..]);

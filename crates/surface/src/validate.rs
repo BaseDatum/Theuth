@@ -281,7 +281,11 @@ fn is_http(url: &str) -> bool {
 
 /// [`is_http`] or an inline `data:image/…` URL: what `<img src>` may load.
 fn is_image_src(src: &str) -> bool {
-    is_http(src) || src.get(..11).unwrap_or(src).eq_ignore_ascii_case("data:image/")
+    is_http(src)
+        || src
+            .get(..11)
+            .unwrap_or(src)
+            .eq_ignore_ascii_case("data:image/")
 }
 
 /// A `Graph` or `Sequence` label: ≤ [`MAX_GRAPH_LABEL_CHARS`].
@@ -803,8 +807,17 @@ mod tests {
             ]
         );
         let errs = errors(&body.to_string());
-        assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/edges/1/from: unknown node \"zz\""), "{errs:?}");
-        assert!(errs.iter().any(|e| e.to_string() == "/elements/g/props/nodes/0/label: 81 characters, limit 80"), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.to_string() == "/elements/g/props/edges/1/from: unknown node \"zz\""),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter().any(
+                |e| e.to_string() == "/elements/g/props/nodes/0/label: 81 characters, limit 80"
+            ),
+            "{errs:?}"
+        );
     }
 
     #[test]
@@ -826,7 +839,10 @@ mod tests {
             ]
         );
         let ragged = json!({ "root": "h", "elements": { "h": { "type": "Heatmap", "props": { "rows": ["a"], "cols": ["x"], "cells": [[1], [2]] } } } });
-        assert_eq!(errors(&ragged.to_string())[0].to_string(), "/elements/h/props/cells: 2 rows of cells, 1 rows");
+        assert_eq!(
+            errors(&ragged.to_string())[0].to_string(),
+            "/elements/h/props/cells: 2 rows of cells, 1 rows"
+        );
         let ok = json!({ "root": "i", "elements": { "i": { "type": "Image", "props": { "src": "data:image/png;base64,AA==", "alt": "dot" } } } });
         assert!(crate::parse(&ok.to_string()).is_ok());
     }
@@ -865,7 +881,10 @@ mod tests {
 
         let one_actor = json!({ "root": "s", "elements": { "s": { "type": "Sequence", "props": {
             "actors": [{ "id": "a", "label": "A" }], "steps": [] } } } });
-        let mut got = errors(&one_actor.to_string()).iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut got = errors(&one_actor.to_string())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         got.sort();
         assert_eq!(
             got,
@@ -875,14 +894,23 @@ mod tests {
             ]
         );
 
-        let long = (0..=MAX_EXCERPT_LINES).map(|_| "x").collect::<Vec<_>>().join("\n");
+        let long = (0..=MAX_EXCERPT_LINES)
+            .map(|_| "x")
+            .collect::<Vec<_>>()
+            .join("\n");
         let big = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": long } } } });
         assert_eq!(
             errors(&big.to_string())[0].to_string(),
-            format!("/elements/x/props/text: {} lines, limit {MAX_EXCERPT_LINES}", MAX_EXCERPT_LINES + 1)
+            format!(
+                "/elements/x/props/text: {} lines, limit {MAX_EXCERPT_LINES}",
+                MAX_EXCERPT_LINES + 1
+            )
         );
         let empty = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "" } } } });
-        assert_eq!(errors(&empty.to_string())[0].to_string(), "/elements/x/props/text: empty");
+        assert_eq!(
+            errors(&empty.to_string())[0].to_string(),
+            "/elements/x/props/text: empty"
+        );
         let zero = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "a", "start": 0 } } } });
         assert_eq!(paths(&zero.to_string()), ["/elements/x/props/start"]);
         let ok = json!({ "root": "x", "elements": { "x": { "type": "Excerpt", "props": { "path": "a.rs", "text": "one\n", "mark": [[1, 1]] } } } });

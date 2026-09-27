@@ -12,6 +12,7 @@
 
 pub mod anchor;
 mod catalog;
+pub mod export;
 mod fences;
 mod flatten;
 mod graph;
@@ -291,7 +292,10 @@ mod tests {
             fixture!("graph-broken-dup-id"),
             "/elements/g/props/nodes/2/group",
         ),
-        (fixture!("broken-heatmap-ragged"), "/elements/h/props/cells/1"),
+        (
+            fixture!("broken-heatmap-ragged"),
+            "/elements/h/props/cells/1",
+        ),
         (fixture!("broken-image-src"), "/elements/i/props/src"),
         (fixture!("broken-link-url"), "/elements/l/props/items/0/url"),
         (fixture!("broken-excerpt-mark"), "/elements/x/props/mark/1"),
@@ -299,8 +303,14 @@ mod tests {
             fixture!("broken-sequence-actor"),
             "/elements/s/props/steps/1/to",
         ),
-        (fixture!("broken-ref-scheme"), "/elements/g/props/nodes/0/ref"),
-        (fixture!("broken-ref-scheme"), "/elements/s/props/steps/0/ref"),
+        (
+            fixture!("broken-ref-scheme"),
+            "/elements/g/props/nodes/0/ref",
+        ),
+        (
+            fixture!("broken-ref-scheme"),
+            "/elements/s/props/steps/0/ref",
+        ),
     ];
 
     /// `broken-unknown-type`: fails at `/elements/t/type`.
@@ -420,12 +430,21 @@ mod tests {
             fences_of(text, "mermaid"),
             vec![(1, Some("graph TD\n  A --> B[\n")), (2, None)]
         );
-        assert_eq!(fences_of(text, "openui"), vec![(1, Some("root = Stack([])\n"))]);
+        assert_eq!(
+            fences_of(text, "openui"),
+            vec![(1, Some("root = Stack([])\n"))]
+        );
         assert!(fences_of(text, "json-render").is_empty());
         let body = "graph TD\n  A --> B[\n";
-        assert_eq!(quote_line(body, "line:2").as_deref(), Some("line 2: A --> B["));
+        assert_eq!(
+            quote_line(body, "line:2").as_deref(),
+            Some("line 2: A --> B[")
+        );
         // mermaid counts one past the end for a trailing newline: the last line is quoted.
-        assert_eq!(quote_line(body, "line:3").as_deref(), Some("line 3: A --> B["));
+        assert_eq!(
+            quote_line(body, "line:3").as_deref(),
+            Some("line 3: A --> B[")
+        );
         assert_eq!(quote_line(body, "line:0"), None);
         assert_eq!(quote_line(body, "/root"), None);
     }

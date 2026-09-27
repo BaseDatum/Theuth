@@ -79,6 +79,11 @@ static DOCUMENT: &str = include_str!("../typst/document.typ");
 static TRANSPILE: &str = include_str!("../typst/transpile.typ");
 static CMARKER: &str = include_str!("../typst/cmarker/lib.typ");
 static CMARKER_WASM: &[u8] = include_bytes!("../typst/cmarker/plugin.wasm");
+/// Newsreader (OFL, `fonts/OFL.txt`): the app's serif, so note exports read like the app (72 §4).
+static NEWSREADER: [&[u8]; 2] = [
+    include_bytes!("../fonts/Newsreader.ttf"),
+    include_bytes!("../fonts/Newsreader-Italic.ttf"),
+];
 
 /// Compile `content` to PDF + page-1 PNG.
 ///
@@ -186,13 +191,14 @@ fn preview(page: &Page) -> anyhow::Result<Vec<u8>> {
         .context("encode preview png")
 }
 
-/// Front matter keys a markdown document may set (35 §4.1).
+/// Front matter keys a markdown document may set (35 §4.1); `font` is the body face (72 §4).
 #[derive(Deserialize, Default)]
 struct Matter {
     title: Option<String>,
     author: Option<String>,
     date: Option<String>,
     paper: Option<String>,
+    font: Option<String>,
     #[serde(default)]
     toc: bool,
 }
@@ -237,6 +243,13 @@ fn front_matter(yaml: Option<&str>) -> Result<Dict, String> {
         matter.paper.unwrap_or_else(|| "a4".to_owned()).into_value(),
     );
     meta.insert("toc".into(), matter.toc.into_value());
+    meta.insert(
+        "font".into(),
+        matter
+            .font
+            .unwrap_or_else(|| "Libertinus Serif".to_owned())
+            .into_value(),
+    );
     Ok(meta)
 }
 
@@ -253,6 +266,7 @@ fn engine(extra_fonts: &[PathBuf]) -> &'static Engine {
             .include_embedded_fonts(true)
             .include_dirs(extra_fonts.iter().cloned());
         let typst = TypstEngine::builder()
+            .fonts(NEWSREADER)
             .search_fonts_with(fonts)
             .with_static_source_file_resolver([
                 ("/document.typ", DOCUMENT),

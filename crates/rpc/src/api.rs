@@ -14,28 +14,26 @@ use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
-    Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets, Cancel,
-    CommunicationState, Compact, CompactStyle, ContextBreakdown, ContextItems, ContextRemoval, Delivery,
-    SessionContextBreakdown,
-    ListActivity,
-    ContextSnapshot, ContextTarget, DeleteSession, EditTurn, ForkSession, GetCommunication,
-    GetCompactStyle, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
-    GetEscalateModel, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListAgents,
-    EscalateModel, SetEscalateModel,
-    ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry,
-    ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo,
-    ArchiveSession,
-    NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession,
-    ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
-    RemoveSkill, RemoveSkillRepo, RenameSession, SendInput, SessionSummary, SetCommunication,
-    SetCompactStyle, SetEffort, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope,
-    SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
+    ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
+    BroadcastTargets, Cancel, CommunicationState, Compact, CompactStyle, ContextBreakdown,
+    ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession, Delivery,
+    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetEscalateModel,
+    GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle, GetSubagentModel,
+    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListActivity,
+    ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
+    Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord,
+    PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
+    SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
+    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle,
+    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
     SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
-    PrivateTrees, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetSessionProject,
-    ListProjectStyles, ProjectStyle, SetProjectStyle, PeerDeliver, PeerEnvelope,
+    ListProjectStyles, PeerDeliver, PeerEnvelope, PrivateTrees, ProjectStyle, ResumePrivate,
+    SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject,
 };
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use app::{
@@ -57,7 +55,6 @@ use kameo::error::SendError;
 use kameo::message::Message;
 use kameo::reply::Reply;
 use knowledge::search::HistoricalConcept;
-use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
 use knowledge::{
     Change, Concept, Delete, Get, HarvestResult, History, HistoryOf, Hit, KNOWLEDGE_ACTOR,
     KnowledgeActor, List, Meta, Put, PutConcept, Restore, Revision, RevisionOf, Search, Source,
@@ -71,6 +68,7 @@ use parking_lot::RwLock;
 use runtime::{InputId, Runtime, SessionId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sessionsync::types::{SessionOrphan, SessionOwner, SessionsStatus};
 use signal::{Allow, Link, RemoveAllowed, SIGNAL_ACTOR, Signal, SignalStatus, Status, Unlink};
 use slack::{SLACK_ACTOR, Slack, SlackStatus};
 use tokio::sync::broadcast;
@@ -189,7 +187,11 @@ pub trait Api {
     /// Returns the owner's receipt (`accepted`); a refusal is the error the
     /// sender records as a `failed` receipt.
     #[method(name = "peer_deliver", with_extensions)]
-    async fn peer_deliver(&self, session: SessionId, envelope: PeerEnvelope) -> RpcResult<PeerReceipt>;
+    async fn peer_deliver(
+        &self,
+        session: SessionId,
+        envelope: PeerEnvelope,
+    ) -> RpcResult<PeerReceipt>;
     /// One message to many sessions (62 §0.1): the selector is resolved on
     /// the harness, each row is authorized like `send_input`, and the reply
     /// carries one outcome per session. `dry_run: true` previews the rows.
@@ -248,7 +250,13 @@ pub trait Api {
     /// Resize a running PTY job's grid (the program gets SIGWINCH). Rows
     /// 2–200, columns 10–400. Errors when the job is unknown or finished.
     #[method(name = "pty_resize", with_extensions)]
-    async fn pty_resize(&self, session: SessionId, job: JobId, rows: u16, cols: u16) -> RpcResult<()>;
+    async fn pty_resize(
+        &self,
+        session: SessionId,
+        job: JobId,
+        rows: u16,
+        cols: u16,
+    ) -> RpcResult<()>;
     /// Attach a terminal emulator to a PTY job: first a `reset` item with
     /// the retained buffer as escape sequences (base64), then every byte the
     /// program writes as `data` items, in order, and `exit` once it ends.
@@ -748,15 +756,34 @@ pub trait Api {
     /// The document bound to an agent-charter `binding`, created from `markdown` when there is none
     /// (the Hire wizard's draft, before `agents/<name>.md` exists). Other bindings: `owner_creates`.
     #[method(name = "doc_ensure", with_extensions)]
-    async fn doc_ensure(&self, binding: document::Binding, markdown: String) -> RpcResult<document::DocId>;
+    async fn doc_ensure(
+        &self,
+        binding: document::Binding,
+        markdown: String,
+    ) -> RpcResult<document::DocId>;
     /// Lossy markdown of the whole document (what its export writes) — Hire copies it into the charter body.
     #[method(name = "doc_markdown")]
     async fn doc_markdown(&self, doc: document::DocId) -> RpcResult<String>;
+    /// Export `doc` (72): `markdown` = `doc_markdown`'s text, `pdf` = the print lowering through Typst
+    /// with `assets` (client-rendered diagram SVGs by block id) as figures. `dest` (owner only, under
+    /// the home directory) is written owner-only and atomically; `None` stores an artifact instead.
+    #[method(name = "doc_export", with_extensions)]
+    async fn doc_export(
+        &self,
+        doc: document::DocId,
+        format: artifact::ExportFormat,
+        dest: Option<PathBuf>,
+        assets: Vec<artifact::ExportAsset>,
+    ) -> RpcResult<artifact::ExportResult>;
     /// Open `doc`: its metadata, the Yjs state missing from `sv` (base64 v1
     /// state vector; absent = everything) as ≤ 48 KiB base64 chunks, and the
     /// current awareness states.
     #[method(name = "doc_open", with_extensions)]
-    async fn doc_open(&self, doc: document::DocId, sv: Option<String>) -> RpcResult<document::DocOpen>;
+    async fn doc_open(
+        &self,
+        doc: document::DocId,
+        sv: Option<String>,
+    ) -> RpcResult<document::DocOpen>;
     /// One base64 v1 update from this connection; refused with `UpdateTooLarge` over 48 KiB and `DocTooLarge` past the document cap.
     #[method(name = "doc_update", with_extensions)]
     async fn doc_update(&self, doc: document::DocId, update: String) -> RpcResult<()>;
@@ -778,7 +805,11 @@ pub trait Api {
     async fn doc_undo_agent(&self, doc: document::DocId) -> RpcResult<()>;
     /// A new note (59 §5.3, §7.3): `kind: note`, derived `documents/<id>/note.md`, headed `# <title>` unless `markdown` has one.
     #[method(name = "doc_create", with_extensions)]
-    async fn doc_create(&self, title: String, markdown: Option<String>) -> RpcResult<document::DocSummary>;
+    async fn doc_create(
+        &self,
+        title: String,
+        markdown: Option<String>,
+    ) -> RpcResult<document::DocSummary>;
     /// Retitle a note: meta, index and its first block when that is a level-1 heading. Other kinds: `title_owned_by_binding`.
     #[method(name = "doc_rename", with_extensions)]
     async fn doc_rename(&self, doc: document::DocId, title: String) -> RpcResult<()>;
@@ -849,7 +880,11 @@ pub trait Api {
     /// top-level and every `path` must stay under it (the whole batch errors
     /// otherwise).
     #[method(name = "code_locate")]
-    async fn code_locate(&self, root: String, anchors: Vec<LocateAnchor>) -> RpcResult<Vec<Located>>;
+    async fn code_locate(
+        &self,
+        root: String,
+        anchors: Vec<LocateAnchor>,
+    ) -> RpcResult<Vec<Located>>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -1141,10 +1176,20 @@ pub trait Api {
     async fn meeting_transcript(&self, id: meeting::MeetingId) -> RpcResult<meeting::Transcript>;
     /// Apply review edits in order — all or none — and return the new transcript.
     #[method(name = "meeting_edit")]
-    async fn meeting_edit(&self, id: meeting::MeetingId, ops: Vec<meeting::EditOp>) -> RpcResult<meeting::Transcript>;
+    async fn meeting_edit(
+        &self,
+        id: meeting::MeetingId,
+        ops: Vec<meeting::EditOp>,
+    ) -> RpcResult<meeting::Transcript>;
     /// `[t0, t1)` of one track as a base64 16-bit mono WAV (48 kHz), for the review pane's player.
     #[method(name = "meeting_segment_audio")]
-    async fn meeting_segment_audio(&self, id: meeting::MeetingId, track: meeting::Track, t0_ms: u64, t1_ms: u64) -> RpcResult<String>;
+    async fn meeting_segment_audio(
+        &self,
+        id: meeting::MeetingId,
+        track: meeting::Track,
+        t0_ms: u64,
+        t1_ms: u64,
+    ) -> RpcResult<String>;
     /// Enrolled speaker profiles (embedding omitted).
     #[method(name = "meeting_speakers")]
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>>;
@@ -1177,7 +1222,11 @@ pub trait Api {
     /// nothing. `browser` off ↔ on also changes whether `browser_run` is registered — that
     /// part takes a restart.
     #[method(name = "set_decision_mode")]
-    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo>;
+    async fn set_decision_mode(
+        &self,
+        prefix: String,
+        mode: decision::Mode,
+    ) -> RpcResult<decision::ModeInfo>;
     /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
@@ -1201,21 +1250,37 @@ pub trait Api {
     /// from the next batch. Turning capture off also clears `share`. A failed config write
     /// changes nothing.
     #[method(name = "set_decision_training")]
-    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    async fn set_decision_training(
+        &self,
+        prefix: String,
+        on: bool,
+    ) -> RpcResult<decision::TrainingInfo>;
     /// 57 §7.1: consent to upload the prefix's captured rows, persisted the same way. Refused
     /// (`-32000`) when capture is off. No uploader reads it in this version.
     #[method(name = "set_decision_share")]
-    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo>;
+    async fn set_decision_share(
+        &self,
+        prefix: String,
+        on: bool,
+    ) -> RpcResult<decision::TrainingInfo>;
     /// 57 §7.1: remove `<data_dir>/decisions/training/<prefix>/`; the switches stay as set.
     /// Answers the new counts.
     #[method(name = "delete_decision_training")]
     async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo>;
     /// Phase 5 (05 §8): the brief cache. Full-text search, best rank first (`limit` ≤ 50, default 8).
     #[method(name = "brief_search")]
-    async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
+    async fn brief_search(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<meeting::CachedBrief>>;
     /// Cached briefs, newest `updated_at` first, optionally only those tagged `tag` (`limit` ≤ 50).
     #[method(name = "brief_list")]
-    async fn brief_list(&self, tag: Option<String>, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>>;
+    async fn brief_list(
+        &self,
+        tag: Option<String>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<meeting::CachedBrief>>;
     /// Every tag in the cache, most-used first.
     #[method(name = "brief_tags")]
     async fn brief_tags(&self) -> RpcResult<Vec<String>>;
@@ -1308,7 +1373,12 @@ pub trait Api {
     /// Move a task on the user's intent (67 §7.2): backlog ↔ todo, → cancelled,
     /// review → done | todo, blocked → todo. `Err` names the allowed targets.
     #[method(name = "task_move")]
-    async fn task_move(&self, id: String, state: tasks::TaskState, note: Option<String>) -> RpcResult<tasks::Task>;
+    async fn task_move(
+        &self,
+        id: String,
+        state: tasks::TaskState,
+        note: Option<String>,
+    ) -> RpcResult<tasks::Task>;
     /// Append a comment to a task's thread as the user; wakes the owner (67 §7.3).
     #[method(name = "task_comment")]
     async fn task_comment(&self, id: String, text: String) -> RpcResult<()>;
@@ -1320,7 +1390,10 @@ pub trait Api {
     async fn task_blocks(&self, id: String) -> RpcResult<Vec<tasks::TaskId>>;
     /// The activity feed, newest first: `since_ms`, `kinds`, `limit` (default 50, max 500) (70 HUD).
     #[method(name = "activity_list")]
-    async fn activity_list(&self, filter: tasks::activity::ActivityFilter) -> RpcResult<Vec<tasks::activity::ActivityEntry>>;
+    async fn activity_list(
+        &self,
+        filter: tasks::activity::ActivityFilter,
+    ) -> RpcResult<Vec<tasks::activity::ActivityEntry>>;
     /// The attention inbox (70 HUD): approvals, decisions, hires, blocked / review tasks,
     /// budgets, unreachable nodes — undismissed and unsnoozed, newest first. Badge = length.
     #[method(name = "attention_list")]
@@ -1358,7 +1431,12 @@ pub trait Api {
     /// `edit: false`, under a synthetic `ui-<uuid v7>` call id, no transcript entry. The
     /// error message is the tool's located diagnostics text.
     #[method(name = "publish_app")]
-    async fn publish_app(&self, session: SessionId, name: String, source: String) -> RpcResult<AppDoc>;
+    async fn publish_app(
+        &self,
+        session: SessionId,
+        name: String,
+        source: String,
+    ) -> RpcResult<AppDoc>;
     /// Run one pinned Query/Mutation binding of an open app view on behalf of
     /// the calling connection (46 §6). A `press` trigger is the approval; the
     /// tool name comes from the binding, never the client. `-32002` when no
@@ -1381,7 +1459,10 @@ pub trait Api {
     /// (`truncated` past that). Rejects when the record vanished or the
     /// archive was unreadable at show time (no listing sidecar).
     #[method(name = "get_artifact_listing")]
-    async fn get_artifact_listing(&self, call_id: String) -> RpcResult<artifact::archive::ArchiveListing>;
+    async fn get_artifact_listing(
+        &self,
+        call_id: String,
+    ) -> RpcResult<artifact::archive::ArchiveListing>;
     /// Up to 2,000 characters of the artifact's indexed text around the
     /// occurrence `query` matches, with highlight ranges and content coverage;
     /// unavailable extraction is an error, never the live `origin` (49 §7).
@@ -1712,7 +1793,11 @@ fn principal(ext: &Extensions) -> RpcResult<(link::RpcPeer, document::Principal)
 fn owner(ext: &Extensions) -> RpcResult<link::RpcPeer> {
     let p = peer(ext)?;
     if p.guest().is_some() {
-        return Err(ErrorObjectOwned::owned(UNAUTHORIZED, "owner only", None::<()>));
+        return Err(ErrorObjectOwned::owned(
+            UNAUTHORIZED,
+            "owner only",
+            None::<()>,
+        ));
     }
     Ok(p)
 }
@@ -1725,9 +1810,10 @@ fn member_outcome<T>(peer: &link::RpcPeer, r: &RpcResult<T>) {
     };
     match r {
         Ok(_) => g.mark_joined(),
-        Err(e) if e.message().starts_with("not_member")
-            || e.message().starts_with("viewer_readonly")
-            || e.message().starts_with("sharing_disabled") =>
+        Err(e)
+            if e.message().starts_with("not_member")
+                || e.message().starts_with("viewer_readonly")
+                || e.message().starts_with("sharing_disabled") =>
         {
             g.refuse();
         }
@@ -1761,7 +1847,10 @@ pub const NOT_HUB: i32 = -32011;
 /// [`send`] for the document actor: a `NotHub` refusal (typed, or in its `Display` form from a
 /// handler whose error stayed a `String`) becomes [`NOT_HUB`] with the typed payload; anything else
 /// is `ASK_FAILED` with the message.
-async fn doc_send<M>(actor: &ActorRef<document::DocumentActor>, msg: M) -> RpcResult<<<document::DocumentActor as Message<M>>::Reply as Reply>::Ok>
+async fn doc_send<M>(
+    actor: &ActorRef<document::DocumentActor>,
+    msg: M,
+) -> RpcResult<<<document::DocumentActor as Message<M>>::Reply as Reply>::Ok>
 where
     document::DocumentActor: Message<M>,
     M: Send + 'static,
@@ -1911,9 +2000,17 @@ fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
 }
 
 /// `PtyAttach` as an RPC result; `size` resizes a running job first.
-async fn attach_pty(session: SessionId, job: &JobId, size: Option<(u16, u16)>) -> RpcResult<tools::PtyAttached> {
+async fn attach_pty(
+    session: SessionId,
+    job: &JobId,
+    size: Option<(u16, u16)>,
+) -> RpcResult<tools::PtyAttached> {
     lookup::<Jobs>(JOBS_ACTOR)?
-        .ask(PtyAttach { session, id: job.clone(), size })
+        .ask(PtyAttach {
+            session,
+            id: job.clone(),
+            size,
+        })
         .await
         .map_err(|e| match e {
             SendError::HandlerError(msg) => failed(msg),
@@ -1980,7 +2077,14 @@ impl ApiServer for Server {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) = forward::route(ext, session, "send_input", (Some(session), &text, forward::ByName(&files), &delivery, id)).await? {
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "send_input",
+            (Some(session), &text, forward::ByName(&files), &delivery, id),
+        )
+        .await?
+        {
             return Ok(r);
         }
         let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
@@ -2008,7 +2112,14 @@ impl ApiServer for Server {
     ) -> RpcResult<InputId> {
         self.authorize(ext, session).await?;
         let id = id.unwrap_or_default();
-        if let Some(r) = forward::route(ext, session, "steer", (session, &text, Some(id), forward::ByName(&files), &delivery)).await? {
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "steer",
+            (session, &text, Some(id), forward::ByName(&files), &delivery),
+        )
+        .await?
+        {
             return Ok(r);
         }
         let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
@@ -2229,7 +2340,12 @@ impl ApiServer for Server {
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
         lookup::<Jobs>(JOBS_ACTOR)?
-            .ask(PtyResize { session, id: job, rows, cols })
+            .ask(PtyResize {
+                session,
+                id: job,
+                rows,
+                cols,
+            })
             .await
             .map_err(|e| match e {
                 SendError::HandlerError(msg) => failed(msg),
@@ -2259,10 +2375,18 @@ impl ApiServer for Server {
         };
         let sink = pending.accept().await?;
         let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
-        let item = |c: &PtyChunk| SubscriptionMessage::from(serde_json::value::to_raw_value(c).expect("PtyChunk serializes"));
+        let item = |c: &PtyChunk| {
+            SubscriptionMessage::from(
+                serde_json::value::to_raw_value(c).expect("PtyChunk serializes"),
+            )
+        };
         tokio::spawn(async move {
             loop {
-                let reset = PtyChunk::Reset { data: b64(&at.replay), rows: at.rows, cols: at.cols };
+                let reset = PtyChunk::Reset {
+                    data: b64(&at.replay),
+                    rows: at.rows,
+                    cols: at.cols,
+                };
                 if sink.send(item(&reset)).await.is_err() {
                     return;
                 }
@@ -2374,7 +2498,14 @@ impl ApiServer for Server {
         targets: Vec<ContextTarget>,
     ) -> RpcResult<ContextRemoval> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "remove_context", (session, &expected_revision, &targets)).await? {
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "remove_context",
+            (session, &expected_revision, &targets),
+        )
+        .await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(
@@ -2405,7 +2536,14 @@ impl ApiServer for Server {
         files: Vec<PathBuf>,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "edit_turn", (session, turn, &text, forward::ByName(&files))).await? {
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "edit_turn",
+            (session, turn, &text, forward::ByName(&files)),
+        )
+        .await?
+        {
             return Ok(r);
         }
         let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
@@ -2549,19 +2687,28 @@ impl ApiServer for Server {
             .ok_or_else(|| failed(format!("{session}: no accounting owner")))
     }
 
-    async fn session_take(&self, ext: &Extensions, session: SessionId, reason: String) -> RpcResult<SessionOwner> {
+    async fn session_take(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        reason: String,
+    ) -> RpcResult<SessionOwner> {
         self.authorize(ext, session).await?;
-        let reason = sessionsync::TakeReason::parse(&reason)
-            .ok_or_else(|| {
-                ErrorObjectOwned::owned(
-                    jsonrpsee::types::error::INVALID_PARAMS_CODE,
-                    format!("reason {reason:?}: expected user | orphan | write"),
-                    None::<()>,
-                )
-            })?;
-        let (owner, epoch) =
-            ask::<sessionsync::SessionSync, _>(sessionsync::SESSIONS_ACTOR, sessionsync::TakeSession { id: session, reason })
-                .await?;
+        let reason = sessionsync::TakeReason::parse(&reason).ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                format!("reason {reason:?}: expected user | orphan | write"),
+                None::<()>,
+            )
+        })?;
+        let (owner, epoch) = ask::<sessionsync::SessionSync, _>(
+            sessionsync::SESSIONS_ACTOR,
+            sessionsync::TakeSession {
+                id: session,
+                reason,
+            },
+        )
+        .await?;
         Ok(SessionOwner {
             owner,
             epoch,
@@ -2578,10 +2725,16 @@ impl ApiServer for Server {
             .ok_or_else(|| failed(format!("{session}: no such session")))
     }
 
-    async fn session_orphans(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<SessionOrphan>> {
+    async fn session_orphans(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Vec<SessionOrphan>> {
         self.authorize(ext, session).await?;
         let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-        sessionsync::orphans(&store, session).await.map_err(|e| failed(format!("{e:#}")))
+        sessionsync::orphans(&store, session)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))
     }
 
     async fn sessions_status(&self) -> RpcResult<SessionsStatus> {
@@ -2631,7 +2784,9 @@ impl ApiServer for Server {
         archived: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "archive_session", (session, archived)).await? {
+        if let Some(r) =
+            forward::route(ext, session, "archive_session", (session, archived)).await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, ArchiveSession { session, archived }).await
@@ -2710,7 +2865,9 @@ impl ApiServer for Server {
         project: Option<String>,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "set_session_project", (session, &project)).await? {
+        if let Some(r) =
+            forward::route(ext, session, "set_session_project", (session, &project)).await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSessionProject { session, project }).await
@@ -2848,7 +3005,9 @@ impl ApiServer for Server {
         hidden: bool,
     ) -> RpcResult<()> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "set_mcp_hidden", (session, &tools, hidden)).await? {
+        if let Some(r) =
+            forward::route(ext, session, "set_mcp_hidden", (session, &tools, hidden)).await?
+        {
             return Ok(r);
         }
         ask::<ToolRegistry, _>(
@@ -2909,7 +3068,8 @@ impl ApiServer for Server {
         alias: Option<String>,
     ) -> RpcResult<CommunicationState> {
         self.authorize(ext, root).await?;
-        if let Some(r) = forward::route(ext, root, "set_peer_scope", (root, &scope, &alias)).await? {
+        if let Some(r) = forward::route(ext, root, "set_peer_scope", (root, &scope, &alias)).await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(agent::AGENT_ACTOR, SetPeerScope { root, scope, alias }).await
@@ -2976,7 +3136,14 @@ impl ApiServer for Server {
         text: String,
     ) -> RpcResult<PeerReceipt> {
         self.authorize(ext, session).await?;
-        if let Some(r) = forward::route(ext, session, "answer_peer_request", (session, reply_to, &text)).await? {
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "answer_peer_request",
+            (session, reply_to, &text),
+        )
+        .await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(
@@ -3015,7 +3182,9 @@ impl ApiServer for Server {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) = forward::route(ext, session, "use_skill", (Some(session), &name, &args)).await? {
+        if let Some(r) =
+            forward::route(ext, session, "use_skill", (Some(session), &name, &args)).await?
+        {
             return Ok(r);
         }
         ask::<Agents, _>(
@@ -3150,26 +3319,48 @@ impl ApiServer for Server {
         doc_send(&documents()?, document::ListDocs { kind, limit }).await
     }
 
-    async fn doc_resolve(&self, ext: &Extensions, binding: document::Binding) -> RpcResult<Option<document::DocId>> {
+    async fn doc_resolve(
+        &self,
+        ext: &Extensions,
+        binding: document::Binding,
+    ) -> RpcResult<Option<document::DocId>> {
         let docs = documents()?;
-        if let Some(id) = doc_send(&docs, document::Lookup { binding: binding.clone() }).await? {
+        if let Some(id) = doc_send(
+            &docs,
+            document::Lookup {
+                binding: binding.clone(),
+            },
+        )
+        .await?
+        {
             return Ok(Some(id));
         }
         let text = match &binding {
             // On demand (59 §7.1): a knowledge concept becomes a document from its current file.
-            document::Binding::Knowledge(concept) => match send(&knowledge()?, Get { id: concept.clone() }).await {
+            document::Binding::Knowledge(concept) => match send(
+                &knowledge()?,
+                Get {
+                    id: concept.clone(),
+                },
+            )
+            .await
+            {
                 Ok(c) => c.text,
                 Err(e) if e.code() == ASK_FAILED => return Ok(None),
                 Err(e) => return Err(e),
             },
             // An agent's charter becomes a document from the body of `agents/<name>.md`; theuth's is
             // `prompt.md`, read-only, never a document.
-            document::Binding::AgentCharter(name) if name == roster::AgentName::DEFAULT => return Ok(None),
-            document::Binding::AgentCharter(name) => match send(&roster_actor()?, roster::GetAgent(name.clone())).await {
-                Ok(f) => f.body,
-                Err(e) if e.code() == ASK_FAILED => return Ok(None),
-                Err(e) => return Err(e),
-            },
+            document::Binding::AgentCharter(name) if name == roster::AgentName::DEFAULT => {
+                return Ok(None);
+            }
+            document::Binding::AgentCharter(name) => {
+                match send(&roster_actor()?, roster::GetAgent(name.clone())).await {
+                    Ok(f) => f.body,
+                    Err(e) if e.code() == ASK_FAILED => return Ok(None),
+                    Err(e) => return Err(e),
+                }
+            }
             _ => return Ok(None),
         };
         let r = doc_send(
@@ -3184,8 +3375,14 @@ impl ApiServer for Server {
         doc_forward(ext, "doc_resolve", (&binding,), r).await
     }
 
-    async fn doc_ensure(&self, ext: &Extensions, binding: document::Binding, markdown: String) -> RpcResult<document::DocId> {
-        if !matches!(&binding, document::Binding::AgentCharter(name) if name != roster::AgentName::DEFAULT) {
+    async fn doc_ensure(
+        &self,
+        ext: &Extensions,
+        binding: document::Binding,
+        markdown: String,
+    ) -> RpcResult<document::DocId> {
+        if !matches!(&binding, document::Binding::AgentCharter(name) if name != roster::AgentName::DEFAULT)
+        {
             return Err(ErrorObjectOwned::owned(
                 jsonrpsee::types::error::INVALID_PARAMS_CODE,
                 "owner_creates",
@@ -3204,7 +3401,75 @@ impl ApiServer for Server {
     }
 
     async fn doc_markdown(&self, doc: document::DocId) -> RpcResult<String> {
-        doc_send(&documents()?, document::Markdown { doc, blocks: None, annotate: false }).await
+        doc_send(
+            &documents()?,
+            document::Markdown {
+                doc,
+                blocks: None,
+                annotate: false,
+            },
+        )
+        .await
+    }
+
+    async fn doc_export(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        format: artifact::ExportFormat,
+        dest: Option<PathBuf>,
+        assets: Vec<artifact::ExportAsset>,
+    ) -> RpcResult<artifact::ExportResult> {
+        let (peer, by) = principal(ext)?;
+        if let Some(dest) = &dest {
+            owner(ext)?;
+            let home = dirs::home_dir().ok_or_else(|| failed("no home directory"))?;
+            let inside = dest.is_absolute()
+                && dest.starts_with(&home)
+                && !dest
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir));
+            if !inside {
+                return Err(failed(format!(
+                    "{}: not under {}",
+                    dest.display(),
+                    home.display()
+                )));
+            }
+        }
+        let docs = documents()?;
+        let meta = doc_send(
+            &docs,
+            document::MetaOf {
+                doc: doc.clone(),
+                by,
+            },
+        )
+        .await;
+        member_outcome(&peer, &meta);
+        let meta = meta?;
+        let annotate = format == artifact::ExportFormat::Pdf;
+        let markdown = doc_send(
+            &docs,
+            document::Markdown {
+                doc,
+                blocks: None,
+                annotate,
+            },
+        )
+        .await?;
+        send(
+            &artifact()?,
+            artifact::ExportDoc {
+                title: meta.title,
+                format,
+                markdown,
+                dest,
+                assets,
+                record: None,
+            },
+        )
+        .await
     }
 
     async fn doc_open(
@@ -3238,12 +3503,20 @@ impl ApiServer for Server {
         state: String,
     ) -> RpcResult<()> {
         let (peer, by) = principal(ext)?;
-        let r = doc_send(&documents()?, document::AwarenessUpdateMsg { doc, state, by }).await;
+        let r = doc_send(
+            &documents()?,
+            document::AwarenessUpdateMsg { doc, state, by },
+        )
+        .await;
         member_outcome(&peer, &r);
         r
     }
 
-    async fn doc_members(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<document::Members> {
+    async fn doc_members(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+    ) -> RpcResult<document::Members> {
         owner(ext)?;
         let r = doc_send(&documents()?, document::MembersOf { doc: doc.clone() }).await;
         doc_forward(ext, "doc_members", (&doc,), r).await
@@ -3260,15 +3533,32 @@ impl ApiServer for Server {
         owner(ext)?;
         let r = doc_send(
             &documents()?,
-            document::MemberSet { doc: doc.clone(), pub_: member.clone(), role, name: name.clone() },
+            document::MemberSet {
+                doc: doc.clone(),
+                pub_: member.clone(),
+                role,
+                name: name.clone(),
+            },
         )
         .await;
         doc_forward(ext, "doc_member_set", (&doc, &member, role, &name), r).await
     }
 
-    async fn doc_member_revoke(&self, ext: &Extensions, doc: document::DocId, member: String) -> RpcResult<()> {
+    async fn doc_member_revoke(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        member: String,
+    ) -> RpcResult<()> {
         owner(ext)?;
-        let r = doc_send(&documents()?, document::MemberRevoke { doc: doc.clone(), pub_: member.clone() }).await;
+        let r = doc_send(
+            &documents()?,
+            document::MemberRevoke {
+                doc: doc.clone(),
+                pub_: member.clone(),
+            },
+        )
+        .await;
         doc_forward(ext, "doc_member_revoke", (&doc, &member), r).await?;
         // 59 §8.4: their live conns go too — here as well as on the hub (the guest may hang off either
         // engine's uplink). Link off (no conns) is not an error.
@@ -3296,7 +3586,9 @@ impl ApiServer for Server {
         // resolving: the engine uplink stays registered.
         let status: LinkStatus = send(&link()?, link::Status).await?;
         if !status.enabled {
-            return Err(failed("link is off: turn on Settings › Link to share documents"));
+            return Err(failed(
+                "link is off: turn on Settings › Link to share documents",
+            ));
         }
         let harness = status
             .mesh
@@ -3327,9 +3619,21 @@ impl ApiServer for Server {
         doc_forward(ext, "doc_link_create", (&doc, role, &name, expires_ms), r).await
     }
 
-    async fn doc_link_revoke(&self, ext: &Extensions, doc: document::DocId, link: String) -> RpcResult<()> {
+    async fn doc_link_revoke(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        link: String,
+    ) -> RpcResult<()> {
         owner(ext)?;
-        let r = doc_send(&documents()?, document::LinkRevoke { doc: doc.clone(), link: link.clone() }).await;
+        let r = doc_send(
+            &documents()?,
+            document::LinkRevoke {
+                doc: doc.clone(),
+                link: link.clone(),
+            },
+        )
+        .await;
         doc_forward(ext, "doc_link_revoke", (&doc, &link), r).await
     }
 
@@ -3342,7 +3646,11 @@ impl ApiServer for Server {
     ) -> RpcResult<document::Joined> {
         let peer = peer(ext)?;
         let Some(guest) = peer.guest() else {
-            return Err(ErrorObjectOwned::owned(UNAUTHORIZED, "guests only", None::<()>));
+            return Err(ErrorObjectOwned::owned(
+                UNAUTHORIZED,
+                "guests only",
+                None::<()>,
+            ));
         };
         let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(proof)
@@ -3367,7 +3675,12 @@ impl ApiServer for Server {
         r
     }
 
-    async fn doc_set_name(&self, ext: &Extensions, doc: document::DocId, name: String) -> RpcResult<()> {
+    async fn doc_set_name(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        name: String,
+    ) -> RpcResult<()> {
         let (peer, by) = principal(ext)?;
         let r = doc_send(&documents()?, document::SetName { doc, by, name }).await;
         member_outcome(&peer, &r);
@@ -3378,17 +3691,31 @@ impl ApiServer for Server {
         doc_send(&documents()?, document::Snapshots { doc }).await
     }
 
-    async fn doc_restore(&self, ext: &Extensions, doc: document::DocId, snapshot: String) -> RpcResult<()> {
-        let r = doc_send(&documents()?, document::Restore { doc: doc.clone(), snapshot: snapshot.clone() })
-            .await
-            .map(|_| ());
+    async fn doc_restore(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        snapshot: String,
+    ) -> RpcResult<()> {
+        let r = doc_send(
+            &documents()?,
+            document::Restore {
+                doc: doc.clone(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .await
+        .map(|_| ());
         doc_forward(ext, "doc_restore", (&doc, &snapshot), r).await
     }
 
     async fn doc_undo_agent(&self, ext: &Extensions, doc: document::DocId) -> RpcResult<()> {
-        let r = doc_send(&documents()?, document::UndoLastAgentEdit { doc: doc.clone() })
-            .await
-            .map(|_| ());
+        let r = doc_send(
+            &documents()?,
+            document::UndoLastAgentEdit { doc: doc.clone() },
+        )
+        .await
+        .map(|_| ());
         doc_forward(ext, "doc_undo_agent", (&doc,), r).await
     }
 
@@ -3425,8 +3752,20 @@ impl ApiServer for Server {
         doc_send(&documents()?, document::Stats).await
     }
 
-    async fn doc_rename(&self, ext: &Extensions, doc: document::DocId, title: String) -> RpcResult<()> {
-        let r = doc_send(&documents()?, document::Rename { doc: doc.clone(), title: title.clone() }).await;
+    async fn doc_rename(
+        &self,
+        ext: &Extensions,
+        doc: document::DocId,
+        title: String,
+    ) -> RpcResult<()> {
+        let r = doc_send(
+            &documents()?,
+            document::Rename {
+                doc: doc.clone(),
+                title: title.clone(),
+            },
+        )
+        .await;
         doc_forward(ext, "doc_rename", (&doc, &title), r).await
     }
 
@@ -3448,11 +3787,28 @@ impl ApiServer for Server {
     }
 
     async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats> {
-        send(&codeindex()?, codeindex::Stats { root: root.map(PathBuf::from) }).await
+        send(
+            &codeindex()?,
+            codeindex::Stats {
+                root: root.map(PathBuf::from),
+            },
+        )
+        .await
     }
 
-    async fn code_locate(&self, root: String, anchors: Vec<LocateAnchor>) -> RpcResult<Vec<Located>> {
-        send(&codeindex()?, codeindex::Locate { root: PathBuf::from(root), anchors }).await
+    async fn code_locate(
+        &self,
+        root: String,
+        anchors: Vec<LocateAnchor>,
+    ) -> RpcResult<Vec<Located>> {
+        send(
+            &codeindex()?,
+            codeindex::Locate {
+                root: PathBuf::from(root),
+                anchors,
+            },
+        )
+        .await
     }
 
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer> {
@@ -3868,8 +4224,13 @@ impl ApiServer for Server {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetMode { prefix }).await
     }
 
-    async fn set_decision_mode(&self, prefix: String, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode }).await
+    async fn set_decision_mode(
+        &self,
+        prefix: String,
+        mode: decision::Mode,
+    ) -> RpcResult<decision::ModeInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetMode { prefix, mode })
+            .await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {
@@ -3877,7 +4238,8 @@ impl ApiServer for Server {
     }
 
     async fn set_meeting_oracle_mode(&self, mode: decision::Mode) -> RpcResult<decision::ModeInfo> {
-        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode).await
+        self.set_decision_mode(meeting::oracle::PREFIX.to_owned(), mode)
+            .await
     }
 
     async fn decision_stats(&self) -> RpcResult<Vec<decision::FamilyStats>> {
@@ -3892,16 +4254,30 @@ impl ApiServer for Server {
         ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::GetTrain { prefix }).await
     }
 
-    async fn set_decision_training(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on }).await
+    async fn set_decision_training(
+        &self,
+        prefix: String,
+        on: bool,
+    ) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetTrain { prefix, on })
+            .await
     }
 
-    async fn set_decision_share(&self, prefix: String, on: bool) -> RpcResult<decision::TrainingInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetShare { prefix, on }).await
+    async fn set_decision_share(
+        &self,
+        prefix: String,
+        on: bool,
+    ) -> RpcResult<decision::TrainingInfo> {
+        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::SetShare { prefix, on })
+            .await
     }
 
     async fn delete_decision_training(&self, prefix: String) -> RpcResult<decision::TrainingInfo> {
-        ask::<decision::Engine, _>(decision::DECISION_ACTOR, decision::DeleteTraining { prefix }).await
+        ask::<decision::Engine, _>(
+            decision::DECISION_ACTOR,
+            decision::DeleteTraining { prefix },
+        )
+        .await
     }
 
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()> {
@@ -3928,11 +4304,19 @@ impl ApiServer for Server {
         send(&meeting()?, meeting::GetSummary { meeting: id }).await
     }
 
-    async fn brief_search(&self, query: String, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>> {
+    async fn brief_search(
+        &self,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<meeting::CachedBrief>> {
         send(&meeting()?, meeting::BriefSearch { query, limit }).await
     }
 
-    async fn brief_list(&self, tag: Option<String>, limit: Option<u32>) -> RpcResult<Vec<meeting::CachedBrief>> {
+    async fn brief_list(
+        &self,
+        tag: Option<String>,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<meeting::CachedBrief>> {
         send(&meeting()?, meeting::BriefList { tag, limit }).await
     }
 
@@ -4073,7 +4457,12 @@ impl ApiServer for Server {
         send(&tasks_actor()?, m).await
     }
 
-    async fn task_move(&self, id: String, state: tasks::TaskState, note: Option<String>) -> RpcResult<tasks::Task> {
+    async fn task_move(
+        &self,
+        id: String,
+        state: tasks::TaskState,
+        note: Option<String>,
+    ) -> RpcResult<tasks::Task> {
         let m = tasks::MoveTask {
             id: tasks::TaskId(id),
             state,
@@ -4104,7 +4493,10 @@ impl ApiServer for Server {
         send(&tasks_actor()?, tasks::TaskBlocks(tasks::TaskId(id))).await
     }
 
-    async fn activity_list(&self, filter: tasks::activity::ActivityFilter) -> RpcResult<Vec<tasks::activity::ActivityEntry>> {
+    async fn activity_list(
+        &self,
+        filter: tasks::activity::ActivityFilter,
+    ) -> RpcResult<Vec<tasks::activity::ActivityEntry>> {
         let actor = lookup::<tasks::activity::Activity>(tasks::activity::ACTIVITY_ACTOR)?;
         send(&actor, tasks::activity::ListActivity(filter)).await
     }
@@ -4114,7 +4506,11 @@ impl ApiServer for Server {
     }
 
     async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()> {
-        send(&attention_actor()?, roster::attention::SnoozeAttention { id, until_ms }).await
+        send(
+            &attention_actor()?,
+            roster::attention::SnoozeAttention { id, until_ms },
+        )
+        .await
     }
 
     async fn attention_dismiss(&self, id: String) -> RpcResult<()> {
@@ -4156,7 +4552,12 @@ impl ApiServer for Server {
         send(&apps()?, GetApp { record_call_id }).await
     }
 
-    async fn publish_app(&self, session: SessionId, name: String, source: String) -> RpcResult<AppDoc> {
+    async fn publish_app(
+        &self,
+        session: SessionId,
+        name: String,
+        source: String,
+    ) -> RpcResult<AppDoc> {
         send(
             &apps()?,
             PublishFromUi {
@@ -4188,10 +4589,19 @@ impl ApiServer for Server {
     }
 
     async fn get_artifact(&self, call_id: String) -> RpcResult<artifact::Artifact> {
-        match send(&artifact()?, artifact::search::Get { call_id: call_id.clone() }).await {
+        match send(
+            &artifact()?,
+            artifact::search::Get {
+                call_id: call_id.clone(),
+            },
+        )
+        .await
+        {
             Ok(a) => Ok(a),
             // 68 §7: the index is engine-local; a record shown elsewhere comes from a peer.
-            Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id, None).await.map_err(|_| e),
+            Err(e) => artifact::mesh::fetch_record(&self.rt.data_dir, &call_id, None)
+                .await
+                .map_err(|_| e),
         }
     }
 
@@ -4289,18 +4699,33 @@ impl ApiServer for Server {
                     None => None,
                 };
                 let prefer = prefer.as_ref();
-                let dir = |n: usize| path.ancestors().nth(n).and_then(Path::file_name).and_then(|d| d.to_str());
+                let dir = |n: usize| {
+                    path.ancestors()
+                        .nth(n)
+                        .and_then(Path::file_name)
+                        .and_then(|d| d.to_str())
+                };
                 let fetched = match (path.file_name().and_then(|n| n.to_str()), dir(1), dir(2)) {
-                    (Some(name), Some("artifacts"), _) => artifact::mesh::fetch_blob(&root.join("artifacts"), name, prefer).await,
-                    (Some(name), Some("attachments"), _) => artifact::mesh::fetch_attachment(&root.join("attachments"), name, prefer).await,
-                    (Some(_), Some(session), Some("spill")) => match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
-                        (Ok(session), Some(call_id)) => artifact::mesh::fetch_spill(&root, session, call_id, prefer).await,
-                        _ => return Err(failed(format!("{}: {e}", path.display()))),
-                    },
+                    (Some(name), Some("artifacts"), _) => {
+                        artifact::mesh::fetch_blob(&root.join("artifacts"), name, prefer).await
+                    }
+                    (Some(name), Some("attachments"), _) => {
+                        artifact::mesh::fetch_attachment(&root.join("attachments"), name, prefer)
+                            .await
+                    }
+                    (Some(_), Some(session), Some("spill")) => {
+                        match (session.parse(), path.file_stem().and_then(|s| s.to_str())) {
+                            (Ok(session), Some(call_id)) => {
+                                artifact::mesh::fetch_spill(&root, session, call_id, prefer).await
+                            }
+                            _ => return Err(failed(format!("{}: {e}", path.display()))),
+                        }
+                    }
                     _ => return Err(failed(format!("{}: {e}", path.display()))),
                 }
                 .map_err(|e| failed(format!("{}: {e:#}", path.display())))?;
-                std::fs::canonicalize(&fetched).map_err(|e| failed(format!("{}: {e}", fetched.display())))?
+                std::fs::canonicalize(&fetched)
+                    .map_err(|e| failed(format!("{}: {e}", fetched.display())))?
             }
         };
         let allowed = ["attachments", "browser", "computer", "artifacts", "spill"]
@@ -4343,7 +4768,9 @@ impl ApiServer for Server {
                     _ = sink.closed() => return,
                     ev = rx.recv() => match ev { Some(ev) => ev, None => return },
                 };
-                let Ok(raw) = serde_json::value::to_raw_value(&ev) else { continue };
+                let Ok(raw) = serde_json::value::to_raw_value(&ev) else {
+                    continue;
+                };
                 let closed = matches!(ev, document::DocEvent::Closed { .. });
                 if sink.send(SubscriptionMessage::from(raw)).await.is_err() || closed {
                     return;

@@ -19,8 +19,8 @@ use sha2::Sha256;
 
 use crate::actor::DocumentActor;
 use crate::hub::DocError;
-use crate::relay::{Client, Cmd};
 use crate::meta::{DocEvent, DocId, Joined, Member, Members, PALETTE, Principal, Role, ShareLink};
+use crate::relay::{Client, Cmd};
 use crate::store::now_ms;
 use secrets::Vault;
 
@@ -31,7 +31,9 @@ pub(crate) fn b64url(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn unb64url(s: &str) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .ok()
 }
 
 /// `ShareLink::secret_hash_sealed` for `hash`: sealed with the mesh key, the link id as aad so a
@@ -44,7 +46,9 @@ pub(crate) fn seal_hash(vault: &Vault, link_id: &str, hash: &[u8]) -> String {
 /// mesh key.
 fn open_hash(vault: &Vault, link: &ShareLink) -> Option<Vec<u8>> {
     let bytes = unb64url(&link.secret_hash_sealed)?;
-    vault.open_with_mesh_key(link.id.as_bytes(), &bytes).map(|k| k.to_vec())
+    vault
+        .open_with_mesh_key(link.id.as_bytes(), &bytes)
+        .map(|k| k.to_vec())
 }
 
 /// `sha256(secret)`, the value a link stores and the proof's key.
@@ -62,7 +66,13 @@ pub fn proof(secret_hash: &[u8; 32], handshake_hash: &[u8], guest_pub: &[u8; 32]
 }
 
 /// Constant-time check of `proof` against the link's sealed hash; no vault = no key = refused.
-pub(crate) fn verify(vault: Option<&Vault>, link: &ShareLink, handshake_hash: &[u8], guest_pub: &[u8; 32], proof: &[u8]) -> bool {
+pub(crate) fn verify(
+    vault: Option<&Vault>,
+    link: &ShareLink,
+    handshake_hash: &[u8],
+    guest_pub: &[u8; 32],
+    proof: &[u8],
+) -> bool {
     let Some(key) = vault.and_then(|v| open_hash(v, link)) else {
         return false;
     };
@@ -136,7 +146,10 @@ impl DocumentActor {
 
     /// The owner's view (§6.1 `doc_members`): links without their hash.
     pub(crate) fn members_of(&self, doc: &DocId) -> Result<Members, String> {
-        let o = self.open.get(doc).ok_or_else(|| format!("{doc} is not loaded"))?;
+        let o = self
+            .open
+            .get(doc)
+            .ok_or_else(|| format!("{doc} is not loaded"))?;
         Ok(Members {
             members: o.meta.members.clone(),
             links: o.meta.links.iter().map(ShareLink::public).collect(),
@@ -159,7 +172,10 @@ impl DocumentActor {
                     .iter()
                     .find(|m| m.pub_ == *pub_)
                     .map_or("former member", |m| m.name.as_str());
-                (id.clone(), format!("{name} · doc-member:{}", &pub_[..pub_.len().min(8)]))
+                (
+                    id.clone(),
+                    format!("{name} · doc-member:{}", &pub_[..pub_.len().min(8)]),
+                )
             })
             .collect()
     }
@@ -238,7 +254,10 @@ impl Message<LinkCreate> for DocumentActor {
             secret_hash_sealed: seal_hash(&vault, &id, &secret_hash(&secret)),
             id,
             role: m.role,
-            name: m.name.filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_owned()),
+            name: m
+                .name
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| n.trim().to_owned()),
             created_ms: now_ms(),
             expires_ms: m.expires_ms,
             revoked_ms: None,
@@ -335,13 +354,20 @@ impl DocumentActor {
         }
         let now = now_ms();
         // Every link is tried, live or not, so the error names the link the guest actually holds.
-        let Some(link) = o
-            .meta
-            .links
-            .iter()
-            .find(|l| verify(vault.as_deref(), l, &m.handshake_hash, &m.guest_pub, &m.proof))
-        else {
-            return Err(if o.meta.links.is_empty() { JoinError::LinkUnknown } else { JoinError::BadProof });
+        let Some(link) = o.meta.links.iter().find(|l| {
+            verify(
+                vault.as_deref(),
+                l,
+                &m.handshake_hash,
+                &m.guest_pub,
+                &m.proof,
+            )
+        }) else {
+            return Err(if o.meta.links.is_empty() {
+                JoinError::LinkUnknown
+            } else {
+                JoinError::BadProof
+            });
         };
         if link.revoked_ms.is_some() {
             return Err(JoinError::LinkRevoked);
@@ -355,7 +381,10 @@ impl DocumentActor {
         let name = link
             .name
             .clone()
-            .or(m.name.filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_owned()))
+            .or(m
+                .name
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| n.trim().to_owned()))
             .unwrap_or_else(|| "Guest".to_owned());
         let member = Member {
             pub_,
@@ -466,7 +495,15 @@ impl Message<SetName> for DocumentActor {
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
             Ok(None) => tx.send(self.set_name(m).await),
-            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::SetName { name: m.name, reply: tx }),
+            Ok(Some(hub)) => self.forward(
+                hub,
+                &m.doc,
+                Client::of(&m.by),
+                Cmd::SetName {
+                    name: m.name,
+                    reply: tx,
+                },
+            ),
             Err(e) => tx.send(Err(e)),
         }
         reply
@@ -475,7 +512,10 @@ impl Message<SetName> for DocumentActor {
 
 impl DocumentActor {
     async fn set_name(&mut self, m: SetName) -> Result<(), DocError> {
-        let pub_ = m.by.member().ok_or_else(|| "not_member".to_owned())?.to_owned();
+        let pub_ =
+            m.by.member()
+                .ok_or_else(|| "not_member".to_owned())?
+                .to_owned();
         self.admit(&m.doc, &m.by, true)?;
         let name = m.name.trim();
         if name.is_empty() || name.chars().count() > 64 {
@@ -513,7 +553,9 @@ mod tests {
 
     async fn vault() -> Vault {
         let dir = tempfile::tempdir().unwrap();
-        Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap()
+        Vault::open(dir.path(), secrets::KeyStore::File)
+            .await
+            .unwrap()
     }
 
     fn link(vault: &Vault, secret: &[u8]) -> ShareLink {
@@ -539,7 +581,11 @@ mod tests {
         assert_eq!(open_hash(&b, &l), None, "another mesh key does not open it");
         let mut moved = l.clone();
         moved.id = "lnk_other".into();
-        assert_eq!(open_hash(&a, &moved), None, "aad binds the ciphertext to its link");
+        assert_eq!(
+            open_hash(&a, &moved),
+            None,
+            "aad binds the ciphertext to its link"
+        );
         assert_eq!(open_hash(&a, &l.public()), None);
     }
 

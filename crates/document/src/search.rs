@@ -37,7 +37,11 @@ pub struct SearchNotes {
 impl Message<SearchNotes> for DocumentActor {
     type Reply = DelegatedReply<Result<SearchPage<NoteSearchHit>, String>>;
 
-    async fn handle(&mut self, m: SearchNotes, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SearchNotes,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let store = self.store.clone();
@@ -51,7 +55,11 @@ impl Message<SearchNotes> for DocumentActor {
 /// rows set `has_more`.
 // ponytail: reads every note file per query (≤ 500 small files); a cached
 // index keyed on DocumentChanged is the upgrade if a measured harness is slow.
-pub async fn search_notes(store: &Store, query: &str, limit: Option<u32>) -> SearchPage<NoteSearchHit> {
+pub async fn search_notes(
+    store: &Store,
+    query: &str,
+    limit: Option<u32>,
+) -> SearchPage<NoteSearchHit> {
     let limit = search::limit(limit);
     if let Err(e) = search::validate_query(query) {
         return SearchPage::error(e);
@@ -75,7 +83,8 @@ pub async fn search_notes(store: &Store, query: &str, limit: Option<u32>) -> Sea
         for doc in notes {
             let title = SearchText::new(doc.title.clone());
             let body = SearchText::new(
-                std::fs::read_to_string(root.join(doc.id.as_str()).join("note.md")).unwrap_or_default(),
+                std::fs::read_to_string(root.join(doc.id.as_str()).join("note.md"))
+                    .unwrap_or_default(),
             );
             let (score, is_body) = match (m.score(&title), m.score(&body)) {
                 (None, None) => continue,
@@ -94,7 +103,11 @@ pub async fn search_notes(store: &Store, query: &str, limit: Option<u32>) -> Sea
         let hits = scored
             .into_iter()
             .filter_map(|(_, is_body, doc, title, body)| {
-                let (text, field) = if is_body { (&body, "body") } else { (&title, "title") };
+                let (text, field) = if is_body {
+                    (&body, "body")
+                } else {
+                    (&title, "title")
+                };
                 let (_, r#match) = m.matched(text, field, SNIPPET_CHARS)?;
                 Some(NoteSearchHit { doc, r#match })
             })
@@ -152,7 +165,10 @@ mod tests {
         assert_eq!(ids, [groceries.as_str(), plan.as_str()], "{page:?}");
         assert_eq!(page.hits[0].r#match.field, "title");
         assert_eq!(page.hits[1].r#match.field, "body");
-        assert!(page.hits[1].r#match.snippet.contains("groceries"), "{page:?}");
+        assert!(
+            page.hits[1].r#match.snippet.contains("groceries"),
+            "{page:?}"
+        );
         assert!(!page.has_more);
 
         let page = search_notes(&store, "groceries", Some(1)).await;

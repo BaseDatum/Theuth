@@ -24,8 +24,8 @@ use secrets::SecretsEvent;
 use serde::Serialize;
 use signal::SignalEvent;
 use slack::SlackEvent;
-use tokio::sync::broadcast;
 use tasks::activity::ActivityAppended;
+use tokio::sync::broadcast;
 use tools::{
     ApprovalRequested, ApprovalResolved, AskRequested, AskResolved, JobEvent, McpProgress,
 };

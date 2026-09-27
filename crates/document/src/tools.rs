@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
-use crate::actor::{CreateBoard, CreateNote, DocumentActor, Edit, EditOutcome, Ensure, Lookup, Markdown, Outline};
+use crate::actor::{
+    CreateBoard, CreateNote, DocumentActor, Edit, EditOutcome, Ensure, Lookup, Markdown, Outline,
+};
 use crate::helper::{Edit as BlockEdit, EditError};
 use crate::meta::{Binding, DocId, Principal};
 
@@ -68,7 +70,11 @@ pub struct Docs {
 }
 
 /// Register the prompt block and the six tools on `reg`.
-pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActor>, data_dir: PathBuf) {
+pub async fn register(
+    reg: &ActorRef<ToolRegistry>,
+    actor: ActorRef<DocumentActor>,
+    data_dir: PathBuf,
+) {
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "document",
@@ -78,7 +84,9 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActo
     let d = Docs::new(actor, data_dir);
     let _ = reg.ask(RegisterTool(Arc::new(ReadTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(InsertTool(d.clone())))).await;
-    let _ = reg.ask(RegisterTool(Arc::new(ReplaceTool(d.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(ReplaceTool(d.clone()))))
+        .await;
     let _ = reg.ask(RegisterTool(Arc::new(DeleteTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(MoveTool(d.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(CreateTool(d)))).await;
@@ -100,34 +108,69 @@ impl Docs {
         }
         if let Some(meeting) = doc.strip_prefix("meeting:") {
             let binding = Binding::MeetingNote(meeting.to_owned());
-            return match self.actor.ask(Lookup { binding }).await.map_err(anyhow::Error::msg)? {
+            return match self
+                .actor
+                .ask(Lookup { binding })
+                .await
+                .map_err(anyhow::Error::msg)?
+            {
                 Some(id) => Ok(id),
-                None => anyhow::bail!("meeting `{meeting}` has no note yet; use `meeting_read` for the transcript"),
+                None => anyhow::bail!(
+                    "meeting `{meeting}` has no note yet; use `meeting_read` for the transcript"
+                ),
             };
         }
         if let Some(name) = doc.strip_prefix("agent-charter:") {
             let binding = Binding::AgentCharter(name.to_owned());
-            return match self.actor.ask(Lookup { binding }).await.map_err(anyhow::Error::msg)? {
+            return match self
+                .actor
+                .ask(Lookup { binding })
+                .await
+                .map_err(anyhow::Error::msg)?
+            {
                 Some(id) => Ok(id),
-                None => anyhow::bail!("agent `{name}` has no charter document yet; open its Charter tab in the Agents view first"),
+                None => anyhow::bail!(
+                    "agent `{name}` has no charter document yet; open its Charter tab in the Agents view first"
+                ),
             };
         }
         let concept = match doc.strip_prefix("knowledge:") {
             Some(c) => c,
             None if doc.contains('/') => doc,
-            None => anyhow::bail!("`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>` nor `agent-charter:<name>`"),
+            None => anyhow::bail!(
+                "`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>` nor `agent-charter:<name>`"
+            ),
         };
         let binding = Binding::Knowledge(concept.to_owned());
-        if let Some(id) = self.actor.ask(Lookup { binding: binding.clone() }).await.map_err(anyhow::Error::msg)? {
+        if let Some(id) = self
+            .actor
+            .ask(Lookup {
+                binding: binding.clone(),
+            })
+            .await
+            .map_err(anyhow::Error::msg)?
+        {
             return Ok(id);
         }
         let path = self.data_dir.join(format!("knowledge/{concept}.md"));
-        let markdown = std::fs::read_to_string(&path)
-            .map_err(|_| anyhow::anyhow!("no knowledge concept `{concept}` (nothing at {})", path.display()))?;
-        self.actor.ask(Ensure { binding, markdown }).await.map_err(anyhow::Error::msg)
+        let markdown = std::fs::read_to_string(&path).map_err(|_| {
+            anyhow::anyhow!(
+                "no knowledge concept `{concept}` (nothing at {})",
+                path.display()
+            )
+        })?;
+        self.actor
+            .ask(Ensure { binding, markdown })
+            .await
+            .map_err(anyhow::Error::msg)
     }
 
-    async fn edit(&self, doc: &str, edits: Vec<BlockEdit>, cx: &ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn edit(
+        &self,
+        doc: &str,
+        edits: Vec<BlockEdit>,
+        cx: &ToolCx,
+    ) -> anyhow::Result<ToolOutput> {
         let id = self.resolve(doc).await?;
         for e in &edits {
             if let BlockEdit::Insert { markdown, .. } | BlockEdit::Replace { markdown, .. } = e
@@ -141,7 +184,9 @@ impl Docs {
             .ask(Edit {
                 doc: id,
                 edits,
-                by: Principal::Agent { session: cx.session.0 },
+                by: Principal::Agent {
+                    session: cx.session.0,
+                },
             })
             .await;
         Ok(match r {
@@ -165,11 +210,31 @@ impl Docs {
         if excerpts.is_empty() && links.is_empty() {
             return None;
         }
-        let ix = ActorRef::<CodeindexActor>::lookup(CODEINDEX_ACTOR).ok().flatten()?;
-        let text = self.actor.ask(Markdown { doc: doc.clone(), blocks: None, annotate: false }).await.ok()?;
+        let ix = ActorRef::<CodeindexActor>::lookup(CODEINDEX_ACTOR)
+            .ok()
+            .flatten()?;
+        let text = self
+            .actor
+            .ask(Markdown {
+                doc: doc.clone(),
+                blocks: None,
+                annotate: false,
+            })
+            .await
+            .ok()?;
         let root = frontmatter_root(&text)?;
-        let anchors = excerpts.iter().map(|a| a.anchor.clone()).chain(links.iter().map(|(_, a)| a.clone())).collect();
-        let located = match ix.ask(Locate { root: PathBuf::from(&root), anchors }).await {
+        let anchors = excerpts
+            .iter()
+            .map(|a| a.anchor.clone())
+            .chain(links.iter().map(|(_, a)| a.clone()))
+            .collect();
+        let located = match ix
+            .ask(Locate {
+                root: PathBuf::from(&root),
+                anchors,
+            })
+            .await
+        {
             Ok(l) => l,
             Err(e) => {
                 tracing::debug!(target: "document", error = %e, "excerpt check skipped");
@@ -177,16 +242,29 @@ impl Docs {
             }
         };
         let (lx, ll) = located.split_at(excerpts.len());
-        let mut s: String = excerpts.iter().zip(lx).filter(|(_, l)| l.status != LocateStatus::Same).map(|(a, l)| a.refusal(l)).collect();
-        for ((raw, a), _) in links.iter().zip(ll).filter(|(_, l)| l.status == LocateStatus::Missing) {
+        let mut s: String = excerpts
+            .iter()
+            .zip(lx)
+            .filter(|(_, l)| l.status != LocateStatus::Same)
+            .map(|(a, l)| a.refusal(l))
+            .collect();
+        for ((raw, a), _) in links
+            .iter()
+            .zip(ll)
+            .filter(|(_, l)| l.status == LocateStatus::Missing)
+        {
             // `Locate` already proved the path stays under `root`; one metadata read names the cause.
             let file = Path::new(&root).join(&a.path);
             let why = match std::fs::read_to_string(&file) {
                 Ok(t) => format!("{} has {} lines", a.path, t.lines().count()),
-                Err(_) if file.is_dir() => format!("{} is a directory — point at a file in it", a.path),
+                Err(_) if file.is_dir() => {
+                    format!("{} is a directory — point at a file in it", a.path)
+                }
                 Err(_) => format!("there is no file {} (check the name)", a.path),
             };
-            s.push_str(&format!("- `{raw}` is a dead anchor: {why}; fix the path or range\n"));
+            s.push_str(&format!(
+                "- `{raw}` is a dead anchor: {why}; fix the path or range\n"
+            ));
         }
         (!s.is_empty()).then(|| ToolOutput::err(format!("nothing changed: an anchor does not match the tree — read the current lines and retry\n{s}")))
     }
@@ -205,28 +283,41 @@ fn check_fences(markdown: &str) -> Option<ToolOutput> {
             s.push_str(&format!("- {e}\n"));
         }
     }
-    for name in surface::catalog_compact().split(" · ").filter_map(|e| e.split('(').next()) {
+    for name in surface::catalog_compact()
+        .split(" · ")
+        .filter_map(|e| e.split('(').next())
+    {
         if !surface::fences_of(markdown, name).is_empty() {
             s.push_str(&format!(
                 "```{name} is not a fence language: write the block as ```json-render {{\"root\": \"x\", \"elements\": {{\"x\": {{\"type\": \"{name}\", \"props\": {{…}}}}}}}}\n"
             ));
         }
     }
-    for href in markdown.split("](").skip(1).filter_map(|rest| rest.split(')').next()) {
-        let Some((path, frag)) = href.split_once('#') else { continue };
+    for href in markdown
+        .split("](")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+    {
+        let Some((path, frag)) = href.split_once('#') else {
+            continue;
+        };
         if frag.starts_with('L')
             && frag[1..].starts_with(|c: char| c.is_ascii_digit())
             && !path.is_empty()
             && !path.contains(':')
             && !path.contains(char::is_whitespace)
         {
-            s.push_str(&format!("`]({href})` has no scheme: a link to code is `[label](code:{href})`\n"));
+            s.push_str(&format!(
+                "`]({href})` has no scheme: a link to code is `[label](code:{href})`\n"
+            ));
         }
     }
     if s.is_empty() {
         return None;
     }
-    Some(ToolOutput::err(format!("nothing changed: a block does not validate — fix it and retry\n{s}")))
+    Some(ToolOutput::err(format!(
+        "nothing changed: a block does not validate — fix it and retry\n{s}"
+    )))
 }
 
 /// One `Excerpt` of a `doc_insert`/`doc_replace` markdown, as the anchor `Locate` verifies.
@@ -242,10 +333,16 @@ impl ExcerptAnchor {
     /// The located error the model corrects from: what the tree holds now at `/props/text`.
     fn refusal(&self, l: &Located) -> String {
         let (path, start) = (&self.anchor.path, self.anchor.start.unwrap_or(1));
-        let mut s = format!("json-render block {}:\n- {}/props/text: not verbatim, ", self.ordinal, self.pointer);
+        let mut s = format!(
+            "json-render block {}:\n- {}/props/text: not verbatim, ",
+            self.ordinal, self.pointer
+        );
         match l.status {
             LocateStatus::Missing => {
-                s.push_str(&format!("{path} L{}-L{} is missing (file, range or symbol gone)", l.start, l.end));
+                s.push_str(&format!(
+                    "{path} L{}-L{} is missing (file, range or symbol gone)",
+                    l.start, l.end
+                ));
                 if let Some(sym) = &self.anchor.symbol {
                     s.push_str(&format!(
                         "; no definition named `{sym}` in {path} — if the lines exist, drop `symbol` or name the definition that starts at L{start}"
@@ -255,9 +352,16 @@ impl ExcerptAnchor {
             }
             status => {
                 if status == LocateStatus::Moved {
-                    s.push_str(&format!("`{}` now starts at L{} (quoted from L{start}); ", self.anchor.symbol.as_deref().unwrap_or(""), l.start));
+                    s.push_str(&format!(
+                        "`{}` now starts at L{} (quoted from L{start}); ",
+                        self.anchor.symbol.as_deref().unwrap_or(""),
+                        l.start
+                    ));
                 }
-                s.push_str(&format!("current lines are {path} L{}-L{}:\n", l.start, l.end));
+                s.push_str(&format!(
+                    "current lines are {path} L{}-L{}:\n",
+                    l.start, l.end
+                ));
                 for (i, line) in l.text.as_deref().unwrap_or("").lines().enumerate() {
                     s.push_str(&format!("    {:>4}  {line}\n", l.start as usize + i));
                 }
@@ -271,9 +375,13 @@ impl ExcerptAnchor {
 fn excerpt_anchors(markdown: &str) -> Vec<ExcerptAnchor> {
     let mut out = Vec::new();
     for (ordinal, body) in surface::fences_of(markdown, "json-render") {
-        let Some(Ok(parsed)) = body.map(surface::parse) else { continue };
+        let Some(Ok(parsed)) = body.map(surface::parse) else {
+            continue;
+        };
         for (id, el) in &parsed.spec.elements {
-            let surface::Component::Excerpt(x) = &el.component else { continue };
+            let surface::Component::Excerpt(x) = &el.component else {
+                continue;
+            };
             let start = x.start.unwrap_or(1);
             let lines: Vec<&str> = x.text.lines().collect();
             out.push(ExcerptAnchor {
@@ -303,11 +411,17 @@ fn link_anchors(markdown: &str) -> Vec<(String, LocateAnchor)> {
         .map(str::to_owned)
         .collect();
     for (_, body) in surface::fences_of(markdown, "json-render") {
-        let Some(Ok(parsed)) = body.map(surface::parse) else { continue };
+        let Some(Ok(parsed)) = body.map(surface::parse) else {
+            continue;
+        };
         for el in parsed.spec.elements.values() {
             match &el.component {
-                surface::Component::Graph(g) => raw.extend(g.nodes.iter().filter_map(|n| n.r#ref.clone())),
-                surface::Component::Sequence(q) => raw.extend(q.steps.iter().filter_map(|s| s.r#ref.clone())),
+                surface::Component::Graph(g) => {
+                    raw.extend(g.nodes.iter().filter_map(|n| n.r#ref.clone()))
+                }
+                surface::Component::Sequence(q) => {
+                    raw.extend(q.steps.iter().filter_map(|s| s.r#ref.clone()))
+                }
                 _ => {}
             }
         }
@@ -318,7 +432,13 @@ fn link_anchors(markdown: &str) -> Vec<(String, LocateAnchor)> {
         .filter_map(|r| match surface::anchor::parse(&r) {
             Ok(surface::anchor::Anchor::Code { path, lines }) => Some((
                 r,
-                LocateAnchor { path, start: lines.map(|l| l.0), end: lines.map(|l| l.1), symbol: None, text_sha: None },
+                LocateAnchor {
+                    path,
+                    start: lines.map(|l| l.0),
+                    end: lines.map(|l| l.1),
+                    symbol: None,
+                    text_sha: None,
+                },
             )),
             _ => None,
         })
@@ -411,18 +531,19 @@ impl Tool for ReadTool {
             .map_err(anyhow::Error::msg)?;
         let text = match a.format.as_deref() {
             None | Some("outline") => outline.outline,
-            Some("markdown") => {
-                self.0
-                    .actor
-                    .ask(Markdown {
-                        doc: id,
-                        blocks: a.blocks,
-                        annotate: true,
-                    })
-                    .await
-                    .map_err(anyhow::Error::msg)?
+            Some("markdown") => self
+                .0
+                .actor
+                .ask(Markdown {
+                    doc: id,
+                    blocks: a.blocks,
+                    annotate: true,
+                })
+                .await
+                .map_err(anyhow::Error::msg)?,
+            Some(other) => {
+                anyhow::bail!("format must be \"outline\" or \"markdown\", not {other:?}")
             }
-            Some(other) => anyhow::bail!("format must be \"outline\" or \"markdown\", not {other:?}"),
         };
         Ok(structured(
             text.clone(),
@@ -683,14 +804,27 @@ impl Tool for CreateTool {
 
     async fn call(&self, a: CreateArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         anyhow::ensure!(!a.title.trim().is_empty(), "title must not be empty");
-        let by = Principal::Agent { session: cx.session.0 };
+        let by = Principal::Agent {
+            session: cx.session.0,
+        };
         let markdown = a.markdown.unwrap_or_default();
         let (kind, summary) = match a.kind.as_deref().unwrap_or("note") {
             "note" => {
                 if a.root.is_some() {
-                    return Ok(ToolOutput::err("root is for boards: pass kind=\"board\" with it"));
+                    return Ok(ToolOutput::err(
+                        "root is for boards: pass kind=\"board\" with it",
+                    ));
                 }
-                let s = self.0.actor.ask(CreateNote { title: a.title, markdown, by }).await.map_err(|e| e.to_string());
+                let s = self
+                    .0
+                    .actor
+                    .ask(CreateNote {
+                        title: a.title,
+                        markdown,
+                        by,
+                    })
+                    .await
+                    .map_err(|e| e.to_string());
                 ("note", s)
             }
             "board" => {
@@ -701,15 +835,35 @@ impl Tool for CreateTool {
                 };
                 let root = PathBuf::from(root);
                 if !root.is_absolute() {
-                    return Ok(ToolOutput::err(format!("root must be an absolute path, not {}", root.display())));
+                    return Ok(ToolOutput::err(format!(
+                        "root must be an absolute path, not {}",
+                        root.display()
+                    )));
                 }
                 if !root.is_dir() {
-                    return Ok(ToolOutput::err(format!("root {} is not a directory", root.display())));
+                    return Ok(ToolOutput::err(format!(
+                        "root {} is not a directory",
+                        root.display()
+                    )));
                 }
-                let s = self.0.actor.ask(CreateBoard { title: a.title, markdown, root, by }).await.map_err(|e| e.to_string());
+                let s = self
+                    .0
+                    .actor
+                    .ask(CreateBoard {
+                        title: a.title,
+                        markdown,
+                        root,
+                        by,
+                    })
+                    .await
+                    .map_err(|e| e.to_string());
                 ("board", s)
             }
-            other => return Ok(ToolOutput::err(format!("kind must be \"note\" or \"board\", not {other:?}"))),
+            other => {
+                return Ok(ToolOutput::err(format!(
+                    "kind must be \"note\" or \"board\", not {other:?}"
+                )));
+            }
         };
         let id = summary.map_err(anyhow::Error::msg)?.id;
         let url = format!("theuth://notes/{id}");
@@ -752,8 +906,14 @@ mod tests {
             .await
             .unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper = crate::helper::Helper::new(dir.path().join("no-helper"), tx, rt.shutdown.clone());
-        let actor = DocumentActor::spawn(DocumentActor::new(store, helper, crate::DocumentsConfig::default(), rt));
+        let helper =
+            crate::helper::Helper::new(dir.path().join("no-helper"), tx, rt.shutdown.clone());
+        let actor = DocumentActor::spawn(DocumentActor::new(
+            store,
+            helper,
+            crate::DocumentsConfig::default(),
+            rt,
+        ));
         (Docs::new(actor, dir.path().to_path_buf()), dir)
     }
 
@@ -763,7 +923,15 @@ mod tests {
     async fn meeting_prefix_resolves_to_the_note_or_names_meeting_read() {
         let (d, _dir) = docs().await;
         let id = d.resolve("meeting:m1").await.unwrap();
-        assert_eq!(d.actor.ask(Lookup { binding: Binding::MeetingNote("m1".into()) }).await.unwrap(), Some(id));
+        assert_eq!(
+            d.actor
+                .ask(Lookup {
+                    binding: Binding::MeetingNote("m1".into())
+                })
+                .await
+                .unwrap(),
+            Some(id)
+        );
         let err = d.resolve("meeting:m2").await.unwrap_err().to_string();
         assert!(err.contains("meeting_read"), "{err}");
         assert!(err.contains("m2"), "{err}");
@@ -792,11 +960,22 @@ mod tests {
         let broken = "## How it works\n\n```json-render\n{\"root\":\"e\",\"elements\":{\"e\":{\"type\":\"Excerpt\",\"props\":{\
             \"path\":\"crates/x.rs\",\"start\":9,\"text\":\"a\\nb\",\"mark\":[[3,4]]}}}}\n```\n";
         let r = InsertTool(d.clone())
-            .call(serde_json::from_value(serde_json::json!({ "doc": "meeting:m1", "markdown": broken })).unwrap(), cx())
+            .call(
+                serde_json::from_value(
+                    serde_json::json!({ "doc": "meeting:m1", "markdown": broken }),
+                )
+                .unwrap(),
+                cx(),
+            )
             .await
             .unwrap();
         assert!(r.is_error, "{}", r.content);
-        assert!(r.content.contains("json-render block 1:\n- /elements/e/props/mark/0: "), "{}", r.content);
+        assert!(
+            r.content
+                .contains("json-render block 1:\n- /elements/e/props/mark/0: "),
+            "{}",
+            r.content
+        );
         assert!(r.content.contains("nothing changed"), "{}", r.content);
         let r = ReplaceTool(d.clone())
             .call(
@@ -806,18 +985,41 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(r.is_error && r.content.contains("/props/mark/0: "), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("/props/mark/0: "),
+            "{}",
+            r.content
+        );
         // Two fences, the second broken: the ordinal names it.
-        let two = format!("```json-render\n{{\"root\":\"c\",\"elements\":{{\"c\":{{\"type\":\"Callout\",\"props\":{{\"text\":\"ok\"}}}}}}}}\n```\n\n{broken}");
+        let two = format!(
+            "```json-render\n{{\"root\":\"c\",\"elements\":{{\"c\":{{\"type\":\"Callout\",\"props\":{{\"text\":\"ok\"}}}}}}}}\n```\n\n{broken}"
+        );
         let r = check_fences(&two).expect("refused");
         assert!(r.content.contains("json-render block 2:"), "{}", r.content);
         assert!(check_fences("plain prose\n\n```json\n{}\n```\n").is_none());
         // The two shapes the model invents when it means a block: a component-named fence, a bare `path#L` link.
         let r = check_fences("```Excerpt\npath: crates/x.rs\nstart: 9\n```\n").expect("refused");
-        assert!(r.content.contains("```Excerpt is not a fence language") && r.content.contains("\"type\": \"Excerpt\""), "{}", r.content);
-        let r = check_fences("see [opening](crates/surface/src/fences.rs#L74-L86) and [ok](code:crates/x.rs#L1).").expect("refused");
-        assert!(r.content.contains("`](crates/surface/src/fences.rs#L74-L86)` has no scheme"), "{}", r.content);
-        assert!(!r.content.contains("code:crates/x.rs#L1)` has no scheme"), "{}", r.content);
+        assert!(
+            r.content.contains("```Excerpt is not a fence language")
+                && r.content.contains("\"type\": \"Excerpt\""),
+            "{}",
+            r.content
+        );
+        let r = check_fences(
+            "see [opening](crates/surface/src/fences.rs#L74-L86) and [ok](code:crates/x.rs#L1).",
+        )
+        .expect("refused");
+        assert!(
+            r.content
+                .contains("`](crates/surface/src/fences.rs#L74-L86)` has no scheme"),
+            "{}",
+            r.content
+        );
+        assert!(
+            !r.content.contains("code:crates/x.rs#L1)` has no scheme"),
+            "{}",
+            r.content
+        );
         assert!(check_fences("[a](https://x.io/f#L1) [b](#L2) [c](code:x.rs#L3) [d](docs/a.md#intro) ```text\nx\n```").is_none());
     }
 
@@ -828,20 +1030,57 @@ mod tests {
         let (d, dir) = docs().await;
         let call = |v: serde_json::Value| {
             let d = d.clone();
-            async move { CreateTool(d).call(serde_json::from_value(v).unwrap(), cx()).await.unwrap() }
+            async move {
+                CreateTool(d)
+                    .call(serde_json::from_value(v).unwrap(), cx())
+                    .await
+                    .unwrap()
+            }
         };
         let r = call(serde_json::json!({ "title": "B", "kind": "board" })).await;
-        assert!(r.is_error && r.content.contains("needs root"), "{}", r.content);
-        let r = call(serde_json::json!({ "title": "B", "kind": "board", "root": "crates/x" })).await;
-        assert!(r.is_error && r.content.contains("absolute"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("needs root"),
+            "{}",
+            r.content
+        );
+        let r =
+            call(serde_json::json!({ "title": "B", "kind": "board", "root": "crates/x" })).await;
+        assert!(
+            r.is_error && r.content.contains("absolute"),
+            "{}",
+            r.content
+        );
         let missing = dir.path().join("nope");
         let r = call(serde_json::json!({ "title": "B", "kind": "board", "root": missing })).await;
-        assert!(r.is_error && r.content.contains("not a directory"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("not a directory"),
+            "{}",
+            r.content
+        );
         let r = call(serde_json::json!({ "title": "N", "root": dir.path() })).await;
-        assert!(r.is_error && r.content.contains("root is for boards"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("root is for boards"),
+            "{}",
+            r.content
+        );
         let r = call(serde_json::json!({ "title": "K", "kind": "knowledge" })).await;
-        assert!(r.is_error && r.content.contains("\"note\" or \"board\""), "{}", r.content);
-        assert!(d.actor.ask(crate::ListDocs { kind: None, limit: None }).await.unwrap().len() == 1, "only m1");
+        assert!(
+            r.is_error && r.content.contains("\"note\" or \"board\""),
+            "{}",
+            r.content
+        );
+        assert!(
+            d.actor
+                .ask(crate::ListDocs {
+                    kind: None,
+                    limit: None
+                })
+                .await
+                .unwrap()
+                .len()
+                == 1,
+            "only m1"
+        );
     }
 
     /// Every `json-render` example in the `board` skill validates, and the skill carries the
@@ -850,7 +1089,11 @@ mod tests {
     fn board_skill_examples_validate_and_rules_are_present() {
         let failed = surface::check(BOARD_SKILL);
         assert!(failed.is_empty(), "{failed:?}");
-        assert!(check_fences(BOARD_SKILL).is_none(), "{}", check_fences(BOARD_SKILL).unwrap().content);
+        assert!(
+            check_fences(BOARD_SKILL).is_none(),
+            "{}",
+            check_fences(BOARD_SKILL).unwrap().content
+        );
         assert!(surface::fences_of(BOARD_SKILL, "json-render").len() >= 7);
         assert!(BOARD_SKILL.starts_with("---\nname: board\n"));
         for must in [
@@ -864,7 +1107,9 @@ mod tests {
             assert!(BOARD_SKILL.contains(must), "missing {must:?}");
         }
         assert!(BOARDS_PROMPT.starts_with("## Boards\n"));
-        assert!(BOARDS_PROMPT.contains("What and why → Map → How it works → Decisions and trade-offs → Checks → Open questions"));
+        assert!(BOARDS_PROMPT.contains(
+            "What and why → Map → How it works → Decisions and trade-offs → Checks → Open questions"
+        ));
     }
 
     /// The frontmatter header a board is created with: plain when YAML reads it back as written,
@@ -873,11 +1118,26 @@ mod tests {
     fn board_frontmatter_quotes_only_when_yaml_would_misread() {
         use crate::board_frontmatter;
         use std::path::Path;
-        assert_eq!(board_frontmatter(Path::new("/Users/sky/Develop/theuth")), "---\nroot: /Users/sky/Develop/theuth\n---\n");
-        assert_eq!(board_frontmatter(Path::new("/tmp/with space/repo")), "---\nroot: /tmp/with space/repo\n---\n");
-        assert_eq!(board_frontmatter(Path::new("/tmp/a: b")), "---\nroot: \"/tmp/a: b\"\n---\n");
-        assert_eq!(board_frontmatter(Path::new("/tmp/a #b")), "---\nroot: \"/tmp/a #b\"\n---\n");
-        assert_eq!(board_frontmatter(Path::new("/tmp/q\"uote")), "---\nroot: \"/tmp/q\\\"uote\"\n---\n");
+        assert_eq!(
+            board_frontmatter(Path::new("/Users/sky/Develop/theuth")),
+            "---\nroot: /Users/sky/Develop/theuth\n---\n"
+        );
+        assert_eq!(
+            board_frontmatter(Path::new("/tmp/with space/repo")),
+            "---\nroot: /tmp/with space/repo\n---\n"
+        );
+        assert_eq!(
+            board_frontmatter(Path::new("/tmp/a: b")),
+            "---\nroot: \"/tmp/a: b\"\n---\n"
+        );
+        assert_eq!(
+            board_frontmatter(Path::new("/tmp/a #b")),
+            "---\nroot: \"/tmp/a #b\"\n---\n"
+        );
+        assert_eq!(
+            board_frontmatter(Path::new("/tmp/q\"uote")),
+            "---\nroot: \"/tmp/q\\\"uote\"\n---\n"
+        );
     }
 
     /// 71 step 7b: the anchors `check_excerpts` sends — one per `Excerpt` element with the 7a hash
@@ -891,22 +1151,67 @@ mod tests {
         let a = excerpt_anchors(md);
         assert_eq!(a.len(), 1);
         assert_eq!((a[0].ordinal, a[0].pointer.as_str()), (2, "/elements/e"));
-        assert_eq!((a[0].anchor.path.as_str(), a[0].anchor.start, a[0].anchor.end, a[0].anchor.symbol.as_deref()), ("src/util.rs", Some(1), Some(3), Some("helper")));
+        assert_eq!(
+            (
+                a[0].anchor.path.as_str(),
+                a[0].anchor.start,
+                a[0].anchor.end,
+                a[0].anchor.symbol.as_deref()
+            ),
+            ("src/util.rs", Some(1), Some(3), Some("helper"))
+        );
         // The trailing newline is not part of the hash (lines joined by `\n`, as `text_sha` documents).
-        assert_eq!(a[0].anchor.text_sha.as_deref(), Some("c652902763db3643b251065363edf41afee7563e5d00e5f1293a40dc93cd9514"));
-        assert!(excerpt_anchors("plain\n\n```json-render\n{\"root\":\"x\"}\n```\n").is_empty(), "a broken fence is check_fences' job");
+        assert_eq!(
+            a[0].anchor.text_sha.as_deref(),
+            Some("c652902763db3643b251065363edf41afee7563e5d00e5f1293a40dc93cd9514")
+        );
+        assert!(
+            excerpt_anchors("plain\n\n```json-render\n{\"root\":\"x\"}\n```\n").is_empty(),
+            "a broken fence is check_fences' job"
+        );
 
-        assert_eq!(frontmatter_root("---\nroot: /Users/sky/Develop/theuth\n---\n# T\n").as_deref(), Some("/Users/sky/Develop/theuth"));
-        assert_eq!(frontmatter_root("---\nroot: \"/tmp/a: b\"\n---\n").as_deref(), Some("/tmp/a: b"));
-        assert_eq!(frontmatter_root("---\ntitle: x\ntype: concept\n---\n"), None, "knowledge frontmatter has no root");
+        assert_eq!(
+            frontmatter_root("---\nroot: /Users/sky/Develop/theuth\n---\n# T\n").as_deref(),
+            Some("/Users/sky/Develop/theuth")
+        );
+        assert_eq!(
+            frontmatter_root("---\nroot: \"/tmp/a: b\"\n---\n").as_deref(),
+            Some("/tmp/a: b")
+        );
+        assert_eq!(
+            frontmatter_root("---\ntitle: x\ntype: concept\n---\n"),
+            None,
+            "knowledge frontmatter has no root"
+        );
         assert_eq!(frontmatter_root("# Plain note\n"), None);
 
-        let l = |status, start, end, text: Option<&str>| Located { status, start, end, text: text.map(str::to_owned) };
-        let r = a[0].refusal(&l(LocateStatus::Changed, 1, 3, Some("pub fn helper() -> u32 {\n    1 + 0\n}")));
-        assert_eq!(r, "json-render block 2:\n- /elements/e/props/text: not verbatim, current lines are src/util.rs L1-L3:\n       1  pub fn helper() -> u32 {\n       2      1 + 0\n       3  }\n");
-        let r = a[0].refusal(&l(LocateStatus::Moved, 3, 5, Some("pub fn helper() -> u32 {\n    1\n}")));
+        let l = |status, start, end, text: Option<&str>| Located {
+            status,
+            start,
+            end,
+            text: text.map(str::to_owned),
+        };
+        let r = a[0].refusal(&l(
+            LocateStatus::Changed,
+            1,
+            3,
+            Some("pub fn helper() -> u32 {\n    1 + 0\n}"),
+        ));
+        assert_eq!(
+            r,
+            "json-render block 2:\n- /elements/e/props/text: not verbatim, current lines are src/util.rs L1-L3:\n       1  pub fn helper() -> u32 {\n       2      1 + 0\n       3  }\n"
+        );
+        let r = a[0].refusal(&l(
+            LocateStatus::Moved,
+            3,
+            5,
+            Some("pub fn helper() -> u32 {\n    1\n}"),
+        ));
         assert!(r.contains("`helper` now starts at L3 (quoted from L1); current lines are src/util.rs L3-L5:\n       3  pub fn"), "{r}");
         let r = a[0].refusal(&l(LocateStatus::Missing, 1, 3, None));
-        assert_eq!(r, "json-render block 2:\n- /elements/e/props/text: not verbatim, src/util.rs L1-L3 is missing (file, range or symbol gone); no definition named `helper` in src/util.rs — if the lines exist, drop `symbol` or name the definition that starts at L1\n");
+        assert_eq!(
+            r,
+            "json-render block 2:\n- /elements/e/props/text: not verbatim, src/util.rs L1-L3 is missing (file, range or symbol gone); no definition named `helper` in src/util.rs — if the lines exist, drop `symbol` or name the definition that starts at L1\n"
+        );
     }
 }

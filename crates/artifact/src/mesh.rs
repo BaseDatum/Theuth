@@ -78,7 +78,12 @@ pub enum Reply {
 type Stream = Framed<Box<dyn ByteStream>, LengthDelimitedCodec>;
 
 fn framed(stream: Box<dyn ByteStream>) -> Stream {
-    Framed::new(stream, LengthDelimitedCodec::builder().max_frame_length(MAX_FRAME).new_codec())
+    Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(MAX_FRAME)
+            .new_codec(),
+    )
 }
 
 fn encode<T: Serialize>(v: &T) -> anyhow::Result<Bytes> {
@@ -149,7 +154,10 @@ pub async fn serve_on(rt: Runtime, transport: Arc<dyn Transport>, stores: Arc<St
 
 /// One accepted stream: request in, reply frames out.
 pub async fn answer(rt: &Runtime, stores: &Stores, mut framed: Stream) -> anyhow::Result<()> {
-    let first = framed.next().await.ok_or_else(|| anyhow::anyhow!("closed before the request"))??;
+    let first = framed
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("closed before the request"))??;
     let req: Req = postcard::from_bytes(&first)?;
     match req {
         Req::Get { hash } => {
@@ -188,7 +196,9 @@ async fn send_file(framed: &mut Stream, path: &Path) -> anyhow::Result<()> {
         if n == 0 {
             break;
         }
-        framed.send(encode(&Reply::Chunk(buf[..n].to_vec()))?).await?;
+        framed
+            .send(encode(&Reply::Chunk(buf[..n].to_vec()))?)
+            .await?;
     }
     framed.send(encode(&Reply::End)?).await?;
     Ok(())
@@ -196,7 +206,11 @@ async fn send_file(framed: &mut Stream, path: &Path) -> anyhow::Result<()> {
 
 /// The mesh transport, if the replica plugin has one right now.
 async fn transport() -> Option<Arc<dyn Transport>> {
-    replica::actor()?.ask(replica::GetTransport).await.ok().flatten()
+    replica::actor()?
+        .ask(replica::GetTransport)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Connected peers, `prefer` first when it is among them.
@@ -268,7 +282,11 @@ async fn fetch_file(
     let tmp = dest.with_extension(format!("part-{}", std::process::id()));
     let req = encode(req)?;
     for peer in ordered(t, prefer) {
-        let outcome = tokio::time::timeout(TIMEOUT, receive_file(t, &peer, req.clone(), &tmp, expect_sha)).await;
+        let outcome = tokio::time::timeout(
+            TIMEOUT,
+            receive_file(t, &peer, req.clone(), &tmp, expect_sha),
+        )
+        .await;
         match outcome {
             Ok(Ok(true)) => {
                 tokio::fs::rename(&tmp, dest).await?;
@@ -306,7 +324,10 @@ async fn receive_file(
         Reply::End => {
             if let (Some(h), Some(want)) = (hasher.take(), expect_sha) {
                 let got = format!("{:x}", h.finalize());
-                anyhow::ensure!(got.starts_with(want), "sha256 {got} does not match the name {want}");
+                anyhow::ensure!(
+                    got.starts_with(want),
+                    "sha256 {got} does not match the name {want}"
+                );
             }
             done = true;
             Ok(true)
@@ -323,15 +344,25 @@ fn offline() -> anyhow::Error {
 
 /// `dir/name` (a blob under this engine's `artifacts/`): the existing file,
 /// or the same bytes fetched from a peer (`prefer` first) and cached there.
-pub async fn fetch_blob(dir: &Path, name: &str, prefer: Option<&PeerId>) -> anyhow::Result<PathBuf> {
+pub async fn fetch_blob(
+    dir: &Path,
+    name: &str,
+    prefer: Option<&PeerId>,
+) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(plain_name(name), "{name}: not a blob name");
     let dest = dir.join(name);
     if tokio::fs::try_exists(&dest).await? {
         return Ok(dest);
     }
     let t = transport().await.ok_or_else(offline)?;
-    let req = Req::Get { hash: name.to_owned() };
-    if fetch_file(t.as_ref(), prefer, &req, &dest, None).await? { Ok(dest) } else { Err(offline()) }
+    let req = Req::Get {
+        hash: name.to_owned(),
+    };
+    if fetch_file(t.as_ref(), prefer, &req, &dest, None).await? {
+        Ok(dest)
+    } else {
+        Err(offline())
+    }
 }
 
 /// The spill file of `call_id` in `session`: local, or fetched from a peer
@@ -351,13 +382,21 @@ pub async fn fetch_spill(
         session,
         call_id: call_id.to_owned(),
     };
-    if fetch_file(t.as_ref(), prefer, &req, &dest, None).await? { Ok(dest) } else { Err(offline()) }
+    if fetch_file(t.as_ref(), prefer, &req, &dest, None).await? {
+        Ok(dest)
+    } else {
+        Err(offline())
+    }
 }
 
 /// `dir/name` (an attachment `<sha16>.<ext>` under this engine's
 /// `attachments/`): the existing file, or the same bytes fetched from a peer
 /// (`prefer` first), verified against the name's sha256 prefix, and cached there.
-pub async fn fetch_attachment(dir: &Path, name: &str, prefer: Option<&PeerId>) -> anyhow::Result<PathBuf> {
+pub async fn fetch_attachment(
+    dir: &Path,
+    name: &str,
+    prefer: Option<&PeerId>,
+) -> anyhow::Result<PathBuf> {
     let dest = dir.join(name);
     if tokio::fs::try_exists(&dest).await? {
         return Ok(dest);
@@ -367,14 +406,27 @@ pub async fn fetch_attachment(dir: &Path, name: &str, prefer: Option<&PeerId>) -
 }
 
 /// [`fetch_attachment`] over a given transport (the mesh's, or a test's).
-pub async fn fetch_attachment_via(t: &dyn Transport, dir: &Path, name: &str, prefer: Option<&PeerId>) -> anyhow::Result<PathBuf> {
-    let sha = hash_prefix(name).filter(|_| plain_name(name)).ok_or_else(|| anyhow::anyhow!("{name}: not an attachment name"))?;
+pub async fn fetch_attachment_via(
+    t: &dyn Transport,
+    dir: &Path,
+    name: &str,
+    prefer: Option<&PeerId>,
+) -> anyhow::Result<PathBuf> {
+    let sha = hash_prefix(name)
+        .filter(|_| plain_name(name))
+        .ok_or_else(|| anyhow::anyhow!("{name}: not an attachment name"))?;
     let dest = dir.join(name);
     if tokio::fs::try_exists(&dest).await? {
         return Ok(dest);
     }
-    let req = Req::GetAttachment { name: name.to_owned() };
-    if fetch_file(t, prefer, &req, &dest, Some(sha)).await? { Ok(dest) } else { Err(nobody()) }
+    let req = Req::GetAttachment {
+        name: name.to_owned(),
+    };
+    if fetch_file(t, prefer, &req, &dest, Some(sha)).await? {
+        Ok(dest)
+    } else {
+        Err(nobody())
+    }
 }
 
 fn nobody() -> anyhow::Error {
@@ -384,7 +436,11 @@ fn nobody() -> anyhow::Error {
 /// The artifact record of `call_id` from a peer (`prefer` first), its
 /// `path`/`source`/`preview` rewritten to this engine's `artifacts/` (the
 /// bytes come later through [`fetch_blob`]). Not cached: the index is engine-local.
-pub async fn fetch_record(data_dir: &Path, call_id: &str, prefer: Option<&PeerId>) -> anyhow::Result<crate::Artifact> {
+pub async fn fetch_record(
+    data_dir: &Path,
+    call_id: &str,
+    prefer: Option<&PeerId>,
+) -> anyhow::Result<crate::Artifact> {
     let t = transport().await.ok_or_else(offline)?;
     let mut found: Option<crate::Artifact> = None;
     let req = Req::Record {
@@ -454,19 +510,35 @@ mod tests {
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.inboxes.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.inboxes
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
 
         async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             let (mine, theirs) = tokio::io::duplex(1 << 20);
-            let to = self.inboxes.lock().get(peer).cloned().ok_or_else(|| anyhow::anyhow!("no such peer"))?;
-            to.send((self.me.clone(), Box::new(theirs))).map_err(|_| anyhow::anyhow!("peer gone"))?;
+            let to = self
+                .inboxes
+                .lock()
+                .get(peer)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            to.send((self.me.clone(), Box::new(theirs)))
+                .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
         }
 
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
             self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.inbox.lock().await.recv().await.ok_or_else(|| anyhow::anyhow!("closed"))
+            self.inbox
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("closed"))
         }
 
         fn subscribe(&self) -> broadcast::Receiver<replica::PeerEvent> {
@@ -477,7 +549,9 @@ mod tests {
     /// An engine's accept loop over `answer` on `data_dir`.
     async fn owner(t: Arc<Loop>, data_dir: PathBuf) -> Arc<Stores> {
         let rt = Runtime::new(figment::Figment::new(), data_dir.clone());
-        let state = crate::State::open(&data_dir, rt.clone(), vec![]).await.unwrap();
+        let state = crate::State::open(&data_dir, rt.clone(), vec![])
+            .await
+            .unwrap();
         let stores = Arc::new(Stores::new(Arc::new(state)));
         let s = stores.clone();
         tokio::spawn(async move {
@@ -503,27 +577,80 @@ mod tests {
         let replica_dir = tempfile::tempdir().unwrap();
         let (ot, rt_) = pair();
         let stores = owner(ot.clone(), owner_dir.path().to_path_buf()).await;
-        let blob = (0..(CHUNK + 17)).map(|i| (i % 251) as u8).collect::<Vec<_>>();
-        tokio::fs::write(stores.durable().dir.join("abc123.bin"), &blob).await.unwrap();
+        let blob = (0..(CHUNK + 17))
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
+        tokio::fs::write(stores.durable().dir.join("abc123.bin"), &blob)
+            .await
+            .unwrap();
         let session = SessionId::new();
         let spill = spill_path(owner_dir.path(), session, "call/1");
-        tokio::fs::create_dir_all(spill.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(spill.parent().unwrap())
+            .await
+            .unwrap();
         tokio::fs::write(&spill, "spilled").await.unwrap();
 
         let dest = replica_dir.path().join("abc123.bin");
-        assert!(fetch_via(&rt_, &ot.me, &Req::Get { hash: "abc123.bin".into() }, &dest).await.unwrap());
-        assert_eq!(tokio::fs::read(&dest).await.unwrap(), blob, "two chunks reassembled");
+        assert!(
+            fetch_via(
+                &rt_,
+                &ot.me,
+                &Req::Get {
+                    hash: "abc123.bin".into()
+                },
+                &dest
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            tokio::fs::read(&dest).await.unwrap(),
+            blob,
+            "two chunks reassembled"
+        );
 
         let dest = replica_dir.path().join("spill.txt");
-        let req = Req::GetSpill { session, call_id: "call/1".into() };
+        let req = Req::GetSpill {
+            session,
+            call_id: "call/1".into(),
+        };
         assert!(fetch_via(&rt_, &ot.me, &req, &dest).await.unwrap());
         assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), "spilled");
 
         let dest = replica_dir.path().join("none.bin");
-        assert!(!fetch_via(&rt_, &ot.me, &Req::Get { hash: "none.bin".into() }, &dest).await.unwrap());
+        assert!(
+            !fetch_via(
+                &rt_,
+                &ot.me,
+                &Req::Get {
+                    hash: "none.bin".into()
+                },
+                &dest
+            )
+            .await
+            .unwrap()
+        );
         // Path escapes are refused, not served.
-        assert!(fetch_via(&rt_, &ot.me, &Req::Get { hash: "../artifacts.sqlite".into() }, &dest).await.is_err());
-        assert_eq!(fetch_blob(replica_dir.path(), "x.bin", None).await.unwrap_err().to_string(), "unavailable: owner offline", "no transport");
+        assert!(
+            fetch_via(
+                &rt_,
+                &ot.me,
+                &Req::Get {
+                    hash: "../artifacts.sqlite".into()
+                },
+                &dest
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            fetch_blob(replica_dir.path(), "x.bin", None)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "unavailable: owner offline",
+            "no transport"
+        );
     }
 
     #[tokio::test]
@@ -539,24 +666,59 @@ mod tests {
         tokio::fs::write(src.join(&name), &good).await.unwrap();
         // A file whose bytes do not hash to its name (tampered or truncated on the peer).
         let bad = sha_name(b"what the name promises", "png");
-        tokio::fs::write(src.join(&bad), b"something else").await.unwrap();
+        tokio::fs::write(src.join(&bad), b"something else")
+            .await
+            .unwrap();
 
         let dir = attachments_dir(replica_dir.path());
         let dest = dir.join(&name);
         let req = Req::GetAttachment { name: name.clone() };
-        assert!(fetch_file(rt_.as_ref(), None, &req, &dest, hash_prefix(&name)).await.unwrap());
-        assert_eq!(tokio::fs::read(&dest).await.unwrap(), good, "cached under attachments/ by name");
+        assert!(
+            fetch_file(rt_.as_ref(), None, &req, &dest, hash_prefix(&name))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            tokio::fs::read(&dest).await.unwrap(),
+            good,
+            "cached under attachments/ by name"
+        );
 
         let dest = dir.join(&bad);
         let req = Req::GetAttachment { name: bad.clone() };
-        assert!(!fetch_file(rt_.as_ref(), None, &req, &dest, hash_prefix(&bad)).await.unwrap(), "hash mismatch → not found");
+        assert!(
+            !fetch_file(rt_.as_ref(), None, &req, &dest, hash_prefix(&bad))
+                .await
+                .unwrap(),
+            "hash mismatch → not found"
+        );
         assert!(!dest.exists(), "nothing cached");
-        assert!(!dest.with_extension(format!("part-{}", std::process::id())).exists(), "temp removed");
+        assert!(
+            !dest
+                .with_extension(format!("part-{}", std::process::id()))
+                .exists(),
+            "temp removed"
+        );
 
-        assert!(fetch_via(&rt_, &ot.me, &Req::GetAttachment { name: "../x.png".into() }, &dest).await.is_err(), "escape refused");
+        assert!(
+            fetch_via(
+                &rt_,
+                &ot.me,
+                &Req::GetAttachment {
+                    name: "../x.png".into()
+                },
+                &dest
+            )
+            .await
+            .is_err(),
+            "escape refused"
+        );
         assert!(hash_prefix("not-a-hash.png").is_none());
         assert_eq!(
-            fetch_attachment(&dir, "0123456789abcdef.png", None).await.unwrap_err().to_string(),
+            fetch_attachment(&dir, "0123456789abcdef.png", None)
+                .await
+                .unwrap_err()
+                .to_string(),
             "unavailable: no peer has it",
             "no transport"
         );
@@ -579,13 +741,31 @@ mod tests {
 
         assert_eq!(ordered(replica.as_ref(), Some(&owner_t.me))[0], owner_t.me);
         assert_eq!(ordered(replica.as_ref(), Some(&other.me))[0], other.me);
-        assert_eq!(ordered(replica.as_ref(), Some(&PeerId("stranger".into()))).len(), 2, "an unknown owner changes nothing");
+        assert_eq!(
+            ordered(replica.as_ref(), Some(&PeerId("stranger".into()))).len(),
+            2,
+            "an unknown owner changes nothing"
+        );
 
         let dest = attachments_dir(replica_dir.path()).join(&name);
         let req = Req::GetAttachment { name: name.clone() };
-        assert!(fetch_file(replica.as_ref(), Some(&owner_t.me), &req, &dest, hash_prefix(&name)).await.unwrap());
+        assert!(
+            fetch_file(
+                replica.as_ref(),
+                Some(&owner_t.me),
+                &req,
+                &dest,
+                hash_prefix(&name)
+            )
+            .await
+            .unwrap()
+        );
         // The accept loop's first `accept` is the pending one; a served stream is a second.
-        assert_eq!(other.hits.load(std::sync::atomic::Ordering::Relaxed), 1, "other was never asked");
+        assert_eq!(
+            other.hits.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "other was never asked"
+        );
         assert_eq!(owner_t.hits.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 }

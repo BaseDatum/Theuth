@@ -32,7 +32,6 @@ fn lines(spec: &Spec, width: usize, text_only: bool) -> Option<Vec<Line>> {
     (width == 0 || lines.iter().all(|l| line_width(l) <= width)).then_some(lines)
 }
 
-
 /// The `markdown` fence hook: `mermaid` and `json-render` fences become their rendering;
 /// a fence that cannot fit `width` or a Mermaid type the renderer does not draw returns
 /// `None` (the plain code block); a fence with a syntax or validation error returns one dim
@@ -737,7 +736,11 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         Component::LinkList(p) => {
             let mut out = Vec::new();
             for l in &p.items {
-                out.push(vec![span("• ", DIM), span(&l.title, BOLD), span(format!("  {}", l.url), DIM)]);
+                out.push(vec![
+                    span("• ", DIM),
+                    span(&l.title, BOLD),
+                    span(format!("  {}", l.url), DIM),
+                ]);
                 if let Some(n) = &l.note {
                     out.extend(indent(text_lines(n, sub(width, 2), PLAIN)));
                 }
@@ -760,7 +763,9 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
             let cells = if width == 0 {
                 BAR_UNBOUNDED
             } else {
-                width.saturating_sub(label.width() + nums.width() + 4).max(10)
+                width
+                    .saturating_sub(label.width() + nums.width() + 4)
+                    .max(10)
             };
             let mut line = Line::new();
             if !label.is_empty() {
@@ -780,9 +785,9 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
         }
         Component::Heatmap(p) => {
             const SHADES: [&str; 5] = ["·", "░", "▒", "▓", "█"];
-            let max = p.max.unwrap_or_else(|| {
-                p.cells.iter().flatten().copied().fold(0.0, f64::max)
-            });
+            let max = p
+                .max
+                .unwrap_or_else(|| p.cells.iter().flatten().copied().fold(0.0, f64::max));
             let cell = |c: &String, style: Style| -> Line { vec![span(c, style)] };
             let head = std::iter::once(String::new())
                 .chain(p.cols.iter().cloned())
@@ -821,7 +826,10 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
                     let folder = i.kind.as_deref() == Some("dir") || i.path.ends_with('/');
                     let mut line = vec![
                         span(if folder { "▸ " } else { "· " }, DIM),
-                        span(format!("{}{}", i.path, " ".repeat(pw - i.path.width())), CODE),
+                        span(
+                            format!("{}{}", i.path, " ".repeat(pw - i.path.width())),
+                            CODE,
+                        ),
                     ];
                     for extra in [&i.kind, &i.size].into_iter().flatten() {
                         line.push(span(format!("  {extra}"), DIM));
@@ -880,7 +888,8 @@ fn element(spec: &Spec, id: &str, width: usize, text_only: bool) -> Vec<Line> {
                     cell
                 })
                 .collect();
-            let total: usize = cells.iter().map(line_width).sum::<usize>() + 2 * cells.len().saturating_sub(1);
+            let total: usize =
+                cells.iter().map(line_width).sum::<usize>() + 2 * cells.len().saturating_sub(1);
             if width == 0 || total <= width {
                 let mut line = Line::new();
                 for cell in cells {
@@ -1030,12 +1039,18 @@ mod tests {
         let s = spec(GRAPH);
         let wide = spec_lines(&s, 100).expect("fits 100");
         assert!(
-            wide.iter().flatten().any(|sp| sp.style.dim && sp.text.contains('─')),
+            wide.iter()
+                .flatten()
+                .any(|sp| sp.style.dim && sp.text.contains('─')),
             "box drawing at 100:\n{}",
             plain_text(&wide)
         );
         let narrow = spec_lines(&s, 40).expect("list fits 40");
-        assert!(plain_text(&narrow).starts_with("Edge\n  • Browser → API (HTTPS), CDN\n"), "{}", plain_text(&narrow));
+        assert!(
+            plain_text(&narrow).starts_with("Edge\n  • Browser → API (HTTPS), CDN\n"),
+            "{}",
+            plain_text(&narrow)
+        );
         let flat = flatten(&format!("```json-render\n{GRAPH}```\n"), 100);
         assert!(flat.starts_with("```\nEdge\n  • Browser"), "{flat}");
     }

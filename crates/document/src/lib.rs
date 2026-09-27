@@ -33,10 +33,10 @@ pub mod tools;
 pub mod watch;
 
 pub use actor::{
-    ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote, DocumentActor,
-    Edit, EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs, Lookup, Markdown, OpenDoc,
-    Outline, Rename, Restore, SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit,
-    board_frontmatter, with_heading,
+    ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote,
+    DocumentActor, Edit, EditOutcome, Ensure, Flush, ImportMarkdown, ImportOutcome, ListDocs,
+    Lookup, Markdown, MetaOf, OpenDoc, Outline, Rename, Restore, SetDerived, Snapshot, Snapshots,
+    Stats, Subscribe, Tick, UndoLastAgentEdit, board_frontmatter, with_heading,
 };
 pub use helper::{
     Edit as BlockEdit, EditError, HelperProcess, HelperStatus, ImportMode, helper_path,
@@ -212,14 +212,20 @@ impl runtime::Plugin for DocumentPlugin {
         let store = match secrets::handle(rt).await {
             Some(vault) => store.with_vault(vault),
             None => {
-                tracing::warn!("documents: secrets vault unavailable; share links cannot be created or verified");
+                tracing::warn!(
+                    "documents: secrets vault unavailable; share links cannot be created or verified"
+                );
                 store
             }
         };
         // 69: the index row replicates; the replica plugin starts after this one. Local only on failure.
         let (rt2, pool) = (rt.clone(), store.pool().clone());
         tokio::spawn(async move {
-            if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+            if rt2
+                .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
+                .await
+                .is_none()
+            {
                 return;
             }
             match replica::attach(&pool, store::TABLES).await {
@@ -238,7 +244,8 @@ impl runtime::Plugin for DocumentPlugin {
         }
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let helper = helper::Helper::new(path, events_tx, rt.shutdown.clone());
-        let actor = DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
+        let actor =
+            DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         actor.register(DOCUMENT_ACTOR)?;
 
         let a = actor.clone();
@@ -280,7 +287,9 @@ impl runtime::Plugin for DocumentPlugin {
         rt.subscribe::<DocumentActor, mesh::MeshEvent>(&actor).await;
         let (a, rt2) = (actor.clone(), rt.clone());
         tokio::spawn(async move {
-            let Some(m) = rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else { return };
+            let Some(m) = rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else {
+                return;
+            };
             if let Ok(st) = m.ask(mesh::Status).await {
                 let _ = a.tell(hub::SelfId(st.self_id)).await;
             }

@@ -269,7 +269,9 @@ tool rounds, so start it while you still have them. Do this, every board:
 5. Fix contradictions between prose and diagram.
 
 Then end with one sentence in chat and the board's link, `theuth://notes/<id>`. Do not paste the board
-into chat.
+into chat. When the reader wants the board as a file, `doc_export(doc, format="pdf"|"markdown")` hands
+it over as a card (diagrams as text, excerpts as numbered code); the app's own Export menu is the one
+that keeps the diagrams as pictures.
 
 ## Answering from a board
 

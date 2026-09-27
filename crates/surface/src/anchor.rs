@@ -81,19 +81,26 @@ pub fn check_path(path: &str) -> Result<(), String> {
         return Err("empty path".into());
     }
     if path.starts_with('/') || path.starts_with('\\') {
-        return Err(format!("path must be root-relative, not absolute: {path:?}"));
+        return Err(format!(
+            "path must be root-relative, not absolute: {path:?}"
+        ));
     }
     if let Some((scheme, _)) = path.split_once(':')
         && !scheme.is_empty()
         && scheme
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
-        && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
     {
         return Err(format!("path must not carry a scheme: {scheme}:"));
     }
     if path.contains(':') {
-        return Err(format!("path must not contain ':'; a line is #L<n>, not :<n>: {path:?}"));
+        return Err(format!(
+            "path must not contain ':'; a line is #L<n>, not :<n>: {path:?}"
+        ));
     }
     if path.contains('#') {
         return Err("path must not contain '#'; the line range follows a single '#'".into());
@@ -161,8 +168,14 @@ mod tests {
         for s in bad {
             assert!(parse(s).is_err(), "{s:?} should not parse");
         }
-        assert_eq!(parse("../x").unwrap_err(), "path must not contain \"..\": \"../x\"");
-        assert_eq!(parse("http://x").unwrap_err(), "path must not carry a scheme: http:");
+        assert_eq!(
+            parse("../x").unwrap_err(),
+            "path must not contain \"..\": \"../x\""
+        );
+        assert_eq!(
+            parse("http://x").unwrap_err(),
+            "path must not carry a scheme: http:"
+        );
         assert_eq!(parse("a#L9-L3").unwrap_err(), "L3 is before L9");
         assert_eq!(
             parse("a/b.rs:12").unwrap_err(),

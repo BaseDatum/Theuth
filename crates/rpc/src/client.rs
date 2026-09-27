@@ -6,19 +6,17 @@
 //! [`mirror`] republishes the remote engine's event stream on the local bus,
 //! so bus subscribers (the TUI bridge, the ACP relay) work unchanged.
 
-use jsonrpsee::core::client::{
-    BatchResponse, ClientT, Error, Subscription, SubscriptionClientT,
-};
+use jsonrpsee::Methods;
+use jsonrpsee::core::client::{BatchResponse, ClientT, Error, Subscription, SubscriptionClientT};
 use jsonrpsee::core::params::BatchRequestBuilder;
 use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::rpc_params;
 use jsonrpsee::types::{Id, Request, Response, ResponsePayload};
 use jsonrpsee::ws_client::{HeaderMap, HeaderValue, WsClient, WsClientBuilder};
-use jsonrpsee::Methods;
-use std::sync::Arc;
 use runtime::Runtime;
 use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
+use std::sync::Arc;
 
 use crate::api::ApiServer;
 use crate::engine::Running;
@@ -40,7 +38,9 @@ impl ClientT for Local {
     where
         Params: ToRpcParams + Send,
     {
-        Err(Error::Custom("notifications are not used in-process".into()))
+        Err(Error::Custom(
+            "notifications are not used in-process".into(),
+        ))
     }
 
     async fn request<R, Params>(&self, method: &str, params: Params) -> Result<R, Error>
@@ -50,7 +50,10 @@ impl ClientT for Local {
     {
         let params = params.to_rpc_params()?;
         let req = Request::borrowed(method, params.as_deref(), Id::Number(0));
-        let (rp, _) = self.0.raw_json_request(&serde_json::to_string(&req)?, 1).await?;
+        let (rp, _) = self
+            .0
+            .raw_json_request(&serde_json::to_string(&req)?, 1)
+            .await?;
         let rp: Response<&RawValue> = serde_json::from_str(rp.get())?;
         match rp.payload {
             ResponsePayload::Success(v) => Ok(serde_json::from_str(v.get())?),
@@ -104,7 +107,11 @@ pub enum Engine {
 }
 
 impl ClientT for Engine {
-    fn notification<Params>(&self, method: &str, params: Params) -> impl Future<Output = Result<(), Error>> + Send
+    fn notification<Params>(
+        &self,
+        method: &str,
+        params: Params,
+    ) -> impl Future<Output = Result<(), Error>> + Send
     where
         Params: ToRpcParams + Send,
     {
@@ -116,7 +123,11 @@ impl ClientT for Engine {
         }
     }
 
-    fn request<R, Params>(&self, method: &str, params: Params) -> impl Future<Output = Result<R, Error>> + Send
+    fn request<R, Params>(
+        &self,
+        method: &str,
+        params: Params,
+    ) -> impl Future<Output = Result<R, Error>> + Send
     where
         R: DeserializeOwned,
         Params: ToRpcParams + Send,
@@ -158,8 +169,14 @@ impl SubscriptionClientT for Engine {
     {
         async move {
             match self {
-                Engine::Local(l) => l.subscribe(subscribe_method, params, unsubscribe_method).await,
-                Engine::Remote(r) => r.subscribe(subscribe_method, params, unsubscribe_method).await,
+                Engine::Local(l) => {
+                    l.subscribe(subscribe_method, params, unsubscribe_method)
+                        .await
+                }
+                Engine::Remote(r) => {
+                    r.subscribe(subscribe_method, params, unsubscribe_method)
+                        .await
+                }
             }
         }
     }
@@ -198,7 +215,10 @@ pub async fn connect(running: &Running) -> anyhow::Result<WsClient> {
         "engine listens on {listen}; only loopback is attachable"
     );
     let mut headers = HeaderMap::new();
-    headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {token}"))?,
+    );
     Ok(WsClientBuilder::default()
         .set_headers(headers)
         .max_request_size(64 << 20)
@@ -284,5 +304,8 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         meeting::BriefEvent,
         app::AppCallChanged,
     );
-    tracing::debug!(tag = v["type"].as_str().unwrap_or("?"), "event with no bus type");
+    tracing::debug!(
+        tag = v["type"].as_str().unwrap_or("?"),
+        "event with no bus type"
+    );
 }

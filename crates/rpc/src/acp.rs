@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use agent::cost::{Coverage, NANOS_PER_UNIT, SessionCost};
 use agent::todo::{Status, Todo};
 use agent::{
-    AgentEvent, CreateSessionOptions, HistoryEntry, PeerDelivered, PeerUplink, RegisterNode, UnregisterNode,
+    AgentEvent, CreateSessionOptions, HistoryEntry, PeerDelivered, PeerUplink, RegisterNode,
+    UnregisterNode,
 };
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Cost,
@@ -146,8 +147,18 @@ pub async fn serve_records(
             Ok::<_, io::Error>(tx)
         });
     let relay = relay(&rt, None).await;
-    let api = relay.ask(Api).await.unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
-    if let Err(e) = serve(Lines::new(outgoing, incoming), relay, api, rt.data_dir.clone()).await {
+    let api = relay
+        .ask(Api)
+        .await
+        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    if let Err(e) = serve(
+        Lines::new(outgoing, incoming),
+        relay,
+        api,
+        rt.data_dir.clone(),
+    )
+    .await
+    {
         tracing::debug!(error = %e, "acp conn ended with error");
     }
 }
@@ -165,9 +176,16 @@ pub async fn serve_mesh(rt: Runtime) {
         return;
     };
     // 68 §5: forwarded session RPCs from other front doors, on `theuth/rpc/1`.
-    tokio::spawn(crate::forward::serve(rt.clone(), transport.clone(), crate::methods(rt.clone()).await));
+    tokio::spawn(crate::forward::serve(
+        rt.clone(),
+        transport.clone(),
+        crate::methods(rt.clone()).await,
+    ));
     let relay = relay(&rt, None).await;
-    let api = relay.ask(Api).await.unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
+    let api = relay
+        .ask(Api)
+        .await
+        .unwrap_or_else(|_| Arc::new(Engine::Local(Local::new(rt.clone()))));
     let (t, data_dir, shutdown) = (transport.clone(), rt.data_dir.clone(), rt.shutdown.clone());
     tokio::spawn(async move {
         loop {
@@ -180,7 +198,9 @@ pub async fn serve_mesh(rt: Runtime) {
                     let (relay, api, data_dir) = (relay.clone(), api.clone(), data_dir.clone());
                     tokio::spawn(async move {
                         let d = acp::line_duplex(stream);
-                        if let Err(e) = serve(Lines::new(d.outgoing, d.incoming), relay, api, data_dir).await {
+                        if let Err(e) =
+                            serve(Lines::new(d.outgoing, d.incoming), relay, api, data_dir).await
+                        {
                             tracing::debug!(%peer, error = %e, "acp mesh conn ended with error");
                         }
                     });
@@ -257,7 +277,11 @@ fn node_name(p: &mesh::Peer, taken: &HashMap<String, String>) -> String {
     if name.is_empty() {
         return short.to_owned();
     }
-    if taken.values().any(|n| n == name) { format!("{name}-{short}") } else { name.to_owned() }
+    if taken.values().any(|n| n == name) {
+        format!("{name}-{short}")
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Ids handed to each [`serve`] connection so the [`Relay`] can tell them
@@ -1070,10 +1094,19 @@ mod tests {
         use std::time::Duration;
 
         async fn engine(name: &str) -> (Arc<mesh::net::Net>, PathBuf) {
-            let dir = std::env::temp_dir().join(format!("theuth-acp-mesh-{}-{}", name, uuid::Uuid::now_v7()));
+            let dir = std::env::temp_dir().join(format!(
+                "theuth-acp-mesh-{}-{}",
+                name,
+                uuid::Uuid::now_v7()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let identity = mesh::identity::Identity::load_or_create(&dir).unwrap();
-            let store = mesh::store::Store::open(&dir.join("mesh.sqlite"), mesh::EngineId(identity.secret.public().to_string())).await.unwrap();
+            let store = mesh::store::Store::open(
+                &dir.join("mesh.sqlite"),
+                mesh::EngineId(identity.secret.public().to_string()),
+            )
+            .await
+            .unwrap();
             let net = mesh::net::Net::bind(
                 mesh::net::BindOpts {
                     secret: identity.secret,
@@ -1093,9 +1126,18 @@ mod tests {
         let (parent, dir_p) = engine("parent").await;
         let (child, dir_c) = engine("child").await;
         let mut events = parent.subscribe_peers();
-        parent.add_peer(&child.pairing_string().await).await.unwrap();
-        let connected = tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
-        assert_eq!(connected, replica::PeerEvent::Connected(PeerId(child.id.0.clone())));
+        parent
+            .add_peer(&child.pairing_string().await)
+            .await
+            .unwrap();
+        let connected = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            connected,
+            replica::PeerEvent::Connected(PeerId(child.id.0.clone()))
+        );
 
         // The child engine: one accepted stream, one ACP agent on it.
         let seen_meta = Arc::new(parking_lot::Mutex::new(None));
@@ -1113,20 +1155,27 @@ mod tests {
                 )
                 .on_receive_request(
                     async move |req: NewSessionRequest, responder, cx| {
-                        *meta_slot.lock() = acp::SessionMeta::from_meta(req.meta.as_ref()).ok().flatten();
+                        *meta_slot.lock() = acp::SessionMeta::from_meta(req.meta.as_ref())
+                            .ok()
+                            .flatten();
                         let id = AcpSessionId::new("child-1");
                         cx.send_notification(SessionNotification::new(
                             id.clone(),
-                            SessionUpdate::AgentMessageChunk(ContentChunk::new("hello from the child".into())),
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                "hello from the child".into(),
+                            )),
                         ))?;
                         responder.respond(NewSessionResponse::new(id))
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
-                .connect_with(Lines::new(d.outgoing, d.incoming), async move |cx: ConnectionTo<Client>| {
-                    cx.incoming_closed().await;
-                    Ok(())
-                })
+                .connect_with(
+                    Lines::new(d.outgoing, d.incoming),
+                    async move |cx: ConnectionTo<Client>| {
+                        cx.incoming_closed().await;
+                        Ok(())
+                    },
+                )
                 .await
                 .unwrap();
             from
@@ -1158,7 +1207,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let update = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         match update {
             acp::Update::Session(SessionUpdate::AgentMessageChunk(c)) => {
                 assert_eq!(acp::content_block_text(&c.content), "hello from the child");
@@ -1166,10 +1218,19 @@ mod tests {
             other => panic!("expected a message chunk, got {other:?}"),
         }
         harness.close();
-        let from = tokio::time::timeout(Duration::from_secs(10), server).await.unwrap().unwrap();
+        let from = tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(from, PeerId(parent.id.0.clone()));
-        let meta = seen_meta.lock().take().expect("_meta.theuth reached the child");
-        assert_eq!((meta.tools, meta.parent.as_deref()), (Some(Risk::ReadOnly), Some("parent-session")));
+        let meta = seen_meta
+            .lock()
+            .take()
+            .expect("_meta.theuth reached the child");
+        assert_eq!(
+            (meta.tools, meta.parent.as_deref()),
+            (Some(Risk::ReadOnly), Some("parent-session"))
+        );
 
         parent.shutdown().await;
         child.shutdown().await;

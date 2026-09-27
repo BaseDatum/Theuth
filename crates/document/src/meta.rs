@@ -632,13 +632,31 @@ mod tests {
         let a = DocId::for_binding(&k);
         assert_eq!(a, DocId::for_binding(&k));
         assert!(DocId::parse(a.as_str()).is_some());
-        assert_ne!(a, DocId::for_binding(&Binding::Knowledge("facts/bar".into())));
-        assert_ne!(a, DocId::for_binding(&Binding::MeetingNote("facts/foo".into())));
-        assert_ne!(DocId::for_binding(&Binding::Note), DocId::for_binding(&Binding::Note));
+        assert_ne!(
+            a,
+            DocId::for_binding(&Binding::Knowledge("facts/bar".into()))
+        );
+        assert_ne!(
+            a,
+            DocId::for_binding(&Binding::MeetingNote("facts/foo".into()))
+        );
+        assert_ne!(
+            DocId::for_binding(&Binding::Note),
+            DocId::for_binding(&Binding::Note)
+        );
         let c = Binding::AgentCharter("ops".into());
-        assert_eq!(DocId::for_binding(&c), DocId::for_binding(&Binding::AgentCharter("ops".into())));
-        assert_ne!(DocId::for_binding(&c), DocId::for_binding(&Binding::AgentCharter("ops2".into())));
-        assert_ne!(DocId::for_binding(&c), DocId::for_binding(&Binding::Knowledge("ops".into())));
+        assert_eq!(
+            DocId::for_binding(&c),
+            DocId::for_binding(&Binding::AgentCharter("ops".into()))
+        );
+        assert_ne!(
+            DocId::for_binding(&c),
+            DocId::for_binding(&Binding::AgentCharter("ops2".into()))
+        );
+        assert_ne!(
+            DocId::for_binding(&c),
+            DocId::for_binding(&Binding::Knowledge("ops".into()))
+        );
     }
 
     #[test]

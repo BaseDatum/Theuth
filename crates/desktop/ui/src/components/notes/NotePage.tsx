@@ -9,6 +9,7 @@ import { Action, DocumentPage } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
+import { ExportMenu } from '@/components/notes/ExportMenu'
 import { NoteChat } from '@/components/notes/NoteChat'
 import { titleAfter } from '@/components/notes/title'
 import { useNotes } from '@/components/notes/useNotes'
@@ -147,6 +148,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
           <Action label="Rename" icon={Pencil} onClick={() => titleInput.current?.select()} disabled={deleted} />
           <Action label="Attach to chat…" icon={MessageSquarePlus} onClick={() => setAttaching(true)} disabled={deleted} />
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
+          <ExportMenu id={id} title={title} disabled={deleted || !live.provider} />
           <UndoAgentAction provider={live.provider} />
           {!popped && canPopout() && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
           <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />

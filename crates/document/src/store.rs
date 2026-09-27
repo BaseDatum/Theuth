@@ -84,7 +84,18 @@ impl Counters {
 }
 
 /// `doc_stats`: how foreign snapshots were handled since start (per process, never persisted).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DocStats {
     /// Foreign snapshots that held state this engine lacked and were joined (closed or open document).
@@ -202,7 +213,9 @@ impl Store {
         .await?;
         let mut groups: Vec<(Binding, Vec<DocId>)> = Vec::new();
         for (id, binding, _) in rows {
-            let Ok(binding) = serde_json::from_str::<Binding>(&binding) else { continue };
+            let Ok(binding) = serde_json::from_str::<Binding>(&binding) else {
+                continue;
+            };
             if matches!(binding, Binding::Note | Binding::TaskThread(_)) {
                 continue;
             }
@@ -222,14 +235,23 @@ impl Store {
                 for other in rest {
                     match self.load(other) {
                         Ok(l) => {
-                            let state = l.doc.transact().encode_state_as_update_v1(&StateVector::default());
-                            if let Err(e) = kept.doc.transact_mut().apply_update(Update::decode_v1(&state)?) {
+                            let state = l
+                                .doc
+                                .transact()
+                                .encode_state_as_update_v1(&StateVector::default());
+                            if let Err(e) = kept
+                                .doc
+                                .transact_mut()
+                                .apply_update(Update::decode_v1(&state)?)
+                            {
                                 tracing::warn!(doc = %other, into = %keep, error = %e, "documents: duplicate not merged");
                                 continue;
                             }
                             tracing::info!(doc = %other, into = %keep, binding = %binding.key(), "documents: duplicate merged");
                         }
-                        Err(e) => tracing::warn!(doc = %other, error = %e, "documents: duplicate unreadable; trashed"),
+                        Err(e) => {
+                            tracing::warn!(doc = %other, error = %e, "documents: duplicate unreadable; trashed")
+                        }
                     }
                     self.delete(other).await?;
                 }
@@ -259,7 +281,10 @@ impl Store {
         if matches!(binding, Binding::Artifact { .. } | Binding::AgentCharter(_)) {
             meta.derived = binding.derived(to);
         }
-        write_atomic(&to_dir.join(META), serde_json::to_vec_pretty(&meta)?.as_slice())?;
+        write_atomic(
+            &to_dir.join(META),
+            serde_json::to_vec_pretty(&meta)?.as_slice(),
+        )?;
         sqlx::query("UPDATE docs SET id = ? WHERE id = ?")
             .bind(to.as_str())
             .bind(from.as_str())
@@ -292,7 +317,10 @@ impl Store {
         if old.is_file() {
             let _ = fs::rename(old, data_dir.join(&meta.derived));
         }
-        write_atomic(&self.dir(id).join(META), serde_json::to_vec_pretty(&meta)?.as_slice())?;
+        write_atomic(
+            &self.dir(id).join(META),
+            serde_json::to_vec_pretty(&meta)?.as_slice(),
+        )?;
         sqlx::query("UPDATE docs SET kind = ?, binding = ? WHERE id = ?")
             .bind(meta.kind.to_string())
             .bind(binding.key())
@@ -367,11 +395,19 @@ impl Store {
             && let Some(links) = v.get_mut("links").and_then(Value::as_array_mut)
         {
             for l in links.iter_mut().filter_map(Value::as_object_mut) {
-                let Some(Value::String(plain)) = l.remove("secret_hash") else { continue };
-                let (Some(hash), Some(id)) = (crate::share::unb64url(&plain), l.get("id").and_then(Value::as_str)) else {
+                let Some(Value::String(plain)) = l.remove("secret_hash") else {
                     continue;
                 };
-                l.insert("secret_hash_sealed".into(), Value::String(crate::share::seal_hash(vault, id, &hash)));
+                let (Some(hash), Some(id)) = (
+                    crate::share::unb64url(&plain),
+                    l.get("id").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                l.insert(
+                    "secret_hash_sealed".into(),
+                    Value::String(crate::share::seal_hash(vault, id, &hash)),
+                );
                 sealed = true;
             }
         }
@@ -406,10 +442,15 @@ impl Store {
     pub fn mirror_write(&self, id: &DocId) -> anyhow::Result<()> {
         let dir = self.dir(id);
         for (src, kind) in [(META, MirrorFile::Meta), (SNAPSHOT, MirrorFile::Snapshot)] {
-            let Some(bytes) = read_opt(&dir.join(src))? else { continue };
+            let Some(bytes) = read_opt(&dir.join(src))? else {
+                continue;
+            };
             let name = mirror::file_name(id, kind);
             let sha = sha256(&bytes);
-            self.projected.lock().unwrap_or_else(|p| p.into_inner()).insert(name.clone(), sha);
+            self.projected
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(name.clone(), sha);
             write_hidden(&self.mirror_dir().join(&name), &bytes)?;
         }
         Ok(())
@@ -455,10 +496,12 @@ impl Store {
         let Some(bytes) = read_opt(path)? else {
             // Removed by a peer's delete; the `docs` tombstone replicates on its own. A directory
             // still here for a row marked deleted follows it into `.trash`.
-            let deleted: Option<(i64,)> = sqlx::query_as("SELECT deleted_ms FROM docs WHERE id = ? AND deleted_ms IS NOT NULL")
-                .bind(id.as_str())
-                .fetch_optional(&self.db)
-                .await?;
+            let deleted: Option<(i64,)> = sqlx::query_as(
+                "SELECT deleted_ms FROM docs WHERE id = ? AND deleted_ms IS NOT NULL",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&self.db)
+            .await?;
             if deleted.is_some() && self.dir(&id).exists() {
                 self.delete(&id).await?;
             }
@@ -473,7 +516,9 @@ impl Store {
             // New here: `meta.json` makes the directory (a document with no snapshot yet is an empty
             // one, as `create` leaves it); a snapshot arriving first waits for its meta.
             let mirror = self.mirror_dir();
-            let Some(meta_bytes) = read_opt(&mirror.join(mirror::file_name(&id, MirrorFile::Meta)))? else {
+            let Some(meta_bytes) =
+                read_opt(&mirror.join(mirror::file_name(&id, MirrorFile::Meta)))?
+            else {
                 return Ok(Applied::Deferred(id));
             };
             let snap_bytes = read_opt(&mirror.join(mirror::file_name(&id, MirrorFile::Snapshot)))?;
@@ -488,7 +533,10 @@ impl Store {
             }
             File::create(dir.join(LOG))?;
             let mut projected = self.projected.lock().unwrap_or_else(|p| p.into_inner());
-            projected.insert(mirror::file_name(&id, MirrorFile::Meta), sha256(&meta_bytes));
+            projected.insert(
+                mirror::file_name(&id, MirrorFile::Meta),
+                sha256(&meta_bytes),
+            );
             if let Some(snap) = &snap_bytes {
                 projected.insert(mirror::file_name(&id, MirrorFile::Snapshot), sha256(snap));
             }
@@ -515,11 +563,18 @@ impl Store {
                 Counters::bump(&self.counters.merged);
                 if exceeds(&loaded.doc, &theirs) {
                     // A real merge: state the peer lacks joins theirs and must ship once.
-                    let diff = theirs.transact().encode_state_as_update_v1(&loaded.doc.transact().state_vector());
-                    loaded.doc.transact_mut().apply_update(Update::decode_v1(&diff)?).context("apply foreign snapshot.yjs")?;
+                    let diff = theirs
+                        .transact()
+                        .encode_state_as_update_v1(&loaded.doc.transact().state_vector());
+                    loaded
+                        .doc
+                        .transact_mut()
+                        .apply_update(Update::decode_v1(&diff)?)
+                        .context("apply foreign snapshot.yjs")?;
                     Counters::bump(&self.counters.resnapshots);
                     let n = self.snapshot(&id, &loaded.doc, None)?;
-                    self.touch_if_changed(&id, loaded.meta.updated_ms, n).await?;
+                    self.touch_if_changed(&id, loaded.meta.updated_ms, n)
+                        .await?;
                 } else {
                     // Theirs holds everything here: their bytes become this document's snapshot and this
                     // process's projection. The mirror file (the replica's copy) already equals its row,
@@ -549,7 +604,12 @@ impl Store {
 
     /// [`Self::touch_at_snapshot`] unless the row already says `bytes` — a same-value write is
     /// still a replication batch.
-    async fn touch_if_changed(&self, id: &DocId, updated_ms: i64, bytes: usize) -> anyhow::Result<()> {
+    async fn touch_if_changed(
+        &self,
+        id: &DocId,
+        updated_ms: i64,
+        bytes: usize,
+    ) -> anyhow::Result<()> {
         let row: Option<(i64,)> = sqlx::query_as("SELECT bytes FROM docs WHERE id = ?")
             .bind(id.as_str())
             .fetch_optional(&self.db)
@@ -709,7 +769,12 @@ impl Store {
 
     /// Index bookkeeping at a snapshot or export (69: not per update — every `docs` write is a
     /// replication batch, and typing must not be one every 200 ms; `bytes` may lag by a log's worth).
-    pub async fn touch_at_snapshot(&self, id: &DocId, updated_ms: i64, bytes: usize) -> anyhow::Result<()> {
+    pub async fn touch_at_snapshot(
+        &self,
+        id: &DocId,
+        updated_ms: i64,
+        bytes: usize,
+    ) -> anyhow::Result<()> {
         sqlx::query("UPDATE docs SET updated_ms = ?, bytes = ? WHERE id = ?")
             .bind(updated_ms)
             .bind(bytes as i64)
@@ -759,17 +824,19 @@ impl Store {
         };
         Ok(rows
             .into_iter()
-            .filter_map(|(id, kind, title, binding, created_ms, updated_ms, bytes)| {
-                Some(DocSummary {
-                    id: DocId(id),
-                    kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
-                    title,
-                    binding: serde_json::from_str(&binding).ok()?,
-                    created_ms,
-                    updated_ms,
-                    bytes,
-                })
-            })
+            .filter_map(
+                |(id, kind, title, binding, created_ms, updated_ms, bytes)| {
+                    Some(DocSummary {
+                        id: DocId(id),
+                        kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
+                        title,
+                        binding: serde_json::from_str(&binding).ok()?,
+                        created_ms,
+                        updated_ms,
+                        bytes,
+                    })
+                },
+            )
             .collect())
     }
 
@@ -835,7 +902,8 @@ fn sanitize(label: &str) -> String {
 /// [`write_atomic`] with a `.`-prefixed temp name, for the mirror: the replica's scan ignores dot
 /// files, so a half-written copy is never a row.
 fn write_hidden(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
         return Err(std::io::Error::other("mirror path without a file name"));
     };
     fs::create_dir_all(parent)?;
@@ -864,7 +932,9 @@ pub fn decode_state(snapshot: &[u8]) -> anyhow::Result<Doc> {
 /// whole delete set — is what decides whether a peer's snapshot is news (69 E2).
 pub fn exceeds(a: &Doc, b: &Doc) -> bool {
     let (a, b) = (a.transact().snapshot(), b.transact().snapshot());
-    a.state_map.iter().any(|(client, clock)| *clock > b.state_map.get(client))
+    a.state_map
+        .iter()
+        .any(|(client, clock)| *clock > b.state_map.get(client))
         || !a.delete_set.diff(&b.delete_set).is_empty()
 }
 
@@ -973,8 +1043,15 @@ mod tests {
     #[tokio::test]
     async fn plaintext_link_hash_is_sealed_on_load() {
         let dir = tempfile::tempdir().unwrap();
-        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
-        let store = Store::open(dir.path()).await.unwrap().with_vault(vault.clone());
+        let vault = Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let store = Store::open(dir.path())
+            .await
+            .unwrap()
+            .with_vault(vault.clone());
         let m = meta(Binding::Note);
         store.create(&m).await.unwrap();
         let hash = crate::share::secret_hash(b"the link secret");
@@ -991,25 +1068,65 @@ mod tests {
         let link = &loaded.links[0];
         assert!(!link.secret_hash_sealed.is_empty());
         assert_ne!(link.secret_hash_sealed, plain_b64);
-        let opened = vault.open_with_mesh_key(b"lnk_old", &crate::share::unb64url(&link.secret_hash_sealed).unwrap()).unwrap();
+        let opened = vault
+            .open_with_mesh_key(
+                b"lnk_old",
+                &crate::share::unb64url(&link.secret_hash_sealed).unwrap(),
+            )
+            .unwrap();
         assert_eq!(opened.as_slice(), &hash[..], "the proof key is unchanged");
         // The guest's proof (the math is unchanged) verifies against the migrated link.
         let (h, g) = ([1u8; 32], [2u8; 32]);
-        assert!(crate::share::verify(Some(&vault), link, &h, &g, &crate::share::proof(&hash, &h, &g)));
-        assert!(!crate::share::verify(Some(&vault), link, &h, &g, &crate::share::proof(&[0u8; 32], &h, &g)));
+        assert!(crate::share::verify(
+            Some(&vault),
+            link,
+            &h,
+            &g,
+            &crate::share::proof(&hash, &h, &g)
+        ));
+        assert!(!crate::share::verify(
+            Some(&vault),
+            link,
+            &h,
+            &g,
+            &crate::share::proof(&[0u8; 32], &h, &g)
+        ));
         // Rewritten in place, and the mirror copy is the sealed one.
-        for bytes in [fs::read(&p).unwrap(), fs::read(store.mirror_dir().join(mirror::file_name(&m.id, MirrorFile::Meta))).unwrap()] {
+        for bytes in [
+            fs::read(&p).unwrap(),
+            fs::read(
+                store
+                    .mirror_dir()
+                    .join(mirror::file_name(&m.id, MirrorFile::Meta)),
+            )
+            .unwrap(),
+        ] {
             let on_disk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert!(on_disk["links"][0].get("secret_hash").is_none(), "no plaintext left");
-            assert_eq!(on_disk["links"][0]["secret_hash_sealed"], link.secret_hash_sealed);
+            assert!(
+                on_disk["links"][0].get("secret_hash").is_none(),
+                "no plaintext left"
+            );
+            assert_eq!(
+                on_disk["links"][0]["secret_hash_sealed"],
+                link.secret_hash_sealed
+            );
         }
         // Second read: nothing to migrate, same value.
-        assert_eq!(store.read_meta(&m.id).unwrap().links[0].secret_hash_sealed, link.secret_hash_sealed);
+        assert_eq!(
+            store.read_meta(&m.id).unwrap().links[0].secret_hash_sealed,
+            link.secret_hash_sealed
+        );
         // A foreign plaintext meta (an engine not yet upgraded) is sealed before it merges.
         let (foreign, sealed) = store.parse_meta(&serde_json::to_vec(&v).unwrap()).unwrap();
         assert!(sealed);
         assert_eq!(
-            vault.open_with_mesh_key(b"lnk_old", &crate::share::unb64url(&foreign.links[0].secret_hash_sealed).unwrap()).unwrap().as_slice(),
+            vault
+                .open_with_mesh_key(
+                    b"lnk_old",
+                    &crate::share::unb64url(&foreign.links[0].secret_hash_sealed).unwrap()
+                )
+                .unwrap()
+                .as_slice(),
             &hash[..]
         );
         // Without a vault nothing is rewritten.
@@ -1133,7 +1250,10 @@ mod tests {
             .map(|s| s.label)
             .collect();
         // Newest first: the two newest dailies stay, the oldest daily (i = 0) went, every other label is kept.
-        assert_eq!(labels, vec!["daily", "artifact-v2", "import-file", "daily", "manual"]);
+        assert_eq!(
+            labels,
+            vec!["daily", "artifact-v2", "import-file", "daily", "manual"]
+        );
     }
 
     #[tokio::test]
@@ -1154,14 +1274,21 @@ mod tests {
             .execute(&store.db)
             .await
             .unwrap();
-        assert_eq!(store.sweep_trash(Duration::from_millis(50000)).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .sweep_trash(Duration::from_millis(50000))
+                .await
+                .unwrap(),
+            1
+        );
         assert!(!trash.join(old.id.as_str()).exists());
         assert!(trash.join(young.id.as_str()).is_dir());
         // 69: the row is a tombstone other engines merge against, never deleted.
-        let rows: Vec<(String, Option<i64>)> = sqlx::query_as("SELECT id, deleted_ms FROM docs ORDER BY id")
-            .fetch_all(&store.db)
-            .await
-            .unwrap();
+        let rows: Vec<(String, Option<i64>)> =
+            sqlx::query_as("SELECT id, deleted_ms FROM docs ORDER BY id")
+                .fetch_all(&store.db)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|(_, d)| d.is_some()));
     }
@@ -1196,21 +1323,36 @@ mod tests {
                     .unwrap();
             }
             let da = Doc::new();
-            store.append(&a.id, &Principal::File, &text_update(&da, "from a")).unwrap();
+            store
+                .append(&a.id, &Principal::File, &text_update(&da, "from a"))
+                .unwrap();
             let db = Doc::new();
-            store.append(&b.id, &Principal::File, &text_update(&db, "from b")).unwrap();
+            store
+                .append(&b.id, &Principal::File, &text_update(&db, "from b"))
+                .unwrap();
             (a, b, l)
         };
         let store = Store::open(dir.path()).await.unwrap();
         let want = DocId::for_binding(&binding);
         assert_eq!(store.lookup(&binding).await.unwrap(), Some(want.clone()));
-        assert_eq!(store.lookup(&lone).await.unwrap(), Some(DocId::for_binding(&lone)));
+        assert_eq!(
+            store.lookup(&lone).await.unwrap(),
+            Some(DocId::for_binding(&lone))
+        );
         let loaded = store.load(&want).unwrap();
-        let text = loaded.doc.get_or_insert_text("t").get_string(&loaded.doc.transact());
+        let text = loaded
+            .doc
+            .get_or_insert_text("t")
+            .get_string(&loaded.doc.transact());
         assert!(text.contains("from a") && text.contains("from b"), "{text}");
         assert_eq!(loaded.log_count, 0, "merged state was snapshotted");
-        assert!(!store.dir(&a.id).exists() && !store.dir(&b.id).exists() && !store.dir(&l.id).exists());
-        assert!(store.root().join(TRASH).join(a.id.as_str()).is_dir(), "the older duplicate is trashed");
+        assert!(
+            !store.dir(&a.id).exists() && !store.dir(&b.id).exists() && !store.dir(&l.id).exists()
+        );
+        assert!(
+            store.root().join(TRASH).join(a.id.as_str()).is_dir(),
+            "the older duplicate is trashed"
+        );
         assert_eq!(store.read_meta(&want).unwrap().id, want);
         // Idempotent.
         Store::open(dir.path()).await.unwrap();
@@ -1238,20 +1380,45 @@ mod tests {
         let binding = Binding::TaskThread("task-1".into());
 
         assert!(store.bind(&thread.id, &binding).await.unwrap());
-        assert!(!store.bind(&thread.id, &binding).await.unwrap(), "idempotent");
+        assert!(
+            !store.bind(&thread.id, &binding).await.unwrap(),
+            "idempotent"
+        );
         let ids = |v: Vec<DocSummary>| v.into_iter().map(|d| d.id).collect::<Vec<_>>();
-        assert_eq!(ids(store.list(Some(DocKind::Note), 10).await.unwrap()), vec![note.id.clone()]);
-        assert_eq!(ids(store.list(Some(DocKind::TaskThread), 10).await.unwrap()), vec![thread.id.clone()]);
-        assert_eq!(store.lookup(&binding).await.unwrap(), Some(thread.id.clone()));
+        assert_eq!(
+            ids(store.list(Some(DocKind::Note), 10).await.unwrap()),
+            vec![note.id.clone()]
+        );
+        assert_eq!(
+            ids(store.list(Some(DocKind::TaskThread), 10).await.unwrap()),
+            vec![thread.id.clone()]
+        );
+        assert_eq!(
+            store.lookup(&binding).await.unwrap(),
+            Some(thread.id.clone())
+        );
         let m = store.read_meta(&thread.id).unwrap();
-        assert_eq!((m.kind, &m.binding, m.derived.as_str()), (DocKind::TaskThread, &binding, &*binding.derived(&thread.id)));
-        assert!(!md.exists() && dir.path().join(&m.derived).is_file(), "derived file followed");
+        assert_eq!(
+            (m.kind, &m.binding, m.derived.as_str()),
+            (DocKind::TaskThread, &binding, &*binding.derived(&thread.id))
+        );
+        assert!(
+            !md.exists() && dir.path().join(&m.derived).is_file(),
+            "derived file followed"
+        );
         // Another note cannot take a bound task; the thread's id is not converged on reopen.
-        let e = store.bind(&note.id, &binding).await.unwrap_err().to_string();
+        let e = store
+            .bind(&note.id, &binding)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("already document"), "{e}");
         drop(store);
         let store = Store::open(dir.path()).await.unwrap();
-        assert_eq!(store.lookup(&binding).await.unwrap(), Some(thread.id.clone()));
+        assert_eq!(
+            store.lookup(&binding).await.unwrap(),
+            Some(thread.id.clone())
+        );
         assert!(store.dir(&thread.id).is_dir());
     }
 
@@ -1265,7 +1432,8 @@ mod tests {
         let m = meta(Binding::Knowledge("facts/m".into()));
         a.create(&m).await.unwrap();
         let doc = Doc::new();
-        a.append(&m.id, &Principal::File, &text_update(&doc, "one ")).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "one "))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         let names = [
             mirror::file_name(&m.id, MirrorFile::Meta),
@@ -1273,58 +1441,135 @@ mod tests {
         ];
         for n in &names {
             assert!(a.mirror_dir().join(n).is_file(), "{n} mirrored");
-            assert_eq!(a.mirror_apply(&a.mirror_dir().join(n)).await.unwrap(), Applied::Ignored, "own write");
+            assert_eq!(
+                a.mirror_apply(&a.mirror_dir().join(n)).await.unwrap(),
+                Applied::Ignored,
+                "own write"
+            );
         }
         assert!(!a.mirror_dir().join(format!(".{}.tmp", names[1])).exists());
-        assert_eq!(a.last_projected(&m.id), Some(sha256(&fs::read(a.mirror_dir().join(&names[1])).unwrap())));
+        assert_eq!(
+            a.last_projected(&m.id),
+            Some(sha256(&fs::read(a.mirror_dir().join(&names[1])).unwrap()))
+        );
 
         // Project onto B, snapshot first: deferred until its meta is there; then created from both.
-        let project = |n: &str| fs::copy(a.mirror_dir().join(n), b.mirror_dir().join(n)).map(|_| ());
+        let project =
+            |n: &str| fs::copy(a.mirror_dir().join(n), b.mirror_dir().join(n)).map(|_| ());
         project(&names[1]).unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&names[1])).await.unwrap(), Applied::Deferred(m.id.clone()));
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&names[1]))
+                .await
+                .unwrap(),
+            Applied::Deferred(m.id.clone())
+        );
         project(&names[0]).unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&names[0])).await.unwrap(), Applied::Created(m.id.clone()));
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&names[0]))
+                .await
+                .unwrap(),
+            Applied::Created(m.id.clone())
+        );
         let lb = b.load(&m.id).unwrap();
-        assert_eq!(lb.doc.get_or_insert_text("t").get_string(&lb.doc.transact()), "one ");
+        assert_eq!(
+            lb.doc
+                .get_or_insert_text("t")
+                .get_string(&lb.doc.transact()),
+            "one "
+        );
         assert_eq!(b.read_meta(&m.id).unwrap().binding, m.binding);
         // B's live copy (as the hub's open `Doc` would be) and a local edit that A has not seen.
         let open_b = lb.doc;
-        b.append(&m.id, &Principal::File, &text_update(&open_b, "B!")).unwrap();
+        b.append(&m.id, &Principal::File, &text_update(&open_b, "B!"))
+            .unwrap();
 
         // A edits and snapshots again: B merges on disk — its text gains A's part, keeps its own, the
         // log is compacted, and A's bytes did not replace B's snapshot.
-        a.append(&m.id, &Principal::File, &text_update(&doc, "two")).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "two"))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         project(&names[1]).unwrap();
         let foreign = fs::read(b.mirror_dir().join(&names[1])).unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&names[1])).await.unwrap(), Applied::Merged(m.id.clone()));
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&names[1]))
+                .await
+                .unwrap(),
+            Applied::Merged(m.id.clone())
+        );
         let lb = b.load(&m.id).unwrap();
-        let text_b = lb.doc.get_or_insert_text("t").get_string(&lb.doc.transact());
-        assert!(text_b.contains("one ") && text_b.contains("two") && text_b.contains("B!"), "{text_b}");
-        assert_eq!(text_b.len(), "one twoB!".len(), "nothing duplicated: {text_b}");
+        let text_b = lb
+            .doc
+            .get_or_insert_text("t")
+            .get_string(&lb.doc.transact());
+        assert!(
+            text_b.contains("one ") && text_b.contains("two") && text_b.contains("B!"),
+            "{text_b}"
+        );
+        assert_eq!(
+            text_b.len(),
+            "one twoB!".len(),
+            "nothing duplicated: {text_b}"
+        );
         assert_eq!(lb.log_count, 0);
-        assert_ne!(fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(), foreign, "B held its own edit: a real merge re-encodes");
+        assert_ne!(
+            fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(),
+            foreign,
+            "B held its own edit: a real merge re-encodes"
+        );
         // The same foreign snapshot into the open `Doc` (the actor's path): news once, then nothing.
         assert!(adds_anything(&foreign, &open_b).unwrap());
         let theirs = decode_state(&foreign).unwrap();
-        let diff = theirs.transact().encode_state_as_update_v1(&open_b.transact().state_vector());
-        open_b.transact_mut().apply_update(Update::decode_v1(&diff).unwrap()).unwrap();
-        assert_eq!(open_b.get_or_insert_text("t").get_string(&open_b.transact()), text_b);
+        let diff = theirs
+            .transact()
+            .encode_state_as_update_v1(&open_b.transact().state_vector());
+        open_b
+            .transact_mut()
+            .apply_update(Update::decode_v1(&diff).unwrap())
+            .unwrap();
+        assert_eq!(
+            open_b
+                .get_or_insert_text("t")
+                .get_string(&open_b.transact()),
+            text_b
+        );
         assert!(!adds_anything(&foreign, &open_b).unwrap());
         assert!(exceeds(&open_b, &theirs), "B's own edit is what A lacks");
         // Same bytes again: own projection now (B re-snapshotted and wrote the mirror) or nothing new.
         assert!(matches!(
-            b.mirror_apply(&b.mirror_dir().join(&names[1])).await.unwrap(),
+            b.mirror_apply(&b.mirror_dir().join(&names[1]))
+                .await
+                .unwrap(),
             Applied::Ignored | Applied::Unchanged
         ));
         // B's snapshot back on A: A merges B's edit, then a second copy brings nothing.
-        fs::copy(b.mirror_dir().join(&names[1]), a.mirror_dir().join(&names[1])).unwrap();
-        assert_eq!(a.mirror_apply(&a.mirror_dir().join(&names[1])).await.unwrap(), Applied::Merged(m.id.clone()));
+        fs::copy(
+            b.mirror_dir().join(&names[1]),
+            a.mirror_dir().join(&names[1]),
+        )
+        .unwrap();
+        assert_eq!(
+            a.mirror_apply(&a.mirror_dir().join(&names[1]))
+                .await
+                .unwrap(),
+            Applied::Merged(m.id.clone())
+        );
         let la = a.load(&m.id).unwrap();
-        assert_eq!(la.doc.get_or_insert_text("t").get_string(&la.doc.transact()), text_b, "A and B converge");
-        fs::copy(b.mirror_dir().join(&names[1]), a.mirror_dir().join(&names[1])).unwrap();
+        assert_eq!(
+            la.doc
+                .get_or_insert_text("t")
+                .get_string(&la.doc.transact()),
+            text_b,
+            "A and B converge"
+        );
+        fs::copy(
+            b.mirror_dir().join(&names[1]),
+            a.mirror_dir().join(&names[1]),
+        )
+        .unwrap();
         assert!(matches!(
-            a.mirror_apply(&a.mirror_dir().join(&names[1])).await.unwrap(),
+            a.mirror_apply(&a.mirror_dir().join(&names[1]))
+                .await
+                .unwrap(),
             Applied::Ignored | Applied::Unchanged
         ));
 
@@ -1332,10 +1577,16 @@ mod tests {
         // alone; its row (replicated on its own) makes it visible; its first snapshot merges in.
         let m2 = meta(Binding::Knowledge("facts/empty".into()));
         a.create(&m2).await.unwrap();
-        let n2 = [mirror::file_name(&m2.id, MirrorFile::Meta), mirror::file_name(&m2.id, MirrorFile::Snapshot)];
+        let n2 = [
+            mirror::file_name(&m2.id, MirrorFile::Meta),
+            mirror::file_name(&m2.id, MirrorFile::Snapshot),
+        ];
         assert!(!a.mirror_dir().join(&n2[1]).exists());
         project(&n2[0]).unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&n2[0])).await.unwrap(), Applied::Created(m2.id.clone()));
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&n2[0])).await.unwrap(),
+            Applied::Created(m2.id.clone())
+        );
         assert_eq!(b.lookup(&m2.binding).await.unwrap(), None, "no row yet");
         sqlx::query("INSERT INTO docs (id, kind, title, binding, created_ms, updated_ms) VALUES (?, 'knowledge', 't', ?, 1, 1)")
             .bind(m2.id.as_str())
@@ -1345,12 +1596,21 @@ mod tests {
             .unwrap();
         assert_eq!(b.lookup(&m2.binding).await.unwrap(), Some(m2.id.clone()));
         let d2 = Doc::new();
-        a.append(&m2.id, &Principal::File, &text_update(&d2, "first")).unwrap();
+        a.append(&m2.id, &Principal::File, &text_update(&d2, "first"))
+            .unwrap();
         a.snapshot(&m2.id, &d2, None).unwrap();
         project(&n2[1]).unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&n2[1])).await.unwrap(), Applied::Merged(m2.id.clone()));
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&n2[1])).await.unwrap(),
+            Applied::Merged(m2.id.clone())
+        );
         let l2 = b.load(&m2.id).unwrap();
-        assert_eq!(l2.doc.get_or_insert_text("t").get_string(&l2.doc.transact()), "first");
+        assert_eq!(
+            l2.doc
+                .get_or_insert_text("t")
+                .get_string(&l2.doc.transact()),
+            "first"
+        );
 
         // A foreign meta with a new member joins; A's stays local otherwise.
         let mut theirs = b.read_meta(&m.id).unwrap();
@@ -1363,8 +1623,17 @@ mod tests {
             via: None,
             last_seen_ms: 5,
         });
-        fs::write(a.mirror_dir().join(&names[0]), serde_json::to_vec(&theirs).unwrap()).unwrap();
-        assert_eq!(a.mirror_apply(&a.mirror_dir().join(&names[0])).await.unwrap(), Applied::Merged(m.id.clone()));
+        fs::write(
+            a.mirror_dir().join(&names[0]),
+            serde_json::to_vec(&theirs).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.mirror_apply(&a.mirror_dir().join(&names[0]))
+                .await
+                .unwrap(),
+            Applied::Merged(m.id.clone())
+        );
         assert_eq!(a.read_meta(&m.id).unwrap().members.len(), 1);
 
         // Delete on A removes its mirror files; the projected removal on B trashes B's directory once the row is a tombstone.
@@ -1377,7 +1646,12 @@ mod tests {
             .execute(&b.db)
             .await
             .unwrap();
-        assert_eq!(b.mirror_apply(&b.mirror_dir().join(&names[0])).await.unwrap(), Applied::Ignored);
+        assert_eq!(
+            b.mirror_apply(&b.mirror_dir().join(&names[0]))
+                .await
+                .unwrap(),
+            Applied::Ignored
+        );
         assert!(!b.dir(&m.id).exists());
         assert!(b.root().join(TRASH).join(m.id.as_str()).is_dir());
     }
@@ -1435,15 +1709,28 @@ mod tests {
         b.append(&m.id, &Principal::File, &u2).unwrap();
         // The crux, on the live `Doc` (the hub's open path): same state, non-empty diff, no news.
         let same = Doc::new();
-        same.transact_mut().apply_update(Update::decode_v1(&yrs::merge_updates_v1([&u1, &u2]).unwrap()).unwrap()).unwrap();
-        let snap = doc.transact().encode_state_as_update_v1(&StateVector::default());
-        let diff = decode_state(&snap).unwrap().transact().encode_state_as_update_v1(&same.transact().state_vector());
-        assert!(diff.len() > 2, "the delete set makes the diff non-empty: {diff:?}");
+        same.transact_mut()
+            .apply_update(Update::decode_v1(&yrs::merge_updates_v1([&u1, &u2]).unwrap()).unwrap())
+            .unwrap();
+        let snap = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let diff = decode_state(&snap)
+            .unwrap()
+            .transact()
+            .encode_state_as_update_v1(&same.transact().state_vector());
+        assert!(
+            diff.len() > 2,
+            "the delete set makes the diff non-empty: {diff:?}"
+        );
         assert!(!adds_anything(&snap, &same).unwrap());
         assert!(!exceeds(&same, &decode_state(&snap).unwrap()));
         // One more deletion elsewhere is news, and only that.
         let ahead = Doc::new();
-        ahead.transact_mut().apply_update(Update::decode_v1(&snap).unwrap()).unwrap();
+        ahead
+            .transact_mut()
+            .apply_update(Update::decode_v1(&snap).unwrap())
+            .unwrap();
         delete_update(&ahead, 1);
         assert!(exceeds(&ahead, &same) && !exceeds(&same, &ahead));
 
@@ -1457,19 +1744,33 @@ mod tests {
         let before = (
             fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(),
             fs::read(b.dir(&m.id).join(LOG)).unwrap(),
-            sqlx::query_as::<_, (i64, i64)>("SELECT updated_ms, bytes FROM docs WHERE id = ?").bind(m.id.as_str()).fetch_one(&b.db).await.unwrap(),
+            sqlx::query_as::<_, (i64, i64)>("SELECT updated_ms, bytes FROM docs WHERE id = ?")
+                .bind(m.id.as_str())
+                .fetch_one(&b.db)
+                .await
+                .unwrap(),
             rows(&b),
             b.last_projected(&m.id),
         );
-        assert!(matches!(b.mirror_apply(&b.mirror_dir().join(&name)).await.unwrap(), Applied::Unchanged | Applied::Ignored));
+        assert!(matches!(
+            b.mirror_apply(&b.mirror_dir().join(&name)).await.unwrap(),
+            Applied::Unchanged | Applied::Ignored
+        ));
         let after = (
             fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(),
             fs::read(b.dir(&m.id).join(LOG)).unwrap(),
-            sqlx::query_as::<_, (i64, i64)>("SELECT updated_ms, bytes FROM docs WHERE id = ?").bind(m.id.as_str()).fetch_one(&b.db).await.unwrap(),
+            sqlx::query_as::<_, (i64, i64)>("SELECT updated_ms, bytes FROM docs WHERE id = ?")
+                .bind(m.id.as_str())
+                .fetch_one(&b.db)
+                .await
+                .unwrap(),
             rows(&b),
             b.last_projected(&m.id),
         );
-        assert_eq!(before, after, "nothing written for a snapshot already contained");
+        assert_eq!(
+            before, after,
+            "nothing written for a snapshot already contained"
+        );
         assert_eq!((b.stats().merged, b.stats().resnapshots), (0, 0));
     }
 
@@ -1484,10 +1785,15 @@ mod tests {
         let m = meta(Binding::Knowledge("facts/ship".into()));
         a.create(&m).await.unwrap();
         let doc = Doc::new();
-        a.append(&m.id, &Principal::File, &text_update(&doc, "one ")).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "one "))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         assert_eq!(exchange(&a, &b).await, 2, "meta + snapshot arrive");
-        assert_eq!(exchange(&b, &a).await, 0, "B has nothing of its own to ship");
+        assert_eq!(
+            exchange(&b, &a).await,
+            0,
+            "B has nothing of its own to ship"
+        );
         // (The creation counted as a merge when the snapshot half arrived after the meta; deltas from here.)
         let counts = |s: &Store| (s.stats().merged, s.stats().resnapshots, s.stats().unchanged);
         let (b0, a0) = (counts(&b), counts(&a));
@@ -1510,31 +1816,82 @@ mod tests {
         };
 
         // A's next snapshot lands on B: B merges (Merged) but ships 0 rows — its snapshot is A's bytes.
-        a.append(&m.id, &Principal::File, &text_update(&doc, "two ")).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "two "))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         assert_eq!(exchange(&a, &b).await, 1);
         assert_eq!(exchange(&b, &a).await, 0, "B shipped 0 doc_files rows");
-        assert_eq!(fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(), fs::read(a.dir(&m.id).join(SNAPSHOT)).unwrap());
-        assert_eq!(b.last_projected(&m.id), a.last_projected(&m.id), "the projection is the peer's bytes");
+        assert_eq!(
+            fs::read(b.dir(&m.id).join(SNAPSHOT)).unwrap(),
+            fs::read(a.dir(&m.id).join(SNAPSHOT)).unwrap()
+        );
+        assert_eq!(
+            b.last_projected(&m.id),
+            a.last_projected(&m.id),
+            "the projection is the peer's bytes"
+        );
         let lb = b.load(&m.id).unwrap();
-        assert_eq!(lb.doc.get_or_insert_text("t").get_string(&lb.doc.transact()), "one two ");
+        assert_eq!(
+            lb.doc
+                .get_or_insert_text("t")
+                .get_string(&lb.doc.transact()),
+            "one two "
+        );
         assert_eq!(lb.log_count, 0, "the log the snapshot covers is compacted");
-        assert_eq!(counts(&b), (b0.0 + 1, b0.1, b0.2), "one merge, no re-snapshot");
-        assert_eq!(docs_row(&b).await, (41, 3), "the adopt wrote 0 docs-row updates on the receiver");
+        assert_eq!(
+            counts(&b),
+            (b0.0 + 1, b0.1, b0.2),
+            "one merge, no re-snapshot"
+        );
+        assert_eq!(
+            docs_row(&b).await,
+            (41, 3),
+            "the adopt wrote 0 docs-row updates on the receiver"
+        );
 
         // B edits locally first: A's next snapshot is a real merge on B — re-snapshotted, shipped once.
-        b.append(&m.id, &Principal::File, &text_update(&lb.doc, "B!")).unwrap();
-        a.append(&m.id, &Principal::File, &text_update(&doc, "three")).unwrap();
+        b.append(&m.id, &Principal::File, &text_update(&lb.doc, "B!"))
+            .unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "three"))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         assert_eq!(exchange(&a, &b).await, 1);
-        assert_eq!(exchange(&b, &a).await, 1, "B shipped exactly 1 row: the joined snapshot");
-        assert_eq!(counts(&b), (b0.0 + 2, b0.1 + 1, b0.2), "the real merge re-snapshotted once");
-        assert_eq!(counts(&a), (a0.0 + 1, a0.1, a0.2), "A catches up on B's edit without re-encoding");
+        assert_eq!(
+            exchange(&b, &a).await,
+            1,
+            "B shipped exactly 1 row: the joined snapshot"
+        );
+        assert_eq!(
+            counts(&b),
+            (b0.0 + 2, b0.1 + 1, b0.2),
+            "the real merge re-snapshotted once"
+        );
+        assert_eq!(
+            counts(&a),
+            (a0.0 + 1, a0.1, a0.2),
+            "A catches up on B's edit without re-encoding"
+        );
         let (la, lb) = (a.load(&m.id).unwrap(), b.load(&m.id).unwrap());
-        let text = la.doc.get_or_insert_text("t").get_string(&la.doc.transact());
-        assert_eq!(text, lb.doc.get_or_insert_text("t").get_string(&lb.doc.transact()));
-        assert_eq!(text.len(), "one two threeB!".len(), "nothing duplicated: {text}");
-        assert_eq!(exchange(&a, &b).await + exchange(&b, &a).await, 0, "converged: a further round moves no bytes");
+        let text = la
+            .doc
+            .get_or_insert_text("t")
+            .get_string(&la.doc.transact());
+        assert_eq!(
+            text,
+            lb.doc
+                .get_or_insert_text("t")
+                .get_string(&lb.doc.transact())
+        );
+        assert_eq!(
+            text.len(),
+            "one two threeB!".len(),
+            "nothing duplicated: {text}"
+        );
+        assert_eq!(
+            exchange(&a, &b).await + exchange(&b, &a).await,
+            0,
+            "converged: a further round moves no bytes"
+        );
     }
 
     /// E2 brief 5: three engines exchanging files as the replica would. One edit on the hub → each
@@ -1550,8 +1907,10 @@ mod tests {
         let m = meta(Binding::Knowledge("facts/three".into()));
         a.create(&m).await.unwrap();
         let doc = Doc::new();
-        a.append(&m.id, &Principal::File, &text_update(&doc, "hello ")).unwrap();
-        a.append(&m.id, &Principal::File, &delete_update(&doc, 1)).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "hello "))
+            .unwrap();
+        a.append(&m.id, &Principal::File, &delete_update(&doc, 1))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
         // Every ordered pair, until a whole round moves nothing.
         async fn round(stores: &[Store]) -> usize {
@@ -1574,14 +1933,25 @@ mod tests {
         let before: Vec<_> = stores.iter().map(counts).collect();
 
         // One edit on A: B and C merge once, re-snapshot never; A applies nothing.
-        a.append(&m.id, &Principal::File, &text_update(&doc, "world")).unwrap();
+        a.append(&m.id, &Principal::File, &text_update(&doc, "world"))
+            .unwrap();
         a.snapshot(&m.id, &doc, None).unwrap();
-        assert_eq!(round(&stores).await, 2, "one snapshot to B and to C, whoever carries it");
+        assert_eq!(
+            round(&stores).await,
+            2,
+            "one snapshot to B and to C, whoever carries it"
+        );
         for (s, (merged, resnapshots)) in stores[1..].iter().zip(&before[1..]) {
             assert_eq!(counts(s), (merged + 1, *resnapshots), "{:?}", s.stats());
             let l = s.load(&m.id).unwrap();
-            assert_eq!(l.doc.get_or_insert_text("t").get_string(&l.doc.transact()), "ello world");
-            assert_eq!(fs::read(s.dir(&m.id).join(SNAPSHOT)).unwrap(), fs::read(a.dir(&m.id).join(SNAPSHOT)).unwrap());
+            assert_eq!(
+                l.doc.get_or_insert_text("t").get_string(&l.doc.transact()),
+                "ello world"
+            );
+            assert_eq!(
+                fs::read(s.dir(&m.id).join(SNAPSHOT)).unwrap(),
+                fs::read(a.dir(&m.id).join(SNAPSHOT)).unwrap()
+            );
         }
         assert_eq!(counts(a), before[0], "{:?}", a.stats());
         assert_eq!(round(&stores).await, 0, "a second round moves no bytes");
@@ -1602,4 +1972,3 @@ mod tests {
         assert!(read_opt(&dir.path().join("nope")).unwrap().is_none());
     }
 }
-

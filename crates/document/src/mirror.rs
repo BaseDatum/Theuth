@@ -149,7 +149,11 @@ pub fn merge_meta(local: &mut DocMeta, incoming: &DocMeta) -> bool {
                     (Some(_), None) => false,
                     _ => l.created_ms > mine.created_ms,
                 };
-                let hash = if mine.secret_hash_sealed.is_empty() { l.secret_hash_sealed.clone() } else { mine.secret_hash_sealed.clone() };
+                let hash = if mine.secret_hash_sealed.is_empty() {
+                    l.secret_hash_sealed.clone()
+                } else {
+                    mine.secret_hash_sealed.clone()
+                };
                 if take {
                     *mine = l.clone();
                 }
@@ -226,8 +230,14 @@ mod tests {
     fn mirror_names_parse_and_skip_temp_files() {
         let id = DocId::for_binding(&Binding::Knowledge("a".into()));
         let dir = Path::new("/x/mirror");
-        assert_eq!(parse(&dir.join(file_name(&id, MirrorFile::Meta))), Some((id.clone(), MirrorFile::Meta)));
-        assert_eq!(parse(&dir.join(file_name(&id, MirrorFile::Snapshot))), Some((id.clone(), MirrorFile::Snapshot)));
+        assert_eq!(
+            parse(&dir.join(file_name(&id, MirrorFile::Meta))),
+            Some((id.clone(), MirrorFile::Meta))
+        );
+        assert_eq!(
+            parse(&dir.join(file_name(&id, MirrorFile::Snapshot))),
+            Some((id.clone(), MirrorFile::Snapshot))
+        );
         assert_eq!(parse(&dir.join(format!(".{id}.snapshot.yjs.tmp-1"))), None);
         assert_eq!(parse(&dir.join("index.sqlite")), None);
         assert_eq!(parse(&dir.join("nope.meta.json")), None);
@@ -244,7 +254,11 @@ mod tests {
         let mut incoming = meta(&id, "new", 20);
         incoming.last_export = Some("theirs".into());
         // Ann seen later elsewhere; Bob unchanged; Cid new.
-        incoming.members = vec![member("a", "Ann R", 1, 9), member("b", "Bobby", 2, 1), member("c", "Cid", 3, 3)];
+        incoming.members = vec![
+            member("a", "Ann R", 1, 9),
+            member("b", "Bobby", 2, 1),
+            member("c", "Cid", 3, 3),
+        ];
         // l1 revoked elsewhere (hash blanked on the wire); l3 new.
         incoming.links = vec![link("l1", 1, Some(7), ""), link("l3", 3, None, "hash3")];
         incoming.authors.insert("blk1".into(), "c".into());
@@ -258,7 +272,10 @@ mod tests {
         assert_eq!(names, vec!["Ann R", "Bob", "Cid"]);
         let l1 = local.links.iter().find(|l| l.id == "l1").unwrap();
         assert_eq!(l1.revoked_ms, Some(7));
-        assert_eq!(l1.secret_hash_sealed, "hash1", "a blanked wire hash never erases the key");
+        assert_eq!(
+            l1.secret_hash_sealed, "hash1",
+            "a blanked wire hash never erases the key"
+        );
         assert_eq!(local.links.len(), 3);
         assert_eq!(local.authors["blk1"], "c");
         assert_eq!(local.authors["blk2"], "c");
@@ -272,7 +289,15 @@ mod tests {
         assert_eq!(local.title, "new");
         assert_eq!(local.authors["blk1"], "c");
         assert_eq!(local.members.len(), 4);
-        assert_eq!(local.links.iter().find(|l| l.id == "l2").unwrap().revoked_ms, Some(8));
+        assert_eq!(
+            local
+                .links
+                .iter()
+                .find(|l| l.id == "l2")
+                .unwrap()
+                .revoked_ms,
+            Some(8)
+        );
 
         // Idempotent.
         let snap = local.clone();

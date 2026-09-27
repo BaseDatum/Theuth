@@ -70,7 +70,11 @@ pub fn helper_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default()
-        .join(format!("theuth-documents-{}{}", protocol_version(), std::env::consts::EXE_SUFFIX));
+        .join(format!(
+            "theuth-documents-{}{}",
+            protocol_version(),
+            std::env::consts::EXE_SUFFIX
+        ));
     #[cfg(debug_assertions)]
     if !beside.is_file() {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -267,7 +271,9 @@ impl EditError {
     /// Decode a helper error; non-JSON text is [`EditError::Other`].
     pub fn from_helper(e: &Error) -> Self {
         match e {
-            Error::Protocol(s) => serde_json::from_str(s).unwrap_or_else(|_| Self::Other(s.clone())),
+            Error::Protocol(s) => {
+                serde_json::from_str(s).unwrap_or_else(|_| Self::Other(s.clone()))
+            }
             other => Self::Other(other.to_string()),
         }
     }
@@ -427,7 +433,8 @@ impl Helper {
 
     /// Lossy markdown of the whole document (frontmatter block → YAML header).
     pub async fn markdown(&self, doc: &DocId) -> Result<String, Error> {
-        self.markdown_of(doc, None, false, &Default::default()).await
+        self.markdown_of(doc, None, false, &Default::default())
+            .await
     }
 
     /// Lossy markdown of `blocks` (any depth) or the whole document; `annotate` prefixes each block with
@@ -545,7 +552,10 @@ struct Proc {
 
 impl Proc {
     fn stderr(&self) -> String {
-        self.stderr.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.stderr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     async fn kill(mut self) {
@@ -563,7 +573,10 @@ impl Proc {
         };
         // Let the last stderr lines land before reading them.
         let _ = tokio::time::timeout(Duration::from_secs(1), &mut self.stderr_done).await;
-        Error::Crashed(format!("{status}: {}", head(&self.stderr(), STDERR_IN_ERROR)))
+        Error::Crashed(format!(
+            "{status}: {}",
+            head(&self.stderr(), STDERR_IN_ERROR)
+        ))
     }
 }
 
@@ -625,7 +638,9 @@ async fn worker(
                     }
                 }
                 Ok(Err(e)) => lost!(e),
-                Err(_) => lost!(Error::Crashed(format!("no answer to --version within {DEADLINE:?}"))),
+                Err(_) => lost!(Error::Crashed(format!(
+                    "no answer to --version within {DEADLINE:?}"
+                ))),
             }
             continue;
         }
@@ -879,11 +894,18 @@ mod tests {
         if std::env::var_os("THEUTH_DOCUMENTS_HELPER").is_some_and(|p| !p.is_empty()) {
             return; // override in effect; the default path is not built
         }
-        let name = helper_path().file_name().unwrap().to_string_lossy().into_owned();
+        let name = helper_path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         // Debug builds may pick the source-tree dev helper instead (suffix-less, by name).
         assert!(
-            name == format!("theuth-documents-{}{}", protocol_version(), std::env::consts::EXE_SUFFIX)
-                || name == "theuth-documents",
+            name == format!(
+                "theuth-documents-{}{}",
+                protocol_version(),
+                std::env::consts::EXE_SUFFIX
+            ) || name == "theuth-documents",
             "{name}"
         );
     }
@@ -992,7 +1014,11 @@ done"#;
     async fn a_handshake_failure_carries_the_stderr() {
         let dir = tempfile::tempdir().unwrap();
         let bad = dir.path().join("bad.sh");
-        std::fs::write(&bad, "#!/bin/sh\necho 'ENOENT: no such file default-stylesheet.css' >&2\nexit 1\n").unwrap();
+        std::fs::write(
+            &bad,
+            "#!/bin/sh\necho 'ENOENT: no such file default-stylesheet.css' >&2\nexit 1\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

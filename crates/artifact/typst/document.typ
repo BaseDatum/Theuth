@@ -1,12 +1,12 @@
 // Glue around cmarker for markdown → PDF (design doc 35 §4.1): page, fonts, title block, contents.
 // Not a layout engine; a second theme is a second file. `sys.inputs.meta` = {title, author, date,
-// paper, toc, body}: front matter as parsed by pdf.rs, `body` the markdown minus the front matter.
+// paper, toc, font, body}: front matter as parsed by pdf.rs, `body` the markdown minus the front matter.
 #import "cmarker/lib.typ": render
 
 #let meta = sys.inputs.meta
 
 #set page(paper: meta.paper, numbering: "1 / 1", margin: 2.2cm)
-#set text(font: ("Libertinus Serif", "New Computer Modern"), size: 11pt)
+#set text(font: (meta.font, "Libertinus Serif", "New Computer Modern"), size: 11pt)
 #set document(title: meta.title)
 #show raw: set text(font: "DejaVu Sans Mono", size: 9pt)
 #show raw.where(block: true): block.with(width: 100%, fill: luma(245), inset: 7pt, radius: 2pt)
