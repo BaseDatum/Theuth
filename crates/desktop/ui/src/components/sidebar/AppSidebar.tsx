@@ -49,15 +49,15 @@ const TOP = [
   ['/routines', 'Routines', CalendarClock],
 ] as const
 
-/** The Library group: what the harness knows, keeps, heard, can use, holds and reaches. Artifacts stays last: this is its only nav entry. */
+/** The Library group: what the harness knows, keeps, heard, can use, holds and reaches. Artifacts first (Sky, 2026-09-27): the most-opened entry, and this is its only nav entry. */
 const LIBRARY = [
+  ['/artifacts', 'Artifacts', FolderOpen],
   ['/knowledge', 'Knowledge', BookOpen],
   ['/notes', 'Notes', StickyNote],
   ['/meetings', 'Meetings', Mic],
   ['/skills', 'Skills', Sparkles],
   ['/secrets', 'Secrets', Lock],
   ['/tools', 'Tools', Wrench],
-  ['/artifacts', 'Artifacts', FolderOpen],
 ] as const
 
 /**
