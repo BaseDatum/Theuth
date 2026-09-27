@@ -581,8 +581,8 @@ export interface Api {
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
-  /** Answer a `SecretsEvent.SecretRequested` (37 §3.8); `null` declines. Rejects when `id` is unknown or expired. */
-  answer_secret(id: string, value: string | null): Promise<void>
+  /** Answer a `SecretsEvent.SecretRequested` (37 §3.8); `null` declines. `false` when `id` was no longer pending. */
+  answer_secret(id: string, value: string | null): Promise<boolean>
   /** Names, notes, versions and the key store (37 §3.8); never a value. */
   list_secrets(): Promise<SecretsList>
   /** Store a new version of `name`; the value transits once and is never echoed. `note: null` keeps the old note. */

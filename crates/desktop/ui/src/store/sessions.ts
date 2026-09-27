@@ -26,6 +26,7 @@ import {
   reconcileTodos,
   route,
 } from "./reduce";
+import type { SecretRequested } from "./approvals";
 import { type Stores, active, scoped } from "./engine-scope";
 
 /** Live tail of a `shell` card's background job. */
@@ -596,7 +597,13 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
   const secrets = st.secretRequests.getState();
   const live = st === active();
   for (const e of events) {
-    if (e.type === "ApprovalRequested") approvals.add(e);
+    if (e.type === "PendingPrompts") {
+      approvals.replace(e.approvals);
+      asks.replace(e.asks);
+      secrets.replace(
+        e.secrets.filter((s): s is SecretRequested => s.type === "SecretRequested"),
+      );
+    } else if (e.type === "ApprovalRequested") approvals.add(e);
     else if (e.type === "ApprovalResolved") approvals.resolve(e.id);
     else if (e.type === "AskRequested") asks.add(e);
     else if (e.type === "AskResolved") asks.resolve(e.id);

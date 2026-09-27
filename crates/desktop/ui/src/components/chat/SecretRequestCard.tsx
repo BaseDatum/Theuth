@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useApi } from '@/lib/rpc'
+import { useSecretRequests } from '@/store/approvals'
 
 /**
  * `SecretsEvent.SecretRequested` (37 §6): the model asked for a secret; the user types it
@@ -27,8 +28,12 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   const answer = async (v: string | null) => {
     setBusy(true)
     try {
-      await api.answer_secret(id, v)
-      setValue('')
+      if (await api.answer_secret(id, v)) setValue('')
+      else {
+        // Answered elsewhere and the `SecretResolved` was missed: the tool row's result is the receipt.
+        useSecretRequests.getState().resolve(id)
+        toast.error('the secret request was already answered')
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
