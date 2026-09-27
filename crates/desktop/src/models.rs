@@ -273,6 +273,20 @@ mod tests {
         }
     }
 
+    /// release-models.sh adds `revision` / `origin` (and may add more): the reader takes only what it knows.
+    #[test]
+    fn manifest_ignores_unknown_fields() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"files":[{"path":"decision/model.safetensors","size":5,"sha256":"aa",
+                "revision":"55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851","origin":"hf:convaiinnovations/laya/model.safetensors",
+                "later":{"nested":true}}],"generated":"2026-09-27"}"#,
+        )
+        .unwrap();
+        assert_eq!(m.files.len(), 1);
+        assert_eq!((m.files[0].key(), m.files[0].size), ("decision/model.safetensors", 5));
+        assert!(m.files[0].for_this_platform());
+    }
+
     #[tokio::test]
     async fn verified_file_lands_and_a_bad_one_leaves_nothing() {
         const BODY: &[u8] = b"hello models";

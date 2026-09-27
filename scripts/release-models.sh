@@ -7,10 +7,15 @@
 #
 #   fetch       scripts/fetch-models.sh: every REQUIRED file missing under $MODELS_DIR is downloaded
 #               from its documented origin (HF_TOKEN for gated repos), else from the already-published
-#               bucket copy (checked against the bucket's models.json); a file found nowhere stops the
-#               run and names itself. Local files are never re-downloaded.
-#   upload      each REQUIRED file → s3://$BUCKET/$PREFIX/models/<model>/<file>
-#               (every upload is skipped when the object is already there with the same size)
+#               bucket copy (checked against the bucket's models.json); a present file with an `hf:`
+#               origin is HEAD-checked against Hugging Face `main` (x-repo-commit / etag / size vs
+#               $MODELS_DIR/.origin/<path>.json, or vs the file's own hash) and replaced when it
+#               changed. A file found nowhere, or a failed download, stops the run and names itself.
+#   upload      each REQUIRED file → s3://$BUCKET/$PREFIX/models/<model>/<file> — the same key as
+#               before (unversioned keys replaced in place; the `<ver>/` immutability of 39 §5 is for
+#               app releases, models.json is written last so a half run is invisible). Skipped when
+#               the bucket's models.json lists the same size + sha256 and the object has that size;
+#               otherwise the object is replaced (`updated`) or created (`new`).
 #   runtime     for each PLATFORMS entry: Microsoft's release archive (tgz; zip for win-*; cached in
 #               target/, sha256-checked against scripts/ort-version.env) → the bare dylib/so/dll →
 #               s3://…/models/onnxruntime/<rust target triple>/<lib>, plus VERSION
@@ -19,19 +24,27 @@
 #               for win-x64 (three DLLs) and linux-*; macOS's runtime has WebGPU built in (no plugin);
 #               win-arm64 is in the nupkg but we ship no such build
 #   verify      anonymous HEAD of every URL: 200 and Content-Length == local size
-#   models.json {files: [{path, size, sha256, platform?, key?}]} — written last.
+#   models.json {files: [{path, size, sha256, revision?, origin?, platform?, key?}]} — written last.
+#               `revision` = the origin's commit (x-repo-commit) from the .origin record, `origin` =
+#               the origin_of string (hf:/https:) — both informational; the desktop reader ignores
+#               unknown fields (crates/desktop/src/models.rs `manifest_ignores_unknown_fields`);
 #               `platform` = rust target triple the entry is for (absent: every platform);
 #               `key` = remote key relative to models/ when it differs from `path`
 #               (the runtime is stored per platform but lands at <data_dir>/models/<path>).
+#   summary     one row per file: path · kept/updated/new · old rev → new rev · bytes.
 #
 # The .app does not need the bucket copy: package-macos.sh bundles the same dylib into
 # Contents/Frameworks, which `models::onnx::ort_lib` tries first.
+#
+#   scripts/release-models.sh [--check] [--force <path|all>]   (flags as fetch-models.sh; --check
+#               reports freshness and publishes nothing, exit 2 when anything is stale)
 #
 # Env (repo-root .env.signing is loaded):
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 #   THEUTH_MODELS_DIR (or MODELS_DIR)   source (default: ${THEUTH_DATA_DIR:-~/.theuth}/models)
 #   THEUTH_S3_ENDPOINT / THEUTH_S3_BUCKET / THEUTH_S3_PREFIX / THEUTH_S3_PUBLIC_BASE_URL  as release-s3.sh
-#   THEUTH_S3_DRY_RUN=1 (or DRY_RUN=1)  print every fetch and every `aws s3 cp`; download and write nothing
+#   MODELS_DRY_RUN=1 (or THEUTH_S3_DRY_RUN / DRY_RUN)  HEAD the origins, print every fetch and every
+#                                       `aws s3 cp`; download, upload and write nothing
 #   HF_TOKEN                            Hugging Face token for gated repos (kyutai/pocket-tts)
 set -euo pipefail
 
@@ -41,7 +54,7 @@ source "$ROOT/scripts/load-signing-env.sh"
 # shellcheck source=ort-version.env
 source "$ROOT/scripts/ort-version.env"
 # shellcheck source=fetch-models.sh
-source "$ROOT/scripts/fetch-models.sh"   # REQUIRED, origin_of, fetch_missing, MODELS_DIR, DRY_RUN, size_of
+source "$ROOT/scripts/fetch-models.sh"   # REQUIRED, origin_of, fetch_models, record_field, bucket_manifest, MODELS_DIR, DRY_RUN, CHECK, size_of, sha256_of
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
 need aws "brew install awscli"
@@ -49,7 +62,7 @@ need jq
 need curl
 need shasum
 need unzip
-[[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] \
+[[ "$CHECK" == 1 || ( -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ) ]] \
   || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset (see .env.signing.example)" >&2; exit 1; }
 
 # Runtime platforms: Microsoft's archive name → rust target triple, archive kind and member, on-disk
@@ -77,10 +90,12 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 export AWS_EC2_METADATA_DISABLED=true
 AWS=(aws --endpoint-url "$ENDPOINT")
 
-fetch_missing
+fetch_models
+[[ "$CHECK" == 1 ]] && { echo "==> --check: nothing published"; exit 0; }
 for f in "${REQUIRED[@]}"; do
   [[ -s "$MODELS_DIR/$f" || "$DRY_RUN" == "1" ]] || { echo "error: $MODELS_DIR/$f missing" >&2; exit 1; }
 done
+bucket_manifest   # what is published today: the upload decision and the summary's "old rev" come from it
 
 echo "==> models from $MODELS_DIR → $S3_MODELS/ (public $PUB_MODELS/, dry run: $DRY_RUN)"
 
@@ -92,28 +107,44 @@ s3_cp() { # src key content-type
 
 MANIFEST='{"files":[]}'
 PUBLISHED=()   # key:local, for verify
-# Upload $1 as models/$2 unless already there with the same size, add its manifest row
-# (path $3, platform $4 — empty: every platform). A file not on disk is only allowed in a dry run
+SUMMARY=()     # path|action|old rev → new rev|bytes
+# "size sha256 revision" of key $1 as the bucket's models.json lists it ("" when not listed).
+bucket_old() { jq -r --arg k "$1" '.files[] | select((.key // .path) == $k) | "\(.size) \(.sha256) \(.revision // "-")"' <<<"$BUCKET_MANIFEST"; }
+# Upload $1 as models/$2 unless the bucket's models.json lists the same size + sha256 and the object
+# has that size, add its manifest row (path $3, platform $4 — empty: every platform, revision/origin
+# from the .origin record when $2 is a model file). A file not on disk is only allowed in a dry run
 # (it would be fetched first): the cp line is printed, the row skipped.
 publish() { # local key path platform
-  local size
+  local size sha old action oldrev="-" rev="" origin=""
   if [[ ! -s "$1" ]]; then
     [[ "$DRY_RUN" == "1" ]] || { echo "error: $1 missing" >&2; exit 1; }
-    echo "    $2: not on disk yet — DRY_RUN: aws s3 cp $1 $S3_MODELS/$2 (manifest row omitted)"; return 0
+    echo "    $2: not on disk yet — DRY_RUN: aws s3 cp $1 $S3_MODELS/$2 (manifest row omitted)"
+    SUMMARY+=("$2|new|- → ?|?"); return 0
   fi
-  size="$(size_of "$1")"
-  if [[ "$(remote_size "$2")" == "$size" ]]; then
+  size="$(size_of "$1")"; sha="$(sha256_of "$1")"
+  old="$(bucket_old "$2")"
+  if [[ -z "$4" ]]; then
+    rev="$(record_field "$3" revision)"; origin="$(origin_of "$3")"; [[ "$origin" == none:* ]] && origin=""
+  fi
+  if [[ -z "$old" ]]; then action=new
+  elif [[ "${old% *}" == "$size $sha" && "$(remote_size "$2")" == "$size" ]]; then action=kept; oldrev="${old##* }"
+  else action=updated; oldrev="${old##* }"
+  fi
+  if [[ "$action" == kept ]]; then
     echo "    $2: already uploaded ($size bytes)"
   else
-    echo "    $2: upload ($size bytes)"
+    echo "    $2: upload ($size bytes, $action)"
     s3_cp "$1" "$2" application/octet-stream
   fi
   local extra='{}'
   [[ "$2" != "$3" ]] && extra="$(jq --arg k "$2" '. + {key: $k}' <<<"$extra")"
   [[ -n "$4" ]] && extra="$(jq --arg p "$4" '. + {platform: $p}' <<<"$extra")"
-  MANIFEST="$(jq --arg p "$3" --argjson s "$size" --arg h "$(shasum -a 256 "$1" | awk '{print $1}')" --argjson x "$extra" \
+  [[ -n "$rev" ]] && extra="$(jq --arg r "$rev" '. + {revision: $r}' <<<"$extra")"
+  [[ -n "$origin" ]] && extra="$(jq --arg o "$origin" '. + {origin: $o}' <<<"$extra")"
+  MANIFEST="$(jq --arg p "$3" --argjson s "$size" --arg h "$sha" --argjson x "$extra" \
     '.files += [{path: $p, size: $s, sha256: $h} + $x]' <<<"$MANIFEST")"
   PUBLISHED+=("$2:$1")
+  local nrev="${rev:--}"; SUMMARY+=("$2|$action|${oldrev:0:7} → ${nrev:0:7}|$size")
 }
 for f in "${REQUIRED[@]}"; do
   publish "$MODELS_DIR/$f" "$f" "$f" ""
@@ -175,4 +206,7 @@ fi
 echo "==> models.json (${#PUBLISHED[@]} rows)"
 jq . <<<"$MANIFEST" | tee "$WORK/models.json"
 s3_cp "$WORK/models.json" models.json application/json
+echo "==> summary (dry run: $DRY_RUN)"
+printf '    %-58s %-8s %-20s %12s\n' file action 'old rev → new rev' bytes
+for row in "${SUMMARY[@]}"; do IFS='|' read -r p a r b <<<"$row"; printf '    %-58s %-8s %-20s %12s\n' "$p" "$a" "$r" "$b"; done
 echo "==> done: $PUB_MODELS/models.json"

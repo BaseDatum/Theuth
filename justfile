@@ -140,17 +140,20 @@ release-add arch:
     THEUTH_RELEASE_ADD={{arch}} ./scripts/release-s3.sh
 
 # Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, nemotron-diarization,
-# pyannote/wespeaker, laya decision checkpoints) that is missing under ${THEUTH_DATA_DIR:-~/.theuth}/models, fetched from
-# its documented origin (HF_TOKEN for gated repos). No AWS creds. DRY_RUN=1 lists instead.
-fetch-models:
-    ./scripts/fetch-models.sh
+# pyannote/wespeaker, laya decision checkpoints) under ${THEUTH_DATA_DIR:-~/.theuth}/models: missing → fetched from
+# its documented origin (HF_TOKEN for gated repos), present with a Hugging Face origin → compared with `main`
+# (x-repo-commit / etag) and replaced when it changed. `--check` reports only (exit 2 when stale),
+# `--force <path|all>` re-downloads. No AWS creds. MODELS_DRY_RUN=1 prints the plan.
+fetch-models *ARGS:
+    ./scripts/fetch-models.sh {{ARGS}}
 
-# fetch-models, then those files + ONNX Runtime and its WebGPU plugin EP for every platform
-# (osx-arm64, linux-x64, linux-aarch64, win-x64) → s3://theuth/releases/models/ + models.json, from
-# one machine; the desktop app downloads what it lacks at start. Needs AWS_* in .env.signing.
-# DRY_RUN=1 prints every fetch and every aws s3 cp.
-release-models:
-    ./scripts/release-models.sh
+# fetch-models (refreshing stale files), then every new-or-updated file + ONNX Runtime and its WebGPU plugin
+# EP for every platform (osx-arm64, linux-x64, linux-aarch64, win-x64) → s3://theuth/releases/models/ (objects
+# replaced in place) + models.json (size/sha256/revision), from one machine; the desktop app downloads what
+# it lacks at start. Needs AWS_* in .env.signing. Same flags as fetch-models; MODELS_DRY_RUN=1 prints every
+# fetch and every aws s3 cp plus the summary table without uploading.
+release-models *ARGS:
+    ./scripts/release-models.sh {{ARGS}}
 
 # Annotated tag v<ver> pushed to origin. THEUTH_RELEASE_NO_PUSH=1 keeps it local.
 tag-release:
