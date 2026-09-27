@@ -6,12 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <script src="/theme.js"></script>
-    <!-- `--bg-page` (src/styles.css) on <html> before the stylesheet arrives, keyed on the class theme.js just set,
-         so no frame paints the webview's default white. `:where` keeps the island's `html[data-island]` rule winning. -->
-    <style>
-      html { background: #e8dcc8 }
-      html:where(.dark) { background: #12100e }
-    </style>
+    <!-- Pre-paint page colour (DARK-FLASH). External on purpose: an inline <style> here gets a Tauri nonce in
+         `style-src`, which voids `'unsafe-inline'` and blocks every runtime-injected stylesheet (xterm's colours). -->
+    <link rel="stylesheet" href="/theme.css" />
   </head>
   <body>
     <div id="root"></div>

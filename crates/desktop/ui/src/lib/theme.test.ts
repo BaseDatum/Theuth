@@ -32,3 +32,13 @@ test.each([
 ] as const)('stored=%s prefersDark=%s → dark=%s', (stored, prefersDark, dark) => {
   expect(run(stored, prefersDark)).toBe(dark)
 })
+
+// PTY-COLOR: Tauri (tauri-utils `inject_nonce_token`, tauri `replace_csp_nonce`) stamps a nonce on every <style> in
+// index.html and appends `'nonce-…'` to `style-src`; a nonce there makes browsers ignore `'unsafe-inline'`, so every
+// stylesheet the app injects at runtime — xterm's `.xterm-fg-N` palette, its font and cell metrics — is silently
+// dropped in the built app. Pre-paint CSS goes in public/theme.css (a <link>), never an inline <style>.
+test('index.html has no inline <style> (a Tauri nonce there voids style-src unsafe-inline)', () => {
+  // Comments are not elements to Tauri's `style` selector either.
+  const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8').replace(/<!--[\s\S]*?-->/g, '')
+  expect(html).not.toMatch(/<style[\s>]/i)
+})
