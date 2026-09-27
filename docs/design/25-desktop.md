@@ -88,7 +88,10 @@ different capabilities means the TUI stays the real one.
   `{ "type": "<TypeName>", ... }`. `session: null` = everything
   (`api.rs:889-912`). Broadcast capacity 1024; overflow yields
   `{"type":"Lagged","count":n}` and the gap is unrecoverable
-  (`bridge.rs:24`, `api.rs:866`). Nothing is replayed to a late subscriber.
+  (`bridge.rs:24`, `api.rs:866`). Nothing is replayed to a late subscriber,
+  except the first item: a `PendingPrompts` snapshot of every approval,
+  `ask_user` and `secret_request` still waiting on a user, which the client
+  takes as its whole pending set (70 as-built ASK-SYNC).
 - Bridged event types (`bridge.rs:61-71`): `AgentEvent` (20 variants),
   `ApprovalRequested/Resolved`, `McpProgress`, `LoginFinished`, `JobEvent`
   (`JobStarted|JobOutput|JobScreen|JobFinished`), `SignalEvent`,
