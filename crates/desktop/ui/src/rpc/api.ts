@@ -130,6 +130,7 @@ import type { Peer } from '@/rpc/bindings/Peer'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskCreate } from '@/rpc/bindings/TaskCreate'
 import type { TaskEvent } from '@/rpc/bindings/TaskEvent'
+import type { PathCompletion } from '@/rpc/bindings/PathCompletion'
 import type { TaskFilter } from '@/rpc/bindings/TaskFilter'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { ActivityFilter } from '@/rpc/bindings/ActivityFilter'
@@ -537,6 +538,8 @@ export interface Api {
   /** `transcript.json` (04 §3). */
   meeting_transcript(id: MeetingId): Promise<MeetingTranscript>
   new_session(): Promise<SessionId>
+  /** PATH-AC: candidates for the path token under `cursor` (a UTF-8 byte offset) in `input`, listed by `session`'s engine; empty, never an error, when nothing applies. */
+  path_complete(session: SessionId | null, input: string, cursor: number): Promise<PathCompletion>
   /** Mesh-internal (62 §0.1): a peer's envelope delivered to `session`; anything but a mesh peer is `UNAUTHORIZED`. */
   peer_deliver(session: SessionId, envelope: PeerEnvelope): Promise<PeerReceipt>
   /** One exchange as `session` recorded it (50 §5.2); never another session's history. */
@@ -865,6 +868,7 @@ export const METHODS = [
   'mesh_set_hub',
   'mesh_status',
   'new_session',
+  'path_complete',
   'peer_deliver',
   'peer_message',
   'pin_session',
