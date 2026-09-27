@@ -21,6 +21,7 @@ author: Ada Lovelace          # under the title
 date: 2026-09-16              # default: today
 paper: a4                     # or us-letter
 toc: true                     # contents page after the title, then a page break
+font: Newsreader              # body face; default Libertinus Serif (Newsreader is embedded too)
 ---
 ```
 

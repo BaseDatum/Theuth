@@ -216,7 +216,11 @@ pub(crate) mod tests {
 
     #[test]
     fn zip_lists_without_inflating() {
-        let bytes = zip_fixture(&[("dir/", b""), ("dir/a.txt", b"hello"), ("b.bin", &[0u8; 300])]);
+        let bytes = zip_fixture(&[
+            ("dir/", b""),
+            ("dir/a.txt", b"hello"),
+            ("b.bin", &[0u8; 300]),
+        ]);
         let l = list(&bytes, "x.zip").unwrap();
         assert_eq!(l.total_entries, 3);
         assert_eq!(l.total_size, 305);

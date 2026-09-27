@@ -21,19 +21,19 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use yrs::sync::{Awareness, AwarenessUpdate};
-use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
 use yrs::types::xml::XmlOut;
 use yrs::types::{Change, DeepObservable, Event};
+use yrs::updates::decoder::Decode;
+use yrs::updates::encoder::Encode;
 use yrs::{ReadTxn, StateVector, Transact, TransactionMut, Update, Xml};
 
 use crate::helper::{self, Edit as BlockEdit, EditError, Helper, HelperEvent, ImportMode};
 use crate::hub::DocError;
-use crate::relay::{Client, Cmd};
 use crate::meta::{
     AgentStyle, Binding, DocEvent, DocId, DocKind, DocMeta, DocOpen, DocSummary, DocumentChanged,
     Principal, SnapshotInfo, Who,
 };
+use crate::relay::{Client, Cmd};
 use crate::store::{self, Store, now_ms, sha256, write_atomic};
 use crate::{DocumentsConfig, Exported, FRAGMENT};
 
@@ -96,7 +96,10 @@ struct RateSlot {
 /// Whether one more awareness state fits into `slot`'s window at `now` (§6.2: ≤ [`AWARENESS_RATE`] per second).
 fn admit_awareness(slot: &mut RateSlot, now: Instant) -> bool {
     if now.duration_since(slot.since) >= Duration::from_secs(1) {
-        *slot = RateSlot { since: now, sent: 0 };
+        *slot = RateSlot {
+            since: now,
+            sent: 0,
+        };
     }
     if slot.sent >= AWARENESS_RATE {
         return false;
@@ -361,7 +364,9 @@ impl DocumentActor {
         let written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
         for id in written {
             let changed = match &by {
-                Principal::Member { pub_, .. } => o.meta.authors.insert(id, pub_.clone()).as_deref() != Some(pub_),
+                Principal::Member { pub_, .. } => {
+                    o.meta.authors.insert(id, pub_.clone()).as_deref() != Some(pub_)
+                }
                 _ => o.meta.authors.remove(&id).is_some(),
             };
             o.authors_dirty |= changed;
@@ -398,7 +403,10 @@ impl DocumentActor {
         }
         let mut who = Who::from(&by);
         if let Who::Member { pub_, name } = &mut who
-            && let Some(m) = self.open.get(doc).and_then(|o| o.meta.members.iter().find(|m| m.pub_ == *pub_))
+            && let Some(m) = self
+                .open
+                .get(doc)
+                .and_then(|o| o.meta.members.iter().find(|m| m.pub_ == *pub_))
         {
             *name = m.name.clone();
         }
@@ -462,7 +470,11 @@ impl DocumentActor {
             return None;
         }
         let derived = match self.open.get(doc) {
-            Some(o) => o.meta.last_export.is_none().then(|| o.meta.derived.clone())?,
+            Some(o) => o
+                .meta
+                .last_export
+                .is_none()
+                .then(|| o.meta.derived.clone())?,
             None => {
                 let m = self.store.read_meta(doc).ok()?;
                 m.last_export.is_none().then_some(m.derived)?
@@ -629,7 +641,11 @@ impl DocumentActor {
     }
 
     /// Fire the export of `doc`: helper markdown → tmp + rename → [`ExportDone`]; `done` hears the outcome.
-    pub(crate) fn export(&mut self, doc: &DocId, done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
+    pub(crate) fn export(
+        &mut self,
+        doc: &DocId,
+        done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    ) {
         let Some(o) = self.open.get_mut(doc) else {
             return;
         };
@@ -753,10 +769,7 @@ impl DocumentActor {
                 });
             }
         }
-        self.store
-            .delete(doc)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+        self.store.delete(doc).await.map_err(|e| format!("{e:#}"))?;
         if let Some(meta) = meta {
             self.rt.publish(DocumentChanged::of(&meta, true)).await;
         }
@@ -842,7 +855,15 @@ impl Message<OpenDoc> for DocumentActor {
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
             Ok(None) => tx.send(self.open_doc(m).await),
-            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Open { sv: m.sv, reply: tx }),
+            Ok(Some(hub)) => self.forward(
+                hub,
+                &m.doc,
+                Client::of(&m.by),
+                Cmd::Open {
+                    sv: m.sv,
+                    reply: tx,
+                },
+            ),
             Err(e) => tx.send(Err(e)),
         }
         reply
@@ -882,7 +903,13 @@ impl DocumentActor {
         // derived file now; the client gets the state as an ordinary update a moment after this reply.
         if let Some(markdown) = self.unsynced_file(&m.doc) {
             tracing::info!(doc = %m.doc, "document never imported; importing its file on open");
-            self.start_import(&m.doc, markdown, Principal::File, ImportMode::Diff, ImportReply::None);
+            self.start_import(
+                &m.doc,
+                markdown,
+                Principal::File,
+                ImportMode::Diff,
+                ImportReply::None,
+            );
         }
         Ok(DocOpen {
             meta,
@@ -911,14 +938,24 @@ pub const MAX_UPDATE_B64: usize = 48 * 1024;
 impl Message<ApplyUpdate> for DocumentActor {
     type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: ApplyUpdate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ApplyUpdate,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
             Ok(None) => tx.send(self.apply_update(m).await),
-            Ok(Some(hub)) => {
-                self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Update { update: m.update, reply: tx })
-            }
+            Ok(Some(hub)) => self.forward(
+                hub,
+                &m.doc,
+                Client::of(&m.by),
+                Cmd::Update {
+                    update: m.update,
+                    reply: tx,
+                },
+            ),
             Err(e) => tx.send(Err(e)),
         }
         reply
@@ -957,7 +994,9 @@ impl Message<Subscribe> for DocumentActor {
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
             Ok(None) => tx.send(self.subscribe(m)),
-            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Subscribe { reply: tx }),
+            Ok(Some(hub)) => {
+                self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Subscribe { reply: tx })
+            }
             Err(e) => tx.send(Err(e)),
         }
         reply
@@ -993,14 +1032,24 @@ pub struct AwarenessUpdateMsg {
 impl Message<AwarenessUpdateMsg> for DocumentActor {
     type Reply = DelegatedReply<Result<(), DocError>>;
 
-    async fn handle(&mut self, m: AwarenessUpdateMsg, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: AwarenessUpdateMsg,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
             Ok(None) => tx.send(self.awareness_update(m)),
-            Ok(Some(hub)) => {
-                self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Awareness { state: m.state, reply: tx })
-            }
+            Ok(Some(hub)) => self.forward(
+                hub,
+                &m.doc,
+                Client::of(&m.by),
+                Cmd::Awareness {
+                    state: m.state,
+                    reply: tx,
+                },
+            ),
             Err(e) => tx.send(Err(e)),
         }
         reply
@@ -1014,10 +1063,10 @@ impl DocumentActor {
         self.admit(&m.doc, &m.by, false)?;
         let o = self.load(&m.doc)?;
         let now = Instant::now();
-        let slot = o
-            .awareness_rate
-            .entry(m.by.conn())
-            .or_insert(RateSlot { since: now, sent: 0 });
+        let slot = o.awareness_rate.entry(m.by.conn()).or_insert(RateSlot {
+            since: now,
+            sent: 0,
+        });
         if !admit_awareness(slot, now) {
             tracing::trace!(doc = %m.doc, conn = ?m.by.conn(), "awareness over the rate cap; dropped");
             return Ok(());
@@ -1233,7 +1282,10 @@ impl Message<ExportDone> for DocumentActor {
                 self.fan_out(&m.doc, DocEvent::Exported, None);
                 self.rt.publish(DocumentChanged::of(&meta, false)).await;
                 // The owner waits for the quiet period (Tick) unless nobody is typing or the harness is stopping.
-                let due = self.open.get(&m.doc).is_some_and(|o| self.owner_due(&m.doc, o, Instant::now()));
+                let due = self
+                    .open
+                    .get(&m.doc)
+                    .is_some_and(|o| self.owner_due(&m.doc, o, Instant::now()));
                 if due {
                     self.notify_owner(&m.doc).await;
                 }
@@ -1271,7 +1323,16 @@ impl Message<Edit> for DocumentActor {
         // be reached answers `NotHub:<id>` — an error the caller sees and may retry, never a drop.
         match self.hub.route() {
             Ok(None) => self.start_edit(&m.doc, m.edits, m.by, tx),
-            Ok(Some(hub)) => self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Edit { edits: m.edits, by: m.by, reply: tx }),
+            Ok(Some(hub)) => self.forward(
+                hub,
+                &m.doc,
+                Client::of(&m.by),
+                Cmd::Edit {
+                    edits: m.edits,
+                    by: m.by,
+                    reply: tx,
+                },
+            ),
             Err(e) => tx.send(Err(EditError::Other(e.to_string()))),
         }
         reply
@@ -1345,7 +1406,10 @@ impl Message<UndoLastAgentEdit> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        let last = self.open.get_mut(&m.doc).and_then(|o| o.last_agent_edit.take());
+        let last = self
+            .open
+            .get_mut(&m.doc)
+            .and_then(|o| o.last_agent_edit.take());
         let Some(last) = last else {
             tx.send(Err("no agent edit to undo".into()));
             return reply;
@@ -1448,6 +1512,24 @@ fn label_outline(outline: &str, authors: &HashMap<String, String>) -> String {
     out
 }
 
+/// `ask` → `Result<DocMeta, String>`: the metadata of `doc` for `by`, members admitted like [`OpenDoc`].
+#[derive(Clone, Debug)]
+pub struct MetaOf {
+    /// Document.
+    pub doc: DocId,
+    /// Who asks.
+    pub by: Principal,
+}
+
+impl Message<MetaOf> for DocumentActor {
+    type Reply = Result<DocMeta, String>;
+
+    async fn handle(&mut self, m: MetaOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.admit(&m.doc, &m.by, false)?;
+        Ok(self.load(&m.doc)?.meta.clone())
+    }
+}
+
 /// `ask` → `Result<String, String>`: lossy markdown of `doc` or of `blocks`, each block preceded by `<!-- id -->` when `annotate`.
 #[derive(Clone, Debug)]
 pub struct Markdown {
@@ -1469,7 +1551,11 @@ impl Message<Markdown> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        let authors = if m.annotate { self.author_labels(&m.doc) } else { HashMap::new() };
+        let authors = if m.annotate {
+            self.author_labels(&m.doc)
+        } else {
+            HashMap::new()
+        };
         let helper = self.helper.clone();
         tokio::spawn(async move {
             tx.send(
@@ -1542,18 +1628,27 @@ pub struct CreateBoard {
 /// misread.
 pub fn board_frontmatter(root: &Path) -> String {
     let root = root.to_string_lossy();
-    let plain = !root.starts_with([' ', '-', '?', '[', '{', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`'])
-        && !root.contains(['"', '\\', '\n', '\r', '\t', '#'])
+    let plain = !root.starts_with([
+        ' ', '-', '?', '[', '{', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`',
+    ]) && !root.contains(['"', '\\', '\n', '\r', '\t', '#'])
         && !root.contains(": ")
         && !root.ends_with([':', ' ']);
-    let value = if plain { root.into_owned() } else { serde_json::to_string(&*root).unwrap_or_default() };
+    let value = if plain {
+        root.into_owned()
+    } else {
+        serde_json::to_string(&*root).unwrap_or_default()
+    };
     format!("---\nroot: {value}\n---\n")
 }
 
 impl Message<CreateBoard> for DocumentActor {
     type Reply = DelegatedReply<Result<DocSummary, String>>;
 
-    async fn handle(&mut self, m: CreateBoard, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CreateBoard,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         if let Err(e) = self.hub.gate_str() {
@@ -1615,7 +1710,11 @@ impl DocumentActor {
         let meta = DocMeta {
             derived: binding.derived(&id),
             id: id.clone(),
-            kind: if board_root.is_some() { DocKind::Board } else { binding.kind() },
+            kind: if board_root.is_some() {
+                DocKind::Board
+            } else {
+                binding.kind()
+            },
             title,
             binding,
             fragment: FRAGMENT.to_owned(),
@@ -1692,11 +1791,23 @@ impl Message<Rename> for DocumentActor {
             tx.send(Err(format!("{e:#}")));
             return reply;
         }
-        self.fan_out(&m.doc, DocEvent::Meta { title: title.clone() }, None);
+        self.fan_out(
+            &m.doc,
+            DocEvent::Meta {
+                title: title.clone(),
+            },
+            None,
+        );
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
-            let outline = match me.ask(Outline { doc: m.doc.clone(), depth: Some(1) }).await {
+            let outline = match me
+                .ask(Outline {
+                    doc: m.doc.clone(),
+                    depth: Some(1),
+                })
+                .await
+            {
                 Ok(o) => o,
                 Err(e) => return tx.send(Err(e.to_string())),
             };
@@ -1705,7 +1816,9 @@ impl Message<Rename> for DocumentActor {
                 return tx.send(Ok(()));
             };
             let is_h1 = first["type"] == "heading"
-                && first["text"].as_str().is_some_and(|t| t.starts_with("[h1] "));
+                && first["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("[h1] "));
             let Some(id) = first["id"].as_str().filter(|_| is_h1) else {
                 return tx.send(Ok(()));
             };
@@ -1740,7 +1853,12 @@ impl Message<DeleteNote> for DocumentActor {
         self.hub.gate_str()?;
         let kind = match self.open.get(&m.doc) {
             Some(o) => o.meta.kind,
-            None => self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?.kind,
+            None => {
+                self.store
+                    .read_meta(&m.doc)
+                    .map_err(|e| format!("{e:#}"))?
+                    .kind
+            }
         };
         if !kind.free_standing() {
             return Err("delete_via_owner".into());
@@ -1865,7 +1983,12 @@ impl Message<Bind> for DocumentActor {
 
     async fn handle(&mut self, m: Bind, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.hub.gate_str()?;
-        if !self.store.bind(&m.doc, &m.binding).await.map_err(|e| format!("{e:#}"))? {
+        if !self
+            .store
+            .bind(&m.doc, &m.binding)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        {
             return Ok(false);
         }
         let meta = self.store.read_meta(&m.doc).map_err(|e| format!("{e:#}"))?;
@@ -2029,8 +2152,14 @@ pub struct MirrorChanged {
 impl Message<MirrorChanged> for DocumentActor {
     type Reply = ();
 
-    async fn handle(&mut self, m: MirrorChanged, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some((id, kind)) = crate::mirror::parse(&m.path) else { return };
+    async fn handle(
+        &mut self,
+        m: MirrorChanged,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Some((id, kind)) = crate::mirror::parse(&m.path) else {
+            return;
+        };
         // Off the hub a loaded document is a read cache (`doc_read`): drop it and merge on disk. Closed
         // documents merge on disk; a document a peer removed follows its tombstone into `.trash`.
         if !self.hub.holding() && self.open.contains_key(&id) {
@@ -2044,12 +2173,19 @@ impl Message<MirrorChanged> for DocumentActor {
                     }
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(doc = %id, error = %e, "documents: mirror file not merged"),
+                Err(e) => {
+                    tracing::warn!(doc = %id, error = %e, "documents: mirror file not merged")
+                }
             }
             return;
         }
-        let Ok(Some(bytes)) = store::read_opt(&m.path) else { return };
-        if self.store.is_own_projection(&crate::mirror::file_name(&id, kind), &bytes) {
+        let Ok(Some(bytes)) = store::read_opt(&m.path) else {
+            return;
+        };
+        if self
+            .store
+            .is_own_projection(&crate::mirror::file_name(&id, kind), &bytes)
+        {
             return;
         }
         match kind {
@@ -2070,10 +2206,15 @@ impl Message<MirrorChanged> for DocumentActor {
                     store::Counters::bump(&self.store.counters.noop_applies_avoided);
                     return;
                 }
-                let diff = theirs.transact().encode_state_as_update_v1(&o.doc.transact().state_vector());
+                let diff = theirs
+                    .transact()
+                    .encode_state_as_update_v1(&o.doc.transact().state_vector());
                 // Into the live document like any update (log, fan-out, helper mirror); the derived
                 // file follows, which `Principal::File` alone would not schedule.
-                if let Err(e) = self.apply(&id, diff, Principal::File, false, Vec::new()).await {
+                if let Err(e) = self
+                    .apply(&id, diff, Principal::File, false, Vec::new())
+                    .await
+                {
                     tracing::warn!(doc = %id, error = %e, "documents: foreign snapshot not merged");
                     return;
                 }
@@ -2089,7 +2230,9 @@ impl Message<MirrorChanged> for DocumentActor {
                         return;
                     }
                 };
-                let Some(o) = self.open.get_mut(&id) else { return };
+                let Some(o) = self.open.get_mut(&id) else {
+                    return;
+                };
                 if !crate::mirror::merge_meta(&mut o.meta, &incoming) {
                     return;
                 }
@@ -2097,7 +2240,13 @@ impl Message<MirrorChanged> for DocumentActor {
                 if let Err(e) = self.store.write_meta(&meta).await {
                     tracing::warn!(doc = %id, error = %e, "meta.json: merge not saved");
                 }
-                let (members, links) = (meta.members.clone(), meta.links.iter().map(crate::meta::ShareLink::public).collect());
+                let (members, links) = (
+                    meta.members.clone(),
+                    meta.links
+                        .iter()
+                        .map(crate::meta::ShareLink::public)
+                        .collect(),
+                );
                 self.fan_out(&id, DocEvent::Members { members, links }, None);
                 self.fan_out(&id, DocEvent::Meta { title }, None);
                 self.rt.publish(DocumentChanged::of(&meta, false)).await;
@@ -2132,7 +2281,10 @@ impl Message<HelperEvent> for DocumentActor {
                 ratio,
             } => {
                 let mut done = false;
-                let (by, snapshot_first) = match (self.imports.get_mut(&req), self.edits.get_mut(&req)) {
+                let (by, snapshot_first) = match (
+                    self.imports.get_mut(&req),
+                    self.edits.get_mut(&req),
+                ) {
                     (Some(imp), _) => {
                         imp.applied = true;
                         done = imp.done_at.is_some();
@@ -2197,7 +2349,10 @@ impl Message<Tick> for DocumentActor {
             // §4.1 size/count policy, plus 69: a quiet period, so the replicated mirror lags by seconds.
             if o.log_bytes > LOG_MAX_BYTES
                 || o.log_count > LOG_MAX_COUNT
-                || (self.hub.holding() && o.log_count > 0 && now.duration_since(o.idle_since) >= Duration::from_millis(self.cfg.snapshot_quiet_ms))
+                || (self.hub.holding()
+                    && o.log_count > 0
+                    && now.duration_since(o.idle_since)
+                        >= Duration::from_millis(self.cfg.snapshot_quiet_ms))
             {
                 snapshots.push(id.clone());
             }
@@ -2235,14 +2390,19 @@ impl Message<Tick> for DocumentActor {
             }
         }
         // Imports that replied but changed nothing send no update: forget them after a grace period.
-        self.imports
-            .retain(|_, i| i.done_at.is_none_or(|t| now.duration_since(t) < IMPORT_GRACE));
+        self.imports.retain(|_, i| {
+            i.done_at
+                .is_none_or(|t| now.duration_since(t) < IMPORT_GRACE)
+        });
         // Subscribers whose receiver went away.
         for subs in self.subs.values_mut() {
             subs.retain(|s| !s.tx.is_closed());
         }
         self.subs.retain(|_, s| !s.is_empty());
-        if self.last_sweep.is_none_or(|t| now.duration_since(t) >= TRASH_SWEEP) {
+        if self
+            .last_sweep
+            .is_none_or(|t| now.duration_since(t) >= TRASH_SWEEP)
+        {
             self.last_sweep = Some(now);
             match self.store.sweep_trash(TRASH_KEEP).await {
                 Ok(n) if n > 0 => tracing::info!(removed = n, "documents trash swept"),
@@ -2264,9 +2424,16 @@ impl Message<Flush> for DocumentActor {
     async fn handle(&mut self, _: Flush, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.shutting_down = true;
         let now = Instant::now();
-        let waiting: Vec<DocId> = self.open.iter().filter(|(_, o)| o.notify_due.is_some()).map(|(id, _)| id.clone()).collect();
+        let waiting: Vec<DocId> = self
+            .open
+            .iter()
+            .filter(|(_, o)| o.notify_due.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
         for id in waiting {
-            let Some(o) = self.open.get(&id) else { continue };
+            let Some(o) = self.open.get(&id) else {
+                continue;
+            };
             if o.export_due.is_some() && !o.exporting {
                 // Fired now; it reports through `ExportDone` (`shutting_down`), like one already in flight.
                 self.export(&id, None);

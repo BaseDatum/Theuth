@@ -7,6 +7,7 @@ description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a
 
 [dependencies]
 platform = { workspace = true }
+dirs = { workspace = true }
 runtime = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }

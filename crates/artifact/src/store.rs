@@ -536,7 +536,11 @@ impl State {
     /// `:memory:` database (every SQLite memory connection is its own database),
     /// no journal, `temp_store=MEMORY`, blobs under `<root>/artifacts/` created
     /// mode 0700. No owner lock and no recovery: nothing outlives the process.
-    pub async fn open_private(root: &Path, rt: Runtime, fonts: Vec<PathBuf>) -> anyhow::Result<Self> {
+    pub async fn open_private(
+        root: &Path,
+        rt: Runtime,
+        fonts: Vec<PathBuf>,
+    ) -> anyhow::Result<Self> {
         let dir = root.join(DIR);
         let mut b = std::fs::DirBuilder::new();
         b.recursive(true);
@@ -626,6 +630,18 @@ impl State {
         session: SessionId,
         call_id: String,
         args: ShowArgs,
+    ) -> Result<Shown, String> {
+        self.show_as(session, call_id, args, true).await
+    }
+
+    /// [`Self::show`] with `bind` = whether a markdown record becomes a document (59 §7.2);
+    /// exports (72) are copies of a document and must not.
+    pub(crate) async fn show_as(
+        &self,
+        session: SessionId,
+        call_id: String,
+        args: ShowArgs,
+        bind: bool,
     ) -> Result<Shown, String> {
         let t0 = Instant::now();
         let (name, bytes, origin, content) = match (args.path, args.content) {
@@ -834,7 +850,7 @@ impl State {
         })?;
         artifact.version = u32::try_from(version).unwrap_or_default();
         self.search.invalidate();
-        if artifact.kind == Kind::Markdown {
+        if bind && artifact.kind == Kind::Markdown {
             self.bind_document(&artifact, &bytes).await;
         }
 
@@ -1068,7 +1084,13 @@ impl State {
             session: a.session.to_string(),
             name: a.name.clone(),
         };
-        let doc = match docs.actor().ask(document::Lookup { binding: binding.clone() }).await {
+        let doc = match docs
+            .actor()
+            .ask(document::Lookup {
+                binding: binding.clone(),
+            })
+            .await
+        {
             Ok(Some(doc)) => docs
                 .import_markdown(doc.clone(), markdown.to_owned(), document::Principal::File)
                 .await
@@ -1914,7 +1936,10 @@ mod tests {
         assert_eq!(shown.receipt.files, Some(1));
         assert_eq!(
             kind::receipt(&shown.artifact, &shown.receipt),
-            format!("shown src.tar.gz (v1 · 1 files · {})", kind::human(shown.artifact.bytes))
+            format!(
+                "shown src.tar.gz (v1 · 1 files · {})",
+                kind::human(shown.artifact.bytes)
+            )
         );
         let listing = archive::read_listing(&shown.artifact.path).await.unwrap();
         assert_eq!(listing.entries[0].path, "src/main.rs");
@@ -1962,7 +1987,10 @@ mod tests {
         assert_eq!(std::fs::read(&src).unwrap(), br#"{"library_hash":"h1"}"#);
         assert_eq!(blobs(&s.dir).len(), 2);
         assert_eq!(s.record("c2").await.unwrap().session, s2);
-        assert_eq!(s.record("nope").await.unwrap_err(), "nope: no such artifact");
+        assert_eq!(
+            s.record("nope").await.unwrap_err(),
+            "nope: no such artifact"
+        );
 
         // A record is immutable: the exact same commit is idempotent, any
         // other content/session under a recorded call_id is refused.
@@ -2576,11 +2604,19 @@ mod tests {
         assert!(stores.state_for(root).is_err());
         assert_eq!(stores.all().len(), 1);
         // A straggler holding the old handle writes nothing.
-        assert!(state.commit(app(child, "c2", "root = B\n", None)).await.is_err());
+        assert!(
+            state
+                .commit(app(child, "c2", "root = B\n", None))
+                .await
+                .is_err()
+        );
         assert!(!artifacts.exists());
         // Closing again is clean; an unrelated id routes durable.
         stores.close_tree(&[root]).await.unwrap();
-        assert!(Arc::ptr_eq(&stores.state_for(SessionId::new()).unwrap(), &durable));
+        assert!(Arc::ptr_eq(
+            &stores.state_for(SessionId::new()).unwrap(),
+            &durable
+        ));
     }
 
     /// A writer admitted before the close finishes first (the close waits on
@@ -2606,7 +2642,10 @@ mod tests {
             async move { stores.close_tree(&[root]).await }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!closing.is_finished(), "close must wait for the admitted writer");
+        assert!(
+            !closing.is_finished(),
+            "close must wait for the admitted writer"
+        );
         assert!(artifacts.exists());
         // Reaches the gate after the close began: refused, nothing written.
         let late = tokio::spawn({

@@ -34,3 +34,18 @@ export function diagramTokens(): DiagramTokens {
     font: v('--font-sans', 'ui-sans-serif, system-ui, sans-serif'),
   }
 }
+
+/**
+ * The light palette (72 §3: print exports are light whatever the app shows). Read by lifting `.dark` off the root for
+ * one synchronous style resolution — no paint happens in between, so nothing flashes.
+ */
+export function lightTokens(): DiagramTokens {
+  const root = document.documentElement
+  if (!root.classList.contains('dark')) return diagramTokens()
+  root.classList.remove('dark')
+  try {
+    return diagramTokens()
+  } finally {
+    root.classList.add('dark')
+  }
+}

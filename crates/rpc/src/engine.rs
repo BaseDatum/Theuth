@@ -299,7 +299,10 @@ mod tests {
                     "engine already running (pid {}, tui, since ",
                     std::process::id()
                 )));
-                assert!(r.to_string().contains("ws://127.0.0.1:1) — run `t` to attach"));
+                assert!(
+                    r.to_string()
+                        .contains("ws://127.0.0.1:1) — run `t` to attach")
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -328,7 +331,11 @@ mod tests {
         let found = discover(&d).unwrap();
         assert_eq!(found.record, lease.record);
         assert!(found.url.is_none());
-        assert!(found.to_string().contains("no socket yet) — retry in a moment"));
+        assert!(
+            found
+                .to_string()
+                .contains("no socket yet) — retry in a moment")
+        );
     }
 
     /// 63 §6.4: an implicit engine learns its ephemeral port after `acquire`;
@@ -342,7 +349,10 @@ mod tests {
         set_listen("127.0.0.1:49731".into());
         let r = read(&d).unwrap();
         assert_eq!(r.listen.as_deref(), Some("127.0.0.1:49731"));
-        assert_eq!(serde_json::from_slice::<Record>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
+        assert_eq!(
+            serde_json::from_slice::<Record>(&serde_json::to_vec(&r).unwrap()).unwrap(),
+            r
+        );
         release();
         assert!(!d.join("engine.json").exists());
     }

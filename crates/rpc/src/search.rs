@@ -16,12 +16,12 @@ use ::search::{Coverage, PageState, SearchCategory, SearchNotice, SearchPage, Te
 use agent::search::SearchHit;
 use artifact::search::ArtifactSearchHit;
 use document::search::NoteSearchHit;
-use meeting::search::MeetingSearchHit;
 use futures::future::BoxFuture;
 use kameo::actor::{Actor, ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
 use kameo::reply::Reply;
 use knowledge::search::{ConceptSearchHit, HistorySearchHit};
+use meeting::search::MeetingSearchHit;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1172,8 +1172,16 @@ mod tests {
         assert_eq!(cats, SearchCategory::ALL.to_vec(), "{resp:?}");
         assert_eq!(resp.groups[4].state(), PageState::Ready, "{resp:?}");
         assert_eq!(resp.groups[5].state(), PageState::Unavailable, "{resp:?}");
-        assert!(out.content.contains("## Notes — ready, 0 hits"), "{}", out.content);
-        assert!(out.content.contains("## Meetings — unavailable"), "{}", out.content);
+        assert!(
+            out.content.contains("## Notes — ready, 0 hits"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("## Meetings — unavailable"),
+            "{}",
+            out.content
+        );
 
         // Blank query: no groups, no work — also for the missing agent owner.
         for args in [

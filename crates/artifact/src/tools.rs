@@ -9,7 +9,7 @@ use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::pdf::Source;
 use crate::store::Stores;
-use crate::{Artifact, Kind, kind};
+use crate::{Artifact, ExportDoc, ExportFormat, Kind, kind};
 
 /// Arguments of `show`. Exactly one of `path` / `content`; `content` requires `name`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -143,24 +143,45 @@ impl Tool for ReadTool {
                 "artifact {call_id} not found (deleted or from another data dir)"
             )));
         };
-        let siblings = state.list(Some(art.session), false).await.unwrap_or_default();
+        let siblings = state
+            .list(Some(art.session), false)
+            .await
+            .unwrap_or_default();
         let same: Vec<&Artifact> = siblings.iter().filter(|s| s.name == art.name).collect();
         let versions = same.len().max(art.version as usize);
-        let latest = same.iter().max_by_key(|s| s.version).filter(|s| s.version > art.version);
-        let doc = if art.kind == Kind::Markdown { bound_document(&art).await } else { None };
-        let shown = header(&art, versions, latest.map(|l| l.call_id.as_str()), session_title(art.session).await.as_deref(), doc.as_deref());
+        let latest = same
+            .iter()
+            .max_by_key(|s| s.version)
+            .filter(|s| s.version > art.version);
+        let doc = if art.kind == Kind::Markdown {
+            bound_document(&art).await
+        } else {
+            None
+        };
+        let shown = header(
+            &art,
+            versions,
+            latest.map(|l| l.call_id.as_str()),
+            session_title(art.session).await.as_deref(),
+            doc.as_deref(),
+        );
 
         let bytes = match tokio::fs::read(&art.path).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ToolOutput::err(format!("[artifact_read {shown}]: blob missing")));
+                return Ok(ToolOutput::err(format!(
+                    "[artifact_read {shown}]: blob missing"
+                )));
             }
             Err(e) => anyhow::bail!("{}: {e}", art.path.display()),
         };
         match art.kind {
             Kind::Image => Ok(ToolOutput {
                 files: vec![art.path.clone()],
-                ..ToolOutput::ok(format!("[artifact_read {shown}: image, {}]", kind::human(art.bytes)))
+                ..ToolOutput::ok(format!(
+                    "[artifact_read {shown}: image, {}]",
+                    kind::human(art.bytes)
+                ))
             }),
             Kind::Archive => {
                 let listing = match crate::archive::read_listing(&art.path).await {
@@ -171,7 +192,11 @@ impl Tool for ReadTool {
                     "[artifact_read {shown}: archive, {} entries, {} unpacked{}]\n",
                     listing.total_entries,
                     kind::human(listing.total_size),
-                    if listing.truncated { ", listing truncated" } else { "" }
+                    if listing.truncated {
+                        ", listing truncated"
+                    } else {
+                        ""
+                    }
                 );
                 for e in &listing.entries {
                     s.push_str(&e.path);
@@ -206,7 +231,14 @@ impl Tool for ReadTool {
                     numbers: true,
                     outline: false,
                 };
-                Ok(ToolOutput::ok(tools::fs::paginate("artifact_read", &shown, note.as_deref(), &text, &args, Vec::new())?))
+                Ok(ToolOutput::ok(tools::fs::paginate(
+                    "artifact_read",
+                    &shown,
+                    note.as_deref(),
+                    &text,
+                    &args,
+                    Vec::new(),
+                )?))
             }
         }
     }
@@ -214,9 +246,19 @@ impl Tool for ReadTool {
 
 /// `"<title>" (<name> v<N> of <M>, <kind>, <bytes>, shown <date> in session "<title>")`,
 /// plus `; latest is <call_id>` and `; editable as document <id> (doc_read)` when they apply.
-fn header(a: &Artifact, versions: usize, latest: Option<&str>, session: Option<&str>, doc: Option<&str>) -> String {
+fn header(
+    a: &Artifact,
+    versions: usize,
+    latest: Option<&str>,
+    session: Option<&str>,
+    doc: Option<&str>,
+) -> String {
     let date = chrono::DateTime::from_timestamp(a.created_at, 0)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .unwrap_or_default();
     let mut s = format!(
         "{:?} ({} v{} of {versions}, {}, {}",
@@ -261,7 +303,126 @@ async fn bound_document(a: &Artifact) -> Option<String> {
 
 /// The owning session's title, when the agent supervisor runs and lists it.
 async fn session_title(session: runtime::SessionId) -> Option<String> {
-    let agents = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()?;
+    let agents = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()?;
     let rows: Vec<agent::SessionSummary> = agents.ask(agent::ListSessions).await.ok()?;
-    rows.into_iter().find(|r| r.id == session).map(|r| r.title).filter(|t| !t.trim().is_empty())
+    rows.into_iter()
+        .find(|r| r.id == session)
+        .map(|r| r.title)
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// Arguments of `doc_export` (72 §3).
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DocExportArgs {
+    /// Document id (from `doc_create` / `doc_read`).
+    pub doc: String,
+    /// `markdown` or `pdf` (default).
+    #[serde(default)]
+    pub format: Option<ExportFormat>,
+    /// Absolute path under the user's home to write; omitted = an artifact card in this chat.
+    #[serde(default)]
+    pub dest: Option<PathBuf>,
+}
+
+/// `doc_export`: a note or board as a `.md` or `.pdf` file — a card in the chat, or a file at `dest`.
+/// Lives here rather than with the other `doc_*` tools because `document` cannot depend on this crate.
+pub struct DocExportTool {
+    /// The durable store (exports are copies of persistent documents).
+    pub state: Arc<crate::store::State>,
+}
+
+#[async_trait::async_trait]
+impl Tool for DocExportTool {
+    const NAME: &'static str = "doc_export";
+    const RISK: Risk = Risk::Mutating;
+    const RETURNS: &'static str = "dict";
+    type Args = DocExportArgs;
+
+    fn description(&self) -> String {
+        "Export a note or board (`doc` from doc_create / doc_read) as a file: `pdf` (default; A4, \
+         diagrams as text, excerpts as numbered code) or `markdown`. Without `dest` the file becomes an \
+         artifact card in this chat; with `dest` (absolute, under the user's home) it is written there. \
+         Returns {path | artifact_id, call_id, pages, warnings}."
+            .into()
+    }
+
+    async fn call(&self, a: DocExportArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let Some(doc) = document::DocId::parse(&a.doc) else {
+            return Ok(ToolOutput::err(format!(
+                "doc_export: `{}` is not a document id",
+                a.doc
+            )));
+        };
+        let Some(docs) = document::Handle::lookup() else {
+            return Ok(ToolOutput::err("doc_export: documents are disabled"));
+        };
+        let format = a.format.unwrap_or(ExportFormat::Pdf);
+        if let Some(dest) = &a.dest {
+            let home = dirs::home_dir().unwrap_or_default();
+            if !dest.is_absolute()
+                || !dest.starts_with(&home)
+                || dest
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Ok(ToolOutput::err(format!(
+                    "doc_export: dest must be an absolute path under {}",
+                    home.display()
+                )));
+            }
+        }
+        let by = document::Principal::Agent {
+            session: cx.session.0,
+        };
+        let meta = docs
+            .actor()
+            .ask(document::MetaOf {
+                doc: doc.clone(),
+                by,
+            })
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let markdown = docs
+            .actor()
+            .ask(document::Markdown {
+                doc,
+                blocks: None,
+                annotate: format == ExportFormat::Pdf,
+            })
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let r = self
+            .state
+            .export_doc(ExportDoc {
+                title: meta.title,
+                format,
+                markdown,
+                dest: a.dest,
+                assets: Vec::new(),
+                record: Some((cx.session, cx.call_id)),
+            })
+            .await;
+        Ok(match r {
+            Ok(r) => {
+                let mut text = match (&r.path, &r.call_id) {
+                    (Some(p), _) => format!("wrote {}", p.display()),
+                    (None, Some(c)) => format!("exported as artifact {c}"),
+                    _ => "exported".to_owned(),
+                };
+                if let Some(p) = r.pages {
+                    text.push_str(&format!(" ({p} pages)"));
+                }
+                for w in &r.warnings {
+                    text.push_str(&format!("\nwarning: {w}"));
+                }
+                ToolOutput {
+                    structured: serde_json::to_value(&r).ok(),
+                    ..ToolOutput::ok(text)
+                }
+            }
+            Err(e) => ToolOutput::err(format!("doc_export: {e}")),
+        })
+    }
 }

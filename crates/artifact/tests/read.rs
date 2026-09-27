@@ -39,7 +39,13 @@ fn args(call_id: &str) -> ReadArgs {
     }
 }
 
-async fn show(state: &State, session: SessionId, call: &str, name: &str, text: &str) -> artifact::Artifact {
+async fn show(
+    state: &State,
+    session: SessionId,
+    call: &str,
+    name: &str,
+    text: &str,
+) -> artifact::Artifact {
     state
         .show(
             session,
@@ -80,12 +86,29 @@ async fn text_pages_with_ranges_and_names_the_newer_version() {
         first.starts_with("[artifact_read \"notes.txt\" (notes.txt v1 of 2, text, "),
         "{first}"
     );
-    assert!(first.contains(&format!("; latest is {}", v2.call_id)), "{first}");
+    assert!(
+        first.contains(&format!("; latest is {}", v2.call_id)),
+        "{first}"
+    );
     assert!(first.contains("; showing 2 ranges, 4 lines]"), "{first}");
-    assert!(out.content.contains("@@ lines 2–3 @@\n 2\tline 2\n 3\tline 3"), "{}", out.content);
+    assert!(
+        out.content
+            .contains("@@ lines 2–3 @@\n 2\tline 2\n 3\tline 3"),
+        "{}",
+        out.content
+    );
     assert!(out.content.contains("@@ lines 29–30 @@"), "{}", out.content);
 
-    let out = tool.call(ReadArgs { tail: Some(1), ..args("c2") }, cx()).await.unwrap();
+    let out = tool
+        .call(
+            ReadArgs {
+                tail: Some(1),
+                ..args("c2")
+            },
+            cx(),
+        )
+        .await
+        .unwrap();
     let first = out.content.lines().next().unwrap();
     assert!(first.contains("v2 of 2, text,"), "{first}");
     assert!(!first.contains("latest is"), "{first}");
@@ -96,15 +119,30 @@ async fn text_pages_with_ranges_and_names_the_newer_version() {
 async fn pdf_is_rendered_as_markdown() {
     let (state, tool, _d) = open().await;
     let s = SessionId::new();
-    let a = show(&state, s, "c1", "report.pdf", "# Quarterly\n\nrevenue grew twelve percent\n").await;
+    let a = show(
+        &state,
+        s,
+        "c1",
+        "report.pdf",
+        "# Quarterly\n\nrevenue grew twelve percent\n",
+    )
+    .await;
     assert_eq!(a.kind, Kind::Pdf);
     let out = tool.call(args("c1"), cx()).await.unwrap();
     assert!(!out.is_error, "{}", out.content);
     let first = out.content.lines().next().unwrap();
     assert!(first.contains(", pdf, "), "{first}");
     assert!(first.contains(" pages, shown "), "{first}");
-    assert!(out.content.contains("rendered as Markdown"), "{}", out.content);
-    assert!(out.content.contains("revenue grew twelve percent"), "{}", out.content);
+    assert!(
+        out.content.contains("rendered as Markdown"),
+        "{}",
+        out.content
+    );
+    assert!(
+        out.content.contains("revenue grew twelve percent"),
+        "{}",
+        out.content
+    );
     assert!(!out.content.contains("%PDF"), "{}", out.content);
 }
 
@@ -113,7 +151,11 @@ async fn image_comes_back_as_a_picture() {
     let (state, tool, d) = open().await;
     let s = SessionId::new();
     let png = d.path().join("chart.png");
-    std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/pdf/chart.png"), &png).unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/pdf/chart.png"),
+        &png,
+    )
+    .unwrap();
     let a = state
         .show(
             s,
@@ -130,8 +172,18 @@ async fn image_comes_back_as_a_picture() {
     let out = tool.call(args("c1"), cx()).await.unwrap();
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(out.files, vec![a.path.clone()]);
-    assert!(out.content.starts_with("[artifact_read \"chart.png\" (chart.png v1 of 1, image, "), "{}", out.content);
-    assert!(out.content.ends_with(&format!(": image, {}]", artifact::kind::human(a.bytes))), "{}", out.content);
+    assert!(
+        out.content
+            .starts_with("[artifact_read \"chart.png\" (chart.png v1 of 1, image, "),
+        "{}",
+        out.content
+    );
+    assert!(
+        out.content
+            .ends_with(&format!(": image, {}]", artifact::kind::human(a.bytes))),
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]
@@ -141,7 +193,8 @@ async fn archive_lists_its_members() {
     let zip_path = d.path().join("src.zip");
     {
         let mut w = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         w.add_directory("src/", opts).unwrap();
         w.start_file("src/main.rs", opts).unwrap();
         w.write_all(b"fn main() {}").unwrap();
@@ -168,7 +221,12 @@ async fn archive_lists_its_members() {
     let first = lines.next().unwrap();
     assert!(first.contains(": archive, 3 entries, "), "{first}");
     let rest: Vec<&str> = lines.collect();
-    assert_eq!(rest, ["src/", "src/main.rs\t12 B", "README.md\t4 B"], "{}", out.content);
+    assert_eq!(
+        rest,
+        ["src/", "src/main.rs\t12 B", "README.md\t4 B"],
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]
@@ -192,8 +250,17 @@ async fn app_returns_its_source() {
     assert_eq!(a.kind, Kind::App);
     let out = tool.call(args("c1"), cx()).await.unwrap();
     assert!(!out.is_error, "{}", out.content);
-    assert!(out.content.starts_with("[artifact_read \"Panel\" (panel.openui v1 of 1, app, "), "{}", out.content);
-    assert!(out.content.ends_with("1\troot = TextContent(\"hi\")"), "{}", out.content);
+    assert!(
+        out.content
+            .starts_with("[artifact_read \"Panel\" (panel.openui v1 of 1, app, "),
+        "{}",
+        out.content
+    );
+    assert!(
+        out.content.ends_with("1\troot = TextContent(\"hi\")"),
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]
@@ -201,14 +268,21 @@ async fn missing_call_id_and_missing_blob_are_named() {
     let (state, tool, _d) = open().await;
     let out = tool.call(args("nope"), cx()).await.unwrap();
     assert!(out.is_error);
-    assert_eq!(out.content, "artifact nope not found (deleted or from another data dir)");
+    assert_eq!(
+        out.content,
+        "artifact nope not found (deleted or from another data dir)"
+    );
 
     let a = show(&state, SessionId::new(), "c1", "a.txt", "x\n").await;
     std::fs::remove_file(&a.path).unwrap();
     let out = tool.call(args("c1"), cx()).await.unwrap();
     assert!(out.is_error);
     assert!(out.content.ends_with("]: blob missing"), "{}", out.content);
-    assert!(out.content.contains("(a.txt v1 of 1, text,"), "{}", out.content);
+    assert!(
+        out.content.contains("(a.txt v1 of 1, text,"),
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]
@@ -225,7 +299,12 @@ async fn markdown_names_its_bound_document() {
     let store = document::store::Store::open(d.path()).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let h = document::helper::Helper::new(bin, tx, rt.shutdown.clone());
-    let actor = DocumentActor::spawn(DocumentActor::new(store, h, document::DocumentsConfig::default(), rt));
+    let actor = DocumentActor::spawn(DocumentActor::new(
+        store,
+        h,
+        document::DocumentsConfig::default(),
+        rt,
+    ));
     actor.register(document::DOCUMENT_ACTOR).unwrap();
     let a2 = actor.clone();
     tokio::spawn(async move {
@@ -234,7 +313,14 @@ async fn markdown_names_its_bound_document() {
         }
     });
     let s = SessionId::new();
-    show(&state, s, "c1", "report.md", "# Report\n\nfirst paragraph\n").await;
+    show(
+        &state,
+        s,
+        "c1",
+        "report.md",
+        "# Report\n\nfirst paragraph\n",
+    )
+    .await;
     let doc = actor
         .ask(document::Lookup {
             binding: document::Binding::Artifact {
@@ -248,6 +334,9 @@ async fn markdown_names_its_bound_document() {
     let out = tool.call(args("c1"), cx()).await.unwrap();
     assert!(!out.is_error, "{}", out.content);
     let first = out.content.lines().next().unwrap();
-    assert!(first.contains(&format!("; editable as document {doc} (doc_read))")), "{first}");
+    assert!(
+        first.contains(&format!("; editable as document {doc} (doc_read))")),
+        "{first}"
+    );
     let _ = actor.stop_gracefully().await;
 }

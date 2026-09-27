@@ -87,10 +87,14 @@ pub struct ByName<'a>(pub &'a [PathBuf]);
 
 impl Serialize for ByName<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(self.0.iter().map(|f| match artifact::mesh::attachment_name(f) {
-            Some(name) => Path::new("attachments").join(name),
-            None => f.clone(),
-        }))
+        s.collect_seq(
+            self.0
+                .iter()
+                .map(|f| match artifact::mesh::attachment_name(f) {
+                    Some(name) => Path::new("attachments").join(name),
+                    None => f.clone(),
+                }),
+        )
     }
 }
 
@@ -102,7 +106,11 @@ fn marker(f: &Path) -> Option<&str> {
 /// The owner side of [`ByName`]: each `attachments/<name>` marker in `files`
 /// becomes this engine's `<data_dir>/attachments/<name>`, fetched from the
 /// forwarder (first) or any peer when not already here. Other entries pass.
-pub async fn resolve_files(ext: &Extensions, data_dir: &Path, files: Vec<PathBuf>) -> RpcResult<Vec<PathBuf>> {
+pub async fn resolve_files(
+    ext: &Extensions,
+    data_dir: &Path,
+    files: Vec<PathBuf>,
+) -> RpcResult<Vec<PathBuf>> {
     if !files.iter().any(|f| marker(f).is_some()) {
         return Ok(files);
     }
@@ -111,7 +119,9 @@ pub async fn resolve_files(ext: &Extensions, data_dir: &Path, files: Vec<PathBuf
         None => None,
     };
     let Some(t) = transport else {
-        return Err(crate::api::failed("attachments: unavailable: no peer has it"));
+        return Err(crate::api::failed(
+            "attachments: unavailable: no peer has it",
+        ));
     };
     resolve_files_via(ext, t.as_ref(), data_dir, files).await
 }
@@ -138,7 +148,9 @@ pub async fn resolve_files_via(
 /// sessions plugin is running: the first peer to ask for its files.
 pub async fn owner_peer(session: SessionId) -> Option<PeerId> {
     sessionsync::actor()?;
-    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await.ok()?;
+    let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore)
+        .await
+        .ok()?;
     let (owner, _) = store.owner(session).await.ok().flatten()?;
     (!owner.is_empty() && owner != store.engine()).then_some(PeerId(owner))
 }
@@ -155,7 +167,11 @@ pub async fn classify(store: &Store, session: SessionId) -> anyhow::Result<Route
         return Ok(Route::Here);
     }
     let desk = row.agent.is_some() || row.desk.is_some();
-    Ok(if desk { Route::Forward(PeerId(row.owner)) } else { Route::Take })
+    Ok(if desk {
+        Route::Forward(PeerId(row.owner))
+    } else {
+        Route::Take
+    })
 }
 
 /// The front door for one call. `Ok(None)`: proceed locally (the owner is
@@ -177,7 +193,10 @@ pub async fn route<T: DeserializeOwned>(
         return Ok(None);
     };
     let store = crate::api::ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-    let owner = match classify(&store, session).await.map_err(|e| internal(format!("{e:#}")))? {
+    let owner = match classify(&store, session)
+        .await
+        .map_err(|e| internal(format!("{e:#}")))?
+    {
         Route::Here => return Ok(None),
         Route::Take => {
             let taken = sessions
@@ -189,7 +208,12 @@ pub async fn route<T: DeserializeOwned>(
             return match taken {
                 Ok(_) => Ok(None),
                 Err(kameo::error::SendError::HandlerError(why)) => {
-                    let (owner, _) = store.owner(session).await.ok().flatten().unwrap_or_default();
+                    let (owner, _) = store
+                        .owner(session)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
                     Err(unreachable(owner, &why).await)
                 }
                 Err(e) => Err(internal(e.to_string())),
@@ -226,7 +250,9 @@ pub async fn to_peer<T: DeserializeOwned>(
     };
     let params = serde_json::value::to_raw_value(&params).map_err(|e| internal(e.to_string()))?;
     match forward(transport.as_ref(), peer, method, &params).await {
-        Ok(raw) => serde_json::from_str(raw.get()).map(Some).map_err(|e| internal(e.to_string())),
+        Ok(raw) => serde_json::from_str(raw.get())
+            .map(Some)
+            .map_err(|e| internal(e.to_string())),
         Err(Err(e)) => Err(e),
         Err(Ok(why)) => Err(unreachable(peer.0.clone(), &why).await),
     }
@@ -243,12 +269,18 @@ pub async fn forward(
     params: &RawValue,
 ) -> Result<Box<RawValue>, Result<String, ErrorObjectOwned>> {
     let exchange = async {
-        let stream = transport.open(owner, ALPN_RPC).await.map_err(|e| format!("{e:#}"))?;
+        let stream = transport
+            .open(owner, ALPN_RPC)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let (read, mut write) = tokio::io::split(stream);
         let req = Request::borrowed(method, Some(params), Id::Number(1));
         let mut line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
         line.push('\n');
-        write.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+        write
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         write.flush().await.map_err(|e| e.to_string())?;
         let mut reply = String::new();
         BufReader::with_capacity(64 * 1024, read)
@@ -266,7 +298,8 @@ pub async fn forward(
         Ok(Err(why)) => return Err(Ok(why)),
         Err(_) => return Err(Ok(format!("no answer within {}s", TIMEOUT.as_secs()))),
     };
-    let rp: Response<&RawValue> = serde_json::from_str(reply.trim_end()).map_err(|e| Ok(format!("malformed reply: {e}")))?;
+    let rp: Response<&RawValue> =
+        serde_json::from_str(reply.trim_end()).map_err(|e| Ok(format!("malformed reply: {e}")))?;
     match rp.payload {
         ResponsePayload::Success(v) => Ok(<RawValue as ToOwned>::to_owned(*v)),
         ResponsePayload::Error(e) => Err(Err(e.into_owned())),
@@ -302,10 +335,16 @@ pub async fn serve(rt: Runtime, transport: Arc<dyn Transport>, mut methods: json
 }
 
 /// One accepted stream: request line in, response line out.
-async fn answer(stream: Box<dyn replica::ByteStream>, methods: &jsonrpsee::Methods) -> anyhow::Result<()> {
+async fn answer(
+    stream: Box<dyn replica::ByteStream>,
+    methods: &jsonrpsee::Methods,
+) -> anyhow::Result<()> {
     let (read, mut write) = tokio::io::split(stream);
     let mut line = String::new();
-    BufReader::with_capacity(64 * 1024, read).take(MAX_LINE as u64).read_line(&mut line).await?;
+    BufReader::with_capacity(64 * 1024, read)
+        .take(MAX_LINE as u64)
+        .read_line(&mut line)
+        .await?;
     anyhow::ensure!(!line.trim().is_empty(), "empty request");
     let (rp, _) = methods.raw_json_request(line.trim_end(), 1).await?;
     let mut out = rp.get().to_owned();
@@ -323,7 +362,12 @@ async fn unreachable(owner: String, why: &str) -> ErrorObjectOwned {
             .ask(mesh::Status)
             .await
             .ok()
-            .and_then(|s| s.peers.into_iter().find(|p| p.id.0 == owner).map(|p| p.last_seen_ms))
+            .and_then(|s| {
+                s.peers
+                    .into_iter()
+                    .find(|p| p.id.0 == owner)
+                    .map(|p| p.last_seen_ms)
+            })
             .filter(|&ms| ms > 0),
         _ => None,
     };
@@ -336,7 +380,11 @@ async fn unreachable(owner: String, why: &str) -> ErrorObjectOwned {
 }
 
 fn internal(msg: String) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(jsonrpsee::types::error::INTERNAL_ERROR_CODE, msg, None::<()>)
+    ErrorObjectOwned::owned(
+        jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+        msg,
+        None::<()>,
+    )
 }
 
 #[cfg(test)]
@@ -375,18 +423,34 @@ mod tests {
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.inboxes.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.inboxes
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
 
         async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             let (mine, theirs) = tokio::io::duplex(1 << 20);
-            let to = self.inboxes.lock().get(peer).cloned().ok_or_else(|| anyhow::anyhow!("no such peer"))?;
-            to.send((self.me.clone(), Box::new(theirs))).map_err(|_| anyhow::anyhow!("peer gone"))?;
+            let to = self
+                .inboxes
+                .lock()
+                .get(peer)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            to.send((self.me.clone(), Box::new(theirs)))
+                .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
         }
 
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
-            self.inbox.lock().await.recv().await.ok_or_else(|| anyhow::anyhow!("closed"))
+            self.inbox
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("closed"))
         }
 
         fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
@@ -407,7 +471,11 @@ mod tests {
 
     /// A fake owner: one `send_input` method that resolves `files` like the
     /// real one and records what reached it.
-    fn fake_owner(seen: mpsc::UnboundedSender<Seen>, t: Arc<Loop>, data_dir: PathBuf) -> jsonrpsee::Methods {
+    fn fake_owner(
+        seen: mpsc::UnboundedSender<Seen>,
+        t: Arc<Loop>,
+        data_dir: PathBuf,
+    ) -> jsonrpsee::Methods {
         let mut m = jsonrpsee::RpcModule::new(Owner { seen, t, data_dir });
         m.register_async_method("send_input", |params, o, ext| async move {
             let mut seq = params.sequence();
@@ -420,7 +488,11 @@ mod tests {
         })
         .unwrap();
         m.register_method("rename_session", |_, _, _| -> RpcResult<()> {
-            Err(ErrorObjectOwned::owned(-32000, "no such session", None::<()>))
+            Err(ErrorObjectOwned::owned(
+                -32000,
+                "no such session",
+                None::<()>,
+            ))
         })
         .unwrap();
         m.into()
@@ -431,16 +503,29 @@ mod tests {
         let (a, b) = pair();
         let (seen_tx, mut seen) = mpsc::unbounded_channel();
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx, b.clone(), std::env::temp_dir())));
+        tokio::spawn(serve(
+            rt,
+            b.clone(),
+            fake_owner(seen_tx, b.clone(), std::env::temp_dir()),
+        ));
         let params = serde_json::value::to_raw_value(&(Some("s-1"), "hello")).unwrap();
-        let reply = forward(a.as_ref(), &b.me, "send_input", &params).await.unwrap();
+        let reply = forward(a.as_ref(), &b.me, "send_input", &params)
+            .await
+            .unwrap();
         assert_eq!(reply.get(), "\"s-1\"");
         let (text, files, ext) = seen.recv().await.unwrap();
         assert_eq!(text, "hello");
         assert!(files.is_empty());
         let ext = ext.unwrap();
-        assert_eq!(ext.get::<Forwarded>().unwrap().0, a.me, "owner dispatch carries the one-hop marker naming the forwarder");
-        assert!(ext.get::<link::RpcPeer>().is_some(), "owner dispatch runs as the internal peer");
+        assert_eq!(
+            ext.get::<Forwarded>().unwrap().0,
+            a.me,
+            "owner dispatch carries the one-hop marker naming the forwarder"
+        );
+        assert!(
+            ext.get::<link::RpcPeer>().is_some(),
+            "owner dispatch runs as the internal peer"
+        );
     }
 
     /// A1: the forwarder sends `files` by name (`attachments/<sha16>.<ext>`);
@@ -455,28 +540,57 @@ mod tests {
         let p1 = agent::context::save_blob(&png, "png", a_dir.path()).unwrap();
         let p2 = agent::context::save_blob(&pdf, "pdf", a_dir.path()).unwrap();
         let rt_a = Runtime::new(figment::Figment::new(), a_dir.path().to_path_buf());
-        let state = artifact::State::open(a_dir.path(), rt_a.clone(), vec![]).await.unwrap();
-        tokio::spawn(artifact::mesh::serve_on(rt_a, a.clone(), Arc::new(artifact::Stores::new(Arc::new(state)))));
+        let state = artifact::State::open(a_dir.path(), rt_a.clone(), vec![])
+            .await
+            .unwrap();
+        tokio::spawn(artifact::mesh::serve_on(
+            rt_a,
+            a.clone(),
+            Arc::new(artifact::Stores::new(Arc::new(state))),
+        ));
         // The owner answers `theuth/rpc/1`.
         let (seen_tx, mut seen) = mpsc::unbounded_channel();
         let rt_b = Runtime::new(figment::Figment::new(), b_dir.path().to_path_buf());
-        tokio::spawn(serve(rt_b, b.clone(), fake_owner(seen_tx, b.clone(), b_dir.path().to_path_buf())));
+        tokio::spawn(serve(
+            rt_b,
+            b.clone(),
+            fake_owner(seen_tx, b.clone(), b_dir.path().to_path_buf()),
+        ));
 
         let files = vec![p1.clone(), p2.clone(), PathBuf::from("/elsewhere/x.png")];
         let wire = serde_json::to_value(ByName(&files)).unwrap();
-        let (n1, n2) = (p1.file_name().unwrap().to_str().unwrap(), p2.file_name().unwrap().to_str().unwrap());
+        let (n1, n2) = (
+            p1.file_name().unwrap().to_str().unwrap(),
+            p2.file_name().unwrap().to_str().unwrap(),
+        );
         assert_eq!(
             wire,
-            serde_json::json!([format!("attachments/{n1}"), format!("attachments/{n2}"), "/elsewhere/x.png"]),
+            serde_json::json!([
+                format!("attachments/{n1}"),
+                format!("attachments/{n2}"),
+                "/elsewhere/x.png"
+            ]),
             "store paths travel as names, anything else verbatim"
         );
-        let params = serde_json::value::to_raw_value(&(Some("s-1"), "look", ByName(&files[..2]), None::<()>)).unwrap();
-        let reply = forward(a.as_ref(), &b.me, "send_input", &params).await.unwrap();
+        let params = serde_json::value::to_raw_value(&(
+            Some("s-1"),
+            "look",
+            ByName(&files[..2]),
+            None::<()>,
+        ))
+        .unwrap();
+        let reply = forward(a.as_ref(), &b.me, "send_input", &params)
+            .await
+            .unwrap();
         assert_eq!(reply.get(), "\"s-1\"");
         let (text, resolved, _) = seen.recv().await.unwrap();
         assert_eq!(text, "look");
         let dir = artifact::mesh::attachments_dir(b_dir.path());
-        assert_eq!(resolved, vec![dir.join(n1), dir.join(n2)], "the owner's own attachments/ paths");
+        assert_eq!(
+            resolved,
+            vec![dir.join(n1), dir.join(n2)],
+            "the owner's own attachments/ paths"
+        );
         assert_eq!(std::fs::read(&resolved[0]).unwrap(), png);
         assert_eq!(std::fs::read(&resolved[1]).unwrap(), pdf);
     }
@@ -486,9 +600,16 @@ mod tests {
         let (a, b) = pair();
         let (seen_tx, _seen) = mpsc::unbounded_channel();
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
-        tokio::spawn(serve(rt, b.clone(), fake_owner(seen_tx, b.clone(), std::env::temp_dir())));
+        tokio::spawn(serve(
+            rt,
+            b.clone(),
+            fake_owner(seen_tx, b.clone(), std::env::temp_dir()),
+        ));
         let params = serde_json::value::to_raw_value(&("s-1", "t")).unwrap();
-        let e = forward(a.as_ref(), &b.me, "rename_session", &params).await.unwrap_err().unwrap_err();
+        let e = forward(a.as_ref(), &b.me, "rename_session", &params)
+            .await
+            .unwrap_err()
+            .unwrap_err();
         assert_eq!(e.code(), -32000);
         assert_eq!(e.message(), "no such session");
     }
@@ -502,7 +623,10 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let params = serde_json::value::to_raw_value(&("s-1",)).unwrap();
-        let why = forward(a.as_ref(), &PeerId("b".into()), "cancel", &params).await.unwrap_err().unwrap();
+        let why = forward(a.as_ref(), &PeerId("b".into()), "cancel", &params)
+            .await
+            .unwrap_err()
+            .unwrap();
         assert!(why.contains("no answer within 30s"), "{why}");
     }
 
@@ -517,31 +641,66 @@ mod tests {
             serde_json::json!({ "OwnerUnreachable": { "owner": "engine-a", "last_seen": null } }),
             "no mesh in a test: never seen"
         );
-        assert!(e.message().starts_with("owner engine-a unreachable"), "{}", e.message());
+        assert!(
+            e.message().starts_with("owner engine-a unreachable"),
+            "{}",
+            e.message()
+        );
     }
 
     #[tokio::test]
     async fn classify_user_vs_desk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite");
-        let (user, desk, roster, mine) = (SessionId::new(), SessionId::new(), SessionId::new(), SessionId::new());
+        let (user, desk, roster, mine) = (
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+            SessionId::new(),
+        );
         // Rows written by another engine ("them") ...
-        let theirs = Store::open(&path, Some(mesh::EngineId("them".into()))).await.unwrap();
-        theirs.create_session(user, "m", None, None, None).await.unwrap();
-        theirs.create_session(desk, "m", None, None, None).await.unwrap();
+        let theirs = Store::open(&path, Some(mesh::EngineId("them".into())))
+            .await
+            .unwrap();
+        theirs
+            .create_session(user, "m", None, None, None)
+            .await
+            .unwrap();
+        theirs
+            .create_session(desk, "m", None, None, None)
+            .await
+            .unwrap();
         theirs.set_acp(desk, "omp", None).await.unwrap();
         // ... a roster desk: the row's `desk` mark (roster::open_desk) ...
-        theirs.create_session(roster, "m", None, None, None).await.unwrap();
+        theirs
+            .create_session(roster, "m", None, None, None)
+            .await
+            .unwrap();
         theirs.set_desk(roster, Some("ops")).await.unwrap();
         theirs.close().await;
         // ... seen from this engine ("me"), which also has a session of its own.
-        let store = Store::open(&path, Some(mesh::EngineId("me".into()))).await.unwrap();
-        store.create_session(mine, "m", None, None, None).await.unwrap();
+        let store = Store::open(&path, Some(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        store
+            .create_session(mine, "m", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(classify(&store, mine).await.unwrap(), Route::Here);
-        assert_eq!(classify(&store, SessionId::new()).await.unwrap(), Route::Here, "unknown → local error path");
+        assert_eq!(
+            classify(&store, SessionId::new()).await.unwrap(),
+            Route::Here,
+            "unknown → local error path"
+        );
         assert_eq!(classify(&store, user).await.unwrap(), Route::Take);
-        assert_eq!(classify(&store, desk).await.unwrap(), Route::Forward(PeerId("them".into())));
-        assert_eq!(classify(&store, roster).await.unwrap(), Route::Forward(PeerId("them".into())));
+        assert_eq!(
+            classify(&store, desk).await.unwrap(),
+            Route::Forward(PeerId("them".into()))
+        );
+        assert_eq!(
+            classify(&store, roster).await.unwrap(),
+            Route::Forward(PeerId("them".into()))
+        );
         store.close().await;
     }
 
@@ -555,12 +714,17 @@ mod tests {
         use agent::{PeerEnvelope, PeerMessageState, PeerReceipt};
 
         let (a, b) = pair();
-        let (seen_tx, mut seen) = mpsc::unbounded_channel::<(SessionId, PeerEnvelope, Option<Extensions>)>();
+        let (seen_tx, mut seen) =
+            mpsc::unbounded_channel::<(SessionId, PeerEnvelope, Option<Extensions>)>();
         let mut m = jsonrpsee::RpcModule::new(seen_tx);
         m.register_async_method("peer_deliver", |params, seen, ext| async move {
             let (session, env): (SessionId, PeerEnvelope) = params.parse()?;
             if env.text == "no" {
-                return Err(ErrorObjectOwned::owned(-32000, "send_message: communication disabled: off", None::<()>));
+                return Err(ErrorObjectOwned::owned(
+                    -32000,
+                    "send_message: communication disabled: off",
+                    None::<()>,
+                ));
             }
             let receipt = PeerReceipt {
                 id: env.id,
@@ -588,7 +752,10 @@ mod tests {
             request_id: Some("r1".into()),
         };
         let receipt = pm::forward(a.as_ref(), &b.me, session, &env).await.unwrap();
-        assert_eq!((receipt.id, receipt.state, receipt.reply_to), (env.id, PeerMessageState::Accepted, env.reply_to));
+        assert_eq!(
+            (receipt.id, receipt.state, receipt.reply_to),
+            (env.id, PeerMessageState::Accepted, env.reply_to)
+        );
         assert_eq!(receipt.to, format!("session:{session}"));
         let (s, e, ext) = seen.recv().await.unwrap();
         assert_eq!((s, e), (session, env.clone()));
@@ -596,9 +763,20 @@ mod tests {
         assert_eq!(ext.get::<Forwarded>().unwrap().0, a.me);
         assert!(ext.get::<link::RpcPeer>().is_some());
 
-        let refused = pm::forward(a.as_ref(), &b.me, session, &PeerEnvelope { text: "no".into(), ..env })
-            .await
-            .unwrap_err();
-        assert_eq!(refused, Failure::Refused("send_message: communication disabled: off".into()));
+        let refused = pm::forward(
+            a.as_ref(),
+            &b.me,
+            session,
+            &PeerEnvelope {
+                text: "no".into(),
+                ..env
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused,
+            Failure::Refused("send_message: communication disabled: off".into())
+        );
     }
 }

@@ -18,7 +18,11 @@ use crate::meta::Binding;
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Watch `<data_dir>/knowledge` recursively until `cancel` fires.
-pub fn start(data_dir: &Path, actor: ActorRef<DocumentActor>, cancel: CancellationToken) -> anyhow::Result<()> {
+pub fn start(
+    data_dir: &Path,
+    actor: ActorRef<DocumentActor>,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
     let root = data_dir.join("knowledge");
     std::fs::create_dir_all(&root)?;
     // FSEvents reports resolved paths (`/tmp` → `/private/tmp`); the prefix must match them.

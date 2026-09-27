@@ -61,7 +61,11 @@ async fn show_twice_then_edit_is_three_versions_of_one_document() {
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
     let docs = start_documents(&rt, &bin).await;
-    let state = Arc::new(State::open(dir.path(), rt.clone(), Vec::new()).await.unwrap());
+    let state = Arc::new(
+        State::open(dir.path(), rt.clone(), Vec::new())
+            .await
+            .unwrap(),
+    );
     let stores = Arc::new(Stores::new(state.clone()));
     let actor = ArtifactActor::spawn_with_mailbox(
         ArtifactActor::new(stores),
@@ -124,7 +128,11 @@ async fn show_twice_then_edit_is_three_versions_of_one_document() {
     assert_eq!(versions(&state, session).await.len(), 2);
     // A File import never exports: no edit version sneaks in behind the shows.
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(versions(&state, session).await.len(), 2, "a show is not an edit");
+    assert_eq!(
+        versions(&state, session).await.len(),
+        2,
+        "a show is not an edit"
+    );
 
     // The user types a paragraph (an owner update) → export → version 3 from the artifact store.
     docs.ask(Edit {

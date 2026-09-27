@@ -66,7 +66,11 @@ impl DocError {
 impl fmt::Display for DocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotHub { hub } => write!(f, "{NOT_HUB}{}", hub.as_ref().map(|h| h.0.as_str()).unwrap_or("")),
+            Self::NotHub { hub } => write!(
+                f,
+                "{NOT_HUB}{}",
+                hub.as_ref().map(|h| h.0.as_str()).unwrap_or("")
+            ),
             Self::Other(s) => f.write_str(s),
         }
     }
@@ -180,7 +184,11 @@ impl DocumentActor {
                 self.legs.clear();
                 let open: Vec<_> = self.open.keys().cloned().collect();
                 for id in &open {
-                    if self.open.get(id).is_some_and(|o| o.export_due.is_some() && !o.exporting) {
+                    if self
+                        .open
+                        .get(id)
+                        .is_some_and(|o| o.export_due.is_some() && !o.exporting)
+                    {
                         self.export(id, None);
                     }
                 }
@@ -214,7 +222,11 @@ impl Message<SelfId> for DocumentActor {
 impl Message<mesh::MeshEvent> for DocumentActor {
     type Reply = ();
 
-    async fn handle(&mut self, m: mesh::MeshEvent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: mesh::MeshEvent,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let mesh::MeshEvent::Lease(lease) = m
             && self.hub.observe(&lease).is_some()
         {
@@ -249,9 +261,15 @@ mod tests {
         };
         assert_eq!(e.to_string(), "NotHub:abc");
         assert_eq!(DocError::parse(&e.to_string()), e);
-        assert_eq!(DocError::from(String::from("NotHub:")), DocError::NotHub { hub: None });
+        assert_eq!(
+            DocError::from(String::from("NotHub:")),
+            DocError::NotHub { hub: None }
+        );
         assert_eq!(DocError::from("nope"), DocError::Other("nope".into()));
-        assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"NotHub":{"hub":"abc"}}"#);
+        assert_eq!(
+            serde_json::to_string(&e).unwrap(),
+            r#"{"NotHub":{"hub":"abc"}}"#
+        );
         assert_eq!(
             serde_json::to_string(&DocError::NotHub { hub: None }).unwrap(),
             r#"{"NotHub":{"hub":null}}"#

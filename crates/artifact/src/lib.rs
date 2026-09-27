@@ -13,6 +13,7 @@
 //! - events: [`ArtifactShown`]
 
 pub mod archive;
+pub mod export;
 pub mod kind;
 pub mod mesh;
 pub mod pdf;
@@ -30,6 +31,7 @@ use kameo::reply::DelegatedReply;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
+pub use export::{EXPORT_SESSION, ExportAsset, ExportDoc, ExportFormat, ExportResult};
 pub use pdf::{Diag, Source};
 pub use store::{
     Claim, CommitError, Invocation, InvocationStatus, MAX_INVOCATION_RESULT, MAX_LIST_INVOCATIONS,
@@ -425,6 +427,18 @@ impl Message<Export> for ArtifactActor {
     }
 }
 
+impl Message<ExportDoc> for ArtifactActor {
+    type Reply = DelegatedReply<Result<ExportResult, String>>;
+
+    async fn handle(&mut self, m: ExportDoc, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let state = self.stores.durable().clone();
+        tokio::spawn(async move { tx.send(state.export_doc(m).await) });
+        reply
+    }
+}
+
 impl Message<Commit> for ArtifactActor {
     type Reply = DelegatedReply<Result<Artifact, CommitError>>;
 
@@ -786,7 +800,14 @@ impl runtime::Plugin for ArtifactPlugin {
                 .await
             {
                 let _ = reg
-                    .ask(::tools::RegisterTool(Arc::new(tools::ReadTool { stores: stores.clone() })))
+                    .ask(::tools::RegisterTool(Arc::new(tools::ReadTool {
+                        stores: stores.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tools::DocExportTool {
+                        state: stores.durable().clone(),
+                    })))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tools::ShowTool { stores })))

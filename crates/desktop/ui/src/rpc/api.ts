@@ -9,6 +9,9 @@ import type { Binding } from '@/rpc/bindings/Binding'
 import type { BroadcastReceipt } from '@/rpc/bindings/BroadcastReceipt'
 import type { BroadcastRequest } from '@/rpc/bindings/BroadcastRequest'
 import type { DocId } from '@/rpc/bindings/DocId'
+import type { ExportAsset } from '@/rpc/bindings/ExportAsset'
+import type { ExportFormat } from '@/rpc/bindings/ExportFormat'
+import type { ExportResult } from '@/rpc/bindings/ExportResult'
 import type { DocKind } from '@/rpc/bindings/DocKind'
 import type { DocOpen } from '@/rpc/bindings/DocOpen'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
@@ -246,6 +249,8 @@ export interface Api {
   doc_ensure(binding: Binding, markdown: string): Promise<DocId>
   /** Lossy markdown of the whole document — what its export writes. */
   doc_markdown(doc: DocId): Promise<string>
+  /** 72: the note as `markdown` (its lossy markdown) or `pdf` (Typst; `assets` = client-rendered diagram svgs by block id). `dest` under the home directory is written owner-only; `null` stores an artifact. */
+  doc_export(doc: DocId, format: ExportFormat, dest: string | null, assets: ExportAsset[]): Promise<ExportResult>
   /** Metadata, the Yjs state missing from `sv` (base64 state vector; `null` = everything) as ≤ 48 KiB base64 chunks, and current awareness. */
   doc_open(doc: DocId, sv: string | null): Promise<DocOpen>
   /** One base64 Yjs v1 update from this connection; `DocTooLarge` past the cap. */
@@ -747,6 +752,7 @@ export const METHODS = [
   'doc_create',
   'doc_delete',
   'doc_ensure',
+  'doc_export',
   'doc_join',
   'doc_link_create',
   'doc_link_revoke',
