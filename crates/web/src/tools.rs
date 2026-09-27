@@ -306,12 +306,17 @@ fn skipped(url: &str, why: impl Into<String>) -> ReadPage {
 }
 
 /// Which rows to read, in rank order: the first `read` hits whose title,
-/// snippet and URL share at least two query tokens (one for a one-token
-/// query); the rest are `not-relevant` (decoys, homonyms), non-http URLs are
-/// `error: …`, and rows past the slots are `budget`. Returns one
-/// `Ok(url)` (read it) or `Err(page)` (already explained) per row.
+/// snippet and URL share enough query tokens - half of them, at most two, at
+/// least one; a row two or more providers agree on needs only one, since a
+/// decoy comes from one flagged engine (measured 2026-09-27: "Anthropic
+/// announcement" rows say "Anthropic", never "announcement"; "PrintToPdf"
+/// pages say "Print to PDF", so tokens also match the text with spaces
+/// removed; the Bun releases page says neither "latest" nor "version"). The
+/// rest are `not-relevant` (decoys, homonyms), non-http URLs are `error: …`,
+/// and rows past the slots are `budget`. Returns one `Ok(url)` (read it) or
+/// `Err(page)` (already explained) per row.
 fn plan_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<Result<String, ReadPage>> {
-    let need = terms.len().min(2);
+    let need_alone = terms.len().div_ceil(2).clamp(1, 2);
     let mut slots = read;
     results
         .iter()
@@ -323,7 +328,13 @@ fn plan_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<Re
                 return Err(skipped(&r.url, "budget"));
             }
             let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
-            if terms.iter().filter(|t| hay.contains(t.as_str())).count() < need {
+            let squashed: String = hay.chars().filter(|c| !c.is_whitespace()).collect();
+            let matched = terms
+                .iter()
+                .filter(|t| hay.contains(t.as_str()) || squashed.contains(t.as_str()))
+                .count();
+            let need = if r.providers.len() >= 2 { 1 } else { need_alone };
+            if matched < need {
                 return Err(skipped(&r.url, "not-relevant"));
             }
             slots -= 1;
@@ -632,6 +643,27 @@ mod tests {
                 "read https://github.com/oven-sh/bun/releases",
                 "not-relevant https://en.wikipedia.org/wiki/Android_17",
             ]
+        );
+    }
+
+    #[test]
+    fn two_token_queries_need_one_match_and_camel_case_matches_spaced_text() {
+        let results = [
+            hit(1, "Introducing Claude Opus 5.5 - Anthropic", "https://www.anthropic.com/claude-opus-5-5", "5 days ago"),
+            hit(2, "How to print to PDF - Microsoft Q&A", "https://learn.microsoft.com/en-us/answers/q/1", "Microsoft Print to PDF"),
+            hit(3, "Unrelated", "https://c.example/", "nothing"),
+        ];
+        assert_eq!(plan(&results, "Anthropic announcement", 8)[0], "read https://www.anthropic.com/claude-opus-5-5");
+        assert_eq!(plan(&results, "PrintToPdf", 8)[1], "read https://learn.microsoft.com/en-us/answers/q/1");
+        assert_eq!(plan(&results, "PrintToPdf", 8)[2], "not-relevant https://c.example/");
+        let agreed = RankedResult {
+            providers: vec!["a".into(), "b".into()],
+            ..hit(1, "Releases: oven-sh/bun - GitHub", "https://github.com/oven-sh/bun/releases", "")
+        };
+        assert_eq!(plan(&[agreed.clone()], "bun latest version", 8)[0], "read https://github.com/oven-sh/bun/releases");
+        assert_eq!(
+            plan(&[RankedResult { providers: vec!["a".into()], ..agreed }], "bun latest version", 8)[0],
+            "not-relevant https://github.com/oven-sh/bun/releases"
         );
     }
 

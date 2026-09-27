@@ -99,6 +99,7 @@ import type { ProviderProbe } from '@/rpc/bindings/ProviderProbe'
 import type { ProviderStatus } from '@/rpc/bindings/ProviderStatus'
 import type { SearchSettings } from '@/rpc/bindings/SearchSettings'
 import type { SearchTestResult } from '@/rpc/bindings/SearchTestResult'
+import type { Recency } from '@/rpc/bindings/Recency'
 import type { SecretInfo } from '@/rpc/bindings/SecretInfo'
 import type { SecretsList } from '@/rpc/bindings/SecretsList'
 import type { SessionId } from '@/rpc/bindings/SessionId'
@@ -529,7 +530,7 @@ export interface Api {
   /** Per-provider health from the last calls, registration order. */
   search_status(): Promise<ProviderStatus[]>
   /** Run the whole `search_web` tool once; the model-facing text plus the JSON. */
-  search_test(query: string): Promise<SearchTestResult>
+  search_test(query: string, site: string | null, recent: Recency | null): Promise<SearchTestResult>
   /** 57 §3.4 / §7.1: the decision-oracle switch of the families under `prefix` (`meeting`, `browser`): `mode` as configured, `effective` with a `reason` when forced off, `enabled` (the plugin), `installed` (the checkpoint). */
   decision_mode(prefix: string): Promise<ModeInfo>
   /** Persist `decision.families.<prefix>: { mode, train, share }` and apply it live; effective from the next ask. `browser` off ↔ on also changes whether `browser_run` is registered — that part takes a restart. */

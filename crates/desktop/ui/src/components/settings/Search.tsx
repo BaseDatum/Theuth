@@ -337,7 +337,7 @@ function Status() {
   const status = useQuery({ queryKey: queryKeys.searchStatus, queryFn: () => api.search_status(), refetchInterval: 15_000 })
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<SearchTestResult | undefined>()
-  const run = useAction((q: string) => api.search_test(q), { keys: [queryKeys.searchStatus], onSuccess: (r) => setResult(r) })
+  const run = useAction((q: string) => api.search_test(q, null, null), { keys: [queryKeys.searchStatus], onSuccess: (r) => setResult(r) })
   return (
     <Section title="Status">
       {status.isError && <Empty>{errorText(status.error)}</Empty>}

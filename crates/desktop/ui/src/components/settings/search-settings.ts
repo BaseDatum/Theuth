@@ -78,9 +78,10 @@ export function msOf(seconds: string, fallback: number): number {
 /** Human summary of one provider's registration state for the card footer. */
 export function providerState(p: ProviderSettings): string {
   if (!p.enabled) return 'Disabled'
+  if (p.registered) return 'Registered'
   if (p.secret && !p.secret_set) return `Key "${p.secret}" not set`
   if (p.name === 'searxng' && !(p.base_url ?? '').trim()) return 'No instance URL'
-  return p.registered ? 'Registered' : 'Not registered yet (save to apply)'
+  return 'Not registered yet (save to apply)'
 }
 
 export type { ProviderSettings, SearchDefaults, SearchSettings }

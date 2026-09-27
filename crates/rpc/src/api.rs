@@ -1198,7 +1198,7 @@ pub trait Api {
     /// Run the whole `search_web` tool once (fan-out, rank, read) from Settings
     /// › Search "Run a test search"; returns the model-facing text and the JSON.
     #[method(name = "search_test")]
-    async fn search_test(&self, query: String) -> RpcResult<web::settings::SearchTestResult>;
+    async fn search_test(&self, query: String, site: Option<String>, recent: Option<web::Recency>) -> RpcResult<web::settings::SearchTestResult>;
     /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
@@ -3925,13 +3925,18 @@ impl ApiServer for Server {
         ask::<web::WebActor, _>(web::WEB_ACTOR, web::settings::Status).await
     }
 
-    async fn search_test(&self, query: String) -> RpcResult<web::settings::SearchTestResult> {
+    async fn search_test(
+        &self,
+        query: String,
+        site: Option<String>,
+        recent: Option<web::Recency>,
+    ) -> RpcResult<web::settings::SearchTestResult> {
         let out = ask::<ToolRegistry, _>(
             tools::REGISTRY_ACTOR,
             tools::Invoke(tools::ToolCall {
                 id: format!("search-test-{}", uuid::Uuid::now_v7()),
                 name: "search_web".into(),
-                args: serde_json::json!({ "query": query }),
+                args: serde_json::json!({ "query": query, "site": site, "recent": recent }),
                 session: SessionId::new(),
                 quiet: true,
             }),
