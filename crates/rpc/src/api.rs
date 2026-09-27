@@ -91,6 +91,7 @@ use voice::{SpeechId, VoiceStatus};
 
 use crate::bridge::Event;
 use crate::forward;
+use crate::pathac::PathCompletion;
 use crate::search::SearchResponse;
 
 /// `ask` failed (handler error, actor stopped mid-call).
@@ -169,6 +170,13 @@ pub trait Api {
         delivery: Option<Delivery>,
         id: Option<InputId>,
     ) -> RpcResult<SessionId>;
+    /// PATH-AC: candidates for the path token under `cursor` in `input`,
+    /// listed by the engine running `session` (`None`: this engine, its
+    /// cwd). Relative paths resolve against the session's cwd; `~`/`$VAR`
+    /// expand for the lookup only. Empty when nothing triggers, the
+    /// directory is missing or the owner is unreachable: never an error.
+    #[method(name = "path_complete", with_extensions)]
+    async fn path_complete(&self, session: Option<SessionId>, input: String, cursor: usize) -> RpcResult<PathCompletion>;
     /// Queue a user message after the current tool batch (or, with
     /// `delivery: next_turn`, after the turn); returns the id (minted when
     /// omitted). `files` are image files (17 §2).
@@ -2486,6 +2494,32 @@ impl ApiServer for Server {
     async fn get_todos(&self, ext: &Extensions, session: SessionId) -> RpcResult<TodoSnapshot> {
         self.authorize(ext, session).await?;
         ask::<Agents, _>(agent::AGENT_ACTOR, GetTodos { session }).await
+    }
+
+    async fn path_complete(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+        input: String,
+        cursor: usize,
+    ) -> RpcResult<PathCompletion> {
+        peer(ext)?;
+        self.authorize_opt(ext, session).await?;
+        let mut cwd = None;
+        if let Some(session) = session {
+            if let Some(owner) = forward::owner_peer(session).await {
+                let forwarded: RpcResult<Option<PathCompletion>> =
+                    forward::to_peer(ext, &owner, "path_complete", (Some(session), &input, cursor)).await;
+                return Ok(forwarded.ok().flatten().unwrap_or_default());
+            }
+            let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
+            cwd = store.session(session).await.ok().flatten().and_then(|s| s.cwd).map(PathBuf::from);
+        }
+        let cwd = cwd
+            .or_else(|| std::env::current_dir().ok())
+            .or_else(std::env::home_dir)
+            .unwrap_or_default();
+        Ok(crate::pathac::complete(&cwd, &input, cursor).await)
     }
 
     async fn session_cost(&self, ext: &Extensions, session: SessionId) -> RpcResult<SessionCost> {

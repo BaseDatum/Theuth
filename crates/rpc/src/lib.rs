@@ -28,6 +28,7 @@ pub mod bridge;
 pub mod client;
 pub mod engine;
 pub mod forward;
+pub mod pathac;
 pub mod search;
 
 #[cfg(test)]
