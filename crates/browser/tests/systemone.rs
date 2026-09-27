@@ -1,16 +1,18 @@
 //! 57 §4.1 parity: `browser::systemone::render` must produce, byte for byte, what
 //! `cklxx/laya-browser`'s systemone server feeds laya for their recorded Wikipedia step
-//! (`code/sample_request.json`, jev-ultrafast's request after the format-v2 transform).
+//! (`code/sample_request.json`, jev-ultrafast's request after the format transform: its page
+//! text is already 1200 chars and no label exceeds 50 chars, so the v2 rendering recorded on
+//! 2026-09-21 is also the v3 rendering v17s reads).
 //!
 //! `fixtures/laya-browser-sample_request.rendered.json` is upstream code's own rendering of that
 //! request — `laya.common.serialize_state` / `render_options` and `Agent._to_internal`'s
 //! `json.dumps(instructions)`, run in Python on 2026-09-21 — so the comparison is against the
 //! bytes their tokenizer saw, not against our reading of their code.
 //!
-//! The model-gated test loads the v10 checkpoint from `~/.theuth/models/decision-browser/`
-//! (`$DECISION_BROWSER_MODEL_DIR` overrides) through the real engine (`AskMany`, the browser
-//! families' gates) and expects the file's `expected`: `operation = TYPE_TEXT`, and the type
-//! target `[2] Search Wikipedia (searchbox)`.
+//! The model-gated test loads the browser checkpoint from `~/.theuth/models/decision-browser/`
+//! (`$DECISION_BROWSER_MODEL_DIR` overrides; v10 or v17s) through the real engine (`AskMany`,
+//! the browser families' gates) and expects the file's `expected`: `operation = TYPE_TEXT`, and
+//! the type target `[2] Search Wikipedia (searchbox)`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -135,7 +137,7 @@ fn model_dir() -> Option<PathBuf> {
 }
 
 #[tokio::test]
-async fn v10_answers_type_text_into_the_search_box() {
+async fn browser_checkpoint_answers_type_text_into_the_search_box() {
     let Some(dir) = model_dir() else { return };
     let (goal, obs) = wikipedia();
     let tmp = tempfile::tempdir().unwrap();

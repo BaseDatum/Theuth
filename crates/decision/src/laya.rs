@@ -15,7 +15,7 @@ use tokenizers::Tokenizer;
 
 use crate::question::Question;
 
-/// `[CLS]` in laya's tokenizer.
+/// `[CLS]` in ModernBERT's tokenizer (the root laya checkpoint); [`Special::MODERNBERT`].
 pub const CLS: i64 = 50281;
 /// `[SEP]`.
 pub const SEP: i64 = 50282;
@@ -23,10 +23,57 @@ pub const SEP: i64 = 50282;
 pub const PAD: i64 = 50283;
 /// `[MASK]`: one per option; the head scores its hidden state.
 pub const MASK: i64 = 50284;
-/// The mask token's text, replaced by a space wherever user text contains it.
-pub const MASK_TEXT: &str = "[MASK]";
 /// Tokens per option before the head budget shrinks them.
 pub const OPTION_CAP: usize = 48;
+
+/// The special tokens laya's `predict` reads off the checkpoint's tokenizer
+/// (`tok.cls_token_id` …): ModernBERT's `[CLS] [SEP] [PAD] [MASK]` for the root checkpoint,
+/// Gemma's `<bos> <eos> <pad> <mask>` for the mmBERT-base fine-tunes (cklxx/laya-browser v17s,
+/// whose `tokenizer_config.json` maps cls→`<bos>`, sep→`<eos>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Special {
+    /// Sequence start.
+    pub cls: i64,
+    /// Segment separator.
+    pub sep: i64,
+    /// Batch padding.
+    pub pad: i64,
+    /// Option marker.
+    pub mask: i64,
+    /// The mask token's text, replaced by a space wherever user text contains it.
+    pub mask_text: &'static str,
+}
+
+impl Special {
+    /// ModernBERT-large's ids (the root `decision/` checkpoint).
+    pub const MODERNBERT: Special = Special {
+        cls: CLS,
+        sep: SEP,
+        pad: PAD,
+        mask: MASK,
+        mask_text: "[MASK]",
+    };
+
+    /// Read the ids off `tok`: the BERT names, else the Gemma names; neither → error naming both.
+    pub fn from_tokenizer(tok: &Tokenizer) -> Result<Special, String> {
+        for (cls, sep, pad, mask) in [
+            ("[CLS]", "[SEP]", "[PAD]", "[MASK]"),
+            ("<bos>", "<eos>", "<pad>", "<mask>"),
+        ] {
+            let id = |t: &str| tok.token_to_id(t).map(i64::from);
+            if let (Some(c), Some(s), Some(p), Some(m)) = (id(cls), id(sep), id(pad), id(mask)) {
+                return Ok(Special {
+                    cls: c,
+                    sep: s,
+                    pad: p,
+                    mask: m,
+                    mask_text: mask,
+                });
+            }
+        }
+        Err("tokenizer has neither [CLS]/[SEP]/[PAD]/[MASK] nor <bos>/<eos>/<pad>/<mask>".into())
+    }
+}
 
 /// Question type, the model's `qtype` input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +106,7 @@ impl QType {
     }
 }
 
-/// The fields of `rl_agent_config.json` inference needs.
+/// The fields of `rl_agent_config.json` inference needs, plus the tokenizer's special ids.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct LayaConfig {
@@ -74,6 +121,9 @@ pub struct LayaConfig {
     pub temperature: [f32; 3],
     /// Per-cardinality temperature, keyed like `choice:3-5`; wins over `temperature`.
     pub temperature_by_options: BTreeMap<String, f32>,
+    /// Not in the json: [`Loaded::open`](crate::candle::Loaded::open) sets it from the tokenizer.
+    #[serde(skip)]
+    pub special: Special,
 }
 
 impl Default for LayaConfig {
@@ -84,6 +134,7 @@ impl Default for LayaConfig {
             head_max_len_train: None,
             temperature: [1.0; 3],
             temperature_by_options: BTreeMap::new(),
+            special: Special::MODERNBERT,
         }
     }
 }
@@ -166,9 +217,9 @@ pub fn labels(q: &Question) -> Vec<String> {
     }
 }
 
-fn encode(tok: &Tokenizer, text: &str) -> Result<Vec<i64>, String> {
+fn encode(tok: &Tokenizer, text: &str, mask_text: &str) -> Result<Vec<i64>, String> {
     let enc = tok
-        .encode(text.replace(MASK_TEXT, " "), false)
+        .encode(text.replace(mask_text, " "), false)
         .map_err(|e| format!("tokenize: {e}"))?;
     Ok(enc.get_ids().iter().map(|&i| i64::from(i)).collect())
 }
@@ -189,12 +240,13 @@ pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result
         } => (instructions.as_str(), state.as_str()),
         Question::Bool { statement, state } => (statement.as_str(), state.as_str()),
     };
-    let mut head = encode(tok, &format!("{} question: {instructions}", qtype.name()))?;
+    let sp = &cfg.special;
+    let mut head = encode(tok, &format!("{} question: {instructions}", qtype.name()), sp.mask_text)?;
     let mut opts: Vec<Vec<i64>> = Vec::new();
     for o in render_options(q) {
-        let mut ids = encode(tok, &format!(" {o}"))?;
+        let mut ids = encode(tok, &format!(" {o}"), sp.mask_text)?;
         ids.truncate(OPTION_CAP);
-        ids.insert(0, MASK);
+        ids.insert(0, sp.mask);
         opts.push(ids);
     }
     let used = |opts: &[Vec<i64>]| opts.iter().map(Vec::len).sum::<usize>();
@@ -210,21 +262,21 @@ pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result
     }
     head.truncate(budget.max(8) as usize);
     let mut ids = Vec::with_capacity(cfg.max_len);
-    ids.push(CLS);
+    ids.push(sp.cls);
     ids.extend(head);
-    ids.push(SEP);
+    ids.push(sp.sep);
     let mut markers = Vec::with_capacity(opts.len());
     for o in &opts {
         markers.push(ids.len() as i64);
         ids.extend(o);
     }
-    ids.push(SEP);
+    ids.push(sp.sep);
     let room = cfg.max_len.saturating_sub(ids.len() + 1);
-    let mut st = encode(tok, state)?;
+    let mut st = encode(tok, state, sp.mask_text)?;
     let state_cut = st.len() > room;
     st.truncate(room);
     ids.extend(st);
-    ids.push(SEP);
+    ids.push(sp.sep);
     ids.truncate(cfg.max_len);
     let k = markers.len();
     markers.retain(|&m| (m as usize) < cfg.max_len);
@@ -282,7 +334,7 @@ pub struct RowOut {
     pub confidence: f32,
 }
 
-/// Rows padded to a common `[B, S]` / `[B, K]` (`collate_items`): `[PAD]` with attention 0,
+/// Rows padded to a common `[B, S]` / `[B, K]` (`collate_items`): `pad` with attention 0,
 /// marker position 0 with mask false.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Batch {
@@ -306,7 +358,7 @@ pub struct Batch {
 
 /// Pad `rows` into one batch; `floor = Some((S, K))` pads at least that far (the model wants
 /// K ≥ 2 marker slots for its top-2 act features). Rows never shrink to the floor.
-pub fn collate(rows: &[Sequence], floor: Option<(usize, usize)>) -> Batch {
+pub fn collate(rows: &[Sequence], floor: Option<(usize, usize)>, pad: i64) -> Batch {
     let b = rows.len();
     let (bs, bk) = floor.unwrap_or((0, 0));
     let s = rows
@@ -334,7 +386,7 @@ pub fn collate(rows: &[Sequence], floor: Option<(usize, usize)>) -> Batch {
     for r in rows {
         let n = r.input_ids.len();
         batch.input_ids.extend_from_slice(&r.input_ids);
-        batch.input_ids.resize(batch.input_ids.len() + s - n, PAD);
+        batch.input_ids.resize(batch.input_ids.len() + s - n, pad);
         batch.attention_mask.extend(std::iter::repeat_n(1, n));
         batch.attention_mask.extend(std::iter::repeat_n(0, s - n));
         let m = r.marker_pos.len();
@@ -598,11 +650,61 @@ mod tests {
         assert_eq!(s.marker_pos.len(), 2);
         assert!(s.input_ids.iter().all(|&i| i != PAD));
         assert!(!s.truncated);
-        // The tokenizer's own special ids are the constants we hardcode.
-        assert_eq!(tok.token_to_id("[CLS]"), Some(CLS as u32));
-        assert_eq!(tok.token_to_id("[SEP]"), Some(SEP as u32));
-        assert_eq!(tok.token_to_id("[PAD]"), Some(PAD as u32));
-        assert_eq!(tok.token_to_id("[MASK]"), Some(MASK as u32));
+        // The tokenizer's own special ids are the ModernBERT constants.
+        assert_eq!(Special::from_tokenizer(&tok).unwrap(), Special::MODERNBERT);
+    }
+
+    /// A Gemma-style tokenizer (mmBERT-base, cklxx/laya-browser v17s): `<pad>=0 <eos>=1 <bos>=2
+    /// <unk>=3 <mask>=4`, then words.
+    fn gemma() -> Tokenizer {
+        let specials = ["<pad>", "<eos>", "<bos>", "<unk>", "<mask>"];
+        let mut vocab = serde_json::Map::new();
+        for (i, t) in specials.iter().enumerate() {
+            vocab.insert((*t).into(), i.into());
+        }
+        for w in "choice question : deploy blocked e0 e1 button".split_whitespace() {
+            let n = vocab.len();
+            vocab.entry(w).or_insert(n.into());
+        }
+        let added: Vec<_> = specials
+            .iter()
+            .enumerate()
+            .map(|(i, t)| serde_json::json!({"id": i, "content": t, "special": true, "single_word": false, "lstrip": false, "rstrip": false, "normalized": false}))
+            .collect();
+        let spec = serde_json::json!({
+            "version": "1.0",
+            "added_tokens": added,
+            "pre_tokenizer": { "type": "Whitespace" },
+            "model": { "type": "WordLevel", "vocab": vocab, "unk_token": "<unk>" },
+        });
+        Tokenizer::from_bytes(serde_json::to_vec(&spec).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn special_tokens_follow_the_tokenizer() {
+        let sp = Special::from_tokenizer(&gemma()).unwrap();
+        assert_eq!(
+            sp,
+            Special { cls: 2, sep: 1, pad: 0, mask: 4, mask_text: "<mask>" }
+        );
+        // The word-level test tokenizer has no special tokens at all.
+        assert!(Special::from_tokenizer(&tiny()).unwrap_err().contains("<bos>"));
+
+        let cfg = LayaConfig { special: sp, ..LayaConfig::default() };
+        let mut q = choice(2, "deploy blocked <mask> [MASK]");
+        if let Question::Choice { instructions, .. } = &mut q {
+            *instructions = "deploy <mask>".into();
+        }
+        let s = build_sequence(&gemma(), &q, &cfg).unwrap();
+        assert_eq!(s.input_ids[0], 2);
+        assert_eq!(*s.input_ids.last().unwrap(), 1);
+        // Exactly the two option markers: `<mask>` in user text was blanked, `[MASK]` is plain
+        // text for this tokenizer (unknown → 3).
+        assert_eq!(s.input_ids.iter().filter(|&&i| i == 4).count(), 2);
+        assert_eq!(s.marker_pos.len(), 2);
+        assert!(s.input_ids.contains(&3));
+        let b = collate(&[s.clone(), seq(vec![2, 1], vec![], 0)], None, cfg.special.pad);
+        assert_eq!(b.input_ids[s.input_ids.len()..s.input_ids.len() * 2][2..], vec![0; s.input_ids.len() - 2]);
     }
 
     fn seq(ids: Vec<i64>, markers: Vec<i64>, qtype: i64) -> Sequence {
@@ -633,7 +735,7 @@ mod tests {
                 1,
             ),
         ];
-        let b = collate(&rows, None);
+        let b = collate(&rows, None, PAD);
         assert_eq!((b.b, b.s, b.k), (3, 12, 3));
         assert_eq!(b.input_ids.len(), 36);
         assert_eq!(b.attention_mask.len(), 36);
@@ -651,7 +753,7 @@ mod tests {
         assert_eq!(&b.marker_pos[0..3], &[3, 5, 0]);
         assert_eq!(&b.marker_mask[6..9], &[true, true, true]);
         assert_eq!(b.qtype, vec![2, 0, 1]);
-        assert_eq!(collate(&[], None).b, 0);
+        assert_eq!(collate(&[], None, PAD).b, 0);
     }
 
     #[test]
@@ -664,7 +766,7 @@ mod tests {
             ),
             seq(vec![CLS, SEP, MASK, SEP], vec![2], 2),
         ];
-        let b = collate(&rows, Some((16, 4)));
+        let b = collate(&rows, Some((16, 4)), PAD);
         assert_eq!((b.b, b.s, b.k), (2, 16, 4));
         assert_eq!(b.input_ids.len(), 2 * 16);
         assert_eq!(b.marker_mask.len(), 2 * 4);
@@ -678,11 +780,11 @@ mod tests {
         assert_eq!(b.marker_mask[4..].iter().filter(|&&m| m).count(), 1);
         // A row longer than the floor is never cut.
         let long = seq(vec![7; 600], vec![1], 0);
-        assert_eq!(collate(&[long], Some((16, 4))).s, 600);
+        assert_eq!(collate(&[long], Some((16, 4)), PAD).s, 600);
         // The floor is a floor, not a fixed shape: the engine's `(0, 2)` leaves S alone and
         // only lifts a one-marker batch to two slots.
-        assert_eq!(collate(&rows, Some((4, 1))).s, 10);
-        let one = collate(&rows[1..], Some((0, 2)));
+        assert_eq!(collate(&rows, Some((4, 1)), PAD).s, 10);
+        let one = collate(&rows[1..], Some((0, 2)), PAD);
         assert_eq!((one.s, one.k), (4, 2));
         assert_eq!(one.marker_mask, [true, false]);
     }
