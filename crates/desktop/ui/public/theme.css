@@ -1,0 +1,6 @@
+/* `--bg-page` (src/styles.css) on <html> before the app stylesheet arrives, keyed on the class theme.js just set, so no
+   frame paints the webview's default white (DARK-FLASH). `:where` keeps the island's `html[data-island]` rule winning.
+   External, never an inline <style>: Tauri puts a nonce on every <style> in index.html and adds it to `style-src`, and a
+   nonce there makes browsers ignore `'unsafe-inline'` — which xterm's injected stylesheets need (PTY-COLOR). */
+html { background: #e8dcc8 }
+html:where(.dark) { background: #12100e }
