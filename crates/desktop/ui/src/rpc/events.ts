@@ -15,6 +15,7 @@ import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { NodeEvent } from '@/rpc/bindings/NodeEvent'
 import type { PeerDelivered } from '@/rpc/bindings/PeerDelivered'
+import type { PendingPrompts } from '@/rpc/bindings/PendingPrompts'
 import type { PeerMessageChanged } from '@/rpc/bindings/PeerMessageChanged'
 import type { ScheduleEvent } from '@/rpc/bindings/ScheduleEvent'
 import type { ActivityAppended } from '@/rpc/bindings/ActivityAppended'
@@ -56,6 +57,8 @@ export type WireEvent =
   | ApprovalResolved
   | AskRequested
   | AskResolved
+  /** First item of every `subscribe_events` stream: the engine's pending prompts, replacing the stores' (31 §7.3). */
+  | PendingPrompts
   | McpProgress
   | LoginFinished
   | JobEvent

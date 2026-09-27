@@ -36,8 +36,11 @@ export const ApprovalCard = memo(function ApprovalCard({
   const decide = async (decision: Decision) => {
     setBusy(true)
     try {
-      if (!(await api.resolve_approval(approval.id, decision)))
-        toast.error('approval was no longer pending')
+      if (!(await api.resolve_approval(approval.id, decision))) {
+        // Decided elsewhere and the `ApprovalResolved` was missed: the tool row carries the outcome.
+        useApprovals.getState().resolve(approval.id)
+        toast.error('the approval was already decided')
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {

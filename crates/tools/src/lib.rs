@@ -46,7 +46,9 @@ pub use activity::{
     Activity, ActivitySink, Admission, Admit, Kind, Notice, Operation, OperationId, Rejected,
     Settle, Tracked,
 };
-pub use approval::{Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Resolve};
+pub use approval::{
+    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, PendingApprovals, Resolve,
+};
 pub use ask::{
     Answer, AnswerAsk, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks, Question,
 };

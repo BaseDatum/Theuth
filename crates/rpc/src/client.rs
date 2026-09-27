@@ -229,8 +229,23 @@ pub async fn mirror(rt: &Runtime, client: &WsClient) -> anyhow::Result<()> {
 }
 
 /// Decode `v` as the first bus type it fits (tags are unique across the
-/// stream) and publish it; the most frequent types are tried first.
+/// stream) and publish it; the most frequent types are tried first. The
+/// `PendingPrompts` snapshot has no bus type: its items are published one by
+/// one, so in-process consumers (the TUI) see the pending cards as
+/// `*Requested` events.
 async fn publish(rt: &Runtime, v: &serde_json::Value) {
+    if let Ok(p) = <crate::api::PendingPrompts as serde::Deserialize>::deserialize(v) {
+        for a in p.approvals {
+            rt.publish(a).await;
+        }
+        for a in p.asks {
+            rt.publish(a).await;
+        }
+        for s in p.secrets {
+            rt.publish(s).await;
+        }
+        return;
+    }
     macro_rules! republish {
         ($($t:ty),* $(,)?) => {$(
             if let Ok(ev) = <$t as serde::Deserialize>::deserialize(v) {

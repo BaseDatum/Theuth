@@ -12,25 +12,36 @@ export type SecretRequested = Extract<SecretsEvent, { type: 'SecretRequested' }>
 /** A tool call waiting on the user: an approval, an `ask_user` or a `secret_request`. */
 export type Prompt = ApprovalRequested | AskRequested | SecretRequested
 
-/** Unanswered requests of one kind across every session, oldest first; `resolve` drops one (ours or another UI's). */
+/**
+ * Unanswered requests of one kind across every session, oldest first. `resolve` drops one (ours or
+ * another UI's) and remembers the id, so a `Requested` that arrives after its `Resolved` (reordered
+ * across a reconnect) is ignored. `replace` is the engine's `PendingPrompts` snapshot, sent first on
+ * every (re)subscribe: afterwards the set is exactly what the engine reports, nothing more.
+ */
 type PendingStore<R extends { id: I }, I> = {
   pending: R[]
+  resolved: Set<I>
   add(request: R): void
   resolve(id: I): void
+  replace(requests: R[]): void
 }
 
 const createPending = <R extends { id: I }, I>(): StoreApi<PendingStore<R, I>> =>
   createStore<PendingStore<R, I>>()((set) => ({
     pending: [],
+    resolved: new Set(),
     add: (request) =>
       set((s) =>
-        s.pending.some((p) => p.id === request.id) ? s : { pending: [...s.pending, request] },
+        s.resolved.has(request.id) || s.pending.some((p) => p.id === request.id)
+          ? s
+          : { pending: [...s.pending, request] },
       ),
     resolve: (id) =>
       set((s) => {
         const pending = s.pending.filter((p) => p.id !== id)
-        return pending.length === s.pending.length ? s : { pending }
+        return pending.length === s.pending.length ? s : { pending, resolved: new Set(s.resolved).add(id) }
       }),
+    replace: (requests) => set({ pending: requests, resolved: new Set() }),
   }))
 
 export type ApprovalsApi = StoreApi<PendingStore<ApprovalRequested, ApprovalId>>

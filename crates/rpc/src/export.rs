@@ -15,6 +15,7 @@ async fn export_bindings() {
     }
     export!(
         crate::api::Info,
+        crate::api::PendingPrompts,
         agent::AgentEvent,
         agent::SessionSummary,
         agent::ProjectStyle,

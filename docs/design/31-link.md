@@ -678,6 +678,13 @@ does today.
   bytes; on iOS the OS closes them in the background and they reconnect on
   foreground (`visibilitychange`).
 - `Info.name` from each harness refreshes the stored name after connect.
+- *ASK-SYNC addendum (2026-09-27).* Every `subscribe_events` stream — first
+  subscribe, relay reconnect, foreground re-issue — opens with a
+  `PendingPrompts` snapshot (approvals, asks, secret requests still pending
+  on the engine); the client `replace`s its three pending stores with it.
+  A `*Resolved` lost in the gap can therefore not leave a stale card, and a
+  `*Requested` lost in the gap still shows. Answering a prompt another
+  client already answered returns `false`; the card drops locally.
 
 ### 7.4 Per-harness state
 

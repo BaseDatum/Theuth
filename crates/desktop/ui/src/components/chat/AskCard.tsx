@@ -10,6 +10,7 @@ import * as speech from '@/lib/speech'
 import type { Answer } from '@/rpc/bindings/Answer'
 import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { Question } from '@/rpc/bindings/Question'
+import { useAsks } from '@/store/approvals'
 import { ActionButton } from './MessageAssistant'
 
 /** Draft answer per question: an option, typed text, an explicit skip, or nothing yet. */
@@ -148,8 +149,13 @@ export const AskCard = memo(function AskCard({ ask }: { ask: AskRequested }) {
   const send = async (answers: Answer[] | null) => {
     setBusy(true)
     try {
-      if (!(await api.answer_ask(ask.id, answers))) toast.error('the question was no longer pending')
-      else if (answers) setSent(true)
+      if (await api.answer_ask(ask.id, answers)) {
+        if (answers) setSent(true)
+      } else {
+        // Answered elsewhere and the `AskResolved` was missed: the tool row's result is the answered state.
+        useAsks.getState().resolve(ask.id)
+        toast.error('the question was already answered')
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
