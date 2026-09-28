@@ -16948,7 +16948,6 @@ dependencies = [
  "kameo",
  "mesh",
  "notify",
- "parking_lot",
  "platform",
  "replica",
  "runtime",

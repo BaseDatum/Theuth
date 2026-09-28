@@ -1407,10 +1407,13 @@ mod fire_tests {
 
     use super::*;
 
+    /// One `create_for_schedule` call: `(schedule, fire_ms, agent, prompt, project, cwd)`.
+    pub(super) type Call = (String, u64, String, String, Option<String>, Option<String>);
+
     /// Records every call; answers a fixed task id.
     #[derive(Default)]
     pub(super) struct Recorder {
-        pub(super) calls: Mutex<Vec<(String, u64, String, String, Option<String>, Option<String>)>>,
+        pub(super) calls: Mutex<Vec<Call>>,
         closed: Mutex<Vec<String>>,
     }
 
@@ -1543,23 +1546,23 @@ mod fire_tests {
 
 #[cfg(test)]
 mod hub_tests {
-    use parking_lot::Mutex;
+    use tokio::sync::Mutex;
 
     use super::fire_tests::actor;
     use super::*;
 
     /// The hub flag is process-global: these run one at a time and leave it true.
-    static HUB: Mutex<()> = Mutex::new(());
+    static HUB: Mutex<()> = Mutex::const_new(());
 
-    fn hub_lock() -> parking_lot::MutexGuard<'static, ()> {
-        HUB.lock()
+    async fn hub_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        HUB.lock().await
     }
 
     const DUE: &str = "---\nevery: 1h\nagent: ops\n---\ngo\n";
 
     #[tokio::test]
     async fn single_engine_default_is_hub() {
-        let _g = hub_lock();
+        let _g = hub_lock().await;
         assert!(mesh::is_hub());
         let dir = tempfile::tempdir().unwrap();
         let (mut s, rec) = actor(dir.path(), &[("n", DUE)]).await;
@@ -1570,7 +1573,7 @@ mod hub_tests {
 
     #[tokio::test]
     async fn non_hub_ticker_skips_and_does_not_advance_last() {
-        let _g = hub_lock();
+        let _g = hub_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let (mut s, rec) = actor(dir.path(), &[("n", DUE)]).await;
         mesh::set_hub(false);
@@ -1589,7 +1592,7 @@ mod hub_tests {
     /// `ListSchedules` recomputes a past `next` from the clause, and leaves `None` alone.
     #[tokio::test]
     async fn list_recomputes_a_stale_next_on_a_non_hub() {
-        let _g = hub_lock();
+        let _g = hub_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let cron = "---\ncron: 0 9 * * *\nagent: ops\n---\ngo\n";
         let (mut s, _rec) = actor(dir.path(), &[("c", cron), ("e", DUE), ("ended", cron)]).await;
@@ -1625,7 +1628,7 @@ mod hub_tests {
 
     #[tokio::test]
     async fn regaining_hub_applies_missed_policy() {
-        let _g = hub_lock();
+        let _g = hub_lock().await;
         let dir = tempfile::tempdir().unwrap();
         let (mut s, rec) = actor(
             dir.path(),
