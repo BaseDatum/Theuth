@@ -801,6 +801,181 @@ async fn affected_set_is_re_resolved() {
     );
 }
 
+/// `code_find` tiers (60 §8): exact → prefix → infix → text, each row
+/// saying which; `exact: true` keeps the first only; space-split infix;
+/// `moniker` on every tool's rows and accepted as `symbol`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn find_tiers_and_monikers() {
+    use codeindex::tools::{
+        CodeFindArgs, CodeFindTool, CodeMapArgs, CodeMapTool, CodeOutlineArgs, CodeOutlineTool,
+        CodeRefsArgs, CodeRefsTool, CodeSymbolArgs, CodeSymbolTool,
+    };
+    use tools::Tool;
+    let (data, ix, ri) = index_fixture("rust").await;
+    let root = Some(ri.root.clone());
+    let find = |name: &str, exact: bool| CodeFindArgs {
+        name: name.into(),
+        kind: None,
+        exact: Some(exact),
+        root: root.clone(),
+        budget: None,
+    };
+    let rows = |v: &serde_json::Value| -> Vec<(String, String, String)> {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["name"].as_str().unwrap().to_owned(),
+                    r["match"].as_str().unwrap().to_owned(),
+                    r["moniker"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let tier = |m: &str| ["exact", "prefix", "infix", "text"].iter().position(|t| *t == m).unwrap();
+
+    // Infix, case-insensitive: "gistry" is inside Registry only.
+    let v = CodeFindTool(ix.clone()).call(find("gistry", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert_eq!(
+        r,
+        [("Registry".to_owned(), "infix".to_owned(), "rust:crates/a/src/lib.rs#Registry(class)".to_owned())],
+        "{v}"
+    );
+    // Space-split: "open db" → open_db, as a prefix (`open%db%`).
+    let v = CodeFindTool(ix.clone()).call(find("open db", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert!(r.iter().any(|(n, m, _)| n == "open_db" && m == "prefix"), "{r:?}");
+    // Tiers in order: `new` is exact twice (Registry::new, Store::new); whatever follows is a later tier.
+    let v = CodeFindTool(ix.clone()).call(find("new", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert_eq!(r[0].1, "exact", "{r:?}");
+    assert_eq!(r[1].1, "exact", "{r:?}");
+    assert!(r.windows(2).all(|w| tier(&w[0].1) <= tier(&w[1].1)), "{r:?}");
+    let mut monikers: Vec<&str> = r.iter().filter(|x| x.1 == "exact").map(|x| x.2.as_str()).collect();
+    monikers.sort_unstable();
+    assert_eq!(
+        monikers,
+        ["rust:crates/a/src/lib.rs#Registry.new(method)", "rust:crates/a/src/store.rs#Store.new(method)"],
+        "impl methods hang off their type"
+    );
+    // exact: true keeps exact rows only.
+    let v = CodeFindTool(ix.clone()).call(find("new", true), cx(&data)).await.unwrap().structured.unwrap();
+    assert!(rows(&v).iter().all(|x| x.1 == "exact"), "{v}");
+    assert_eq!(rows(&v).len(), 2);
+    // A nested fn's moniker carries its module.
+    let v = CodeFindTool(ix.clone()).call(find("helper", true), cx(&data)).await.unwrap().structured.unwrap();
+    assert_eq!(rows(&v)[0].2, "rust:crates/a/src/lib.rs#inner.helper(function)");
+
+    // The moniker picks the definition in code_refs and code_symbol (two `new`s exist by name).
+    let m = "rust:crates/a/src/lib.rs#Registry.new(method)";
+    let out = CodeRefsTool(ix.clone())
+        .call(
+            CodeRefsArgs { symbol: m.into(), direction: None, kind: None, root: root.clone(), budget: None },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    assert_eq!(v["definition"]["moniker"], m, "{v}");
+    assert_eq!(v["definition"]["name"], "new");
+    let out = CodeSymbolTool(ix.clone())
+        .call(
+            CodeSymbolArgs {
+                symbol: m.into(),
+                sections: Some(vec!["definition".into()]),
+                root: root.clone(),
+                budget: None,
+            },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.structured.unwrap()["definition"]["moniker"], m);
+    // By name alone, `new` is ambiguous.
+    let out = CodeRefsTool(ix.clone())
+        .call(
+            CodeRefsArgs { symbol: "new".into(), direction: None, kind: None, root: root.clone(), budget: None },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(out.content.contains("has 2 definitions"), "{}", out.content);
+
+    // code_outline nodes carry it, nested ones too.
+    let out = CodeOutlineTool(ix.clone())
+        .call(CodeOutlineArgs { path: "crates/a/src/lib.rs".into(), root: root.clone(), budget: None }, cx(&data))
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    let reg = v["symbols"].as_array().unwrap().iter().find(|s| s["name"] == "Registry").unwrap();
+    assert_eq!(reg["moniker"], "rust:crates/a/src/lib.rs#Registry(class)");
+    assert!(
+        reg["children"].as_array().unwrap().iter().any(|c| c["moniker"] == "rust:crates/a/src/lib.rs#Registry.new(method)"),
+        "{reg}"
+    );
+    // code_map rows carry it.
+    let out = CodeMapTool(ix.clone())
+        .call(CodeMapArgs { focus: None, budget: None, paths_only: None, root: root.clone() }, cx(&data))
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    let rows = v["rows"].as_array().unwrap();
+    assert!(!rows.is_empty(), "{v}");
+    assert!(rows.iter().all(|r| r["moniker"].as_str().is_some_and(|m| m.starts_with("rust:"))), "{v}");
+}
+
+/// Monikers survive a reparse that only moves lines (60 §8): insert lines
+/// above a definition, reconcile, same moniker, new `line_start`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn monikers_are_stable_across_line_moves() {
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"fixture-moniker\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    let body = "pub struct Foo;\n\nimpl Foo {\n    pub fn render(&self) {}\n    pub fn render_all(&self) {}\n}\n\npub fn render() {}\n";
+    std::fs::write(d.join("src/lib.rs"), body).unwrap();
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ri = ix.open_root(&d).await.unwrap();
+    ix.reconcile(&ri, false).await.unwrap();
+    let snapshot = |ri: &RootIndex| {
+        let pool = ri.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, i64)>("SELECT moniker, line_start FROM symbols ORDER BY moniker")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let before = snapshot(&ri).await;
+    assert_eq!(
+        before.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(),
+        [
+            "rust:src/lib.rs#Foo(class)",
+            "rust:src/lib.rs#Foo.render(method)",
+            "rust:src/lib.rs#Foo.render_all(method)",
+            "rust:src/lib.rs#render(function)",
+        ]
+    );
+    std::fs::write(d.join("src/lib.rs"), format!("//! moved\n//! down\n//! three lines\n{body}")).unwrap();
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert_eq!(r.reparsed, 1, "{r:?}");
+    let after = snapshot(&ri).await;
+    for ((m0, l0), (m1, l1)) in before.iter().zip(&after) {
+        assert_eq!(m0, m1);
+        assert_eq!(l0 + 3, *l1, "{m0} moved by 3 lines");
+    }
+}
+
 /// 60 §16 rows 1–2 on this repository: ≥ 290 `.rs` files, `ToolRegistry` in
 /// `registry.rs` as `class`, `fs.rs` outline, one touched file → one reparse;
 /// imports `cargo` > 500 and `unresolved` < 5 % of non-external; refs by
@@ -1167,7 +1342,7 @@ async fn tools_envelope() {
     assert!(v["ambiguous"].as_i64().unwrap() > 0, "{v}");
     assert!(
         out.content
-            .contains("definitions; pass a symbol_id or path:line"),
+            .contains("definitions; pass a symbol_id, moniker or path:line"),
         "{}",
         out.content
     );
@@ -1657,6 +1832,11 @@ async fn impact_on_a_fixture_repository() {
     );
     let changed = v["changed"].as_array().unwrap();
     let util = changed.iter().find(|c| c["path"] == "src/util.rs").unwrap();
+    assert_eq!(
+        util["monikers"],
+        serde_json::json!(["rust:src/util.rs#helper(function)"]),
+        "{util}"
+    );
     let names: Vec<&str> = util["symbols_changed"]
         .as_array()
         .unwrap()
