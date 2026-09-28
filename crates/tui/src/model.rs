@@ -9787,7 +9787,7 @@ pub(crate) fn artifact_text(
         },
         Kind::Csv => match bytes
             .map_err(str::to_owned)
-            .and_then(|b| artifact::kind::csv_table(&b, ext == "tsv", CSV_ROWS))
+            .and_then(|b| artifact::kind::csv_table(b, ext == "tsv", CSV_ROWS))
         {
             Err(e) => unreadable(&e),
             Ok((header, rows, total)) => {

@@ -1159,7 +1159,7 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
             writeln!(out, "⊘ removed from context: summary (epoch {epoch})")
         }
         agent::HistoryEntry::User { text, context, .. } => {
-            writeln!(out, "> {}{}", attach::display(&text), labels(context))
+            writeln!(out, "> {}{}", attach::display(text), labels(context))
         }
         agent::HistoryEntry::Assistant { text, .. } => writeln!(out, "{text}"),
         agent::HistoryEntry::Reasoning { text, .. } => writeln!(out, "\x1b[2m┆ {text}\x1b[0m"),
@@ -1499,7 +1499,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }),
         UiEvent::Broadcasted(Err(e)) => writeln!(out, "broadcast: {e}"),
-        UiEvent::Broadcasted(Ok(r)) => broadcast::result_lines(&r)
+        UiEvent::Broadcasted(Ok(r)) => broadcast::result_lines(r)
             .iter()
             .try_for_each(|l| writeln!(out, "{l}")),
         UiEvent::History(_, loaded) => print_history(out, loaded),
