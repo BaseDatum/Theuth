@@ -18,6 +18,8 @@ export type PopoutTarget =
   | { kind: 'meeting-note'; meeting: string }
   /** `/pty/$session/$job`: one agent-started terminal alone (`components/chat/TerminalViewer.tsx`). */
   | { kind: 'pty'; session: string; job: string }
+  /** `/codemap/$session/$root`: one session's CodeMap on one root alone (73 §6.9). */
+  | { kind: 'codemap'; session: string; root: string }
 
 const idOf = (t: PopoutTarget): string =>
   t.kind === 'chat'
@@ -28,7 +30,9 @@ const idOf = (t: PopoutTarget): string =>
         ? t.doc
         : t.kind === 'pty'
           ? `${t.session}-${t.job}`
-          : t.meeting
+          : t.kind === 'codemap'
+            ? `${t.session}-${t.root}`
+            : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'chat'
@@ -39,7 +43,9 @@ const pathOf = (t: PopoutTarget): string =>
         ? `/notes/${encodeURIComponent(t.doc)}`
         : t.kind === 'pty'
           ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
-          : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
+          : t.kind === 'codemap'
+            ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
+            : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
 
 /** Tauri window labels allow `[A-Za-z0-9/:_-]`; ids are passed through the same filter. */
 const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
@@ -55,6 +61,7 @@ export function popoutTarget(href: string): PopoutTarget | null {
   const [, head, id, sub] = url.pathname.split('/')
   if (!id) return null
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
+  if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'artifacts') return { kind: 'artifact', callId: decodeURIComponent(id) }
   if (head === 'notes') return { kind: 'note', doc: decodeURIComponent(id) }
@@ -75,7 +82,8 @@ export const popoutMeeting = (t: PopoutTarget | null): string | null =>
   t !== null && (t.kind === 'meeting' || t.kind === 'meeting-note') ? t.meeting : null
 
 /** The session a popped window belongs to (`chat`, or the PTY's owning session), else `null`: `SessionDeleted` for it closes the window. */
-export const popoutSession = (t: PopoutTarget | null): string | null => (t !== null && (t.kind === 'chat' || t.kind === 'pty') ? t.session : null)
+export const popoutSession = (t: PopoutTarget | null): string | null =>
+  t !== null && (t.kind === 'chat' || t.kind === 'pty' || t.kind === 'codemap') ? t.session : null
 
 /**
  * Whether this container can open a second window at all: a desktop shell (`open_window`) or a plain browser

@@ -1,0 +1,355 @@
+{
+  "meta": {
+    "root": "/Users/sky/Develop/theuth",
+    "seq": 44,
+    "indexed_files": 1051,
+    "stale": false,
+    "pending": 0,
+    "suspect_root": false,
+    "hint": null,
+    "truncated_walk": false,
+    "git_head": "22b39455d849c0a1",
+    "ms": 210
+  },
+  "mode": "worktree",
+  "range": [
+    "22b39455",
+    "WORKTREE"
+  ],
+  "changed": [
+    {
+      "path": "crates/codeindex/src/index.rs",
+      "status": "modified",
+      "symbols": [
+        {
+          "moniker": "rust:crates/codeindex/src/index.rs#write(function)",
+          "name": "write",
+          "kind": "function",
+          "line": 300
+        },
+        {
+          "moniker": "rust:crates/codeindex/src/index.rs#reconcile(function)",
+          "name": "reconcile",
+          "kind": "function",
+          "line": 116
+        }
+      ],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/src/tools.rs",
+      "status": "modified",
+      "symbols": [
+        {
+          "moniker": "rust:crates/codeindex/src/tools.rs#register(function)",
+          "name": "register",
+          "kind": "function",
+          "line": 43
+        },
+        {
+          "moniker": "rust:crates/codeindex/src/tools.rs#CodeMapTool::call(method)",
+          "name": "CodeMapTool::call",
+          "kind": "method",
+          "line": 170
+        }
+      ],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/src/rank.rs",
+      "status": "added",
+      "symbols": [
+        {
+          "moniker": "rust:crates/codeindex/src/rank.rs#load(function)",
+          "name": "load",
+          "kind": "function",
+          "line": 131
+        },
+        {
+          "moniker": "rust:crates/codeindex/src/rank.rs#rank(function)",
+          "name": "rank",
+          "kind": "function",
+          "line": 211
+        }
+      ],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 0
+    }
+  ],
+  "direct": [
+    {
+      "path": "crates/rpc/src/api.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "Stats",
+        "reconcile"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/lib.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "register",
+        "reconcile"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/outline_hook.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/rpc/src/bridge.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/rpc/src/export.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/store.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "rank"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/graph.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "load"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/root.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/agent/src/lib.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/event.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "write"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/lens.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "rank",
+        "load"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    },
+    {
+      "path": "crates/codeindex/src/resolve.rs",
+      "status": null,
+      "symbols": [],
+      "via": [
+        "<import>"
+      ],
+      "is_test": false,
+      "test_link": null,
+      "depth": 1
+    }
+  ],
+  "transitive": [
+    {
+      "path": "crates/cli/src/main.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 2
+    },
+    {
+      "path": "crates/rpc/src/client.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 2
+    },
+    {
+      "path": "crates/desktop/src/commands.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 3
+    },
+    {
+      "path": "crates/link/src/lib.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": false,
+      "test_link": null,
+      "depth": 3
+    }
+  ],
+  "tests": [
+    {
+      "path": "crates/codeindex/tests/index.rs",
+      "status": null,
+      "symbols": [
+        {
+          "moniker": "rust:crates/codeindex/tests/index.rs#reconcile_is_incremental(function)",
+          "name": "reconcile_is_incremental",
+          "kind": "function",
+          "line": 12
+        }
+      ],
+      "via": [],
+      "is_test": true,
+      "test_link": "ref",
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/impact.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": "ref",
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/fixture.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": "subject",
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/rank.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": "subject",
+      "depth": 0
+    },
+    {
+      "path": "crates/rpc/tests/api.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": null,
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/store.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": "ref",
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/tools.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": "ref",
+      "depth": 0
+    },
+    {
+      "path": "crates/codeindex/tests/walk.rs",
+      "status": null,
+      "symbols": [],
+      "via": [],
+      "is_test": true,
+      "test_link": null,
+      "depth": 0
+    }
+  ],
+  "more": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "ambiguous_skipped": 464,
+  "unresolved_imports": 2,
+  "unindexed": [
+    "crates/codeindex/src/lens.rs"
+  ],
+  "cache_hit": false
+}

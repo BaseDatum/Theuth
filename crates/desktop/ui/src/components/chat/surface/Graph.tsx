@@ -87,7 +87,10 @@ function Label({ text, cx, cy, fill, t, size = FONT_PX }: { text: string; cx: nu
   )
 }
 
-/** The svg for `graph` at `layout`; `markerId` must be unique per mounted svg (arrowheads are looked up by id). */
+/**
+ * The svg for `graph` at `layout`; `markerId` must be unique per mounted svg (arrowheads are looked up by id) — `null`
+ * draws no arrowheads (73 §6.5: none in Fit). `badges` are the colour states' words (73 §6.5), `hatch` the stale ids.
+ */
 export function GraphSvg({
   graph,
   layout: l,
@@ -95,14 +98,23 @@ export function GraphSvg({
   markerId,
   highlight,
   onSelect,
+  badges,
+  hatch,
+  patternId,
+  nodeClass,
 }: {
   graph: GraphData
   layout: Layout
   tokens: DiagramTokens
-  markerId: string
+  markerId: string | null
   highlight?: readonly string[]
   onSelect?: (id: string) => void
+  badges?: Record<string, string>
+  hatch?: readonly string[]
+  patternId?: string
+  nodeClass?: string
 }) {
+  const hatchId = `${patternId ?? markerId ?? 'hatch'}-hatch`
   const M = 12
   const W = Math.ceil(l.width + 2 * M)
   const H = Math.ceil(l.height + 2 * M)
@@ -113,9 +125,16 @@ export function GraphSvg({
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ maxWidth: '100%', height: 'auto' }} role={onSelect ? 'group' : 'img'} aria-label="Graph">
       <defs>
-        <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M0 0 L10 5 L0 10 z" fill={t.foreground} />
-        </marker>
+        {markerId !== null && (
+          <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill={t.foreground} />
+          </marker>
+        )}
+        {hatch?.length ? (
+          <pattern id={hatchId} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={6} stroke={t.mutedForeground} strokeWidth={2} opacity={0.3} />
+          </pattern>
+        ) : null}
       </defs>
       <g transform={`translate(${M} ${M})`}>
         {l.groups.map((g) => (
@@ -132,7 +151,7 @@ export function GraphSvg({
           const d = e.sections.map((s) => [s.start, ...s.bends, s.end].map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ')).join(' ')
           return (
             <g key={e.index}>
-              <path d={d} fill="none" stroke={t.foreground} strokeWidth={1.25} strokeDasharray={edge.style === 'dashed' ? '6 4' : undefined} markerEnd={`url(#${markerId})`} />
+              <path d={d} fill="none" stroke={t.foreground} strokeWidth={1.25} strokeDasharray={edge.style === 'dashed' ? '6 4' : undefined} markerEnd={markerId === null ? undefined : `url(#${markerId})`} />
               {e.label && edge.label && (
                 <g>
                   <rect x={e.label.x} y={e.label.y} width={e.label.w} height={e.label.h} rx={3} fill={t.background} />
@@ -149,13 +168,20 @@ export function GraphSvg({
           return (
             <g
               key={n.id}
+              className={nodeClass}
               opacity={s.opacity}
               data-node={n.id}
               aria-description={node.ref ?? undefined}
               {...(onSelect ? { role: 'button', tabIndex: 0, style: { cursor: 'pointer' }, onClick: () => onSelect(n.id), onKeyDown: (ev: React.KeyboardEvent) => (ev.key === 'Enter' || ev.key === ' ') && onSelect(n.id) } : {})}
             >
               <Shape kind={node.kind} x={n.x} y={n.y} w={n.w} h={n.h} fill={s.fill} fillOpacity={s.fillOpacity} stroke={s.stroke} strokeWidth={s.strokeWidth} />
+              {hatch?.includes(n.id) && <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={node.kind === 'pill' ? n.h / 2 : undefined} fill={`url(#${hatchId})`} />}
               <Label text={node.label} cx={n.x + n.w / 2} cy={n.y + n.h / 2} fill={t.foreground} t={t} />
+              {badges?.[n.id] && (
+                <text x={n.x + n.w - 4} y={n.y - 3} textAnchor="end" fontFamily="ui-monospace, monospace" fontSize={11} fill={t.mutedForeground}>
+                  {badges[n.id]}
+                </text>
+              )}
             </g>
           )
         })}

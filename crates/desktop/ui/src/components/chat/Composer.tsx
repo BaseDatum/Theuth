@@ -76,6 +76,11 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 export function prefillDraft(session: string | null, text: string, refs: AttachRef[] = [], panel = false): void {
   useDrafts.getState().set(`${panel ? 'panel:' : ''}${session ?? ''}`, { text, pastes: refs.reduce((held, r) => attachRef(r, held), NONE) })
 }
+/** Append `text` to `session`'s draft, keeping what is typed and held (73 §6.8 "Ask about this"); `head` is prepended only when the draft is empty. */
+export function appendDraft(session: string, text: string, head = ''): void {
+  const cur = useDrafts.getState().by[session] ?? EMPTY
+  useDrafts.getState().set(session, { ...cur, text: cur.text ? `${cur.text}${text}` : `${head}${text}` })
+}
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** A send's ack is one round trip ("returns once queued"): longer means a socket the OS never closed (70 SEND-NEVER-LOSES). */
