@@ -1712,6 +1712,7 @@ async fn map_and_symbol() {
         paths_only: Some(paths_only),
         root: root.clone(),
         budget: Some(budget),
+        mode: None,
     };
 
     let out = CodeMapTool(ix.clone())
@@ -2471,4 +2472,146 @@ async fn impact_on_this_repository() {
     eprintln!("code_symbol(open_db, cochange):\n{}", out.content);
     assert!(!v["cochange"].as_array().unwrap().is_empty(), "{v}");
     assert!(v.get("note").is_none());
+}
+
+/// CI-RENDER on a fixture repository: badges (`(→N)`, `[NEW]`, `↑N`) in
+/// `content` and as row fields, the rendered-map cache (hit on the second
+/// call, miss after an edit), and `mode="changed"` (changed definitions,
+/// direct importers, `[added]`, the clean-tree header, argument errors).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn map_render_badges_cache_and_changed_mode() {
+    use codeindex::tools::{CodeMapArgs, CodeMapTool};
+    use tools::Tool;
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"fixture-map\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("src/util.rs"),
+        "pub fn helper() -> u32 {\n    1\n}\n\npub fn unrelated() -> u32 {\n    2\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("src/lib.rs"),
+        "pub mod util;\npub mod top;\nuse crate::util::helper;\n\npub fn run() -> u32 {\n    helper()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("src/top.rs"),
+        "use crate::run;\n\npub fn top() -> u32 {\n    run()\n}\n",
+    )
+    .unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "one"]);
+
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let tool = CodeMapTool(ix.clone());
+    let args = |mode: Option<&str>, paths_only: bool| CodeMapArgs {
+        focus: None,
+        paths_only: Some(paths_only),
+        root: Some(d.clone()),
+        budget: Some(2000),
+        mode: mode.map(str::to_owned),
+    };
+    let call = |a: CodeMapArgs| tool.call(a, cx(&data));
+
+    // Badges.
+    let out = call(args(None, false)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_map on the fixture:\n{}", out.content);
+    assert_eq!(v["cached"], false);
+    assert_eq!(v["mode"], "full");
+    assert!(v["coverage_added"].is_u64(), "{v}");
+    let rows = v["rows"].as_array().unwrap();
+    let helper = rows.iter().find(|r| r["name"] == "helper").expect("helper ranks");
+    assert!(helper["callers"].as_i64().unwrap() >= 1, "{helper}");
+    assert!(helper["importers"].as_i64().unwrap() >= 1, "lib.rs imports util: {helper}");
+    assert_eq!(helper["recent"], true);
+    let util_line = out
+        .content
+        .lines()
+        .find(|l| l.starts_with("src/util.rs"))
+        .unwrap();
+    assert!(
+        util_line.contains(" (→") && util_line.ends_with(" [NEW]"),
+        "{util_line}"
+    );
+    assert!(
+        out.content.lines().any(|l| l.contains("pub fn helper()") && l.contains("  ↑")),
+        "{}",
+        out.content
+    );
+    let first = out.content.clone();
+
+    // Cache: same arguments, unchanged index → hit with the same text.
+    let out = call(args(None, false)).await.unwrap();
+    let v = out.structured.unwrap();
+    assert_eq!(v["cached"], true, "{v}");
+    assert_eq!(out.content, first);
+    // Other arguments miss.
+    let v = call(args(None, true)).await.unwrap().structured.unwrap();
+    assert_eq!(v["cached"], false);
+    let paths_row = &v["rows"][0];
+    assert!(paths_row["importers"].is_i64() && paths_row["recent"].is_boolean(), "{v}");
+
+    // Clean tree: the changed map is empty.
+    let out = call(args(Some("changed"), false)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.content, "changed 0 files, 0 symbols");
+    assert_eq!(out.structured.unwrap()["rows"].as_array().unwrap().len(), 0);
+
+    // Edit `helper` and add a file: the reconcile invalidates the cache.
+    std::fs::write(
+        d.join("src/util.rs"),
+        "pub fn helper() -> u32 {\n    1 + 1\n}\n\npub fn unrelated() -> u32 {\n    2\n}\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("src/extra.rs"), "pub fn extra() -> u32 {\n    3\n}\n").unwrap();
+    let v = call(args(None, false)).await.unwrap().structured.unwrap();
+    assert_eq!(v["cached"], false, "an edit invalidates: {v}");
+
+    let out = call(args(Some("changed"), false)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("code_map(mode=changed) on the fixture:\n{}", out.content);
+    assert_eq!(v["mode"], "changed");
+    assert!(out.content.starts_with("changed 2 files, 2 symbols\n"), "{}", out.content);
+    let names: Vec<(&str, &str, &str)> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["path"].as_str().unwrap(),
+                r["name"].as_str().unwrap(),
+                r["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(names.contains(&("src/util.rs", "helper", "modified")), "{names:?}");
+    assert!(names.contains(&("src/extra.rs", "extra", "added")), "{names:?}");
+    assert!(!names.iter().any(|n| n.1 == "unrelated"), "only touched definitions: {names:?}");
+    assert!(out.content.contains("src/extra.rs [NEW] [added]\n"), "{}", out.content);
+    let files = v["changed_files"].as_array().unwrap();
+    let util = files.iter().find(|f| f["path"] == "src/util.rs").unwrap();
+    assert_eq!(util["importers"], serde_json::json!(["src/lib.rs"]), "{v}");
+    assert!(out.content.contains("  ← src/lib.rs\n"), "{}", out.content);
+    let r = v["rows"].as_array().unwrap().iter().find(|r| r["name"] == "helper").unwrap();
+    assert!(r["callers"].as_i64().unwrap() >= 1 && r["recent"] == true, "{r}");
+    // The second identical call is a hit.
+    assert_eq!(
+        call(args(Some("changed"), false)).await.unwrap().structured.unwrap()["cached"],
+        true
+    );
+
+    // Argument errors.
+    assert!(call(args(Some("changed"), true)).await.unwrap().is_error);
+    assert!(call(args(Some("delta"), false)).await.unwrap().is_error);
 }

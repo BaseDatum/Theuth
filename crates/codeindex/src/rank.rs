@@ -28,6 +28,11 @@ const IMPORT: &str = "<import>";
 const SELF: &str = "<self>";
 /// Budget tolerance of the map fit (aider: 15 %).
 const FIT_SLACK: f64 = 0.15;
+/// `[NEW]` window: a file modified within the last 48 h.
+pub const RECENT_NS: i64 = 48 * 3600 * 1_000_000_000;
+/// Directory coverage: a depth-2 component holding at least this share of
+/// the parsed files gets one line in the map even when nothing in it ranked.
+const COVERAGE_SHARE: f64 = 0.05;
 
 /// One graph node: a parsed file.
 #[derive(Clone, Debug, FromRow)]
@@ -124,6 +129,63 @@ pub struct Ranked {
     pub tags: Vec<(i64, Tag)>,
     /// Power iterations run.
     pub iterations: usize,
+}
+
+/// Badge and coverage facts the render prints beside the ranked tags
+/// (`store::map_facts`).
+#[derive(Clone, Debug, Default)]
+pub struct MapFacts {
+    /// Path → distinct files that import or reference it.
+    pub importers: HashMap<String, i64>,
+    /// Paths modified within [`RECENT_NS`].
+    pub recent: HashSet<String>,
+    /// `(path, line)` → cross-file resolved references to the definition there.
+    pub callers: HashMap<(String, i64), i64>,
+    /// Every parsed file, for the directory-coverage shares.
+    pub files: Vec<String>,
+}
+
+impl MapFacts {
+    /// `path (→N) [NEW]`: the file line with its badges; nothing for zero.
+    pub fn file_line(&self, path: &str) -> String {
+        let mut s = path.to_owned();
+        if let Some(n) = self.importers.get(path).filter(|&&n| n > 0) {
+            s.push_str(&format!(" (→{n})"));
+        }
+        if self.recent.contains(path) {
+            s.push_str(" [NEW]");
+        }
+        s
+    }
+
+    /// `  line: signature  ↑N`: the definition line with its caller badge.
+    pub fn tag_line(&self, path: &str, line: i64, signature: &str) -> String {
+        let mut s = format!("  {line}: {signature}");
+        if let Some(n) = self.callers(path, line) {
+            s.push_str(&format!("  ↑{n}"));
+        }
+        s
+    }
+
+    /// Cross-file callers of the definition at `(path, line)`, if any.
+    pub fn callers(&self, path: &str, line: i64) -> Option<i64> {
+        // ponytail: owned-key lookup clones the path; a borrowed key type if the map is hot.
+        self.callers
+            .get(&(path.to_owned(), line))
+            .copied()
+            .filter(|&n| n > 0)
+    }
+}
+
+/// One rendered map.
+#[derive(Debug, Default)]
+pub struct Rendered {
+    /// The text.
+    pub text: String,
+    /// Indexes into the input tags that were rendered, ascending (= by rank).
+    pub kept: Vec<usize>,
+    /// Files appended by directory coverage.
+    pub coverage_added: usize,
 }
 
 impl Graph {
@@ -411,13 +473,28 @@ pub async fn persist(pool: &SqlitePool) -> anyhow::Result<(usize, usize)> {
     Ok((files.len(), r.iterations))
 }
 
-/// aider's tree: `path`, then `  line: signature` per ranked tag in line
-/// order; files by their best tag. Renders the most tags whose text fits
-/// `budget` (chars/3), accepting up to 15 % over. Returns `(text, kept)`.
-pub fn render(tags: &[Tag], budget: u32) -> (String, usize) {
-    let tree = |k: usize| -> String {
+/// Depth-2 component of a path (`crates/codeindex`, `src/store`); a file
+/// one directory deep is its directory, a root file is `""`.
+pub fn component(path: &str) -> &str {
+    let mut it = path.match_indices('/');
+    match (it.next(), it.next()) {
+        (Some(_), Some((j, _))) => &path[..j],
+        (Some((i, _)), None) => &path[..i],
+        _ => "",
+    }
+}
+
+/// aider's tree with badges: `path (→importers) [NEW]`, then
+/// `  line: signature  ↑callers` per ranked tag in line order; files by
+/// their best tag. Renders the most tags whose text fits `budget`
+/// (chars/3), accepting up to 15 % over. Then directory coverage: every
+/// component with ≥ [`COVERAGE_SHARE`] of the parsed files and no line in
+/// the tree gets its best-ranked file as one line, paid for by dropping
+/// the lowest-ranked tags of the components with the most lines.
+pub fn render(tags: &[Tag], budget: u32, facts: &MapFacts) -> Rendered {
+    let tree = |kept: &[usize]| -> String {
         let mut files: Vec<(&str, Vec<&Tag>)> = Vec::new();
-        for t in &tags[..k] {
+        for t in kept.iter().map(|&i| &tags[i]) {
             match files.iter_mut().find(|(p, _)| *p == t.path) {
                 Some((_, v)) => v.push(t),
                 None => files.push((t.path.as_str(), vec![t])),
@@ -426,10 +503,11 @@ pub fn render(tags: &[Tag], budget: u32) -> (String, usize) {
         let mut out = String::new();
         for (p, v) in &mut files {
             v.sort_by_key(|t| t.line);
-            out.push_str(p);
+            out.push_str(&facts.file_line(p));
             out.push('\n');
             for t in v.iter() {
-                out.push_str(&format!("  {}: {}\n", t.line, t.signature));
+                out.push_str(&facts.tag_line(&t.path, t.line, &t.signature));
+                out.push('\n');
             }
         }
         out
@@ -441,8 +519,9 @@ pub fn render(tags: &[Tag], budget: u32) -> (String, usize) {
     let mut mid = ((budget_f / 25.0) as usize)
         .clamp(1, tags.len().max(1))
         .min(tags.len());
+    let all: Vec<usize> = (0..tags.len()).collect();
     while lo <= hi && !tags.is_empty() {
-        let text = tree(mid);
+        let text = tree(&all[..mid]);
         let tokens = estimate_tokens(text.len());
         let err = (f64::from(tokens) - budget_f).abs() / budget_f.max(1.0);
         let better = best.as_ref().is_none_or(|(_, _, t)| tokens > *t);
@@ -463,9 +542,81 @@ pub fn render(tags: &[Tag], budget: u32) -> (String, usize) {
             break;
         }
     }
-    match best {
-        Some((text, k, _)) => (text, k),
-        None => (String::new(), 0),
+    let Some((mut text, k, fit_tokens)) = best else {
+        return Rendered::default();
+    };
+    let mut kept = all[..k].to_vec();
+
+    // Directory coverage (recon item 8).
+    let mut size: HashMap<&str, usize> = HashMap::new();
+    for p in &facts.files {
+        *size.entry(component(p)).or_default() += 1;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let min = (facts.files.len() as f64 * COVERAGE_SHARE).ceil().max(1.0) as usize;
+    let shown: HashSet<&str> = kept.iter().map(|&i| component(&tags[i].path)).collect();
+    let mut covered: HashSet<&str> = HashSet::new();
+    // Best tag per uncovered large component, in rank order.
+    let mut extra: Vec<String> = Vec::new();
+    for t in &tags[k..] {
+        let c = component(&t.path);
+        if size.get(c).is_some_and(|&n| n >= min)
+            && !shown.contains(c)
+            && covered.insert(c)
+        {
+            extra.push(facts.file_line(&t.path));
+        }
+    }
+    if extra.is_empty() {
+        return Rendered {
+            text,
+            kept,
+            coverage_added: 0,
+        };
+    }
+    let target = budget.max(fit_tokens);
+    let with = |text: &str, extra: &[String]| -> String {
+        let mut s = text.to_owned();
+        for l in extra {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    };
+    let mut out = with(&text, &extra);
+    while estimate_tokens(out.len()) > target {
+        // Over-represented: the component with the most kept tags, if it
+        // has more than one (never empty a component to cover another).
+        let mut per: HashMap<&str, usize> = HashMap::new();
+        for &i in &kept {
+            *per.entry(component(&tags[i].path)).or_default() += 1;
+        }
+        let fat = per
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .max_by_key(|(c, n)| (**n, std::cmp::Reverse(**c)))
+            .map(|(c, _)| *c);
+        match fat {
+            Some(c) => {
+                if let Some(pos) = kept.iter().rposition(|&i| component(&tags[i].path) == c) {
+                    kept.remove(pos);
+                }
+                text = tree(&kept);
+            }
+            None => {
+                extra.pop();
+            }
+        }
+        out = with(&text, &extra);
+    }
+    Rendered {
+        text: out,
+        kept,
+        coverage_added: extra.len(),
     }
 }
 
@@ -622,31 +773,110 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_fits_the_budget_within_slack() {
-        let tags: Vec<Tag> = (0..200)
+    fn tags(n: i64, path: impl Fn(i64) -> String) -> Vec<Tag> {
+        (0..n)
             .map(|i| Tag {
-                path: format!("src/f{}.rs", i % 7),
+                path: path(i),
                 line: i,
                 kind: "function".into(),
                 name: format!("fn_{i}"),
                 signature: format!("pub fn fn_{i}(a: u32, b: &str) -> Result<()>"),
                 moniker: format!("rust:src/f{}.rs#fn_{i}(function)", i % 7),
+                #[allow(clippy::cast_precision_loss)]
                 rank: 1.0 / (i as f64 + 1.0),
             })
-            .collect();
-        let (text, kept) = render(&tags, 300);
-        let tokens = estimate_tokens(text.len());
+            .collect()
+    }
+
+    #[test]
+    fn render_fits_the_budget_within_slack() {
+        let tags = tags(200, |i| format!("src/f{}.rs", i % 7));
+        let facts = MapFacts::default();
+        let r = render(&tags, 300, &facts);
+        let tokens = estimate_tokens(r.text.len());
         assert!(
             (200..=345).contains(&tokens),
-            "{tokens} tokens for {kept} tags"
+            "{tokens} tokens for {} tags",
+            r.kept.len()
         );
-        assert!(kept > 0 && kept < 200);
-        assert!(text.starts_with("src/f0.rs\n  0: pub fn fn_0"));
-        let (text, kept) = render(&tags, 1_000_000);
-        assert_eq!(kept, 200);
-        assert_eq!(text.lines().count(), 207);
-        assert_eq!(render(&[], 100), (String::new(), 0));
+        assert!(!r.kept.is_empty() && r.kept.len() < 200);
+        assert!(r.text.starts_with("src/f0.rs\n  0: pub fn fn_0"));
+        let r = render(&tags, 1_000_000, &facts);
+        assert_eq!(r.kept.len(), 200);
+        assert_eq!(r.text.lines().count(), 207);
+        assert_eq!(r.coverage_added, 0);
+        let r = render(&[], 100, &facts);
+        assert!(r.text.is_empty() && r.kept.is_empty());
+    }
+
+    #[test]
+    fn badges_print_only_what_carries_information() {
+        let tags = tags(2, |_| "src/a.rs".to_owned());
+        let mut facts = MapFacts::default();
+        facts.importers.insert("src/a.rs".into(), 3);
+        facts.importers.insert("src/zero.rs".into(), 0);
+        facts.recent.insert("src/a.rs".into());
+        facts.callers.insert(("src/a.rs".into(), 1), 4);
+        let r = render(&tags, 10_000, &facts);
+        assert_eq!(
+            r.text,
+            "src/a.rs (→3) [NEW]\n  0: pub fn fn_0(a: u32, b: &str) -> Result<()>\n  1: pub fn fn_1(a: u32, b: &str) -> Result<()>  ↑4\n"
+        );
+        assert_eq!(facts.file_line("src/zero.rs"), "src/zero.rs");
+        assert_eq!(facts.callers("src/a.rs", 0), None);
+    }
+
+    #[test]
+    fn components_are_depth_two() {
+        assert_eq!(component("crates/codeindex/src/rank.rs"), "crates/codeindex");
+        assert_eq!(component("src/store/x.rs"), "src/store");
+        assert_eq!(component("src/main.rs"), "src");
+        assert_eq!(component("build.rs"), "");
+    }
+
+    #[test]
+    fn coverage_adds_one_line_per_large_silent_component_within_budget() {
+        // 30 tags in crates/big; the last tag is crates/small's only one and
+        // never fits. crates/small holds 50 % of the files → one line.
+        let mut tags = tags(30, |_| "crates/big/src/lib.rs".to_owned());
+        tags.push(Tag {
+            path: "crates/small/src/lib.rs".into(),
+            line: 1,
+            kind: "function".into(),
+            name: "tiny".into(),
+            signature: "pub fn tiny()".into(),
+            rank: 0.0001,
+        });
+        let mut facts = MapFacts {
+            files: vec![
+                "crates/big/src/lib.rs".into(),
+                "crates/small/src/lib.rs".into(),
+            ],
+            ..MapFacts::default()
+        };
+        facts.importers.insert("crates/small/src/lib.rs".into(), 2);
+        let budget = 200;
+        let r = render(&tags, budget, &facts);
+        assert_eq!(r.coverage_added, 1, "{}", r.text);
+        assert!(r.text.ends_with("crates/small/src/lib.rs (→2)\n"), "{}", r.text);
+        let without = render(&tags, budget, &MapFacts::default());
+        assert!(estimate_tokens(r.text.len()) <= budget.max(estimate_tokens(without.text.len())));
+        assert!(r.kept.iter().all(|&i| tags[i].path.starts_with("crates/big")));
+        // Paid for by dropping crates/big's lowest-ranked tags when the fit
+        // left no room: a budget the fit already overshoots (within slack).
+        let tight = (150..400)
+            .find(|&b| estimate_tokens(render(&tags, b, &MapFacts::default()).text.len()) >= b)
+            .expect("some budget lands over");
+        let (r, without) = (render(&tags, tight, &facts), render(&tags, tight, &MapFacts::default()));
+        assert_eq!(r.coverage_added, 1);
+        assert!(r.kept.len() < without.kept.len(), "{} vs {}", r.kept.len(), without.kept.len());
+        assert!(estimate_tokens(r.text.len()) <= estimate_tokens(without.text.len()));
+        assert_eq!(r.kept, (0..r.kept.len()).collect::<Vec<_>>(), "drops the lowest-ranked");
+        // A component under the share, or already shown, gets nothing.
+        facts.files = vec!["crates/big/src/lib.rs".into(); 40];
+        facts.files.push("crates/small/src/lib.rs".into());
+        assert_eq!(render(&tags, budget, &facts).coverage_added, 0);
+        assert_eq!(render(&tags, 1_000_000, &facts).coverage_added, 0);
     }
 
     #[test]
