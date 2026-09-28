@@ -3,8 +3,9 @@
 // §0 Q5: the card binds the board to the session that drew it (`note-chat`), so the board's badge and Ask land there;
 // a binding the user already changed (New chat) is left alone.
 import { Link } from '@tanstack/react-router'
-import { AppWindow, LayoutPanelTop, Loader2 } from 'lucide-react'
+import { AppWindow, LayoutPanelTop } from 'lucide-react'
 import { useEffect } from 'react'
+import { ToolSpinner } from './Indicators'
 import { Button } from '@/components/ui/button'
 import { resultLine } from '@/lib/describe'
 import { useNoteChat } from '@/lib/note-chat'
@@ -52,7 +53,7 @@ export function BoardCard({ tool, session, readOnly }: { tool: Tool; session: st
       <div className="flex items-center gap-2 font-medium">
         <LayoutPanelTop className="size-3.5 shrink-0 text-fg-secondary" />
         <span className="wrap-anywhere">{title}</span>
-        {(tool.pending || !tool.result) && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+        {(tool.pending || !tool.result) && <ToolSpinner />}
         <span className="ml-auto shrink-0 font-mono text-xs text-fg-tertiary">{drawing ? `drawing${section ? ` · ${section}` : '…'}` : id ? 'board' : null}</span>
       </div>
       {failed && <div className="mt-1 truncate font-mono text-xs text-danger">✗ {resultLine(tool.result?.output ?? '')}</div>}

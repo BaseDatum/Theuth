@@ -34,6 +34,16 @@ export function formatMoney(m: Money): string {
 }
 
 /**
+ * `formatMoney` split for a rolling display (`CostPill`): the symbol (or `XYZ ` code) as text and the half-up-rounded
+ * milli-units as a number, exact at three decimals (`0.123`), so `Intl` prints the same digits `formatMoney` does.
+ */
+export function moneyParts(m: Money): { prefix: string; value: number } {
+  const milli = (BigInt(m.nanos) + NANOS_PER_MILLI / 2n) / NANOS_PER_MILLI
+  const s = symbol(m.currency)
+  return { prefix: s ?? `${m.currency} `, value: Number(milli) / 1000 }
+}
+
+/**
  * 51 §6.2 display strings. Returned money and estimates never appear in one string:
  * `primary` is the returned part (`—` when nothing was dispatched) plus the unavailable
  * count; `secondary` is the estimate line (catalog or adapter rates over calls the

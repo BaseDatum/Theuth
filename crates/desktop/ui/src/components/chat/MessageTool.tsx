@@ -1,6 +1,7 @@
-import { Loader2, Timer, Wrench } from 'lucide-react'
+import { Timer, Wrench } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Streamdown } from 'streamdown'
+import { ToolSpinner } from './Indicators'
 import { codeDetails, describe, resultLine } from '@/lib/describe'
 import { type DiffLine, diffLines } from '@/lib/diff'
 import { rows } from '@/lib/jobTail'
@@ -110,7 +111,7 @@ function ReminderCard({ tool, session }: { tool: Tool; session: string }) {
       <div className="flex items-center gap-2 font-medium">
         <Timer className="size-3.5 shrink-0 text-fg-secondary" />
         <span className="wrap-anywhere">Reminder{id ? ` ${id}` : ''}</span>
-        {(tool.pending || !tool.result) && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+        {(tool.pending || !tool.result) && <ToolSpinner />}
         {state && <span className={cn('ml-auto shrink-0 font-mono text-xs tabular-nums', state === 'delivered' ? 'text-success' : 'text-fg-tertiary')}>{state}</span>}
       </div>
       {message && <div className="mt-1 wrap-anywhere whitespace-pre-wrap text-fg-secondary">{message}</div>}
@@ -165,7 +166,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
         <div className="flex items-center gap-2 font-medium">
           {tool.child ? <span className="shrink-0 text-fg-secondary">↳</span> : <Wrench className="size-3.5 shrink-0 text-fg-secondary" />}
           <span className="wrap-anywhere">{tool.name}</span>
-          {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+          {running && <ToolSpinner />}
         </div>
         {lines.length > 0 && (
           <pre className="w-full font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap text-fg-secondary">

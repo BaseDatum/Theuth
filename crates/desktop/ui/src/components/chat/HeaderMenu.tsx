@@ -1,5 +1,5 @@
 import { ChevronDown, type LucideIcon } from 'lucide-react'
-import { type ComponentProps, createContext, type ReactNode, type RefObject, useContext, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, createContext, isValidElement, type ReactElement, type ReactNode, type RefObject, useContext, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { panelGeometry } from '@/lib/header'
@@ -12,7 +12,8 @@ export const useHeaderMenuClose = () => useContext(Close)
 /**
  * One line of the chevron menu: icon · label · detail. With `onSelect` it is a button that closes the menu first (a
  * dialog it opens lives in the header, not in the menu, so it survives); without one, an indicator only, unless a
- * caller spreads a Radix trigger on it (`asChild`), when the nested menu takes over the click.
+ * caller spreads a Radix trigger on it (`asChild`), when the nested menu takes over the click. `icon` is a LucideIcon,
+ * or a ready element (a live indicator carrying its own state) that must size itself to `size-4`.
  */
 export function MenuRow({
   icon: Icon,
@@ -22,7 +23,7 @@ export function MenuRow({
   className,
   ...props
 }: Omit<ComponentProps<'button'>, 'onSelect'> & {
-  icon?: LucideIcon
+  icon?: LucideIcon | ReactElement
   label: ReactNode
   detail?: ReactNode
   onSelect?(): void
@@ -30,7 +31,7 @@ export function MenuRow({
   const close = useHeaderMenuClose()
   const body = (
     <>
-      {Icon ? <Icon className="size-4 shrink-0 text-fg-secondary" /> : <span className="size-4 shrink-0" />}
+      {isValidElement(Icon) ? Icon : Icon ? <Icon className="size-4 shrink-0 text-fg-secondary" /> : <span className="size-4 shrink-0" />}
       <span className="shrink-0 text-left">{label}</span>
       {detail !== undefined && detail !== null && (
         <span className="ml-auto min-w-0 truncate text-xs text-fg-tertiary tabular-nums" title={typeof detail === 'string' ? detail : undefined}>

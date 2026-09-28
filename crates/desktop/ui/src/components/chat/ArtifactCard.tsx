@@ -10,7 +10,6 @@ import {
   FolderOpen,
   Image as ImageIcon,
   LayoutGrid,
-  Loader2,
   MoreHorizontal,
   PanelRight,
   Table,
@@ -33,6 +32,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ArtifactWriting, ToolSpinner } from "./Indicators";
 import {
   Tooltip,
   TooltipContent,
@@ -366,9 +366,7 @@ function Frame({
       <div className="flex items-center gap-2 font-medium">
         <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
         <span>{name}</span>
-        {busy && (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />
-        )}
+        {busy && <ToolSpinner />}
       </div>
       <div className="mt-2 flex min-w-0 gap-3">
         {slot}
@@ -378,9 +376,6 @@ function Frame({
   );
 }
 
-const SKELETON = (
-  <div className="h-[72px] w-14 shrink-0 animate-pulse rounded-lg bg-layer-2" />
-);
 const FAILED_SLOT = (
   <div className="flex h-[72px] w-14 shrink-0 items-center justify-center rounded-lg bg-danger-bg text-danger">
     <File className="size-6" />
@@ -500,7 +495,7 @@ export const ArtifactCard = memo(function ArtifactCard({
   return (
     <Frame
       name={tool.name}
-      slot={SKELETON}
+      slot={ArtifactWriting}
       busy={!result}
       onClick={draft && open}
     >

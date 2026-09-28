@@ -5,7 +5,7 @@ import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
 import { adopt, apply, empty, fromHistory, route, type Ctx } from './reduce'
-import { type Freshness, type SessionSlice, freshness, shownActivity, useSessions } from './sessions'
+import { type Freshness, type SessionSlice, browserBusy, freshness, shownActivity, useSessions } from './sessions'
 
 const S = 'sess'
 const T = 'turn'
@@ -117,6 +117,23 @@ test('pending tool is replaced by its start (same id), finished by call id, aban
   s = apply(s, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'tool'])
   expect(s).toMatchObject({ running: false, activity: 'idle', usage, context: 15 })
+})
+
+test('browserBusy: a browser_* call without its result during a running turn, not other tools, not after the turn', () => {
+  let s = run([
+    { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 },
+    { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'read' },
+  ])
+  expect(browserBusy(s)).toBe(false)
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c2', name: 'browser_run', args: {} }, ctx())
+  expect(browserBusy(s)).toBe(true)
+  s = apply(s, { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c2', output: 'ok', is_error: false, files: [] }, ctx())
+  expect(browserBusy(s)).toBe(false)
+  s = apply(s, { type: 'ToolCallPending', session: S, turn: T, call_id: 'c3', name: 'browser_click' }, ctx())
+  expect(browserBusy(s)).toBe(true)
+  s = apply(s, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }, ctx())
+  expect(browserBusy(s)).toBe(false)
+  expect(browserBusy(undefined)).toBe(false)
 })
 
 test('detached harvest: Harvesting after TurnFinished shows only while idle, a new turn takes over, Harvested clears it', () => {

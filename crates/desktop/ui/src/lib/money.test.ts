@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
-import { costLines, costShort, formatMoney } from './money'
+import { costLines, costShort, formatMoney, moneyParts } from './money'
 
 const usd = (nanos: string) => ({ currency: 'USD', nanos })
 const bucket = (o: Partial<CostBucket>): CostBucket => ({
@@ -21,6 +21,14 @@ test('formatMoney rounds nanos half up to milli-units without floats', () => {
   expect(formatMoney(usd('1234499999'))).toBe('$1.234')
   expect(formatMoney(usd('1234500000'))).toBe('$1.235')
   expect(formatMoney(usd('99999999999999999999'))).toBe('$100000000000.000')
+})
+
+test('moneyParts prints formatMoney digit for digit through Intl', () => {
+  for (const nanos of ['123000000', '100000000', '0', '1234499999', '1234500000', '1004500000', '99999999999999999999']) {
+    const { prefix, value } = moneyParts(usd(nanos))
+    expect(prefix + value.toLocaleString('en', { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false })).toBe(formatMoney(usd(nanos)))
+  }
+  expect(moneyParts({ currency: 'XYZ', nanos: '5000000' }).prefix).toBe('XYZ ')
 })
 
 test('costLines follows 51 §6.2 and never merges returned with estimate', () => {

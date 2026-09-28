@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Cog, Eye, LoaderCircle, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, SquareTerminal, Wrench } from 'lucide-react'
-import { memo, useState } from 'react'
+import { Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Wrench } from 'lucide-react'
+import { type ComponentType, memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -23,6 +23,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { HarvestIndicator, PtyIcon, ThinkingIndicator } from '@/components/chat/Indicators'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { type AttachRef, chatName, toRef } from '@/lib/attach'
@@ -41,13 +42,13 @@ import { type Activity, type SessionSlice, shownActivity, useSessionField, useSe
 import { useEngineLabel } from '@/lib/owner'
 
 /** One glyph per non-idle `Activity`: what the session is doing right now, readable at a glance in the list. */
-const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon, string]> = {
-  thinking: [LoaderCircle, 'Thinking'],
+const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ className?: string; 'aria-label'?: string; role?: string }>, string]> = {
+  thinking: [ThinkingIndicator, 'Thinking'],
   reasoning: [Brain, 'Reasoning'],
   streaming: [PencilLine, 'Replying'],
   tool: [Wrench, 'Running a tool'],
   compacting: [Shrink, 'Compacting context'],
-  harvesting: [Archive, 'Harvesting'],
+  harvesting: [HarvestIndicator, 'Harvesting'],
   vision: [Eye, 'Inspecting images'],
 }
 
@@ -56,9 +57,10 @@ function SessionActivity({ id }: { id: string }) {
   const activity = shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting'))
   if (activity === 'idle') return null
   const [Icon, label] = ACTIVITY[activity]
+  // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
   return (
     <Icon
-      className={cn('size-3.5 shrink-0 text-info', activity === 'thinking' ? 'animate-spin' : 'animate-pulse')}
+      className={cn('size-3.5 shrink-0 text-info', activity !== 'thinking' && activity !== 'harvesting' && 'animate-pulse')}
       aria-label={label}
       role="img"
     />
@@ -72,7 +74,7 @@ function SessionJobs({ id }: { id: string }) {
   return (
     <>
       {jobs > 0 && <Cog className="size-3.5 shrink-0 animate-pulse text-info" aria-label={`${jobs} background job${jobs === 1 ? '' : 's'}`} role="img" />}
-      {ptys > 0 && <SquareTerminal className="size-3.5 shrink-0 animate-pulse text-info" aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
+      {ptys > 0 && <PtyIcon live className="size-3.5 shrink-0 text-info" aria-label={`${ptys} live terminal${ptys === 1 ? '' : 's'}`} role="img" />}
     </>
   )
 }

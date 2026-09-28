@@ -2,10 +2,11 @@ import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useQuery } from '@tanstack/react-query'
-import { AppWindow, Keyboard, SquareTerminal } from 'lucide-react'
+import { AppWindow, Keyboard } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { canPopout, openPopout } from '@/lib/popout'
@@ -370,6 +371,8 @@ export function useHasTerminals(session: string | null): boolean {
 export function TerminalButton({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
   const api = useApi()
   const alt = useRef(false)
+  // A retained-only terminal (found by `list_terminals`) is not live: the glyph animates on `terminal` alone.
+  const live = !!useSessionField(session, 'terminal')
   if (!useHasTerminals(session)) return null
   const open = (popout: boolean) => {
     if (!popout || !canPopout()) return onOpen()
@@ -378,10 +381,10 @@ export function TerminalButton({ session, row, onOpen }: { session: string; row?
       .then((ts) => (ts[0] ? openPopout({ kind: 'pty', session: ts[0].session, job: ts[0].id }) : onOpen()))
       .catch(onOpen)
   }
-  if (row) return <MenuRow icon={SquareTerminal} label="Terminals" onClick={(e) => (alt.current = e.altKey)} onSelect={() => open(alt.current)} />
+  if (row) return <MenuRow icon={<PtyIcon live={live} className="size-4 shrink-0 text-fg-secondary" />} label="Terminals" onClick={(e) => (alt.current = e.altKey)} onSelect={() => open(alt.current)} />
   return (
     <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={(e) => open(e.altKey)}>
-      <SquareTerminal className="size-5" />
+      <PtyIcon live={live} className="size-5" />
     </Button>
   )
 }
