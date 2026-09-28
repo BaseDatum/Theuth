@@ -137,7 +137,7 @@ async fn open(
 /// Arguments for [`CodeFindTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodeFindArgs {
-    /// Symbol name, or a prefix of it (and of signature/docs words) unless `exact`.
+    /// Symbol name, a case-insensitive part of it (`registry`, `tool registry` → `ToolRegistry`), or a prefix of signature/docs words; `exact` for the name alone.
     pub name: String,
     /// Restrict to one kind: function, method, class, interface, module, macro, type, constant.
     #[serde(default)]
@@ -166,7 +166,7 @@ impl Tool for CodeFindTool {
     type Args = CodeFindArgs;
 
     fn description(&self) -> String {
-        "Find where a symbol is defined in a source tree (tree-sitter index; reconciled on every call). Returns {rows: [{symbol_id, name, kind, path, line_start, line_end, signature, exported, rank}], root, indexed_files, stale, pending, dropped, content}. Exact-name hits first. Prefix search over name, signature and docs unless exact: true; kind narrows (function, method, class, interface, module, macro, type, constant).".into()
+        "Find where a symbol is defined in a source tree (tree-sitter index; reconciled on every call). Returns {rows: [{symbol_id, name, kind, path, line_start, line_end, signature, exported, rank, moniker, match}], root, indexed_files, stale, pending, dropped, content}. match says how the row hit, and rows come in that order: exact name, then prefix, then infix (case-insensitive, space-split: \"tool registry\" finds ToolRegistry), then text (signature/docs word prefix). exact: true keeps exact-name hits only; kind narrows (function, method, class, interface, module, macro, type, constant). moniker (lang:path#Qualified.Name(kind)) is a stable id accepted by code_refs/code_symbol symbol.".into()
     }
 
     async fn call(&self, a: CodeFindArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -240,6 +240,7 @@ struct Node {
     line_end: i64,
     signature: String,
     exported: bool,
+    moniker: String,
     children: Vec<Node>,
 }
 
@@ -256,6 +257,7 @@ fn nest(rows: &[OutlineRow], kept: usize) -> Vec<Node> {
                 line_end: r.line_end,
                 signature: r.signature.clone(),
                 exported: r.exported,
+                moniker: r.moniker.clone(),
                 children: build(rows, Some(r.id), kept),
             })
             .collect()
@@ -274,7 +276,7 @@ impl Tool for CodeOutlineTool {
     type Args = CodeOutlineArgs;
 
     fn description(&self) -> String {
-        "Outline one source file from the tree-sitter index: {path, language, lines, parse_errors, imports: [{specifier, target, names, line, provenance}], symbols: [{name, kind, line_start, line_end, signature, exported, children}], root, indexed_files, stale, pending, dropped, content}. Symbols nest by enclosing definition (methods under their class/impl block owner); imports carry the resolved target path and how it was resolved (cargo|mod|tsconfig|package|relative|gomod|external|unresolved).".into()
+        "Outline one source file from the tree-sitter index: {path, language, lines, parse_errors, imports: [{specifier, target, names, line, provenance}], symbols: [{name, kind, line_start, line_end, signature, exported, moniker, children}], root, indexed_files, stale, pending, dropped, content}. Symbols nest by enclosing definition (methods under their class/impl block owner); imports carry the resolved target path and how it was resolved (cargo|mod|tsconfig|package|relative|gomod|external|unresolved).".into()
     }
 
     async fn call(&self, a: CodeOutlineArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -371,7 +373,7 @@ impl Tool for CodeOutlineTool {
 /// Arguments for [`CodeRefsTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodeRefsArgs {
-    /// Symbol: a name (`ToolRegistry`), a definition site (`path/to/file.rs:123`), or a numeric symbol_id from code_find.
+    /// Symbol: a name (`ToolRegistry`), a definition site (`path/to/file.rs:123`), a numeric symbol_id, or a moniker (`lang:path#Name(kind)`) from code_find.
     pub symbol: String,
     /// `in` (default): who references this definition. `out`: what this definition references.
     #[serde(default)]
@@ -397,7 +399,8 @@ enum Picked {
     None,
 }
 
-/// Numeric → `symbols.id`; `path:line` → innermost definition there; else exact name.
+/// Numeric → `symbols.id`; a moniker (`lang:path#Name(kind)`) → that row;
+/// `path:line` → innermost definition there; else exact name.
 async fn pick(
     pool: &sqlx::SqlitePool,
     root: &std::path::Path,
@@ -405,6 +408,11 @@ async fn pick(
 ) -> anyhow::Result<Picked> {
     if let Ok(id) = symbol.parse::<i64>() {
         return Ok(store::definition_by_id(pool, id)
+            .await?
+            .map_or(Picked::None, Picked::One));
+    }
+    if symbol.contains('#') && symbol.contains(':') {
+        return Ok(store::definition_by_moniker(pool, symbol)
             .await?
             .map_or(Picked::None, Picked::One));
     }
@@ -434,7 +442,7 @@ impl Tool for CodeRefsTool {
     type Args = CodeRefsArgs;
 
     fn description(&self) -> String {
-        "Who references a symbol (direction=in, default) or what a definition references (direction=out), from the tree-sitter index. Returns {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, refs: [{path, line, name, from_symbol, kind, provenance, confidence, target}], ambiguous: n, by_file: [{path, count}], root, indexed_files, stale, pending, dropped, content}. provenance same_file|import = 1.0, package = 0.8, unique = 0.6; `ambiguous` = same-name references that could not be attributed to one definition (method calls on receivers mostly). A bare name matching several definitions returns candidates: [{symbol_id, path, line, kind}] and no refs: call again with the symbol_id or path:line.".into()
+        "Who references a symbol (direction=in, default) or what a definition references (direction=out), from the tree-sitter index. Returns {definition: {symbol_id, name, kind, path, line_start, line_end, signature, moniker}, refs: [{path, line, name, from_symbol, kind, provenance, confidence, target}], ambiguous: n, by_file: [{path, count}], root, indexed_files, stale, pending, dropped, content}. provenance same_file|import = 1.0, package = 0.8, unique = 0.6; `ambiguous` = same-name references that could not be attributed to one definition (method calls on receivers mostly). A bare name matching several definitions returns candidates: [{symbol_id, path, line, kind}] and no refs: call again with the symbol_id or path:line.".into()
     }
 
     async fn call(&self, a: CodeRefsArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -483,7 +491,7 @@ impl Tool for CodeRefsTool {
                     .collect();
                 let (body, kept, dropped) = budget_render(&lines, budget);
                 let text = format!(
-                    "{symbol:?} has {} definitions; pass a symbol_id or path:line to pick one ({ambiguous} same-name references are ambiguous)\n{body}",
+                    "{symbol:?} has {} definitions; pass a symbol_id, moniker or path:line to pick one ({ambiguous} same-name references are ambiguous)\n{body}",
                     defs.len()
                 );
                 let e = env(dropped);
@@ -712,7 +720,7 @@ impl Tool for CodeMapTool {
 /// Arguments for [`CodeSymbolTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodeSymbolArgs {
-    /// Symbol: a name (`open_db`), a definition site (`path/to/file.rs:123`), or a numeric symbol_id from code_find.
+    /// Symbol: a name (`open_db`), a definition site (`path/to/file.rs:123`), a numeric symbol_id, or a moniker (`lang:path#Name(kind)`) from code_find.
     pub symbol: String,
     /// Sections to return; default all five: definition, body, callers, callees, cochange.
     #[serde(default)]
@@ -827,7 +835,7 @@ impl Tool for CodeSymbolTool {
     type Args = CodeSymbolArgs;
 
     fn description(&self) -> String {
-        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
+        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature, moniker}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
     }
 
     async fn call(&self, a: CodeSymbolArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -887,7 +895,7 @@ impl Tool for CodeSymbolTool {
                     .collect();
                 let (body, kept, dropped) = budget_render(&lines, budget);
                 let text = format!(
-                    "{symbol:?} has {} definitions; pass a symbol_id or path:line to pick one\n{body}",
+                    "{symbol:?} has {} definitions; pass a symbol_id, moniker or path:line to pick one\n{body}",
                     defs.len()
                 );
                 let e = env(dropped);
@@ -1091,6 +1099,8 @@ struct Sym {
     kind: String,
     line_start: i64,
     line_end: i64,
+    /// Set for index rows; empty for blob parses (never output).
+    moniker: String,
 }
 
 /// The definitions `spans` touch: any intersecting a [`Span::Lines`]/
@@ -1141,6 +1151,7 @@ fn parse_new_sides(changes: &[Change]) -> Vec<Option<Vec<Sym>>> {
                         kind: s.kind.to_owned(),
                         line_start: s.line_start,
                         line_end: s.line_end,
+                        moniker: String::new(),
                     })
                     .collect(),
             )
@@ -1180,7 +1191,7 @@ impl Tool for CodeImpactTool {
     type Args = CodeImpactArgs;
 
     fn description(&self) -> String {
-        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
+        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}], monikers: [str]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
     }
 
     async fn call(&self, a: CodeImpactArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1288,21 +1299,24 @@ impl Tool for CodeImpactTool {
                     kind: r.kind,
                     line_start: r.line_start,
                     line_end: r.line_end,
+                    moniker: r.moniker,
                 })
                 .collect();
             // Spans are lines of the new side; map them on its own parse when we have
             // one, then find the index's rows by (name, kind) in the same file.
             let hit: Vec<&Sym> = touched(blob_syms.as_deref().unwrap_or(&rows), &c.spans);
+            let mut file_ids: Vec<i64> = Vec::with_capacity(hit.len());
             for h in &hit {
                 match h.id {
-                    Some(id) => symbol_ids.push(id),
-                    None => symbol_ids.extend(
+                    Some(id) => file_ids.push(id),
+                    None => file_ids.extend(
                         rows.iter()
                             .filter(|r| r.name == h.name && r.kind == h.kind)
                             .filter_map(|r| r.id),
                     ),
                 }
             }
+            symbol_ids.extend_from_slice(&file_ids);
             sym_names.extend(hit.iter().map(|s| s.name.clone()));
             let status = serde_json::to_value(c.status)?;
             let list = if hit.is_empty() {
@@ -1328,6 +1342,7 @@ impl Tool for CodeImpactTool {
             changed_rows.push(serde_json::json!({
                 "path": c.path, "status": status,
                 "symbols_changed": hit.iter().map(|s| serde_json::json!({"name": s.name, "kind": s.kind, "line": s.line_start})).collect::<Vec<_>>(),
+                "monikers": rows.iter().filter(|r| r.id.is_some_and(|id| file_ids.contains(&id))).map(|r| &r.moniker).collect::<Vec<_>>(),
             }));
         }
         symbol_ids.sort_unstable();

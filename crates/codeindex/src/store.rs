@@ -16,8 +16,9 @@ use crate::parse::ParsedFile;
 
 /// Bump on any DDL change; a mismatch deletes the file (60 §4).
 /// 2: `imports.id`, `refs.qualifier` (step 2). 3: receiver-call confidence
-/// and stoplist change stored `refs` rows (step 3).
-pub const SCHEMA_VERSION: &str = "3";
+/// and stoplist change stored `refs` rows (step 3). 4: `symbols.moniker`
+/// and the `symbols_tri` trigram table (CI-SEARCH).
+pub const SCHEMA_VERSION: &str = "4";
 
 /// Rows per multi-row `INSERT` (≤ 12 binds each; SQLite allows 32 766).
 const ROWS_PER_INSERT: usize = 500;
@@ -48,14 +49,20 @@ const DDL: &[&str] = &[
   signature TEXT NOT NULL,
   docs      TEXT,
   exported  INTEGER NOT NULL DEFAULT 0,
-  rank      REAL NOT NULL DEFAULT 0.0
+  rank      REAL NOT NULL DEFAULT 0.0,
+  moniker   TEXT NOT NULL
 )",
     "CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id)",
     "CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name)",
+    "CREATE INDEX IF NOT EXISTS symbols_moniker ON symbols(moniker)",
     "CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name, signature, docs, path UNINDEXED, symbol_id UNINDEXED,
   tokenize = 'porter unicode61 remove_diacritics 2'
 )",
+    // Names only, for infix `code_find` (60 §8): FTS5's trigram tokenizer
+    // answers `LIKE '%reg%istry%'` from the index (0.1 ms warm here vs 0.3 ms
+    // for a hand-rolled postings table and 1 ms for a `symbols.name LIKE` scan).
+    "CREATE VIRTUAL TABLE IF NOT EXISTS symbols_tri USING fts5(name, tokenize = 'trigram')",
     "CREATE TABLE IF NOT EXISTS imports (
   id         INTEGER PRIMARY KEY,
   file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -270,12 +277,12 @@ pub async fn apply(
         affected.extend(rows.into_iter().map(|(p,)| p));
     }
     for id in removed {
-        sqlx::query(
+        for sql in [
             "DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id = ?)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+            "DELETE FROM symbols_tri WHERE rowid IN (SELECT id FROM symbols WHERE file_id = ?)",
+        ] {
+            sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+        }
         sqlx::query("DELETE FROM files WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -321,11 +328,12 @@ pub async fn apply(
         let first: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 1 FROM symbols")
             .fetch_one(&mut *tx)
             .await?;
+        let monikers = crate::parse::monikers(w.language, w.path, &p.symbols);
         let mut inserted = 0usize;
         for (bi, batch) in p.symbols.chunks(ROWS_PER_INSERT).enumerate() {
             let base = bi * ROWS_PER_INSERT;
             let mut q = QueryBuilder::new(
-                "INSERT INTO symbols (id, file_id, name, kind, parent_id, line_start, line_end, byte_start, byte_end, signature, docs, exported) ",
+                "INSERT INTO symbols (id, file_id, name, kind, parent_id, line_start, line_end, byte_start, byte_end, signature, docs, exported, moniker) ",
             );
             q.push_values(batch.iter().enumerate(), |mut b, (i, s)| {
                 b.push_bind(first + (base + i) as i64)
@@ -339,7 +347,8 @@ pub async fn apply(
                     .push_bind(s.byte_end)
                     .push_bind(&s.signature)
                     .push_bind(&s.docs)
-                    .push_bind(s.exported);
+                    .push_bind(s.exported)
+                    .push_bind(&monikers[base + i]);
             });
             inserted += q.build().execute(&mut *tx).await?.rows_affected() as usize;
             let mut q = QueryBuilder::new(
@@ -353,6 +362,11 @@ pub async fn apply(
                     .push_bind(&s.docs)
                     .push_bind(w.path)
                     .push_bind(id);
+            });
+            q.build().execute(&mut *tx).await?;
+            let mut q = QueryBuilder::new("INSERT INTO symbols_tri (rowid, name) ");
+            q.push_values(batch.iter().enumerate(), |mut b, (i, s)| {
+                b.push_bind(first + (base + i) as i64).push_bind(&s.name);
             });
             q.build().execute(&mut *tx).await?;
         }
@@ -414,11 +428,19 @@ pub struct FindRow {
     pub exported: bool,
     /// PageRank (0.0 until step 3).
     pub rank: f64,
+    /// Stable identity (60 §8): `<language>:<path>#<Qualified.Name>(<kind>)`.
+    pub moniker: String,
+    /// How the query hit: `exact` | `prefix` | `infix` (name, case-insensitive) | `text` (signature/docs words).
+    #[sqlx(rename = "match")]
+    #[serde(rename = "match")]
+    pub matched: String,
 }
 
-/// `code_find`: exact `symbols.name`, or FTS5 prefix over name/signature/docs
-/// unioned with the exact name so stemming can never hide an exact hit.
-/// Exact-name hits first, then rank, then path and line.
+/// `code_find` (60 §8). `exact`: `symbols.name = name` only. Otherwise the
+/// union of exact name, case-insensitive infix over names through the
+/// trigram table (`tool registry` → `%tool%registry%` → `ToolRegistry`) and
+/// FTS5 word-prefix over name/signature/docs; each row says which tier hit,
+/// and rows come tier first, then rank, then path and line.
 pub async fn find(
     pool: &SqlitePool,
     name: &str,
@@ -426,22 +448,48 @@ pub async fn find(
     exact: bool,
     limit: i64,
 ) -> anyhow::Result<Vec<FindRow>> {
-    const EXACT: &str = "SELECT s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature, s.exported, s.rank \
+    const EXACT: &str = "SELECT s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature, s.exported, s.rank, s.moniker, 'exact' AS match \
          FROM symbols s JOIN files f ON f.id = s.file_id \
-         WHERE s.name = ?1 AND (?3 IS NULL OR s.kind = ?3) \
-         ORDER BY s.rank DESC, f.path, s.line_start LIMIT ?4";
-    const PREFIX: &str = "SELECT s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature, s.exported, s.rank \
+         WHERE s.name = ?1 AND (?5 IS NULL OR s.kind = ?5) \
+         ORDER BY s.rank DESC, f.path, s.line_start LIMIT ?6";
+    // The trigram hits are used twice (tier and filter): a materialized CTE
+    // computes them once (0.26 ms vs 0.47 ms warm on 20k symbols).
+    const TIERED: &str = "WITH tri AS MATERIALIZED (SELECT rowid AS id FROM symbols_tri WHERE name LIKE ?3) \
+         SELECT s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature, s.exported, s.rank, s.moniker, \
+         CASE WHEN s.name = ?1 THEN 'exact' WHEN s.name LIKE ?2 THEN 'prefix' WHEN s.id IN tri THEN 'infix' ELSE 'text' END AS match \
          FROM symbols s JOIN files f ON f.id = s.file_id \
-         WHERE (s.name = ?1 OR s.id IN (SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ?2)) AND (?3 IS NULL OR s.kind = ?3) \
-         ORDER BY (s.name = ?1) DESC, s.rank DESC, f.path, s.line_start LIMIT ?4";
-    let rows = sqlx::query_as::<_, FindRow>(if exact { EXACT } else { PREFIX })
+         WHERE (s.name = ?1 OR s.id IN tri OR s.id IN (SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ?4)) \
+           AND (?5 IS NULL OR s.kind = ?5) \
+         ORDER BY CASE match WHEN 'exact' THEN 0 WHEN 'prefix' THEN 1 WHEN 'infix' THEN 2 ELSE 3 END, \
+                  s.rank DESC, f.path, s.line_start LIMIT ?6";
+    let infix = like_pattern(name);
+    let rows = sqlx::query_as::<_, FindRow>(if exact { EXACT } else { TIERED })
         .bind(name)
+        .bind(&infix[1..])
+        .bind(&infix)
         .bind(fts_prefix(name))
         .bind(kind)
         .bind(limit)
         .fetch_all(pool)
         .await?;
     Ok(rows)
+}
+
+/// `%tok%tok2%`: every whitespace-separated token as an infix, `%` stripped
+/// from user text (`_` stays: a one-char wildcard over-matches `open_db` by
+/// `openXdb` at worst). `[1..]` is the prefix form `tok%tok2%`.
+fn like_pattern(name: &str) -> String {
+    let mut q = String::with_capacity(name.len() + 4);
+    q.push('%');
+    for tok in name.split_whitespace() {
+        let tok = tok.replace('%', "");
+        if tok.is_empty() {
+            continue;
+        }
+        q.push_str(&tok);
+        q.push('%');
+    }
+    q
 }
 
 /// `"tok"* "tok2"*`: every whitespace-separated token as a quoted prefix,
@@ -510,12 +558,14 @@ pub struct OutlineRow {
     pub signature: String,
     /// Exported heuristic.
     pub exported: bool,
+    /// Stable identity (60 §8).
+    pub moniker: String,
 }
 
 /// A file's symbols in source order.
 pub async fn outline(pool: &SqlitePool, file_id: i64) -> anyhow::Result<Vec<OutlineRow>> {
     Ok(sqlx::query_as(
-        "SELECT id, parent_id, name, kind, line_start, line_end, signature, exported FROM symbols WHERE file_id = ? ORDER BY byte_start, byte_end DESC",
+        "SELECT id, parent_id, name, kind, line_start, line_end, signature, exported, moniker FROM symbols WHERE file_id = ? ORDER BY byte_start, byte_end DESC",
     )
     .bind(file_id)
     .fetch_all(pool)
@@ -773,13 +823,15 @@ pub struct Definition {
     pub line_end: i64,
     /// Definition line.
     pub signature: String,
+    /// Stable identity (60 §8).
+    pub moniker: String,
 }
 
 /// Shared `SELECT` tail for [`Definition`] (a macro so `concat!` keeps the
 /// SQL a literal for sqlx's injection check).
 macro_rules! def_cols {
     () => {
-        "s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature \
+        "s.id AS symbol_id, s.name, s.kind, f.path, s.line_start, s.line_end, s.signature, s.moniker \
          FROM symbols s JOIN files f ON f.id = s.file_id"
     };
 }
@@ -801,6 +853,19 @@ pub async fn definition_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<Opti
     Ok(
         sqlx::query_as(concat!("SELECT ", def_cols!(), " WHERE s.id = ?"))
             .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// The definition with `symbols.moniker = moniker`.
+pub async fn definition_by_moniker(
+    pool: &SqlitePool,
+    moniker: &str,
+) -> anyhow::Result<Option<Definition>> {
+    Ok(
+        sqlx::query_as(concat!("SELECT ", def_cols!(), " WHERE s.moniker = ?"))
+            .bind(moniker)
             .fetch_optional(pool)
             .await?,
     )
@@ -965,10 +1030,11 @@ pub async fn ranked_tags(pool: &SqlitePool) -> anyhow::Result<Vec<crate::rank::T
         kind: String,
         name: String,
         signature: String,
+        moniker: String,
         rank: f64,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT f.path, s.line_start AS line, s.kind, s.name, s.signature, s.rank FROM symbols s JOIN files f ON f.id = s.file_id \
+        "SELECT f.path, s.line_start AS line, s.kind, s.name, s.signature, s.moniker, s.rank FROM symbols s JOIN files f ON f.id = s.file_id \
          WHERE s.rank > 0 ORDER BY s.rank DESC, f.path, s.line_start",
     )
     .fetch_all(pool)
@@ -981,6 +1047,7 @@ pub async fn ranked_tags(pool: &SqlitePool) -> anyhow::Result<Vec<crate::rank::T
             kind: r.kind,
             name: r.name,
             signature: r.signature,
+            moniker: r.moniker,
             rank: r.rank,
         })
         .collect())
@@ -1152,5 +1219,12 @@ mod tests {
             "\"open\"* \"db\"* \"OR\"* \"x\"*"
         );
         assert_eq!(fts_prefix("  "), "\"\"");
+    }
+
+    #[test]
+    fn like_pattern_joins_tokens_and_strips_wildcards() {
+        assert_eq!(like_pattern("Registry"), "%Registry%");
+        assert_eq!(like_pattern("tool  registry"), "%tool%registry%");
+        assert_eq!(like_pattern("a%b %"), "%ab%");
     }
 }

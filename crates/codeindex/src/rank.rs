@@ -59,6 +59,8 @@ pub struct SymNode {
     pub line_start: i64,
     /// Definition line.
     pub signature: String,
+    /// Stable identity (60 §8).
+    pub moniker: String,
 }
 
 /// `(referencer file, definer file, identifier, count)` before weighting.
@@ -108,6 +110,8 @@ pub struct Tag {
     pub name: String,
     /// Definition line.
     pub signature: String,
+    /// Stable identity (60 §8).
+    pub moniker: String,
     /// Spread rank.
     pub rank: f64,
 }
@@ -132,7 +136,7 @@ impl Graph {
                 .fetch_all(pool)
                 .await?;
         let symbols: Vec<SymNode> =
-            sqlx::query_as("SELECT id, file_id, name, kind, line_start, signature FROM symbols")
+            sqlx::query_as("SELECT id, file_id, name, kind, line_start, signature, moniker FROM symbols")
                 .fetch_all(pool)
                 .await?;
         let mut edges: Vec<EdgeRow> = sqlx::query_as(
@@ -364,6 +368,7 @@ impl Graph {
                         kind: s.kind.clone(),
                         name: s.name.clone(),
                         signature: s.signature.clone(),
+                        moniker: s.moniker.clone(),
                         rank: *m,
                     },
                 ));
@@ -486,6 +491,7 @@ mod tests {
             kind: "function".into(),
             line_start: id,
             signature: format!("fn {name}()"),
+            moniker: format!("rust:f{file_id}.rs#{name}(function)"),
         }
     }
 
@@ -625,6 +631,7 @@ mod tests {
                 kind: "function".into(),
                 name: format!("fn_{i}"),
                 signature: format!("pub fn fn_{i}(a: u32, b: &str) -> Result<()>"),
+                moniker: format!("rust:src/f{}.rs#fn_{i}(function)", i % 7),
                 rank: 1.0 / (i as f64 + 1.0),
             })
             .collect();
