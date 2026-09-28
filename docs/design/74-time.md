@@ -1,4 +1,4 @@
-# 73 — Time: a clock for the model, timestamps for the human
+# 74 — Time: a clock for the model, timestamps for the human
 
 Status: built 2026-09-28. Amends 07 §2 rule 4 (§4 below); extends 14 (`<job_result>`, `<reminder>`), 50 §9 (`<message>`), 61 (`<job_idle>`), 48 §3.2 (`ContextEntry`). Code: `crates/agent/src/clock.rs`, seams in `loop_.rs`, `store.rs`, `supervisor.rs`; UI in `crates/desktop/ui/src/lib/time.ts`, `components/chat/Stamp.tsx`, `Transcript.tsx`.
 

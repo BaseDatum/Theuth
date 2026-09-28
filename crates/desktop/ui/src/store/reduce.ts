@@ -313,7 +313,7 @@ function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: Con
 }
 
 /** Transcript entries for one history record; `context` (48 §3.3) rides along on every card the record becomes, and
- * the stored row time becomes `at` (73 §5). */
+ * the stored row time becomes `at` (74 §5). */
 export function fromHistory(h: HistoryEntry): Entry[] {
   const out = historyEntries(h);
   const at = h.context?.at ? Date.parse(h.context.at) : NaN;
@@ -324,7 +324,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined;
   switch (h.role) {
     case "user": {
-      // 73 §3: the engine's `<time …/>` line is for the model; the row's `at` is what the human sees.
+      // 74 §3: the engine's `<time …/>` line is for the model; the row's `at` is what the human sees.
       const text = stripTime(h.text);
       // 52 §6: the typed metadata, never the `<vision_observation>` prose, makes a row a consultation note.
       const vision = h.vision ?? context?.vision;

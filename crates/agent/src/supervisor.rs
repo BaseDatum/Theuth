@@ -2200,7 +2200,7 @@ impl Message<GetTodos> for Agents {
 
 /// The `<job_result>` wrapper (14 §1.2): `command` cut to 120 chars and
 /// attribute-escaped; `exit` is the code, `timeout` or `killed`; `secs` the
-/// job's wall time; `at` the local delivery clock (73 §4). PTY jobs
+/// job's wall time; `at` the local delivery clock (74 §4). PTY jobs
 /// (22 §2.2) carry ` pty="true"` and `text` is the final screen.
 pub(crate) fn job_result(
     id: &JobId,
@@ -2227,7 +2227,7 @@ pub(crate) fn job_result(
 
 /// The `<job_idle>` wrapper (61 §2.2): `command` cut and escaped as
 /// [`job_result`]; `name` and `user_typed` only when present; `at` the local
-/// clock (73 §4); `text` is the screen with its `cursor:` line.
+/// clock (74 §4); `text` is the screen with its `cursor:` line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn job_idle(
     id: &JobId,
@@ -2253,7 +2253,7 @@ pub(crate) fn job_idle(
 /// The `<reminder>` wrapper (14 as-built 2026-09-23): `after` is the
 /// requested delay in seconds, `set_at` RFC 3339 local, `late` true when it
 /// was re-armed past due after a restart, `at` the local clock when it fired
-/// (73 §4); `text` is the model's message.
+/// (74 §4); `text` is the model's message.
 pub(crate) fn reminder(
     id: &str,
     after: u64,

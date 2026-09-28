@@ -1,5 +1,5 @@
 /**
- * Wall-clock helpers for the transcript (73 §5): the hover timestamp on a message, the gap divider between
+ * Wall-clock helpers for the transcript (74 §5): the hover timestamp on a message, the gap divider between
  * distant entries, and the `<time …/>` line the engine prepends to inputs the model sees (never shown as text).
  */
 import { humanSecs } from './injected'
@@ -45,7 +45,7 @@ export function withGaps<R extends { key: string }>(rows: R[], at: (row: R) => n
   return out
 }
 
-/** `text` without the leading `<time …/>` stamp line the engine prepends (73 §3). */
+/** `text` without the leading `<time …/>` stamp line the engine prepends (74 §3). */
 export function stripTime(text: string): string {
   const t = text.trimStart()
   if (!t.startsWith('<time ')) return text

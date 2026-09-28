@@ -4,7 +4,7 @@ import { formatAt, fullAt } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
 /**
- * A message's wall-clock time (73 §5), shown while the `group` ancestor is hovered on a fine pointer; on a coarse
+ * A message's wall-clock time (74 §5), shown while the `group` ancestor is hovered on a fine pointer; on a coarse
  * one it has no hover, so the message's tap toggles it (`useStampToggle`). Nothing when the row has no time.
  * Space is reserved by the action row it sits in, so appearing never moves layout.
  */

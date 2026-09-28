@@ -2779,7 +2779,7 @@ mod tests {
         ChatMessage::assistant(MessageContent::from_text(t))
     }
 
-    /// 73 §5: every appended row records when, readable as `ContextEntry.at`;
+    /// 74 §5: every appended row records when, readable as `ContextEntry.at`;
     /// a row from before the column (simulated by clearing it) has none.
     #[tokio::test]
     async fn message_time_is_stored_and_exposed() {

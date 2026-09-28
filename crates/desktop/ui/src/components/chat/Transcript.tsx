@@ -44,7 +44,7 @@ type Row =
   | { key: string; entry: Entry; prompts: Prompt[] | null }
   | { key: string; run: Run; prompts: Prompt[] | null }
   | { key: string; prompt: Prompt; from?: AgentInfo }
-  /** `1 h 12 min later · 15:15` between two rows at least an hour apart (73 §5). */
+  /** `1 h 12 min later · 15:15` between two rows at least an hour apart (74 §5). */
   | { key: string; gap: string }
 
 /** `at` of a row: the entry's, or the first entry's of a folded run. */

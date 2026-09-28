@@ -433,7 +433,7 @@ pub struct SessionState {
     /// Skills whose body is in the frame this epoch (04 §2.4): user
     /// injections and successful `load_skill` calls; cleared by compaction.
     pub skills: BTreeSet<String>,
-    /// Instant of the last `<time …/>` stamp the model saw (73 §3): the
+    /// Instant of the last `<time …/>` stamp the model saw (74 §3): the
     /// `since_last` origin and the rate limit; recovered from the frame on
     /// resume, `None` until the first stamp.
     pub last_stamp: Option<chrono::DateTime<chrono::Utc>>,
@@ -4007,7 +4007,7 @@ impl Turn {
                 tracing::info!(session = %self.shared.id, budget, total_before = before, total, "tool batch over budget; shrunk {shrunk} results");
             }
         }
-        // 73 §3: a long autonomous run still glances at the clock.
+        // 74 §3: a long autonomous run still glances at the clock.
         if let Some(first) = responses.first_mut() {
             clock::prepend_due(
                 &mut first.content,
@@ -5166,7 +5166,7 @@ fn user_message(Input { text, files, .. }: Input) -> ChatMessage {
     ChatMessage::user(MessageContent::from_parts(parts))
 }
 
-/// The latest `<time …/>` stamp in the frame (73 §3), for resume.
+/// The latest `<time …/>` stamp in the frame (74 §3), for resume.
 fn last_stamp(history: &[(i64, ChatMessage)]) -> Option<chrono::DateTime<chrono::Utc>> {
     history.iter().rev().find_map(|(_, m)| match m.role {
         ChatRole::User => clock::parse(&text_of(&m.content)),
@@ -5185,7 +5185,7 @@ fn last_stamp(history: &[(i64, ChatMessage)]) -> Option<chrono::DateTime<chrono:
 /// ([`neutralise_delimiters`]). The body is never parsed for trusted
 /// events; the durable id in `id` is what a `reply_to` names. `at` is the
 /// local delivery clock and `after` the humanised age of the record when it
-/// is a minute or more (73 §4).
+/// is a minute or more (74 §4).
 pub(crate) fn peer_wrapper(
     record: &PeerRecord,
     reply_expected: bool,
@@ -6173,7 +6173,7 @@ mod tests {
             )
         );
         assert!(!peer_wrapper(&record, false, delivered).contains("reply_expected"));
-        // 73 §4: a record delivered a while after it was sent says how long.
+        // 74 §4: a record delivered a while after it was sent says how long.
         let late = peer_wrapper(&record, false, now("2026-09-28T15:12:00+02:00"));
         assert!(late.contains("\" after=\"1h 12m\">\n"), "{late}");
     }
@@ -6274,7 +6274,7 @@ mod tests {
         );
         assert_eq!(turn.state.history.len(), 1);
         assert_eq!(turn.first_seq, Some(turn.state.history[0].0));
-        // 73 §3: the first input of a session carries the time stamp; the wrapper follows it.
+        // 74 §3: the first input of a session carries the time stamp; the wrapper follows it.
         let stored = text_of(&turn.state.history[0].1.content);
         assert!(clock::parse(&stored).is_some(), "{stored}");
         assert_eq!(clock::strip(&stored), "<message>hello</message>");

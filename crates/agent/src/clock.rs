@@ -1,11 +1,11 @@
-//! Time awareness (design doc 73): a rate-limited `<time …/>` line the
+//! Time awareness (design doc 74): a rate-limited `<time …/>` line the
 //! harness prepends to inputs the model sees, and the `at="HH:MM"` clock on
 //! wake-up wrappers. Pure functions; the loop owns the `last_stamp` state.
 
 use chrono::{DateTime, Local, Utc};
 use std::time::Duration;
 
-/// Minimum wall time between two stamps in one session (73 §3). A user
+/// Minimum wall time between two stamps in one session (74 §3). A user
 /// turn or tool result landing sooner than this after the last stamp gets
 /// none; the first input of a session (or after a restart with no stamp in
 /// the frame) always gets one.

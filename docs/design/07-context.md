@@ -142,7 +142,7 @@ per-transport difference.
 4. **Nothing in the frame carries a clock finer than the day.** The date is
    in the baseline (as today); when it changes the next turn rebases. The
    time is not in the prompt at all; the shell tool has `date`. This is a
-   rule about the *prefix*: 73 adds a rate-limited `<time …/>` line inside
+   rule about the *prefix*: 74 adds a rate-limited `<time …/>` line inside
    tail-appended user and tool messages, which costs no cache.
 5. **Tool descriptions and schemas are pure functions of configuration.**
    Not of the session, the turn, the roster or the clock. The tool list is
