@@ -582,11 +582,14 @@ impl Tool for CodeRefsTool {
 }
 
 /// Arguments for [`CodeMapTool`].
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CodeMapArgs {
     /// Identifiers and/or root-relative paths (files or directories) to personalise the map toward.
     #[serde(default)]
     pub focus: Option<Vec<String>>,
+    /// Files edited this session (root-relative or absolute): weighted above a `focus` path, their co-change partners lightly.
+    #[serde(default)]
+    pub edited: Option<Vec<PathBuf>>,
     /// Ranked files only ({path, rank, lines, language}), no definitions.
     #[serde(default)]
     pub paths_only: Option<bool>,
@@ -611,7 +614,7 @@ impl Tool for CodeMapTool {
     type Args = CodeMapArgs;
 
     fn description(&self) -> String {
-        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high). Returns {rows: [{path, line, kind, name, signature, rank}], root, indexed_files, stale, pending, dropped, content}; content is the map as text (path, then indented `line: signature` per definition) fitted to budget — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); paths_only=true returns ranked files {path, rank, lines, language} instead.".into()
+        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high; re-exports route to their definer, barrel and type-only files are damped). Returns {rows: [{path, line, kind, name, signature, rank, entry?}], root, indexed_files, stale, pending, dropped, content}; content is the map as text (path, then indented `line: signature` per definition) fitted to budget — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); edited=[paths] weighs files edited this session above a focus path and folds in their co-change partners; with neither, manifest entry points (rows with entry: true) seed the map lightly. paths_only=true returns ranked files {path, rank, lines, language, entry?} instead.".into()
     }
 
     async fn call(&self, a: CodeMapArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -626,20 +629,36 @@ impl Tool for CodeMapTool {
             .into_iter()
             .filter(|s| !s.trim().is_empty())
             .collect();
+        // Root-relative, forward slashes; absolute paths under the root are stripped.
+        let edited: Vec<String> = a
+            .edited
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&ri.root)
+                    .unwrap_or(p)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
         let paths_only = a.paths_only.unwrap_or(false);
-        // Without focus the stored ranks are the answer (60 §7); a focus is a fresh personalised run.
-        let ranked = if focus.is_empty() && !paths_only {
+        // Without focus or edited the stored ranks are the answer (60 §7); either is a fresh personalised run.
+        let personalised = !focus.is_empty() || !edited.is_empty();
+        let ranked = if !personalised && !paths_only {
             None
         } else {
             let g = Graph::load(&ri.pool).await?;
-            let f = g.focus(&focus);
-            let rk = if focus.is_empty() {
-                None
-            } else {
-                Some(g.rank(&f))
-            };
+            let f = g.focus(&focus, &edited);
+            let rk = personalised.then(|| g.rank(&f));
             Some((g, f, rk))
         };
+        let entries: HashSet<String> = store::meta(&ri.pool, "entry_points")
+            .await?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let mut extra = serde_json::Map::new();
         if let Some((g, f, rk)) = &ranked {
             extra.insert(
@@ -657,6 +676,7 @@ impl Tool for CodeMapTool {
             if let Some(rk) = rk {
                 extra.insert("pagerank_iterations".into(), rk.iterations.into());
             }
+            extra.insert("entry_points".into(), g.entry_paths().into());
         }
         let (mut text, rows, dropped) = if paths_only {
             let (g, _, rk) = ranked.as_ref().expect("loaded for paths_only");
@@ -672,7 +692,13 @@ impl Tool for CodeMapTool {
             let (text, kept, dropped) = budget_render(&lines, budget);
             let rows: Vec<serde_json::Value> = files[..kept]
                 .iter()
-                .map(|(f, r)| serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language}))
+                .map(|(f, r)| {
+                    let mut v = serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language});
+                    if entries.contains(&f.path) {
+                        v["entry"] = true.into();
+                    }
+                    v
+                })
                 .collect();
             (text, rows, dropped)
         } else {
@@ -683,7 +709,13 @@ impl Tool for CodeMapTool {
             let (text, kept) = rank::render(&tags, budget);
             let rows = tags[..kept]
                 .iter()
-                .map(|t| serde_json::to_value(t).unwrap_or_default())
+                .map(|t| {
+                    let mut v = serde_json::to_value(t).unwrap_or_default();
+                    if entries.contains(&t.path) {
+                        v["entry"] = true.into();
+                    }
+                    v
+                })
                 .collect();
             (text, rows, tags.len() - kept)
         };
