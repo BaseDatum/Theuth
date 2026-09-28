@@ -1181,9 +1181,22 @@ async fn tools_envelope() {
     let v = out.structured.unwrap();
     assert_eq!(v["definition"]["symbol_id"], id);
     assert_eq!(v["definition"]["name"], "new");
+    // `path:line` inside `ToolInspection`'s body; the line is read from the
+    // file so edits above it do not move the probe out of the definition.
+    let registry =
+        std::fs::read_to_string(repo_root().join("crates/tools/src/registry.rs")).unwrap();
+    let line = registry
+        .lines()
+        .position(|l| l.starts_with("pub struct ToolInspection {"))
+        .unwrap()
+        + 2;
     let out = CodeRefsTool(ix.clone())
         .call(
-            refs("crates/tools/src/registry.rs:232", Some("out"), None),
+            refs(
+                &format!("crates/tools/src/registry.rs:{line}"),
+                Some("out"),
+                None,
+            ),
             cx(),
         )
         .await
@@ -1191,9 +1204,10 @@ async fn tools_envelope() {
     assert!(!out.is_error, "{}", out.content);
     let v = out.structured.unwrap();
     assert_eq!(v["direction"], "out");
+    let line = line as i64;
     assert!(
-        v["definition"]["line_start"].as_i64().unwrap() <= 232
-            && 232 <= v["definition"]["line_end"].as_i64().unwrap(),
+        v["definition"]["line_start"].as_i64().unwrap() <= line
+            && line <= v["definition"]["line_end"].as_i64().unwrap(),
         "{v}"
     );
 
