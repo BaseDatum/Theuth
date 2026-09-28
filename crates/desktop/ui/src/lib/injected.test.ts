@@ -1,9 +1,21 @@
 import { expect, test } from 'vitest'
-import { classify } from './injected'
+import { classify, parseBroadcast } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
   expect(classify('<message from="x">unterminated')).toBeNull()
+})
+
+test('broadcast marker: the human speaking to many sessions, not a wrapper', () => {
+  const text = '[broadcast 01a0 · 3 sessions]\nstatus report?\n\n- **now**'
+  // Still the user's row for the reducer (a turn opener, editable); the card is chosen at render.
+  expect(classify(text)).toBeNull()
+  expect(parseBroadcast(text)).toEqual({ id: '01a0', count: 3, text: 'status report?\n\n- **now**' })
+  expect(parseBroadcast('[broadcast 01a0 · 1 sessions]')).toEqual({ id: '01a0', count: 1, text: '' })
+  // Only the supervisor's exact marker at the start; a quoted or dry-run marker stays text.
+  expect(parseBroadcast('see [broadcast 01a0 · 3 sessions]\nx')).toBeNull()
+  expect(parseBroadcast('[broadcast … · 2 sessions]\nx')).toBeNull()
+  expect(parseBroadcast('[broadcast 01a0 · 3 sessions] x')).toBeNull()
 })
 
 test('skill injection: chip plus the words after it', () => {

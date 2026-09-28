@@ -29,6 +29,9 @@ const ANSWER2: &str = "A solid navy-blue square filling the whole 4x4 image.";
 const FINAL: &str = "The square is red.";
 /// The reply of a main call the fake cuts off (`finish_reason: length`).
 const TRUNCATED: &str = "Working on it";
+/// A main request carrying this text gets an empty reply (`finish_reason:
+/// content_filter`, no content chunk): a refused / filtered round.
+const EMPTY_REPLY_TRIGGER: &str = "EMPTY-REPLY";
 /// A vault value the main model leaks into its question (52 §5.3).
 const SECRET: &str = "sk-live-deadbeef42";
 const PLACEHOLDER: &str = "{{secret:TOKEN}}";
@@ -50,8 +53,9 @@ fn summary() -> String {
 
 // region:    --- Fake provider
 
-/// One OpenAI chat-completions SSE reply: a content chunk, the finish chunk,
-/// a usage-only chunk, `[DONE]`.
+/// One OpenAI chat-completions SSE reply: a content chunk (none when `text` is
+/// empty — a refused/filtered reply has no blocks), the finish chunk, a
+/// usage-only chunk, `[DONE]`.
 fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTemplate {
     let chunk = |choices: Value, usage: Option<Value>| {
         let mut v =
@@ -61,12 +65,19 @@ fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTe
         }
         v
     };
+    let content = if text.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "data: {}\n\n",
+            chunk(
+                json!([{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": null}]),
+                None
+            )
+        )
+    };
     let body = format!(
-        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-        chunk(
-            json!([{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": null}]),
-            None
-        ),
+        "{content}data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         chunk(
             json!([{"index": 0, "delta": {}, "finish_reason": finish}]),
             None
@@ -159,6 +170,10 @@ impl Respond for Fake {
                 Some(d) => t.set_delay(d),
                 None => t,
             };
+        }
+        // The trigger stays in history: only the newest message decides, so the next turn answers.
+        if texts(&b).last().is_some_and(|t| t.contains(EMPTY_REPLY_TRIGGER)) {
+            return sse("", "content_filter", MAIN_USAGE);
         }
         if self.truncate_until.is_some_and(|t| !text.contains(t)) {
             return sse(TRUNCATED, "length", MAIN_USAGE);
@@ -669,6 +684,7 @@ async fn vision_scenarios() {
     manual_summary_compaction_inspects_pending_images_first().await;
     leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
     cut_compaction_budgets_the_tail_and_folds_tool_results().await;
+    empty_reply_is_surfaced_as_an_error().await;
 
     let _ = std::fs::remove_dir_all(&reg_dir);
 }
@@ -828,6 +844,26 @@ async fn vision_capable_main_bypasses_a_broken_fallback() {
     assert!(h.notes().await.is_empty());
     assert!(progress(&events).is_empty());
     assert_eq!(h.store.messages(h.id).await.unwrap().len(), 2);
+}
+
+/// An empty reply (no text, no tool calls) ends the turn with an error note in
+/// the transcript instead of silently — the stop reason is the only clue the
+/// provider gives (2026-09-28: one session lost ten turns this way).
+async fn empty_reply_is_surfaced_as_an_error() {
+    let mut h = Harness::new(fake()).await;
+    h.set_fallback(None);
+    let events = h.run("openai/textonly", EMPTY_REPLY_TRIGGER, false).await;
+    assert_eq!(
+        errors(&events),
+        ["model returned an empty reply (stop_reason=content_filter)"]
+    );
+    assert_eq!(stop_reason(&events), "content_filter");
+    // Nothing to replay: no empty assistant row lands in history.
+    assert_eq!(h.store.messages(h.id).await.unwrap().len(), 1);
+    // The next turn runs normally.
+    let events = h.run("openai/textonly", "Say the colour.", false).await;
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert_eq!(stop_reason(&events), "stop");
 }
 
 /// 52 §4.1: text-only main, no fallback — one main request with the stable

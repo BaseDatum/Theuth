@@ -89,6 +89,15 @@ export function humanSecs(secs: string | number): string {
   return m > 0 ? `${m} min` : `${s} s`
 }
 
+/** `supervisor::broadcast`: `[broadcast <4 hex> · <n> sessions]\n<text>` — the human's one message to many sessions (62 §0.4). */
+const BROADCAST = /^\[broadcast ([0-9a-f]{4}) · (\d+) sessions\](?:\n|$)/
+
+/** The broadcast marker's id and recipient count with the human's words; `null` for any other input. */
+export function parseBroadcast(text: string): { id: string; count: number; text: string } | null {
+  const m = BROADCAST.exec(text.trimStart())
+  return m ? { id: m[1] as string, count: Number(m[2]), text: text.trimStart().slice(m[0].length) } : null
+}
+
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`

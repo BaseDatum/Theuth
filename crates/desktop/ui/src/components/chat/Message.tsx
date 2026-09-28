@@ -2,14 +2,14 @@ import { Link } from '@tanstack/react-router'
 import { AppWindow, BellRing, Bot, ChevronRight, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useState } from 'react'
 import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
-import { ENGINE_NOTICES } from '@/lib/injected'
+import { ENGINE_NOTICES, parseBroadcast } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/rpc/extra'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
-import { DeskCard, WakeCard } from './HarnessCards'
+import { BroadcastCard, DeskCard, WakeCard } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo } from './MessageInfo'
@@ -28,6 +28,9 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       // 53 §4.4: the daemon's `[meeting …]` inputs are notices, not the user's words.
       const meeting = parseMeetingLine(entry.text)
       if (meeting) return <MeetingCard line={meeting} />
+      // 62 §0.4: a broadcast is the human's words to many sessions; the marker line becomes the card's header.
+      const broadcast = parseBroadcast(entry.text)
+      if (broadcast) return <BroadcastCard {...broadcast} />
       // 46 §6.3: an app's `@ToAssistant` action is app data with provenance, not a `you` bubble.
       const app = parseAppInput(entry.text)
       if (app) return <AppInputCard input={app} />

@@ -3,7 +3,7 @@
 // task record as its body. Nothing is hidden: every part stays readable, just folded.
 
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, Zap } from 'lucide-react'
+import { Bot, ChevronRight, Radio, Zap } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
@@ -71,6 +71,23 @@ export function WakeCard({ id, title, reason, count, state, owner, reviewer, thr
         </Streamdown>
       )}
       {roster !== undefined && <Section title="Fit check" text={roster} />}
+    </div>
+  )
+}
+
+/** 62 §0.4: the human's one message sent to `count` sessions at once; the marker id names the broadcast. */
+export function BroadcastCard({ id, count, text }: { id: string; count: number; text: string }) {
+  return (
+    <div className={SHELL}>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-secondary">
+        <Radio className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="font-medium">broadcast</span>
+        <span className="text-fg-tertiary">{id}</span>
+        <Badge variant="outline">{count} sessions</Badge>
+      </div>
+      <Streamdown mode="static" className="mt-2 text-sm">
+        {text}
+      </Streamdown>
     </div>
   )
 }

@@ -3730,6 +3730,14 @@ impl Turn {
             .map(|v| v.into_iter().cloned().collect())
             .unwrap_or_default();
         if calls.is_empty() {
+            // An empty reply (Anthropic `refusal`, a filtered stream, a bare
+            // `end_turn` with no blocks) used to end the turn with nothing in the
+            // transcript or the log: the user's message looked swallowed
+            // (session 01a0e834, 2026-09-28: ten such turns over 1h50). Say so.
+            if end.captured_content.as_ref().is_none_or(|c| c.is_empty()) {
+                self.error(format!("model returned an empty reply (stop_reason={stop})"))
+                    .await;
+            }
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
                 // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
                 // rounds per turn while a fence would not render, then one final
