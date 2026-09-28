@@ -526,7 +526,7 @@ impl Net {
             match pending.as_ref().filter(|p| p.live()) {
                 Some(p) => p.token.clone(),
                 None => {
-                    let p = Pending::new();
+                    let p = Pending::fresh();
                     let token = p.token.clone();
                     *pending = Some(p);
                     token
@@ -897,9 +897,9 @@ impl Net {
                 keep
             });
             for id in want {
-                if !tasks.contains_key(&id) {
+                if let std::collections::hash_map::Entry::Vacant(e) = tasks.entry(id) {
                     let c = cancel.child_token();
-                    tasks.insert(id, c.clone());
+                    e.insert(c.clone());
                     tokio::spawn(self.clone().connect_loop(id, c));
                 }
             }

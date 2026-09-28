@@ -58,8 +58,8 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// Fresh token.
-    pub fn new() -> Self {
+    /// Fresh random token.
+    pub fn fresh() -> Self {
         let bytes: [u8; 16] = rand::random();
         Self {
             token: BASE32_NOPAD.encode(&bytes),
@@ -180,7 +180,7 @@ mod tests {
             name: "Sky’s Mac".into(),
             relay: "https://iroh.relay.theuth.io".into(),
             addrs: vec![TransportAddr::Ip("192.168.1.5:11204".parse().unwrap())],
-            token: Pending::new().token,
+            token: Pending::fresh().token,
             vault_key: Some(BASE32_NOPAD.encode(&[9u8; 32])),
         };
         let s = build(&p);

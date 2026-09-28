@@ -134,7 +134,7 @@ pub fn elect(
         .iter()
         .filter(|c| c.hub_pref != HubPref::Never)
         .collect();
-    ranked.sort_by(|a, b| key(b).cmp(&key(a)));
+    ranked.sort_by_key(|c| std::cmp::Reverse(key(c)));
     let incumbent = incumbent.filter(|id| ranked.iter().any(|c| &c.id == *id));
     let Some(inc) = incumbent else {
         return ranked.first().map(|c| c.id.clone());
