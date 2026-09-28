@@ -1,7 +1,7 @@
 import { ChevronRight } from 'lucide-react'
 import { memo, useState } from 'react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Pulse } from './Pulse'
+import { ThinkingIndicator } from './Indicators'
 
 /**
  * A thinking block, collapsed behind a chevron until clicked (70 THINKING-TRACES).
@@ -18,7 +18,7 @@ export const MessageReasoning = memo(function MessageReasoning({ text, done }: {
           'Thought'
         ) : (
           <>
-            <Pulse className="size-2 shrink-0" />
+            <ThinkingIndicator />
             <span className="shrink-0">Thinking…</span>
             {!open && <span className="truncate text-fg-tertiary">{text.trimEnd().split('\n').pop()}</span>}
           </>

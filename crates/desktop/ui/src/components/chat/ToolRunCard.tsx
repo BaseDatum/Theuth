@@ -1,7 +1,8 @@
-import { ChevronRight, Loader2, Wrench } from 'lucide-react'
+import { ChevronRight, Wrench } from 'lucide-react'
 import { resultLine } from '@/lib/describe'
 import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
+import { ToolSpinner } from './Indicators'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { isBoardCreate } from './BoardCard'
@@ -84,7 +85,7 @@ export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prom
             <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
             <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
             <span className="min-w-0 truncate">{text}</span>
-            {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+            {running && <ToolSpinner />}
           </div>
           {hint && !open && (
             <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>

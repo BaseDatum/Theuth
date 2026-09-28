@@ -35,6 +35,7 @@
         "cn": "^0.3.0",
         "elkjs": "^0.9.3",
         "jsonrepair": "^3.13.0",
+        "loading-dev": "^0.3.4",
         "lucide-react": "^1.46.0",
         "mermaid": "^12.0.0",
         "opus-decoder": "^0.7.12",
@@ -990,6 +991,8 @@
     "lightningcss-win32-arm64-msvc": ["lightningcss-win32-arm64-msvc@1.33.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA=="],
 
     "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
+
+    "loading-dev": ["loading-dev@0.3.4", "", { "peerDependencies": { "react": ">=19.0.0", "react-dom": ">=19.0.0" } }, "sha512-vFwHrUk4QFVya4FKvGWP0q1eSJUlFQAQIPI1KScxiLExxCEhlsRAumjtD72m45yKMYX8fGK7i+yxAj+wdYLSkQ=="],
 
     "lodash-es": ["lodash-es@4.17.23", "", {}, "sha512-kVI48u3PZr38HdYz98UmfPnXl2DXrpdctLrFLCd3kOx1xUkOmpFPx7gCWWM5MPkL/fD8zb+Ph0QzjGFs4+hHWg=="],
 

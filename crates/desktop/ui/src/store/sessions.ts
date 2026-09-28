@@ -568,6 +568,17 @@ export function useSessionField<K extends keyof SessionSlice>(
   return useSessions((s) => s.sessions[id]?.[key]);
 }
 
+/** A `browser_*` call is in flight: a tool card without its result during a running turn (a stale card after a crash does not count). */
+export const browserBusy = (s: SessionSlice | undefined): boolean =>
+  !!s?.running &&
+  s.entries.some(
+    (t) => t.kind === "tool" && t.name.startsWith("browser_") && !t.result,
+  );
+
+/** `browserBusy` of one session; the header's globe spins on it. */
+export const useBrowserBusy = (id: string) =>
+  useSessions((s) => browserBusy(s.sessions[id]));
+
 type Listener<T extends WireEvent["type"]> = (
   e: Extract<WireEvent, { type: T }>,
 ) => void;

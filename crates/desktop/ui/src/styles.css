@@ -225,6 +225,30 @@
   }
 }
 
+/* `PtyIcon` while a PTY is live: the prompt chevron nudges right, the cursor blinks (sidebar row, header terminals button). */
+.pty-live .pty-prompt {
+  animation: pty-nudge 1.2s ease-in-out infinite;
+}
+.pty-live .pty-cursor {
+  animation: pty-blink 1s step-end infinite;
+}
+@keyframes pty-nudge {
+  50% {
+    transform: translateX(1.5px);
+  }
+}
+@keyframes pty-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pty-live .pty-prompt,
+  .pty-live .pty-cursor {
+    animation: none;
+  }
+}
+
 /* Sweep on an in-flight crawl/search label (LibreChat `.shimmer`). */
 .shimmer {
   background-image: linear-gradient(90deg, var(--fg-tertiary) 40%, var(--fg-primary) 50%, var(--fg-tertiary) 60%);

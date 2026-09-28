@@ -1,5 +1,6 @@
-import { ChevronDown, Globe, Loader2, Wrench } from 'lucide-react'
+import { ChevronDown, Wrench } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
+import { BrowserIndicator, ToolSpinner } from './Indicators'
 import { type Source, domainOf, sourcesFromResult, uniqueDomains, urlsFromResult } from '@/lib/scrape'
 import { describe, resultLine } from '@/lib/describe'
 import { cn } from '@/lib/utils'
@@ -118,7 +119,7 @@ export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: To
         <div className="flex items-center gap-2 font-medium">
           {tool.child ? <span className="shrink-0 text-fg-secondary">↳</span> : <Wrench className="size-3.5 shrink-0 text-fg-secondary" />}
           <span className="wrap-anywhere">{tool.name}</span>
-          {running && <Loader2 className="size-3.5 shrink-0 animate-spin text-fg-tertiary" />}
+          {running && <ToolSpinner />}
         </div>
         {lines.length > 0 && (
           <pre className="w-full font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap text-fg-secondary">
@@ -129,7 +130,7 @@ export const ScrapeCard = memo(function ScrapeCard({ tool, session }: { tool: To
           {running
             ? stack.length > 0 && <StackedFavicons urls={stack} />
             : done.length > 0 && <SourceStack urls={done} />}
-          <Globe className="size-4 shrink-0 text-fg-tertiary" aria-hidden="true" />
+          <BrowserIndicator live={running} className="text-fg-tertiary" />
           <span className={cn('min-w-0 truncate text-xs', running ? 'shimmer font-medium text-fg-secondary' : 'text-fg-secondary')}>
             {text}
           </span>

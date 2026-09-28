@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, CornerLeftUp, Gauge, Globe, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
-import { useSessionField, useSessions } from '@/store/sessions'
+import { useBrowserBusy, useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalsSheet } from './ApprovalCard'
 import { metaLine } from './ArtifactCard'
 import { ArtifactPanel } from './ArtifactPanel'
@@ -28,6 +28,7 @@ import { ContextMeter } from './ContextMeter'
 import { CostDialog, CostPill } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
+import { BrowserIndicator } from './Indicators'
 import { SessionMenu } from './SessionMenu'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 
@@ -164,6 +165,7 @@ export function Header({
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
   const browser = useSessionField(session ?? '', 'browser')
+  const browserBusy = useBrowserBusy(session ?? '')
   const live = useSessionField(session ?? '', 'browserLive')
   const artifacts = useSessionField(session ?? '', 'artifacts')
   const terminals = useHasTerminals(session)
@@ -236,7 +238,7 @@ export function Header({
     terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
     browser: (mode) =>
       !session || !browser ? null : mode === 'row' ? (
-        <MenuRow icon={Globe} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
+        <MenuRow icon={<BrowserIndicator live={browserBusy} className="text-fg-secondary" />} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
       ) : (
         <Button
           variant="ghost"
@@ -244,7 +246,7 @@ export function Header({
           aria-label="Live browser"
           onClick={() => useSessions.getState().setBrowserLive(session, true)}
         >
-          <Globe className="size-5" />
+          <BrowserIndicator live={browserBusy} size={20} />
         </Button>
       ),
     artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
