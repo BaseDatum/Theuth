@@ -10,7 +10,7 @@
 //!   [`Stats`], [`Reconcile`], [`Locate`] (71 §2.5)
 //! - the `codeindex_stats` RPC method answers [`Stats`], `code_locate` answers
 //!   [`Locate`] (60 §10)
-//! - no events in v1 (60 §10)
+//! - events [`CodeindexEvent`] on the bus (73 §5.1)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+pub mod event;
 pub mod git;
 pub mod index;
 pub mod lang;
@@ -35,6 +36,7 @@ pub mod store;
 pub mod tools;
 pub mod walk;
 
+pub use event::{CodeToolSummary, CodeindexEvent, SummaryDefinition, SummaryImpact, SummaryRange};
 pub use index::{Codeindex, Reconciled, RootIndex};
 pub use locate::{Locate, LocateAnchor, LocateStatus, Located};
 
@@ -217,7 +219,7 @@ impl runtime::Plugin for CodeindexPlugin {
             return Ok(());
         }
         let ix = match Codeindex::new(cfg, &rt.data_dir) {
-            Ok(ix) => Arc::new(ix),
+            Ok(ix) => Arc::new(ix.with_runtime(rt.clone())),
             Err(e) => {
                 tracing::warn!("codeindex unavailable: {e:#}");
                 return Ok(());

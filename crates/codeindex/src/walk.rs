@@ -66,28 +66,39 @@ pub fn walk(root: &Path, max_bytes: u64) -> Walk {
             break;
         }
         let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        let path = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        let language = rel
-            .extension()
-            .and_then(|e| e.to_str())
-            .map_or(Language::Other, Language::from_ext);
-        let mtime_ns = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
-        out.entries.push(Entry {
-            path,
-            mtime_ns,
-            size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
-            language,
-        });
+        out.entries.push(entry_of(rel, &meta));
     }
     out
+}
+
+/// One file of `root` as the walk would list it, or `None` when it is not a
+/// regular file or exceeds `max_bytes` (`codemap_touch`, 73 §5.2).
+pub fn entry(root: &Path, rel: &str, max_bytes: u64) -> Option<Entry> {
+    let meta = std::fs::metadata(root.join(rel)).ok()?;
+    (meta.is_file() && meta.len() <= max_bytes).then(|| entry_of(Path::new(rel), &meta))
+}
+
+fn entry_of(rel: &Path, meta: &std::fs::Metadata) -> Entry {
+    let path = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let language = rel
+        .extension()
+        .and_then(|e| e.to_str())
+        .map_or(Language::Other, Language::from_ext);
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
+    Entry {
+        path,
+        mtime_ns,
+        size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
+        language,
+    }
 }
 
 /// `*.min.js`, `*.pb.go`, `*_generated.*` (60 §5.1).

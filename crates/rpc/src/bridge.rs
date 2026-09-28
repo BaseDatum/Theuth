@@ -10,6 +10,7 @@ use agent::{AgentEvent, CommunicationChanged, LoginFinished, PeerDelivered, Peer
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use browser::BrowserEvent;
+use codeindex::CodeindexEvent;
 use document::DocumentChanged;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -116,7 +117,8 @@ forward!(
     MeetingEvent,
     BriefEvent,
     AppCallChanged,
-    ActivityAppended
+    ActivityAppended,
+    CodeindexEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -163,5 +165,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, BriefEvent>(&actor).await;
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
     rt.subscribe::<Bridge, ActivityAppended>(&actor).await;
+    rt.subscribe::<Bridge, CodeindexEvent>(&actor).await;
     tx
 }
