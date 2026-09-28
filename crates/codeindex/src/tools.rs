@@ -606,11 +606,14 @@ impl Tool for CodeRefsTool {
 }
 
 /// Arguments for [`CodeMapTool`].
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CodeMapArgs {
     /// Identifiers and/or root-relative paths (files or directories) to personalise the map toward.
     #[serde(default)]
     pub focus: Option<Vec<String>>,
+    /// Files edited this session (root-relative or absolute): weighted above a `focus` path, their co-change partners lightly.
+    #[serde(default)]
+    pub edited: Option<Vec<PathBuf>>,
     /// Ranked files only ({path, rank, lines, language}), no definitions.
     #[serde(default)]
     pub paths_only: Option<bool>,
@@ -671,7 +674,10 @@ fn badge_fields(v: &mut serde_json::Value, facts: &rank::MapFacts, path: &str, l
             facts.importers.get(path).copied().unwrap_or(0).into(),
         );
         m.insert("recent".into(), facts.recent.contains(path).into());
-        m.insert("callers".into(), facts.callers(path, line).unwrap_or(0).into());
+        m.insert(
+            "callers".into(),
+            facts.callers(path, line).unwrap_or(0).into(),
+        );
     }
 }
 
@@ -688,7 +694,7 @@ impl Tool for CodeMapTool {
     type Args = CodeMapArgs;
 
     fn description(&self) -> String {
-        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high). Returns {rows: [{path, line, kind, name, signature, rank, importers, recent, callers}], root, indexed_files, stale, pending, dropped, cached, coverage_added, content}; content is the map as text: `path (→N importing/referencing files) [NEW if modified < 48 h]`, then indented `line: signature  ↑callers` per definition, fitted to budget, plus one line for any large directory the fit left out — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); paths_only=true returns ranked files {path, rank, lines, language} instead; mode=\"changed\" renders only the files changed in the worktree vs HEAD with their changed definitions and direct importers (`← a, b`), most recently modified first — a few hundred tokens to brief a child about what is being worked on. Unchanged index + same arguments → served from cache (cached: true).".into()
+        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high; re-exports route to their definer, barrel and type-only files are damped). Returns {rows: [{path, line, kind, name, signature, rank, importers, recent, callers, entry?}], root, indexed_files, stale, pending, dropped, cached, coverage_added, content}; content is the map as text: `path (→N importing/referencing files) [NEW if modified < 48 h]`, then indented `line: signature  ↑callers` per definition, fitted to budget, plus one line for any large directory the fit left out — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); edited=[paths] weighs files edited this session above a focus path and folds in their co-change partners; with neither, manifest entry points (rows with entry: true) seed the map lightly. paths_only=true returns ranked files {path, rank, lines, language, entry?} instead; mode=\"changed\" renders only the files changed in the worktree vs HEAD with their changed definitions and direct importers (`← a, b`), most recently modified first — a few hundred tokens to brief a child about what is being worked on. Unchanged index + same arguments → served from cache (cached: true).".into()
     }
 
     async fn call(&self, a: CodeMapArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -703,15 +709,36 @@ impl Tool for CodeMapTool {
             .into_iter()
             .filter(|s| !s.trim().is_empty())
             .collect();
+        // Root-relative, forward slashes; absolute paths under the root are stripped.
+        let edited: Vec<String> = a
+            .edited
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&ri.root)
+                    .unwrap_or(p)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
         let paths_only = a.paths_only.unwrap_or(false);
         let mode = a.mode.as_deref().map_or("full", str::trim);
         let changed = match mode {
             "full" => false,
             "changed" => true,
-            m => return Ok(ToolOutput::err(format!("mode {m:?}: expected \"full\" or \"changed\""))),
+            m => {
+                return Ok(ToolOutput::err(format!(
+                    "mode {m:?}: expected \"full\" or \"changed\""
+                )));
+            }
         };
         if changed && paths_only {
-            return Ok(ToolOutput::err("paths_only has no meaning with mode=\"changed\""));
+            return Ok(ToolOutput::err(
+                "paths_only has no meaning with mode=\"changed\"",
+            ));
         }
         // HEAD for the cache key; `changed` without a repository has no diff to render.
         let head = {
@@ -746,9 +773,12 @@ impl Tool for CodeMapTool {
         );
         let mut sorted = focus.clone();
         sorted.sort();
+        let mut sorted_edited = edited.clone();
+        sorted_edited.sort();
         let key = format!(
-            "{state}:b={budget};p={paths_only};m={mode};f={}",
-            sorted.join("\u{1f}")
+            "{state}:b={budget};p={paths_only};m={mode};f={};e={}",
+            sorted.join("\u{1f}"),
+            sorted_edited.join("\u{1f}")
         );
         if !r.stale
             && let Some(hit) = store::map_cache_get(&ri.pool, &key).await?
@@ -770,16 +800,21 @@ impl Tool for CodeMapTool {
                 let Some(g) = Git::open(&root)? else {
                     anyhow::bail!("{} is not in a git repository", root.display())
                 };
-                g.changes(&git::Range::Worktree, &root, paths.iter().map(String::as_str))
+                g.changes(
+                    &git::Range::Worktree,
+                    &root,
+                    paths.iter().map(String::as_str),
+                )
             })
             .await?;
             let changes = match changes {
                 Ok(c) => c,
                 Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
             };
-            self.changed(&ri, &known, changes, &facts, budget, &mut extra).await?
+            self.changed(&ri, &known, changes, &facts, budget, &mut extra)
+                .await?
         } else {
-            self.full(&ri, &focus, paths_only, &facts, budget, &mut extra).await?
+            Self::full(&ri, &focus, &edited, paths_only, &facts, budget, &mut extra).await?
         };
         if text.is_empty() {
             text = if changed {
@@ -788,13 +823,12 @@ impl Tool for CodeMapTool {
                 "no ranked definitions: the index has no resolved cross-file references yet".into()
             };
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = Envelope::new(&ri, &r, dropped);
         let mut v = serde_json::json!({
             "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
             "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "suspect_root": e.suspect_root, "hint": e.hint,
             "estimated_tokens": estimate_tokens(text.len()),
             "mode": mode,
             "cached": false,
@@ -812,30 +846,31 @@ impl Tool for CodeMapTool {
 }
 
 impl CodeMapTool {
-    /// `mode="full"`: the ranked map (60 §7), personalised when `focus` is
-    /// given, ranked files only when `paths_only`. Returns `(text, rows, dropped)`.
+    /// `mode="full"`: the ranked map (60 §7), personalised when `focus` or
+    /// `edited` is given, ranked files only when `paths_only`. Returns `(text, rows, dropped)`.
     async fn full(
-        &self,
         ri: &RootIndex,
         focus: &[String],
+        edited: &[String],
         paths_only: bool,
         facts: &rank::MapFacts,
         budget: u32,
         extra: &mut serde_json::Map<String, serde_json::Value>,
     ) -> anyhow::Result<(String, Vec<serde_json::Value>, usize)> {
-        // Without focus the stored ranks are the answer (60 §7); a focus is a fresh personalised run.
-        let ranked = if focus.is_empty() && !paths_only {
+        // Without focus or edited the stored ranks are the answer (60 §7); either is a fresh personalised run.
+        let personalised = !focus.is_empty() || !edited.is_empty();
+        let ranked = if !personalised && !paths_only {
             None
         } else {
             let g = Graph::load(&ri.pool).await?;
-            let f = g.focus(focus);
-            let rk = if focus.is_empty() {
-                None
-            } else {
-                Some(g.rank(&f))
-            };
+            let f = g.focus(focus, edited);
+            let rk = personalised.then(|| g.rank(&f));
             Some((g, f, rk))
         };
+        let entries: HashSet<String> = store::meta(&ri.pool, "entry_points")
+            .await?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         if let Some((g, f, rk)) = &ranked {
             extra.insert(
                 "focus_files".into(),
@@ -852,6 +887,7 @@ impl CodeMapTool {
             if let Some(rk) = rk {
                 extra.insert("pagerank_iterations".into(), rk.iterations.into());
             }
+            extra.insert("entry_points".into(), g.entry_paths().into());
         }
         if paths_only {
             let (g, _, rk) = ranked.as_ref().expect("loaded for paths_only");
@@ -863,7 +899,12 @@ impl CodeMapTool {
             let lines: Vec<String> = files
                 .iter()
                 .map(|(f, r)| {
-                    format!("{}  {r:.5}  {} lines  {}", facts.file_line(&f.path), f.lines, f.language)
+                    format!(
+                        "{}  {r:.5}  {} lines  {}",
+                        facts.file_line(&f.path),
+                        f.lines,
+                        f.language
+                    )
                 })
                 .collect();
             let (text, kept, dropped) = budget_render(&lines, budget);
@@ -872,6 +913,9 @@ impl CodeMapTool {
                 .map(|(f, r)| {
                     let mut v = serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language});
                     badge_fields(&mut v, facts, &f.path, 0);
+                    if entries.contains(&f.path) {
+                        v["entry"] = true.into();
+                    }
                     v
                 })
                 .collect();
@@ -889,6 +933,9 @@ impl CodeMapTool {
                 let t = &tags[i];
                 let mut v = serde_json::to_value(t).unwrap_or_default();
                 badge_fields(&mut v, facts, &t.path, t.line);
+                if entries.contains(&t.path) {
+                    v["entry"] = true.into();
+                }
                 v
             })
             .collect();
@@ -912,7 +959,10 @@ impl CodeMapTool {
         // The reconcile just made the index describe the disk, which is the
         // diff's new side: hunks map straight onto the stored rows (no
         // new-side parse as `code_impact` needs for commit ranges).
-        let by_id: HashMap<i64, &str> = known.iter().map(|(p, &(id, ..))| (id, p.as_str())).collect();
+        let by_id: HashMap<i64, &str> = known
+            .iter()
+            .map(|(p, &(id, ..))| (id, p.as_str()))
+            .collect();
         let edges = store::import_edges(&ri.pool).await?;
         let mut blocks: Vec<ChangedBlock<'_>> = Vec::with_capacity(changes.len());
         for c in &changes {
@@ -940,7 +990,10 @@ impl CodeMapTool {
                     moniker: r.moniker.clone(),
                 })
                 .collect();
-            let hit: HashSet<i64> = touched(&syms, &c.spans).iter().filter_map(|s| s.id).collect();
+            let hit: HashSet<i64> = touched(&syms, &c.spans)
+                .iter()
+                .filter_map(|s| s.id)
+                .collect();
             let symbols: Vec<OutlineRow> =
                 rows.into_iter().filter(|r| hit.contains(&r.id)).collect();
             let mut importers: Vec<&str> = edges

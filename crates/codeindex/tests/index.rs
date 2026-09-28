@@ -1123,46 +1123,102 @@ async fn find_tiers_and_monikers() {
             })
             .collect()
     };
-    let tier = |m: &str| ["exact", "prefix", "infix", "text"].iter().position(|t| *t == m).unwrap();
+    let tier = |m: &str| {
+        ["exact", "prefix", "infix", "text"]
+            .iter()
+            .position(|t| *t == m)
+            .unwrap()
+    };
 
     // Infix, case-insensitive: "gistry" is inside Registry only.
-    let v = CodeFindTool(ix.clone()).call(find("gistry", false), cx(&data)).await.unwrap().structured.unwrap();
+    let v = CodeFindTool(ix.clone())
+        .call(find("gistry", false), cx(&data))
+        .await
+        .unwrap()
+        .structured
+        .unwrap();
     let r = rows(&v);
     assert_eq!(
         r,
-        [("Registry".to_owned(), "infix".to_owned(), "rust:crates/a/src/lib.rs#Registry(class)".to_owned())],
+        [(
+            "Registry".to_owned(),
+            "infix".to_owned(),
+            "rust:crates/a/src/lib.rs#Registry(class)".to_owned()
+        )],
         "{v}"
     );
     // Space-split: "open db" → open_db, as a prefix (`open%db%`).
-    let v = CodeFindTool(ix.clone()).call(find("open db", false), cx(&data)).await.unwrap().structured.unwrap();
+    let v = CodeFindTool(ix.clone())
+        .call(find("open db", false), cx(&data))
+        .await
+        .unwrap()
+        .structured
+        .unwrap();
     let r = rows(&v);
-    assert!(r.iter().any(|(n, m, _)| n == "open_db" && m == "prefix"), "{r:?}");
+    assert!(
+        r.iter().any(|(n, m, _)| n == "open_db" && m == "prefix"),
+        "{r:?}"
+    );
     // Tiers in order: `new` is exact twice (Registry::new, Store::new); whatever follows is a later tier.
-    let v = CodeFindTool(ix.clone()).call(find("new", false), cx(&data)).await.unwrap().structured.unwrap();
+    let v = CodeFindTool(ix.clone())
+        .call(find("new", false), cx(&data))
+        .await
+        .unwrap()
+        .structured
+        .unwrap();
     let r = rows(&v);
     assert_eq!(r[0].1, "exact", "{r:?}");
     assert_eq!(r[1].1, "exact", "{r:?}");
-    assert!(r.windows(2).all(|w| tier(&w[0].1) <= tier(&w[1].1)), "{r:?}");
-    let mut monikers: Vec<&str> = r.iter().filter(|x| x.1 == "exact").map(|x| x.2.as_str()).collect();
+    assert!(
+        r.windows(2).all(|w| tier(&w[0].1) <= tier(&w[1].1)),
+        "{r:?}"
+    );
+    let mut monikers: Vec<&str> = r
+        .iter()
+        .filter(|x| x.1 == "exact")
+        .map(|x| x.2.as_str())
+        .collect();
     monikers.sort_unstable();
     assert_eq!(
         monikers,
-        ["rust:crates/a/src/lib.rs#Registry.new(method)", "rust:crates/a/src/store.rs#Store.new(method)"],
+        [
+            "rust:crates/a/src/lib.rs#Registry.new(method)",
+            "rust:crates/a/src/store.rs#Store.new(method)"
+        ],
         "impl methods hang off their type"
     );
     // exact: true keeps exact rows only.
-    let v = CodeFindTool(ix.clone()).call(find("new", true), cx(&data)).await.unwrap().structured.unwrap();
+    let v = CodeFindTool(ix.clone())
+        .call(find("new", true), cx(&data))
+        .await
+        .unwrap()
+        .structured
+        .unwrap();
     assert!(rows(&v).iter().all(|x| x.1 == "exact"), "{v}");
     assert_eq!(rows(&v).len(), 2);
     // A nested fn's moniker carries its module.
-    let v = CodeFindTool(ix.clone()).call(find("helper", true), cx(&data)).await.unwrap().structured.unwrap();
-    assert_eq!(rows(&v)[0].2, "rust:crates/a/src/lib.rs#inner.helper(function)");
+    let v = CodeFindTool(ix.clone())
+        .call(find("helper", true), cx(&data))
+        .await
+        .unwrap()
+        .structured
+        .unwrap();
+    assert_eq!(
+        rows(&v)[0].2,
+        "rust:crates/a/src/lib.rs#inner.helper(function)"
+    );
 
     // The moniker picks the definition in code_refs and code_symbol (two `new`s exist by name).
     let m = "rust:crates/a/src/lib.rs#Registry.new(method)";
     let out = CodeRefsTool(ix.clone())
         .call(
-            CodeRefsArgs { symbol: m.into(), direction: None, kind: None, root: root.clone(), budget: None },
+            CodeRefsArgs {
+                symbol: m.into(),
+                direction: None,
+                kind: None,
+                root: root.clone(),
+                budget: None,
+            },
             cx(&data),
         )
         .await
@@ -1188,7 +1244,13 @@ async fn find_tiers_and_monikers() {
     // By name alone, `new` is ambiguous.
     let out = CodeRefsTool(ix.clone())
         .call(
-            CodeRefsArgs { symbol: "new".into(), direction: None, kind: None, root: root.clone(), budget: None },
+            CodeRefsArgs {
+                symbol: "new".into(),
+                direction: None,
+                kind: None,
+                root: root.clone(),
+                budget: None,
+            },
             cx(&data),
         )
         .await
@@ -1197,25 +1259,56 @@ async fn find_tiers_and_monikers() {
 
     // code_outline nodes carry it, nested ones too.
     let out = CodeOutlineTool(ix.clone())
-        .call(CodeOutlineArgs { path: "crates/a/src/lib.rs".into(), root: root.clone(), budget: None }, cx(&data))
+        .call(
+            CodeOutlineArgs {
+                path: "crates/a/src/lib.rs".into(),
+                root: root.clone(),
+                budget: None,
+            },
+            cx(&data),
+        )
         .await
         .unwrap();
     let v = out.structured.unwrap();
-    let reg = v["symbols"].as_array().unwrap().iter().find(|s| s["name"] == "Registry").unwrap();
+    let reg = v["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "Registry")
+        .unwrap();
     assert_eq!(reg["moniker"], "rust:crates/a/src/lib.rs#Registry(class)");
     assert!(
-        reg["children"].as_array().unwrap().iter().any(|c| c["moniker"] == "rust:crates/a/src/lib.rs#Registry.new(method)"),
+        reg["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["moniker"] == "rust:crates/a/src/lib.rs#Registry.new(method)"),
         "{reg}"
     );
     // code_map rows carry it.
     let out = CodeMapTool(ix.clone())
-        .call(CodeMapArgs { focus: None, budget: None, paths_only: None, mode: None, root: root.clone() }, cx(&data))
+        .call(
+            CodeMapArgs {
+                focus: None,
+                edited: None,
+                budget: None,
+                paths_only: None,
+                mode: None,
+                root: root.clone(),
+            },
+            cx(&data),
+        )
         .await
         .unwrap();
     let v = out.structured.unwrap();
     let rows = v["rows"].as_array().unwrap();
     assert!(!rows.is_empty(), "{v}");
-    assert!(rows.iter().all(|r| r["moniker"].as_str().is_some_and(|m| m.starts_with("rust:"))), "{v}");
+    assert!(
+        rows.iter().all(|r| r["moniker"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("rust:"))),
+        "{v}"
+    );
 }
 
 /// Monikers survive a reparse that only moves lines (60 §8): insert lines
@@ -1239,10 +1332,12 @@ async fn monikers_are_stable_across_line_moves() {
     let snapshot = |ri: &RootIndex| {
         let pool = ri.pool.clone();
         async move {
-            sqlx::query_as::<_, (String, i64)>("SELECT moniker, line_start FROM symbols ORDER BY moniker")
-                .fetch_all(&pool)
-                .await
-                .unwrap()
+            sqlx::query_as::<_, (String, i64)>(
+                "SELECT moniker, line_start FROM symbols ORDER BY moniker",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
         }
     };
     let before = snapshot(&ri).await;
@@ -1255,7 +1350,11 @@ async fn monikers_are_stable_across_line_moves() {
             "rust:src/lib.rs#render(function)",
         ]
     );
-    std::fs::write(d.join("src/lib.rs"), format!("//! moved\n//! down\n//! three lines\n{body}")).unwrap();
+    std::fs::write(
+        d.join("src/lib.rs"),
+        format!("//! moved\n//! down\n//! three lines\n{body}"),
+    )
+    .unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert_eq!(r.reparsed, 1, "{r:?}");
     let after = snapshot(&ri).await;
@@ -1713,6 +1812,7 @@ async fn map_and_symbol() {
         root: root.clone(),
         budget: Some(budget),
         mode: None,
+        edited: None,
     };
 
     let out = CodeMapTool(ix.clone())
@@ -1739,10 +1839,16 @@ async fn map_and_symbol() {
 
     // Ranked files (the unpersonalised `files.rank` lookup), top 15.
     let out = CodeMapTool(ix.clone())
-        .call(map(None, true, 400), cx())
+        .call(map(None, true, 1000), cx())
         .await
         .unwrap();
     let v = out.structured.unwrap();
+    let paths: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
     let top: Vec<String> = v["rows"]
         .as_array()
         .unwrap()
@@ -1771,9 +1877,61 @@ async fn map_and_symbol() {
             }
         );
     }
+    // The tools crate root (every tool implements `Tool` from it) stays near
+    // the top: #16 after CI-RANK, when its 131 `pub use` rows made it a
+    // barrel whose `<import>` edges are damped (its `refs` edges are not).
     assert!(
-        top.iter().any(|t| t.starts_with("crates/tools/src/lib.rs")),
-        "{top:?}"
+        paths[..20].contains(&"crates/tools/src/lib.rs"),
+        "{paths:?}"
+    );
+    // CI-RANK: `side_call.rs` no longer rides `runtime/lib.rs`'s `pub use`
+    // (60 §17 bullet 1): #2 before, #71 after.
+    assert!(
+        !paths[..30].contains(&"crates/runtime/src/side_call.rs"),
+        "{paths:?}"
+    );
+
+    // `edited`: the edited file takes the teleport mass (absolute path accepted);
+    // `entry_points` come from the manifests and mark rows `entry: true`.
+    let out = CodeMapTool(ix.clone())
+        .call(
+            CodeMapArgs {
+                edited: Some(vec![repo_root().join("crates/codeindex/src/rank.rs")]),
+                ..map(None, true, 4000)
+            },
+            cx(),
+        )
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    assert_eq!(v["focus_files"][0], "crates/codeindex/src/rank.rs", "{v}");
+    assert_eq!(
+        v["rows"][0]["path"], "crates/codeindex/src/rank.rs",
+        "{}",
+        v["rows"]
+    );
+    let entries: Vec<&str> = v["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(
+        entries.contains(&"crates/codeindex/src/lib.rs")
+            && entries.contains(&"crates/theuth/src/main.rs"),
+        "{entries:?}"
+    );
+    let flagged: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["entry"] == true)
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    eprintln!("entry points among ranked files: {flagged:?}");
+    assert!(
+        !flagged.is_empty() && flagged.iter().all(|p| entries.contains(p)),
+        "{flagged:?}"
     );
 
     // Focus on an identifier: `crates/scrape/*` rises.
@@ -1974,7 +2132,7 @@ async fn map_and_symbol() {
     let g = codeindex::rank::Graph::load(&ri.pool).await.unwrap();
     let load = t.elapsed();
     let t = std::time::Instant::now();
-    let personalised = g.rank(&g.focus(&["crates/scrape/src/tools.rs".to_owned()]));
+    let personalised = g.rank(&g.focus(&["crates/scrape/src/tools.rs".to_owned()], &[]));
     eprintln!(
         "graph load {load:?}; personalised rank {:?}, {} iterations",
         t.elapsed(),
@@ -2514,6 +2672,7 @@ async fn map_render_badges_cache_and_changed_mode() {
     let tool = CodeMapTool(ix.clone());
     let args = |mode: Option<&str>, paths_only: bool| CodeMapArgs {
         focus: None,
+        edited: None,
         paths_only: Some(paths_only),
         root: Some(d.clone()),
         budget: Some(2000),
@@ -2530,9 +2689,15 @@ async fn map_render_badges_cache_and_changed_mode() {
     assert_eq!(v["mode"], "full");
     assert!(v["coverage_added"].is_u64(), "{v}");
     let rows = v["rows"].as_array().unwrap();
-    let helper = rows.iter().find(|r| r["name"] == "helper").expect("helper ranks");
+    let helper = rows
+        .iter()
+        .find(|r| r["name"] == "helper")
+        .expect("helper ranks");
     assert!(helper["callers"].as_i64().unwrap() >= 1, "{helper}");
-    assert!(helper["importers"].as_i64().unwrap() >= 1, "lib.rs imports util: {helper}");
+    assert!(
+        helper["importers"].as_i64().unwrap() >= 1,
+        "lib.rs imports util: {helper}"
+    );
     assert_eq!(helper["recent"], true);
     let util_line = out
         .content
@@ -2544,7 +2709,9 @@ async fn map_render_badges_cache_and_changed_mode() {
         "{util_line}"
     );
     assert!(
-        out.content.lines().any(|l| l.contains("pub fn helper()") && l.contains("  ↑")),
+        out.content
+            .lines()
+            .any(|l| l.contains("pub fn helper()") && l.contains("  ↑")),
         "{}",
         out.content
     );
@@ -2559,7 +2726,10 @@ async fn map_render_badges_cache_and_changed_mode() {
     let v = call(args(None, true)).await.unwrap().structured.unwrap();
     assert_eq!(v["cached"], false);
     let paths_row = &v["rows"][0];
-    assert!(paths_row["importers"].is_i64() && paths_row["recent"].is_boolean(), "{v}");
+    assert!(
+        paths_row["importers"].is_i64() && paths_row["recent"].is_boolean(),
+        "{v}"
+    );
 
     // Clean tree: the changed map is empty.
     let out = call(args(Some("changed"), false)).await.unwrap();
@@ -2573,7 +2743,11 @@ async fn map_render_badges_cache_and_changed_mode() {
         "pub fn helper() -> u32 {\n    1 + 1\n}\n\npub fn unrelated() -> u32 {\n    2\n}\n",
     )
     .unwrap();
-    std::fs::write(d.join("src/extra.rs"), "pub fn extra() -> u32 {\n    3\n}\n").unwrap();
+    std::fs::write(
+        d.join("src/extra.rs"),
+        "pub fn extra() -> u32 {\n    3\n}\n",
+    )
+    .unwrap();
     let v = call(args(None, false)).await.unwrap().structured.unwrap();
     assert_eq!(v["cached"], false, "an edit invalidates: {v}");
 
@@ -2582,7 +2756,11 @@ async fn map_render_badges_cache_and_changed_mode() {
     let v = out.structured.unwrap();
     eprintln!("code_map(mode=changed) on the fixture:\n{}", out.content);
     assert_eq!(v["mode"], "changed");
-    assert!(out.content.starts_with("changed 2 files, 2 symbols\n"), "{}", out.content);
+    assert!(
+        out.content.starts_with("changed 2 files, 2 symbols\n"),
+        "{}",
+        out.content
+    );
     let names: Vec<(&str, &str, &str)> = v["rows"]
         .as_array()
         .unwrap()
@@ -2595,19 +2773,44 @@ async fn map_render_badges_cache_and_changed_mode() {
             )
         })
         .collect();
-    assert!(names.contains(&("src/util.rs", "helper", "modified")), "{names:?}");
-    assert!(names.contains(&("src/extra.rs", "extra", "added")), "{names:?}");
-    assert!(!names.iter().any(|n| n.1 == "unrelated"), "only touched definitions: {names:?}");
-    assert!(out.content.contains("src/extra.rs [NEW] [added]\n"), "{}", out.content);
+    assert!(
+        names.contains(&("src/util.rs", "helper", "modified")),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&("src/extra.rs", "extra", "added")),
+        "{names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.1 == "unrelated"),
+        "only touched definitions: {names:?}"
+    );
+    assert!(
+        out.content.contains("src/extra.rs [NEW] [added]\n"),
+        "{}",
+        out.content
+    );
     let files = v["changed_files"].as_array().unwrap();
     let util = files.iter().find(|f| f["path"] == "src/util.rs").unwrap();
     assert_eq!(util["importers"], serde_json::json!(["src/lib.rs"]), "{v}");
     assert!(out.content.contains("  ← src/lib.rs\n"), "{}", out.content);
-    let r = v["rows"].as_array().unwrap().iter().find(|r| r["name"] == "helper").unwrap();
-    assert!(r["callers"].as_i64().unwrap() >= 1 && r["recent"] == true, "{r}");
+    let r = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "helper")
+        .unwrap();
+    assert!(
+        r["callers"].as_i64().unwrap() >= 1 && r["recent"] == true,
+        "{r}"
+    );
     // The second identical call is a hit.
     assert_eq!(
-        call(args(Some("changed"), false)).await.unwrap().structured.unwrap()["cached"],
+        call(args(Some("changed"), false))
+            .await
+            .unwrap()
+            .structured
+            .unwrap()["cached"],
         true
     );
 

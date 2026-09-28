@@ -2,14 +2,18 @@
 //! referencer → definer edges from resolved `refs` (confidence ≥ 0.5) and
 //! `imports`, weighted by identifier rarity, personalised PageRank (own
 //! sparse power iteration), rank spread per `(file, identifier)`, rendered
-//! top-down to a token budget.
+//! top-down to a token budget. Re-exports route through to their definer,
+//! barrels and type-only files take damped in-edges (60 §17), and the
+//! personalisation vector is seeded from focus, edited files, their
+//! co-change partners, or — without any signal — manifest entry points.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use sqlx::{FromRow, SqlitePool};
 
-use crate::store;
 use crate::tools::estimate_tokens;
+use crate::{store, walk};
 
 /// Damping factor.
 const DAMPING: f64 = 0.85;
@@ -19,9 +23,32 @@ const MAX_ITER: usize = 50;
 const TOLERANCE: f64 = 1e-6;
 /// Self-edge weight for files that define something nobody references.
 const SELF_EDGE: f64 = 0.1;
-/// Weight of an `imports` edge before `mul` (60 §22): a `pub use` re-export
-/// otherwise carries the crate root's whole rank to one module.
+/// Weight of an `imports` edge before `mul` (60 §22): a use of a module is
+/// weaker evidence than a reference to one of its names.
 const IMPORT_EDGE: f64 = 0.1;
+/// Edges into a barrel keep this share: the mass the passthrough could not
+/// attribute (glob imports, names the barrel defines itself).
+const BARREL_IN: f64 = 0.3;
+/// Edges into a type-heavy file keep this share. Empryo uses 0.3; a Rust
+/// type module is what a brief most often needs to show, so halve, don't bury.
+const TYPE_IN: f64 = 0.5;
+/// Barrel: re-exported names above this share of tags (definitions + re-exports).
+const BARREL_SHARE: f64 = 0.6;
+/// Type-heavy: types/traits/interfaces/consts at or above this share, no functions.
+const TYPE_SHARE: f64 = 0.8;
+/// Teleport weight of a `focus` path or an identifier's definer.
+const SEED_MENTIONED: f64 = 1.0;
+/// Teleport weight of an edited file: twice a mention, one decade below the
+/// ×50/×10 edge multipliers so the seed steers, the edges rank.
+const SEED_EDITED: f64 = 2.0;
+/// Teleport weight of a co-change partner at 3+ shared commits (linear below).
+const SEED_COCHANGE: f64 = 0.5;
+/// Extra teleport weight of an entry point over the uniform 1.0 when nothing
+/// else is given: an entry counts double. Empryo's +4·base put leaf crate
+/// roots nobody references at #5 on this repository (§ as-built numbers).
+const SEED_ENTRY: f64 = 1.0;
+/// Shared commits at which a co-change partner reaches [`SEED_COCHANGE`].
+const COCHANGE_CAP: i64 = 3;
 /// Pseudo-identifier of an `imports` edge.
 const IMPORT: &str = "<import>";
 /// Pseudo-identifier of a self-edge.
@@ -75,10 +102,25 @@ pub struct EdgeRow {
     pub src: i64,
     /// `files.id` of the defining file.
     pub dst: i64,
-    /// Referenced identifier (or [`IMPORT`]).
+    /// Referenced identifier.
     pub name: String,
     /// References grouped under this edge.
     pub n: i64,
+}
+
+/// One resolved, non-`mod:` `imports` row.
+#[derive(Clone, Debug)]
+pub struct ImportRow {
+    /// `files.id` of the importing file.
+    pub src: i64,
+    /// `files.id` the row resolved to.
+    pub dst: i64,
+    /// Imported names; `None` = glob.
+    pub names: Option<Vec<String>>,
+    /// `src` resolved a reference to one of the names, or to anything `dst`
+    /// defines. Otherwise the row is a re-export: `pub use`, `export …
+    /// from`, `__init__.py` passthrough — `src` republishes, it does not use.
+    pub used: bool,
 }
 
 /// The file graph as the store gives it.
@@ -89,8 +131,14 @@ pub struct Graph {
     idx: HashMap<i64, usize>,
     /// Every symbol of every parsed file.
     pub symbols: Vec<SymNode>,
-    /// Raw edges.
+    /// Raw `refs` edges.
     edges: Vec<EdgeRow>,
+    /// Resolved `imports` rows.
+    imports: Vec<ImportRow>,
+    /// `cochanges` rows `(file_a, file_b, count)`.
+    cochanges: Vec<(i64, i64, i64)>,
+    /// Indexes of manifest entry points (60 §17 item 9).
+    pub entries: HashSet<usize>,
 }
 
 /// What a `code_map` call personalises toward.
@@ -98,8 +146,11 @@ pub struct Graph {
 pub struct Focus {
     /// Identifiers: ×10 on their edges.
     pub idents: HashSet<String>,
-    /// Indexes into [`Graph::files`]: ×50 on their out-edges, personalisation mass.
+    /// Indexes into [`Graph::files`] (mentioned paths, identifier definers,
+    /// edited files): ×50 on their out-edges, one self-edge per definition.
     pub files: HashSet<usize>,
+    /// Teleport weights by file index; empty = uniform plus entry seeds.
+    pub seeds: HashMap<usize, f64>,
 }
 
 /// One ranked definition (60 §8 `code_map.rows`).
@@ -190,79 +241,188 @@ pub struct Rendered {
 
 impl Graph {
     /// Read the graph: parsed files, their symbols, `refs` edges with
-    /// `confidence ≥ 0.5` across files grouped per (R, D, name), and
-    /// `imports` edges as [`IMPORT`].
+    /// `confidence ≥ 0.5` across files grouped per (R, D, name), resolved
+    /// `imports` rows with their used/re-export flag, co-change pairs and
+    /// the manifest entry points.
     pub async fn load(pool: &SqlitePool) -> anyhow::Result<Self> {
         let files: Vec<FileNode> =
             sqlx::query_as("SELECT id, path, language, lines, rank FROM files WHERE language <> 'other' ORDER BY id")
                 .fetch_all(pool)
                 .await?;
-        let symbols: Vec<SymNode> =
-            sqlx::query_as("SELECT id, file_id, name, kind, line_start, signature, moniker FROM symbols")
-                .fetch_all(pool)
-                .await?;
-        let mut edges: Vec<EdgeRow> = sqlx::query_as(
+        let symbols: Vec<SymNode> = sqlx::query_as(
+            "SELECT id, file_id, name, kind, line_start, signature, moniker FROM symbols",
+        )
+        .fetch_all(pool)
+        .await?;
+        let edges: Vec<EdgeRow> = sqlx::query_as(
             "SELECT r.file_id AS src, s.file_id AS dst, r.name, count(*) AS n FROM refs r JOIN symbols s ON s.id = r.to_symbol \
              WHERE r.confidence >= 0.5 AND r.file_id <> s.file_id GROUP BY r.file_id, s.file_id, r.name",
         )
         .fetch_all(pool)
         .await?;
+        // `used`: the file resolved a reference to the imported name, or to
+        // anything the target defines (`Bar::new()` resolves to `Bar`'s file
+        // under the name `new`). Both come from `edges` — no `refs` scan
+        // (a DISTINCT over 149k refs cost 0.3 s, correlated EXISTS 4–9 s).
+        // An imported name never referenced was imported to be re-exported.
+        let resolved: HashSet<(i64, i64)> = edges.iter().map(|e| (e.src, e.dst)).collect();
+        let referenced: HashSet<(i64, &str)> =
+            edges.iter().map(|e| (e.src, e.name.as_str())).collect();
         // `mod x;` rows are module-tree edges, not uses (60 §21): a crate
         // root with few `use`s would otherwise pour its rank into them.
-        let imports: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT DISTINCT file_id, target_file FROM imports WHERE target_file IS NOT NULL AND target_file <> file_id \
+        let rows: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT file_id, target_file, names FROM imports WHERE target_file IS NOT NULL AND target_file <> file_id \
              AND specifier NOT LIKE 'mod:%'",
         )
         .fetch_all(pool)
         .await?;
-        edges.extend(imports.into_iter().map(|(src, dst)| EdgeRow {
-            src,
-            dst,
-            name: IMPORT.to_owned(),
-            n: 1,
-        }));
-        let idx = files.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+        let imports = rows
+            .into_iter()
+            .map(|(src, dst, names)| {
+                let names: Option<Vec<String>> = names.and_then(|s| serde_json::from_str(&s).ok());
+                let used = resolved.contains(&(src, dst))
+                    || names
+                        .iter()
+                        .flatten()
+                        .any(|n| referenced.contains(&(src, n.as_str())));
+                ImportRow {
+                    src,
+                    dst,
+                    names,
+                    used,
+                }
+            })
+            .collect();
+        let cochanges: Vec<(i64, i64, i64)> =
+            sqlx::query_as("SELECT file_a, file_b, count FROM cochanges")
+                .fetch_all(pool)
+                .await?;
+        let idx: HashMap<i64, usize> = files.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+        // Entry points: manifests on disk (60 §17 item 9) plus Go `package main`.
+        let manifests: Vec<String> = sqlx::query_scalar(
+            "SELECT path FROM files WHERE path = 'Cargo.toml' OR path LIKE '%/Cargo.toml' \
+             OR path = 'package.json' OR path LIKE '%/package.json' \
+             OR path = 'pyproject.toml' OR path LIKE '%/pyproject.toml' ORDER BY path",
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut entry_paths: Vec<String> = match store::meta(pool, "root").await? {
+            Some(root) => walk::entry_points(Path::new(&root), &manifests),
+            None => Vec::new(),
+        };
+        entry_paths.extend(
+            sqlx::query_scalar::<_, String>(
+                "SELECT path FROM files WHERE language = 'go' AND package = 'main'",
+            )
+            .fetch_all(pool)
+            .await?,
+        );
+        let by_path: HashMap<&str, usize> = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.path.as_str(), i))
+            .collect();
+        // Fixture manifests under `tests/` name entry points of a fixture, not of the repo.
+        let entries = entry_paths
+            .iter()
+            .filter(|p| !walk::is_test_path(p))
+            .filter_map(|p| by_path.get(p.as_str()).copied())
+            .collect();
         Ok(Self {
             files,
             idx,
             symbols,
             edges,
+            imports,
+            cochanges,
+            entries,
         })
     }
 
+    /// Root-relative entry points, sorted.
+    pub fn entry_paths(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self
+            .entries
+            .iter()
+            .map(|&i| self.files[i].path.as_str())
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Indexes of the files `e` names: an indexed path, or every file under
+    /// an indexed directory (root-relative).
+    fn paths(&self, e: &str) -> Vec<usize> {
+        self.files
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.path == e
+                    || n.path
+                        .strip_prefix(e)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// Split `focus` entries into files (an entry that names an indexed
-    /// file or directory, root-relative) and identifiers (the rest).
-    pub fn focus(&self, entries: &[String]) -> Focus {
+    /// file or directory, root-relative) and identifiers (the rest); add
+    /// `edited` files at [`SEED_EDITED`] and their co-change partners at up
+    /// to [`SEED_COCHANGE`]. No entries at all → default seeds (entry points).
+    pub fn focus(&self, entries: &[String], edited: &[String]) -> Focus {
         let mut f = Focus::default();
-        for e in entries {
-            let e = e.trim().trim_start_matches("./").trim_end_matches('/');
-            if e.is_empty() {
-                continue;
-            }
-            let hits: Vec<usize> = self
-                .files
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| {
-                    n.path == e
-                        || n.path
-                            .strip_prefix(e)
-                            .is_some_and(|rest| rest.starts_with('/'))
-                })
-                .map(|(i, _)| i)
-                .collect();
-            if hits.is_empty() {
+        let clean = |e: &str| {
+            e.trim()
+                .trim_start_matches("./")
+                .trim_end_matches('/')
+                .to_owned()
+        };
+        for e in entries.iter().map(|e| clean(e)).filter(|e| !e.is_empty()) {
+            let hits = self.paths(&e);
+            let hits = if hits.is_empty() {
                 // An identifier names its definers too (60 §21): a symbol
                 // referenced only inside its own file has no edge to boost.
-                f.idents.insert(e.to_owned());
-                f.files.extend(
-                    self.symbols
-                        .iter()
-                        .filter(|s| s.name == e)
-                        .filter_map(|s| self.idx.get(&s.file_id)),
-                );
+                f.idents.insert(e.clone());
+                self.symbols
+                    .iter()
+                    .filter(|s| s.name == e)
+                    .filter_map(|s| self.idx.get(&s.file_id).copied())
+                    .collect()
             } else {
-                f.files.extend(hits);
+                hits
+            };
+            for i in hits {
+                f.files.insert(i);
+                let w = f.seeds.entry(i).or_default();
+                *w = w.max(SEED_MENTIONED);
+            }
+        }
+        let mut edited_ids: HashSet<i64> = HashSet::new();
+        for e in edited.iter().map(|e| clean(e)).filter(|e| !e.is_empty()) {
+            for i in self.paths(&e) {
+                f.files.insert(i);
+                f.seeds.insert(i, SEED_EDITED);
+                edited_ids.insert(self.files[i].id);
+            }
+        }
+        if !edited_ids.is_empty() {
+            for &(a, b, count) in &self.cochanges {
+                for (me, other) in [(a, b), (b, a)] {
+                    if !edited_ids.contains(&me) {
+                        continue;
+                    }
+                    let Some(&j) = self.idx.get(&other) else {
+                        continue;
+                    };
+                    if f.files.contains(&j) {
+                        continue;
+                    }
+                    #[allow(clippy::cast_precision_loss)]
+                    let w = SEED_COCHANGE * count.min(COCHANGE_CAP) as f64 / COCHANGE_CAP as f64;
+                    let s = f.seeds.entry(j).or_default();
+                    *s = s.max(w);
+                }
             }
         }
         f
@@ -306,6 +466,46 @@ impl Graph {
             }
             mul
         };
+        // Re-exports (60 §17 bullet 1): `(file, name) → definer` from rows the
+        // file imports but never references, plus glob re-exports by file.
+        let mut reexport: HashMap<(usize, &str), usize> = HashMap::new();
+        let mut glob_reexport: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut reexported = vec![0usize; n];
+        for r in self.imports.iter().filter(|r| !r.used) {
+            let (Some(&s), Some(&d)) = (self.idx.get(&r.src), self.idx.get(&r.dst)) else {
+                continue;
+            };
+            match &r.names {
+                Some(names) => {
+                    for name in names {
+                        reexport.insert((s, name.as_str()), d);
+                    }
+                    reexported[s] += names.len();
+                }
+                None => {
+                    glob_reexport.entry(s).or_default().push(d);
+                    reexported[s] += 1;
+                }
+            }
+        }
+        let shape = self.shapes(&reexported);
+        // A `refs` edge names a definition the target owns: full weight
+        // unless the target is type-only. An `<import>` edge into a barrel
+        // is what the passthrough could not attribute: residual weight.
+        let damp_ref = |d: usize| -> f64 {
+            if shape[d] == Shape::TypeHeavy {
+                TYPE_IN
+            } else {
+                1.0
+            }
+        };
+        let damp_import = |d: usize| -> f64 {
+            match shape[d] {
+                Shape::Barrel => BARREL_IN,
+                Shape::TypeHeavy => TYPE_IN,
+                Shape::Plain => 1.0,
+            }
+        };
         // Weighted edges (src, dst, name, weight), then self-edges.
         let mut edges: Vec<(usize, usize, &str, f64)> = Vec::with_capacity(self.edges.len() + n);
         let mut incoming = vec![false; n];
@@ -314,13 +514,44 @@ impl Graph {
                 continue;
             };
             #[allow(clippy::cast_precision_loss)]
-            let base = if e.name == IMPORT {
-                IMPORT_EDGE
-            } else {
-                (e.n.max(1) as f64).sqrt()
-            };
-            edges.push((s, d, e.name.as_str(), mul(&e.name, s) * base));
+            let base = (e.n.max(1) as f64).sqrt();
+            edges.push((s, d, e.name.as_str(), mul(&e.name, s) * base * damp_ref(d)));
             incoming[d] = true;
+        }
+        // Import edges: a row the file uses lands on the definer of each
+        // name it imports when the target re-exports it (one level), else on
+        // the target; a row the file re-exports is not an edge at all — the
+        // file does not use what it republishes.
+        let mut imported: HashSet<(usize, usize)> = HashSet::new();
+        for r in self.imports.iter().filter(|r| r.used) {
+            let (Some(&s), Some(&t)) = (self.idx.get(&r.src), self.idx.get(&r.dst)) else {
+                continue;
+            };
+            let route = |name: &str| -> usize {
+                reexport.get(&(t, name)).copied().unwrap_or_else(|| {
+                    glob_reexport
+                        .get(&t)
+                        .and_then(|gs| {
+                            gs.iter().find(|&&g| {
+                                definers
+                                    .get(name)
+                                    .is_some_and(|f| f.contains(&self.files[g].id))
+                            })
+                        })
+                        .copied()
+                        .unwrap_or(t)
+                })
+            };
+            let targets: Vec<usize> = match &r.names {
+                Some(names) => names.iter().map(|nm| route(nm)).collect(),
+                None => vec![t],
+            };
+            for d in targets {
+                if d != s && imported.insert((s, d)) {
+                    edges.push((s, d, IMPORT, mul(IMPORT, s) * IMPORT_EDGE * damp_import(d)));
+                    incoming[d] = true;
+                }
+            }
         }
         // A focus file's own definitions are what the caller wants to see:
         // one self-edge per definition, weighted like a single reference,
@@ -363,19 +594,28 @@ impl Graph {
                 }
             }
         }
-        // Personalisation (also the dangling distribution) and the start vector.
+        // Personalisation (also the dangling distribution) and the start
+        // vector: the seeds, or uniform with entry points at 1 + SEED_ENTRY.
         #[allow(clippy::cast_precision_loss)]
-        let uniform = 1.0 / n as f64;
-        let p: Vec<f64> = if focus.files.is_empty() {
-            vec![uniform; n]
-        } else {
-            let share = 1.0 / focus.files.len() as f64;
+        let p: Vec<f64> = if focus.seeds.is_empty() {
+            let total = n as f64 + SEED_ENTRY * self.entries.len() as f64;
             (0..n)
-                .map(|i| if focus.files.contains(&i) { share } else { 0.0 })
+                .map(|i| {
+                    (1.0 + if self.entries.contains(&i) {
+                        SEED_ENTRY
+                    } else {
+                        0.0
+                    }) / total
+                })
+                .collect()
+        } else {
+            let total: f64 = focus.seeds.values().sum();
+            (0..n)
+                .map(|i| focus.seeds.get(&i).copied().unwrap_or(0.0) / total)
                 .collect()
         };
         let warm: f64 = self.files.iter().map(|f| f.rank).sum();
-        let mut x: Vec<f64> = if focus.files.is_empty() && warm > 0.0 {
+        let mut x: Vec<f64> = if focus.seeds.is_empty() && warm > 0.0 {
             self.files.iter().map(|f| f.rank / warm).collect()
         } else {
             p.clone()
@@ -448,6 +688,60 @@ impl Graph {
             iterations,
         }
     }
+
+    /// Classify every file by what it defines versus re-exports
+    /// (`reexported[i]` = re-exported names of file `i`). `module` tags
+    /// (`pub mod x;`) are module-tree declarations, not definitions.
+    fn shapes(&self, reexported: &[usize]) -> Vec<Shape> {
+        let n = self.files.len();
+        let (mut defs, mut fns, mut types) = (vec![0usize; n], vec![0usize; n], vec![0usize; n]);
+        for s in &self.symbols {
+            let Some(&i) = self.idx.get(&s.file_id) else {
+                continue;
+            };
+            match s.kind.as_str() {
+                "module" => continue,
+                "function" | "method" => fns[i] += 1,
+                "class" | "interface" | "type" | "constant" => types[i] += 1,
+                _ => {}
+            }
+            defs[i] += 1;
+        }
+        (0..n)
+            .map(|i| Shape::of(defs[i], fns[i], types[i], reexported[i]))
+            .collect()
+    }
+}
+
+/// What a file mostly is, for in-edge damping (60 §17 bullet 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// Definitions with behaviour, or nothing notable.
+    Plain,
+    /// Mostly re-exports: ≥ 1 re-export and no function, or re-exports
+    /// above [`BARREL_SHARE`] of its tags.
+    Barrel,
+    /// Types/traits/interfaces/consts at or above [`TYPE_SHARE`] of its
+    /// definitions and no function.
+    TypeHeavy,
+}
+
+impl Shape {
+    /// Type-heavy is decided first: a type module's own `use` rows look like
+    /// re-exports when its only uses are type positions the tags queries do
+    /// not reference, and a barrel's `refs` edges are undamped.
+    #[allow(clippy::cast_precision_loss)]
+    fn of(defs: usize, fns: usize, types: usize, reexported: usize) -> Self {
+        if defs > 0 && fns == 0 && types as f64 >= TYPE_SHARE * defs as f64 {
+            Self::TypeHeavy
+        } else if reexported >= 1 && fns == 0
+            || reexported as f64 > BARREL_SHARE * (reexported + defs) as f64
+        {
+            Self::Barrel
+        } else {
+            Self::Plain
+        }
+    }
 }
 
 /// aider's `is_snake or is_camel`: an underscore beside letters, or mixed case.
@@ -457,8 +751,9 @@ fn is_snake_or_camel(s: &str) -> bool {
     snake || camel
 }
 
-/// Recompute the unpersonalised ranks and store them in `files.rank` and
-/// `symbols.rank` (60 §7). Returns `(files, iterations)`.
+/// Recompute the unpersonalised ranks (entry-point seeded, 60 §17 item 9)
+/// and store them in `files.rank` and `symbols.rank` (60 §7), the entry
+/// points as JSON in `meta.entry_points`. Returns `(files, iterations)`.
 pub async fn persist(pool: &SqlitePool) -> anyhow::Result<(usize, usize)> {
     let g = Graph::load(pool).await?;
     let r = g.rank(&Focus::default());
@@ -470,6 +765,12 @@ pub async fn persist(pool: &SqlitePool) -> anyhow::Result<(usize, usize)> {
         .collect();
     let symbols: Vec<(i64, f64)> = r.tags.iter().map(|(id, t)| (*id, t.rank)).collect();
     store::update_ranks(pool, &files, &symbols).await?;
+    store::set_meta(
+        pool,
+        "entry_points",
+        &serde_json::to_string(&g.entry_paths())?,
+    )
+    .await?;
     Ok((files.len(), r.iterations))
 }
 
@@ -564,10 +865,7 @@ pub fn render(tags: &[Tag], budget: u32, facts: &MapFacts) -> Rendered {
     let mut extra: Vec<String> = Vec::new();
     for t in &tags[k..] {
         let c = component(&t.path);
-        if size.get(c).is_some_and(|&n| n >= min)
-            && !shown.contains(c)
-            && covered.insert(c)
-        {
+        if size.get(c).is_some_and(|&n| n >= min) && !shown.contains(c) && covered.insert(c) {
             extra.push(facts.file_line(&t.path));
         }
     }
@@ -635,13 +933,17 @@ mod tests {
     }
 
     fn sym(id: i64, file_id: i64, name: &str) -> SymNode {
+        kind_sym(id, file_id, name, "function")
+    }
+
+    fn kind_sym(id: i64, file_id: i64, name: &str, kind: &str) -> SymNode {
         SymNode {
             id,
             file_id,
             name: name.to_owned(),
-            kind: "function".into(),
+            kind: kind.into(),
             line_start: id,
-            signature: format!("fn {name}()"),
+            signature: format!("{kind} {name}"),
             moniker: format!("rust:f{file_id}.rs#{name}(function)"),
         }
     }
@@ -655,36 +957,219 @@ mod tests {
         }
     }
 
-    /// Four files: `core` is used by everyone, `util` by two, `app` and
-    /// `island` by nobody (`island` defines something → self-edge).
-    fn toy() -> Graph {
-        let files = vec![
-            file(1, "src/core.rs"),
-            file(2, "src/util.rs"),
-            file(3, "src/app.rs"),
-            file(4, "src/island.rs"),
-        ];
-        let symbols = vec![
-            sym(1, 1, "open_database"),
-            sym(2, 2, "helper"),
-            sym(3, 3, "main"),
-            sym(4, 4, "alone"),
-        ];
-        let edges = vec![
-            edge(2, 1, "open_database", 3),
-            edge(3, 1, "open_database", 1),
-            edge(4, 1, "open_database", 1),
-            edge(3, 2, "helper", 2),
-            edge(4, 2, "helper", 1),
-            edge(3, 1, IMPORT, 1),
-        ];
+    fn import(src: i64, dst: i64, names: &[&str], used: bool) -> ImportRow {
+        ImportRow {
+            src,
+            dst,
+            names: (!names.is_empty()).then(|| names.iter().map(|s| (*s).to_owned()).collect()),
+            used,
+        }
+    }
+
+    fn graph(
+        files: Vec<FileNode>,
+        symbols: Vec<SymNode>,
+        edges: Vec<EdgeRow>,
+        imports: Vec<ImportRow>,
+    ) -> Graph {
         let idx = files.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
         Graph {
             files,
             idx,
             symbols,
             edges,
+            imports,
+            cochanges: Vec::new(),
+            entries: HashSet::new(),
         }
+    }
+
+    /// Four files: `core` is used by everyone, `util` by two, `app` and
+    /// `island` by nobody (`island` defines something → self-edge).
+    fn toy() -> Graph {
+        graph(
+            vec![
+                file(1, "src/core.rs"),
+                file(2, "src/util.rs"),
+                file(3, "src/app.rs"),
+                file(4, "src/island.rs"),
+            ],
+            vec![
+                sym(1, 1, "open_database"),
+                sym(2, 2, "helper"),
+                sym(3, 3, "main"),
+                sym(4, 4, "alone"),
+            ],
+            vec![
+                edge(2, 1, "open_database", 3),
+                edge(3, 1, "open_database", 1),
+                edge(4, 1, "open_database", 1),
+                edge(3, 2, "helper", 2),
+                edge(4, 2, "helper", 1),
+            ],
+            vec![import(3, 1, &["open_database"], true)],
+        )
+    }
+
+    /// `lib.rs` defines `Runtime` (used by `app`) and re-exports `SideCall`
+    /// from `side_call.rs`, which nobody references (60 §17 bullet 1).
+    /// `index.rs` is a pure barrel over `impl_.rs`; `app` imports through it.
+    fn reexports() -> Graph {
+        graph(
+            vec![
+                file(1, "src/lib.rs"),
+                file(2, "src/side_call.rs"),
+                file(3, "src/app.rs"),
+                file(4, "src/index.rs"),
+                file(5, "src/impl_.rs"),
+            ],
+            vec![
+                kind_sym(1, 1, "Runtime", "class"),
+                sym(2, 1, "spawn_runtime"),
+                kind_sym(3, 2, "SideCall", "class"),
+                sym(4, 3, "main"),
+                sym(5, 5, "real_thing"),
+            ],
+            vec![
+                edge(3, 1, "spawn_runtime", 2),
+                edge(3, 5, "real_thing", 1),
+                edge(2, 1, "Runtime", 1),
+            ],
+            vec![
+                import(1, 2, &["SideCall"], false),
+                import(3, 1, &["spawn_runtime"], true),
+                import(4, 5, &["real_thing"], false),
+                import(3, 4, &["real_thing"], true),
+            ],
+        )
+    }
+
+    #[test]
+    fn reexport_edges_route_to_the_definer_and_barrels_are_damped() {
+        let g = reexports();
+        let r = g.rank(&Focus::default());
+        let at = |p: &str| g.files.iter().position(|f| f.path == p).unwrap();
+        // Before: every import row was an edge, so `lib.rs` poured its rank
+        // down the re-export and `side_call.rs` came second.
+        let mut old = reexports();
+        old.imports.iter_mut().for_each(|i| i.used = true);
+        let o = old.rank(&Focus::default());
+        assert!(
+            o.files[at("src/side_call.rs")] > o.files[at("src/impl_.rs")],
+            "{:?}",
+            o.files
+        );
+        // After: the re-export is no edge; `side_call.rs` ranks like any unreferenced file.
+        assert!(
+            r.files[at("src/lib.rs")] > 2.0 * r.files[at("src/side_call.rs")],
+            "{:?}",
+            r.files
+        );
+        assert!(
+            r.files[at("src/side_call.rs")] < 1.1 * r.files[at("src/app.rs")],
+            "{:?}",
+            r.files
+        );
+        // `app`'s import of `real_thing` through the barrel lands on `impl_.rs`, not `index.rs`.
+        assert!(
+            r.files[at("src/impl_.rs")] > r.files[at("src/index.rs")],
+            "{:?}",
+            r.files
+        );
+        assert!(!r.tags.iter().any(|(_, t)| t.path == "src/side_call.rs"));
+        let shapes = g.shapes(&[0, 0, 0, 1, 0]);
+        assert_eq!(
+            shapes,
+            [
+                Shape::Plain,
+                Shape::TypeHeavy,
+                Shape::Plain,
+                Shape::Barrel,
+                Shape::Plain
+            ]
+        );
+    }
+
+    #[test]
+    fn shape_thresholds() {
+        // ≥ 1 re-export and no function → barrel (pure barrel, or with a
+        // macro def); > 60 % re-exports → barrel even with functions.
+        assert_eq!(Shape::of(0, 0, 0, 1), Shape::Barrel);
+        assert_eq!(Shape::of(2, 0, 1, 1), Shape::Barrel);
+        assert_eq!(Shape::of(2, 1, 1, 4), Shape::Barrel);
+        assert_eq!(Shape::of(2, 1, 1, 3), Shape::Plain);
+        // ≥ 80 % types and no function → type-heavy; one method flips it.
+        assert_eq!(Shape::of(5, 0, 4, 0), Shape::TypeHeavy);
+        assert_eq!(Shape::of(5, 0, 3, 0), Shape::Plain);
+        assert_eq!(Shape::of(5, 1, 4, 0), Shape::Plain);
+        // A type module whose `use`s read as re-exports stays type-heavy.
+        assert_eq!(Shape::of(2, 0, 2, 1), Shape::TypeHeavy);
+        assert_eq!(Shape::of(0, 0, 0, 0), Shape::Plain);
+    }
+
+    #[test]
+    fn type_heavy_in_edges_are_damped() {
+        // `types.rs` (two structs) and `svc.rs` (one fn) are each referenced once by `app`.
+        let mk = |kind: &str| {
+            graph(
+                vec![
+                    file(1, "src/types.rs"),
+                    file(2, "src/svc.rs"),
+                    file(3, "src/app.rs"),
+                ],
+                vec![
+                    kind_sym(1, 1, "Config", kind),
+                    kind_sym(2, 1, "Options", kind),
+                    sym(3, 2, "serve"),
+                    sym(4, 3, "main"),
+                ],
+                vec![edge(3, 1, "Config", 1), edge(3, 2, "serve", 1)],
+                Vec::new(),
+            )
+        };
+        let typed = mk("class").rank(&Focus::default());
+        let plain = mk("function").rank(&Focus::default());
+        // Same multipliers on both edges: equal without damping, half with.
+        assert!(
+            (plain.files[0] - plain.files[1]).abs() < 1e-9,
+            "{:?}",
+            plain.files
+        );
+        assert!(
+            typed.files[0] < plain.files[0] && typed.files[0] < typed.files[1],
+            "{:?}",
+            typed.files
+        );
+    }
+
+    #[test]
+    fn seeds_from_edited_cochange_and_entry_points() {
+        let mut g = toy();
+        g.cochanges = vec![(2, 4, 3), (1, 2, 1)];
+        let f = g.focus(&["src/core.rs".to_owned()], &["src/util.rs".to_owned()]);
+        assert_eq!(f.seeds[&0], SEED_MENTIONED);
+        assert_eq!(f.seeds[&1], SEED_EDITED);
+        assert_eq!(f.seeds[&3], SEED_COCHANGE, "island: 3 shared commits");
+        assert!(!f.seeds.contains_key(&2));
+        assert!(f.files.contains(&0) && f.files.contains(&1) && !f.files.contains(&3));
+        // An edited file outranks a mentioned one of equal standing.
+        let g2 = toy();
+        let r = g2.rank(&g2.focus(&["src/app.rs".to_owned()], &["src/island.rs".to_owned()]));
+        assert!(r.files[3] > r.files[2], "{:?}", r.files);
+        // No signal: entry points get 1 + SEED_ENTRY of the teleport mass.
+        let mut g3 = toy();
+        g3.entries = [2].into_iter().collect();
+        let base = toy().rank(&Focus::default());
+        let seeded = g3.rank(&Focus::default());
+        assert!(
+            seeded.files[2] > base.files[2],
+            "{:?} vs {:?}",
+            seeded.files,
+            base.files
+        );
+        assert!((seeded.files.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+        // Unknown edited paths are ignored, not an error.
+        assert!(toy().focus(&[], &["nope.rs".to_owned()]).seeds.is_empty());
     }
 
     #[test]
@@ -712,11 +1197,14 @@ mod tests {
     #[test]
     fn focus_flips_the_order() {
         let g = toy();
-        let f = g.focus(&[
-            "src/util.rs".to_owned(),
-            "helper".to_owned(),
-            "src/".to_owned(),
-        ]);
+        let f = g.focus(
+            &[
+                "src/util.rs".to_owned(),
+                "helper".to_owned(),
+                "src/".to_owned(),
+            ],
+            &[],
+        );
         assert_eq!(f.files.len(), 4, "`src/` names every file");
         assert!(f.idents.contains("helper") && !f.idents.contains("src/util.rs"));
         let base = g.rank(&Focus::default());
@@ -729,7 +1217,7 @@ mod tests {
                 .rank
         };
         // Identifier focus: ×10 on `helper`'s edges — its share of the spread rises.
-        let r = g.rank(&g.focus(&["helper".to_owned()]));
+        let r = g.rank(&g.focus(&["helper".to_owned()], &[]));
         assert!(
             helper(&r) > 1.5 * helper(&base),
             "{} vs {}",
@@ -739,7 +1227,7 @@ mod tests {
         // File focus on `app.rs`: it takes the teleport mass (top file) and its ×50 out-edges lift
         // `helper` (which it references twice) — `open_database` keeps first place on its own
         // long-name ×10 plus the mass `util` and `island` send it.
-        let r = g.rank(&g.focus(&["src/app.rs".to_owned()]));
+        let r = g.rank(&g.focus(&["src/app.rs".to_owned()], &[]));
         assert_eq!(
             r.files
                 .iter()
@@ -759,7 +1247,7 @@ mod tests {
         );
         assert_eq!(r.tags[0].1.name, "open_database", "{:?}", r.tags);
         // Personalising toward the island puts it first.
-        let r = g.rank(&g.focus(&["src/island.rs".to_owned()]));
+        let r = g.rank(&g.focus(&["src/island.rs".to_owned()], &[]));
         assert_eq!(
             r.files
                 .iter()
@@ -828,7 +1316,10 @@ mod tests {
 
     #[test]
     fn components_are_depth_two() {
-        assert_eq!(component("crates/codeindex/src/rank.rs"), "crates/codeindex");
+        assert_eq!(
+            component("crates/codeindex/src/rank.rs"),
+            "crates/codeindex"
+        );
         assert_eq!(component("src/store/x.rs"), "src/store");
         assert_eq!(component("src/main.rs"), "src");
         assert_eq!(component("build.rs"), "");
@@ -859,20 +1350,40 @@ mod tests {
         let budget = 200;
         let r = render(&tags, budget, &facts);
         assert_eq!(r.coverage_added, 1, "{}", r.text);
-        assert!(r.text.ends_with("crates/small/src/lib.rs (→2)\n"), "{}", r.text);
+        assert!(
+            r.text.ends_with("crates/small/src/lib.rs (→2)\n"),
+            "{}",
+            r.text
+        );
         let without = render(&tags, budget, &MapFacts::default());
         assert!(estimate_tokens(r.text.len()) <= budget.max(estimate_tokens(without.text.len())));
-        assert!(r.kept.iter().all(|&i| tags[i].path.starts_with("crates/big")));
+        assert!(
+            r.kept
+                .iter()
+                .all(|&i| tags[i].path.starts_with("crates/big"))
+        );
         // Paid for by dropping crates/big's lowest-ranked tags when the fit
         // left no room: a budget the fit already overshoots (within slack).
         let tight = (150..400)
             .find(|&b| estimate_tokens(render(&tags, b, &MapFacts::default()).text.len()) >= b)
             .expect("some budget lands over");
-        let (r, without) = (render(&tags, tight, &facts), render(&tags, tight, &MapFacts::default()));
+        let (r, without) = (
+            render(&tags, tight, &facts),
+            render(&tags, tight, &MapFacts::default()),
+        );
         assert_eq!(r.coverage_added, 1);
-        assert!(r.kept.len() < without.kept.len(), "{} vs {}", r.kept.len(), without.kept.len());
+        assert!(
+            r.kept.len() < without.kept.len(),
+            "{} vs {}",
+            r.kept.len(),
+            without.kept.len()
+        );
         assert!(estimate_tokens(r.text.len()) <= estimate_tokens(without.text.len()));
-        assert_eq!(r.kept, (0..r.kept.len()).collect::<Vec<_>>(), "drops the lowest-ranked");
+        assert_eq!(
+            r.kept,
+            (0..r.kept.len()).collect::<Vec<_>>(),
+            "drops the lowest-ranked"
+        );
         // A component under the share, or already shown, gets nothing.
         facts.files = vec!["crates/big/src/lib.rs".into(); 40];
         facts.files.push("crates/small/src/lib.rs".into());
