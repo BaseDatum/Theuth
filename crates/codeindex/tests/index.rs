@@ -1248,6 +1248,7 @@ async fn map_and_symbol() {
         paths_only: Some(paths_only),
         root: root.clone(),
         budget: Some(budget),
+        edited: None,
     };
 
     let out = CodeMapTool(ix.clone())
@@ -1274,10 +1275,16 @@ async fn map_and_symbol() {
 
     // Ranked files (the unpersonalised `files.rank` lookup), top 15.
     let out = CodeMapTool(ix.clone())
-        .call(map(None, true, 400), cx())
+        .call(map(None, true, 1000), cx())
         .await
         .unwrap();
     let v = out.structured.unwrap();
+    let paths: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
     let top: Vec<String> = v["rows"]
         .as_array()
         .unwrap()
@@ -1306,9 +1313,61 @@ async fn map_and_symbol() {
             }
         );
     }
+    // The tools crate root (every tool implements `Tool` from it) stays near
+    // the top: #16 after CI-RANK, when its 131 `pub use` rows made it a
+    // barrel whose `<import>` edges are damped (its `refs` edges are not).
     assert!(
-        top.iter().any(|t| t.starts_with("crates/tools/src/lib.rs")),
-        "{top:?}"
+        paths[..20].contains(&"crates/tools/src/lib.rs"),
+        "{paths:?}"
+    );
+    // CI-RANK: `side_call.rs` no longer rides `runtime/lib.rs`'s `pub use`
+    // (60 §17 bullet 1): #2 before, #71 after.
+    assert!(
+        !paths[..30].contains(&"crates/runtime/src/side_call.rs"),
+        "{paths:?}"
+    );
+
+    // `edited`: the edited file takes the teleport mass (absolute path accepted);
+    // `entry_points` come from the manifests and mark rows `entry: true`.
+    let out = CodeMapTool(ix.clone())
+        .call(
+            CodeMapArgs {
+                edited: Some(vec![repo_root().join("crates/codeindex/src/rank.rs")]),
+                ..map(None, true, 4000)
+            },
+            cx(),
+        )
+        .await
+        .unwrap();
+    let v = out.structured.unwrap();
+    assert_eq!(v["focus_files"][0], "crates/codeindex/src/rank.rs", "{v}");
+    assert_eq!(
+        v["rows"][0]["path"], "crates/codeindex/src/rank.rs",
+        "{}",
+        v["rows"]
+    );
+    let entries: Vec<&str> = v["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(
+        entries.contains(&"crates/codeindex/src/lib.rs")
+            && entries.contains(&"crates/theuth/src/main.rs"),
+        "{entries:?}"
+    );
+    let flagged: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["entry"] == true)
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    eprintln!("entry points among ranked files: {flagged:?}");
+    assert!(
+        !flagged.is_empty() && flagged.iter().all(|p| entries.contains(p)),
+        "{flagged:?}"
     );
 
     // Focus on an identifier: `crates/scrape/*` rises.
@@ -1509,7 +1568,7 @@ async fn map_and_symbol() {
     let g = codeindex::rank::Graph::load(&ri.pool).await.unwrap();
     let load = t.elapsed();
     let t = std::time::Instant::now();
-    let personalised = g.rank(&g.focus(&["crates/scrape/src/tools.rs".to_owned()]));
+    let personalised = g.rank(&g.focus(&["crates/scrape/src/tools.rs".to_owned()], &[]));
     eprintln!(
         "graph load {load:?}; personalised rank {:?}, {} iterations",
         t.elapsed(),
