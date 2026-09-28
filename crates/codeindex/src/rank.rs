@@ -622,7 +622,8 @@ impl Graph {
     }
 
     /// Classify every file by what it defines versus re-exports
-    /// (`reexported[i]` = re-exported names of file `i`).
+    /// (`reexported[i]` = re-exported names of file `i`). `module` tags
+    /// (`pub mod x;`) are module-tree declarations, not definitions.
     fn shapes(&self, reexported: &[usize]) -> Vec<Shape> {
         let n = self.files.len();
         let (mut defs, mut fns, mut types) = (vec![0usize; n], vec![0usize; n], vec![0usize; n]);
@@ -630,12 +631,13 @@ impl Graph {
             let Some(&i) = self.idx.get(&s.file_id) else {
                 continue;
             };
-            defs[i] += 1;
             match s.kind.as_str() {
+                "module" => continue,
                 "function" | "method" => fns[i] += 1,
                 "class" | "interface" | "type" | "constant" => types[i] += 1,
                 _ => {}
             }
+            defs[i] += 1;
         }
         (0..n)
             .map(|i| Shape::of(defs[i], fns[i], types[i], reexported[i]))
@@ -657,14 +659,17 @@ enum Shape {
 }
 
 impl Shape {
+    /// Type-heavy is decided first: a type module's own `use` rows look like
+    /// re-exports when its only uses are type positions the tags queries do
+    /// not reference, and a barrel's `refs` edges are undamped.
     #[allow(clippy::cast_precision_loss)]
     fn of(defs: usize, fns: usize, types: usize, reexported: usize) -> Self {
-        if reexported >= 1 && fns == 0
+        if defs > 0 && fns == 0 && types as f64 >= TYPE_SHARE * defs as f64 {
+            Self::TypeHeavy
+        } else if reexported >= 1 && fns == 0
             || reexported as f64 > BARREL_SHARE * (reexported + defs) as f64
         {
             Self::Barrel
-        } else if defs > 0 && fns == 0 && types as f64 >= TYPE_SHARE * defs as f64 {
-            Self::TypeHeavy
         } else {
             Self::Plain
         }
@@ -932,14 +937,18 @@ mod tests {
 
     #[test]
     fn shape_thresholds() {
-        // ≥ 1 re-export and no function → barrel; > 60 % re-exports → barrel.
-        assert_eq!(Shape::of(2, 0, 2, 1), Shape::Barrel);
+        // ≥ 1 re-export and no function → barrel (pure barrel, or with a
+        // macro def); > 60 % re-exports → barrel even with functions.
+        assert_eq!(Shape::of(0, 0, 0, 1), Shape::Barrel);
+        assert_eq!(Shape::of(2, 0, 1, 1), Shape::Barrel);
         assert_eq!(Shape::of(2, 1, 1, 4), Shape::Barrel);
         assert_eq!(Shape::of(2, 1, 1, 3), Shape::Plain);
         // ≥ 80 % types and no function → type-heavy; one method flips it.
         assert_eq!(Shape::of(5, 0, 4, 0), Shape::TypeHeavy);
         assert_eq!(Shape::of(5, 0, 3, 0), Shape::Plain);
         assert_eq!(Shape::of(5, 1, 4, 0), Shape::Plain);
+        // A type module whose `use`s read as re-exports stays type-heavy.
+        assert_eq!(Shape::of(2, 0, 2, 1), Shape::TypeHeavy);
         assert_eq!(Shape::of(0, 0, 0, 0), Shape::Plain);
     }
 
