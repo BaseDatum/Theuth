@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use futures::StreamExt as _;
 use genai::chat::{ChatMessage, ChatStreamEvent, ReasoningEffort, StreamEnd, Tool, ToolResponse};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};

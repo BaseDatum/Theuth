@@ -1223,24 +1223,20 @@ impl Agents {
             self.register_scope(&task, route.clone());
         }
         let mut handed = false;
-        if let Some(q) = question {
-            if let Ok(Some(orig)) = self.store.exchange_receipt(q).await {
-                if orig.state == PeerMessageState::Replied && self.settle_wait(&orig) {
-                    handed = true;
-                    if let Err(e) = self
-                        .store
-                        .consume_exchange_direct(
-                            receipt.id,
-                            task.session,
-                            generation.revision() as i64,
-                        )
-                        .await
-                    {
-                        tracing::warn!(exchange = %receipt.id, "a2a: direct consume: {e:#}");
-                    }
+        if let Some(q) = question
+            && let Ok(Some(orig)) = self.store.exchange_receipt(q).await
+        {
+            if orig.state == PeerMessageState::Replied && self.settle_wait(&orig) {
+                handed = true;
+                if let Err(e) = self
+                    .store
+                    .consume_exchange_direct(receipt.id, task.session, generation.revision() as i64)
+                    .await
+                {
+                    tracing::warn!(exchange = %receipt.id, "a2a: direct consume: {e:#}");
                 }
-                self.peer_changed(&orig).await;
             }
+            self.peer_changed(&orig).await;
         }
         if !handed {
             let record = self
@@ -2160,7 +2156,7 @@ impl Message<CommitPeerConfig> for Agents {
             if !seen.insert(r.alias.as_str()) {
                 return Err(format!("duplicate peer alias `{}`", r.alias));
             }
-            if m.revoke.iter().any(|a| *a == r.alias) {
+            if m.revoke.contains(&r.alias) {
                 return Err(format!("peer `{}` is both bound and revoked", r.alias));
             }
         }

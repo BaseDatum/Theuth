@@ -601,7 +601,7 @@ async fn accept_in(
 ) -> anyhow::Result<(PeerReceipt, bool)> {
     bounded("sender", a.sender, EXTERNAL_ID_MAX)?;
     bounded("recipient", a.recipient, EXTERNAL_ID_MAX)?;
-    if a.body.len() > PEER_TEXT_MAX as usize {
+    if a.body.len() > PEER_TEXT_MAX {
         anyhow::bail!(CommError::TooLarge);
     }
     let owner = a
@@ -833,7 +833,7 @@ async fn bind_peer_in(
     alias: &str,
     endpoint: &str,
 ) -> anyhow::Result<PeerBinding> {
-    bounded("alias", alias, ALIAS_MAX as usize)?;
+    bounded("alias", alias, ALIAS_MAX)?;
     bounded("endpoint", endpoint, EXTERNAL_ID_MAX)?;
     let live: Option<(String, String)> = sqlx::query_as(
         "SELECT id, endpoint FROM peer_bindings WHERE alias = ? AND revoked_at IS NULL",
@@ -925,7 +925,7 @@ impl Store {
         alias: Option<&str>,
     ) -> anyhow::Result<()> {
         if let Some(a) = alias {
-            bounded("alias", a, ALIAS_MAX as usize)?;
+            bounded("alias", a, ALIAS_MAX)?;
         }
         let sid = root.to_string();
         let mut tx = self.begin_write().await?;
@@ -1169,7 +1169,7 @@ impl Store {
         by: SessionId,
         text: &str,
     ) -> anyhow::Result<PeerReceipt> {
-        if text.len() > PEER_TEXT_MAX as usize {
+        if text.len() > PEER_TEXT_MAX {
             anyhow::bail!(CommError::TooLarge);
         }
         let ids = original.to_string();
@@ -2439,7 +2439,7 @@ mod tests {
         let old = store.bind_peer("old", "https://old.example").await.unwrap();
         // One bad alias (over ALIAS_MAX) fails the whole commit: `old` stays live,
         // nothing about `new` is minted.
-        let long = "x".repeat(ALIAS_MAX as usize + 1);
+        let long = "x".repeat(ALIAS_MAX + 1);
         let e = store
             .commit_peer_bindings(
                 &[

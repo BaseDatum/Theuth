@@ -4119,7 +4119,7 @@ impl Message<ListPeerMessages> for Agents {
                     messages.push(r);
                 }
             }
-            messages.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            messages.sort_by_key(|m| std::cmp::Reverse(m.created_at));
             return Ok(PeerMessagePage {
                 awaiting_answer: received,
                 awaiting_reply: sent,
@@ -10234,7 +10234,7 @@ pub(crate) mod tests {
     }
 
     /// The owner side of `theuth/rpc/1` for one engine, as `rpc::forward::serve`
-    /// + `api::peer_deliver` do it: one request line per stream, dispatched
+    /// and `api::peer_deliver` do it: one request line per stream, dispatched
     /// into the supervisor's [`Agents::peer_deliver`], one response line.
     fn serve_peer_deliver(
         t: Arc<peer_mesh::loopback::Loop>,
@@ -10327,7 +10327,7 @@ pub(crate) mod tests {
                 "nothing here consumes a forwarded message"
             );
             assert!(
-                a.sessions.get(&b_root).is_none(),
+                !a.sessions.contains_key(&b_root),
                 "the remote row was not woken here"
             );
             assert!(

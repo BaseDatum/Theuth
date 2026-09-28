@@ -2837,6 +2837,8 @@ impl Turn {
     /// One open + drain. Streamed assistant text accumulates in `text`; `calls`
     /// is set once a tool-call chunk arrived. No event for `agent.stream_idle_secs`
     /// is a transient `stream idle for Ns` (36 §2.3).
+    // Every argument is a distinct per-attempt input of the retry loop in `call`; a struct would be built there alone.
+    #[allow(clippy::too_many_arguments)]
     async fn stream_once(
         &self,
         current: &Current,

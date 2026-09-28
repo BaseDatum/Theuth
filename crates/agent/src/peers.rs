@@ -1003,7 +1003,9 @@ mod tests {
         assert_eq!(s["receipts"].as_array().map(Vec::len), Some(2));
         assert_eq!(s["receipts"][1]["to"], "session:b");
         // A single recipient is still a list.
-        let s = receipts_output(&[a.clone()]).structured.unwrap();
+        let s = receipts_output(std::slice::from_ref(&a))
+            .structured
+            .unwrap();
         assert_eq!(s["receipts"].as_array().map(Vec::len), Some(1));
         // One bad address among two: nothing sent, two error lines, is_error.
         let out = receipts_output(&[

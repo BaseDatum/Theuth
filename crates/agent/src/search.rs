@@ -284,10 +284,11 @@ impl Index {
         // Bodies arrive ordered by (session, seq): the first user row wins.
         let mut first_lines: HashMap<SessionId, String> = HashMap::new();
         for d in &docs {
-            if d.role == HitRole::User && !first_lines.contains_key(&d.session) {
-                if let Some(line) = crate::attach::first_line(d.text.as_str()) {
-                    first_lines.insert(d.session, line);
-                }
+            if d.role == HitRole::User
+                && !first_lines.contains_key(&d.session)
+                && let Some(line) = crate::attach::first_line(d.text.as_str())
+            {
+                first_lines.insert(d.session, line);
             }
         }
         let titles = store

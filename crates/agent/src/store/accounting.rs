@@ -649,10 +649,10 @@ impl Store {
         }
         let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (id, n) in &nodes {
-            if let Some(p) = &n.parent {
-                if p != id {
-                    children.entry(p.clone()).or_default().push(id.clone());
-                }
+            if let Some(p) = &n.parent
+                && p != id
+            {
+                children.entry(p.clone()).or_default().push(id.clone());
             }
         }
         // Deterministic child order (owner ids are time-ordered uuids).
