@@ -115,6 +115,18 @@ fn is_test_dir(d: &str) -> bool {
     matches!(d, "test" | "tests" | "__tests__" | "testdata")
 }
 
+/// Test *data* rather than a test: fixtures, snapshots, `testdata`. Such
+/// files are `is_test` (kept out of `direct`) but exercise nothing, so they
+/// get no subject.
+pub fn is_test_data(path: &str) -> bool {
+    path.split('/').any(|d| {
+        matches!(
+            d,
+            "fixtures" | "__fixtures__" | "testdata" | "snapshots" | "__snapshots__" | "golden"
+        )
+    })
+}
+
 /// The files a test at `path` most plausibly exercises, by convention, best
 /// first (60 §8 `test_subject`): the test marker stripped from the name
 /// (`foo.test.ts`, `foo.spec.ts`, `foo_test.go`, `test_foo.py`, `foo_test.py`
@@ -157,11 +169,15 @@ pub fn subject_candidates(path: &str) -> Vec<String> {
                 .collect();
             dirs.push(join(&[before, after].concat()));
             dirs.push(join(&src));
-            if !after.is_empty() {
+            // One level of nesting (`tests/unit/foo`) may still mirror `src/`;
+            // deeper trees are suites of their own, not the crate's API.
+            if after.len() == 1 {
                 dirs.push(join(before));
                 dirs.push(join(&[before, &["src"]].concat()));
             }
-            crate_root = Some(join(&[before, &["src"]].concat()));
+            if after.len() <= 1 {
+                crate_root = Some(join(&[before, &["src"]].concat()));
+            }
         }
         None => dirs.push(dir.to_owned()),
     }
@@ -228,5 +244,10 @@ mod tests {
         assert!(c.contains(&"src/store.py".to_owned()), "{c:?}");
         assert!(c.contains(&"store.py".to_owned()), "{c:?}");
         assert!(!subject_candidates("tests/it.rs").contains(&"tests/it.rs".to_owned()));
+        // Deep fixture trees never map onto the crate root.
+        let c = subject_candidates("crates/x/tests/fixtures/rust/crates/a/src/lib.rs");
+        assert!(!c.contains(&"crates/x/src/lib.rs".to_owned()), "{c:?}");
+        assert!(is_test_data("crates/x/tests/fixtures/rust/a.rs"));
+        assert!(!is_test_data("crates/x/tests/index.rs"));
     }
 }

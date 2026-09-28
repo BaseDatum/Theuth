@@ -418,7 +418,7 @@ async fn test_subjects(pool: &SqlitePool) -> anyhow::Result<usize> {
     }
     let map: BTreeMap<String, String> = files
         .iter()
-        .filter(|f| f.is_test)
+        .filter(|f| f.is_test && f.language != "other" && !walk::is_test_data(&f.path))
         .filter_map(|f| {
             walk::subject_candidates(&f.path)
                 .into_iter()
