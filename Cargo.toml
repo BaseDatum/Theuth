@@ -323,6 +323,10 @@ rpassword = "7"  # secrets vault (37)
 
 [workspace.lints.rust]
 missing_docs = "warn"
+# Apple's ld prints "__eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact
+# unwind table" for `t` and every debug test binary; it is a note about exception-handling lookup
+# speed, not about the code, and rustc 1.98 forwards it as a warning.
+linker_messages = "allow"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
