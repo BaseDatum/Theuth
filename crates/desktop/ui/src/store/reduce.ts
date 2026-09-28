@@ -1,5 +1,6 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
+import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { stripTime } from "@/lib/time";
@@ -47,6 +48,8 @@ export function empty(id: string): SessionSlice {
     appDrafts: new Map(),
     appCalls: new Map(),
     artifactPanel: null,
+    codemap: emptyCodemap(),
+    codemapPanel: null,
     contextEstimated: false,
     contextEditable: false,
     contextStale: false,
@@ -597,6 +600,8 @@ export function apply(
     }
     case "BrowserShowLive":
       return { ...slice, browser: true, browserLive: true };
+    case "CodeToolRan":
+      return { ...slice, codemap: codeToolRan(slice.codemap, e) };
     case "ToolCallProgress": {
       const next = {
         ...slice,
@@ -798,6 +803,7 @@ function turn(
         entries,
         progress: without(s.progress, e.call_id),
         browser: s.browser || e.name.startsWith("browser_"),
+        codemap: codeEdited(s.codemap, e.name, e.args),
         waiting: false,
         activity: "tool" as const,
       };

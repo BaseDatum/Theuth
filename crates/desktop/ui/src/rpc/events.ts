@@ -33,6 +33,7 @@ import type {
   ToolCallProgress,
   VisionProgress,
 } from '@/rpc/extra'
+import type { CodeindexEvent } from '@/rpc/bindings/CodeindexEvent'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -87,4 +88,6 @@ export type WireEvent =
   | AppCallChanged
   /** 70 HUD: a row was appended to the activity feed. */
   | ActivityAppended
+  /** 73 §5.1: `CodeToolRan` (per session) · `CodeReconciled` (global, filtered by `root`). */
+  | CodeindexEvent
   | Lagged

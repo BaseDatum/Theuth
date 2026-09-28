@@ -42,7 +42,10 @@ use app::{
 use artifact::search::ArtifactMatchContext;
 use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
-use codeindex::{CODEINDEX_ACTOR, CodeindexActor, IndexStats, LocateAnchor, Located};
+use codeindex::{
+    CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
+    LocateAnchor, Located,
+};
 use computer::{COMPUTER_ACTOR, Computer, Permissions};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
@@ -897,6 +900,44 @@ pub trait Api {
         root: String,
         anchors: Vec<LocateAnchor>,
     ) -> RpcResult<Vec<Located>>;
+    /// CodeMap Here lens (73 §5.2): the stored ranked map of an already
+    /// indexed `root` cut to `limit` rows (default 2 000) with badges;
+    /// `focus`/`edited` personalise the rank. Store reads only, never a
+    /// walk; `ASK_FAILED` when the root was never indexed.
+    #[method(name = "codemap_here")]
+    async fn codemap_here(
+        &self,
+        root: String,
+        focus: Option<Vec<String>>,
+        edited: Option<Vec<String>>,
+        limit: Option<u32>,
+    ) -> RpcResult<HereLens>;
+    /// CodeMap Fit lens (73 §5.2): the butterfly around `symbol` (a moniker,
+    /// a name, `path:line` or a symbol id) — callers, focus, callees — cut to
+    /// `limit` nodes (default 20) with counted remainders.
+    #[method(name = "codemap_fit")]
+    async fn codemap_fit(
+        &self,
+        root: String,
+        symbol: String,
+        limit: Option<u32>,
+    ) -> RpcResult<FitLens>;
+    /// CodeMap Change lens (73 §5.2): `code_impact` over the open index in
+    /// four bands (changed, direct, transitive, tests); neither `git_range`
+    /// nor `files` means `WORKTREE`.
+    #[method(name = "codemap_change")]
+    async fn codemap_change(
+        &self,
+        root: String,
+        git_range: Option<String>,
+        files: Option<Vec<String>>,
+        include_tests: Option<bool>,
+    ) -> RpcResult<ChangeLens>;
+    /// CodeMap touch (73 §5.2): stat and re-parse only `paths` (root-relative;
+    /// a path outside the root fails the call), or force a full reconcile when
+    /// `paths` is null. Publishes `CodeReconciled`.
+    #[method(name = "codemap_touch")]
+    async fn codemap_touch(&self, root: String, paths: Option<Vec<String>>) -> RpcResult<LensMeta>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -3891,6 +3932,72 @@ impl ApiServer for Server {
             codeindex::Locate {
                 root: PathBuf::from(root),
                 anchors,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_here(
+        &self,
+        root: String,
+        focus: Option<Vec<String>>,
+        edited: Option<Vec<String>>,
+        limit: Option<u32>,
+    ) -> RpcResult<HereLens> {
+        send(
+            &codeindex()?,
+            codeindex::Here {
+                root: PathBuf::from(root),
+                focus,
+                edited,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_fit(
+        &self,
+        root: String,
+        symbol: String,
+        limit: Option<u32>,
+    ) -> RpcResult<FitLens> {
+        send(
+            &codeindex()?,
+            codeindex::Fit {
+                root: PathBuf::from(root),
+                symbol,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_change(
+        &self,
+        root: String,
+        git_range: Option<String>,
+        files: Option<Vec<String>>,
+        include_tests: Option<bool>,
+    ) -> RpcResult<ChangeLens> {
+        send(
+            &codeindex()?,
+            codeindex::Change {
+                root: PathBuf::from(root),
+                git_range,
+                files,
+                include_tests,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_touch(&self, root: String, paths: Option<Vec<String>>) -> RpcResult<LensMeta> {
+        send(
+            &codeindex()?,
+            codeindex::Touch {
+                root: PathBuf::from(root),
+                paths,
             },
         )
         .await

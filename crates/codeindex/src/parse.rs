@@ -4,6 +4,7 @@
 //! erroring tree are kept.
 
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
@@ -356,6 +357,49 @@ fn clip(mut s: String, max_chars: usize) -> String {
     s
 }
 
+/// One moniker per symbol, `<language>:<path>#<Qualified.Name>(<kind>)`
+/// (60 §8): the qualified name is the parent chain joined by `.`, so it
+/// survives line moves; a same-name-same-kind sibling in the same file gets
+/// `#2`, `#3`, … by source order.
+pub fn monikers(language: &str, path: &str, symbols: &[Symbol<'_>]) -> Vec<String> {
+    fn qualified(symbols: &[Symbol<'_>], i: usize, depth: usize, out: &mut String) {
+        // ponytail: depth cap guards a parent cycle from `attach_impl_methods`
+        // (type defined inside its own method body); never seen, cheap to bound.
+        if let Some(p) = symbols[i].parent
+            && depth < 32
+        {
+            qualified(symbols, p, depth + 1, out);
+            out.push('.');
+        }
+        out.push_str(&symbols[i].name);
+    }
+    let mut out = Vec::with_capacity(symbols.len());
+    for i in 0..symbols.len() {
+        let mut m = format!("{language}:{path}#");
+        qualified(symbols, i, 0, &mut m);
+        m.push('(');
+        m.push_str(symbols[i].kind);
+        m.push(')');
+        out.push(m);
+    }
+    let mut seen: HashMap<&str, usize> = HashMap::with_capacity(out.len());
+    let ordinal: Vec<usize> = out
+        .iter()
+        .map(|m| {
+            let n = seen.entry(m.as_str()).or_insert(0);
+            *n += 1;
+            *n
+        })
+        .collect();
+    for (m, n) in out.iter_mut().zip(ordinal) {
+        if n > 1 {
+            m.push('#');
+            m.push_str(&n.to_string());
+        }
+    }
+    out
+}
+
 /// Byte offset → 0-based row.
 struct LineIndex(Vec<usize>);
 
@@ -375,7 +419,43 @@ impl LineIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::qualifier;
+    use super::{Symbol, monikers, qualifier};
+
+    #[test]
+    fn monikers_follow_the_parent_chain_and_number_siblings() {
+        let sym = |name: &str, kind: &'static str, parent: Option<usize>| Symbol {
+            name: name.into(),
+            kind,
+            parent,
+            line_start: 1,
+            line_end: 1,
+            byte_start: 0,
+            byte_end: 0,
+            signature: String::new(),
+            docs: None,
+            exported: false,
+        };
+        // `impl` methods may point at a type declared later in the file (parent index > child).
+        let symbols = [
+            sym("render", "method", Some(2)),
+            sym("render", "method", Some(2)),
+            sym("Live", "class", None),
+            sym("inner", "module", None),
+            sym("render", "function", Some(3)),
+            sym("render", "function", None),
+        ];
+        assert_eq!(
+            monikers("typescript", "src/a.ts", &symbols),
+            [
+                "typescript:src/a.ts#Live.render(method)",
+                "typescript:src/a.ts#Live.render(method)#2",
+                "typescript:src/a.ts#Live(class)",
+                "typescript:src/a.ts#inner(module)",
+                "typescript:src/a.ts#inner.render(function)",
+                "typescript:src/a.ts#render(function)",
+            ]
+        );
+    }
 
     #[test]
     fn qualifier_accepts_plain_chains_only() {

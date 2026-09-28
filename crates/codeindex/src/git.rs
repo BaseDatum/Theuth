@@ -242,6 +242,13 @@ impl Git {
                     bail!("HEAD is unborn")
                 };
                 let tree = self.tree(Some(head))?;
+                // git's own shortcut (`git status`): an index entry holding HEAD's
+                // blob whose stat still matches the file is unchanged — no read,
+                // no hash. Racy entries (written within the index's own second)
+                // fall through to the hash.
+                let index = self.repo.index_or_empty()?;
+                let racy_at = index.timestamp();
+                let opts = gix::index::entry::stat::Options::default();
                 let mut seen = HashSet::new();
                 let mut out = Vec::new();
                 for e in tree.traverse().breadthfirst.files()? {
@@ -252,7 +259,17 @@ impl Git {
                         continue;
                     };
                     seen.insert(path.clone());
-                    match std::fs::read(root.join(&path)) {
+                    let full = root.join(&path);
+                    if let Some(ie) = index.entry_by_path(e.filepath.as_bstr())
+                        && ie.id == e.oid
+                        && !ie.stat.is_racy(racy_at, opts)
+                        && let Ok(meta) = gix::index::fs::Metadata::from_path_no_follow(&full)
+                        && let Ok(st) = gix::index::entry::Stat::from_fs(&meta)
+                        && ie.stat.matches(&st, opts)
+                    {
+                        continue;
+                    }
+                    match std::fs::read(&full) {
                         Ok(data) => {
                             if gix::objs::compute_hash(
                                 self.repo.object_hash(),

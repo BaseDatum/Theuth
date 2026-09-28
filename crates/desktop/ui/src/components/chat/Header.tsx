@@ -23,6 +23,7 @@ import { useBrowserBusy, useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalsSheet } from './ApprovalCard'
 import { metaLine } from './ArtifactCard'
 import { ArtifactPanel } from './ArtifactPanel'
+import { CodeMapButton, CodeMapSheet, useCodemapAvailable } from '@/components/codemap/CodeMapHost'
 import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
 import { CostDialog, CostPill } from './CostPill'
@@ -169,6 +170,7 @@ export function Header({
   const live = useSessionField(session ?? '', 'browserLive')
   const artifacts = useSessionField(session ?? '', 'artifacts')
   const terminals = useHasTerminals(session)
+  const codemap = useCodemapAvailable(session)
   const liveTitle = useSessionField(session ?? '', 'title')
   // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
@@ -193,7 +195,7 @@ export function Header({
    * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
-  const panel = artifacts?.size ? 'artifacts' : browser ? 'browser' : terminals ? 'terminals' : null
+  const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
   const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
@@ -250,6 +252,7 @@ export function Header({
         </Button>
       ),
     artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
+    codemap: (mode) => (session && codemap ? <CodeMapButton session={session} row={mode === 'row'} /> : null),
     approvalsOff: (mode) =>
       !approvalsOff ? null : mode === 'row' ? (
         <MenuRow icon={ShieldOff} label="Approvals off" />
@@ -315,6 +318,7 @@ export function Header({
           <TerminalViewer session={session} open={terminal} onOpenChange={setTerminal} />
           <BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} />
           <ArtifactPanel session={session} />
+          <CodeMapSheet session={session} />
         </>
       )}
     </header>

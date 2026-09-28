@@ -7,10 +7,11 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`CODEINDEX_ACTOR`] actor ([`CodeindexActor`]): [`Handle`],
-//!   [`Stats`], [`Reconcile`], [`Locate`] (71 §2.5)
+//!   [`Stats`], [`Reconcile`], [`Locate`] (71 §2.5), the lens messages of
+//!   [`lens`] (73 §5.2)
 //! - the `codeindex_stats` RPC method answers [`Stats`], `code_locate` answers
-//!   [`Locate`] (60 §10)
-//! - no events in v1 (60 §10)
+//!   [`Locate`] (60 §10), `codemap_*` answer the lens messages
+//! - events [`CodeindexEvent`] on the bus (73 §5.1)
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,12 +22,15 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+pub mod event;
 pub mod git;
 pub mod index;
 pub mod lang;
+pub mod lens;
 pub mod locate;
 pub mod outline_hook;
 pub mod parse;
+pub mod profile;
 pub mod rank;
 pub mod resolve;
 pub mod root;
@@ -34,7 +38,12 @@ pub mod store;
 pub mod tools;
 pub mod walk;
 
+pub use event::{CodeToolSummary, CodeindexEvent, SummaryDefinition, SummaryImpact, SummaryRange};
 pub use index::{Codeindex, Reconciled, RootIndex};
+pub use lens::{
+    Change, ChangeFile, ChangeLens, ChangeSym, DirRow, Fit, FitEdge, FitLens, FitNode, Here,
+    HereLens, LensMeta, MapRow, Touch,
+};
 pub use locate::{Locate, LocateAnchor, LocateStatus, Located};
 
 /// Registry name of the [`CodeindexActor`].
@@ -195,6 +204,25 @@ impl Message<Locate> for CodeindexActor {
     }
 }
 
+/// The four lens messages (73 §5.2): store reads, no walk; `Touch` writes.
+macro_rules! lens_handler {
+    ($($msg:ty => $reply:ty, $f:path;)*) => {$(
+        impl Message<$msg> for CodeindexActor {
+            type Reply = Result<$reply, String>;
+
+            async fn handle(&mut self, m: $msg, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+                $f(&self.ix, m).await.map_err(|e| format!("{e:#}"))
+            }
+        }
+    )*};
+}
+lens_handler! {
+    Here => HereLens, lens::here;
+    Fit => FitLens, lens::fit;
+    Change => ChangeLens, lens::change;
+    Touch => LensMeta, lens::touch;
+}
+
 /// The plugin: reads `codeindex`, creates `<data_dir>/codeindex/`, spawns
 /// [`CodeindexActor`], registers the `code_*` tools once the registry is up.
 /// Nothing is indexed at start; the first call on a root pays (60 §0.8).
@@ -216,7 +244,7 @@ impl runtime::Plugin for CodeindexPlugin {
             return Ok(());
         }
         let ix = match Codeindex::new(cfg, &rt.data_dir) {
-            Ok(ix) => Arc::new(ix),
+            Ok(ix) => Arc::new(ix.with_runtime(rt.clone())),
             Err(e) => {
                 tracing::warn!("codeindex unavailable: {e:#}");
                 return Ok(());

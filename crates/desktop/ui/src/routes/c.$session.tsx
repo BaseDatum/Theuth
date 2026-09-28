@@ -3,6 +3,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { LinkBanner } from '@/components/link/LinkFailure'
@@ -53,7 +54,15 @@ function SessionRoute() {
   return (
     <Panes
       session={session}
-      render={(id, first) => (isDraft(id) ? <NewChatPane id={id} first={first} /> : <LiveSession session={id} first={first} />)}
+      render={(id, first) =>
+        isDraft(id) ? (
+          <NewChatPane id={id} first={first} />
+        ) : (
+          <CodeMapPane session={id}>
+            <LiveSession session={id} first={first} />
+          </CodeMapPane>
+        )
+      }
     />
   )
 }
@@ -81,6 +90,9 @@ export function LiveSession({ session, first }: { session: string; first: boolea
   useEffect(() => {
     if (focused) document.title = `${title || (row ? chatName(row) : '')}${running ? ' ·' : ''}`
   }, [title, row, running, focused])
+  useEffect(() => {
+    if (import.meta.env.DEV && import.meta.env.VITE_CODEMAP_MOCK === '1') void import('@/dev/codemap-fixture').then((m) => m.play(session))
+  }, [session])
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
