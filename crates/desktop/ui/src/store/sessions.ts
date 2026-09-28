@@ -1,6 +1,8 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { Injected } from '@/lib/injected';
+import { codeFromHistory } from '@/lib/codemap/slice';
+import type { CodemapSlice } from '@/lib/codemap/types';
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { JobExit } from "@/rpc/bindings/JobExit";
@@ -226,6 +228,10 @@ export type SessionSlice = {
   appCalls: Map<string, Map<string, AppCallChanged>>;
   /** `call_id` of the artifact open in the side panel; `null` when closed. */
   artifactPanel: string | null;
+  /** 73 §4: roots touched by `code_*` tools, the last call, the activity trail and this session's edits. */
+  codemap: CodemapSlice;
+  /** Root shown in the docked CodeMap pane; `null` when closed. */
+  codemapPanel: string | null;
   /** The plan (47 §5): the newest snapshot seen from any source; `null` before one arrives (unavailable, not empty). */
   todos: TodoSnapshot | null;
   /** A reconnect, `Lagged` or engine switch may have dropped a `TodoChanged`: the list is labelled stale until
@@ -280,6 +286,8 @@ type SessionsStore = {
   setArtifacts(id: string, artifacts: Artifact[]): void;
   /** Open the artifact panel on `callId`, or close it with `null`. */
   setArtifactPanel(id: string, callId: string | null): void;
+  /** Open the CodeMap pane on `root`, or close it with `null`. */
+  setCodemapPanel(id: string, root: string | null): void;
   /** Record a press outcome the view learned directly (46 §6.4), as if its `AppCallChanged` had arrived. */
   recordAppCall(id: string, e: AppCallChanged): void;
   /** Install a `get_todos` reply (47 §5.4): a higher version replaces, an equal one repairs a stale mark, an older or `null` one is ignored. */
@@ -346,11 +354,16 @@ export const createSessions = (): SessionsApi =>
           loaded.history.some(
             (h) => h.role === "tool" && h.name.startsWith("browser_"),
           );
+        const codemap = codeFromHistory(
+          cur.codemap,
+          loaded.history.flatMap((h) => (h.role === "tool" ? [h.name] : [])),
+        );
         let next: SessionSlice;
         if (mode === "prepend") {
           next = {
             ...cur,
             browser,
+            codemap,
             entries: [...entries, ...cur.entries],
             firstSeq: loaded.first_seq ?? cur.firstSeq,
             more: loaded.more,
@@ -365,6 +378,7 @@ export const createSessions = (): SessionsApi =>
           next = {
             ...cur,
             browser,
+            codemap,
             entries: adopt(cur.entries, entries),
             running: loaded.running,
             waiting: false,
@@ -485,6 +499,14 @@ export const createSessions = (): SessionsApi =>
                   [id]: { ...cur, artifactPanel: callId },
                 },
               };
+        });
+      },
+      setCodemapPanel(id, root) {
+        set((st) => {
+          const cur = st.sessions[id] ?? empty(id);
+          return cur.codemapPanel === root
+            ? st
+            : { sessions: { ...st.sessions, [id]: { ...cur, codemapPanel: root } } };
         });
       },
       recordAppCall(id, e) {

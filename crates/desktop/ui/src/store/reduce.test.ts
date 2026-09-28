@@ -6,6 +6,8 @@ import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
 import { adopt, apply, empty, fromHistory, route, type Ctx } from './reduce'
 import { type Freshness, type SessionSlice, freshness, shownActivity, useSessions } from './sessions'
+import type { CodeToolRan } from '@/lib/codemap/types'
+import codemapEvents from '@/components/codemap/__fixtures__/events.json'
 
 const S = 'sess'
 const T = 'turn'
@@ -862,4 +864,32 @@ test('AppCallChanged keeps the newest status per statement of each record, bound
   expect(s.appCalls.size).toBe(32)
   expect(s.appCalls.has('r1')).toBe(false)
   expect(s.appCalls.has('x31')).toBe(true)
+})
+
+const codeEvents = (codemapEvents as { type: string }[]).filter((e): e is CodeToolRan => e.type === 'CodeToolRan')
+const ROOT = '/Users/sky/Develop/theuth'
+
+test('CodeToolRan: roots ∪= root, last is the newest call, trail newest-first with a target per tool, capped at 20', () => {
+  let s = run(codeEvents)
+  expect(s.codemap.roots).toEqual([ROOT])
+  expect(s.codemap.last).toMatchObject({ root: ROOT, tool: 'code_impact', callId: 'toolu_01C', seq: 42 })
+  expect(s.codemap.trail.map((t) => [t.tool, t.callId, t.target])).toEqual([
+    ['code_impact', 'toolu_01C', '9532e7ff..176bf52'],
+    ['code_refs', 'toolu_01B', 'crates/tools/src/registry.rs#L1366'],
+    ['code_map', 'toolu_01A', 'crates/tools'],
+  ])
+  for (let i = 0; i < 22; i++) s = apply(s, { ...codeEvents[0]!, call_id: `x${i}`, seq: 100 + i }, ctx())
+  expect(s.codemap.trail).toHaveLength(20)
+  expect(s.codemap.trail[0]).toMatchObject({ callId: 'x21', seq: 121 })
+  expect(s.codemap.roots).toEqual([ROOT])
+})
+
+test('ToolCallStarted edit/write_file appends the root-relative path under its root; a path outside every root with no root is ignored', () => {
+  let s = run([codeEvents[0]!])
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'e1', name: 'edit', args: { path: `${ROOT}/crates/tools/src/registry.rs`, old: 'a', new: 'b' } }, ctx())
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'e2', name: 'write_file', args: { path: 'crates/desktop/ui/src/x.ts', content: '' } }, ctx())
+  s = apply(s, { type: 'ToolCallStarted', session: S, turn: T, call_id: 'e3', name: 'read', args: { path: 'crates/other.rs' } }, ctx())
+  expect(s.codemap.edited).toEqual({ [ROOT]: ['crates/tools/src/registry.rs', 'crates/desktop/ui/src/x.ts'] })
+  const none = run([{ type: 'ToolCallStarted', session: S, turn: T, call_id: 'e4', name: 'write_file', args: { path: '/elsewhere/z.rs', content: '' } }])
+  expect(none.codemap.edited).toEqual({})
 })

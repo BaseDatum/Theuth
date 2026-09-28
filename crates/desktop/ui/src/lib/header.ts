@@ -37,6 +37,7 @@ export type HeaderId =
   | 'terminals'
   | 'browser'
   | 'artifacts'
+  | 'codemap'
   | 'approvalsOff'
   | 'pending'
   | 'popout'
@@ -62,7 +63,7 @@ export type HeaderItem = {
  * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
  * second window exists (`canPopout()` false, or this is already the popped window).
  */
-export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null, popout: boolean): HeaderItem[] {
+export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean): HeaderItem[] {
   return [
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
@@ -75,6 +76,7 @@ export function headerOrder(panel: 'artifacts' | 'browser' | 'terminals' | null,
     { id: 'terminals', slot: panel === 'terminals' ? 'bar' : 'menu', shed: true },
     { id: 'browser', slot: panel === 'browser' ? 'bar' : 'menu', shed: true },
     { id: 'artifacts', slot: panel === 'artifacts' ? 'bar' : 'menu', shed: true },
+    { id: 'codemap', slot: panel === 'codemap' ? 'bar' : 'menu', shed: true },
     { id: 'approvalsOff', slot: 'menu' },
     { id: 'pending', slot: 'menu' },
     ...(popout ? [{ id: 'popout', slot: 'bar' } as const] : []),

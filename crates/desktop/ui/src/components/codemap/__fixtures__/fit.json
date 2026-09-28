@@ -1,0 +1,376 @@
+{
+  "meta": {
+    "root": "/Users/sky/Develop/theuth",
+    "seq": 43,
+    "indexed_files": 1051,
+    "stale": false,
+    "pending": 0,
+    "suspect_root": false,
+    "hint": null,
+    "truncated_walk": false,
+    "git_head": "22b39455d849c0a1",
+    "ms": 9
+  },
+  "focus": {
+    "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+    "path": "crates/tools/src/registry.rs",
+    "line_start": 1366,
+    "line_end": 1439,
+    "kind": "method",
+    "name": "ToolRegistry::start",
+    "signature": "pub async fn start(&self, cx: ToolCx, call: ToolCall) -> ToolOutput",
+    "is_test": false
+  },
+  "callers": [
+    {
+      "moniker": "rust:crates/knowledge/src/tools.rs#register(function)",
+      "path": "crates/knowledge/src/tools.rs",
+      "line_start": 51,
+      "line_end": 70,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/scrape/src/tools.rs#register(function)",
+      "path": "crates/scrape/src/tools.rs",
+      "line_start": 30,
+      "line_end": 44,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/codeindex/src/tools.rs#register(function)",
+      "path": "crates/codeindex/src/tools.rs",
+      "line_start": 43,
+      "line_end": 60,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/browser/src/tools.rs#register(function)",
+      "path": "crates/browser/src/tools.rs",
+      "line_start": 20,
+      "line_end": 38,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/document/src/tools.rs#register(function)",
+      "path": "crates/document/src/tools.rs",
+      "line_start": 792,
+      "line_end": 866,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/agent/src/loop_.rs#run_tool(function)",
+      "path": "crates/agent/src/loop_.rs",
+      "line_start": 3790,
+      "line_end": 3900,
+      "kind": "function",
+      "name": "run_tool",
+      "signature": "fn run_tool(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/agent/src/lib.rs#AgentActor::handle(method)",
+      "path": "crates/agent/src/lib.rs",
+      "line_start": 1600,
+      "line_end": 1650,
+      "kind": "method",
+      "name": "AgentActor::handle",
+      "signature": "fn handle(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/rpc/src/api.rs#ApiImpl::tool_call(method)",
+      "path": "crates/rpc/src/api.rs",
+      "line_start": 3800,
+      "line_end": 3830,
+      "kind": "method",
+      "name": "ApiImpl::tool_call",
+      "signature": "fn tool_call(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry::run_many(method)",
+      "path": "crates/tools/src/registry.rs",
+      "line_start": 1440,
+      "line_end": 1470,
+      "kind": "method",
+      "name": "ToolRegistry::run_many",
+      "signature": "fn run_many(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/python.rs#exec_cell(function)",
+      "path": "crates/tools/src/python.rs",
+      "line_start": 210,
+      "line_end": 260,
+      "kind": "function",
+      "name": "exec_cell",
+      "signature": "fn exec_cell(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/meeting/src/tools.rs#register(function)",
+      "path": "crates/meeting/src/tools.rs",
+      "line_start": 12,
+      "line_end": 30,
+      "kind": "function",
+      "name": "register",
+      "signature": "fn register(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/tests/registry.rs#start_runs_registered_tool(function)",
+      "path": "crates/tools/tests/registry.rs",
+      "line_start": 8,
+      "line_end": 40,
+      "kind": "function",
+      "name": "start_runs_registered_tool",
+      "signature": "fn start_runs_registered_tool(..)",
+      "is_test": true
+    }
+  ],
+  "callees": [
+    {
+      "moniker": "rust:crates/tools/src/registry.rs#RegisterTool(struct)",
+      "path": "crates/tools/src/registry.rs",
+      "line_start": 231,
+      "line_end": 231,
+      "kind": "struct",
+      "name": "RegisterTool",
+      "signature": "fn RegisterTool(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/lib.rs#Tool::call(method)",
+      "path": "crates/tools/src/lib.rs",
+      "line_start": 40,
+      "line_end": 71,
+      "kind": "method",
+      "name": "Tool::call",
+      "signature": "fn call(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/lib.rs#ToolOutput::error(method)",
+      "path": "crates/tools/src/lib.rs",
+      "line_start": 88,
+      "line_end": 102,
+      "kind": "method",
+      "name": "ToolOutput::error",
+      "signature": "fn error(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/approval.rs#approve(function)",
+      "path": "crates/tools/src/approval.rs",
+      "line_start": 100,
+      "line_end": 150,
+      "kind": "function",
+      "name": "approve",
+      "signature": "fn approve(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/runtime/src/lib.rs#Runtime::publish(method)",
+      "path": "crates/runtime/src/lib.rs",
+      "line_start": 48,
+      "line_end": 55,
+      "kind": "method",
+      "name": "Runtime::publish",
+      "signature": "fn publish(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry::lookup(method)",
+      "path": "crates/tools/src/registry.rs",
+      "line_start": 300,
+      "line_end": 320,
+      "kind": "method",
+      "name": "ToolRegistry::lookup",
+      "signature": "fn lookup(..)",
+      "is_test": false
+    },
+    {
+      "moniker": "rust:crates/tools/src/telemetry.rs#record(function)",
+      "path": "crates/tools/src/telemetry.rs",
+      "line_start": 10,
+      "line_end": 30,
+      "kind": "function",
+      "name": "record",
+      "signature": "fn record(..)",
+      "is_test": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "rust:crates/knowledge/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/scrape/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/codeindex/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "package",
+      "confidence": 0.8
+    },
+    {
+      "from": "rust:crates/browser/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/document/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "package",
+      "confidence": 0.8
+    },
+    {
+      "from": "rust:crates/agent/src/loop_.rs#run_tool(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 2,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/agent/src/lib.rs#AgentActor::handle(method)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/rpc/src/api.rs#ApiImpl::tool_call(method)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "unique",
+      "confidence": 0.6
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::run_many(method)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "same_file",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/python.rs#exec_cell(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "package",
+      "confidence": 0.8
+    },
+    {
+      "from": "rust:crates/meeting/src/tools.rs#register(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "unique",
+      "confidence": 0.6
+    },
+    {
+      "from": "rust:crates/tools/tests/registry.rs#start_runs_registered_tool(function)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "package",
+      "confidence": 0.8
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/registry.rs#RegisterTool(struct)",
+      "count": 1,
+      "kind": "type",
+      "provenance": "same_file",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/lib.rs#Tool::call(method)",
+      "count": 3,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/lib.rs#ToolOutput::error(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/approval.rs#approve(function)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/runtime/src/lib.rs#Runtime::publish(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "unique",
+      "confidence": 0.6
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/registry.rs#ToolRegistry::lookup(method)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "same_file",
+      "confidence": 1.0
+    },
+    {
+      "from": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+      "to": "rust:crates/tools/src/telemetry.rs#record(function)",
+      "count": 1,
+      "kind": "call",
+      "provenance": "import",
+      "confidence": 1.0
+    }
+  ],
+  "ambiguous": 3,
+  "more_callers": 14,
+  "more_callees": 1,
+  "candidates": []
+}

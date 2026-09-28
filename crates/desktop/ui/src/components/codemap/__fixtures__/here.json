@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "root": "/Users/sky/Develop/theuth",
+    "seq": 41,
+    "indexed_files": 1051,
+    "stale": false,
+    "pending": 0,
+    "suspect_root": false,
+    "hint": null,
+    "truncated_walk": false,
+    "git_head": "22b39455d849c0a1",
+    "ms": 11
+  },
+  "rows": [
+    { "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry(struct)", "path": "crates/tools/src/registry.rs", "line": 231, "line_end": 260, "kind": "struct", "name": "ToolRegistry", "signature": "pub struct ToolRegistry", "rank": 0.0412, "exported": true, "importers": 14, "callers": 0, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)", "path": "crates/tools/src/registry.rs", "line": 1366, "line_end": 1439, "kind": "method", "name": "start", "signature": "pub async fn start(&self, cx: ToolCx, call: ToolCall) -> ToolOutput", "rank": 0.0398, "exported": true, "importers": 14, "callers": 9, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/tools/src/registry.rs#RegisterTool(struct)", "path": "crates/tools/src/registry.rs", "line": 231, "line_end": 231, "kind": "struct", "name": "RegisterTool", "signature": "pub struct RegisterTool", "rank": 0.0301, "exported": true, "importers": 14, "callers": 7, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/tools/src/lib.rs#Tool(trait)", "path": "crates/tools/src/lib.rs", "line": 40, "line_end": 71, "kind": "interface", "name": "Tool", "signature": "pub trait Tool: Send + Sync", "rank": 0.0288, "exported": true, "importers": 56, "callers": 0, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/tools/src/lib.rs#ToolOutput(struct)", "path": "crates/tools/src/lib.rs", "line": 88, "line_end": 102, "kind": "struct", "name": "ToolOutput", "signature": "pub struct ToolOutput", "rank": 0.0271, "exported": true, "importers": 56, "callers": 0, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/runtime/src/lib.rs#Runtime(struct)", "path": "crates/runtime/src/lib.rs", "line": 22, "line_end": 44, "kind": "struct", "name": "Runtime", "signature": "pub struct Runtime", "rank": 0.0250, "exported": true, "importers": 48, "callers": 31, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/runtime/src/lib.rs#Runtime::publish(method)", "path": "crates/runtime/src/lib.rs", "line": 48, "line_end": 55, "kind": "method", "name": "publish", "signature": "pub fn publish<E: Event>(&self, e: E)", "rank": 0.0231, "exported": true, "importers": 48, "callers": 12, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/runtime/src/lib.rs#lookup_when(function)", "path": "crates/runtime/src/lib.rs", "line": 120, "line_end": 141, "kind": "function", "name": "lookup_when", "signature": "pub async fn lookup_when<T>(rt: &Runtime) -> Option<Arc<T>>", "rank": 0.0102, "exported": true, "importers": 48, "callers": 6, "recent": false, "entry": true, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/index.rs#Codeindex(struct)", "path": "crates/codeindex/src/index.rs", "line": 60, "line_end": 71, "kind": "struct", "name": "Codeindex", "signature": "pub struct Codeindex", "rank": 0.0090, "exported": true, "importers": 3, "callers": 0, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/index.rs#reconcile(function)", "path": "crates/codeindex/src/index.rs", "line": 116, "line_end": 224, "kind": "function", "name": "reconcile", "signature": "pub async fn reconcile(ri: &RootIndex, force: bool) -> Reconciled", "rank": 0.0088, "exported": true, "importers": 3, "callers": 4, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/tools.rs#CodeMapTool(struct)", "path": "crates/codeindex/src/tools.rs", "line": 157, "line_end": 160, "kind": "struct", "name": "CodeMapTool", "signature": "pub struct CodeMapTool(pub Arc<Codeindex>)", "rank": 0.0060, "exported": true, "importers": 1, "callers": 1, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/tools.rs#register(function)", "path": "crates/codeindex/src/tools.rs", "line": 43, "line_end": 60, "kind": "function", "name": "register", "signature": "pub fn register(reg: &ToolRegistry, ix: Arc<Codeindex>)", "rank": 0.0058, "exported": true, "importers": 1, "callers": 1, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/store.rs#ranked_tags(function)", "path": "crates/codeindex/src/store.rs", "line": 960, "line_end": 1002, "kind": "function", "name": "ranked_tags", "signature": "pub async fn ranked_tags(pool: &Pool, limit: u32) -> Vec<Tag>", "rank": 0.0055, "exported": true, "importers": 2, "callers": 3, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/src/store.rs#SCHEMA_VERSION(constant)", "path": "crates/codeindex/src/store.rs", "line": 24, "line_end": 24, "kind": "constant", "name": "SCHEMA_VERSION", "signature": "pub const SCHEMA_VERSION: &str = \"3\"", "rank": 0.0021, "exported": true, "importers": 2, "callers": 0, "recent": true, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/scrape/src/tools.rs#register(function)", "path": "crates/scrape/src/tools.rs", "line": 30, "line_end": 44, "kind": "function", "name": "register", "signature": "pub fn register(reg: &ToolRegistry)", "rank": 0.0044, "exported": true, "importers": 1, "callers": 1, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/knowledge/src/tools.rs#register(function)", "path": "crates/knowledge/src/tools.rs", "line": 51, "line_end": 70, "kind": "function", "name": "register", "signature": "pub fn register(reg: &ToolRegistry, kb: Arc<Knowledge>)", "rank": 0.0043, "exported": true, "importers": 1, "callers": 1, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/rpc/src/api.rs#Api(trait)", "path": "crates/rpc/src/api.rs", "line": 143, "line_end": 900, "kind": "interface", "name": "Api", "signature": "pub trait Api", "rank": 0.0200, "exported": true, "importers": 4, "callers": 0, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/rpc/src/api.rs#codeindex_stats(method)", "path": "crates/rpc/src/api.rs", "line": 887, "line_end": 888, "kind": "method", "name": "codeindex_stats", "signature": "async fn codeindex_stats(&self, root: Option<String>) -> RpcResult<IndexStats>", "rank": 0.0035, "exported": false, "importers": 4, "callers": 2, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/rpc/src/bridge.rs#Bridge(struct)", "path": "crates/rpc/src/bridge.rs", "line": 30, "line_end": 40, "kind": "struct", "name": "Bridge", "signature": "pub struct Bridge", "rank": 0.0030, "exported": true, "importers": 2, "callers": 5, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/codeindex/tests/index.rs#reconcile_is_incremental(function)", "path": "crates/codeindex/tests/index.rs", "line": 12, "line_end": 40, "kind": "function", "name": "reconcile_is_incremental", "signature": "async fn reconcile_is_incremental()", "rank": 0.0010, "exported": false, "importers": 0, "callers": 0, "recent": true, "entry": false, "is_test": true },
+    { "moniker": "ts:crates/desktop/ui/src/lib/graph-layout.ts#layout(function)", "path": "crates/desktop/ui/src/lib/graph-layout.ts", "line": 239, "line_end": 272, "kind": "function", "name": "layout", "signature": "export async function layout(props: GraphData, hash?: string): Promise<Layout>", "rank": 0.0028, "exported": true, "importers": 3, "callers": 2, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "ts:crates/desktop/ui/src/lib/graph-layout.ts#WRAP(constant)", "path": "crates/desktop/ui/src/lib/graph-layout.ts", "line": 49, "line_end": 49, "kind": "constant", "name": "WRAP", "signature": "export const WRAP = 24", "rank": 0.0012, "exported": true, "importers": 3, "callers": 0, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/tools/src/edit.rs#edit_macro(macro)", "path": "crates/tools/src/edit.rs", "line": 12, "line_end": 20, "kind": "macro", "name": "edit_macro", "signature": "macro_rules! edit_macro", "rank": 0.0008, "exported": false, "importers": 14, "callers": 0, "recent": false, "entry": false, "is_test": false },
+    { "moniker": "rust:crates/tools/src/edit.rs#mod(module)", "path": "crates/tools/src/edit.rs", "line": 1, "line_end": 1, "kind": "module", "name": "edit", "signature": "pub mod edit", "rank": 0.0007, "exported": true, "importers": 14, "callers": 0, "recent": false, "entry": false, "is_test": false }
+  ],
+  "dropped": 1976,
+  "dirs": [
+    { "path": "crates/desktop/ui", "files": 412, "ranked_rows": 0, "importers": 0 },
+    { "path": "crates/agent", "files": 38, "ranked_rows": 0, "importers": 22 },
+    { "path": "crates/browser", "files": 9, "ranked_rows": 0, "importers": 3 },
+    { "path": "crates/document", "files": 14, "ranked_rows": 0, "importers": 5 },
+    { "path": "crates/surface", "files": 11, "ranked_rows": 0, "importers": 4 },
+    { "path": "crates/voice", "files": 7, "ranked_rows": 0, "importers": 2 },
+    { "path": "packages/apps", "files": 61, "ranked_rows": 0, "importers": 1 }
+  ],
+  "personalised": false,
+  "cache_hit": true
+}

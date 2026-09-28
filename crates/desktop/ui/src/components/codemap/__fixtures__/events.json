@@ -1,0 +1,107 @@
+[
+  {
+    "type": "CodeToolRan",
+    "session": "sess",
+    "root": "/Users/sky/Develop/theuth",
+    "call_id": "toolu_01A",
+    "tool": "code_map",
+    "args": {
+      "focus_files": [
+        "crates/tools"
+      ]
+    },
+    "summary": {
+      "rows": 24,
+      "dropped": 1976,
+      "is_error": false,
+      "stale": false,
+      "pending": 0,
+      "truncated_walk": false,
+      "suspect_root": false,
+      "hint": null,
+      "focus": [
+        "crates/tools"
+      ]
+    },
+    "seq": 40
+  },
+  {
+    "type": "CodeToolRan",
+    "session": "sess",
+    "root": "/Users/sky/Develop/theuth",
+    "call_id": "toolu_01B",
+    "tool": "code_refs",
+    "args": {
+      "symbol": "RegisterTool",
+      "direction": "in"
+    },
+    "summary": {
+      "rows": 12,
+      "dropped": 0,
+      "is_error": false,
+      "stale": false,
+      "pending": 0,
+      "truncated_walk": false,
+      "suspect_root": false,
+      "hint": null,
+      "definition": {
+        "moniker": "rust:crates/tools/src/registry.rs#ToolRegistry::start(method)",
+        "path": "crates/tools/src/registry.rs",
+        "line_start": 1366,
+        "line_end": 1439,
+        "name": "start",
+        "kind": "method"
+      }
+    },
+    "seq": 41
+  },
+  {
+    "type": "CodeToolRan",
+    "session": "sess",
+    "root": "/Users/sky/Develop/theuth",
+    "call_id": "toolu_01C",
+    "tool": "code_impact",
+    "args": {
+      "include_tests": true
+    },
+    "summary": {
+      "rows": 27,
+      "dropped": 0,
+      "is_error": false,
+      "stale": false,
+      "pending": 0,
+      "truncated_walk": false,
+      "suspect_root": false,
+      "hint": null,
+      "impact": {
+        "mode": "range",
+        "range": {
+          "old": "9532e7ff",
+          "new": "176bf52"
+        },
+        "include_tests": true,
+        "changed": 13,
+        "direct": 12,
+        "transitive": 4,
+        "tests": 8,
+        "ambiguous_skipped": 464,
+        "unresolved_imports": 2
+      }
+    },
+    "seq": 42
+  },
+  {
+    "type": "CodeReconciled",
+    "root": "/Users/sky/Develop/theuth",
+    "reparsed": [
+      "crates/tools/src/registry.rs"
+    ],
+    "removed": [],
+    "stale": false,
+    "pending": 0,
+    "suspect_root": false,
+    "hint": null,
+    "git_head": "22b39455d849c0a1",
+    "seq": 43
+  }
+]
