@@ -1330,6 +1330,160 @@ pub async fn test_subjects(pool: &SqlitePool) -> anyhow::Result<BTreeMap<String,
     })
 }
 
+// --- codemap lenses (73 §5.3) ----------------------------------------------
+
+/// One definition with everything a lens row shows.
+#[derive(Clone, Debug, FromRow)]
+pub struct SymbolRow {
+    /// `symbols.id`.
+    pub symbol_id: i64,
+    /// Root-relative path.
+    pub path: String,
+    /// `files.language`.
+    pub language: String,
+    /// `files.is_test`.
+    pub is_test: bool,
+    /// Stable identity.
+    pub moniker: String,
+    /// Name.
+    pub name: String,
+    /// Kind.
+    pub kind: String,
+    /// 1-based.
+    pub line_start: i64,
+    /// 1-based, inclusive.
+    pub line_end: i64,
+    /// Definition line.
+    pub signature: String,
+    /// Stored (unpersonalised) rank.
+    pub rank: f64,
+    /// `symbols.exported`.
+    pub exported: bool,
+}
+
+macro_rules! symbol_row_cols {
+    () => {
+        "s.id AS symbol_id, f.path, f.language, f.is_test, s.moniker, s.name, s.kind, s.line_start, s.line_end, \
+         s.signature, s.rank, s.exported FROM symbols s JOIN files f ON f.id = s.file_id"
+    };
+}
+
+/// The stored map as lens rows: the `limit` best-ranked definitions and the
+/// count of all ranked ones (`codemap_here` without focus, a lookup).
+pub async fn ranked_symbol_rows(
+    pool: &SqlitePool,
+    limit: i64,
+) -> anyhow::Result<(Vec<SymbolRow>, i64)> {
+    let rows = sqlx::query_as(concat!(
+        "SELECT ",
+        symbol_row_cols!(),
+        " WHERE s.rank > 0 ORDER BY s.rank DESC, f.path, s.line_start LIMIT ?"
+    ))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let total = sqlx::query_scalar("SELECT count(*) FROM symbols WHERE rank > 0")
+        .fetch_one(pool)
+        .await?;
+    Ok((rows, total))
+}
+
+/// Lens rows for `ids`, in no particular order.
+pub async fn symbol_rows(pool: &SqlitePool, ids: &[i64]) -> anyhow::Result<Vec<SymbolRow>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for batch in ids.chunks(ROWS_PER_INSERT) {
+        let mut q = QueryBuilder::new(concat!("SELECT ", symbol_row_cols!(), " WHERE s.id IN ("));
+        let mut sep = q.separated(", ");
+        for id in batch {
+            sep.push_bind(id);
+        }
+        q.push(")");
+        out.extend(q.build_query_as::<SymbolRow>().fetch_all(pool).await?);
+    }
+    Ok(out)
+}
+
+/// One side of the butterfly (73 §6.3): a referencing (or referenced)
+/// definition — or, for module-scope references, the file — with the edge
+/// summary. `symbol_id`/`moniker`/… are `None` for a file node.
+#[derive(Clone, Debug, FromRow)]
+pub struct Neighbour {
+    /// `symbols.id`, `None` for a file node.
+    pub symbol_id: Option<i64>,
+    /// Root-relative path.
+    pub path: String,
+    /// `files.language`.
+    pub language: String,
+    /// `files.is_test`.
+    pub is_test: bool,
+    /// Definition fields, `None` for a file node.
+    pub moniker: Option<String>,
+    /// Definition fields, `None` for a file node.
+    pub name: Option<String>,
+    /// Definition fields, `None` for a file node.
+    pub kind: Option<String>,
+    /// Definition span; for a file node the first reference line, twice.
+    pub line_start: i64,
+    /// Definition span; for a file node the first reference line, twice.
+    pub line_end: i64,
+    /// Definition line, empty for a file node.
+    pub signature: String,
+    /// References bundled into this edge.
+    pub count: i64,
+    /// Best confidence among them, and that reference's kind/provenance.
+    pub confidence: f64,
+    /// Best confidence among them, and that reference's kind/provenance.
+    pub ref_kind: String,
+    /// Best confidence among them, and that reference's kind/provenance.
+    pub provenance: String,
+}
+
+/// Who references `symbol_id`, one row per referencing definition (or file
+/// at module scope), best confidence then most references first; the
+/// definition's own body is excluded.
+pub async fn callers_of(pool: &SqlitePool, symbol_id: i64) -> anyhow::Result<Vec<Neighbour>> {
+    Ok(sqlx::query_as(
+        "SELECT r.from_symbol AS symbol_id, f.path, f.language, f.is_test, s.moniker, s.name, s.kind, \
+           coalesce(s.line_start, min(r.line)) AS line_start, coalesce(s.line_end, min(r.line)) AS line_end, \
+           coalesce(s.signature, '') AS signature, count(*) AS count, max(r.confidence) AS confidence, \
+           r.kind AS ref_kind, r.provenance \
+         FROM refs r JOIN files f ON f.id = r.file_id LEFT JOIN symbols s ON s.id = r.from_symbol \
+         WHERE r.to_symbol = ?1 AND (r.from_symbol IS NULL OR r.from_symbol <> ?1) \
+         GROUP BY coalesce(r.from_symbol, -r.file_id) \
+         ORDER BY confidence DESC, count DESC, f.path, line_start",
+    )
+    .bind(symbol_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// What the definition spanning `path:line_start-line_end` references, one
+/// row per referenced definition (itself excluded), best confidence then
+/// most references first.
+pub async fn callees_of(
+    pool: &SqlitePool,
+    symbol_id: i64,
+    path: &str,
+    line_start: i64,
+    line_end: i64,
+) -> anyhow::Result<Vec<Neighbour>> {
+    Ok(sqlx::query_as(
+        "SELECT s.id AS symbol_id, f.path, f.language, f.is_test, s.moniker, s.name, s.kind, \
+           s.line_start, s.line_end, s.signature, count(*) AS count, max(r.confidence) AS confidence, \
+           r.kind AS ref_kind, r.provenance \
+         FROM refs r JOIN files rf ON rf.id = r.file_id JOIN symbols s ON s.id = r.to_symbol JOIN files f ON f.id = s.file_id \
+         WHERE rf.path = ?1 AND r.line BETWEEN ?2 AND ?3 AND r.to_symbol <> ?4 \
+         GROUP BY r.to_symbol \
+         ORDER BY confidence DESC, count DESC, f.path, s.line_start",
+    )
+    .bind(path)
+    .bind(line_start)
+    .bind(line_end)
+    .bind(symbol_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
