@@ -801,93 +801,6 @@ async fn affected_set_is_re_resolved() {
     );
 }
 
-/// `code_find` tiers (60 §8): exact → prefix → infix → text, each row
-/// saying which; `exact: true` keeps the first only; space-split infix;
-/// `moniker` on every tool's rows and accepted as `symbol`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn find_tiers_and_monikers() {
-    use codeindex::tools::{
-        CodeFindArgs, CodeFindTool, CodeMapArgs, CodeMapTool, CodeOutlineArgs, CodeOutlineTool,
-        CodeRefsArgs, CodeRefsTool, CodeSymbolArgs, CodeSymbolTool,
-    };
-    use tools::Tool;
-    let (data, ix, ri) = index_fixture("rust").await;
-    let root = Some(ri.root.clone());
-    let find = |name: &str, exact: bool| CodeFindArgs {
-        name: name.into(),
-        kind: None,
-        exact: Some(exact),
-        root: root.clone(),
-        budget: None,
-    };
-    let rows = |v: &serde_json::Value| -> Vec<(String, String, String)> {
-        v["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| {
-                (
-                    r["name"].as_str().unwrap().to_owned(),
-                    r["match"].as_str().unwrap().to_owned(),
-                    r["moniker"].as_str().unwrap().to_owned(),
-                )
-            })
-            .collect()
-    };
-    let tier = |m: &str| ["exact", "prefix", "infix", "text"].iter().position(|t| *t == m).unwrap();
-
-    // Infix, case-insensitive: "gistry" is inside Registry only.
-    let v = CodeFindTool(ix.clone()).call(find("gistry", false), cx(&data)).await.unwrap().structured.unwrap();
-    let r = rows(&v);
-    assert_eq!(
-        r,
-        [("Registry".to_owned(), "infix".to_owned(), "rust:crates/a/src/lib.rs#Registry(class)".to_owned())],
-        "{v}"
-    );
-    // Space-split: "open db" → open_db, as a prefix (`open%db%`).
-    let v = CodeFindTool(ix.clone()).call(find("open db", false), cx(&data)).await.unwrap().structured.unwrap();
-    let r = rows(&v);
-    assert!(r.iter().any(|(n, m, _)| n == "open_db" && m == "prefix"), "{r:?}");
-    // Tiers in order: `new` is exact twice (Registry::new, Store::new); whatever follows is a later tier.
-    let v = CodeFindTool(ix.clone()).call(find("new", false), cx(&data)).await.unwrap().structured.unwrap();
-    let r = rows(&v);
-    assert_eq!(r[0].1, "exact", "{r:?}");
-    assert_eq!(r[1].1, "exact", "{r:?}");
-    assert!(r.windows(2).all(|w| tier(&w[0].1) <= tier(&w[1].1)), "{r:?}");
-    let mut monikers: Vec<&str> = r.iter().filter(|x| x.1 == "exact").map(|x| x.2.as_str()).collect();
-    monikers.sort_unstable();
-    assert_eq!(
-        monikers,
-        ["rust:crates/a/src/lib.rs#Registry.new(method)", "rust:crates/a/src/store.rs#Store.new(method)"],
-        "impl methods hang off their type"
-    );
-    // exact: true keeps exact rows only.
-    let v = CodeFindTool(ix.clone()).call(find("new", true), cx(&data)).await.unwrap().structured.unwrap();
-    assert!(rows(&v).iter().all(|x| x.1 == "exact"), "{v}");
-    assert_eq!(rows(&v).len(), 2);
-    // A nested fn's moniker carries its module.
-    let v = CodeFindTool(ix.clone()).call(find("helper", true), cx(&data)).await.unwrap().structured.unwrap();
-    assert_eq!(rows(&v)[0].2, "rust:crates/a/src/lib.rs#inner.helper(function)");
-
-    // The moniker picks the definition in code_refs and code_symbol (two `new`s exist by name).
-    let m = "rust:crates/a/src/lib.rs#Registry.new(method)";
-    let out = CodeRefsTool(ix.clone())
-        .call(
-            CodeRefsArgs { symbol: m.into(), direction: None, kind: None, root: root.clone(), budget: None },
-            cx(&data),
-        )
-        .await
-        .unwrap();
-    assert!(!out.is_error, "{}", out.content);
-    let v = out.structured.unwrap();
-    assert_eq!(v["definition"]["moniker"], m, "{v}");
-    assert_eq!(v["definition"]["name"], "new");
-    let out = CodeSymbolTool(ix.clone())
-        .call(
-            CodeSymbolArgs {
-                symbol: m.into(),
-                sections: Some(vec!["definition".into()]),
-                root: root.clone(),
 /// Reconcile guard: a walk that loses more than 80 % of the indexed files
 /// (here: every file but one removed from a temp copy) deletes nothing and
 /// answers `stale` + `suspect_root` with a hint; a smaller loss reconciles
@@ -1066,11 +979,6 @@ async fn test_subjects_link_api_tests() {
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
-    assert_eq!(out.structured.unwrap()["definition"]["moniker"], m);
-    // By name alone, `new` is ambiguous.
-    let out = CodeRefsTool(ix.clone())
-        .call(
-            CodeRefsArgs { symbol: "new".into(), direction: None, kind: None, root: root.clone(), budget: None },
     let v = out.structured.unwrap();
     eprintln!(
         "code_impact(files=[src/lib.rs]) with subjects:\n{}",
@@ -1108,6 +1016,179 @@ async fn test_subjects_link_api_tests() {
                 root: Some(d.clone()),
                 budget: None,
             },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    assert_eq!(
+        v["tests"],
+        serde_json::json!(["tests/api.rs", "tests/cli.rs"]),
+        "{v}"
+    );
+    assert!(
+        v["content"]
+            .as_str()
+            .unwrap()
+            .contains("-- tests: 2 files (subject src/lib.rs) --\ntests/api.rs\ntests/cli.rs"),
+        "{v}"
+    );
+}
+
+/// `project_profile` through `Tool::call` on this repository (cargo workspace
+/// with a justfile: recipes win the slots they name) and, when present, on
+/// /tmp/empryo-recon (Bun/TS). Warm timing printed and bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_profile_on_this_repository() {
+    use codeindex::tools::{ProjectProfileArgs, ProjectProfileTool};
+    use tools::Tool;
+    let data = tempdir();
+    let root = repo_root();
+    let call =
+        |r: PathBuf| ProjectProfileTool.call(ProjectProfileArgs { root: Some(r) }, cx(&data));
+    let _warm = call(root.clone()).await.unwrap();
+    let t = std::time::Instant::now();
+    let out = call(root.clone()).await.unwrap();
+    let ms = t.elapsed().as_millis();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("project_profile(theuth) in {ms} ms:\n{}", out.content);
+    assert_eq!(v["kind"], "cargo", "{v}");
+    assert_eq!(v["package_manager"], "cargo");
+    assert_eq!(v["commands"]["test"], "just test", "{v}");
+    assert_eq!(v["commands"]["lint"], "just clippy");
+    assert_eq!(v["commands"]["format"], "just fmt");
+    assert_eq!(v["commands"]["check"], "just check");
+    assert_eq!(v["test_runner"], "cargo test");
+    assert!(
+        v["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "Cargo.toml"),
+        "{v}"
+    );
+    assert!(v["scripts"]["desktop-check"].is_string(), "{v}");
+    assert!(ms <= 20, "project_profile took {ms} ms");
+
+    let empryo = PathBuf::from("/tmp/empryo-recon");
+    if empryo.is_dir() {
+        let t = std::time::Instant::now();
+        let out = call(empryo).await.unwrap();
+        let ms = t.elapsed().as_millis();
+        let v = out.structured.unwrap();
+        eprintln!("project_profile(empryo-recon) in {ms} ms:\n{}", out.content);
+        assert_eq!(
+            (v["kind"].as_str(), v["package_manager"].as_str()),
+            (Some("node"), Some("bun")),
+            "{v}"
+        );
+        assert_eq!(v["commands"]["test"], "bun run test");
+        assert_eq!(v["commands"]["typecheck"], "bun run typecheck");
+        assert_eq!(v["test_runner"], "bun test");
+    }
+}
+
+/// `code_find` tiers (60 §8): exact → prefix → infix → text, each row
+/// saying which; `exact: true` keeps the first only; space-split infix;
+/// `moniker` on every tool's rows and accepted as `symbol`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn find_tiers_and_monikers() {
+    use codeindex::tools::{
+        CodeFindArgs, CodeFindTool, CodeMapArgs, CodeMapTool, CodeOutlineArgs, CodeOutlineTool,
+        CodeRefsArgs, CodeRefsTool, CodeSymbolArgs, CodeSymbolTool,
+    };
+    use tools::Tool;
+    let (data, ix, ri) = index_fixture("rust").await;
+    let root = Some(ri.root.clone());
+    let find = |name: &str, exact: bool| CodeFindArgs {
+        name: name.into(),
+        kind: None,
+        exact: Some(exact),
+        root: root.clone(),
+        budget: None,
+    };
+    let rows = |v: &serde_json::Value| -> Vec<(String, String, String)> {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["name"].as_str().unwrap().to_owned(),
+                    r["match"].as_str().unwrap().to_owned(),
+                    r["moniker"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let tier = |m: &str| ["exact", "prefix", "infix", "text"].iter().position(|t| *t == m).unwrap();
+
+    // Infix, case-insensitive: "gistry" is inside Registry only.
+    let v = CodeFindTool(ix.clone()).call(find("gistry", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert_eq!(
+        r,
+        [("Registry".to_owned(), "infix".to_owned(), "rust:crates/a/src/lib.rs#Registry(class)".to_owned())],
+        "{v}"
+    );
+    // Space-split: "open db" → open_db, as a prefix (`open%db%`).
+    let v = CodeFindTool(ix.clone()).call(find("open db", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert!(r.iter().any(|(n, m, _)| n == "open_db" && m == "prefix"), "{r:?}");
+    // Tiers in order: `new` is exact twice (Registry::new, Store::new); whatever follows is a later tier.
+    let v = CodeFindTool(ix.clone()).call(find("new", false), cx(&data)).await.unwrap().structured.unwrap();
+    let r = rows(&v);
+    assert_eq!(r[0].1, "exact", "{r:?}");
+    assert_eq!(r[1].1, "exact", "{r:?}");
+    assert!(r.windows(2).all(|w| tier(&w[0].1) <= tier(&w[1].1)), "{r:?}");
+    let mut monikers: Vec<&str> = r.iter().filter(|x| x.1 == "exact").map(|x| x.2.as_str()).collect();
+    monikers.sort_unstable();
+    assert_eq!(
+        monikers,
+        ["rust:crates/a/src/lib.rs#Registry.new(method)", "rust:crates/a/src/store.rs#Store.new(method)"],
+        "impl methods hang off their type"
+    );
+    // exact: true keeps exact rows only.
+    let v = CodeFindTool(ix.clone()).call(find("new", true), cx(&data)).await.unwrap().structured.unwrap();
+    assert!(rows(&v).iter().all(|x| x.1 == "exact"), "{v}");
+    assert_eq!(rows(&v).len(), 2);
+    // A nested fn's moniker carries its module.
+    let v = CodeFindTool(ix.clone()).call(find("helper", true), cx(&data)).await.unwrap().structured.unwrap();
+    assert_eq!(rows(&v)[0].2, "rust:crates/a/src/lib.rs#inner.helper(function)");
+
+    // The moniker picks the definition in code_refs and code_symbol (two `new`s exist by name).
+    let m = "rust:crates/a/src/lib.rs#Registry.new(method)";
+    let out = CodeRefsTool(ix.clone())
+        .call(
+            CodeRefsArgs { symbol: m.into(), direction: None, kind: None, root: root.clone(), budget: None },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    assert_eq!(v["definition"]["moniker"], m, "{v}");
+    assert_eq!(v["definition"]["name"], "new");
+    let out = CodeSymbolTool(ix.clone())
+        .call(
+            CodeSymbolArgs {
+                symbol: m.into(),
+                sections: Some(vec!["definition".into()]),
+                root: root.clone(),
+                budget: None,
+            },
+            cx(&data),
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.structured.unwrap()["definition"]["moniker"], m);
+    // By name alone, `new` is ambiguous.
+    let out = CodeRefsTool(ix.clone())
+        .call(
+            CodeRefsArgs { symbol: "new".into(), direction: None, kind: None, root: root.clone(), budget: None },
             cx(&data),
         )
         .await
@@ -1181,73 +1262,6 @@ async fn monikers_are_stable_across_line_moves() {
     for ((m0, l0), (m1, l1)) in before.iter().zip(&after) {
         assert_eq!(m0, m1);
         assert_eq!(l0 + 3, *l1, "{m0} moved by 3 lines");
-    assert!(!out.is_error, "{}", out.content);
-    let v = out.structured.unwrap();
-    assert_eq!(
-        v["tests"],
-        serde_json::json!(["tests/api.rs", "tests/cli.rs"]),
-        "{v}"
-    );
-    assert!(
-        v["content"]
-            .as_str()
-            .unwrap()
-            .contains("-- tests: 2 files (subject src/lib.rs) --\ntests/api.rs\ntests/cli.rs"),
-        "{v}"
-    );
-}
-
-/// `project_profile` through `Tool::call` on this repository (cargo workspace
-/// with a justfile: recipes win the slots they name) and, when present, on
-/// /tmp/empryo-recon (Bun/TS). Warm timing printed and bounded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn project_profile_on_this_repository() {
-    use codeindex::tools::{ProjectProfileArgs, ProjectProfileTool};
-    use tools::Tool;
-    let data = tempdir();
-    let root = repo_root();
-    let call =
-        |r: PathBuf| ProjectProfileTool.call(ProjectProfileArgs { root: Some(r) }, cx(&data));
-    let _warm = call(root.clone()).await.unwrap();
-    let t = std::time::Instant::now();
-    let out = call(root.clone()).await.unwrap();
-    let ms = t.elapsed().as_millis();
-    assert!(!out.is_error, "{}", out.content);
-    let v = out.structured.unwrap();
-    eprintln!("project_profile(theuth) in {ms} ms:\n{}", out.content);
-    assert_eq!(v["kind"], "cargo", "{v}");
-    assert_eq!(v["package_manager"], "cargo");
-    assert_eq!(v["commands"]["test"], "just test", "{v}");
-    assert_eq!(v["commands"]["lint"], "just clippy");
-    assert_eq!(v["commands"]["format"], "just fmt");
-    assert_eq!(v["commands"]["check"], "just check");
-    assert_eq!(v["test_runner"], "cargo test");
-    assert!(
-        v["manifests"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m == "Cargo.toml"),
-        "{v}"
-    );
-    assert!(v["scripts"]["desktop-check"].is_string(), "{v}");
-    assert!(ms <= 20, "project_profile took {ms} ms");
-
-    let empryo = PathBuf::from("/tmp/empryo-recon");
-    if empryo.is_dir() {
-        let t = std::time::Instant::now();
-        let out = call(empryo).await.unwrap();
-        let ms = t.elapsed().as_millis();
-        let v = out.structured.unwrap();
-        eprintln!("project_profile(empryo-recon) in {ms} ms:\n{}", out.content);
-        assert_eq!(
-            (v["kind"].as_str(), v["package_manager"].as_str()),
-            (Some("node"), Some("bun")),
-            "{v}"
-        );
-        assert_eq!(v["commands"]["test"], "bun run test");
-        assert_eq!(v["commands"]["typecheck"], "bun run typecheck");
-        assert_eq!(v["test_runner"], "bun test");
     }
 }
 
