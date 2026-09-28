@@ -209,6 +209,7 @@ impl Codeindex {
         };
         ri.suspect.store(!force && d.suspect(), Ordering::Release);
         ri.truncated.store(d.truncated, Ordering::Release);
+        let mut wrote = None;
         if d.changed.is_empty() && d.delete.is_empty() {
             out.stale = ri.background.load(Ordering::Acquire);
             out.pending = ri.pending.load(Ordering::Acquire);
@@ -227,7 +228,7 @@ impl Codeindex {
             let written = self.write(ri, d.changed, d.delete).await?;
             out.reparsed = written.len();
             tracing::info!(root = %ri.root.display(), reparsed = out.reparsed, removed = out.removed, ms = t.elapsed().as_millis(), "codeindex reconciled");
-            self.reconciled(ri, written, d.gone).await;
+            wrote = Some((written, d.gone));
         } else {
             out.stale = true;
             out.pending = d.changed.len();
@@ -286,6 +287,10 @@ impl Codeindex {
             }
         }
         out.indexed_files = store::counts(&ri.pool).await?.files;
+        // After the co-change walk: the event carries `meta.git_head`.
+        if let Some((written, gone)) = wrote {
+            self.reconciled(ri, written, gone).await;
+        }
         Ok(out)
     }
 
