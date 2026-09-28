@@ -77,7 +77,11 @@ pub struct Proposed {
 /// `transcript.json`: derived until `reviewed_at` is set, truth after (01 §5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 // `MeetingTranscript` on the wire: `Transcript.ts` is the voice note's reply.
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingTranscript"))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "MeetingTranscript")
+)]
 pub struct Transcript {
     /// The meeting.
     pub meeting: MeetingId,
@@ -184,7 +188,8 @@ impl Transcript {
             .filter(move |s| to_ms.is_none_or(|t| s.t0_ms <= t))
             .filter(move |s| {
                 speaker.as_deref().is_none_or(|sp| {
-                    s.speaker.eq_ignore_ascii_case(sp) || self.name(&s.speaker).eq_ignore_ascii_case(sp)
+                    s.speaker.eq_ignore_ascii_case(sp)
+                        || self.name(&s.speaker).eq_ignore_ascii_case(sp)
                 })
             })
             .map(|s| format!("[{}] {}: {}", mmss(s.t0_ms), self.name(&s.speaker), s.text))
@@ -269,7 +274,12 @@ pub fn apply(
                 let next_id = t.segments.iter().map(|s| s.id).max().unwrap_or(0) + 1;
                 let s = &mut t.segments[i];
                 let tail: Vec<Word> = s.words.split_off(at);
-                let join = |ws: &[Word]| ws.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                let join = |ws: &[Word]| {
+                    ws.iter()
+                        .map(|w| w.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
                 s.text = join(&s.words);
                 s.t1_ms = s.words.last().map_or(s.t1_ms, |w| w.t1_ms);
                 let second = Segment {
@@ -334,7 +344,11 @@ mod tests {
             speaker: speaker.into(),
             t0_ms: words[0].t0_ms,
             t1_ms: words[words.len() - 1].t1_ms,
-            text: words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "),
+            text: words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
             words: words.to_vec(),
         }
     }
@@ -353,9 +367,23 @@ mod tests {
             meeting: MeetingId::new(),
             speakers: vec![label(ME), label("s1"), label("s2")],
             segments: vec![
-                seg(0, Track::System, "s1", &[w("Hello", 0, 400), w("there.", 450, 900)]),
+                seg(
+                    0,
+                    Track::System,
+                    "s1",
+                    &[w("Hello", 0, 400), w("there.", 450, 900)],
+                ),
                 seg(1, Track::Mic, ME, &[w("Hi.", 1000, 1300)]),
-                seg(2, Track::System, "s2", &[w("The", 2000, 2100), w("tags", 2150, 2500), w("broke.", 2600, 3000)]),
+                seg(
+                    2,
+                    Track::System,
+                    "s2",
+                    &[
+                        w("The", 2000, 2100),
+                        w("tags", 2150, 2500),
+                        w("broke.", 2600, 3000),
+                    ],
+                ),
                 seg(3, Track::System, "s2", &[w("Again.", 3200, 3600)]),
             ],
             reviewed_at: None,
@@ -412,7 +440,13 @@ mod tests {
     #[test]
     fn merge_and_split() {
         let mut t = transcript();
-        run(&mut t, &[EditOp::Merge { segments: vec![3, 2] }]).unwrap();
+        run(
+            &mut t,
+            &[EditOp::Merge {
+                segments: vec![3, 2],
+            }],
+        )
+        .unwrap();
         assert_eq!(t.segments.len(), 3);
         let m = &t.segments[2];
         assert_eq!((m.id, m.t0_ms, m.t1_ms), (2, 2000, 3600));
@@ -430,7 +464,10 @@ mod tests {
         assert_eq!(t.segments[2].text, "The tags broke.");
         assert_eq!(t.segments[2].t1_ms, 3000);
         let s = &t.segments[3];
-        assert_eq!((s.id, s.t0_ms, s.t1_ms, s.speaker.as_str()), (3, 3200, 3600, "s2"));
+        assert_eq!(
+            (s.id, s.t0_ms, s.t1_ms, s.speaker.as_str()),
+            (3, 3200, 3600, "s2")
+        );
         assert_eq!(s.text, "Again.");
     }
 
@@ -438,9 +475,13 @@ mod tests {
     fn rejects() {
         let t = transcript();
         let bad = [
-            EditOp::Merge { segments: vec![0, 2] },
+            EditOp::Merge {
+                segments: vec![0, 2],
+            },
             EditOp::Merge { segments: vec![0] },
-            EditOp::Merge { segments: vec![0, 1] },
+            EditOp::Merge {
+                segments: vec![0, 1],
+            },
             EditOp::Relabel {
                 segments: vec![0],
                 speaker: "s9".into(),
@@ -519,6 +560,10 @@ mod tests {
         assert_eq!(t.speakers[1].profile, Some(john));
         assert_eq!(p.list().len(), 1);
         assert_eq!(p.list()[0].samples, 2);
-        assert_eq!(p.list()[0].entity.as_deref(), Some("people/john"), "entity kept");
+        assert_eq!(
+            p.list()[0].entity.as_deref(),
+            Some("people/john"),
+            "entity kept"
+        );
     }
 }

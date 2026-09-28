@@ -126,10 +126,7 @@ async fn routable() -> Vec<roster::Routable> {
     let Some(roster) = roster::actor() else {
         return Vec::new();
     };
-    roster
-        .ask(roster::RoutableAgents)
-        .await
-        .unwrap_or_default()
+    roster.ask(roster::RoutableAgents).await.unwrap_or_default()
 }
 
 fn agents() -> Result<ActorRef<Agents>, String> {
@@ -1371,7 +1368,13 @@ impl Channel {
                     .ask(tasks::CreateTask {
                         input: tasks::TaskCreate {
                             state: tasks::TaskState::Todo,
-                            title: input.lines().next().unwrap_or("").chars().take(80).collect(),
+                            title: input
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(80)
+                                .collect(),
                             brief: input,
                             owner: tasks::Owner::Agent(agent),
                             reviewer: None,
@@ -3171,7 +3174,13 @@ pub(crate) mod tests {
                 Call::SendInput(Some(f.stub.session), "ops: hi".into())
             ]
         );
-        let t = f.chan.lock().threads.get(&thread_key(DM, "100.1")).cloned().expect("bound");
+        let t = f
+            .chan
+            .lock()
+            .threads
+            .get(&thread_key(DM, "100.1"))
+            .cloned()
+            .expect("bound");
         assert_eq!(t.agent, None);
         f.chan
             .handle_inbound(Inbound::Push(Box::new(dm(
@@ -3216,8 +3225,12 @@ pub(crate) mod tests {
             .await;
         let start = format!("start_stream {DM} 100.1 Ops — ");
         let stop = format!("stop_stream {DM} 9.9 Ops — ");
-        f.until(|calls| calls.iter().any(|c| c.starts_with(&start) || c.starts_with(&stop)))
-            .await;
+        f.until(|calls| {
+            calls
+                .iter()
+                .any(|c| c.starts_with(&start) || c.starts_with(&stop))
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -3243,10 +3256,10 @@ pub(crate) mod tests {
     async fn stop_button_cancels_the_bound_session() {
         let f = fixture();
         let key = thread_key(DM, "100.1");
-        f.chan.lock().threads.bind(
-            key,
-            Thread::new(f.stub.session, OWNER.into(), "T1".into()),
-        );
+        f.chan
+            .lock()
+            .threads
+            .bind(key, Thread::new(f.stub.session, OWNER.into(), "T1".into()));
         f.chan
             .handle_inbound(Inbound::Push(Box::new(push(json!({
                 "type": "agent_session_stopped", "channel": DM, "thread_ts": "100.1", "user": OWNER,
@@ -3505,7 +3518,9 @@ pub(crate) mod tests {
                 id,
                 Some(vec![
                     Answer::Choice { index: 1 },
-                    Answer::Text { text: "theuth".into() },
+                    Answer::Text {
+                        text: "theuth".into()
+                    },
                 ]),
             )]
         );

@@ -26,7 +26,9 @@ fn date_rfc3339(s: &str) -> String {
 }
 
 fn date_ms(ms: i64) -> String {
-    DateTime::from_timestamp_millis(ms).map(date).unwrap_or_default()
+    DateTime::from_timestamp_millis(ms)
+        .map(date)
+        .unwrap_or_default()
 }
 
 fn date_secs(s: i64) -> String {
@@ -44,7 +46,11 @@ pub fn size(bytes: u64) -> String {
     } else {
         (b / K / K, "MB")
     };
-    if n < 10.0 { format!("{n:.1} {unit}") } else { format!("{n:.0} {unit}") }
+    if n < 10.0 {
+        format!("{n:.1} {unit}")
+    } else {
+        format!("{n:.0} {unit}")
+    }
 }
 
 /// The reference a search hit attaches as.
@@ -61,7 +67,9 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
                 title: session_title(
                     &h.title,
                     None,
-                    DateTime::parse_from_rfc3339(&h.created_at).ok().map(|t| t.with_timezone(&Utc)),
+                    DateTime::parse_from_rfc3339(&h.created_at)
+                        .ok()
+                        .map(|t| t.with_timezone(&Utc)),
                 ),
                 meta,
             }
@@ -76,7 +84,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             AttachRef {
                 kind: Kind::Artifact,
                 id: a.call_id.clone(),
-                title: if a.title.trim().is_empty() { a.name.clone() } else { a.title.clone() },
+                title: if a.title.trim().is_empty() {
+                    a.name.clone()
+                } else {
+                    a.title.clone()
+                },
                 meta,
             }
         }
@@ -97,7 +109,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             kind: Kind::Knowledge,
             id: format!("{}@{}", h.id, h.commit),
             title: h.title.clone(),
-            meta: format!("revision {} · {}", h.commit.get(..7).unwrap_or(&h.commit), date_rfc3339(&h.time)),
+            meta: format!(
+                "revision {} · {}",
+                h.commit.get(..7).unwrap_or(&h.commit),
+                date_rfc3339(&h.time)
+            ),
         },
         Hit::Note(h) => {
             let d = &h.doc;
@@ -109,7 +125,11 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
                 } else {
                     d.title.clone()
                 },
-                meta: format!("note · updated {} · {}", date_ms(d.updated_ms), size(d.bytes.max(0) as u64)),
+                meta: format!(
+                    "note · updated {} · {}",
+                    date_ms(d.updated_ms),
+                    size(d.bytes.max(0) as u64)
+                ),
             }
         }
         Hit::Meeting(h) => {
@@ -188,7 +208,10 @@ mod tests {
         };
         let text = format!("{}\ncheck it", marker(&r));
         assert_eq!(display(&text), "⎘ Q3 report (artifact)\ncheck it");
-        assert_eq!(display("plain\n[attached note a \"b\"]"), "plain\n[attached note a \"b\"]");
+        assert_eq!(
+            display("plain\n[attached note a \"b\"]"),
+            "plain\n[attached note a \"b\"]"
+        );
     }
 
     #[test]
@@ -220,6 +243,9 @@ mod tests {
         let r = from_session(&s);
         assert_eq!(r.kind, Kind::Session);
         assert!(r.title.starts_with("Untitled chat · "), "{}", r.title);
-        assert_eq!(r.meta, format!("chat · no project · updated {} · archived", date(now)));
+        assert_eq!(
+            r.meta,
+            format!("chat · no project · updated {} · archived", date(now))
+        );
     }
 }

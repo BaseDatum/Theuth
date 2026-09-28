@@ -96,27 +96,34 @@ impl Store {
 
     /// Encoded batches of `origin` with `seq > after`, in order.
     pub async fn batches_after(&self, origin: &PeerId, after: u64) -> anyhow::Result<Vec<Vec<u8>>> {
-        let rows = sqlx::query("SELECT batch FROM outbox WHERE origin = ? AND seq > ? ORDER BY seq")
-            .bind(&origin.0)
-            .bind(after as i64)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT batch FROM outbox WHERE origin = ? AND seq > ? ORDER BY seq")
+                .bind(&origin.0)
+                .bind(after as i64)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows.into_iter().map(|r| r.get(0)).collect())
     }
 
     /// Whether `(origin, seq)` was already applied (or produced) here.
     pub async fn has_batch(&self, origin: &PeerId, seq: u64) -> anyhow::Result<bool> {
-        Ok(sqlx::query("SELECT 1 FROM outbox WHERE origin = ? AND seq = ?")
-            .bind(&origin.0)
-            .bind(seq as i64)
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some())
+        Ok(
+            sqlx::query("SELECT 1 FROM outbox WHERE origin = ? AND seq = ?")
+                .bind(&origin.0)
+                .bind(seq as i64)
+                .fetch_optional(&self.pool)
+                .await?
+                .is_some(),
+        )
     }
 }
 
 /// Remember the clock so a restart never stamps below an earlier write.
-pub(crate) async fn save_clock(exec: impl SqliteExecutor<'_>, wall_ms: u64, counter: u32) -> anyhow::Result<()> {
+pub(crate) async fn save_clock(
+    exec: impl SqliteExecutor<'_>,
+    wall_ms: u64,
+    counter: u32,
+) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO clock (id, wall_ms, counter) VALUES (1, ?, ?)
          ON CONFLICT (id) DO UPDATE SET wall_ms = excluded.wall_ms, counter = excluded.counter",
@@ -150,11 +157,12 @@ pub(crate) async fn col_clocks(
     table: &str,
     pk: &str,
 ) -> anyhow::Result<HashMap<String, Hlc>> {
-    let rows = sqlx::query("SELECT column_name, hlc FROM col_clock WHERE table_name = ? AND pk = ?")
-        .bind(table)
-        .bind(pk)
-        .fetch_all(&mut *conn)
-        .await?;
+    let rows =
+        sqlx::query("SELECT column_name, hlc FROM col_clock WHERE table_name = ? AND pk = ?")
+            .bind(table)
+            .bind(pk)
+            .fetch_all(&mut *conn)
+            .await?;
     Ok(rows
         .into_iter()
         .filter_map(|r| Some((r.get(0), Hlc::parse(r.get::<&str, _>(1))?)))
@@ -184,7 +192,11 @@ pub(crate) async fn set_col_clock(
 }
 
 /// The row's tombstone clock, if it was deleted.
-pub(crate) async fn tombstone(conn: &mut SqliteConnection, table: &str, pk: &str) -> anyhow::Result<Option<Hlc>> {
+pub(crate) async fn tombstone(
+    conn: &mut SqliteConnection,
+    table: &str,
+    pk: &str,
+) -> anyhow::Result<Option<Hlc>> {
     let row = sqlx::query("SELECT hlc FROM tombstone WHERE table_name = ? AND pk = ?")
         .bind(table)
         .bind(pk)
@@ -194,7 +206,12 @@ pub(crate) async fn tombstone(conn: &mut SqliteConnection, table: &str, pk: &str
 }
 
 /// The row died at `hlc`: drop its column clocks, remember the tombstone.
-pub(crate) async fn bury(conn: &mut SqliteConnection, table: &str, pk: &str, hlc: &Hlc) -> anyhow::Result<()> {
+pub(crate) async fn bury(
+    conn: &mut SqliteConnection,
+    table: &str,
+    pk: &str,
+    hlc: &Hlc,
+) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM col_clock WHERE table_name = ? AND pk = ?")
         .bind(table)
         .bind(pk)
@@ -213,7 +230,11 @@ pub(crate) async fn bury(conn: &mut SqliteConnection, table: &str, pk: &str, hlc
 }
 
 /// The row came back: forget the tombstone.
-pub(crate) async fn unbury(conn: &mut SqliteConnection, table: &str, pk: &str) -> anyhow::Result<()> {
+pub(crate) async fn unbury(
+    conn: &mut SqliteConnection,
+    table: &str,
+    pk: &str,
+) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM tombstone WHERE table_name = ? AND pk = ?")
         .bind(table)
         .bind(pk)

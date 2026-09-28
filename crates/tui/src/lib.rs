@@ -34,11 +34,11 @@ use tools::{
     McpProgress,
 };
 
+pub mod attach;
 pub mod broadcast;
 mod clip;
 pub mod dictation;
 pub mod model;
-pub mod attach;
 pub mod pathac;
 pub mod search;
 mod ui;
@@ -123,7 +123,12 @@ impl runtime::Plugin for TuiPlugin {
         })));
         if let Some(attached) = self.attached {
             let _ = events_tx.send(UiEvent::Engine(Some(attached_label(&attached.running))));
-            tokio::spawn(supervise(rt.clone(), api.clone(), events_tx.clone(), attached));
+            tokio::spawn(supervise(
+                rt.clone(),
+                api.clone(),
+                events_tx.clone(),
+                attached,
+            ));
         }
         // The one startup fact the runtime does not hand out as a config
         // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
@@ -246,7 +251,9 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
                     }
                     Err(e) => {
                         rpc::engine::release();
-                        let _ = tx.send(UiEvent::Error(format!("node process failed to start: {e:#}")));
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "node process failed to start: {e:#}"
+                        )));
                     }
                 }
                 return;
@@ -278,7 +285,9 @@ async fn supervise(rt: Runtime, api: Api, tx: UnboundedSender<UiEvent>, attached
         *api.write().unwrap() = Arc::new(Engine::Remote(client.clone()));
         let _ = tx.send(UiEvent::Engine(Some(attached_label(&running))));
     }
-    let _ = tx.send(UiEvent::Error("node process gone; could not attach to its successor after 3 attempts".into()));
+    let _ = tx.send(UiEvent::Error(
+        "node process gone; could not attach to its successor after 3 attempts".into(),
+    ));
 }
 
 /// The one place commands become `rpc::Api` calls. Each command runs in its
@@ -332,7 +341,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             text,
             files,
         } => {
-            let r = msg(api.send_input(session, text.clone(), files, None, None).await);
+            let r = msg(api
+                .send_input(session, text.clone(), files, None, None)
+                .await);
             if r.is_err() {
                 let _ = tx.send(UiEvent::Unsent { id: None, text });
             }
@@ -350,7 +361,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 if interject {
                     msg(api.cancel(session).await)?;
                 }
-                msg(api.steer(session, text.clone(), Some(id), files, None).await)?;
+                msg(api
+                    .steer(session, text.clone(), Some(id), files, None)
+                    .await)?;
                 Ok(())
             }
             .await;
@@ -570,13 +583,14 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             input,
             cursor,
             generation,
-        } => UiEvent::PathComplete(generation, api.path_complete(session, input, cursor).await.ok()),
+        } => UiEvent::PathComplete(
+            generation,
+            api.path_complete(session, input, cursor).await.ok(),
+        ),
         Command::ListAgents(session) => UiEvent::Agents(msg(api.list_agents(session).await)?),
         Command::ListActivity => UiEvent::Activity(msg(api.list_activity().await)?),
         // The menu shows the refusal on its error line; not an `Error` entry.
-        Command::Broadcast(req) => {
-            UiEvent::Broadcasted(api.broadcast(req).await.map_err(reason))
-        }
+        Command::Broadcast(req) => UiEvent::Broadcasted(api.broadcast(req).await.map_err(reason)),
         // A failed read must not leave the card looking current: the plan is
         // marked stale first, then the error line explains why (47 §5.4).
         Command::GetTodos(session) => match msg(api.get_todos(session).await) {
@@ -684,9 +698,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::KnowledgeRestore { id, commit } => {
             UiEvent::KnowledgeRestored(msg(api.knowledge_restore(id, commit).await)?)
         }
-        Command::Harvest(session) => {
-            UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?)
-        }
+        Command::Harvest(session) => UiEvent::Harvested(msg(api.knowledge_harvest(session).await)?),
         Command::AddMcp { name, entry } => {
             UiEvent::McpAdded(msg(api.add_mcp_server(name, entry).await)?)
         }
@@ -910,9 +922,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             session,
             reply_to,
             text,
-        } => UiEvent::PeerAnswered(msg(api
-            .answer_peer_request(session, reply_to, text)
-            .await)?),
+        } => UiEvent::PeerAnswered(msg(api.answer_peer_request(session, reply_to, text).await)?),
         Command::A2aStatus => UiEvent::A2a(msg(api.a2a_status().await)?),
         Command::ReloadA2a => UiEvent::A2a(msg(api.reload_a2a().await)?),
         // The reply carries the state even when `DictationModel` was published before this bridge subscribed.
@@ -975,17 +985,22 @@ async fn search_request(api: &Engine, kind: search::RequestKind) -> search::Repl
             }))
         }
         RequestKind::Concept(id) => Reply::Concept(api.knowledge_get(id).await.map_err(reason)),
-        RequestKind::Historical { id, commit } => {
-            Reply::Historical(api.knowledge_read_revision(id, commit).await.map_err(reason))
-        }
-        RequestKind::Revision { commit, id } => {
-            Reply::Revision(api.knowledge_revision(commit, Some(id)).await.map_err(reason))
-        }
+        RequestKind::Historical { id, commit } => Reply::Historical(
+            api.knowledge_read_revision(id, commit)
+                .await
+                .map_err(reason),
+        ),
+        RequestKind::Revision { commit, id } => Reply::Revision(
+            api.knowledge_revision(commit, Some(id))
+                .await
+                .map_err(reason),
+        ),
         RequestKind::Page { session, seq } => Reply::Page {
             session,
             seq,
             result: api
-                .load_session(session,
+                .load_session(
+                    session,
                     Some(seq.saturating_add(1)),
                     Some(search::PAGE),
                     Some(false),
@@ -1185,7 +1200,10 @@ fn print_history(out: &mut impl Write, loaded: &agent::Loaded) -> std::io::Resul
 
 fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
     // Thinking streams dim under a `┆` header (70 THINKING-TRACES); anything else closes the block.
-    let thinking = matches!(model.entries.last(), Some(model::Entry::Reasoning { done: false, .. }));
+    let thinking = matches!(
+        model.entries.last(),
+        Some(model::Entry::Reasoning { done: false, .. })
+    );
     if thinking && !matches!(ev, UiEvent::Agent(AgentEvent::ReasoningDelta { .. })) {
         let _ = writeln!(out, "\x1b[0m");
     }
@@ -1295,7 +1313,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
-        UiEvent::Models(_) | UiEvent::Mcp(_) | UiEvent::PathComplete(..) => writeln!(out, "menus need a TTY"),
+        UiEvent::Models(_) | UiEvent::Mcp(_) | UiEvent::PathComplete(..) => {
+            writeln!(out, "menus need a TTY")
+        }
         UiEvent::Logins(rows) => rows
             .iter()
             .try_for_each(|r| writeln!(out, "{}  {}", r.name, r.status)),
@@ -1442,7 +1462,11 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         }),
         UiEvent::AskResolved(_) => Ok(()),
         UiEvent::Sessions(list) => list.iter().try_for_each(|s| {
-            let chip = if s.here { String::new() } else { model::engine_chip(&s.owner) };
+            let chip = if s.here {
+                String::new()
+            } else {
+                model::engine_chip(&s.owner)
+            };
             writeln!(out, "{}  {}  {chip:<8}  {}", s.id, s.model, s.title)
         }),
         // Real output groups with state, coverage and exact identities (49

@@ -122,7 +122,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let handle = Handle::new();
     let mut servers = JoinSet::new();
-    servers.spawn(serve(cli.listen, tls.clone(), router.with_state(app), handle.clone()));
+    servers.spawn(serve(
+        cli.listen,
+        tls.clone(),
+        router.with_state(app),
+        handle.clone(),
+    ));
     if let Some(dir) = cli.site.as_deref() {
         let files = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
         let site = Router::new().fallback_service(files);

@@ -135,7 +135,9 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
 
     for (a, at_ms) in &inputs.approvals {
         let args = match &a.args {
-            serde_json::Value::Object(m) => m.get("command").and_then(|v| v.as_str()).map(str::to_owned),
+            serde_json::Value::Object(m) => {
+                m.get("command").and_then(|v| v.as_str()).map(str::to_owned)
+            }
             _ => None,
         };
         out.push(AttentionItem {
@@ -144,7 +146,13 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             session: Some(a.session.to_string()),
             approval: Some(a.id),
             decision: None,
-            ..item(format!("approval:{}", a.id.0), AttentionKind::Approval, format!("{} wants to run {}", a.session, a.tool), args, *at_ms)
+            ..item(
+                format!("approval:{}", a.id.0),
+                AttentionKind::Approval,
+                format!("{} wants to run {}", a.session, a.tool),
+                args,
+                *at_ms,
+            )
         });
     }
 
@@ -157,7 +165,11 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         };
         match t.state {
             tasks::TaskState::Blocked => {
-                let decisions: Vec<&String> = t.blockers.iter().filter(|b| b.starts_with("decision:")).collect();
+                let decisions: Vec<&String> = t
+                    .blockers
+                    .iter()
+                    .filter(|b| b.starts_with("decision:"))
+                    .collect();
                 if let Some(d) = decisions.first() {
                     out.push(AttentionItem {
                         task: Some(t.id.clone()),
@@ -166,7 +178,10 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                         ..item(
                             format!("decision:{}:{d}", t.id),
                             AttentionKind::Decision,
-                            format!("{} asks for a decision on \u{201c}{}\u{201d}", t.owner, t.title),
+                            format!(
+                                "{} asks for a decision on \u{201c}{}\u{201d}",
+                                t.owner, t.title
+                            ),
                             Some("the question is in the task thread".into()),
                             t.updated_ms,
                         )
@@ -205,18 +220,33 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
     for a in &inputs.agents {
         let name = a.file.name.as_str().to_owned();
         if a.status == AgentStatus::Proposed || a.file.proposed_by.is_some() {
-            let hire_task = inputs
-                .tasks
-                .iter()
-                .find(|t| t.title.starts_with(hire_prefix) && t.title[hire_prefix.len()..].starts_with(&name) && !matches!(t.state, tasks::TaskState::Done | tasks::TaskState::Cancelled));
+            let hire_task = inputs.tasks.iter().find(|t| {
+                t.title.starts_with(hire_prefix)
+                    && t.title[hire_prefix.len()..].starts_with(&name)
+                    && !matches!(
+                        t.state,
+                        tasks::TaskState::Done | tasks::TaskState::Cancelled
+                    )
+            });
             out.push(AttentionItem {
                 task: hire_task.map(|t| t.id.clone()),
                 agent: Some(name.clone()),
                 ..item(
                     format!("hire:{name}"),
                     AttentionKind::Hire,
-                    format!("{} proposes hiring {} ({})", a.file.proposed_by.clone().unwrap_or_else(|| "someone".into()), name, a.file.title),
-                    Some(format!("reports to {} \u{b7} budget {}", a.file.reports_to, a.file.budget)),
+                    format!(
+                        "{} proposes hiring {} ({})",
+                        a.file
+                            .proposed_by
+                            .clone()
+                            .unwrap_or_else(|| "someone".into()),
+                        name,
+                        a.file.title
+                    ),
+                    Some(format!(
+                        "reports to {} \u{b7} budget {}",
+                        a.file.reports_to, a.file.budget
+                    )),
                     hire_task.map_or(now_ms, |t| t.created_ms),
                 )
             });
@@ -227,13 +257,20 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             && a.spent_month / amount >= BUDGET_WARN
         {
             let pct = (a.spent_month / amount * 100.0).round();
-            let detail = if a.file.paused { "paused at the cap; un-pause to override for the month" } else { "at 80 %: the cap pauses it" };
+            let detail = if a.file.paused {
+                "paused at the cap; un-pause to override for the month"
+            } else {
+                "at 80 %: the cap pauses it"
+            };
             out.push(AttentionItem {
                 agent: Some(name.clone()),
                 ..item(
                     format!("budget:{name}"),
                     AttentionKind::Budget,
-                    format!("{name} spent {:.2} of {amount:.2} {currency} ({pct:.0} %)", a.spent_month),
+                    format!(
+                        "{name} spent {:.2} of {amount:.2} {currency} ({pct:.0} %)",
+                        a.spent_month
+                    ),
                     Some(detail.into()),
                     now_ms,
                 )
@@ -251,13 +288,22 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         ));
     }
 
-    out.retain(|i| !states.get(&i.id).copied().unwrap_or_default().hidden(now_ms));
+    out.retain(|i| {
+        !states
+            .get(&i.id)
+            .copied()
+            .unwrap_or_default()
+            .hidden(now_ms)
+    });
     out.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
     out
 }
 
 fn stamp(ms: u64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms as i64).map_or_else(|| "never".into(), |d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+    chrono::DateTime::from_timestamp_millis(ms as i64).map_or_else(
+        || "never".into(),
+        |d| d.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
 }
 
 /// The [`ATTENTION_ACTOR`] actor.
@@ -287,7 +333,12 @@ impl Attention {
         let tasks = match tasks::actor() {
             Some(t) => t
                 .ask(tasks::ListTasks(tasks::TaskFilter {
-                    state: Some(vec![tasks::TaskState::Todo, tasks::TaskState::Doing, tasks::TaskState::Review, tasks::TaskState::Blocked]),
+                    state: Some(vec![
+                        tasks::TaskState::Todo,
+                        tasks::TaskState::Doing,
+                        tasks::TaskState::Review,
+                        tasks::TaskState::Blocked,
+                    ]),
                     ..Default::default()
                 }))
                 .await
@@ -300,7 +351,12 @@ impl Attention {
             None => vec![],
         };
         let peers = match mesh::actor() {
-            Some(m) => m.ask(mesh::Status).await.ok().map(|s| s.peers).unwrap_or_default(),
+            Some(m) => m
+                .ask(mesh::Status)
+                .await
+                .ok()
+                .map(|s| s.peers)
+                .unwrap_or_default(),
             None => vec![],
         };
         Inputs {
@@ -315,7 +371,9 @@ impl Attention {
 /// Every stored dismiss / snooze.
 pub async fn states(pool: &SqlitePool) -> anyhow::Result<HashMap<String, State>> {
     let rows: Vec<(String, Option<i64>, Option<i64>)> =
-        sqlx::query_as("SELECT id, dismissed_ms, snoozed_until_ms FROM attention_state").fetch_all(pool).await?;
+        sqlx::query_as("SELECT id, dismissed_ms, snoozed_until_ms FROM attention_state")
+            .fetch_all(pool)
+            .await?;
     Ok(rows
         .into_iter()
         .map(|(id, d, s)| {
@@ -331,24 +389,25 @@ pub async fn states(pool: &SqlitePool) -> anyhow::Result<HashMap<String, State>>
 }
 
 /// Snooze (`until_ms = Some`) or dismiss (`None`) one id.
-pub async fn set_state(pool: &SqlitePool, id: &str, until_ms: Option<u64>, now_ms: u64) -> anyhow::Result<()> {
+pub async fn set_state(
+    pool: &SqlitePool,
+    id: &str,
+    until_ms: Option<u64>,
+    now_ms: u64,
+) -> anyhow::Result<()> {
     match until_ms {
-        Some(u) => {
-            sqlx::query(
-                "INSERT INTO attention_state (id, snoozed_until_ms) VALUES (?, ?) \
+        Some(u) => sqlx::query(
+            "INSERT INTO attention_state (id, snoozed_until_ms) VALUES (?, ?) \
                  ON CONFLICT(id) DO UPDATE SET snoozed_until_ms = excluded.snoozed_until_ms",
-            )
-            .bind(id)
-            .bind(u as i64)
-        }
-        None => {
-            sqlx::query(
-                "INSERT INTO attention_state (id, dismissed_ms) VALUES (?, ?) \
+        )
+        .bind(id)
+        .bind(u as i64),
+        None => sqlx::query(
+            "INSERT INTO attention_state (id, dismissed_ms) VALUES (?, ?) \
                  ON CONFLICT(id) DO UPDATE SET dismissed_ms = excluded.dismissed_ms",
-            )
-            .bind(id)
-            .bind(now_ms as i64)
-        }
+        )
+        .bind(id)
+        .bind(now_ms as i64),
     }
     .execute(pool)
     .await?;
@@ -358,7 +417,11 @@ pub async fn set_state(pool: &SqlitePool, id: &str, until_ms: Option<u64>, now_m
 impl Message<ApprovalRequested> for Attention {
     type Reply = ();
 
-    async fn handle(&mut self, m: ApprovalRequested, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ApprovalRequested,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.pending.insert(m.id, (m, now_ms()));
     }
 }
@@ -366,7 +429,11 @@ impl Message<ApprovalRequested> for Attention {
 impl Message<ApprovalResolved> for Attention {
     type Reply = ();
 
-    async fn handle(&mut self, m: ApprovalResolved, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ApprovalResolved,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.pending.remove(&m.id);
     }
 }
@@ -374,7 +441,11 @@ impl Message<ApprovalResolved> for Attention {
 impl Message<ListAttention> for Attention {
     type Reply = Result<Vec<AttentionItem>, String>;
 
-    async fn handle(&mut self, _: ListAttention, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: ListAttention,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let inputs = self.gather().await;
         let states = states(&self.pool).await.map_err(|e| e.to_string())?;
         Ok(derive(&inputs, &states, now_ms()))
@@ -384,16 +455,28 @@ impl Message<ListAttention> for Attention {
 impl Message<SnoozeAttention> for Attention {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: SnoozeAttention, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        set_state(&self.pool, &m.id, Some(m.until_ms), now_ms()).await.map_err(|e| e.to_string())
+    async fn handle(
+        &mut self,
+        m: SnoozeAttention,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        set_state(&self.pool, &m.id, Some(m.until_ms), now_ms())
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
 impl Message<DismissAttention> for Attention {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: DismissAttention, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        set_state(&self.pool, &m.0, None, now_ms()).await.map_err(|e| e.to_string())
+    async fn handle(
+        &mut self,
+        m: DismissAttention,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        set_state(&self.pool, &m.0, None, now_ms())
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -405,7 +488,9 @@ fn now_ms() -> u64 {
 
 /// The attention actor; `None` before the roster plugin started.
 pub fn actor() -> Option<ActorRef<Attention>> {
-    ActorRef::<Attention>::lookup(ATTENTION_ACTOR).ok().flatten()
+    ActorRef::<Attention>::lookup(ATTENTION_ACTOR)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -413,7 +498,14 @@ mod tests {
     use super::*;
     use crate::types::{AgentFile, AgentName};
 
-    fn task(title: &str, state: tasks::TaskState, owner: tasks::Owner, blockers: &[&str], reviewer: Option<tasks::Owner>, updated_ms: u64) -> tasks::Task {
+    fn task(
+        title: &str,
+        state: tasks::TaskState,
+        owner: tasks::Owner,
+        blockers: &[&str],
+        reviewer: Option<tasks::Owner>,
+        updated_ms: u64,
+    ) -> tasks::Task {
         tasks::Task {
             id: tasks::TaskId::new(),
             title: title.into(),
@@ -441,7 +533,14 @@ mod tests {
         }
     }
 
-    fn agent(name: &str, status: AgentStatus, budget: Budget, spent: f64, proposed_by: Option<&str>, paused: bool) -> AgentSummary {
+    fn agent(
+        name: &str,
+        status: AgentStatus,
+        budget: Budget,
+        spent: f64,
+        proposed_by: Option<&str>,
+        paused: bool,
+    ) -> AgentSummary {
         AgentSummary {
             file: AgentFile {
                 name: AgentName::new(name).unwrap(),
@@ -470,18 +569,81 @@ mod tests {
         let ops = tasks::Owner::Agent("ops".into());
         let inputs = Inputs {
             tasks: vec![
-                task("deploy", tasks::TaskState::Blocked, ops.clone(), &["decision:d1"], None, 50),
-                task("migrate", tasks::TaskState::Blocked, ops.clone(), &["person:sky"], None, 40),
-                task("review me", tasks::TaskState::Review, ops.clone(), &[], Some(tasks::Owner::User), 30),
-                task("not mine", tasks::TaskState::Review, ops.clone(), &[], Some(ops.clone()), 30),
-                task("Hire agent amy (AMY)", tasks::TaskState::Todo, tasks::Owner::User, &[], None, 20),
+                task(
+                    "deploy",
+                    tasks::TaskState::Blocked,
+                    ops.clone(),
+                    &["decision:d1"],
+                    None,
+                    50,
+                ),
+                task(
+                    "migrate",
+                    tasks::TaskState::Blocked,
+                    ops.clone(),
+                    &["person:sky"],
+                    None,
+                    40,
+                ),
+                task(
+                    "review me",
+                    tasks::TaskState::Review,
+                    ops.clone(),
+                    &[],
+                    Some(tasks::Owner::User),
+                    30,
+                ),
+                task(
+                    "not mine",
+                    tasks::TaskState::Review,
+                    ops.clone(),
+                    &[],
+                    Some(ops.clone()),
+                    30,
+                ),
+                task(
+                    "Hire agent amy (AMY)",
+                    tasks::TaskState::Todo,
+                    tasks::Owner::User,
+                    &[],
+                    None,
+                    20,
+                ),
                 task("plain", tasks::TaskState::Doing, ops.clone(), &[], None, 10),
             ],
             agents: vec![
-                agent("amy", AgentStatus::Proposed, Budget::None, 0.0, Some("agent:ops"), true),
-                agent("ops", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 33.0, None, false),
-                agent("dev", AgentStatus::Idle, "40 USD/month".parse().unwrap(), 10.0, None, false),
-                agent("cap", AgentStatus::Paused, "10 USD/month".parse().unwrap(), 10.0, None, true),
+                agent(
+                    "amy",
+                    AgentStatus::Proposed,
+                    Budget::None,
+                    0.0,
+                    Some("agent:ops"),
+                    true,
+                ),
+                agent(
+                    "ops",
+                    AgentStatus::Idle,
+                    "40 USD/month".parse().unwrap(),
+                    33.0,
+                    None,
+                    false,
+                ),
+                agent(
+                    "dev",
+                    AgentStatus::Idle,
+                    "40 USD/month".parse().unwrap(),
+                    10.0,
+                    None,
+                    false,
+                ),
+                agent(
+                    "cap",
+                    AgentStatus::Paused,
+                    "10 USD/month".parse().unwrap(),
+                    10.0,
+                    None,
+                    true,
+                ),
             ],
             approvals: vec![],
             peers: vec![mesh::Peer {
@@ -507,20 +669,60 @@ mod tests {
                 AttentionKind::Node
             ]
         );
-        let hire = items.iter().find(|i| i.kind == AttentionKind::Hire).unwrap();
+        let hire = items
+            .iter()
+            .find(|i| i.kind == AttentionKind::Hire)
+            .unwrap();
         assert_eq!(hire.id, "hire:amy");
         assert!(hire.task.is_some(), "the open hire task is linked");
-        assert!(!items.iter().any(|i| i.title.starts_with("\u{201c}Hire agent")), "the hire task is not a second item");
-        let decision = items.iter().find(|i| i.kind == AttentionKind::Decision).unwrap();
+        assert!(
+            !items
+                .iter()
+                .any(|i| i.title.starts_with("\u{201c}Hire agent")),
+            "the hire task is not a second item"
+        );
+        let decision = items
+            .iter()
+            .find(|i| i.kind == AttentionKind::Decision)
+            .unwrap();
         assert_eq!(decision.decision.as_deref(), Some("decision:d1"));
-        assert_eq!(items.iter().filter(|i| i.kind == AttentionKind::Budget).map(|i| i.agent.clone().unwrap()).collect::<Vec<_>>(), ["ops", "cap"]);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|i| i.kind == AttentionKind::Budget)
+                .map(|i| i.agent.clone().unwrap())
+                .collect::<Vec<_>>(),
+            ["ops", "cap"]
+        );
 
         let mut states = HashMap::new();
-        states.insert(hire.id.clone(), State { dismissed_ms: Some(1), snoozed_until_ms: None });
-        states.insert(decision.id.clone(), State { dismissed_ms: None, snoozed_until_ms: Some(200) });
-        states.insert("budget:ops".into(), State { dismissed_ms: None, snoozed_until_ms: Some(90) });
+        states.insert(
+            hire.id.clone(),
+            State {
+                dismissed_ms: Some(1),
+                snoozed_until_ms: None,
+            },
+        );
+        states.insert(
+            decision.id.clone(),
+            State {
+                dismissed_ms: None,
+                snoozed_until_ms: Some(200),
+            },
+        );
+        states.insert(
+            "budget:ops".into(),
+            State {
+                dismissed_ms: None,
+                snoozed_until_ms: Some(90),
+            },
+        );
         let left = derive(&inputs, &states, 100);
-        assert_eq!(left.len(), 5, "dismissed and live-snoozed gone, expired snooze back");
+        assert_eq!(
+            left.len(),
+            5,
+            "dismissed and live-snoozed gone, expired snooze back"
+        );
         assert!(left.iter().any(|i| i.id == "budget:ops"));
     }
 
@@ -532,7 +734,19 @@ mod tests {
         set_state(store.pool(), "b", None, 2).await.unwrap();
         set_state(store.pool(), "a", Some(600), 3).await.unwrap();
         let s = states(store.pool()).await.unwrap();
-        assert_eq!(s["a"], State { dismissed_ms: None, snoozed_until_ms: Some(600) });
-        assert_eq!(s["b"], State { dismissed_ms: Some(2), snoozed_until_ms: None });
+        assert_eq!(
+            s["a"],
+            State {
+                dismissed_ms: None,
+                snoozed_until_ms: Some(600)
+            }
+        );
+        assert_eq!(
+            s["b"],
+            State {
+                dismissed_ms: Some(2),
+                snoozed_until_ms: None
+            }
+        );
     }
 }

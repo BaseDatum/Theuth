@@ -2048,7 +2048,11 @@ mod tests {
             destructive: PolicyAction::Allow,
         };
         let reg = registry_with(
-            vec![Arc::new(Echo), Arc::new(Touch), Arc::new(Peer(Arc::default()))],
+            vec![
+                Arc::new(Echo),
+                Arc::new(Touch),
+                Arc::new(Peer(Arc::default())),
+            ],
             None,
             allow,
             None,
@@ -2064,7 +2068,12 @@ mod tests {
             names(reg.ask(ListTools(Some(child))).await.unwrap()),
             ["echo", "touch"]
         );
-        assert!(!reg.ask(Invoke(call("touch", child))).await.unwrap().is_error);
+        assert!(
+            !reg.ask(Invoke(call("touch", child)))
+                .await
+                .unwrap()
+                .is_error
+        );
 
         // (a) capped at read_only: `touch` is not offered ...
         reg.tell(SetCap {
@@ -2080,7 +2089,10 @@ mod tests {
         // (b) ... and naming it anyway is the cap's refusal, not the policy's.
         let out = reg.ask(Invoke(call("touch", child))).await.unwrap();
         assert!(out.is_error, "{out:?}");
-        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+        assert_eq!(
+            out.content,
+            "touch: denied: subagent is capped at read_only"
+        );
         // (e) a read-only tool still runs.
         assert!(!reg.ask(Invoke(call("echo", child))).await.unwrap().is_error);
         // `send_message` is exempt: still described, still allowed.
@@ -2110,7 +2122,10 @@ mod tests {
             ["echo"]
         );
         let out = reg.ask(Invoke(call("touch", grandchild))).await.unwrap();
-        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+        assert_eq!(
+            out.content,
+            "touch: denied: subagent is capped at read_only"
+        );
 
         // (d) clearing the child's cap restores both.
         reg.tell(SetCap {
@@ -2123,7 +2138,12 @@ mod tests {
             names(reg.ask(ListTools(Some(child))).await.unwrap()),
             ["echo", "touch"]
         );
-        assert!(!reg.ask(Invoke(call("touch", grandchild))).await.unwrap().is_error);
+        assert!(
+            !reg.ask(Invoke(call("touch", grandchild)))
+                .await
+                .unwrap()
+                .is_error
+        );
     }
 
     /// Stands in for the agent's `send_message`: counts body runs.

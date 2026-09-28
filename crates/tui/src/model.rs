@@ -39,8 +39,8 @@ use uuid::Uuid;
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
 use crate::dictation::{Dictating, Phase};
-use crate::search;
 use crate::pathac::PathState;
+use crate::search;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -1349,14 +1349,22 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "",
         "this project's tasks: id, state, owner, title (67)",
     ),
-    ("/roster", "", "the agent roster: name, status, open tasks (67)"),
+    (
+        "/roster",
+        "",
+        "the agent roster: name, status, open tasks (67)",
+    ),
     (
         "/computer",
         "",
         "computer control: permissions and displays",
     ),
     ("/parent", "", "open the parent session (from a subagent)"),
-    ("/sessions", "", "switch session (picker; owner chip on sessions owned elsewhere)"),
+    (
+        "/sessions",
+        "",
+        "switch session (picker; owner chip on sessions owned elsewhere)",
+    ),
     ("/take", "", "continue the open session on this node (68)"),
     (
         "/broadcast",
@@ -5352,13 +5360,18 @@ impl Model {
                     self.entries.push(Entry::Info(if *here {
                         format!("session continues here (epoch {epoch})")
                     } else {
-                        format!("session now owned by {} (epoch {epoch})", engine_chip(owner))
+                        format!(
+                            "session now owned by {} (epoch {epoch})",
+                            engine_chip(owner)
+                        )
                     }));
                 }
                 return;
             }
             // Queue bookkeeping mid-stream must not finish the streaming tail below.
-            AgentEvent::InputQueued { session, id, text, .. } => {
+            AgentEvent::InputQueued {
+                session, id, text, ..
+            } => {
                 if self.session == Some(*session) && !self.queued.iter().any(|q| q.id == *id) {
                     self.queued.push(QueuedInput {
                         id: *id,
@@ -5608,7 +5621,8 @@ impl Model {
             // switches away from one already shown, not at connect.
             AgentEvent::HarnessModelChanged { model, .. } => {
                 if self.harness_model.as_ref().is_some_and(|m| *m != model) {
-                    self.entries.push(Entry::Info(format!("harness model → {model}")));
+                    self.entries
+                        .push(Entry::Info(format!("harness model → {model}")));
                 }
                 self.harness_model = Some(model);
             }
@@ -6426,7 +6440,9 @@ impl Model {
             .attached
             .as_deref()
             .map_or_else(String::new, |a| format!("  ·  {a}"));
-        format!("{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{attached}")
+        format!(
+            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{attached}"
+        )
     }
 
     /// Line above the input: `model  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`
@@ -6437,7 +6453,11 @@ impl Model {
     /// prefix-cache hit ratio of the last finished turn (design doc 07 §7),
     /// omitted until one has reported usage.
     pub fn header(&self, catalog: &Catalog) -> (String, Level) {
-        let used = format!("{}{}", if self.context_estimated { "≈" } else { "" }, k(self.context));
+        let used = format!(
+            "{}{}",
+            if self.context_estimated { "≈" } else { "" },
+            k(self.context)
+        );
         let cache = match self.usage {
             Some(u) if u.prompt > 0 => {
                 format!(
@@ -7537,8 +7557,9 @@ impl Model {
             _ => (BroadcastTargets::Running, arg),
         };
         if text.is_empty() {
-            self.entries
-                .push(Entry::Error("usage: /broadcast [running|roots] [text]".into()));
+            self.entries.push(Entry::Error(
+                "usage: /broadcast [running|roots] [text]".into(),
+            ));
             return;
         }
         let b = Broadcast::review(targets, text.to_owned());
@@ -9713,7 +9734,9 @@ fn artifact_body(a: &artifact::Artifact, opts: &markdown::Options) -> markdown::
     let bytes = artifact_read_path(a).map(|p| std::fs::read(p).map_err(|e| e.to_string()));
     artifact_text(
         a,
-        bytes.as_ref().map_or(Ok(&[][..]), |b| b.as_deref().map_err(String::as_str)),
+        bytes
+            .as_ref()
+            .map_or(Ok(&[][..]), |b| b.as_deref().map_err(String::as_str)),
         opts,
     )
 }
@@ -9797,11 +9820,14 @@ pub(crate) fn artifact_text(
             Err(e) => unreadable(&e),
             Ok(b) => fenced("mermaid", String::from_utf8_lossy(b).trim_end()),
         },
-        Kind::Archive => match bytes
-            .map_err(str::to_owned)
-            .and_then(|b| serde_json::from_slice::<artifact::archive::ArchiveListing>(b).map_err(|e| e.to_string()))
-        {
-            Err(_) => format!("{} · no listing (archive unreadable) · {path}", bytes_label(a.bytes)),
+        Kind::Archive => match bytes.map_err(str::to_owned).and_then(|b| {
+            serde_json::from_slice::<artifact::archive::ArchiveListing>(b)
+                .map_err(|e| e.to_string())
+        }) {
+            Err(_) => format!(
+                "{} · no listing (archive unreadable) · {path}",
+                bytes_label(a.bytes)
+            ),
             Ok(l) => {
                 let mut out = format!(
                     "{} files · {} unpacked · {} · {path}\n",
@@ -9810,10 +9836,21 @@ pub(crate) fn artifact_text(
                     bytes_label(a.bytes)
                 );
                 for e in l.entries.iter().take(ARCHIVE_ROWS) {
-                    out.push_str(&format!("\n    {:>9}  {}", if e.is_dir { String::new() } else { bytes_label(e.size) }, e.path));
+                    out.push_str(&format!(
+                        "\n    {:>9}  {}",
+                        if e.is_dir {
+                            String::new()
+                        } else {
+                            bytes_label(e.size)
+                        },
+                        e.path
+                    ));
                 }
                 if l.total_entries > ARCHIVE_ROWS as u64 {
-                    out.push_str(&format!("\n\n… (+{} entries, o opens)", l.total_entries - ARCHIVE_ROWS as u64));
+                    out.push_str(&format!(
+                        "\n\n… (+{} entries, o opens)",
+                        l.total_entries - ARCHIVE_ROWS as u64
+                    ));
                 }
                 out
             }
@@ -9985,7 +10022,10 @@ pub fn tasks_table(project: Option<&str>, rows: &[tasks::Task]) -> String {
     if rows.is_empty() {
         return format!("no tasks ({scope})");
     }
-    let mut out = vec![format!("tasks · {scope}"), "id · state · owner · title".to_owned()];
+    let mut out = vec![
+        format!("tasks · {scope}"),
+        "id · state · owner · title".to_owned(),
+    ];
     out.extend(rows.iter().map(|t| {
         let id = &t.id.0;
         let short = &id[id.len().saturating_sub(6)..];
@@ -10024,13 +10064,19 @@ pub fn session_row(s: &SessionSummary, depth: usize, width: u16, current: bool) 
     // Row prefix (mark, id, stamp, model, chip, gaps, box) is ~62 columns; the title gets the rest.
     let room = usize::from(width).saturating_sub(62 + 2 * depth).max(16);
     let title: String = s.title.chars().take(room).collect();
-    let chip = if s.here { String::new() } else { engine_chip(&s.owner) };
+    let chip = if s.here {
+        String::new()
+    } else {
+        engine_chip(&s.owner)
+    };
     format!(
         "{} {}{}  {}  {:<20} {chip:<8}  {title}",
         if current { "●" } else { " " },
         "  ".repeat(depth),
         short(s.id),
-        s.updated_at.with_timezone(&chrono::Local).format("%m-%d %H:%M"),
+        s.updated_at
+            .with_timezone(&chrono::Local)
+            .format("%m-%d %H:%M"),
         s.model.rsplit('/').next().unwrap_or(&s.model),
     )
 }
@@ -10056,8 +10102,10 @@ pub fn owner_unreachable(data: Option<&str>) -> Option<(String, String)> {
     let o = v.get("OwnerUnreachable").or(tagged.then_some(&v))?;
     let owner = o.get("owner")?.as_str()?.to_owned();
     let last_seen = match o.get("last_seen") {
-        Some(serde_json::Value::String(t)) => chrono::DateTime::parse_from_rfc3339(t)
-            .map_or_else(|_| t.clone(), |t| ago(chrono::Utc::now() - t.with_timezone(&chrono::Utc))),
+        Some(serde_json::Value::String(t)) => chrono::DateTime::parse_from_rfc3339(t).map_or_else(
+            |_| t.clone(),
+            |t| ago(chrono::Utc::now() - t.with_timezone(&chrono::Utc)),
+        ),
         Some(serde_json::Value::Number(ms)) => ms
             .as_i64()
             .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
@@ -10344,7 +10392,10 @@ fn currency_symbol(code: &str) -> Option<String> {
     if sym.is_empty() || sym == "¤" || sym == code {
         return None;
     }
-    let shared = Currency::iter().filter(|o| o.symbol().symbol == sym).count() > 1;
+    let shared = Currency::iter()
+        .filter(|o| o.symbol().symbol == sym)
+        .count()
+        > 1;
     (!shared || matches!(code, "USD" | "GBP" | "JPY")).then_some(sym)
 }
 
@@ -11377,7 +11428,9 @@ mod tests {
         assert_eq!(token, "[⎘ attach 1: deploy checklist]");
         assert_eq!(m.pastes.len(), 1);
         // Attaching the same thing again is a no-op returning the same token.
-        let again = m.attach_ref(crate::attach::from_hit(&search::Hit::Session(search_session_hit(hit, None))));
+        let again = m.attach_ref(crate::attach::from_hit(&search::Hit::Session(
+            search_session_hit(hit, None),
+        )));
         assert_eq!((again, m.pastes.len()), (token.clone(), 1));
 
         m.submit(&format!("{token} pick up where this left off"), &tx);
@@ -11394,7 +11447,10 @@ mod tests {
         assert!(m.pastes.is_empty());
         // The transcript card shows the reference as a `⎘` line, not the marker.
         let shown = crate::attach::display(&text);
-        assert!(shown.starts_with("⎘ deploy checklist (session)\n"), "{shown}");
+        assert!(
+            shown.starts_with("⎘ deploy checklist (session)\n"),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -11624,7 +11680,9 @@ mod tests {
         };
         assert!(!req.dry_run && req.delivery == agent::Delivery::NextTurn);
         m.apply(UiEvent::Broadcasted(Err("too many targets".into())));
-        assert!(matches!(&m.menu, Some(Menu::Broadcast(b)) if b.error.as_deref() == Some("too many targets")));
+        assert!(
+            matches!(&m.menu, Some(Menu::Broadcast(b)) if b.error.as_deref() == Some("too many targets"))
+        );
         m.apply(UiEvent::Broadcasted(Ok(receipt([
             BroadcastOutcome::Started,
             BroadcastOutcome::Queued {
@@ -11702,7 +11760,11 @@ mod tests {
                 ..Loaded::default()
             },
         ));
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         assert!(m.header(&catalog).0.starts_with("↳ run  child · "));
         m.submit("/parent", &tx);
         assert_eq!(m.session, Some(root));
@@ -11820,7 +11882,9 @@ mod tests {
         // Anything but `devices` is usage, sent nowhere.
         m.submit("/mesh status", &tx);
         assert!(rx.try_recv().is_err());
-        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /mesh devices")));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /mesh devices"))
+        );
 
         let now = now_ms();
         let row = link::DeviceInfo {
@@ -11831,7 +11895,10 @@ mod tests {
             last_seen_ms: 0,
             revoked: false,
         };
-        assert_eq!(mesh_device_line(&row, now), "abcd1234  phone  ios  paired 1d ago · never seen");
+        assert_eq!(
+            mesh_device_line(&row, now),
+            "abcd1234  phone  ios  paired 1d ago · never seen"
+        );
         let revoked = link::DeviceInfo {
             revoked: true,
             last_seen_ms: now - 3_600_000,
@@ -11839,14 +11906,18 @@ mod tests {
         };
         assert!(mesh_device_line(&revoked, now).ends_with("· revoked"));
         m.apply(UiEvent::MeshDevices(vec![]));
-        assert!(matches!(m.entries.last(), Some(Entry::Info(s)) if s == "mesh devices: none paired"));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(s)) if s == "mesh devices: none paired")
+        );
         m.apply(UiEvent::MeshDevicePairing(link::PairingPayload {
             string: "https://relay.example/link#1.AAAA.d29yaw.QWJDLV8xMjM".into(),
             expires_ms: now + 300_000,
             pending_id: "AbC-_123".into(),
         }));
         assert!(m.invite.is_some());
-        assert!(matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Node, title, .. }) if title.ends_with("pending AbC-_123")));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Card { kind: CardKind::Node, title, .. }) if title.ends_with("pending AbC-_123"))
+        );
     }
 
     #[test]
@@ -11935,7 +12006,11 @@ mod tests {
 
     #[test]
     fn update_ready_tags_header_and_lines_once() {
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         let mut m = Model::new("m".into(), true);
         let ev = update::UpdateReady {
             version: "0.2.0".into(),
@@ -12043,7 +12118,11 @@ mod tests {
             rows[0].starts_with("● build-box") && rows[0].contains("2 running   paired 3d ago")
         );
         assert!(rows[1].starts_with("○ mac-mini") && rows[1].ends_with("seen 2h ago"));
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         assert!(m.header(&catalog).0.ends_with("  ·  nodes ●1"));
         // `x` confirms through a prompt; `n` keeps.
         m.menu_key(KeyCode::Char('x'), "", &tx);
@@ -12636,12 +12715,24 @@ mod tests {
     #[test]
     fn injected_parses_reminder() {
         assert_eq!(
-            injected("<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck the deploy\n</reminder>"),
-            Some(vec![(CardKind::Job, "r3 reminder · after 10m".to_owned(), "check the deploy".to_owned())])
+            injected(
+                "<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck the deploy\n</reminder>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "r3 reminder · after 10m".to_owned(),
+                "check the deploy".to_owned()
+            )])
         );
         assert_eq!(
-            injected("<reminder id=\"r1\" after=\"5400\" set_at=\"x\" late=\"true\">\n\n</reminder>"),
-            Some(vec![(CardKind::Job, "r1 reminder · after 1h30m · late".to_owned(), String::new())])
+            injected(
+                "<reminder id=\"r1\" after=\"5400\" set_at=\"x\" late=\"true\">\n\n</reminder>"
+            ),
+            Some(vec![(
+                CardKind::Job,
+                "r1 reminder · after 1h30m · late".to_owned(),
+                String::new()
+            )])
         );
     }
 
@@ -12855,7 +12946,10 @@ mod tests {
             spent_month: 0.0,
             error: None,
         };
-        assert_eq!(agents_table(&[agent]), "name · status · open\nops · working · 2");
+        assert_eq!(
+            agents_table(&[agent]),
+            "name · status · open\nops · working · 2"
+        );
         m.apply(UiEvent::Roster(vec![]));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "no agents"));
     }
@@ -12877,7 +12971,10 @@ mod tests {
 
         let mut s = summary(id, None, None);
         s.title = "Fix the deploy".into();
-        assert!(session_row(&s, 0, 120, true).ends_with(&format!("{:<20} {:<8}  Fix the deploy", "m", "")));
+        assert!(
+            session_row(&s, 0, 120, true)
+                .ends_with(&format!("{:<20} {:<8}  Fix the deploy", "m", ""))
+        );
         s.owner = "abcdef0123456789".repeat(4);
         s.here = false;
         let row = session_row(&s, 0, 120, false);
@@ -12893,20 +12990,29 @@ mod tests {
         }));
         match &m.menu {
             Some(Menu::Sessions { items, .. }) => {
-                let Grouped::Item((row, _)) = &items[1] else { panic!("{items:?}") };
+                let Grouped::Item((row, _)) = &items[1] else {
+                    panic!("{items:?}")
+                };
                 assert!(row.here && row.epoch == 2 && row.owner == "me");
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "session continues here (epoch 2)"));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "session continues here (epoch 2)")
+        );
 
         assert_eq!(
             owner_offline_line(&s.owner, "3m ago"),
             "owned by abcdef01, last seen 3m ago. continue here now? (turns not yet shipped from abcdef01 stay there) — /take"
         );
-        let (owner, seen) =
-            owner_unreachable(Some(r#"{"OwnerUnreachable":{"owner":"abcdef0123456789","last_seen":null}}"#)).unwrap();
-        assert_eq!((owner.as_str(), seen.as_str()), ("abcdef0123456789", "never"));
+        let (owner, seen) = owner_unreachable(Some(
+            r#"{"OwnerUnreachable":{"owner":"abcdef0123456789","last_seen":null}}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            (owner.as_str(), seen.as_str()),
+            ("abcdef0123456789", "never")
+        );
         let (_, seen) = owner_unreachable(Some(
             r#"{"kind":"OwnerUnreachable","owner":"x","last_seen":"2020-01-01T00:00:00Z"}"#,
         ))
@@ -13520,7 +13626,11 @@ mod tests {
         assert_eq!(k(12_345), "12.3k");
         assert_eq!(k(200_000), "200k");
         assert_eq!(k(1_000_000), "1.0M");
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         let mut m = Model::new("anthropic/claude-sonnet-4-5".into(), true);
         let limit = catalog
             .get(&m.model_id)
@@ -13647,7 +13757,11 @@ mod tests {
 
     #[test]
     fn header_shows_effort_when_set() {
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         let mut m = Model::new("nobody/nothing".into(), true);
         assert_eq!(m.header(&catalog).0, "nobody/nothing  ·  ctx 0");
         m.effort = Some("high".into());
@@ -13662,7 +13776,11 @@ mod tests {
     /// `TurnStarted.model` (the harness name) does not disturb it.
     #[test]
     fn header_shows_harness_and_its_model_for_an_acp_child() {
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         let mut m = Model::new("nobody/nothing".into(), true);
         let s = SessionId::new();
         m.session = Some(s);
@@ -13684,7 +13802,12 @@ mod tests {
             m.header(&catalog).0,
             "omp · anthropic/claude-opus-4-8  ·  ctx 0"
         );
-        assert_eq!(m.entries.len(), infos, "first report is silent: {:?}", m.entries);
+        assert_eq!(
+            m.entries.len(),
+            infos,
+            "first report is silent: {:?}",
+            m.entries
+        );
         m.apply_agent(AgentEvent::TurnStarted {
             session: s,
             turn: TurnId::new(),
@@ -13692,12 +13815,20 @@ mod tests {
             text: "go".into(),
             model: "omp".into(),
         });
-        assert!(m.header(&catalog).0.starts_with("omp · anthropic/claude-opus-4-8"));
+        assert!(
+            m.header(&catalog)
+                .0
+                .starts_with("omp · anthropic/claude-opus-4-8")
+        );
         m.apply_agent(AgentEvent::HarnessModelChanged {
             session: s,
             model: "openai/gpt-5.4".into(),
         });
-        assert!(m.header(&catalog).0.starts_with("omp · openai/gpt-5.4"), "{}", m.header(&catalog).0);
+        assert!(
+            m.header(&catalog).0.starts_with("omp · openai/gpt-5.4"),
+            "{}",
+            m.header(&catalog).0
+        );
         assert!(
             m.entries
                 .iter()
@@ -13865,7 +13996,11 @@ mod tests {
 
     #[test]
     fn attach_notice_names_the_vision_fallback_for_a_text_only_model() {
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         let (provider, model) = catalog
             .providers()
             .flat_map(|p| p.models.values().map(move |m| (&p.id, m)))
@@ -14124,11 +14259,15 @@ mod tests {
         let mut fresh = Model::new("m".into(), true);
         fresh.session = Some(s);
         fresh.submit("/etc/hosts has a bad entry", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/etc/hosts has a bad entry"));
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/etc/hosts has a bad entry")
+        );
         fresh.submit("/", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "/"));
         fresh.submit("/maybe lite", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, .. }) if name == "maybe" && args == "lite"));
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::UseSkill { name, args, .. }) if name == "maybe" && args == "lite")
+        );
 
         // `/skills` opens the picker; Enter uses, `s` shows.
         m.submit("/skills", &tx);
@@ -14209,7 +14348,10 @@ mod tests {
         let mut m = Model::new("m".into(), true);
         m.submit("hello", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::Send { .. })));
-        assert!(matches!(m.entries.last(), Some(Entry::User { turn: None, .. })));
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::User { turn: None, .. })
+        ));
         assert!(m.awaiting_session);
         m.apply(UiEvent::Unsent {
             id: None,
@@ -14777,7 +14919,8 @@ mod tests {
             name: "show".into(),
             args: serde_json::json!({"name": "note.md", "content": "# Hello\n\nbody"}),
         });
-        let path = std::env::temp_dir().join(format!("theuth-tui-artifact-{}.md", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("theuth-tui-artifact-{}.md", std::process::id()));
         std::fs::write(&path, "# Hello\n\nbody\n").unwrap();
         let artifact = artifact::Artifact {
             id: "abc".into(),
@@ -14884,7 +15027,8 @@ mod tests {
             name: "app".into(),
             args: serde_json::json!({"name": "panel", "source": "root = Card(TextContent(\"hi\"))"}),
         });
-        let path = std::env::temp_dir().join(format!("theuth-tui-app-{}.openui", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("theuth-tui-app-{}.openui", std::process::id()));
         std::fs::write(&path, "root = Card(TextContent(\"hi\"))\n").unwrap();
         let app = artifact::Artifact {
             id: "app1".into(),
@@ -15350,7 +15494,11 @@ mod tests {
         )));
         assert!(m.communication.is_none() && m.entries.is_empty());
         m.apply(UiEvent::Communication(state(Some(s), false, false, false)));
-        let catalog = Catalog::load(std::env::temp_dir().join("theuth-tui-no-user-file").as_path());
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
         assert!(m.header(&catalog).0.contains("communication off"));
         assert!(
             matches!(m.entries.first(), Some(Entry::Info(l)) if l.contains("disabled globally"))
@@ -15504,16 +15652,16 @@ mod tests {
         b.estimated_for_unavailable = vec![usd(23_400_000)];
         assert_eq!(
             cost_lines(&b),
-            [
-                "Returned cost $0.100 · 2 unavailable",
-                "Estimated ~$0.023"
-            ]
+            ["Returned cost $0.100 · 2 unavailable", "Estimated ~$0.023"]
         );
         // Header tag and child rows: returned wins, then the estimate keeps its tilde, then a dash.
         assert_eq!(cost_short(&b), "$0.100");
         b.returned.clear();
         assert_eq!(cost_short(&b), "~$0.023");
-        assert_eq!(cost_lines(&b), ["Returned cost — · 2 unavailable", "Estimated ~$0.023"]);
+        assert_eq!(
+            cost_lines(&b),
+            ["Returned cost — · 2 unavailable", "Estimated ~$0.023"]
+        );
         b.estimated_for_unavailable.clear();
         assert_eq!(cost_short(&b), "—");
         b.unavailable = 0;
@@ -15685,7 +15833,13 @@ mod tests {
         let live = PtyViewport::Live;
         let mut v = TerminalView::new(&t, 1);
         v.poll(0);
-        v.reply(s, &JobId("j1".into()), live, 1, Ok(PtyScreenReply::Updated(page(s, "j1", 1, live))));
+        v.reply(
+            s,
+            &JobId("j1".into()),
+            live,
+            1,
+            Ok(PtyScreenReply::Updated(page(s, "j1", 1, live))),
+        );
         m.menu = Some(Menu::Terminal(Box::new(v)));
         assert!(!m.terminal_interactive());
         // Esc in view mode closes; `i` first.
@@ -15698,7 +15852,10 @@ mod tests {
         m.terminal_type(KeyCode::Char('w'), KeyModifiers::SHIFT, &tx);
         let mut sent = Vec::new();
         while let Ok(c) = rx.try_recv() {
-            if let Command::PtyInput { text, keys, job, .. } = c {
+            if let Command::PtyInput {
+                text, keys, job, ..
+            } = c
+            {
                 assert_eq!(job, JobId("j1".into()));
                 sent.push((text, keys));
             }
@@ -15712,22 +15869,36 @@ mod tests {
                 (Some("w".into()), vec![]),
             ]
         );
-        let Some(Menu::Terminal(v)) = &mut m.menu else { panic!() };
+        let Some(Menu::Terminal(v)) = &mut m.menu else {
+            panic!()
+        };
         assert!(v.interactive && v.inflight);
         v.inflight = false;
         v.poll(5000);
-        assert_eq!(v.next_poll, 5000 + TERMINAL_INTERACTIVE_POLL_MS, "tight poll while typing");
+        assert_eq!(
+            v.next_poll,
+            5000 + TERMINAL_INTERACTIVE_POLL_MS,
+            "tight poll while typing"
+        );
         // Ctrl-] detaches and sends nothing.
         m.terminal_type(KeyCode::Char(']'), KeyModifiers::CONTROL, &tx);
         assert!(!m.terminal_interactive());
         assert!(rx.try_recv().is_err());
         // The job exits: `i` no longer enters, and an open typing mode drops.
-        let Some(Menu::Terminal(v)) = &mut m.menu else { panic!() };
+        let Some(Menu::Terminal(v)) = &mut m.menu else {
+            panic!()
+        };
         v.interactive = true;
         v.inflight = true;
         let mut exited = page(s, "j1", 2, live);
         exited.exit = Some(tools::JobExit::Exited(0));
-        v.reply(s, &JobId("j1".into()), live, 1, Ok(PtyScreenReply::Updated(exited)));
+        v.reply(
+            s,
+            &JobId("j1".into()),
+            live,
+            1,
+            Ok(PtyScreenReply::Updated(exited)),
+        );
         assert!(!v.interactive);
         m.menu_key(KeyCode::Char('i'), "", &tx);
         assert!(!m.terminal_interactive());

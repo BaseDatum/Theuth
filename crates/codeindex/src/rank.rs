@@ -132,7 +132,9 @@ impl Graph {
                 .fetch_all(pool)
                 .await?;
         let symbols: Vec<SymNode> =
-            sqlx::query_as("SELECT id, file_id, name, kind, line_start, signature FROM symbols").fetch_all(pool).await?;
+            sqlx::query_as("SELECT id, file_id, name, kind, line_start, signature FROM symbols")
+                .fetch_all(pool)
+                .await?;
         let mut edges: Vec<EdgeRow> = sqlx::query_as(
             "SELECT r.file_id AS src, s.file_id AS dst, r.name, count(*) AS n FROM refs r JOIN symbols s ON s.id = r.to_symbol \
              WHERE r.confidence >= 0.5 AND r.file_id <> s.file_id GROUP BY r.file_id, s.file_id, r.name",
@@ -175,14 +177,24 @@ impl Graph {
                 .files
                 .iter()
                 .enumerate()
-                .filter(|(_, n)| n.path == e || n.path.strip_prefix(e).is_some_and(|rest| rest.starts_with('/')))
+                .filter(|(_, n)| {
+                    n.path == e
+                        || n.path
+                            .strip_prefix(e)
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
                 .map(|(i, _)| i)
                 .collect();
             if hits.is_empty() {
                 // An identifier names its definers too (60 §21): a symbol
                 // referenced only inside its own file has no edge to boost.
                 f.idents.insert(e.to_owned());
-                f.files.extend(self.symbols.iter().filter(|s| s.name == e).filter_map(|s| self.idx.get(&s.file_id)));
+                f.files.extend(
+                    self.symbols
+                        .iter()
+                        .filter(|s| s.name == e)
+                        .filter_map(|s| self.idx.get(&s.file_id)),
+                );
             } else {
                 f.files.extend(hits);
             }
@@ -204,7 +216,10 @@ impl Graph {
         // Identifier rarity: files defining each name.
         let mut definers: HashMap<&str, HashSet<i64>> = HashMap::new();
         for s in &self.symbols {
-            definers.entry(s.name.as_str()).or_default().insert(s.file_id);
+            definers
+                .entry(s.name.as_str())
+                .or_default()
+                .insert(s.file_id);
         }
         let mul = |name: &str, src: usize| -> f64 {
             let mut mul = 1.0;
@@ -229,9 +244,15 @@ impl Graph {
         let mut edges: Vec<(usize, usize, &str, f64)> = Vec::with_capacity(self.edges.len() + n);
         let mut incoming = vec![false; n];
         for e in &self.edges {
-            let (Some(&s), Some(&d)) = (self.idx.get(&e.src), self.idx.get(&e.dst)) else { continue };
+            let (Some(&s), Some(&d)) = (self.idx.get(&e.src), self.idx.get(&e.dst)) else {
+                continue;
+            };
             #[allow(clippy::cast_precision_loss)]
-            let base = if e.name == IMPORT { IMPORT_EDGE } else { (e.n.max(1) as f64).sqrt() };
+            let base = if e.name == IMPORT {
+                IMPORT_EDGE
+            } else {
+                (e.n.max(1) as f64).sqrt()
+            };
             edges.push((s, d, e.name.as_str(), mul(&e.name, s) * base));
             incoming[d] = true;
         }
@@ -246,8 +267,16 @@ impl Graph {
                 incoming[i] = true;
             }
         }
-        let has_defs: HashSet<usize> = self.symbols.iter().filter_map(|s| self.idx.get(&s.file_id).copied()).collect();
-        for (i, _) in incoming.iter().enumerate().filter(|(i, inc)| !**inc && has_defs.contains(i)) {
+        let has_defs: HashSet<usize> = self
+            .symbols
+            .iter()
+            .filter_map(|s| self.idx.get(&s.file_id).copied())
+            .collect();
+        for (i, _) in incoming
+            .iter()
+            .enumerate()
+            .filter(|(i, inc)| !**inc && has_defs.contains(i))
+        {
             edges.push((i, i, SELF, SELF_EDGE));
         }
         // CSR by source, values = weight / out-weight.
@@ -275,7 +304,9 @@ impl Graph {
             vec![uniform; n]
         } else {
             let share = 1.0 / focus.files.len() as f64;
-            (0..n).map(|i| if focus.files.contains(&i) { share } else { 0.0 }).collect()
+            (0..n)
+                .map(|i| if focus.files.contains(&i) { share } else { 0.0 })
+                .collect()
         };
         let warm: f64 = self.files.iter().map(|f| f.rank).sum();
         let mut x: Vec<f64> = if focus.files.is_empty() && warm > 0.0 {
@@ -338,7 +369,12 @@ impl Graph {
                 ));
             }
         }
-        tags.sort_by(|a, b| b.1.rank.total_cmp(&a.1.rank).then_with(|| a.1.path.cmp(&b.1.path)).then(a.1.line.cmp(&b.1.line)));
+        tags.sort_by(|a, b| {
+            b.1.rank
+                .total_cmp(&a.1.rank)
+                .then_with(|| a.1.path.cmp(&b.1.path))
+                .then(a.1.line.cmp(&b.1.line))
+        });
         Ranked {
             files: x,
             tags,
@@ -359,7 +395,12 @@ fn is_snake_or_camel(s: &str) -> bool {
 pub async fn persist(pool: &SqlitePool) -> anyhow::Result<(usize, usize)> {
     let g = Graph::load(pool).await?;
     let r = g.rank(&Focus::default());
-    let files: Vec<(i64, f64)> = g.files.iter().zip(&r.files).map(|(f, &x)| (f.id, x)).collect();
+    let files: Vec<(i64, f64)> = g
+        .files
+        .iter()
+        .zip(&r.files)
+        .map(|(f, &x)| (f.id, x))
+        .collect();
     let symbols: Vec<(i64, f64)> = r.tags.iter().map(|(id, t)| (*id, t.rank)).collect();
     store::update_ranks(pool, &files, &symbols).await?;
     Ok((files.len(), r.iterations))
@@ -392,7 +433,9 @@ pub fn render(tags: &[Tag], budget: u32) -> (String, usize) {
     let (mut lo, mut hi) = (0usize, tags.len());
     let mut best: Option<(String, usize, u32)> = None;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let mut mid = ((budget_f / 25.0) as usize).clamp(1, tags.len().max(1)).min(tags.len());
+    let mut mid = ((budget_f / 25.0) as usize)
+        .clamp(1, tags.len().max(1))
+        .min(tags.len());
     while lo <= hi && !tags.is_empty() {
         let text = tree(mid);
         let tokens = estimate_tokens(text.len());
@@ -458,8 +501,18 @@ mod tests {
     /// Four files: `core` is used by everyone, `util` by two, `app` and
     /// `island` by nobody (`island` defines something → self-edge).
     fn toy() -> Graph {
-        let files = vec![file(1, "src/core.rs"), file(2, "src/util.rs"), file(3, "src/app.rs"), file(4, "src/island.rs")];
-        let symbols = vec![sym(1, 1, "open_database"), sym(2, 2, "helper"), sym(3, 3, "main"), sym(4, 4, "alone")];
+        let files = vec![
+            file(1, "src/core.rs"),
+            file(2, "src/util.rs"),
+            file(3, "src/app.rs"),
+            file(4, "src/island.rs"),
+        ];
+        let symbols = vec![
+            sym(1, 1, "open_database"),
+            sym(2, 2, "helper"),
+            sym(3, 3, "main"),
+            sym(4, 4, "alone"),
+        ];
         let edges = vec![
             edge(2, 1, "open_database", 3),
             edge(3, 1, "open_database", 1),
@@ -481,9 +534,17 @@ mod tests {
     fn ranks_the_most_referenced_file_first_and_converges() {
         let g = toy();
         let r = g.rank(&Focus::default());
-        assert!(r.iterations > 1 && r.iterations < MAX_ITER, "{}", r.iterations);
+        assert!(
+            r.iterations > 1 && r.iterations < MAX_ITER,
+            "{}",
+            r.iterations
+        );
         assert!((r.files.iter().sum::<f64>() - 1.0).abs() < 1e-6);
-        assert!(r.files[0] > r.files[1] && r.files[1] > r.files[2], "{:?}", r.files);
+        assert!(
+            r.files[0] > r.files[1] && r.files[1] > r.files[2],
+            "{:?}",
+            r.files
+        );
         assert!(r.files[3] > 0.0, "an isolated definer keeps a rank");
         assert_eq!(r.tags[0].1.name, "open_database");
         assert_eq!(r.tags[1].1.name, "helper");
@@ -494,24 +555,65 @@ mod tests {
     #[test]
     fn focus_flips_the_order() {
         let g = toy();
-        let f = g.focus(&["src/util.rs".to_owned(), "helper".to_owned(), "src/".to_owned()]);
+        let f = g.focus(&[
+            "src/util.rs".to_owned(),
+            "helper".to_owned(),
+            "src/".to_owned(),
+        ]);
         assert_eq!(f.files.len(), 4, "`src/` names every file");
         assert!(f.idents.contains("helper") && !f.idents.contains("src/util.rs"));
         let base = g.rank(&Focus::default());
-        let helper = |r: &Ranked| r.tags.iter().find(|(_, t)| t.name == "helper").unwrap().1.rank;
+        let helper = |r: &Ranked| {
+            r.tags
+                .iter()
+                .find(|(_, t)| t.name == "helper")
+                .unwrap()
+                .1
+                .rank
+        };
         // Identifier focus: ×10 on `helper`'s edges — its share of the spread rises.
         let r = g.rank(&g.focus(&["helper".to_owned()]));
-        assert!(helper(&r) > 1.5 * helper(&base), "{} vs {}", helper(&r), helper(&base));
+        assert!(
+            helper(&r) > 1.5 * helper(&base),
+            "{} vs {}",
+            helper(&r),
+            helper(&base)
+        );
         // File focus on `app.rs`: it takes the teleport mass (top file) and its ×50 out-edges lift
         // `helper` (which it references twice) — `open_database` keeps first place on its own
         // long-name ×10 plus the mass `util` and `island` send it.
         let r = g.rank(&g.focus(&["src/app.rs".to_owned()]));
-        assert_eq!(r.files.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0, 2, "{:?}", r.files);
-        assert!(helper(&r) > 1.5 * helper(&base), "{} vs {}", helper(&r), helper(&base));
+        assert_eq!(
+            r.files
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0,
+            2,
+            "{:?}",
+            r.files
+        );
+        assert!(
+            helper(&r) > 1.5 * helper(&base),
+            "{} vs {}",
+            helper(&r),
+            helper(&base)
+        );
         assert_eq!(r.tags[0].1.name, "open_database", "{:?}", r.tags);
         // Personalising toward the island puts it first.
         let r = g.rank(&g.focus(&["src/island.rs".to_owned()]));
-        assert_eq!(r.files.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0, 3, "{:?}", r.files);
+        assert_eq!(
+            r.files
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0,
+            3,
+            "{:?}",
+            r.files
+        );
     }
 
     #[test]
@@ -528,7 +630,10 @@ mod tests {
             .collect();
         let (text, kept) = render(&tags, 300);
         let tokens = estimate_tokens(text.len());
-        assert!((200..=345).contains(&tokens), "{tokens} tokens for {kept} tags");
+        assert!(
+            (200..=345).contains(&tokens),
+            "{tokens} tokens for {kept} tags"
+        );
         assert!(kept > 0 && kept < 200);
         assert!(text.starts_with("src/f0.rs\n  0: pub fn fn_0"));
         let (text, kept) = render(&tags, 1_000_000);
@@ -540,6 +645,8 @@ mod tests {
     #[test]
     fn snake_or_camel() {
         assert!(is_snake_or_camel("open_db") && is_snake_or_camel("ToolRegistry"));
-        assert!(!is_snake_or_camel("new") && !is_snake_or_camel(IMPORT) && !is_snake_or_camel("HTTP"));
+        assert!(
+            !is_snake_or_camel("new") && !is_snake_or_camel(IMPORT) && !is_snake_or_camel("HTTP")
+        );
     }
 }

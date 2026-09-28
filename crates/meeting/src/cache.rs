@@ -163,7 +163,9 @@ impl Cache {
             .context("load aliases")?;
         let mut list = Vec::new();
         for (id, aliases) in rows {
-            let Ok(id) = id.parse::<BriefId>() else { continue };
+            let Ok(id) = id.parse::<BriefId>() else {
+                continue;
+            };
             let aliases: Vec<String> = serde_json::from_str(&aliases).unwrap_or_default();
             list.extend(aliases.into_iter().map(|a| (a.to_lowercase(), id)));
         }
@@ -240,10 +242,15 @@ impl Cache {
         .fetch_all(&self.pool)
         .await
         .context("search briefs")?;
-        let mut hits: Vec<CachedBrief> = rows.into_iter().map(row).collect::<anyhow::Result<_>>()?;
+        let mut hits: Vec<CachedBrief> =
+            rows.into_iter().map(row).collect::<anyhow::Result<_>>()?;
         if let [word] = words.as_slice() {
             let word = word.to_lowercase();
-            let exact = self.aliases().iter().find(|(a, _)| *a == word).map(|(_, id)| *id);
+            let exact = self
+                .aliases()
+                .iter()
+                .find(|(a, _)| *a == word)
+                .map(|(_, id)| *id);
             if let Some(id) = exact {
                 match hits.iter().position(|h| h.id == id) {
                     Some(0) => {}
@@ -263,7 +270,11 @@ impl Cache {
     /// Validate, upsert the row and its FTS mirror in one transaction, reload
     /// the aliases. `Ok((row, created))`. An existing row keeps `source`,
     /// `created_at`, `uses`; `updated_at` moves.
-    pub async fn put(&self, p: CachedBriefPut, source: &str) -> Result<(CachedBrief, bool), String> {
+    pub async fn put(
+        &self,
+        p: CachedBriefPut,
+        source: &str,
+    ) -> Result<(CachedBrief, bool), String> {
         let title = p.title.trim();
         if title.is_empty() {
             return Err("title is empty".into());
@@ -322,15 +333,17 @@ impl Cache {
             .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
-        sqlx::query("INSERT INTO briefs_fts (id, aliases, title, tags, bullets) VALUES (?, ?, ?, ?, ?)")
-            .bind(id.to_string())
-            .bind(aliases.join(" "))
-            .bind(title)
-            .bind(tags.join(" "))
-            .bind(bullets.join(" "))
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        sqlx::query(
+            "INSERT INTO briefs_fts (id, aliases, title, tags, bullets) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(aliases.join(" "))
+        .bind(title)
+        .bind(tags.join(" "))
+        .bind(bullets.join(" "))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -402,17 +415,29 @@ pub fn scan(text: &str, aliases: &[(String, BriefId)]) -> Vec<(BriefId, String)>
     let same_len = lower.len() == text.len();
     let mut hits: Vec<(usize, BriefId, String)> = Vec::new();
     for (alias, id) in aliases {
-        if alias.is_empty() || (alias.chars().count() < 3 && !alias.chars().any(|c| c.is_ascii_digit())) {
+        if alias.is_empty()
+            || (alias.chars().count() < 3 && !alias.chars().any(|c| c.is_ascii_digit()))
+        {
             continue;
         }
         let mut from = 0;
         while let Some(i) = lower[from..].find(alias.as_str()) {
             let start = from + i;
             let end = start + alias.len();
-            let before = lower[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
-            let after = lower[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+            let before = lower[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let after = lower[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
             if before && after {
-                let spoken = if same_len { text[start..end].to_owned() } else { alias.clone() };
+                let spoken = if same_len {
+                    text[start..end].to_owned()
+                } else {
+                    alias.clone()
+                };
                 hits.push((start, *id, spoken));
                 break;
             }
@@ -455,13 +480,23 @@ mod tests {
             ("KEDA", keda),
         ]);
         assert!(scan("the drive is full", &a).is_empty());
-        assert!(scan("kedab and dr", &a).is_empty(), "no boundary after, `dr` too short");
+        assert!(
+            scan("kedab and dr", &a).is_empty(),
+            "no boundary after, `dr` too short"
+        );
         assert_eq!(
             scan("So KEDA, then the dr CUTOVER, then sre-2386.", &a),
-            [(keda, "KEDA".to_owned()), (dr, "the dr CUTOVER".to_owned()), (sre, "sre-2386".to_owned())]
+            [
+                (keda, "KEDA".to_owned()),
+                (dr, "the dr CUTOVER".to_owned()),
+                (sre, "sre-2386".to_owned())
+            ]
         );
         // Two aliases of one row → one hit, at the earliest occurrence.
-        assert_eq!(scan("ticket 2386 is SRE-2386", &a), [(sre, "2386".to_owned())]);
+        assert_eq!(
+            scan("ticket 2386 is SRE-2386", &a),
+            [(sre, "2386".to_owned())]
+        );
         // A boundary failure on the first occurrence does not hide a later one.
         assert_eq!(scan("kedas KEDA", &a), [(keda, "KEDA".to_owned())]);
         assert_eq!(scan("(SRE-2386)", &a), [(sre, "SRE-2386".to_owned())]);
@@ -484,30 +519,62 @@ mod tests {
     async fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let c = Cache::open(dir.path()).await.unwrap();
-        assert!(c.put(put("x", &[], &["a", "b"], &[]), "user").await.is_err());
-        assert!(c.put(put("x", &["a b c d e"], &["a", "b"], &[]), "user").await.is_err());
+        assert!(
+            c.put(put("x", &[], &["a", "b"], &[]), "user")
+                .await
+                .is_err()
+        );
+        assert!(
+            c.put(put("x", &["a b c d e"], &["a", "b"], &[]), "user")
+                .await
+                .is_err()
+        );
         assert!(c.put(put("x", &["ok"], &["a"], &[]), "user").await.is_err());
-        assert!(c.put(put(" ", &["ok"], &["a", "b"], &[]), "user").await.is_err());
+        assert!(
+            c.put(put(" ", &["ok"], &["a", "b"], &[]), "user")
+                .await
+                .is_err()
+        );
 
         let (sre, created) = c
             .put(
-                put("SRE-2386 image tags", &["SRE-2386", " sre-2386 ", "two three eight six"], &["DR sync blocked on image tags", "owner: Dana"], &["dr-sync"]),
+                put(
+                    "SRE-2386 image tags",
+                    &["SRE-2386", " sre-2386 ", "two three eight six"],
+                    &["DR sync blocked on image tags", "owner: Dana"],
+                    &["dr-sync"],
+                ),
                 "meeting:m1",
             )
             .await
             .unwrap();
         assert!(created);
-        assert_eq!(sre.aliases, ["SRE-2386", "two three eight six"], "case-insensitive dedupe");
+        assert_eq!(
+            sre.aliases,
+            ["SRE-2386", "two three eight six"],
+            "case-insensitive dedupe"
+        );
         assert_eq!((sre.uses, sre.source.as_str()), (0, "meeting:m1"));
         let (keda, _) = c
-            .put(put("KEDA scaling", &["KEDA"], &["limit 20k", "mentions SRE-2386 tags"], &["dr-sync", "platform"]), "session:s1")
+            .put(
+                put(
+                    "KEDA scaling",
+                    &["KEDA"],
+                    &["limit 20k", "mentions SRE-2386 tags"],
+                    &["dr-sync", "platform"],
+                ),
+                "session:s1",
+            )
             .await
             .unwrap();
         assert_eq!(c.aliases().len(), 3);
 
         // Alias hit (SRE row) beats the bullet hit (KEDA row); exact single word too.
         let hits = c.search("SRE-2386", 8).await.unwrap();
-        assert_eq!(hits.iter().map(|h| h.id).collect::<Vec<_>>(), [sre.id, keda.id]);
+        assert_eq!(
+            hits.iter().map(|h| h.id).collect::<Vec<_>>(),
+            [sre.id, keda.id]
+        );
         // Exact alias first even when bm25 would not rank it so: the KEDA row
         // carries "tags" in its bullets, the SRE row only in its title — but
         // "keda" is an alias of the KEDA row and a single word, so it leads.
@@ -532,7 +599,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!created);
-        assert_eq!((sre2.uses, sre2.source.as_str(), &sre2.created_at), (1, "meeting:m1", &sre.created_at));
+        assert_eq!(
+            (sre2.uses, sre2.source.as_str(), &sre2.created_at),
+            (1, "meeting:m1", &sre.created_at)
+        );
         assert!(sre2.updated_at > sre.updated_at && sre2.last_used_at.is_some());
         assert_eq!(c.aliases().len(), 2);
 
@@ -546,9 +616,18 @@ mod tests {
 
         // list: newest updated first; by tag.
         let all = c.list(None, 50).await.unwrap();
-        assert_eq!(all.iter().map(|h| h.id).collect::<Vec<_>>(), [sre.id, keda.id]);
+        assert_eq!(
+            all.iter().map(|h| h.id).collect::<Vec<_>>(),
+            [sre.id, keda.id]
+        );
         assert_eq!(c.list(Some("platform"), 50).await.unwrap().len(), 1);
-        assert!(c.list(Some("dr-sync"), 50).await.unwrap().iter().all(|h| h.id == keda.id));
+        assert!(
+            c.list(Some("dr-sync"), 50)
+                .await
+                .unwrap()
+                .iter()
+                .all(|h| h.id == keda.id)
+        );
         assert_eq!(c.tags().await.unwrap(), ["dr-sync", "platform"]);
 
         c.delete(keda.id).await.unwrap();

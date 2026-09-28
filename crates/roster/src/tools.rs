@@ -69,7 +69,11 @@ pub struct AgentProposeArgs {
 /// The file `a` describes, active and unproposed (the caller sets `paused` /
 /// `proposed_by`). `Err`: a bad budget, or a `reports_to` that is neither
 /// `theuth` nor an agent on the roster.
-fn file_of(a: AgentProposeArgs, default_reports_to: &str, shared: &Shared) -> Result<AgentFile, String> {
+fn file_of(
+    a: AgentProposeArgs,
+    default_reports_to: &str,
+    shared: &Shared,
+) -> Result<AgentFile, String> {
     let budget: Budget = match a.budget.as_deref().map(str::parse) {
         Some(Ok(b)) => b,
         Some(Err(e)) => return Err(e),
@@ -81,7 +85,9 @@ fn file_of(a: AgentProposeArgs, default_reports_to: &str, shared: &Shared) -> Re
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| default_reports_to.to_owned());
     if reports_to != AgentName::DEFAULT && !shared.files().contains_key(&reports_to) {
-        return Err(format!("reports_to {reports_to:?}: no such agent (see agents_list); use `theuth` or an existing name"));
+        return Err(format!(
+            "reports_to {reports_to:?}: no such agent (see agents_list); use `theuth` or an existing name"
+        ));
     }
     Ok(AgentFile {
         name: a.name,
@@ -182,7 +188,11 @@ impl Tool for AgentPutTool {
         let Some(roster) = crate::actor() else {
             return Ok(ToolOutput::err("roster is not running"));
         };
-        if let Some(desk) = self.0.agent_of(cx.session).filter(|d| d != AgentName::DEFAULT) {
+        if let Some(desk) = self
+            .0
+            .agent_of(cx.session)
+            .filter(|d| d != AgentName::DEFAULT)
+        {
             return Ok(ToolOutput::err(format!(
                 "agent_put is the user's approval; as agent {desk}'s desk, propose with agent_propose"
             )));
@@ -198,7 +208,11 @@ impl Tool for AgentPutTool {
             Ok(()) => Ok(ToolOutput::ok(format!(
                 "{} agents/{name}.md ({})",
                 if existed { "replaced" } else { "hired" },
-                if a.paused { "paused: un-pause from the Agents view when ready" } else { "active" }
+                if a.paused {
+                    "paused: un-pause from the Agents view when ready"
+                } else {
+                    "active"
+                }
             ))),
             Err(e) => Ok(ToolOutput::err(e.to_string())),
         }
@@ -242,13 +256,20 @@ impl Tool for AgentsListTool {
         };
         let mut s = String::new();
         let mut rows = Vec::new();
-        for a in list.into_iter().filter(|s| !s.file.name.is_default()).filter(|s| {
-            a.all
-                || matches!(
-                    s.status,
-                    AgentStatus::Idle | AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Unreachable
-                )
-        }) {
+        for a in list
+            .into_iter()
+            .filter(|s| !s.file.name.is_default())
+            .filter(|s| {
+                a.all
+                    || matches!(
+                        s.status,
+                        AgentStatus::Idle
+                            | AgentStatus::Working
+                            | AgentStatus::Blocked
+                            | AgentStatus::Unreachable
+                    )
+            })
+        {
             let f = &a.file;
             s.push_str(&format!(
                 "{} — {} (reports to {}) [{}] open tasks: {}",
@@ -262,7 +283,10 @@ impl Tool for AgentsListTool {
                 a.open_tasks
             ));
             if let Budget::Monthly { amount, currency } = &f.budget {
-                s.push_str(&format!(" budget: {:.2}/{amount} {currency}", a.spent_month));
+                s.push_str(&format!(
+                    " budget: {:.2}/{amount} {currency}",
+                    a.spent_month
+                ));
             }
             if let Some(c) = &f.capabilities {
                 s.push_str(&format!("\n  {c}"));
@@ -317,25 +341,72 @@ mod tests {
     fn file_of_checks_reports_to_and_keeps_the_fields() {
         let shared = Shared::default();
         let cto = file_of(args("cto", None), AgentName::DEFAULT, &shared).unwrap();
-        assert_eq!((cto.reports_to.as_str(), cto.title.as_str(), cto.model.as_deref()), ("theuth", "Ops", Some("gpt-5")));
-        assert_eq!(cto.budget, Budget::Monthly { amount: 40.0, currency: "USD".into() });
+        assert_eq!(
+            (
+                cto.reports_to.as_str(),
+                cto.title.as_str(),
+                cto.model.as_deref()
+            ),
+            ("theuth", "Ops", Some("gpt-5"))
+        );
+        assert_eq!(
+            cto.budget,
+            Budget::Monthly {
+                amount: 40.0,
+                currency: "USD".into()
+            }
+        );
         assert!(!cto.paused && cto.proposed_by.is_none());
         // an unknown manager is refused; a roster agent or theuth is fine; blank falls back to the default
-        assert!(file_of(args("ops", Some("cto")), AgentName::DEFAULT, &shared).unwrap_err().contains("no such agent"));
-        shared.set_files(BTreeMap::from([("cto".to_owned(), Ok(cto))]), file::default_agent(std::path::Path::new("/nonexistent")));
-        assert_eq!(file_of(args("ops", Some(" cto ")), AgentName::DEFAULT, &shared).unwrap().reports_to, "cto");
-        assert_eq!(file_of(args("ops", Some("")), "cto", &shared).unwrap().reports_to, "cto");
+        assert!(
+            file_of(args("ops", Some("cto")), AgentName::DEFAULT, &shared)
+                .unwrap_err()
+                .contains("no such agent")
+        );
+        shared.set_files(
+            BTreeMap::from([("cto".to_owned(), Ok(cto))]),
+            file::default_agent(std::path::Path::new("/nonexistent")),
+        );
+        assert_eq!(
+            file_of(args("ops", Some(" cto ")), AgentName::DEFAULT, &shared)
+                .unwrap()
+                .reports_to,
+            "cto"
+        );
+        assert_eq!(
+            file_of(args("ops", Some("")), "cto", &shared)
+                .unwrap()
+                .reports_to,
+            "cto"
+        );
         assert!(file_of(args("ops", Some("theuth")), "cto", &shared).is_ok());
-        assert!(file_of(AgentProposeArgs { budget: Some("lots".into()), ..args("ops", None) }, "cto", &shared).is_err());
+        assert!(
+            file_of(
+                AgentProposeArgs {
+                    budget: Some("lots".into()),
+                    ..args("ops", None)
+                },
+                "cto",
+                &shared
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn mcp_arg_omitted_is_all_and_empty_is_none() {
         let base = r#""name":"ops","title":"Ops","charter":"You are Ops.""#;
-        let parse = |extra: &str| serde_json::from_str::<AgentProposeArgs>(&format!("{{{base}{extra}}}")).unwrap().mcp;
+        let parse = |extra: &str| {
+            serde_json::from_str::<AgentProposeArgs>(&format!("{{{base}{extra}}}"))
+                .unwrap()
+                .mcp
+        };
         assert_eq!(parse(""), None);
         assert_eq!(parse(r#","mcp":[]"#), Some(vec![]));
-        assert_eq!(parse(r#","mcp":["grafana"]"#), Some(vec!["grafana".to_owned()]));
+        assert_eq!(
+            parse(r#","mcp":["grafana"]"#),
+            Some(vec!["grafana".to_owned()])
+        );
     }
 
     #[test]
@@ -345,7 +416,11 @@ mod tests {
         let unattended = agent::frame::baseline(&dir, None, "", PROMPT, false, None, false);
         for p in [&attended, &unattended] {
             assert!(p.contains("## Hiring\n"), "{p}");
-            assert!(p.contains("`agent_draft`") && p.contains("`agent_put`") && p.contains("Never tell the user to write or edit a file"));
+            assert!(
+                p.contains("`agent_draft`")
+                    && p.contains("`agent_put`")
+                    && p.contains("Never tell the user to write or edit a file")
+            );
         }
         let manual = crate::desk::manual(&file::default_agent(&dir), 3);
         assert!(manual.contains("`agent_propose`") && !manual.contains("agent_put"));

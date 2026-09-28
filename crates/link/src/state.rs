@@ -169,7 +169,11 @@ impl State {
             name: self.name().to_owned(),
             harness_id: self.identity.as_ref().map(|i| i.id.clone()),
             connected: self.connected,
-            devices: self.devices.rows().map(|r| r.device(self.online(&r.key))).collect(),
+            devices: self
+                .devices
+                .rows()
+                .map(|r| r.device(self.online(&r.key)))
+                .collect(),
             pairing: self.live_pairing().map(Pending::pairing),
             mesh: self.mesh.clone(),
         }

@@ -55,7 +55,9 @@ impl std::str::FromStr for Accelerator {
             "directml" => Ok(Accelerator::Directml),
             "cuda" => Ok(Accelerator::Cuda),
             "webgpu" => Ok(Accelerator::Webgpu),
-            _ => Err(format!("accelerator: {s:?} is not auto | cpu | directml | cuda | webgpu")),
+            _ => Err(format!(
+                "accelerator: {s:?} is not auto | cpu | directml | cuda | webgpu"
+            )),
         }
     }
 }
@@ -95,7 +97,13 @@ mod tests {
 
     #[test]
     fn round_trips_every_spelling() {
-        for a in [Accelerator::Auto, Accelerator::Cpu, Accelerator::Directml, Accelerator::Cuda, Accelerator::Webgpu] {
+        for a in [
+            Accelerator::Auto,
+            Accelerator::Cpu,
+            Accelerator::Directml,
+            Accelerator::Cuda,
+            Accelerator::Webgpu,
+        ] {
             assert_eq!(a.name().parse::<Accelerator>(), Ok(a));
             set(a);
             assert_eq!(get(), a);

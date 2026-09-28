@@ -57,7 +57,9 @@ impl ServiceUnit {
                 let plist = path.display().to_string();
                 run("launchctl", &["bootout", &format!("gui/{uid}/{UNIT}")]);
                 if !run("launchctl", &["bootstrap", &format!("gui/{uid}"), &plist]) {
-                    anyhow::bail!("launchctl bootstrap failed; see `launchctl print gui/{uid}/{UNIT}`");
+                    anyhow::bail!(
+                        "launchctl bootstrap failed; see `launchctl print gui/{uid}/{UNIT}`"
+                    );
                 }
                 Ok(Installed {
                     scope: format!("launchd gui/{uid}/{UNIT}"),
@@ -97,11 +99,18 @@ impl ServiceUnit {
             // ponytail: unverified on Windows — step 4's check: `t --install-service`
             // creates a logon task and the daemon answers RPC after logoff/logon.
             Self::TaskScheduler => {
-                let tr = argv.iter().map(|a| quote_win(a)).collect::<Vec<_>>().join(" ");
+                let tr = argv
+                    .iter()
+                    .map(|a| quote_win(a))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 run("schtasks", &["/end", "/tn", UNIT]);
                 if !run(
                     "schtasks",
-                    &["/create", "/f", "/sc", "onlogon", "/rl", "limited", "/tn", UNIT, "/tr", &tr],
+                    &[
+                        "/create", "/f", "/sc", "onlogon", "/rl", "limited", "/tn", UNIT, "/tr",
+                        &tr,
+                    ],
                 ) {
                     anyhow::bail!("schtasks /create failed; see `schtasks /query /tn {UNIT} /v`");
                 }
@@ -128,13 +137,19 @@ impl ServiceUnit {
                 let uid = uid()?;
                 run("launchctl", &["bootout", &format!("gui/{uid}/{UNIT}")]);
                 remove(&plist_path()?)?;
-                Ok(format!("launchd gui/{uid}/{UNIT} and {}", plist_path()?.display()))
+                Ok(format!(
+                    "launchd gui/{uid}/{UNIT} and {}",
+                    plist_path()?.display()
+                ))
             }
             Self::SystemdUser => {
                 run("systemctl", &["--user", "disable", "--now", UNIT]);
                 remove(&systemd_path()?)?;
                 run("systemctl", &["--user", "daemon-reload"]);
-                Ok(format!("systemd --user {UNIT} and {}", systemd_path()?.display()))
+                Ok(format!(
+                    "systemd --user {UNIT} and {}",
+                    systemd_path()?.display()
+                ))
             }
             Self::TaskScheduler => {
                 run("schtasks", &["/end", "/tn", UNIT]);
@@ -172,7 +187,9 @@ pub fn log_path(data_dir: &Path) -> PathBuf {
 /// The LaunchAgent for `argv` (32 §5.1).
 pub fn plist(argv: &[String], data_dir: &Path) -> String {
     fn xml(s: &str) -> String {
-        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
     }
     let args: String = argv
         .iter()
@@ -315,8 +332,13 @@ mod tests {
 
     #[test]
     fn schtasks_command_line_quotes_paths_with_spaces() {
-        let words = [r"C:\Program Files\theuth\t.exe", "--headless", "--data-dir", r"C:\Users\me\.theuth"]
-            .map(quote_win);
+        let words = [
+            r"C:\Program Files\theuth\t.exe",
+            "--headless",
+            "--data-dir",
+            r"C:\Users\me\.theuth",
+        ]
+        .map(quote_win);
         assert_eq!(
             words.join(" "),
             r#""C:\Program Files\theuth\t.exe" --headless --data-dir C:\Users\me\.theuth"#

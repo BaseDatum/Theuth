@@ -60,9 +60,13 @@ pub async fn fetch(os: &str, arch: &str, out: &Progress) -> anyhow::Result<Vec<(
         .with_context(|| format!("release {} has no {key} asset", m.version))?;
     out.say("binary", format!("downloading {} {key}", m.version));
 
-    let pk = PublicKey::decode(&tauri_b64(update::PUBKEY)?).map_err(|_| anyhow::anyhow!("release pubkey"))?;
-    let sig = Signature::decode(&tauri_b64(&p.signature)?).map_err(|_| anyhow::anyhow!("release signature"))?;
-    let mut verifier = pk.verify_stream(&sig).map_err(|_| anyhow::anyhow!("release signature"))?;
+    let pk = PublicKey::decode(&tauri_b64(update::PUBKEY)?)
+        .map_err(|_| anyhow::anyhow!("release pubkey"))?;
+    let sig = Signature::decode(&tauri_b64(&p.signature)?)
+        .map_err(|_| anyhow::anyhow!("release signature"))?;
+    let mut verifier = pk
+        .verify_stream(&sig)
+        .map_err(|_| anyhow::anyhow!("release signature"))?;
     let mut resp = client
         .get(&p.url)
         .send()
@@ -108,11 +112,15 @@ mod tests {
 
     #[test]
     fn extracts_t_first_then_helpers() {
-        let mut ar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let mut ar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
         let mut h = tar::Header::new_gnu();
         h.set_size(1);
         h.set_cksum();
-        ar.append_data(&mut h, "theuth-documents-1.0", &b"x"[..]).unwrap();
+        ar.append_data(&mut h, "theuth-documents-1.0", &b"x"[..])
+            .unwrap();
         let mut h = tar::Header::new_gnu();
         h.set_size(3);
         h.set_mode(0o755);

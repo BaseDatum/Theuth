@@ -198,7 +198,12 @@ impl Vault {
             Some(sealed) => open_bytes(&key, MESH_KEY_AAD, &sealed)
                 .and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
                 .map(Zeroizing::new)
-                .ok_or_else(|| anyhow::anyhow!("{}: the mesh key does not open with this engine's key", path.display()))?,
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}: the mesh key does not open with this engine's key",
+                        path.display()
+                    )
+                })?,
             None => {
                 let k = Zeroizing::new(rand::random::<[u8; 32]>());
                 store::meta_put(&pool, MESH_KEY, &seal(&key, MESH_KEY_AAD, &*k)).await?;
@@ -234,7 +239,10 @@ impl Vault {
 
     /// The mesh data key (travels inside the pairing string, 67 §5.4).
     pub fn mesh_key(&self) -> Zeroizing<[u8; 32]> {
-        self.mesh_key.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.mesh_key
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Take the mesh key a pairing string carried: every local row is
@@ -260,13 +268,18 @@ impl Vault {
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
-            .bind(MESH_KEY)
-            .bind(seal(&self.key, MESH_KEY_AAD, &*key))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        )
+        .bind(MESH_KEY)
+        .bind(seal(&self.key, MESH_KEY_AAD, &*key))
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
-        *self.mesh_key.write().unwrap_or_else(PoisonError::into_inner) = key;
+        *self
+            .mesh_key
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = key;
         self.refresh().await
     }
 
@@ -277,12 +290,21 @@ impl Vault {
     /// mesh identity; only a pairing creates it, so two engines that ran alone before pairing do
     /// not each mint one and collide). `Ok(None)` = no row yet.
     pub fn mesh_device_key_if_set(&self) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
-        self.get(Self::MESH_DEVICE_KEY, 0).map(|v| Self::decode_mesh_key(&v)).transpose()
+        self.get(Self::MESH_DEVICE_KEY, 0)
+            .map(|v| Self::decode_mesh_key(&v))
+            .transpose()
     }
 
     fn decode_mesh_key(v: &str) -> anyhow::Result<Zeroizing<[u8; 32]>> {
-        let bytes = Zeroizing::new(URL_SAFE_NO_PAD.decode(v).context("mesh/device_key: not base64url")?);
-        let key: [u8; 32] = bytes.as_slice().try_into().context("mesh/device_key: expected 32 bytes")?;
+        let bytes = Zeroizing::new(
+            URL_SAFE_NO_PAD
+                .decode(v)
+                .context("mesh/device_key: not base64url")?,
+        );
+        let key: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .context("mesh/device_key: expected 32 bytes")?;
         Ok(Zeroizing::new(key))
     }
 
@@ -298,7 +320,10 @@ impl Vault {
         }
         let fresh: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
         let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*fresh));
-        match self.set_if_version(Self::MESH_DEVICE_KEY, &encoded, "link", None).await {
+        match self
+            .set_if_version(Self::MESH_DEVICE_KEY, &encoded, "link", None)
+            .await
+        {
             Ok(Some(_)) => Ok(fresh),
             Ok(None) => {
                 // Lost the race: another engine (or task) wrote first; its
@@ -332,7 +357,10 @@ impl Vault {
     pub fn disk_stamp(&self) -> Option<SystemTime> {
         let mut wal = self.path.as_os_str().to_owned();
         wal.push("-wal");
-        mtime(&self.path).into_iter().chain(mtime(Path::new(&wal))).max()
+        mtime(&self.path)
+            .into_iter()
+            .chain(mtime(Path::new(&wal)))
+            .max()
     }
 
     /// Rebuild the in-memory copy from the tables: per name the current
@@ -477,7 +505,11 @@ impl Vault {
 
     /// Remove the name and every version.
     pub async fn delete(&self, name: &str) -> Result<(), String> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| e.to_string())?;
         let gone = sqlx::query("DELETE FROM vault_current WHERE name = ?")
             .bind(name)
             .execute(&mut *tx)
@@ -581,7 +613,8 @@ impl Vault {
         source: &str,
         expected: Option<Option<u32>>,
     ) -> Result<Option<SecretInfo>, String> {
-        self.write_row(name, value, note, source, expected, false).await
+        self.write_row(name, value, note, source, expected, false)
+            .await
     }
 
     /// One transaction: read the pointer, check `expected` (`Some(x)` = the
@@ -607,7 +640,9 @@ impl Vault {
             g.entries.get(name).map(|e| {
                 (
                     e.versions.first().map(|v| v.v),
-                    e.versions.first().is_some_and(|cur| cur.value.as_str() == value),
+                    e.versions
+                        .first()
+                        .is_some_and(|cur| cur.value.as_str() == value),
                     e.note.clone(),
                 )
             })
@@ -619,12 +654,13 @@ impl Vault {
             return Ok(self.info_of(name));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
-        let cur: Option<u32> = sqlx::query_scalar::<_, i64>("SELECT version FROM vault_current WHERE name = ?")
-            .bind(name)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(e)?
-            .map(|v| v as u32);
+        let cur: Option<u32> =
+            sqlx::query_scalar::<_, i64>("SELECT version FROM vault_current WHERE name = ?")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(e)?
+                .map(|v| v as u32);
         if let Some(exp) = expected
             && exp != cur
         {
@@ -651,21 +687,25 @@ impl Vault {
         .await
         .map_err(e)?;
         let moved = match cur {
-            Some(c) => sqlx::query("UPDATE vault_current SET version = ? WHERE name = ? AND version = ?")
-                .bind(i64::from(version))
-                .bind(name)
-                .bind(i64::from(c))
-                .execute(&mut *tx)
-                .await
-                .map_err(e)?
-                .rows_affected(),
-            None => sqlx::query("INSERT OR IGNORE INTO vault_current (name, version) VALUES (?, ?)")
-                .bind(name)
-                .bind(i64::from(version))
-                .execute(&mut *tx)
-                .await
-                .map_err(e)?
-                .rows_affected(),
+            Some(c) => {
+                sqlx::query("UPDATE vault_current SET version = ? WHERE name = ? AND version = ?")
+                    .bind(i64::from(version))
+                    .bind(name)
+                    .bind(i64::from(c))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(e)?
+                    .rows_affected()
+            }
+            None => {
+                sqlx::query("INSERT OR IGNORE INTO vault_current (name, version) VALUES (?, ?)")
+                    .bind(name)
+                    .bind(i64::from(version))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(e)?
+                    .rows_affected()
+            }
         };
         if moved != 1 {
             return Ok(None);
@@ -726,7 +766,10 @@ impl Vault {
         let mut moved = path.as_os_str().to_owned();
         moved.push(".migrated");
         std::fs::rename(path, &moved).with_context(|| format!("rename {}", path.display()))?;
-        tracing::info!("migrated {n} secrets from {} into secrets.sqlite", path.display());
+        tracing::info!(
+            "migrated {n} secrets from {} into secrets.sqlite",
+            path.display()
+        );
         self.refresh().await
     }
 
@@ -963,7 +1006,9 @@ mod tests {
     async fn round_trip_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
-        v.set("gh", "ghp_0123456789", Some("GitHub PAT"), "user").await.unwrap();
+        v.set("gh", "ghp_0123456789", Some("GitHub PAT"), "user")
+            .await
+            .unwrap();
         drop(v);
         let v = open(dir.path()).await;
         assert_eq!(v.get("gh", 0).unwrap().as_str(), "ghp_0123456789");
@@ -975,7 +1020,12 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(open_bytes(&[7; 32], b"gh#1", &rows[0].ciphertext).is_none());
         assert!(open_bytes(&v.mesh_key(), b"gh#2", &rows[0].ciphertext).is_none());
-        assert_eq!(open_bytes(&v.mesh_key(), b"gh#1", &rows[0].ciphertext).unwrap().as_slice(), b"ghp_0123456789");
+        assert_eq!(
+            open_bytes(&v.mesh_key(), b"gh#1", &rows[0].ciphertext)
+                .unwrap()
+                .as_slice(),
+            b"ghp_0123456789"
+        );
     }
 
     #[tokio::test]
@@ -983,12 +1033,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
         for i in 1..=10 {
-            let info = v.set("k", &format!("value-number-{i}"), None, "shell").await.unwrap();
+            let info = v
+                .set("k", &format!("value-number-{i}"), None, "shell")
+                .await
+                .unwrap();
             assert_eq!(info.current, i);
         }
         let info = &v.list()[0];
         assert_eq!(info.versions.len(), KEEP);
-        assert_eq!(info.versions.iter().map(|x| x.v).collect::<Vec<_>>(), [10, 9, 8, 7, 6]);
+        assert_eq!(
+            info.versions.iter().map(|x| x.v).collect::<Vec<_>>(),
+            [10, 9, 8, 7, 6]
+        );
         assert_eq!(v.get("k", 4).unwrap().as_str(), "value-number-6");
         assert!(v.get("k", 5).is_none());
         assert!(v.get("nope", 0).is_none());
@@ -1007,12 +1063,21 @@ mod tests {
         assert_eq!(r.versions[0].source, "restore v8");
         assert_eq!(v.get("k", 0).unwrap().as_str(), "value-number-8");
         assert_eq!(v.get("k", 1).unwrap().as_str(), "value-number-10");
-        assert_eq!(v.restore("k", 5).await.unwrap_err(), "back: 5 is not in 1..=4");
+        assert_eq!(
+            v.restore("k", 5).await.unwrap_err(),
+            "back: 5 is not in 1..=4"
+        );
         v.delete("k").await.unwrap();
-        assert_eq!(v.restore("k", 1).await.unwrap_err(), "unknown secret k; secret_list shows the names");
+        assert_eq!(
+            v.restore("k", 1).await.unwrap_err(),
+            "unknown secret k; secret_list shows the names"
+        );
         v.set("two", "a", None, "u").await.unwrap();
         v.set("two", "b", None, "u").await.unwrap();
-        assert_eq!(v.restore("two", 3).await.unwrap_err(), "two has 2 versions; back: 3 does not exist");
+        assert_eq!(
+            v.restore("two", 3).await.unwrap_err(),
+            "two has 2 versions; back: 3 does not exist"
+        );
         assert!(v.delete("two").await.is_ok());
         assert!(v.delete("two").await.is_err());
         assert!(v.list().is_empty());
@@ -1022,15 +1087,41 @@ mod tests {
     async fn set_if_version_is_a_precondition() {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
-        assert!(v.set_if_version("oauth/gh", "{\"a\":1}", "login", Some(3)).await.unwrap().is_none());
-        let i = v.set_if_version("oauth/gh", "{\"a\":1}", "login", None).await.unwrap().unwrap();
+        assert!(
+            v.set_if_version("oauth/gh", "{\"a\":1}", "login", Some(3))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let i = v
+            .set_if_version("oauth/gh", "{\"a\":1}", "login", None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(i.current, 1);
-        assert!(v.set_if_version("oauth/gh", "{\"a\":2}", "refresh", None).await.unwrap().is_none());
-        assert!(v.set_if_version("oauth/gh", "{\"a\":2}", "refresh", Some(2)).await.unwrap().is_none());
-        let i = v.set_if_version("oauth/gh", "{\"a\":2}", "refresh", Some(1)).await.unwrap().unwrap();
+        assert!(
+            v.set_if_version("oauth/gh", "{\"a\":2}", "refresh", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            v.set_if_version("oauth/gh", "{\"a\":2}", "refresh", Some(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let i = v
+            .set_if_version("oauth/gh", "{\"a\":2}", "refresh", Some(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(i.current, 2);
         assert_eq!(v.get_versioned("oauth/gh").unwrap().0, 2);
-        assert!(v.set("oauth/gh", "x", None, "u").await.is_err(), "`/` names only via set_if_version");
+        assert!(
+            v.set("oauth/gh", "x", None, "u").await.is_err(),
+            "`/` names only via set_if_version"
+        );
         assert!(v.set_if_version("a/b", "x", "u", None).await.is_err());
     }
 
@@ -1054,9 +1145,15 @@ mod tests {
         assert!(args["nested"].get("{{secret:tok}}").is_some());
 
         let mut bad = serde_json::json!({"a": "{{secret:nope}}"});
-        assert_eq!(v.expand(&mut bad).unwrap_err(), "unknown secret nope; secret_list shows the names");
+        assert_eq!(
+            v.expand(&mut bad).unwrap_err(),
+            "unknown secret nope; secret_list shows the names"
+        );
         let mut bad = serde_json::json!({"a": "{{secret:tok:-3}}"});
-        assert_eq!(v.expand(&mut bad).unwrap_err(), "tok has 2 versions; :-3 does not exist");
+        assert_eq!(
+            v.expand(&mut bad).unwrap_err(),
+            "tok has 2 versions; :-3 does not exist"
+        );
         let mut none = serde_json::json!({"a": "{{secret:}}", "b": 1});
         assert_eq!(v.expand(&mut none).unwrap(), 0);
     }
@@ -1065,14 +1162,21 @@ mod tests {
     async fn redact_all_versions_and_base64() {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
-        v.set("tok", "first-secret-value", None, "user").await.unwrap();
-        v.set("tok", "second-secret-value", None, "user").await.unwrap();
+        v.set("tok", "first-secret-value", None, "user")
+            .await
+            .unwrap();
+        v.set("tok", "second-secret-value", None, "user")
+            .await
+            .unwrap();
         v.set("pin", "1234", None, "user").await.unwrap();
         let text = format!(
             "cur=second-secret-value old=first-secret-value b64={} pin=1234",
             B64.encode("second-secret-value")
         );
-        assert_eq!(v.redact(&text), "cur={{secret:tok}} old={{secret:tok:-1}} b64={{secret:tok}} pin=1234");
+        assert_eq!(
+            v.redact(&text),
+            "cur={{secret:tok}} old={{secret:tok:-1}} b64={{secret:tok}} pin=1234"
+        );
         assert!(matches!(v.redact("nothing to see"), Cow::Borrowed(_)));
 
         let mut val = serde_json::json!({"out": ["second-secret-value"], "n": 1});
@@ -1088,11 +1192,18 @@ mod tests {
     async fn imports_credentials_yaml_once() {
         let dir = tempfile::tempdir().unwrap();
         let yaml = dir.path().join("credentials.yaml");
-        std::fs::write(&yaml, "# keys\nanthropic: sk-ant-abc\nopenai: \"\"\nbrave: brv-1\n").unwrap();
+        std::fs::write(
+            &yaml,
+            "# keys\nanthropic: sk-ant-abc\nopenai: \"\"\nbrave: brv-1\n",
+        )
+        .unwrap();
         let v = open(dir.path()).await;
         assert!(!yaml.exists());
         let list = v.list();
-        assert_eq!(list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["anthropic", "brave"]);
+        assert_eq!(
+            list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["anthropic", "brave"]
+        );
         assert_eq!(list[0].versions[0].source, "import");
         assert_eq!(list[0].note, "imported from credentials.yaml");
         assert_eq!(v.get("anthropic", 0).unwrap().as_str(), "sk-ant-abc");
@@ -1125,11 +1236,17 @@ mod tests {
         assert!(dir.path().join("secrets.vault.migrated").exists());
         let info = &v.list()[0];
         assert_eq!((info.current, info.note.as_str()), (3, "old"));
-        assert_eq!(info.versions.iter().map(|x| x.v).collect::<Vec<_>>(), [3, 2]);
+        assert_eq!(
+            info.versions.iter().map(|x| x.v).collect::<Vec<_>>(),
+            [3, 2]
+        );
         assert_eq!(info.versions[0].created, "2025-01-03T00:00:00Z");
         assert_eq!(v.get("gh", 1).unwrap().as_str(), "second-value-long");
         assert_eq!(v.redact("x third-value-long y"), "x {{secret:gh}} y");
-        let next = v.set("gh", "fourth-value-long", None, "user").await.unwrap();
+        let next = v
+            .set("gh", "fourth-value-long", None, "user")
+            .await
+            .unwrap();
         assert_eq!(next.current, 4);
     }
 
@@ -1156,16 +1273,39 @@ mod tests {
     async fn backend_rows_are_hidden_and_unexpandable() {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
-        v.set("tok", "user-token-value", None, "user").await.unwrap();
-        assert!(v.set("mesh/device_key", "x", None, "u").await.is_err(), "`/` names only via set_if_version");
-        let i = v.set_if_version("mesh/device_key", "device-key-bytes-b64", "link", None).await.unwrap().unwrap();
+        v.set("tok", "user-token-value", None, "user")
+            .await
+            .unwrap();
+        assert!(
+            v.set("mesh/device_key", "x", None, "u").await.is_err(),
+            "`/` names only via set_if_version"
+        );
+        let i = v
+            .set_if_version("mesh/device_key", "device-key-bytes-b64", "link", None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((i.name.as_str(), i.current), ("mesh/device_key", 1));
-        v.set_if_version("oauth/gh", "{}", "oauth", None).await.unwrap().unwrap();
-        assert_eq!(v.get("mesh/device_key", 0).unwrap().as_str(), "device-key-bytes-b64");
-        assert_eq!(v.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["tok"]);
+        v.set_if_version("oauth/gh", "{}", "oauth", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            v.get("mesh/device_key", 0).unwrap().as_str(),
+            "device-key-bytes-b64"
+        );
+        assert_eq!(
+            v.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["tok"]
+        );
 
-        let mut args = serde_json::json!({"a": "{{secret:mesh/device_key}}", "b": "{{secret:oauth/gh}}"});
-        assert_eq!(v.expand(&mut args).unwrap(), 0, "the placeholder grammar has no `/`");
+        let mut args =
+            serde_json::json!({"a": "{{secret:mesh/device_key}}", "b": "{{secret:oauth/gh}}"});
+        assert_eq!(
+            v.expand(&mut args).unwrap(),
+            0,
+            "the placeholder grammar has no `/`"
+        );
         assert_eq!(args["a"], "{{secret:mesh/device_key}}");
     }
 
@@ -1176,20 +1316,35 @@ mod tests {
     async fn mesh_device_key_is_created_once() {
         let dir = tempfile::tempdir().unwrap();
         let v = open(dir.path()).await;
-        assert!(v.mesh_device_key_if_set().unwrap().is_none(), "a hub loads, never mints");
+        assert!(
+            v.mesh_device_key_if_set().unwrap().is_none(),
+            "a hub loads, never mints"
+        );
         assert!(v.info_of(Vault::MESH_DEVICE_KEY).is_none());
         let (a, b) = tokio::join!(v.mesh_device_key(), v.mesh_device_key());
-        assert_eq!(*v.mesh_device_key_if_set().unwrap().unwrap(), **a.as_ref().unwrap());
+        assert_eq!(
+            *v.mesh_device_key_if_set().unwrap().unwrap(),
+            **a.as_ref().unwrap()
+        );
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_eq!(*a, *b, "the race loser adopts the winner's key");
-        assert_eq!(v.info_of(Vault::MESH_DEVICE_KEY).unwrap().current, 1, "exactly one version written");
+        assert_eq!(
+            v.info_of(Vault::MESH_DEVICE_KEY).unwrap().current,
+            1,
+            "exactly one version written"
+        );
         assert!(v.list().is_empty(), "never listed");
         drop(v);
         let v = open(dir.path()).await;
         assert_eq!(*v.mesh_device_key().await.unwrap(), *a);
 
         let sealed = v.seal_with_mesh_key(b"pending#1", b"psk-bytes");
-        assert_eq!(v.open_with_mesh_key(b"pending#1", &sealed).unwrap().as_slice(), b"psk-bytes");
+        assert_eq!(
+            v.open_with_mesh_key(b"pending#1", &sealed)
+                .unwrap()
+                .as_slice(),
+            b"psk-bytes"
+        );
         assert!(v.open_with_mesh_key(b"pending#2", &sealed).is_none());
     }
 
@@ -1226,13 +1381,19 @@ mod tests {
         let a = open(da.path()).await;
         let b = open(db.path()).await;
         b.adopt_mesh_key(*a.mesh_key()).await.unwrap();
-        let ea = replica::engine::Engine::open(&da.path().join("replica.sqlite")).await.unwrap();
-        let eb = replica::engine::Engine::open(&db.path().join("replica.sqlite")).await.unwrap();
+        let ea = replica::engine::Engine::open(&da.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let eb = replica::engine::Engine::open(&db.path().join("replica.sqlite"))
+            .await
+            .unwrap();
         let ha = ea.attach(a.pool(), store::TABLES).await.unwrap();
         let hb = eb.attach(b.pool(), store::TABLES).await.unwrap();
 
         // Set on A, resolve on B.
-        a.set("gh", "first-value-long", Some("GitHub"), "user").await.unwrap();
+        a.set("gh", "first-value-long", Some("GitHub"), "user")
+            .await
+            .unwrap();
         pump(&ha, &eb).await;
         b.refresh().await.unwrap();
         assert_eq!(b.get("gh", 0).unwrap().as_str(), "first-value-long");
@@ -1242,7 +1403,9 @@ mod tests {
         assert_eq!(args["h"], "Bearer first-value-long");
 
         // A restore replicates as a new version with its source.
-        a.set("gh", "second-value-long", None, "user").await.unwrap();
+        a.set("gh", "second-value-long", None, "user")
+            .await
+            .unwrap();
         a.restore("gh", 1).await.unwrap();
         pump(&ha, &eb).await;
         b.refresh().await.unwrap();
@@ -1253,7 +1416,9 @@ mod tests {
         assert_eq!(b.get("gh", 1).unwrap().as_str(), "second-value-long");
 
         // Both directions; `secret_list` shows the same names on both.
-        b.set("slack", "xoxb-long-token-value", None, "cli").await.unwrap();
+        b.set("slack", "xoxb-long-token-value", None, "cli")
+            .await
+            .unwrap();
         pump(&hb, &ea).await;
         a.refresh().await.unwrap();
         assert_eq!(list_names(&a), ["gh", "slack"]);
@@ -1280,7 +1445,11 @@ mod tests {
         assert_eq!(v.get("gh", 0).unwrap().as_str(), "ghp_0123456789");
         drop(v);
         let v = open(dir.path()).await;
-        assert_eq!(*v.mesh_key(), *o.mesh_key(), "the adopted key is what reopens");
+        assert_eq!(
+            *v.mesh_key(),
+            *o.mesh_key(),
+            "the adopted key is what reopens"
+        );
         assert_eq!(v.get("gh", 0).unwrap().as_str(), "ghp_0123456789");
     }
 }

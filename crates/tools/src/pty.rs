@@ -77,8 +77,7 @@ pub(crate) const SNAPSHOTS: usize = 4;
 /// What one PTY is charged against [`jobs::PTY_BUDGET`] at `start`: every
 /// retained row at a generous per-cell estimate plus parser overhead. Charged
 /// once per handle; snapshot clones are transient and not charged.
-pub(crate) const RESERVE: usize =
-    (ROWS as usize + HISTORY) * COLS as usize * 96 + 4 * 1024;
+pub(crate) const RESERVE: usize = (ROWS as usize + HISTORY) * COLS as usize * 96 + 4 * 1024;
 
 /// One PTY job as `list_terminals` reports it (51 §7.3).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, kameo::Reply)]
@@ -213,8 +212,14 @@ pub struct Style {
 pub enum Color {
     #[default]
     Default,
-    Idx { idx: u8 },
-    Rgb { r: u8, g: u8, b: u8 },
+    Idx {
+        idx: u8,
+    },
+    Rgb {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
 }
 
 impl From<vt100::Color> for Color {
@@ -348,7 +353,11 @@ pub enum Key {
 
 impl Key {
     fn encode(&self, out: &mut Vec<u8>, screen: &vt100::Screen) -> Result<(), String> {
-        let cursor = if screen.application_cursor() { b'O' } else { b'[' };
+        let cursor = if screen.application_cursor() {
+            b'O'
+        } else {
+            b'['
+        };
         let bytes: &[u8] = match self {
             Key::Enter => b"\r",
             Key::Tab => b"\t",
@@ -579,7 +588,9 @@ impl PtyHandle {
     /// the size first so the redraw it triggers is parsed at the new width.
     pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
         if !(2..=ROWS_MAX).contains(&rows) || !(10..=COLS_MAX).contains(&cols) {
-            return Err(format!("size {cols}x{rows} out of range (10..={COLS_MAX} x 2..={ROWS_MAX})"));
+            return Err(format!(
+                "size {cols}x{rows} out of range (10..={COLS_MAX} x 2..={ROWS_MAX})"
+            ));
         }
         let master = lock(&self.master);
         let Some(master) = master.as_ref() else {
@@ -594,13 +605,25 @@ impl PtyHandle {
             self.revision.fetch_add(1, SeqCst);
         }
         master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("resize pty: {e:#}"))
     }
 
     /// Subscribe and snapshot under one lock: the replay plus every byte
     /// after it is the whole terminal. The replay is formatted off the lock.
-    pub(crate) fn attach(&self) -> (Vec<u8>, (u16, u16), broadcast::Receiver<PtyOut>, Option<JobExit>) {
+    pub(crate) fn attach(
+        &self,
+    ) -> (
+        Vec<u8>,
+        (u16, u16),
+        broadcast::Receiver<PtyOut>,
+        Option<JobExit>,
+    ) {
         let (screen, rx) = {
             let p = lock(&self.parser);
             (p.screen().clone(), self.stream.subscribe())
@@ -672,8 +695,8 @@ impl PtySnapshot {
     /// The wire page, top rows dropped by halves until it serializes under
     /// [`PAGE_BYTES`] (never below one row).
     pub(crate) fn into_page(self, session: SessionId, id: JobId) -> PtyPage {
-        let cursor = (!self.cursor_hidden && self.viewport == PtyViewport::Live)
-            .then_some(self.cursor_pos);
+        let cursor =
+            (!self.cursor_hidden && self.viewport == PtyViewport::Live).then_some(self.cursor_pos);
         let mut page = PtyPage {
             session,
             id,
@@ -692,17 +715,16 @@ impl PtySnapshot {
             redaction_complete: self.redaction_complete,
             exit: self.exit,
         };
-        while page.lines.len() > 1
-            && serde_json::to_vec(&page).is_ok_and(|v| v.len() > PAGE_BYTES)
+        while page.lines.len() > 1 && serde_json::to_vec(&page).is_ok_and(|v| v.len() > PAGE_BYTES)
         {
             let drop = page.lines.len() / 2;
             page.lines.drain(..drop);
             page.wrapped.drain(..drop);
             page.origin += drop as u32;
             page.truncated = true;
-            page.cursor = page.cursor.and_then(|(r, c)| {
-                r.checked_sub(drop as u16).map(|r| (r, c))
-            });
+            page.cursor = page
+                .cursor
+                .and_then(|(r, c)| r.checked_sub(drop as u16).map(|r| (r, c)));
         }
         page
     }
@@ -773,7 +795,11 @@ fn render(
             )
         }
     };
-    let scan = if max_len > 0 { 0..retained + live } else { start..end };
+    let scan = if max_len > 0 {
+        0..retained + live
+    } else {
+        start..end
+    };
     let mut text = String::new();
     let mut page: Vec<Vec<Raw>> = Vec::with_capacity(end - start);
     let mut wrapped = Vec::with_capacity(end - start);
@@ -835,7 +861,11 @@ fn render(
             ranges.peek().is_some_and(|s| s.start < cell.at + cell.len)
         };
         if hit {
-            cell.text = if cell.continuation { String::new() } else { "•".to_owned() };
+            cell.text = if cell.continuation {
+                String::new()
+            } else {
+                "•".to_owned()
+            };
             cell.style = Style::default();
         }
         prev_masked = hit;
@@ -1245,7 +1275,8 @@ impl Message<Launch<StartPty>> for Jobs {
         if self.pty_bytes + RESERVE > jobs::PTY_BUDGET {
             return Err("terminal capacity exhausted (64 MiB retained-terminal budget)".into());
         }
-        let s = spawn(&dir, &log_path, &m.args, &m.cwd, m.pty_shell.as_deref()).map_err(|e| format!("{e:#}"))?;
+        let s = spawn(&dir, &log_path, &m.args, &m.cwd, m.pty_shell.as_deref())
+            .map_err(|e| format!("{e:#}"))?;
         self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
             writer: Mutex::new(s.writer),
@@ -1380,7 +1411,11 @@ impl Message<Wait> for Jobs {
 impl Message<ListTerminals> for Jobs {
     type Reply = Vec<TerminalSummary>;
 
-    async fn handle(&mut self, m: ListTerminals, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ListTerminals,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         m.sessions
             .iter()
             .filter_map(|s| self.sessions.get(s).map(|sj| (*s, sj)))
@@ -1452,7 +1487,12 @@ impl Message<PtyScreen> for Jobs {
 
 impl Jobs {
     /// The handle of a PTY job by exact id; `running` also refuses a finished one.
-    fn pty_handle(&self, session: SessionId, id: &JobId, running: bool) -> Result<Arc<PtyHandle>, String> {
+    fn pty_handle(
+        &self,
+        session: SessionId,
+        id: &JobId,
+        running: bool,
+    ) -> Result<Arc<PtyHandle>, String> {
         let job = self
             .sessions
             .get(&session)
@@ -1475,7 +1515,9 @@ impl Message<PtyInput> for Jobs {
         match self.pty_handle(m.session, &m.id, true) {
             Err(e) => tx.send(Err(e)),
             Ok(pty) => {
-                tokio::spawn(async move { tx.send(write(&pty, m.text.as_deref(), &m.keys, true).await) });
+                tokio::spawn(async move {
+                    tx.send(write(&pty, m.text.as_deref(), &m.keys, true).await)
+                });
             }
         }
         reply
@@ -1506,7 +1548,13 @@ impl Message<PtyAttach> for Jobs {
         // The replay of up to 552 rows is formatted off the mailbox.
         tokio::task::spawn_blocking(move || {
             let (replay, (rows, cols), rx, exit) = pty.attach();
-            tx.send(Ok(PtyAttached { replay, rows, cols, rx, exit }));
+            tx.send(Ok(PtyAttached {
+                replay,
+                rows,
+                cols,
+                rx,
+                exit,
+            }));
         });
         reply
     }
@@ -1516,14 +1564,20 @@ impl Message<PtyResize> for Jobs {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: PtyResize, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.pty_handle(m.session, &m.id, true)?.resize(m.rows, m.cols)
+        self.pty_handle(m.session, &m.id, true)?
+            .resize(m.rows, m.cols)
     }
 }
 
 /// Encode and write to the master off the runtime (a full kernel buffer
 /// blocks). `human` stamps [`PtyHandle::user_input`] and restarts the idle
 /// timer without counting as the model's interaction (61 §1.3).
-async fn write(pty: &Arc<PtyHandle>, text: Option<&str>, keys: &[Key], human: bool) -> Result<(), String> {
+async fn write(
+    pty: &Arc<PtyHandle>,
+    text: Option<&str>,
+    keys: &[Key],
+    human: bool,
+) -> Result<(), String> {
     let data = encode(pty, text, keys)?;
     if data.is_empty() {
         return Ok(());
@@ -2173,7 +2227,13 @@ async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
     if args.text.is_some() && args.enter.unwrap_or(true) {
         text.push('\r');
     }
-    write(&live.pty, Some(&text), args.keys.as_deref().unwrap_or_default(), false).await?;
+    write(
+        &live.pty,
+        Some(&text),
+        args.keys.as_deref().unwrap_or_default(),
+        false,
+    )
+    .await?;
     if let Some(sig) = args.signal {
         live.pty
             .tree
@@ -2212,14 +2272,17 @@ async fn wait(live: &Live, args: WaitArgs) -> Result<ToolOutput, String> {
     let secs = args.timeout.unwrap_or(WAIT_DEFAULT).min(WAIT_MAX);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     let from = live.pty.cursor.load(SeqCst);
-    let on_screen = re.as_ref().and_then(|re| find_since(&live.log_path, from, re));
+    let on_screen = re
+        .as_ref()
+        .and_then(|re| find_since(&live.log_path, from, re));
     let already = on_screen.is_some();
     let outcome = match on_screen {
         Some(m) => Outcome::Ready(Some(m)),
         None => {
             // 61 §1.5: the model is watching; the reply, not a nudge, is the wake.
             live.pty.waiting.fetch_add(1, SeqCst);
-            let o = await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await;
+            let o =
+                await_output(&live.pty, &live.log_path, from, re.as_ref(), None, deadline).await;
             live.pty.waiting.fetch_sub(1, SeqCst);
             o
         }
@@ -2500,12 +2563,22 @@ mod tests {
     }
 
     fn text(row: &[StyledRun]) -> String {
-        cells(row).iter().map(|c| c.text.as_str()).collect::<String>().trim_end().to_owned()
+        cells(row)
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
     }
 
     #[test]
     fn render_merges_same_style_cells_into_runs() {
-        let s = render(capture(b"\x1b[31mred\x1b[0m plain"), PtyViewport::Live, &no_spans, 0);
+        let s = render(
+            capture(b"\x1b[31mred\x1b[0m plain"),
+            PtyViewport::Live,
+            &no_spans,
+            0,
+        );
         assert_eq!(s.origin, 0);
         assert_eq!(s.lines.len(), 40);
         let row = &s.lines[0];
@@ -2535,15 +2608,25 @@ mod tests {
         assert_eq!(enc(b"\x1b[?1h", &[Key::Up]).unwrap(), b"\x1bOA");
         let paste = [Key::Paste("hi".into())];
         assert_eq!(enc(b"", &paste).unwrap(), b"hi");
-        assert_eq!(enc(b"\x1b[?2004h", &paste).unwrap(), b"\x1b[200~hi\x1b[201~");
+        assert_eq!(
+            enc(b"\x1b[?2004h", &paste).unwrap(),
+            b"\x1b[200~hi\x1b[201~"
+        );
         assert_eq!(enc(b"", &[Key::Ctrl('c')]).unwrap(), b"\x03");
-        assert_eq!(enc(b"", &[Key::Ctrl('c')]).unwrap(), enc(b"", &[Key::CtrlC]).unwrap());
+        assert_eq!(
+            enc(b"", &[Key::Ctrl('c')]).unwrap(),
+            enc(b"", &[Key::CtrlC]).unwrap()
+        );
         assert_eq!(enc(b"", &[Key::Ctrl(']')]).unwrap(), b"\x1d");
-        assert_eq!(enc(b"", &[Key::Alt('x'), Key::F(5), Key::ShiftTab]).unwrap(), b"\x1bx\x1b[15~\x1b[Z");
+        assert_eq!(
+            enc(b"", &[Key::Alt('x'), Key::F(5), Key::ShiftTab]).unwrap(),
+            b"\x1bx\x1b[15~\x1b[Z"
+        );
         assert!(enc(b"", &[Key::Ctrl('1')]).is_err());
         assert!(enc(b"", &[Key::F(13)]).is_err());
         assert_eq!(
-            serde_json::to_value([Key::Ctrl('a'), Key::F(2), Key::Paste("p".into()), Key::Up]).unwrap(),
+            serde_json::to_value([Key::Ctrl('a'), Key::F(2), Key::Paste("p".into()), Key::Up])
+                .unwrap(),
             serde_json::json!([{"ctrl": "a"}, {"f": 2}, {"paste": "p"}, "up"])
         );
     }
@@ -2612,15 +2695,36 @@ mod tests {
         feed.extend_from_slice(b"\x1b[0m");
         feed.extend_from_slice(&LITERAL.as_bytes()[10..]);
         feed.extend_from_slice(b" tail");
-        let s = render(capture(&feed), PtyViewport::Live, &literal_spans, LITERAL.len());
+        let s = render(
+            capture(&feed),
+            PtyViewport::Live,
+            &literal_spans,
+            LITERAL.len(),
+        );
         assert!(s.wrapped[0] && !s.wrapped[1], "{:?}", s.wrapped);
         let (r0, r1) = (cells(&s.lines[0]), cells(&s.lines[1]));
         assert!(r0[..110].iter().all(|c| c.text == "x"));
-        assert!(r0[110..].iter().all(|c| c.text == "•"), "{:?}", text(&s.lines[0]));
-        assert!(r1[..15].iter().all(|c| c.text == "•"), "{:?}", text(&s.lines[1]));
-        assert_eq!(text(&s.lines[1]), "•••••••••••••••  tail".replace("  ", " "));
+        assert!(
+            r0[110..].iter().all(|c| c.text == "•"),
+            "{:?}",
+            text(&s.lines[0])
+        );
+        assert!(
+            r1[..15].iter().all(|c| c.text == "•"),
+            "{:?}",
+            text(&s.lines[1])
+        );
+        assert_eq!(
+            text(&s.lines[1]),
+            "•••••••••••••••  tail".replace("  ", " ")
+        );
         assert!(s.lines[0].iter().all(|run| run.style == Style::default()));
-        let shown: String = s.lines.iter().map(|l| text(l)).collect::<Vec<_>>().join("\n");
+        let shown: String = s
+            .lines
+            .iter()
+            .map(|l| text(l))
+            .collect::<Vec<_>>()
+            .join("\n");
         for i in 0..=LITERAL.len() - 4 {
             assert!(!shown.contains(&LITERAL[i..i + 4]), "{shown}");
         }
@@ -2646,8 +2750,14 @@ mod tests {
     async fn pty_screen_unchanged_and_unavailable() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
         let (start, ..) = tools(&fx);
-        let out = Tool::call(&start, start_args("sleep 30"), cx(&fx)).await.unwrap();
-        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let out = Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with("job j1 · running"),
+            "{}",
+            out.content
+        );
         let ask = |id: &str, if_revision| {
             fx.jobs.ask(PtyScreen {
                 session: fx.session,
@@ -2669,7 +2779,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(terms.len(), 1);
-        assert_eq!((terms[0].revision, terms[0].state.as_str()), (page.revision, "running"));
+        assert_eq!(
+            (terms[0].revision, terms[0].state.as_str()),
+            (page.revision, "running")
+        );
         assert!(matches!(
             ask("j1", Some(page.revision)).await.unwrap(),
             PtyScreenReply::Unchanged { viewport: PtyViewport::Live, revision } if revision == page.revision
@@ -2685,8 +2798,14 @@ mod tests {
     async fn pty_input_types_and_marks_user_attached() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
         let (start, _, screen, _) = tools(&fx);
-        let out = Tool::call(&start, start_args("cat"), cx(&fx)).await.unwrap();
-        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with("job j1 · running"),
+            "{}",
+            out.content
+        );
         let out = Tool::call(&screen, ScreenArgs { id: "j1".into() }, cx(&fx))
             .await
             .unwrap();
@@ -2708,7 +2827,11 @@ mod tests {
             .unwrap();
         // Typed, echoed by the tty, echoed back by cat.
         assert_eq!(out.content.matches("hello").count(), 2, "{}", out.content);
-        assert!(out.content.ends_with("user attached · typed 0s ago"), "{}", out.content);
+        assert!(
+            out.content.ends_with("user attached · typed 0s ago"),
+            "{}",
+            out.content
+        );
         assert!(out.structured.unwrap()["user_attached_ms"].is_u64());
 
         // The trailer expires.
@@ -2727,7 +2850,10 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e == "no such job"), "{err}");
+        assert!(
+            matches!(&err, kameo::error::SendError::HandlerError(e) if e == "no such job"),
+            "{err}"
+        );
         cancel(&fx, "j1").await;
         finished(&fx).await;
         let err = fx
@@ -2740,7 +2866,10 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(&err, kameo::error::SendError::HandlerError(e) if e.starts_with("j1 ")), "{err}");
+        assert!(
+            matches!(&err, kameo::error::SendError::HandlerError(e) if e.starts_with("j1 ")),
+            "{err}"
+        );
     }
 
     /// A viewer's own emulator fed `replay` then the stream shows what the
@@ -2750,8 +2879,14 @@ mod tests {
     async fn attach_replays_streams_and_resizes() {
         let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
         let (start, ..) = tools(&fx);
-        let out = Tool::call(&start, start_args("cat"), cx(&fx)).await.unwrap();
-        assert!(out.content.starts_with("job j1 · running"), "{}", out.content);
+        let out = Tool::call(&start, start_args("cat"), cx(&fx))
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with("job j1 · running"),
+            "{}",
+            out.content
+        );
         let type_ = |text: &str| {
             fx.jobs.ask(PtyInput {
                 session: fx.session,
@@ -2776,7 +2911,11 @@ mod tests {
         assert!(attached.exit.is_none());
         let mut viewer = vt100::Parser::new(24, 80, 1000);
         viewer.process(&attached.replay);
-        assert!(viewer.screen().contents().contains("before"), "{}", viewer.screen().contents());
+        assert!(
+            viewer.screen().contents().contains("before"),
+            "{}",
+            viewer.screen().contents()
+        );
         let terms = fx
             .jobs
             .ask(ListTerminals {
@@ -2800,8 +2939,13 @@ mod tests {
         type_("after").await.unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let out = tokio::time::timeout_at(deadline, rx.recv()).await.unwrap().unwrap();
-            let PtyOut::Data(bytes) = out else { panic!("exit before echo") };
+            let out = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let PtyOut::Data(bytes) = out else {
+                panic!("exit before echo")
+            };
             viewer.process(&bytes);
             if viewer.screen().contents().matches("after").count() == 2 {
                 break;
@@ -2817,7 +2961,9 @@ mod tests {
             })
             .await
             .unwrap();
-        let PtyScreenReply::Updated(page) = daemon else { panic!("expected a page") };
+        let PtyScreenReply::Updated(page) = daemon else {
+            panic!("expected a page")
+        };
         assert_eq!((page.rows, page.cols, page.lines.len()), (30, 100, 30));
         assert!(matches!(
             fx.jobs
@@ -2831,7 +2977,11 @@ mod tests {
         // in the event — the attach below still has the last frame.
         cancel_from(&fx, "j1", CancelOrigin::Tool).await;
         let exit = loop {
-            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
                 PtyOut::Data(_) => {}
                 PtyOut::Exit(e) => break e,
             }
@@ -2851,12 +3001,21 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!((again.rows, again.cols, again.exit), (30, 100, Some(JobExit::Killed)));
-        assert!(fx
-            .jobs
-            .ask(PtyResize { session: fx.session, id: JobId("j1".into()), rows: 24, cols: 80 })
-            .await
-            .is_err());
+        assert_eq!(
+            (again.rows, again.cols, again.exit),
+            (30, 100, Some(JobExit::Killed))
+        );
+        assert!(
+            fx.jobs
+                .ask(PtyResize {
+                    session: fx.session,
+                    id: JobId("j1".into()),
+                    rows: 24,
+                    cols: 80
+                })
+                .await
+                .is_err()
+        );
     }
 
     fn tools(fx: &Fx) -> (StartTool, SendTool, ScreenTool, WaitTool) {
@@ -3152,7 +3311,8 @@ mod tests {
             .unwrap();
         assert!(t.elapsed() < Duration::from_secs(2));
         assert!(
-            out.content.contains("matched (already on screen): \"READY\""),
+            out.content
+                .contains("matched (already on screen): \"READY\""),
             "{}",
             out.content
         );

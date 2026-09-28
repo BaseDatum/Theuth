@@ -43,14 +43,17 @@ impl Session {
     pub(crate) unsafe fn create(db: NonNull<ffi::sqlite3>) -> anyhow::Result<Self> {
         let mut raw: *mut ffi::sqlite3_session = ptr::null_mut();
         let rc = unsafe { ffi::sqlite3session_create(db.as_ptr(), c"main".as_ptr(), &mut raw) };
-        let ptr = NonNull::new(raw).filter(|_| rc == ffi::SQLITE_OK).ok_or_else(|| {
-            anyhow::anyhow!("sqlite3session_create failed (rc {rc})")
-        })?;
+        let ptr = NonNull::new(raw)
+            .filter(|_| rc == ffi::SQLITE_OK)
+            .ok_or_else(|| anyhow::anyhow!("sqlite3session_create failed (rc {rc})"))?;
         let session = Self { db, ptr };
         for (table, _) in ATTACHED {
             let name = CString::new(table).expect("static table name");
             let rc = unsafe { ffi::sqlite3session_attach(ptr.as_ptr(), name.as_ptr()) };
-            anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3session_attach({table}) failed (rc {rc})");
+            anyhow::ensure!(
+                rc == ffi::SQLITE_OK,
+                "sqlite3session_attach({table}) failed (rc {rc})"
+            );
         }
         Ok(session)
     }
@@ -61,7 +64,10 @@ impl Session {
         let mut n: std::os::raw::c_int = 0;
         let mut p: *mut std::os::raw::c_void = ptr::null_mut();
         let rc = unsafe { ffi::sqlite3session_changeset(self.ptr.as_ptr(), &mut n, &mut p) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3session_changeset failed (rc {rc})");
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK,
+            "sqlite3session_changeset failed (rc {rc})"
+        );
         if p.is_null() || n <= 0 {
             return Ok(Vec::new());
         }
@@ -158,9 +164,16 @@ impl Iter {
     fn op(&self) -> anyhow::Result<(String, c_int)> {
         let mut tab: *const c_char = ptr::null();
         let (mut ncol, mut op, mut indirect) = (0, 0, 0);
-        let rc = unsafe { ffi::sqlite3changeset_op(self.0.as_ptr(), &mut tab, &mut ncol, &mut op, &mut indirect) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK && !tab.is_null(), "sqlite3changeset_op failed (rc {rc})");
-        let name = unsafe { CStr::from_ptr(tab) }.to_string_lossy().into_owned();
+        let rc = unsafe {
+            ffi::sqlite3changeset_op(self.0.as_ptr(), &mut tab, &mut ncol, &mut op, &mut indirect)
+        };
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK && !tab.is_null(),
+            "sqlite3changeset_op failed (rc {rc})"
+        );
+        let name = unsafe { CStr::from_ptr(tab) }
+            .to_string_lossy()
+            .into_owned();
         Ok((name, op))
     }
 
@@ -168,7 +181,11 @@ impl Iter {
     /// `None` when undefined or NULL.
     fn value(&self, old: bool, i: usize) -> Option<Value> {
         let mut v: *mut ffi::sqlite3_value = ptr::null_mut();
-        let f = if old { ffi::sqlite3changeset_old } else { ffi::sqlite3changeset_new };
+        let f = if old {
+            ffi::sqlite3changeset_old
+        } else {
+            ffi::sqlite3changeset_new
+        };
         let rc = unsafe { f(self.0.as_ptr(), c_int::try_from(i).ok()?, &mut v) };
         if rc != ffi::SQLITE_OK || v.is_null() {
             return None;
@@ -233,7 +250,10 @@ pub(crate) fn scan(changeset: &[u8], tables: &[TableMeta]) -> anyhow::Result<Vec
             .ok_or_else(|| anyhow::anyhow!("changeset touches unattached table {name}"))?;
         let meta = &tables[table];
         let old = op != ffi::SQLITE_INSERT;
-        let pk = it.value(old, meta.pk_col()).map(Value::text).unwrap_or_default();
+        let pk = it
+            .value(old, meta.pk_col())
+            .map(Value::text)
+            .unwrap_or_default();
         let session = if op == ffi::SQLITE_UPDATE && !meta.pk[meta.session_col] {
             None
         } else {
@@ -241,8 +261,14 @@ pub(crate) fn scan(changeset: &[u8], tables: &[TableMeta]) -> anyhow::Result<Vec
         };
         let deleted_session = (op == ffi::SQLITE_DELETE && meta.name == "sessions")
             .then(|| {
-                let owner = meta.col("owner").and_then(|c| it.value(true, c)).map(Value::text);
-                let epoch = meta.col("epoch").and_then(|c| it.value(true, c)).map(Value::int);
+                let owner = meta
+                    .col("owner")
+                    .and_then(|c| it.value(true, c))
+                    .map(Value::text);
+                let epoch = meta
+                    .col("epoch")
+                    .and_then(|c| it.value(true, c))
+                    .map(Value::int);
                 Some((owner?, epoch?))
             })
             .flatten();
@@ -260,12 +286,17 @@ pub(crate) fn scan(changeset: &[u8], tables: &[TableMeta]) -> anyhow::Result<Vec
 /// is the session of the i-th record (as [`scan`] ordered them, resolved).
 /// Uses `sqlite3changegroup_add_change` (SQLite ≥ 3.44; vendored 3.50.4),
 /// so every row goes to exactly one output.
-pub(crate) fn split(changeset: &[u8], sessions: &[String]) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+pub(crate) fn split(
+    changeset: &[u8],
+    sessions: &[String],
+) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     let mut groups: Vec<(String, Group)> = Vec::new();
     let mut it = Iter::start(changeset)?;
     let mut i = 0;
     while it.next()? {
-        let sid = sessions.get(i).ok_or_else(|| anyhow::anyhow!("changeset longer than its scan"))?;
+        let sid = sessions
+            .get(i)
+            .ok_or_else(|| anyhow::anyhow!("changeset longer than its scan"))?;
         i += 1;
         let group = match groups.iter_mut().position(|(s, _)| s == sid) {
             Some(k) => &mut groups[k].1,
@@ -275,7 +306,10 @@ pub(crate) fn split(changeset: &[u8], sessions: &[String]) -> anyhow::Result<Vec
             }
         };
         let rc = unsafe { ffi::sqlite3changegroup_add_change(group.0.as_ptr(), it.0.as_ptr()) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3changegroup_add_change failed (rc {rc})");
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK,
+            "sqlite3changegroup_add_change failed (rc {rc})"
+        );
     }
     groups
         .into_iter()
@@ -299,7 +333,10 @@ impl Group {
         let mut n: c_int = 0;
         let mut p: *mut c_void = ptr::null_mut();
         let rc = unsafe { ffi::sqlite3changegroup_output(self.0.as_ptr(), &mut n, &mut p) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3changegroup_output failed (rc {rc})");
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK,
+            "sqlite3changegroup_output failed (rc {rc})"
+        );
         if p.is_null() || n <= 0 {
             return Ok(Vec::new());
         }

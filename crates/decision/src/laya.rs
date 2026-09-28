@@ -241,7 +241,11 @@ pub fn build_sequence(tok: &Tokenizer, q: &Question, cfg: &LayaConfig) -> Result
         Question::Bool { statement, state } => (statement.as_str(), state.as_str()),
     };
     let sp = &cfg.special;
-    let mut head = encode(tok, &format!("{} question: {instructions}", qtype.name()), sp.mask_text)?;
+    let mut head = encode(
+        tok,
+        &format!("{} question: {instructions}", qtype.name()),
+        sp.mask_text,
+    )?;
     let mut opts: Vec<Vec<i64>> = Vec::new();
     for o in render_options(q) {
         let mut ids = encode(tok, &format!(" {o}"), sp.mask_text)?;
@@ -455,7 +459,8 @@ mod tests {
     fn real() -> Option<Tokenizer> {
         let home = std::env::var_os("HOME")?;
         let candidates = [
-            std::path::PathBuf::from(&home).join(".theuth/models/decision/tokenizer/tokenizer.json"),
+            std::path::PathBuf::from(&home)
+                .join(".theuth/models/decision/tokenizer/tokenizer.json"),
             std::path::PathBuf::from("/tmp/laya-design/tokenizer.json"),
         ];
         candidates
@@ -685,12 +690,25 @@ mod tests {
         let sp = Special::from_tokenizer(&gemma()).unwrap();
         assert_eq!(
             sp,
-            Special { cls: 2, sep: 1, pad: 0, mask: 4, mask_text: "<mask>" }
+            Special {
+                cls: 2,
+                sep: 1,
+                pad: 0,
+                mask: 4,
+                mask_text: "<mask>"
+            }
         );
         // The word-level test tokenizer has no special tokens at all.
-        assert!(Special::from_tokenizer(&tiny()).unwrap_err().contains("<bos>"));
+        assert!(
+            Special::from_tokenizer(&tiny())
+                .unwrap_err()
+                .contains("<bos>")
+        );
 
-        let cfg = LayaConfig { special: sp, ..LayaConfig::default() };
+        let cfg = LayaConfig {
+            special: sp,
+            ..LayaConfig::default()
+        };
         let mut q = choice(2, "deploy blocked <mask> [MASK]");
         if let Question::Choice { instructions, .. } = &mut q {
             *instructions = "deploy <mask>".into();
@@ -703,8 +721,15 @@ mod tests {
         assert_eq!(s.input_ids.iter().filter(|&&i| i == 4).count(), 2);
         assert_eq!(s.marker_pos.len(), 2);
         assert!(s.input_ids.contains(&3));
-        let b = collate(&[s.clone(), seq(vec![2, 1], vec![], 0)], None, cfg.special.pad);
-        assert_eq!(b.input_ids[s.input_ids.len()..s.input_ids.len() * 2][2..], vec![0; s.input_ids.len() - 2]);
+        let b = collate(
+            &[s.clone(), seq(vec![2, 1], vec![], 0)],
+            None,
+            cfg.special.pad,
+        );
+        assert_eq!(
+            b.input_ids[s.input_ids.len()..s.input_ids.len() * 2][2..],
+            vec![0; s.input_ids.len() - 2]
+        );
     }
 
     fn seq(ids: Vec<i64>, markers: Vec<i64>, qtype: i64) -> Sequence {

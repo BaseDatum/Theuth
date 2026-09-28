@@ -41,7 +41,12 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     let fm = parsed.data.unwrap_or_default();
     // gray_matter returns empty `content` for input no longer than its `---`
     // delimiter; a three-byte charter ("QA.") is still a charter.
-    let body = if text.len() <= 3 { text } else { &parsed.content }.trim();
+    let body = if text.len() <= 3 {
+        text
+    } else {
+        &parsed.content
+    }
+    .trim();
     if body.is_empty() {
         return Err("empty charter".into());
     }
@@ -49,7 +54,9 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     if let Some(t) = &tools
         && !matches!(t.as_str(), "read_only" | "mutating" | "destructive")
     {
-        return Err(format!("tools: expected read_only|mutating|destructive, got {t:?}"));
+        return Err(format!(
+            "tools: expected read_only|mutating|destructive, got {t:?}"
+        ));
     }
     let budget = fm.budget.as_deref().map_or(Ok(Budget::None), str::parse)?;
     Ok(AgentFile {
@@ -273,7 +280,10 @@ mod tests {
         assert_eq!(f.model.as_deref(), Some("anthropic/claude-opus-5-5"));
         assert_eq!(f.effort.as_deref(), Some("high"));
         assert_eq!(f.tools.as_deref(), Some("mutating"));
-        assert_eq!(f.mcp, Some(vec!["grafana".into(), "argocd_prod".into(), "slack".into()]));
+        assert_eq!(
+            f.mcp,
+            Some(vec!["grafana".into(), "argocd_prod".into(), "slack".into()])
+        );
         assert_eq!(
             f.budget,
             Budget::Monthly {
@@ -298,16 +308,24 @@ mod tests {
         assert!(parse(&"a".repeat(33), "charter").is_err());
         assert!(parse("theuth", "charter").is_err());
         assert!(parse("ops", "---\ncomputer: build-A\n---\ncharter").is_err());
-        assert!(parse("ops", "---\ntitle: Ops\n---\n").is_err(), "empty charter");
+        assert!(
+            parse("ops", "---\ntitle: Ops\n---\n").is_err(),
+            "empty charter"
+        );
     }
 
     #[test]
     fn mcp_is_three_valued() {
         assert_eq!(parse("ops", "---\nmcp: ~\n---\ncharter").unwrap().mcp, None);
         assert_eq!(parse("ops", "charter").unwrap().mcp, None);
-        assert_eq!(parse("ops", "---\nmcp: []\n---\ncharter").unwrap().mcp, Some(vec![]));
         assert_eq!(
-            parse("ops", "---\nmcp: [grafana]\n---\ncharter").unwrap().mcp,
+            parse("ops", "---\nmcp: []\n---\ncharter").unwrap().mcp,
+            Some(vec![])
+        );
+        assert_eq!(
+            parse("ops", "---\nmcp: [grafana]\n---\ncharter")
+                .unwrap()
+                .mcp,
             Some(vec!["grafana".to_owned()])
         );
         let mut f = parse("ops", "charter").unwrap();
@@ -326,7 +344,10 @@ mod tests {
             model: Some("anthropic/claude-opus-5-5".into()),
             effort: Some("high".into()),
             tools: Some("mutating".into()),
-            mcp: Some(vec!["grafana".into(), "argocd_prod.list_applications".into()]),
+            mcp: Some(vec![
+                "grafana".into(),
+                "argocd_prod.list_applications".into(),
+            ]),
             budget: Budget::Monthly {
                 amount: 40.0,
                 currency: "USD".into(),
@@ -353,9 +374,19 @@ mod tests {
             set_key("---\ntitle: Ops\n---\ncharter\n", "paused", Some("true")),
             "---\npaused: true\ntitle: Ops\n---\ncharter\n"
         );
-        assert_eq!(set_key("charter\n", "paused", Some("true")), "---\npaused: true\n---\ncharter\n");
-        assert_eq!(set_key(text, "paused", None), "---\ntitle: Ops\n---\ncharter\n");
-        assert!(parse("ops", &set_key(text, "paused", Some("true"))).unwrap().paused);
+        assert_eq!(
+            set_key("charter\n", "paused", Some("true")),
+            "---\npaused: true\n---\ncharter\n"
+        );
+        assert_eq!(
+            set_key(text, "paused", None),
+            "---\ntitle: Ops\n---\ncharter\n"
+        );
+        assert!(
+            parse("ops", &set_key(text, "paused", Some("true")))
+                .unwrap()
+                .paused
+        );
     }
 
     #[test]

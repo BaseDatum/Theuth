@@ -58,10 +58,7 @@ fn repo_path(url: &str) -> Option<(String, String)> {
     let u = url::Url::parse(url).ok()?;
     let mut segs = u.path_segments()?.filter(|s| !s.is_empty());
     let owner = segs.next()?.to_ascii_lowercase();
-    let repo = segs
-        .next()?
-        .trim_end_matches(".git")
-        .to_ascii_lowercase();
+    let repo = segs.next()?.trim_end_matches(".git").to_ascii_lowercase();
     Some((owner, repo))
 }
 
@@ -111,11 +108,14 @@ pub fn refine(
         .collect();
     let before = rows.len();
     rows.retain(|(r, h)| {
-        !(in_list(h, MIRROR_HOSTS) && repo_path(&r.url).is_some_and(|p| canonical_repos.contains(&p)))
+        !(in_list(h, MIRROR_HOSTS)
+            && repo_path(&r.url).is_some_and(|p| canonical_repos.contains(&p)))
     });
     let dropped = before - rows.len();
     if dropped > 0 {
-        notes.push(format!("{dropped} mirror rows dropped (canonical repository present)"));
+        notes.push(format!(
+            "{dropped} mirror rows dropped (canonical repository present)"
+        ));
     }
 
     if let Some(recent) = q.recent {
@@ -127,11 +127,16 @@ pub fn refine(
         });
         let dropped = before - rows.len();
         if dropped > 0 {
-            notes.push(format!("{dropped} rows older than recent={} dropped", crate::aggregate::recency_name(recent)));
+            notes.push(format!(
+                "{dropped} rows older than recent={} dropped",
+                crate::aggregate::recency_name(recent)
+            ));
         }
         let undated = rows.iter().filter(|(r, _)| r.published.is_none()).count();
         if undated > 0 {
-            notes.push(format!("dates unavailable for {undated} rows (listed after dated ones)"));
+            notes.push(format!(
+                "dates unavailable for {undated} rows (listed after dated ones)"
+            ));
         }
     }
 
@@ -185,7 +190,9 @@ pub fn refine(
         .collect();
     keyed.sort_by_key(|(t, undated, _)| (*t, *undated));
     if forks > 0 {
-        notes.push(format!("{forks} fork rows listed after the canonical repository"));
+        notes.push(format!(
+            "{forks} fork rows listed after the canonical repository"
+        ));
     }
     if aggregators > 0 {
         notes.push(format!("{aggregators} version-aggregator rows listed last"));
@@ -242,18 +249,34 @@ mod tests {
         let q = query("PrintToPdf", Some("learn.microsoft.com"), None);
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
-            row(1, "PDF - Wikipedia", "https://en.wikipedia.org/wiki/PDF", None),
+            row(
+                1,
+                "PDF - Wikipedia",
+                "https://en.wikipedia.org/wiki/PDF",
+                None,
+            ),
             row(2, "PrintToPdf", "https://learn.microsoft.com/en-us/x", None),
-            row(3, "PrintToPdf sub", "https://docs.learn.microsoft.com/y", None),
+            row(
+                3,
+                "PrintToPdf sub",
+                "https://docs.learn.microsoft.com/y",
+                None,
+            ),
         ];
         let (out, notes) = refine(rows, &q, &terms, now());
         assert_eq!(
             urls(&out),
-            ["https://learn.microsoft.com/en-us/x", "https://docs.learn.microsoft.com/y"]
+            [
+                "https://learn.microsoft.com/en-us/x",
+                "https://docs.learn.microsoft.com/y"
+            ]
         );
         assert_eq!(out[0].rank, 1);
         assert_eq!(out[1].rank, 2);
-        assert_eq!(notes, ["1 off-site rows dropped (site=learn.microsoft.com)"]);
+        assert_eq!(
+            notes,
+            ["1 off-site rows dropped (site=learn.microsoft.com)"]
+        );
     }
 
     #[test]
@@ -261,9 +284,24 @@ mod tests {
         let q = query("bun version", None, None);
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
-            row(1, "Android 17", "https://en.wikipedia.org/wiki/Android_17", None),
-            row(2, "Bun (software)", "https://en.wikipedia.org/wiki/Bun_(software)", None),
-            row(3, "Bun releases", "https://github.com/oven-sh/bun/releases", None),
+            row(
+                1,
+                "Android 17",
+                "https://en.wikipedia.org/wiki/Android_17",
+                None,
+            ),
+            row(
+                2,
+                "Bun (software)",
+                "https://en.wikipedia.org/wiki/Bun_(software)",
+                None,
+            ),
+            row(
+                3,
+                "Bun releases",
+                "https://github.com/oven-sh/bun/releases",
+                None,
+            ),
         ];
         let (out, notes) = refine(rows, &q, &terms, now());
         assert_eq!(
@@ -281,8 +319,18 @@ mod tests {
         let q = query("shadcn-labs pdfcn", None, None);
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
-            row(1, "pdfcn fork", "https://github.com/kalebnation/pdfcn", None),
-            row(2, "pdfcn deepwiki", "https://deepwiki.com/shadcn-labs/pdfcn", None),
+            row(
+                1,
+                "pdfcn fork",
+                "https://github.com/kalebnation/pdfcn",
+                None,
+            ),
+            row(
+                2,
+                "pdfcn deepwiki",
+                "https://deepwiki.com/shadcn-labs/pdfcn",
+                None,
+            ),
             row(3, "pdfcn", "https://github.com/shadcn-labs/pdfcn", None),
             row(4, "pdfcn all", "https://allshadcn.com/pdfcn", None),
             row(5, "pdfcn.dev", "https://pdfcn.dev/", None),
@@ -297,9 +345,18 @@ mod tests {
                 "https://allshadcn.com/pdfcn",
             ]
         );
-        assert!(notes.iter().any(|n| n.starts_with("1 mirror rows dropped")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.starts_with("1 fork rows")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.starts_with("1 version-aggregator")), "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.starts_with("1 mirror rows dropped")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.starts_with("1 fork rows")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.starts_with("1 version-aggregator")),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -308,12 +365,20 @@ mod tests {
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
             row(1, "pdfcn", "https://github.com/shadcn-labs/pdfcn", None),
-            row(2, "pdfcn fork", "https://github.com/kalebnation/pdfcn", None),
+            row(
+                2,
+                "pdfcn fork",
+                "https://github.com/kalebnation/pdfcn",
+                None,
+            ),
         ];
         let (out, _) = refine(rows, &q, &terms, now());
         assert_eq!(
             urls(&out),
-            ["https://github.com/shadcn-labs/pdfcn", "https://github.com/kalebnation/pdfcn"]
+            [
+                "https://github.com/shadcn-labs/pdfcn",
+                "https://github.com/kalebnation/pdfcn"
+            ]
         );
     }
 
@@ -322,12 +387,25 @@ mod tests {
         let q = query("iroh release notes", None, Some(Recency::Month));
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
-            row(1, "iroh 0.1", "https://a.example/old", Some("2024-01-01T00:00:00Z")),
+            row(
+                1,
+                "iroh 0.1",
+                "https://a.example/old",
+                Some("2024-01-01T00:00:00Z"),
+            ),
             row(2, "iroh notes", "https://b.example/undated", None),
-            row(3, "iroh 0.9", "https://c.example/new", Some("2026-09-20T00:00:00Z")),
+            row(
+                3,
+                "iroh 0.9",
+                "https://c.example/new",
+                Some("2026-09-20T00:00:00Z"),
+            ),
         ];
         let (out, notes) = refine(rows, &q, &terms, now());
-        assert_eq!(urls(&out), ["https://c.example/new", "https://b.example/undated"]);
+        assert_eq!(
+            urls(&out),
+            ["https://c.example/new", "https://b.example/undated"]
+        );
         assert_eq!(
             notes,
             [
@@ -343,12 +421,20 @@ mod tests {
         let terms = crate::excerpt::tokens(&q.text);
         let rows = vec![
             row(1, "Bun version", "https://what-version.com/bun", None),
-            row(2, "Releases", "https://github.com/oven-sh/bun/releases", None),
+            row(
+                2,
+                "Releases",
+                "https://github.com/oven-sh/bun/releases",
+                None,
+            ),
         ];
         let (out, _) = refine(rows, &q, &terms, now());
         assert_eq!(
             urls(&out),
-            ["https://github.com/oven-sh/bun/releases", "https://what-version.com/bun"]
+            [
+                "https://github.com/oven-sh/bun/releases",
+                "https://what-version.com/bun"
+            ]
         );
     }
 }

@@ -191,7 +191,8 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
             let mic_words = t.mic.clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let d = diarize::run(&system_pcm, &models, |p| {
-                    let _ = progress.send((PostStage::Diarizing, 60 + (u32::from(p) * 30 / 100) as u8));
+                    let _ =
+                        progress.send((PostStage::Diarizing, 60 + (u32::from(p) * 30 / 100) as u8));
                 })?;
                 let me = me_embedding(&models, &mic_pcm, &mic_words)?;
                 Ok((d, me))
@@ -205,7 +206,8 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
     // 3. Aligning (90–100 %). 07 §5: the offline labels are renamed to agree with the live
     // ones first, so "Speaker 2" is one voice in the session and in the record.
     stage(cx, m, PostStage::Aligning, 90).await;
-    let live: Vec<Utterance> = crate::read_jsonl(&dir.join(crate::LIVE_LOG), usize::MAX).unwrap_or_default();
+    let live: Vec<Utterance> =
+        crate::read_jsonl(&dir.join(crate::LIVE_LOG), usize::MAX).unwrap_or_default();
     let renamed = align::reconcile(&live, &diarized.spans);
     for s in &mut diarized.spans {
         if let Some(id) = renamed.get(&s.speaker) {
@@ -235,18 +237,20 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
         profile: None,
         proposed: None,
     }];
-    speakers.extend(ids.into_iter().map(|id| SpeakerLabel {
-        name: default_name(&id),
-        proposed: embeddings
-            .get(&id)
-            .and_then(|e| profiles.best_match(e))
-            .map(|(profile, name, score)| Proposed {
-                profile,
-                name,
-                score,
-            }),
-        id,
-        profile: None,
+    speakers.extend(ids.into_iter().map(|id| {
+        SpeakerLabel {
+            name: default_name(&id),
+            proposed: embeddings
+                .get(&id)
+                .and_then(|e| profiles.best_match(e))
+                .map(|(profile, name, score)| Proposed {
+                    profile,
+                    name,
+                    score,
+                }),
+            id,
+            profile: None,
+        }
     }));
     let transcript = Transcript {
         meeting: m.id,
@@ -269,7 +273,9 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
     let _ = cx.progress.send((PostStage::Aligning, 100));
     m.state = MeetingState::Review;
     save(cx, m).await;
-    cx.rt.publish(MeetingEvent::ReviewReady { meeting: m.id }).await;
+    cx.rt
+        .publish(MeetingEvent::ReviewReady { meeting: m.id })
+        .await;
     Ok(())
 }
 

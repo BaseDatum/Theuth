@@ -9,7 +9,17 @@ pub use replica::{PeerEvent, PeerId};
 
 /// An engine's identity: its iroh endpoint id (an Ed25519 public key) as text.
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
@@ -35,7 +45,17 @@ impl From<replica::PeerId> for EngineId {
 
 /// How willing an engine is to hold the hub lease (67 §4.5, decision 5).
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
@@ -65,7 +85,9 @@ pub enum EngineClass {
 }
 
 /// One row of the peer set (`peers` table) with live reachability.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Peer {
     /// Endpoint id.
@@ -107,7 +129,9 @@ pub struct EngineStats {
 }
 
 /// Who holds the hub lease (67 §4.3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LeaseState {
     /// The hub; `None` while no engine qualifies or during a handover.
@@ -153,7 +177,9 @@ pub struct AlpnTraffic {
 }
 
 /// Reply to [`crate::Status`] / `mesh_status`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MeshStatus {
     /// This engine.

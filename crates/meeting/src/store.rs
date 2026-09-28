@@ -407,8 +407,21 @@ impl Store {
     }
 
     /// FTS5 over `speaker` and `text`, one meeting or all, best rank first, ≤ [`SEARCH_CAP`].
-    pub async fn search(&self, query: &str, meeting: Option<MeetingId>) -> anyhow::Result<Vec<SearchHit>> {
-        type Hit = (String, Option<String>, String, i64, i64, i64, String, String);
+    pub async fn search(
+        &self,
+        query: &str,
+        meeting: Option<MeetingId>,
+    ) -> anyhow::Result<Vec<SearchHit>> {
+        type Hit = (
+            String,
+            Option<String>,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+        );
         let scope = meeting.map(|m| m.to_string());
         let rows: Vec<Hit> = sqlx::query_as(
             "SELECT s.meeting, m.title, m.process_name, s.seg, s.t0, s.t1, s.speaker, \
@@ -604,41 +617,83 @@ mod tests {
         let other = manifest();
         store.create(&other).await.unwrap();
         store
-            .save_transcript(&transcript(m.id, "The DR sync for SRE-2386 is blocked on the image tags."))
+            .save_transcript(&transcript(
+                m.id,
+                "The DR sync for SRE-2386 is blocked on the image tags.",
+            ))
             .await
             .unwrap();
         store
             .save_transcript(&transcript(other.id, "KEDA scaled the workers again."))
             .await
             .unwrap();
-        assert_eq!(store.transcript(m.id).unwrap().segments.len(), 2, "file round trip");
+        assert_eq!(
+            store.transcript(m.id).unwrap().segments.len(),
+            2,
+            "file round trip"
+        );
 
         let hits = store.search("image tags", None).await.unwrap();
         assert_eq!(hits.len(), 1, "{hits:?}");
-        assert_eq!((hits[0].meeting, hits[0].seg, hits[0].t0_ms), (m.id, 0, 5_000));
+        assert_eq!(
+            (hits[0].meeting, hits[0].seg, hits[0].t0_ms),
+            (m.id, 0, 5_000)
+        );
         assert_eq!(hits[0].speaker, "Dana");
         assert_eq!(hits[0].title, "Music", "process name when untitled");
-        assert!(hits[0].snippet.contains("[image] [tags]"), "{}", hits[0].snippet);
-        assert_eq!(store.search("SRE-2386", None).await.unwrap().len(), 1, "hyphen is text");
-        assert_eq!(store.search("dana", None).await.unwrap().len(), 2, "speaker is indexed (both meetings)");
-        assert_eq!(store.search("keda", Some(m.id)).await.unwrap().len(), 0, "scoped");
+        assert!(
+            hits[0].snippet.contains("[image] [tags]"),
+            "{}",
+            hits[0].snippet
+        );
+        assert_eq!(
+            store.search("SRE-2386", None).await.unwrap().len(),
+            1,
+            "hyphen is text"
+        );
+        assert_eq!(
+            store.search("dana", None).await.unwrap().len(),
+            2,
+            "speaker is indexed (both meetings)"
+        );
+        assert_eq!(
+            store.search("keda", Some(m.id)).await.unwrap().len(),
+            0,
+            "scoped"
+        );
         assert_eq!(store.search("keda", Some(other.id)).await.unwrap().len(), 1);
-        assert!(store.search("", None).await.is_err() || store.search("", None).await.unwrap().is_empty());
+        assert!(
+            store.search("", None).await.is_err()
+                || store.search("", None).await.unwrap().is_empty()
+        );
 
         store
-            .save_transcript(&transcript(m.id, "The DR sync for SRE-2386 is blocked on the container tags."))
+            .save_transcript(&transcript(
+                m.id,
+                "The DR sync for SRE-2386 is blocked on the container tags.",
+            ))
             .await
             .unwrap();
-        assert!(store.search("image", None).await.unwrap().is_empty(), "old text gone");
+        assert!(
+            store.search("image", None).await.unwrap().is_empty(),
+            "old text gone"
+        );
         assert_eq!(store.search("container", None).await.unwrap().len(), 1);
 
         store.delete(other.id).await.unwrap();
-        assert!(store.search("keda", None).await.unwrap().is_empty(), "rows go with the meeting");
+        assert!(
+            store.search("keda", None).await.unwrap().is_empty(),
+            "rows go with the meeting"
+        );
         drop(store);
         for f in [DB, "meetings.sqlite-wal", "meetings.sqlite-shm"] {
             let _ = std::fs::remove_file(tmp.path().join(DIR).join(f));
         }
         let store = Store::open(tmp.path()).await.unwrap();
-        assert_eq!(store.search("container", None).await.unwrap().len(), 1, "rebuilt from transcript.json");
+        assert_eq!(
+            store.search("container", None).await.unwrap().len(),
+            1,
+            "rebuilt from transcript.json"
+        );
     }
 }

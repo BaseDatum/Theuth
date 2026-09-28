@@ -84,10 +84,16 @@ pub type Pair = (i64, i64, i64);
 impl Git {
     /// The repository containing `root` (canonical), or `None` when there is none.
     pub fn open(root: &Path) -> anyhow::Result<Option<Self>> {
-        let Ok(mut repo) = gix::discover(root) else { return Ok(None) };
-        let Some(workdir) = repo.workdir().map(Path::to_path_buf) else { return Ok(None) };
+        let Ok(mut repo) = gix::discover(root) else {
+            return Ok(None);
+        };
+        let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+            return Ok(None);
+        };
         let workdir = workdir.canonicalize().unwrap_or(workdir);
-        let rel = root.strip_prefix(&workdir).with_context(|| format!("{} is outside {}", root.display(), workdir.display()))?;
+        let rel = root
+            .strip_prefix(&workdir)
+            .with_context(|| format!("{} is outside {}", root.display(), workdir.display()))?;
         let mut prefix = crate::root::rel_str(rel);
         if !prefix.is_empty() {
             prefix.push('/');
@@ -103,7 +109,10 @@ impl Git {
 
     /// Tree path → root-relative path, `None` outside the root.
     fn rel(&self, loc: &BStr) -> Option<String> {
-        loc.to_str().ok()?.strip_prefix(self.prefix.as_str()).map(str::to_owned)
+        loc.to_str()
+            .ok()?
+            .strip_prefix(self.prefix.as_str())
+            .map(str::to_owned)
     }
 
     fn rev(&self, spec: &str) -> anyhow::Result<ObjectId> {
@@ -130,14 +139,30 @@ impl Git {
         }
         if let Some((a, b)) = spec.split_once("...") {
             let (a, b) = (self.rev(a)?, self.rev(b)?);
-            let base = self.repo.merge_base(a, b).with_context(|| format!("no merge base for {spec}"))?.detach();
-            return Ok(Range::Commits { old: Some(base), new: b });
+            let base = self
+                .repo
+                .merge_base(a, b)
+                .with_context(|| format!("no merge base for {spec}"))?
+                .detach();
+            return Ok(Range::Commits {
+                old: Some(base),
+                new: b,
+            });
         }
         if let Some((a, b)) = spec.split_once("..") {
-            return Ok(Range::Commits { old: Some(self.rev(a)?), new: self.rev(b)? });
+            return Ok(Range::Commits {
+                old: Some(self.rev(a)?),
+                new: self.rev(b)?,
+            });
         }
         let new = self.rev(spec)?;
-        let old = self.repo.find_object(new)?.try_into_commit()?.parent_ids().next().map(|p| p.detach());
+        let old = self
+            .repo
+            .find_object(new)?
+            .try_into_commit()?
+            .parent_ids()
+            .next()
+            .map(|p| p.detach());
         Ok(Range::Commits { old, new })
     }
 
@@ -149,7 +174,11 @@ impl Git {
     }
 
     /// Blob changes between two trees, root-relative.
-    fn tree_changes(&self, old: &gix::Tree<'_>, new: &gix::Tree<'_>) -> anyhow::Result<Vec<TreeChange>> {
+    fn tree_changes(
+        &self,
+        old: &gix::Tree<'_>,
+        new: &gix::Tree<'_>,
+    ) -> anyhow::Result<Vec<TreeChange>> {
         let mut opts = gix::diff::Options::default();
         opts.track_rewrites(None);
         use gix::diff::tree_with_rewrites::Change as C;
@@ -158,11 +187,15 @@ impl Git {
             if !ch.entry_mode().is_blob() {
                 continue;
             }
-            let Some(path) = self.rel(ch.location()) else { continue };
+            let Some(path) = self.rel(ch.location()) else {
+                continue;
+            };
             out.push(match &ch {
                 C::Addition { id, .. } => (path, Status::Added, None, Some(*id)),
                 C::Deletion { id, .. } => (path, Status::Deleted, Some(*id), None),
-                C::Modification { previous_id, id, .. } => (path, Status::Modified, Some(*previous_id), Some(*id)),
+                C::Modification {
+                    previous_id, id, ..
+                } => (path, Status::Modified, Some(*previous_id), Some(*id)),
                 // Rewrite tracking is off above.
                 C::Rewrite { .. } => continue,
             });
@@ -178,7 +211,12 @@ impl Git {
     /// every HEAD blob under the root is hashed against the file on disk (no
     /// `status` machinery: the index already walked the tree), and `indexed`
     /// paths absent from HEAD are additions.
-    pub fn changes<'a>(&self, range: &Range, root: &Path, indexed: impl Iterator<Item = &'a str>) -> anyhow::Result<Vec<Change>> {
+    pub fn changes<'a>(
+        &self,
+        range: &Range,
+        root: &Path,
+        indexed: impl Iterator<Item = &'a str>,
+    ) -> anyhow::Result<Vec<Change>> {
         match range {
             Range::Commits { old, new } => {
                 let (old, new) = (self.tree(*old)?, self.tree(Some(*new))?);
@@ -190,12 +228,19 @@ impl Git {
                         (None, Some(_)) => vec![Span::All],
                         _ => Vec::new(),
                     };
-                    out.push(Change { path, status, spans, new });
+                    out.push(Change {
+                        path,
+                        status,
+                        spans,
+                        new,
+                    });
                 }
                 Ok(out)
             }
             Range::Worktree => {
-                let Some(head) = self.head() else { bail!("HEAD is unborn") };
+                let Some(head) = self.head() else {
+                    bail!("HEAD is unborn")
+                };
                 let tree = self.tree(Some(head))?;
                 let mut seen = HashSet::new();
                 let mut out = Vec::new();
@@ -203,23 +248,45 @@ impl Git {
                     if !e.mode.is_blob() {
                         continue;
                     }
-                    let Some(path) = self.rel(e.filepath.as_bstr()) else { continue };
+                    let Some(path) = self.rel(e.filepath.as_bstr()) else {
+                        continue;
+                    };
                     seen.insert(path.clone());
                     match std::fs::read(root.join(&path)) {
                         Ok(data) => {
-                            if gix::objs::compute_hash(self.repo.object_hash(), gix::objs::Kind::Blob, &data)? == e.oid {
+                            if gix::objs::compute_hash(
+                                self.repo.object_hash(),
+                                gix::objs::Kind::Blob,
+                                &data,
+                            )? == e.oid
+                            {
                                 continue;
                             }
                             let spans = hunks(&self.blob(e.oid)?, &data);
-                            out.push(Change { path, status: Status::Modified, spans, new: Some(data) });
+                            out.push(Change {
+                                path,
+                                status: Status::Modified,
+                                spans,
+                                new: Some(data),
+                            });
                         }
-                        Err(_) => out.push(Change { path, status: Status::Deleted, spans: Vec::new(), new: None }),
+                        Err(_) => out.push(Change {
+                            path,
+                            status: Status::Deleted,
+                            spans: Vec::new(),
+                            new: None,
+                        }),
                     }
                 }
                 for p in indexed {
                     if !seen.contains(p) {
                         let new = std::fs::read(root.join(p)).ok();
-                        out.push(Change { path: p.to_owned(), status: Status::Added, spans: vec![Span::All], new });
+                        out.push(Change {
+                            path: p.to_owned(),
+                            status: Status::Added,
+                            spans: vec![Span::All],
+                            new,
+                        });
                     }
                 }
                 out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -230,27 +297,47 @@ impl Git {
 
     /// The blob at `path` in HEAD, `None` when absent (or HEAD unborn).
     pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let Some(head) = self.head() else { return Ok(None) };
+        let Some(head) = self.head() else {
+            return Ok(None);
+        };
         let tree = self.tree(Some(head))?;
-        Ok(match tree.lookup_entry_by_path(Path::new(&format!("{}{path}", self.prefix)))? {
-            Some(entry) => Some(entry.object()?.detach().data),
-            None => None,
-        })
+        Ok(
+            match tree.lookup_entry_by_path(Path::new(&format!("{}{path}", self.prefix)))? {
+                Some(entry) => Some(entry.object()?.detach().data),
+                None => None,
+            },
+        )
     }
 
     /// First-parent walk from HEAD over at most `limit` commits; a commit
     /// touching 2..=20 `indexed` files adds 1 to each unordered pair. Returns
     /// `(file_a, file_b, count)` with `file_a < file_b`, and the commits walked.
-    pub fn cochanges(&self, limit: usize, indexed: &HashMap<String, i64>) -> anyhow::Result<(Vec<Pair>, usize)> {
-        let Some(head) = self.head() else { return Ok((Vec::new(), 0)) };
+    pub fn cochanges(
+        &self,
+        limit: usize,
+        indexed: &HashMap<String, i64>,
+    ) -> anyhow::Result<(Vec<Pair>, usize)> {
+        let Some(head) = self.head() else {
+            return Ok((Vec::new(), 0));
+        };
         let mut pairs: HashMap<(i64, i64), i64> = HashMap::new();
         let mut walked = 0;
-        for info in self.repo.rev_walk([head]).first_parent_only().all()?.take(limit) {
+        for info in self
+            .repo
+            .rev_walk([head])
+            .first_parent_only()
+            .all()?
+            .take(limit)
+        {
             let info = info?;
             walked += 1;
             let new = info.object()?.tree()?;
             let old = self.tree(info.parent_ids.first().copied())?;
-            let mut ids: Vec<i64> = self.tree_changes(&old, &new)?.into_iter().filter_map(|(p, ..)| indexed.get(&p).copied()).collect();
+            let mut ids: Vec<i64> = self
+                .tree_changes(&old, &new)?
+                .into_iter()
+                .filter_map(|(p, ..)| indexed.get(&p).copied())
+                .collect();
             ids.sort_unstable();
             ids.dedup();
             if !COCHANGE_FILES.contains(&ids.len()) {
@@ -262,7 +349,8 @@ impl Git {
                 }
             }
         }
-        let mut out: Vec<(i64, i64, i64)> = pairs.into_iter().map(|((a, b), n)| (a, b, n)).collect();
+        let mut out: Vec<(i64, i64, i64)> =
+            pairs.into_iter().map(|((a, b), n)| (a, b, n)).collect();
         out.sort_unstable();
         Ok((out, walked))
     }
@@ -336,7 +424,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         git(&d, &["init", "-q", "-b", "main"]);
-        std::fs::write(d.join("a.rs"), "fn one() {\n    1\n}\nfn two() {\n    2\n}\n").unwrap();
+        std::fs::write(
+            d.join("a.rs"),
+            "fn one() {\n    1\n}\nfn two() {\n    2\n}\n",
+        )
+        .unwrap();
         std::fs::write(d.join("b.rs"), "fn b() {}\n").unwrap();
         std::fs::write(d.join("c.txt"), "c\n").unwrap();
         git(&d, &["add", "."]);
@@ -359,34 +451,100 @@ mod tests {
         let head = g.head().unwrap();
         // `HEAD~1` is the root commit: `R^..R` with the empty tree as old side.
         let r = g.range("HEAD~1").unwrap();
-        let Range::Commits { old: None, new: first } = r else { panic!("{r:?}") };
+        let Range::Commits {
+            old: None,
+            new: first,
+        } = r
+        else {
+            panic!("{r:?}")
+        };
         assert_ne!(first, head);
-        assert_eq!(g.range("HEAD~1..HEAD").unwrap(), Range::Commits { old: Some(first), new: head });
-        assert_eq!(g.range("HEAD").unwrap(), Range::Commits { old: Some(first), new: head });
-        assert_eq!(g.range("..").unwrap(), Range::Commits { old: Some(head), new: head });
-        assert_eq!(g.range("main...HEAD").unwrap(), Range::Commits { old: Some(head), new: head });
-        assert_eq!(g.range(&format!("{first}...HEAD")).unwrap(), Range::Commits { old: Some(first), new: head });
+        assert_eq!(
+            g.range("HEAD~1..HEAD").unwrap(),
+            Range::Commits {
+                old: Some(first),
+                new: head
+            }
+        );
+        assert_eq!(
+            g.range("HEAD").unwrap(),
+            Range::Commits {
+                old: Some(first),
+                new: head
+            }
+        );
+        assert_eq!(
+            g.range("..").unwrap(),
+            Range::Commits {
+                old: Some(head),
+                new: head
+            }
+        );
+        assert_eq!(
+            g.range("main...HEAD").unwrap(),
+            Range::Commits {
+                old: Some(head),
+                new: head
+            }
+        );
+        assert_eq!(
+            g.range(&format!("{first}...HEAD")).unwrap(),
+            Range::Commits {
+                old: Some(first),
+                new: head
+            }
+        );
         assert_eq!(g.range("WORKTREE").unwrap(), Range::Worktree);
         assert!(g.range("nope").is_err());
         let new = first;
 
-        let ch = g.changes(&g.range("HEAD").unwrap(), &root, std::iter::empty()).unwrap();
+        let ch = g
+            .changes(&g.range("HEAD").unwrap(), &root, std::iter::empty())
+            .unwrap();
         let a = ch.iter().find(|c| c.path == "a.rs").unwrap();
         assert_eq!(a.status, Status::Modified);
-        assert_eq!(a.spans, [Span::Lines(2, 2), Span::Point(4)], "{:?}", a.spans);
+        assert_eq!(
+            a.spans,
+            [Span::Lines(2, 2), Span::Point(4)],
+            "{:?}",
+            a.spans
+        );
         assert!(Span::Lines(2, 2).touches(1, 3) && !Span::Lines(2, 2).touches(4, 6));
         assert!(Span::Point(4).touches(4, 5));
-        assert_eq!(ch.iter().find(|c| c.path == "b.rs").unwrap().spans, [Span::Lines(1, 1)]);
-        let ch = g.changes(&g.range(&new.to_string()).unwrap(), &root, std::iter::empty()).unwrap();
-        assert!(ch.iter().all(|c| c.status == Status::Added && c.spans == [Span::All]) && ch.len() == 3, "{ch:?}");
+        assert_eq!(
+            ch.iter().find(|c| c.path == "b.rs").unwrap().spans,
+            [Span::Lines(1, 1)]
+        );
+        let ch = g
+            .changes(
+                &g.range(&new.to_string()).unwrap(),
+                &root,
+                std::iter::empty(),
+            )
+            .unwrap();
+        assert!(
+            ch.iter()
+                .all(|c| c.status == Status::Added && c.spans == [Span::All])
+                && ch.len() == 3,
+            "{ch:?}"
+        );
 
-        let ch = g.changes(&Range::Worktree, &root, ["new.rs", "a.rs"].into_iter()).unwrap();
+        let ch = g
+            .changes(&Range::Worktree, &root, ["new.rs", "a.rs"].into_iter())
+            .unwrap();
         let paths: Vec<(&str, Status)> = ch.iter().map(|c| (c.path.as_str(), c.status)).collect();
-        assert_eq!(paths, [("c.txt", Status::Modified), ("new.rs", Status::Added)], "{ch:?}");
+        assert_eq!(
+            paths,
+            [("c.txt", Status::Modified), ("new.rs", Status::Added)],
+            "{ch:?}"
+        );
         assert_eq!(g.head_blob("b.rs").unwrap().unwrap(), b"fn b() { 1 }\n");
         assert!(g.head_blob("new.rs").unwrap().is_none());
 
-        let indexed: HashMap<String, i64> = [("a.rs", 1), ("b.rs", 2), ("c.txt", 3)].into_iter().map(|(p, i)| (p.to_owned(), i)).collect();
+        let indexed: HashMap<String, i64> = [("a.rs", 1), ("b.rs", 2), ("c.txt", 3)]
+            .into_iter()
+            .map(|(p, i)| (p.to_owned(), i))
+            .collect();
         let (pairs, walked) = g.cochanges(300, &indexed).unwrap();
         assert_eq!(walked, 2);
         assert_eq!(pairs, [(1, 2, 2), (1, 3, 1), (2, 3, 1)]);

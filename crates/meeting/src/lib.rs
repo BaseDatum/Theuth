@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use ::tools::{ApprovalRequested, ApprovalResolved};
 use agent::AgentEvent;
 use decision::training::{Amendment, ExampleId, Reaction};
 use kameo::actor::{ActorRef, Spawn};
@@ -30,7 +31,6 @@ use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
 use runtime::{InputId, Runtime, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
-use ::tools::{ApprovalRequested, ApprovalResolved};
 use voice::live::Utterer;
 
 use crate::post::diarize;
@@ -57,12 +57,12 @@ pub mod transcript;
 pub use cache::{Cache, CachedBrief, CachedBriefPut};
 pub use oracle::{OracleDecision, OracleDisposition, OracleOutcome};
 pub use speakers::{Profile, Profiles};
+use state::Prompted;
 pub use state::{Recording, RecordingClock};
 pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stem, Store, TrackFile};
-pub use transcript::{EditOp, Proposed, Segment, SpeakerLabel, Transcript, Word};
-use state::Prompted;
 use stt::Piece;
 use topics::{Gone, Record};
+pub use transcript::{EditOp, Proposed, Segment, SpeakerLabel, Transcript, Word};
 
 /// Registry name of the [`Meeting`] actor.
 pub const MEETING_ACTOR: &str = "meeting";
@@ -652,7 +652,11 @@ pub struct MeetingStatus;
 /// Reply to [`MeetingStatus`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 // `MeetingStatus` on the wire: `Status.ts` is the todo item state's file.
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingStatus"))]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, rename = "MeetingStatus")
+)]
 pub struct Status {
     /// `Idle` when nothing is recording.
     pub state: MeetingState,
@@ -1054,7 +1058,11 @@ impl Meeting {
     }
 
     /// Write a row and tell the world (05 §0.8). Both the tools and the RPC land here.
-    async fn cache_put(&self, put: CachedBriefPut, source: &str) -> Result<(CachedBrief, bool), String> {
+    async fn cache_put(
+        &self,
+        put: CachedBriefPut,
+        source: &str,
+    ) -> Result<(CachedBrief, bool), String> {
         let (row, created) = self.cache()?.put(put, source).await?;
         self.rt
             .publish(BriefEvent::Changed {
@@ -1083,9 +1091,13 @@ impl Meeting {
     /// measured from entry.
     async fn cached_topics(&mut self, hits: Vec<(BriefId, String)>, at_ms: u64, since: Instant) {
         let entered = Instant::now();
-        let Some(cache) = self.cache.clone() else { return };
+        let Some(cache) = self.cache.clone() else {
+            return;
+        };
         for (row, label) in hits {
-            let Some(rec) = self.current.as_mut() else { return };
+            let Some(rec) = self.current.as_mut() else {
+                return;
+            };
             if rec.live.topics.cached_blocked(row) {
                 continue;
             }
@@ -1093,15 +1105,22 @@ impl Meeting {
                 Ok(r) => r,
                 Err(_) => continue, // deleted between the scan and now
             };
-            let Some(rec) = self.current.as_mut() else { return };
-            let (topic, brief, expired) =
-                match rec.live.topics.insert_cached(&label, &row, BriefSource::Cache, Instant::now(), at_ms) {
-                    Ok(x) => x,
-                    Err(e) => {
-                        tracing::debug!(label, "meeting: cached topic skipped: {e}");
-                        continue;
-                    }
-                };
+            let Some(rec) = self.current.as_mut() else {
+                return;
+            };
+            let (topic, brief, expired) = match rec.live.topics.insert_cached(
+                &label,
+                &row,
+                BriefSource::Cache,
+                Instant::now(),
+                at_ms,
+            ) {
+                Ok(x) => x,
+                Err(e) => {
+                    tracing::debug!(label, "meeting: cached topic skipped: {e}");
+                    continue;
+                }
+            };
             rec.live.log_record(&Record::Topic(topic.clone()));
             rec.live.log_record(&Record::Brief(brief));
             let meeting = rec.manifest.id;
@@ -1124,7 +1143,9 @@ impl Meeting {
     async fn cached_request(&mut self, hits: &[(BriefId, String)]) -> Option<String> {
         let cache = self.cache.clone()?;
         for (id, _) in hits {
-            let Ok(row) = cache.get(*id).await else { continue };
+            let Ok(row) = cache.get(*id).await else {
+                continue;
+            };
             let rec = self.current.as_mut()?;
             let at_ms = rec.clock.now_ms();
             let Ok(brief) = rec.live.topics.add_brief(
@@ -1269,7 +1290,9 @@ impl Meeting {
 
     /// `Steer` if the session has a turn running, else `SendInput` (02 §3).
     async fn deliver(&self, text: String) {
-        let Some(rec) = self.current.as_ref() else { return };
+        let Some(rec) = self.current.as_ref() else {
+            return;
+        };
         let session = rec.manifest.session;
         if let Err(e) = session::deliver(session, text, rec.live.turn_running).await {
             tracing::warn!(%session, "meeting: deliver: {e}");
@@ -1280,7 +1303,9 @@ impl Meeting {
     /// goes through the decision oracle off the mailbox (57 §3; [`oracle::run`]) and comes
     /// back as a [`oracle::Verdict`]; with the oracle off that is today's delivery, one hop later.
     async fn send_batch(&mut self, batch: Vec<Utterance>, me: &ActorRef<Self>) {
-        let Some(rec) = self.current.as_ref() else { return };
+        let Some(rec) = self.current.as_ref() else {
+            return;
+        };
         let session = rec.manifest.session;
         if session::queued(session).await > batch::MAX_QUEUED {
             if let Some(rec) = self.current.as_mut() {
@@ -1288,12 +1313,23 @@ impl Meeting {
             }
             return;
         }
-        let Some(rec) = self.current.as_ref() else { return };
+        let Some(rec) = self.current.as_ref() else {
+            return;
+        };
         let meeting = rec.manifest.id;
         let blocked = rec.live.topics.cached_blocked_rows();
         let (rt, cache, me) = (self.rt.clone(), self.cache.clone(), me.clone());
         tokio::spawn(async move {
-            let verdict = oracle::run(rt, cache, blocked, batch, meeting, session, oracle::side_caller()).await;
+            let verdict = oracle::run(
+                rt,
+                cache,
+                blocked,
+                batch,
+                meeting,
+                session,
+                oracle::side_caller(),
+            )
+            .await;
             let _ = me.tell(verdict).await;
         });
     }
@@ -1306,7 +1342,9 @@ impl Meeting {
         evidence: Option<String>,
         pending: Option<(OracleDecision, oracle::Expected, Option<ExampleId>)>,
     ) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let carried = std::mem::take(&mut rec.live.carry);
         let text = session::batch_line_with(
             &batch,
@@ -1323,7 +1361,9 @@ impl Meeting {
 
     /// The oracle kept `batch` from the model: it becomes context for the next delivered one.
     fn carry(&mut self, batch: Vec<Utterance>) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         rec.live.carry.push((oracle::batch_id(&batch), batch));
         // ponytail: a long quiet stretch would otherwise grow the next line without bound;
         // the transcript is on disk anyway (`meeting_read`).
@@ -1338,7 +1378,9 @@ impl Meeting {
     /// captured examples get an `amend { outcome }`, and the published topics are remembered
     /// so a tap or dismiss on them amends the same examples.
     async fn settle_pending(&mut self) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         if rec.live.pending.is_empty() {
             rec.live.published.clear();
             rec.live.published_topics.clear();
@@ -1362,9 +1404,11 @@ impl Meeting {
                 oracle::amend(
                     id,
                     Amendment::Outcome {
-                        published: published.first().map(|(row, title)| decision::training::Brief {
-                            id: row.map(|r| r.to_string()),
-                            title: title.clone(),
+                        published: published.first().map(|(row, title)| {
+                            decision::training::Brief {
+                                id: row.map(|r| r.to_string()),
+                                title: title.clone(),
+                            }
                         }),
                     },
                 );
@@ -1382,7 +1426,9 @@ impl Meeting {
 
     /// A topic left the live set: event + `briefs.jsonl` record.
     async fn topic_gone(&mut self, topic: TopicId, why: TopicGone) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let meeting = rec.manifest.id;
         rec.live.log_record(&Record::Removed {
             topic,
@@ -1390,7 +1436,11 @@ impl Meeting {
             at_ms: rec.clock.now_ms(),
         });
         self.rt
-            .publish(MeetingEvent::TopicRemoved { meeting, topic, why })
+            .publish(MeetingEvent::TopicRemoved {
+                meeting,
+                topic,
+                why,
+            })
             .await;
     }
 
@@ -1402,10 +1452,14 @@ impl Meeting {
 
     /// A brief to show: event + record.
     async fn show_brief(&mut self, brief: Brief) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let meeting = rec.manifest.id;
         rec.live.log_record(&Record::Brief(brief.clone()));
-        self.rt.publish(MeetingEvent::Brief { meeting, brief }).await;
+        self.rt
+            .publish(MeetingEvent::Brief { meeting, brief })
+            .await;
     }
 
     /// A closed utterance: `live.jsonl`, the alias scan (05 §3), then the batcher
@@ -1414,7 +1468,9 @@ impl Meeting {
         let hits = self.scan(&u.text);
         if u.request {
             let cached = self.cached_request(&hits).await;
-            let Some(rec) = self.current.as_mut() else { return };
+            let Some(rec) = self.current.as_mut() else {
+                return;
+            };
             rec.live.log_utterance(&u);
             rec.live
                 .prompted(Prompted::Request { spoken: true }, u.text.clone());
@@ -1423,7 +1479,9 @@ impl Meeting {
             return;
         }
         self.cached_topics(hits, u.t1_ms, at).await;
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         if u.track == Track::System && rec.live.diar.is_some() {
             // 07 §3: the line is logged and batched once the diariser has scored it.
             rec.live.held_system.push(u);
@@ -1435,7 +1493,9 @@ impl Meeting {
 
     /// The tail of [`Meeting::closed`]: `live.jsonl`, then the batcher.
     async fn commit(&mut self, u: Utterance, me: &ActorRef<Self>) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         rec.live.log_utterance(&u);
         if let Some(batch) = rec.live.batcher.feed(u, Instant::now()) {
             self.send_batch(batch, me).await;
@@ -1447,9 +1507,16 @@ impl Meeting {
     /// second `final` `Utterance` event for the same row.
     async fn release_held(&mut self, me: &ActorRef<Self>, all: bool) {
         loop {
-            let Some(rec) = self.current.as_mut() else { return };
+            let Some(rec) = self.current.as_mut() else {
+                return;
+            };
             let horizon = rec.live.labels.horizon_ms;
-            if rec.live.held_system.first().is_none_or(|u| !all && u.t1_ms > horizon) {
+            if rec
+                .live
+                .held_system
+                .first()
+                .is_none_or(|u| !all && u.t1_ms > horizon)
+            {
                 return;
             }
             let mut u = rec.live.held_system.remove(0);
@@ -1747,7 +1814,10 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     let (model_dir, data_dir) = (setup.live_model_dir.clone(), setup.data_dir.clone());
     let t = Instant::now();
     let engines = tokio::task::spawn_blocking(move || -> anyhow::Result<(Utterer, Utterer)> {
-        Ok((Utterer::open(&model_dir, &data_dir)?, Utterer::open(&model_dir, &data_dir)?))
+        Ok((
+            Utterer::open(&model_dir, &data_dir)?,
+            Utterer::open(&model_dir, &data_dir)?,
+        ))
     })
     .await
     .map_err(|e| anyhow::anyhow!("STT load task panicked: {e}"))
@@ -1759,7 +1829,10 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         }
         Err(e) => {
             tracing::warn!(meeting = %manifest.id, "meeting: live STT unavailable: {e:#}");
-            for d in [Degradation::SttDown(Track::Mic), Degradation::SttDown(Track::System)] {
+            for d in [
+                Degradation::SttDown(Track::Mic),
+                Degradation::SttDown(Track::System),
+            ] {
                 if !manifest.degraded.contains(&d) {
                     manifest.degraded.push(d);
                 }
@@ -1769,7 +1842,11 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     };
     // 07 §2: the live diariser (≈ 300 MB). Missing models are not a degradation (labels
     // are simply absent, as with the switch off); a failed load with the switch on is.
-    let diar = match setup.diarization.as_ref().and_then(|dir| diarize::models(dir, &setup.data_dir)) {
+    let diar = match setup
+        .diarization
+        .as_ref()
+        .and_then(|dir| diarize::models(dir, &setup.data_dir))
+    {
         Some(models) => {
             let t = Instant::now();
             match tokio::task::spawn_blocking(move || diar::open(&models)).await {
@@ -2081,7 +2158,10 @@ impl Message<StopMeeting> for Meeting {
         let tasks: Vec<_> = live.stt.drain(..).collect();
         for task in tasks {
             let Ok(pieces) = task.await else { continue };
-            for p in pieces.into_iter().filter(|p| p.is_final && said_something(&p.text)) {
+            for p in pieces
+                .into_iter()
+                .filter(|p| p.is_final && said_something(&p.text))
+            {
                 let (t0_ms, t1_ms) = times(&clock, &p);
                 finals.push(Utterance {
                     track: p.track,
@@ -2305,7 +2385,9 @@ impl Message<Piece> for Meeting {
     type Reply = ();
 
     async fn handle(&mut self, p: Piece, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let meeting = rec.manifest.id;
         let (t0_ms, t1_ms) = times(&rec.clock, &p);
         rec.live.topics.touch(&p.text, Instant::now());
@@ -2346,8 +2428,14 @@ impl Message<diar::Labels> for Meeting {
     type Reply = ();
 
     /// 07 §3: the diariser's view replaces the last one; whatever it now covers is released.
-    async fn handle(&mut self, m: diar::Labels, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(rec) = self.current.as_mut() else { return };
+    async fn handle(
+        &mut self,
+        m: diar::Labels,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let at_ms = rec.clock.elapsed_at(m.at).as_millis() as u64;
         rec.live.labels = m.view(at_ms);
         let me = ctx.actor_ref().clone();
@@ -2359,7 +2447,9 @@ impl Message<Tick> for Meeting {
     type Reply = ();
 
     async fn handle(&mut self, _: Tick, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let now = Instant::now();
         let batch = rec.live.batcher.tick(now);
         let gone = rec.live.topics.expire(now);
@@ -2375,8 +2465,14 @@ impl Message<oracle::Verdict> for Meeting {
 
     /// 57 §3.2: act on the oracle's verdict — skip (carry), publish the cached brief as an
     /// `Oracle` topic (carry), or deliver today's batch line with the evidence.
-    async fn handle(&mut self, v: oracle::Verdict, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(rec) = self.current.as_mut() else { return };
+    async fn handle(
+        &mut self,
+        v: oracle::Verdict,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         let pending = match (v.event, v.expected) {
             (Some(e), Some(x)) => Some((e, x, v.example)),
             _ => None,
@@ -2386,7 +2482,13 @@ impl Message<oracle::Verdict> for Meeting {
             oracle::Action::Publish { row, label } => {
                 let at_ms = rec.clock.now_ms();
                 let meeting = rec.manifest.id;
-                match rec.live.topics.insert_cached(&label, &row, BriefSource::Oracle, Instant::now(), at_ms) {
+                match rec.live.topics.insert_cached(
+                    &label,
+                    &row,
+                    BriefSource::Oracle,
+                    Instant::now(),
+                    at_ms,
+                ) {
                     Ok((topic, brief, expired)) => {
                         rec.live.log_record(&Record::Topic(topic.clone()));
                         rec.live.log_record(&Record::Brief(brief));
@@ -2405,7 +2507,9 @@ impl Message<oracle::Verdict> for Meeting {
                 }
                 self.carry(v.batch);
             }
-            oracle::Action::Model { evidence } => self.deliver_batch(v.batch, evidence, pending).await,
+            oracle::Action::Model { evidence } => {
+                self.deliver_batch(v.batch, evidence, pending).await
+            }
         }
     }
 }
@@ -2446,7 +2550,9 @@ impl Message<AgentEvent> for Meeting {
                 _ => {}
             }
         }
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         match ev {
             AgentEvent::TurnStarted { session, .. } if session == rec.manifest.session => {
                 rec.live.turn_running = true;
@@ -2466,11 +2572,15 @@ impl Message<AgentEvent> for Meeting {
                 if !errored {
                     self.settle_pending().await;
                 }
-                let Some(rec) = self.current.as_mut() else { return };
+                let Some(rec) = self.current.as_mut() else {
+                    return;
+                };
                 if errored && !down {
                     rec.manifest.degraded.push(Degradation::ModelDown);
                 } else if !errored && down {
-                    rec.manifest.degraded.retain(|d| *d != Degradation::ModelDown);
+                    rec.manifest
+                        .degraded
+                        .retain(|d| *d != Degradation::ModelDown);
                 } else {
                     if let Some((p, text)) = nudge {
                         self.deliver(session::nudge_line(p, &text)).await;
@@ -2510,7 +2620,9 @@ impl Message<ApprovalResolved> for Meeting {
     type Reply = ();
 
     async fn handle(&mut self, a: ApprovalResolved, _: &mut Context<Self, Self::Reply>) {
-        let Some(rec) = self.current.as_mut() else { return };
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
         if !rec.live.approvals.remove(&a.id) {
             return;
         }
@@ -2525,22 +2637,23 @@ impl Message<TapTopic> for Meeting {
 
     async fn handle(&mut self, m: TapTopic, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let rec = self.current.as_mut().ok_or("no meeting is recording")?;
-        let topic = rec
-            .live
-            .topics
-            .view(m.topic)
-            .ok_or("no such live topic")?;
+        let topic = rec.live.topics.view(m.topic).ok_or("no such live topic")?;
         // Decision 11: the precomputed brief is shown on the tap itself; a
         // `meeting_brief` from the model, if any, is a second one.
         let brief = topic.brief.and_then(|b| rec.live.topics.brief(b).cloned());
-        rec.live.prompted(Prompted::Tap(topic.id), topic.label.clone());
+        rec.live
+            .prompted(Prompted::Tap(topic.id), topic.label.clone());
         rec.live.react(topic.id, Reaction::Tapped);
         self.topic_gone(topic.id, TopicGone::Viewed).await;
         if let Some(mut brief) = brief {
             brief.source = BriefSource::Tap;
-            let Some(rec) = self.current.as_mut() else { return Ok(()) };
+            let Some(rec) = self.current.as_mut() else {
+                return Ok(());
+            };
             let meeting = rec.manifest.id;
-            self.rt.publish(MeetingEvent::Brief { meeting, brief }).await;
+            self.rt
+                .publish(MeetingEvent::Brief { meeting, brief })
+                .await;
         }
         self.deliver(session::tapped_line(&topic.label)).await;
         Ok(())
@@ -2593,7 +2706,9 @@ impl Message<TypedRequest> for Meeting {
         }
         let hits = self.scan(&m.text);
         let cached = self.cached_request(&hits).await;
-        let Some(rec) = self.current.as_mut() else { return Ok(()) };
+        let Some(rec) = self.current.as_mut() else {
+            return Ok(());
+        };
         rec.live
             .prompted(Prompted::Request { spoken: false }, m.text.clone());
         self.deliver(session::request_line(false, &m.text, cached.as_deref()))
@@ -2698,10 +2813,13 @@ impl Message<AddTopic> for Meeting {
         let (topic, brief, expired, learnt) = if let Some(id) = m.brief {
             let row = self.cache()?.get(id).await?;
             let rec = self.recording_for(m.session)?;
-            let (t, b, e) = rec
-                .live
-                .topics
-                .insert_cached(&m.label, &row, BriefSource::Cache, Instant::now(), at_ms)?;
+            let (t, b, e) = rec.live.topics.insert_cached(
+                &m.label,
+                &row,
+                BriefSource::Cache,
+                Instant::now(),
+                at_ms,
+            )?;
             (t, b, e, Some(id))
         } else {
             let (Some(title), Some(bullets)) = (m.title, m.bullets) else {
@@ -2729,10 +2847,10 @@ impl Message<AddTopic> for Meeting {
                 }
             };
             let rec = self.recording_for(m.session)?;
-            let (t, b, e) = rec
-                .live
-                .topics
-                .insert(&m.label, &title, bullets, cached, Instant::now(), at_ms)?;
+            let (t, b, e) =
+                rec.live
+                    .topics
+                    .insert(&m.label, &title, bullets, cached, Instant::now(), at_ms)?;
             (t, b, e, None)
         };
         let rec = self.recording_for(m.session)?;
@@ -2809,10 +2927,9 @@ impl Message<AddBrief> for Meeting {
         }
         let rec = self.recording_for(m.session)?;
         let at_ms = rec.clock.now_ms();
-        let brief = rec
-            .live
-            .topics
-            .add_brief(&m.title, m.bullets, m.topic, m.parent, source, cached, at_ms)?;
+        let brief = rec.live.topics.add_brief(
+            &m.title, m.bullets, m.topic, m.parent, source, cached, at_ms,
+        )?;
         // The answered topic's button goes away and its precomputed brief is superseded.
         let viewed = m.topic.and_then(|t| rec.live.topics.view(t));
         if let Some(t) = viewed {
@@ -2916,8 +3033,14 @@ impl Message<BriefDelete> for Meeting {
 impl Message<GetTranscript> for Meeting {
     type Reply = Result<Transcript, String>;
 
-    async fn handle(&mut self, m: GetTranscript, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store.transcript(m.meeting).map_err(|e| format!("{e:#}"))
+    async fn handle(
+        &mut self,
+        m: GetTranscript,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .transcript(m.meeting)
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -2925,7 +3048,11 @@ impl Message<EditTranscript> for Meeting {
     type Reply = Result<Transcript, String>;
 
     /// All ops or none: applied to a copy, saved (and re-indexed) only on `Ok`.
-    async fn handle(&mut self, m: EditTranscript, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: EditTranscript,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let manifest = self.stored(m.meeting)?;
         if matches!(
             manifest.state,
@@ -2933,7 +3060,10 @@ impl Message<EditTranscript> for Meeting {
         ) {
             return Err(format!("{:?}: wait for it to finish", manifest.state));
         }
-        let mut t = self.store.transcript(m.meeting).map_err(|e| format!("{e:#}"))?;
+        let mut t = self
+            .store
+            .transcript(m.meeting)
+            .map_err(|e| format!("{e:#}"))?;
         let dir = self.store.meeting_dir(m.meeting);
         let embeddings: std::collections::HashMap<String, Vec<f32>> =
             std::fs::read(dir.join(transcript::EMBEDDINGS))
@@ -2954,7 +3084,11 @@ impl Message<SegmentAudio> for Meeting {
     type Reply = DelegatedReply<Result<String, String>>;
 
     /// Off the mailbox: a whole-file decode (04 §0.5) is seconds for a long track.
-    async fn handle(&mut self, m: SegmentAudio, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SegmentAudio,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let manifest = match self.store.manifest(m.meeting) {
@@ -3027,7 +3161,11 @@ impl Message<ListSpeakers> for Meeting {
 impl Message<DeleteSpeaker> for Meeting {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: DeleteSpeaker, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: DeleteSpeaker,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         Profiles::load(&self.paths().speakers)
             .map_err(|e| format!("{e:#}"))?
             .delete(m.profile)
@@ -3037,7 +3175,11 @@ impl Message<DeleteSpeaker> for Meeting {
 impl Message<LiveDiarization> for Meeting {
     type Reply = bool;
 
-    async fn handle(&mut self, _: LiveDiarization, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: LiveDiarization,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.cfg.live_diarization
     }
 }
@@ -3045,7 +3187,11 @@ impl Message<LiveDiarization> for Meeting {
 impl Message<SetLiveDiarization> for Meeting {
     type Reply = Result<bool, String>;
 
-    async fn handle(&mut self, m: SetLiveDiarization, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SetLiveDiarization,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         runtime::write_config_value(
             &self.rt.data_dir.join("config.yaml"),
             "meeting",
@@ -3064,7 +3210,11 @@ impl Meeting {
     /// turn — now when the session is idle, after the running turn otherwise — the
     /// manifest becomes `Summarizing`, and a watchdog bounds the wait by
     /// [`SUMMARY_TIMEOUT`]. `Err` leaves the manifest untouched.
-    async fn begin_summary(&mut self, mut manifest: Manifest, me: ActorRef<Self>) -> Result<(), String> {
+    async fn begin_summary(
+        &mut self,
+        mut manifest: Manifest,
+        me: ActorRef<Self>,
+    ) -> Result<(), String> {
         let input = InputId::new();
         session::queue_turn(manifest.session, input, summary::form_for(&manifest)).await?;
         manifest.state = MeetingState::Summarizing;
@@ -3088,7 +3238,11 @@ impl Meeting {
 
     /// Release the slot matching `pred`.
     fn take_summarizing(&mut self, pred: impl Fn(&Summarizing) -> bool) -> Option<Summarizing> {
-        let id = self.summarizing.iter().find(|(_, s)| pred(s)).map(|(id, _)| *id)?;
+        let id = self
+            .summarizing
+            .iter()
+            .find(|(_, s)| pred(s))
+            .map(|(id, _)| *id)?;
         self.summarizing.remove(&id)
     }
 
@@ -3124,16 +3278,27 @@ impl Message<SummaryTimeout> for Meeting {
     type Reply = ();
 
     /// The watchdog fired: if this attempt still holds the slot, release it.
-    async fn handle(&mut self, t: SummaryTimeout, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        t: SummaryTimeout,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let held = self
             .summarizing
             .get(&t.meeting)
             .is_some_and(|s| s.input == t.input);
         if held && let Some(s) = self.summarizing.remove(&t.meeting) {
-            let why = if s.turn.is_some() { "its turn" } else { "the session" };
+            let why = if s.turn.is_some() {
+                "its turn"
+            } else {
+                "the session"
+            };
             let mins = SUMMARY_TIMEOUT.as_secs() / 60;
-            self.summary_failed(s.manifest, &format!("{why} did not finish within {mins} minutes"))
-                .await;
+            self.summary_failed(
+                s.manifest,
+                &format!("{why} did not finish within {mins} minutes"),
+            )
+            .await;
         }
     }
 }
@@ -3145,7 +3310,11 @@ impl Message<Resummarize> for Meeting {
     /// holding the finished summary turn → settle on it; otherwise the form goes out
     /// again (no new `meeting-before-summary` snapshot: the one from the first attempt
     /// stands). A re-send that fails leaves `Review` + `failure`.
-    async fn handle(&mut self, Resummarize(m): Resummarize, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        Resummarize(m): Resummarize,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match summary::finished_turn(m.session).await {
             Ok(true) => {
                 tracing::info!(meeting = %m.id, "meeting: settling the summary turn found in the history");
@@ -3154,8 +3323,11 @@ impl Message<Resummarize> for Meeting {
             Ok(false) | Err(_) => {
                 tracing::info!(meeting = %m.id, "meeting: re-sending the summary form after a restart");
                 if let Err(e) = self.begin_summary(m.clone(), ctx.actor_ref().clone()).await {
-                    self.summary_failed(m, &format!("the daemon restarted and re-sending the form failed: {e}"))
-                        .await;
+                    self.summary_failed(
+                        m,
+                        &format!("the daemon restarted and re-sending the form failed: {e}"),
+                    )
+                    .await;
                 }
             }
         }
@@ -3455,9 +3627,15 @@ mod tests {
         let (batch, summary) = (TurnId::new(), TurnId::new());
 
         // The stop-flush batch turn ends: nothing settles.
-        b.actor.ask(finished_turn(m.session, batch, "end_turn")).await.unwrap();
+        b.actor
+            .ask(finished_turn(m.session, batch, "end_turn"))
+            .await
+            .unwrap();
         assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id]);
-        assert_eq!(b.store.manifest(m.id).unwrap().state, MeetingState::Summarizing);
+        assert_eq!(
+            b.store.manifest(m.id).unwrap().state,
+            MeetingState::Summarizing
+        );
 
         // The deferred form opens the next turn.
         b.actor
@@ -3481,14 +3659,23 @@ mod tests {
         assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id]);
 
         // Its end hands the meeting to `summary::spawn` (the cancelled path needs no agent).
-        b.actor.ask(finished_turn(m.session, summary, "cancelled")).await.unwrap();
+        b.actor
+            .ask(finished_turn(m.session, summary, "cancelled"))
+            .await
+            .unwrap();
         assert!(b.actor.ask(Held).await.unwrap().is_empty(), "slot released");
         let after = settled(&b.store, m.id).await;
         assert_eq!(after.state, MeetingState::Review);
-        assert_eq!(after.failure.as_deref(), Some("summary: the summary turn ended with cancelled"));
+        assert_eq!(
+            after.failure.as_deref(),
+            Some("summary: the summary turn ended with cancelled")
+        );
 
         // A second end of the same turn is nothing.
-        b.actor.ask(finished_turn(m.session, summary, "cancelled")).await.unwrap();
+        b.actor
+            .ask(finished_turn(m.session, summary, "cancelled"))
+            .await
+            .unwrap();
         assert_eq!(states(&b.events, m.id).await, [MeetingState::Review]);
     }
 
@@ -3514,10 +3701,16 @@ mod tests {
                 .await
                 .unwrap();
         }
-        b.actor.ask(finished_turn(c.session, tc, "error")).await.unwrap();
+        b.actor
+            .ask(finished_turn(c.session, tc, "error"))
+            .await
+            .unwrap();
         assert_eq!(b.actor.ask(Held).await.unwrap(), [a.id], "a still held");
         assert_eq!(settled(&b.store, c.id).await.state, MeetingState::Review);
-        b.actor.ask(finished_turn(a.session, ta, "cancelled")).await.unwrap();
+        b.actor
+            .ask(finished_turn(a.session, ta, "cancelled"))
+            .await
+            .unwrap();
         assert!(b.actor.ask(Held).await.unwrap().is_empty());
         assert_eq!(settled(&b.store, a.id).await.state, MeetingState::Review);
     }
@@ -3537,7 +3730,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(b.actor.ask(Held).await.unwrap(), [m.id], "another attempt's timer");
+        assert_eq!(
+            b.actor.ask(Held).await.unwrap(),
+            [m.id],
+            "another attempt's timer"
+        );
         b.actor
             .ask(SummaryTimeout {
                 meeting: m.id,
@@ -3582,7 +3779,9 @@ mod tests {
         assert_eq!(after.state, MeetingState::Review);
         assert_eq!(
             after.failure.as_deref(),
-            Some("summary did not complete: the daemon restarted and re-sending the form failed: agent is not running")
+            Some(
+                "summary did not complete: the daemon restarted and re-sending the form failed: agent is not running"
+            )
         );
         assert_eq!(states(&b.events, m.id).await, [MeetingState::Review]);
     }
@@ -3593,7 +3792,8 @@ mod tests {
     async fn summarize_again_after_a_failure() {
         let b = bench().await;
         let mut m = finished(&b.store, MeetingState::Review).await;
-        m.failure = Some("summary did not complete: the session did not finish within 10 minutes".into());
+        m.failure =
+            Some("summary did not complete: the session did not finish within 10 minutes".into());
         b.store.save(&m).await.unwrap();
         let r = b.actor.ask(Summarize { meeting: m.id }).await;
         assert!(
@@ -3605,6 +3805,9 @@ mod tests {
 
         let d = finished(&b.store, MeetingState::Done).await;
         let r = b.actor.ask(Summarize { meeting: d.id }).await;
-        assert!(matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "Done: review it first"), "{r:?}");
+        assert!(
+            matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "Done: review it first"),
+            "{r:?}"
+        );
     }
 }

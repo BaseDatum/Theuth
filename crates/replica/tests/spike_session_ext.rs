@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
 use rusqlite::hooks::Action;
 use rusqlite::session::{ChangesetIter, ConflictAction, ConflictType, Session};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 const SCHEMA: &str = "CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b INTEGER, hlc TEXT)";
 /// Column index of `hlc` in `t`, as the changeset numbers columns.
@@ -53,8 +53,14 @@ fn apply_lww(conn: &Connection, changeset: &[u8]) {
                 // Local row differs from the changeset's `old` values (UPDATE/DELETE),
                 // or an INSERT hits an existing pk: compare clocks.
                 ConflictType::SQLITE_CHANGESET_DATA | ConflictType::SQLITE_CHANGESET_CONFLICT => {
-                    let local = item.conflict(HLC_COL).ok().and_then(|v| v.as_str().ok().map(str::to_owned));
-                    let incoming = item.new_value(HLC_COL).ok().and_then(|v| v.as_str().ok().map(str::to_owned));
+                    let local = item
+                        .conflict(HLC_COL)
+                        .ok()
+                        .and_then(|v| v.as_str().ok().map(str::to_owned));
+                    let incoming = item
+                        .new_value(HLC_COL)
+                        .ok()
+                        .and_then(|v| v.as_str().ok().map(str::to_owned));
                     match (incoming, local) {
                         (Some(i), Some(l)) if i > l => ConflictAction::SQLITE_CHANGESET_REPLACE,
                         // A DELETE has no `new` values: the deleter's clock is not in the
@@ -72,7 +78,9 @@ fn apply_lww(conn: &Connection, changeset: &[u8]) {
 }
 
 fn rows(conn: &Connection) -> Vec<(String, Option<String>, Option<i64>, Option<String>)> {
-    let mut st = conn.prepare("SELECT id, a, b, hlc FROM t ORDER BY id").unwrap();
+    let mut st = conn
+        .prepare("SELECT id, a, b, hlc FROM t ORDER BY id")
+        .unwrap();
     st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .unwrap()
         .map(Result::unwrap)
@@ -104,10 +112,14 @@ fn capture_and_replay(key: Option<&str>) {
     let b = open(dir.path(), "b.sqlite", key);
 
     let cs = capture(&a, |a| {
-        a.execute("INSERT INTO t VALUES ('1', 'one', 1, '0001')", []).unwrap();
-        a.execute("INSERT INTO t VALUES ('2', 'two', 2, '0001')", []).unwrap();
-        a.execute("INSERT INTO t VALUES ('3', 'three', 3, '0001')", []).unwrap();
-        a.execute("UPDATE t SET a = 'TWO', hlc = '0002' WHERE id = '2'", []).unwrap();
+        a.execute("INSERT INTO t VALUES ('1', 'one', 1, '0001')", [])
+            .unwrap();
+        a.execute("INSERT INTO t VALUES ('2', 'two', 2, '0001')", [])
+            .unwrap();
+        a.execute("INSERT INTO t VALUES ('3', 'three', 3, '0001')", [])
+            .unwrap();
+        a.execute("UPDATE t SET a = 'TWO', hlc = '0002' WHERE id = '2'", [])
+            .unwrap();
         a.execute("DELETE FROM t WHERE id = '3'", []).unwrap();
     });
     assert!(!cs.is_empty(), "session yielded an empty changeset");
@@ -121,13 +133,22 @@ fn capture_and_replay(key: Option<&str>) {
 
     // A second session on top of the replicated state: pure updates and a delete.
     let cs2 = capture(&a, |a| {
-        a.execute("UPDATE t SET b = 11, hlc = '0003' WHERE id = '1'", []).unwrap();
+        a.execute("UPDATE t SET b = 11, hlc = '0003' WHERE id = '1'", [])
+            .unwrap();
         a.execute("DELETE FROM t WHERE id = '2'", []).unwrap();
     });
     assert_eq!(ops(&cs2), (0, 1, 1));
     apply_lww(&b, &cs2);
     assert_eq!(rows(&a), rows(&b));
-    assert_eq!(rows(&b), vec![("1".into(), Some("one".into()), Some(11), Some("0003".into()))]);
+    assert_eq!(
+        rows(&b),
+        vec![(
+            "1".into(),
+            Some("one".into()),
+            Some(11),
+            Some("0003".into())
+        )]
+    );
 }
 
 #[test]
@@ -142,7 +163,10 @@ fn captures_and_replays_under_sqlcipher_key() {
     let dir = tempfile::tempdir().unwrap();
     let _ = open(dir.path(), "k.sqlite", Some("spike-key"));
     let plain = Connection::open(dir.path().join("k.sqlite")).unwrap();
-    assert!(plain.execute_batch("SELECT count(*) FROM t").is_err(), "opened a keyed file without its key");
+    assert!(
+        plain.execute_batch("SELECT count(*) FROM t").is_err(),
+        "opened a keyed file without its key"
+    );
 }
 
 /// (3): the same row updated on both sides; the conflict handler keeps the
@@ -153,14 +177,17 @@ fn concurrent_update_resolved_by_hlc() {
     let a = open(dir.path(), "a.sqlite", None);
     let b = open(dir.path(), "b.sqlite", None);
     for c in [&a, &b] {
-        c.execute("INSERT INTO t VALUES ('1', 'base', 0, '0001')", []).unwrap();
+        c.execute("INSERT INTO t VALUES ('1', 'base', 0, '0001')", [])
+            .unwrap();
     }
 
     let from_a = capture(&a, |a| {
-        a.execute("UPDATE t SET a = 'A', hlc = '0003' WHERE id = '1'", []).unwrap();
+        a.execute("UPDATE t SET a = 'A', hlc = '0003' WHERE id = '1'", [])
+            .unwrap();
     });
     let from_b = capture(&b, |b| {
-        b.execute("UPDATE t SET a = 'B', hlc = '0002' WHERE id = '1'", []).unwrap();
+        b.execute("UPDATE t SET a = 'B', hlc = '0002' WHERE id = '1'", [])
+            .unwrap();
     });
 
     // B receives A's later write: conflict (old value 'base' != 'B'), higher wins → replace.
@@ -177,12 +204,21 @@ fn concurrent_update_resolved_by_hlc() {
         a.execute("DELETE FROM t WHERE id = '1'", []).unwrap();
     });
     let upd = capture(&b, |b| {
-        b.execute("UPDATE t SET b = 9, hlc = '0004' WHERE id = '1'", []).unwrap();
+        b.execute("UPDATE t SET b = 9, hlc = '0004' WHERE id = '1'", [])
+            .unwrap();
     });
     apply_lww(&b, &del);
     apply_lww(&a, &upd); // NOTFOUND on A: omitted — the update alone cannot resurrect.
-    assert_eq!(rows(&b).len(), 1, "update with a higher clock survives the delete on B");
-    assert_eq!(rows(&a).len(), 0, "a lone column update cannot resurrect a deleted row on A");
+    assert_eq!(
+        rows(&b).len(),
+        1,
+        "update with a higher clock survives the delete on B"
+    );
+    assert_eq!(
+        rows(&a).len(),
+        0,
+        "a lone column update cannot resurrect a deleted row on A"
+    );
 }
 
 /// (4): numbers. Printed; recorded in docs/design/67-replica-spike.md.
@@ -194,7 +230,13 @@ fn numbers() {
         {
             let mut st = tx.prepare("INSERT INTO t VALUES (?1, ?2, ?3, ?4)").unwrap();
             for i in 0..n {
-                st.execute(params![format!("row-{i:06}"), format!("value {i}"), i as i64, "0001"]).unwrap();
+                st.execute(params![
+                    format!("row-{i:06}"),
+                    format!("value {i}"),
+                    i as i64,
+                    "0001"
+                ])
+                .unwrap();
             }
         }
         tx.commit().unwrap();
@@ -225,8 +267,19 @@ fn numbers() {
     let one_k = open(dir.path(), "onek.sqlite", None);
     let cs_1k = capture(&one_k, |c| insert(c, 1_000));
 
-    eprintln!("SPIKE 10k inserts, one transaction, no session: {without:?} ({:.1} µs/row)", without.as_secs_f64() * 1e6 / 10_000.0);
-    eprintln!("SPIKE 10k inserts, one transaction, session attached: {with:?} ({:.1} µs/row)", with.as_secs_f64() * 1e6 / 10_000.0);
-    eprintln!("SPIKE changeset for 10k rows: {} bytes; for 1k rows: {} bytes ({:.1} B/row)", cs.len(), cs_1k.len(), cs_1k.len() as f64 / 1000.0);
+    eprintln!(
+        "SPIKE 10k inserts, one transaction, no session: {without:?} ({:.1} µs/row)",
+        without.as_secs_f64() * 1e6 / 10_000.0
+    );
+    eprintln!(
+        "SPIKE 10k inserts, one transaction, session attached: {with:?} ({:.1} µs/row)",
+        with.as_secs_f64() * 1e6 / 10_000.0
+    );
+    eprintln!(
+        "SPIKE changeset for 10k rows: {} bytes; for 1k rows: {} bytes ({:.1} B/row)",
+        cs.len(),
+        cs_1k.len(),
+        cs_1k.len() as f64 / 1000.0
+    );
     eprintln!("SPIKE apply 10k-row changeset to a fresh file: {apply:?}");
 }

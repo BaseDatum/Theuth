@@ -71,7 +71,9 @@ fn exited(child: &mut Child) -> std::io::Result<Option<u32>> {
 /// `Some(exit code)` once the daemon has exited (no signals on Windows: always a code).
 #[cfg(windows)]
 fn exited(child: &mut Child) -> std::io::Result<Option<u32>> {
-    Ok(child.try_wait()?.map(|s| s.code().unwrap_or_default() as u32))
+    Ok(child
+        .try_wait()?
+        .map(|s| s.code().unwrap_or_default() as u32))
 }
 
 #[derive(Default)]
@@ -190,7 +192,9 @@ fn recorded_listen(data_dir: &Path) -> Option<String> {
     let bytes = std::fs::read(data_dir.join("engine.json")).ok()?;
     let r: Record = serde_json::from_slice(&bytes).ok()?;
     // A dead engine leaves a stale record (63 §2.1); `platform` answers per OS.
-    platform::process::pid_alive(r.pid).then_some(r.listen).flatten()
+    platform::process::pid_alive(r.pid)
+        .then_some(r.listen)
+        .flatten()
 }
 
 fn configured_listen(data_dir: &Path) -> String {
@@ -297,7 +301,10 @@ fn daemon_command(data_dir: &Path, log: &Mutex<Vec<u8>>) -> (PathBuf, Vec<String
         sq(&bin.to_string_lossy()),
         sq(&data_dir.to_string_lossy())
     );
-    (shell(log), ["-l", "-i", "-c", &script].map(str::to_owned).to_vec())
+    (
+        shell(log),
+        ["-l", "-i", "-c", &script].map(str::to_owned).to_vec(),
+    )
 }
 
 /// The app's environment plus `TERM`, the `THEUTH_LAUNCH=1` guard (18 §4) and
@@ -325,14 +332,21 @@ fn command(program: &Path, args: &[String], port: u16) -> CommandBuilder {
 }
 
 /// The login shell when `$SHELL` is unset: zsh on macOS, `sh` elsewhere.
-const FALLBACK_SHELL: &str = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+const FALLBACK_SHELL: &str = if cfg!(target_os = "macos") {
+    "/bin/zsh"
+} else {
+    "/bin/sh"
+};
 
 /// `$SHELL` when it exists, else [`FALLBACK_SHELL`] — said in the transcript (18 §4).
 fn shell(log: &Mutex<Vec<u8>>) -> PathBuf {
     match std::env::var_os("SHELL").map(PathBuf::from) {
         Some(s) if s.is_file() => s,
         _ => {
-            append(log, format!("SHELL unset or not executable; using {FALLBACK_SHELL}\r\n").as_bytes());
+            append(
+                log,
+                format!("SHELL unset or not executable; using {FALLBACK_SHELL}\r\n").as_bytes(),
+            );
             PathBuf::from(FALLBACK_SHELL)
         }
     }
@@ -469,7 +483,12 @@ fn strip_controls(bytes: &[u8]) -> String {
 /// (`Password: `, `Continue? (y/n) `) — a daemon or shell that finished its
 /// output ended it with a newline.
 fn waiting_for_input(text: &str) -> bool {
-    !text.rsplit(['\n', '\r']).next().unwrap_or("").trim().is_empty()
+    !text
+        .rsplit(['\n', '\r'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
 }
 
 /// The last `n` non-blank lines, newline-joined.
@@ -544,7 +563,11 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from(FALLBACK_SHELL));
         let mut child = pair
             .slave
-            .spawn_command(command(&shell, &["-l", "-i", "-c", "exec env"].map(str::to_owned), 7802))
+            .spawn_command(command(
+                &shell,
+                &["-l", "-i", "-c", "exec env"].map(str::to_owned),
+                7802,
+            ))
             .unwrap();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().unwrap();
@@ -582,20 +605,29 @@ mod tests {
         assert_eq!(strip_controls(CONHOST), "");
         assert!(!waiting_for_input(&strip_controls(CONHOST)));
         // An OSC the stream never terminated swallows the rest: still no prompt.
-        assert!(!waiting_for_input(&strip_controls(b"\x1b]0;C:\\t.exe \x1b[6n")));
+        assert!(!waiting_for_input(&strip_controls(
+            b"\x1b]0;C:\\t.exe \x1b[6n"
+        )));
         assert!(!waiting_for_input(&strip_controls(b"loaded 3 skills\r\n")));
         assert!(!waiting_for_input(""));
     }
 
     #[test]
     fn real_prompts_are() {
-        assert!(waiting_for_input(&strip_controls(b"Last login: Tue\r\nPassword: ")));
-        assert!(waiting_for_input(&strip_controls(b"\x1b[1mUpdate zsh plugins? (y/n) \x1b[0m")));
+        assert!(waiting_for_input(&strip_controls(
+            b"Last login: Tue\r\nPassword: "
+        )));
+        assert!(waiting_for_input(&strip_controls(
+            b"\x1b[1mUpdate zsh plugins? (y/n) \x1b[0m"
+        )));
     }
 
     #[test]
     fn strip_keeps_text_between_sequences() {
-        assert_eq!(strip_controls(b"\x1b(Ba\x1b[31mb\x1b[0m\x07c\x1bP..\x1b\\d"), "abcd");
+        assert_eq!(
+            strip_controls(b"\x1b(Ba\x1b[31mb\x1b[0m\x07c\x1bP..\x1b\\d"),
+            "abcd"
+        );
         assert_eq!(last_lines("a\r\n\r\nb\nc\n", 2), "b\nc");
     }
 }

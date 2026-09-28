@@ -139,7 +139,11 @@ impl Routes {
 
     /// A domain's routes: the private root's map when `root` is given, else
     /// the disk store.
-    pub(crate) async fn load(&self, root: Option<&Path>, domain: &str) -> anyhow::Result<SiteRoutes> {
+    pub(crate) async fn load(
+        &self,
+        root: Option<&Path>,
+        domain: &str,
+    ) -> anyhow::Result<SiteRoutes> {
         let Some(root) = root else {
             return self.store.load(domain).await;
         };
@@ -654,23 +658,36 @@ mod tests {
                 .await
                 .expect("absorb");
         }
-        routes
-            .members
-            .lock()
-            .await
-            .insert(session, scratch.clone());
+        routes.members.lock().await.insert(session, scratch.clone());
         let url = Url::parse("https://api.example.com/").expect("url");
         let site = routes.list(root, &url).await.expect("list");
         assert_eq!(site.routes.len(), 1);
         let id = site.routes[0].id.clone();
-        routes.mark(root, "example.com", &id, false).await.expect("mark");
+        routes
+            .mark(root, "example.com", &id, false)
+            .await
+            .expect("mark");
         assert!(routes.list(root, &url).await.expect("list").routes[0].stale);
         // Never on disk, never visible to a durable session.
         assert!(!dir.join("routes").exists());
-        assert!(routes.list(None, &url).await.expect("list").routes.is_empty());
+        assert!(
+            routes
+                .list(None, &url)
+                .await
+                .expect("list")
+                .routes
+                .is_empty()
+        );
 
         routes.close(&[session]).await;
-        assert!(routes.list(root, &url).await.expect("list").routes.is_empty());
+        assert!(
+            routes
+                .list(root, &url)
+                .await
+                .expect("list")
+                .routes
+                .is_empty()
+        );
         assert!(routes.creds.lock().await.is_empty());
         assert!(routes.members.lock().await.is_empty());
     }

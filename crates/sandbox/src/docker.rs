@@ -12,10 +12,14 @@ use std::path::PathBuf;
 use bollard::Docker;
 use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-use bollard::models::{ContainerCreateBody, ContainerSummaryStateEnum, HostConfig, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    ContainerCreateBody, ContainerSummaryStateEnum, HostConfig, RestartPolicy,
+    RestartPolicyNameEnum,
+};
 use bollard::query_parameters::{
-    BuildImageOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, RemoveVolumeOptions, StartContainerOptions, UploadToContainerOptionsBuilder,
+    BuildImageOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptions,
+    StartContainerOptions, UploadToContainerOptionsBuilder,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -57,17 +61,28 @@ impl DockerSandbox {
     /// `~/.docker/run/docker.sock`, else `/var/run/docker.sock`. `image` is a
     /// pre-built ref; `local_t` selects the dev Dockerfile; neither → the
     /// release Dockerfile.
-    pub async fn connect(name: &str, image: Option<String>, local_t: Option<PathBuf>) -> anyhow::Result<Self> {
+    pub async fn connect(
+        name: &str,
+        image: Option<String>,
+        local_t: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
         let docker = if std::env::var_os("DOCKER_HOST").is_some() {
             Docker::connect_with_defaults()?
         } else {
             let desktop = dirs::home_dir().map(|h| h.join(".docker/run/docker.sock"));
             match desktop.filter(|p| p.exists()) {
-                Some(p) => Docker::connect_with_unix(&p.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION)?,
+                Some(p) => Docker::connect_with_unix(
+                    &p.to_string_lossy(),
+                    120,
+                    bollard::API_DEFAULT_VERSION,
+                )?,
                 None => Docker::connect_with_local_defaults()?,
             }
         };
-        docker.ping().await.map_err(|e| anyhow::anyhow!("docker daemon: {e}"))?;
+        docker
+            .ping()
+            .await
+            .map_err(|e| anyhow::anyhow!("docker daemon: {e}"))?;
         let image = match (image, local_t) {
             (Some(r), _) => Image::Ref(r),
             (None, Some(p)) => Image::Dev(p),
@@ -86,13 +101,18 @@ impl DockerSandbox {
     }
 
     fn volumes(&self) -> [String; 2] {
-        [format!("theuth-{}-data", self.name), format!("theuth-{}-workspace", self.name)]
+        [
+            format!("theuth-{}-data", self.name),
+            format!("theuth-{}-workspace", self.name),
+        ]
     }
 
     async fn image_id(&self, r: &str) -> anyhow::Result<Option<String>> {
         match self.docker.inspect_image(r).await {
             Ok(i) => Ok(i.id),
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -111,7 +131,10 @@ impl DockerSandbox {
                 while let Some(item) = s.next().await {
                     item.map_err(|e| anyhow::anyhow!("pull {r}: {e}"))?;
                 }
-                return self.image_id(r).await?.ok_or_else(|| anyhow::anyhow!("pull {r}: image missing after pull"));
+                return self
+                    .image_id(r)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("pull {r}: image missing after pull"));
             }
             Image::Release => {
                 let tag = format!("theuth-engine:{}", env!("CARGO_PKG_VERSION"));
@@ -121,7 +144,10 @@ impl DockerSandbox {
                 let t = std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
                 let hash = sha2::Sha256::digest(&t);
                 let short: String = hash.iter().take(6).map(|b| format!("{b:02x}")).collect();
-                (format!("theuth-engine:dev-{short}"), tar_context(DOCKERFILE_DEV, Some(&t)))
+                (
+                    format!("theuth-engine:dev-{short}"),
+                    tar_context(DOCKERFILE_DEV, Some(&t)),
+                )
             }
         };
         if let Some(id) = self.image_id(&tag).await? {
@@ -130,7 +156,10 @@ impl DockerSandbox {
         }
         out.say("image", format!("building {tag}"));
         let args = HashMap::from([
-            ("THEUTH_VERSION".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
+            (
+                "THEUTH_VERSION".to_owned(),
+                env!("CARGO_PKG_VERSION").to_owned(),
+            ),
             ("THEUTH_PUBKEY".to_owned(), update::PUBKEY.trim().to_owned()),
         ]);
         let opts = BuildImageOptionsBuilder::new()
@@ -139,7 +168,9 @@ impl DockerSandbox {
             .buildargs(&args)
             .rm(true)
             .build();
-        let mut s = self.docker.build_image(opts, None, Some(bollard::body_full(context.into())));
+        let mut s = self
+            .docker
+            .build_image(opts, None, Some(bollard::body_full(context.into())));
         while let Some(item) = s.next().await {
             let info = item.map_err(|e| anyhow::anyhow!("build {tag}: {e}"))?;
             if let Some(line) = info.stream {
@@ -152,13 +183,21 @@ impl DockerSandbox {
                 anyhow::bail!("build {tag}: {}", d.message.unwrap_or_default());
             }
         }
-        self.image_id(&tag).await?.ok_or_else(|| anyhow::anyhow!("build {tag}: no image after build"))
+        self.image_id(&tag)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("build {tag}: no image after build"))
     }
 
     /// Our container for this name, if any: `(id, running, matches image+schema)`.
     async fn existing(&self, image_id: &str) -> anyhow::Result<Option<(String, bool, bool)>> {
-        let filters = HashMap::from([("label".to_owned(), vec![format!("{LABEL_ENGINE}={}", self.name)])]);
-        let opts = ListContainersOptionsBuilder::new().all(true).filters(&filters).build();
+        let filters = HashMap::from([(
+            "label".to_owned(),
+            vec![format!("{LABEL_ENGINE}={}", self.name)],
+        )]);
+        let opts = ListContainersOptionsBuilder::new()
+            .all(true)
+            .filters(&filters)
+            .build();
         let list = self.docker.list_containers(Some(opts)).await?;
         Ok(list.into_iter().next().and_then(|c| {
             let id = c.id?;
@@ -213,14 +252,22 @@ impl Sandbox for DockerSandbox {
         if let Some((id, running, matches)) = self.existing(&image_id).await? {
             if matches {
                 if !running {
-                    self.docker.start_container(&id, None::<StartContainerOptions>).await?;
+                    self.docker
+                        .start_container(&id, None::<StartContainerOptions>)
+                        .await?;
                 }
                 out.say("create", format!("{cname} adopted"));
                 return Ok(Handle { id });
             }
-            out.say("create", format!("{cname} is from another image; recreating (volumes kept)"));
+            out.say(
+                "create",
+                format!("{cname} is from another image; recreating (volumes kept)"),
+            );
             self.docker
-                .remove_container(&id, Some(RemoveContainerOptionsBuilder::new().force(true).build()))
+                .remove_container(
+                    &id,
+                    Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+                )
                 .await?;
         }
         let [data, workspace] = self.volumes();
@@ -233,7 +280,10 @@ impl Sandbox for DockerSandbox {
                 (LABEL_IMAGE.to_owned(), image_id),
             ])),
             host_config: Some(HostConfig {
-                binds: Some(vec![format!("{data}:/data"), format!("{workspace}:/workspace")]),
+                binds: Some(vec![
+                    format!("{data}:/data"),
+                    format!("{workspace}:/workspace"),
+                ]),
                 restart_policy: Some(RestartPolicy {
                     name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                     maximum_retry_count: None,
@@ -244,7 +294,9 @@ impl Sandbox for DockerSandbox {
         };
         let opts = CreateContainerOptionsBuilder::new().name(&cname).build();
         let created = self.docker.create_container(Some(opts), body).await?;
-        self.docker.start_container(&created.id, None::<StartContainerOptions>).await?;
+        self.docker
+            .start_container(&created.id, None::<StartContainerOptions>)
+            .await?;
         out.say("create", format!("{cname} started"));
         Ok(Handle { id: created.id })
     }
@@ -270,8 +322,13 @@ impl Sandbox for DockerSandbox {
                 status: -1,
                 ..Default::default()
             };
-            if let StartExecResults::Attached { mut output, mut input } =
-                self.docker.start_exec(&exec.id, None::<StartExecOptions>).await?
+            if let StartExecResults::Attached {
+                mut output,
+                mut input,
+            } = self
+                .docker
+                .start_exec(&exec.id, None::<StartExecOptions>)
+                .await?
             {
                 let feed = tokio::spawn(async move {
                     if let Some(bytes) = cmd.stdin {
@@ -281,8 +338,12 @@ impl Sandbox for DockerSandbox {
                 });
                 while let Some(item) = output.next().await {
                     match item? {
-                        bollard::container::LogOutput::StdOut { message } => out.stdout.extend_from_slice(&message),
-                        bollard::container::LogOutput::StdErr { message } => out.stderr.extend_from_slice(&message),
+                        bollard::container::LogOutput::StdOut { message } => {
+                            out.stdout.extend_from_slice(&message)
+                        }
+                        bollard::container::LogOutput::StdErr { message } => {
+                            out.stderr.extend_from_slice(&message)
+                        }
                         _ => {}
                     }
                 }
@@ -299,13 +360,19 @@ impl Sandbox for DockerSandbox {
 
     async fn put(&self, h: &Handle, path: &str, bytes: Bytes, mode: u32) -> anyhow::Result<()> {
         let (dir, name) = path.rsplit_once('/').unwrap_or((".", path));
-        let mk = self.exec(h, Cmd::new(format!("mkdir -p {}", crate::sq(dir)))).await?;
+        let mk = self
+            .exec(h, Cmd::new(format!("mkdir -p {}", crate::sq(dir))))
+            .await?;
         if !mk.ok() {
             anyhow::bail!("put {path}: {}", mk.reason());
         }
         let opts = UploadToContainerOptionsBuilder::new().path(dir).build();
         self.docker
-            .upload_to_container(&h.id, Some(opts), bollard::body_full(tar_file(name, &bytes, mode).into()))
+            .upload_to_container(
+                &h.id,
+                Some(opts),
+                bollard::body_full(tar_file(name, &bytes, mode).into()),
+            )
             .await?;
         Ok(())
     }
@@ -321,16 +388,29 @@ impl Sandbox for DockerSandbox {
     async fn destroy(&self, h: &Handle, preserve_data: bool) -> anyhow::Result<()> {
         match self
             .docker
-            .remove_container(&h.id, Some(RemoveContainerOptionsBuilder::new().force(true).build()))
+            .remove_container(
+                &h.id,
+                Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+            )
             .await
         {
-            Ok(()) | Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => {}
+            Ok(())
+            | Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
             Err(e) => return Err(e.into()),
         }
         if !preserve_data {
             for v in self.volumes() {
-                match self.docker.remove_volume(&v, None::<RemoveVolumeOptions>).await {
-                    Ok(()) | Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => {}
+                match self
+                    .docker
+                    .remove_volume(&v, None::<RemoveVolumeOptions>)
+                    .await
+                {
+                    Ok(())
+                    | Err(DockerError::DockerResponseServerError {
+                        status_code: 404, ..
+                    }) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -353,8 +433,14 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(tar_context(DOCKERFILE, None)), ["Dockerfile"]);
-        assert_eq!(names(tar_context(DOCKERFILE_DEV, Some(b"ELF"))), ["Dockerfile", "t"]);
+        assert_eq!(
+            names(tar_context(DOCKERFILE_DEV, Some(b"ELF"))),
+            ["Dockerfile", "t"]
+        );
         assert_eq!(names(tar_file("t", b"ELF", 0o755)), ["t"]);
-        assert!(DOCKERFILE.contains("minisign -Vq") && DOCKERFILE_DEV.contains("COPY t /usr/local/bin/t"));
+        assert!(
+            DOCKERFILE.contains("minisign -Vq")
+                && DOCKERFILE_DEV.contains("COPY t /usr/local/bin/t")
+        );
     }
 }

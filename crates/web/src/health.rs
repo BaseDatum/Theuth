@@ -107,10 +107,16 @@ mod tests {
         assert_eq!(error_kind("blocked: b_captcha"), "captcha");
         assert_eq!(error_kind("blocked: HTTP 202 challenge"), "challenge");
         assert_eq!(error_kind("blocked: HTTP 403"), "blocked");
-        assert_eq!(error_kind("no results; response shape may have changed"), "parse_error");
+        assert_eq!(
+            error_kind("no results; response shape may have changed"),
+            "parse_error"
+        );
         assert_eq!(error_kind("bad response: missing field"), "parse_error");
         assert_eq!(error_kind("timed out after 4000ms"), "timeout");
-        assert_eq!(error_kind("unauthorized: check the provider's secret"), "unauthorized");
+        assert_eq!(
+            error_kind("unauthorized: check the provider's secret"),
+            "unauthorized"
+        );
         assert_eq!(error_kind("HTTP 502"), "http");
     }
 

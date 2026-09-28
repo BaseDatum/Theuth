@@ -199,7 +199,11 @@ pub fn tags(reply: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in line.split(',') {
         let mut tag = String::new();
-        for c in raw.trim().trim_matches(['`', '"', '\'', '[', ']', '#']).chars() {
+        for c in raw
+            .trim()
+            .trim_matches(['`', '"', '\'', '[', ']', '#'])
+            .chars()
+        {
             match c.to_ascii_lowercase() {
                 c if c.is_ascii_alphanumeric() => tag.push(c),
                 _ if !tag.is_empty() && !tag.ends_with('-') => tag.push('-'),
@@ -262,10 +266,14 @@ mod tests {
 
     #[test]
     fn tags_parse_normalise_dedupe_and_cap() {
-        let reply = "Merge design 62\ntags: Theuth, Rust, desktop UI, theuth, C++, meeting, extra\n";
+        let reply =
+            "Merge design 62\ntags: Theuth, Rust, desktop UI, theuth, C++, meeting, extra\n";
         assert_eq!(clean(reply).as_deref(), Some("Merge design 62"));
         assert_eq!(tags(reply), ["theuth", "rust", "desktop-ui", "c"]);
-        assert_eq!(tags("**Tags:** `merge`, \"research\""), ["merge", "research"]);
+        assert_eq!(
+            tags("**Tags:** `merge`, \"research\""),
+            ["merge", "research"]
+        );
         assert_eq!(tags("Just a title"), Vec::<String>::new());
         assert_eq!(tags("tags: , --, ***"), Vec::<String>::new());
         let long = tags(&format!("tags: {}", "a".repeat(40)));
@@ -283,7 +291,10 @@ mod tests {
         h.push((99, ChatMessage::user("<todo>\n- x\n</todo>")));
         h.push((100, ChatMessage::assistant("Done: shipped it.")));
         let d = digest("Old title", &["rust".to_owned()], None, &h);
-        assert!(d.contains("Current title: Old title\nCurrent tags: rust\n"), "{d}");
+        assert!(
+            d.contains("Current title: Old title\nCurrent tags: rust\n"),
+            "{d}"
+        );
         assert!(
             d.contains("- ask 0\n- ask 1\n(… 5 more …)\n- ask 7\n"),
             "{d}"
@@ -302,10 +313,15 @@ mod tests {
     fn digest_names_attachments_by_title() {
         let h = vec![(
             0,
-            ChatMessage::user("[attached note abc \"Groceries\" · 1 KB]\n[doc knowledge:facts/x \"Relay timeouts\"]\nwhat's missing?"),
+            ChatMessage::user(
+                "[attached note abc \"Groceries\" · 1 KB]\n[doc knowledge:facts/x \"Relay timeouts\"]\nwhat's missing?",
+            ),
         )];
         let d = digest("", &[], None, &h);
-        assert!(d.contains("- (attached: \"Groceries\", \"Relay timeouts\") what's missing?\n"), "{d}");
+        assert!(
+            d.contains("- (attached: \"Groceries\", \"Relay timeouts\") what's missing?\n"),
+            "{d}"
+        );
         assert!(!d.contains("[attached") && !d.contains("abc"), "{d}");
     }
 }

@@ -8,7 +8,17 @@ use serde::{Deserialize, Serialize};
 
 /// Task id: uuidv7 as text.
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
@@ -275,7 +285,12 @@ impl WakeReason {
         match self {
             _ if matches!(state, Done | Cancelled) => false,
             Self::Review => matches!(state, Review | Blocked),
-            Self::Assigned | Self::Reassigned | Self::Resume | Self::Resumed | Self::BlockersResolved | Self::ChildrenCompleted => {
+            Self::Assigned
+            | Self::Reassigned
+            | Self::Resume
+            | Self::Resumed
+            | Self::BlockersResolved
+            | Self::ChildrenCompleted => {
                 matches!(state, Todo | Doing)
             }
             Self::Comment | Self::Mention | Self::Schedule | Self::Answer | Self::Manual => true,
@@ -284,7 +299,9 @@ impl WakeReason {
 }
 
 /// One row of `wakes` (67 §7.3): coalesced on `key`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Wake {
     /// uuidv7.
@@ -371,14 +388,24 @@ impl std::fmt::Display for DoneBecause {
             Self::CriteriaMet => f.write_str("criteria met"),
             Self::IntentMet => f.write_str("intent met"),
             Self::FollowUpsFiled { tasks } => {
-                write!(f, "follow-ups filed ({})", tasks.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(", "))
+                write!(
+                    f,
+                    "follow-ups filed ({})",
+                    tasks
+                        .iter()
+                        .map(|t| t.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
         }
     }
 }
 
 /// One row of `task_events`: a field-level change (67 §7.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct TaskEvent {
     /// ms since epoch.
@@ -537,8 +564,10 @@ mod tests {
 
     #[test]
     fn create_state_defaults_to_backlog_on_the_wire() {
-        let t: TaskCreate =
-            serde_json::from_value(serde_json::json!({ "title": "t", "brief": "", "owner": { "type": "user" } })).unwrap();
+        let t: TaskCreate = serde_json::from_value(
+            serde_json::json!({ "title": "t", "brief": "", "owner": { "type": "user" } }),
+        )
+        .unwrap();
         assert_eq!(t.state, TaskState::Backlog);
         assert_eq!(serde_json::to_value(TaskState::Backlog).unwrap(), "backlog");
     }

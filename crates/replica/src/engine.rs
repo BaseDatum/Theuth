@@ -43,7 +43,17 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// Replication counters (69 audit): every path that could echo or storm has a
 /// number that would show it; `mesh_status.replica` reports them. All but
 /// `outbox_rows` count column changes since start.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ReplicaStats"))]
 pub struct Stats {
     /// Captured from local writes.
@@ -194,7 +204,13 @@ impl Engine {
     pub(crate) async fn with_store(store: Store) -> anyhow::Result<Arc<Self>> {
         let origin = store.identity().await?;
         let clock = Clock::new(origin.clone(), store.load_clock().await?);
-        let next_seq = store.version_vector().await?.get(&origin).copied().unwrap_or(0) + 1;
+        let next_seq = store
+            .version_vector()
+            .await?
+            .get(&origin)
+            .copied()
+            .unwrap_or(0)
+            + 1;
         let (feed, _) = broadcast::channel(FEED_CAPACITY);
         Ok(Arc::new(Self {
             store,
@@ -234,14 +250,20 @@ impl Engine {
 
     /// Mark `tables` of `pool` as replicated: verify shape, install the
     /// capture triggers, start polling. Errors name the offending table.
-    pub async fn attach(self: &Arc<Self>, pool: &SqlitePool, tables: &[&str]) -> anyhow::Result<ReplicaHandle> {
+    pub async fn attach(
+        self: &Arc<Self>,
+        pool: &SqlitePool,
+        tables: &[&str],
+    ) -> anyhow::Result<ReplicaHandle> {
         let mut infos = Vec::with_capacity(tables.len());
         for &t in tables {
             infos.push((t.to_owned(), inspect(pool, t).await?));
         }
         install_log(pool).await?;
         for (t, info) in &infos {
-            install_triggers(pool, t, info).await.with_context(|| format!("table {t}: install triggers"))?;
+            install_triggers(pool, t, info)
+                .await
+                .with_context(|| format!("table {t}: install triggers"))?;
         }
         {
             let mut map = self.tables.lock();
@@ -280,13 +302,21 @@ impl Engine {
 
     /// Fold pending `_replica_log` rows of `tables` into one batch: stamp,
     /// persist, publish, then clear the rows. Returns the batch if any.
-    pub(crate) async fn capture(&self, pool: &SqlitePool, tables: &[String]) -> anyhow::Result<Option<ChangeBatch>> {
+    pub(crate) async fn capture(
+        &self,
+        pool: &SqlitePool,
+        tables: &[String],
+    ) -> anyhow::Result<Option<ChangeBatch>> {
         let _guard = self.write_lock.lock().await;
         self.capture_locked(pool, tables).await
     }
 
     /// [`Engine::capture`] with `write_lock` held by the caller.
-    pub(crate) async fn capture_locked(&self, pool: &SqlitePool, tables: &[String]) -> anyhow::Result<Option<ChangeBatch>> {
+    pub(crate) async fn capture_locked(
+        &self,
+        pool: &SqlitePool,
+        tables: &[String],
+    ) -> anyhow::Result<Option<ChangeBatch>> {
         let placeholders = vec!["?"; tables.len()].join(",");
         let sql = format!(
             "SELECT seq, tbl, pk, col, vtype, value, deleted, hlc FROM _replica_log
@@ -343,7 +373,10 @@ impl Engine {
 
     /// Counters plus the outbox size.
     pub async fn stats(&self) -> anyhow::Result<Stats> {
-        let outbox_rows: i64 = sqlx::query("SELECT COUNT(*) FROM outbox").fetch_one(self.store.pool()).await?.get(0);
+        let outbox_rows: i64 = sqlx::query("SELECT COUNT(*) FROM outbox")
+            .fetch_one(self.store.pool())
+            .await?
+            .get(0);
         Ok(Stats {
             captured: self.counters.captured.load(Relaxed),
             applied: self.counters.applied.load(Relaxed),
@@ -360,13 +393,17 @@ impl Engine {
 
     /// `changes` were sent on a stream for `origin`.
     pub(crate) fn count_relayed(&self, changes: &[Change]) {
-        self.counters.relayed.fetch_add(changes.len() as u64, Relaxed);
+        self.counters
+            .relayed
+            .fetch_add(changes.len() as u64, Relaxed);
     }
 
     /// `changes` were applied from a peer: count them and remember the
     /// column writes so a capture that repeats one is an echo.
     pub(crate) fn count_applied(&self, changes: &[Change]) {
-        self.counters.applied.fetch_add(changes.len() as u64, Relaxed);
+        self.counters
+            .applied
+            .fetch_add(changes.len() as u64, Relaxed);
         let at_ms = now_ms();
         let mut recent = self.recent.lock();
         for c in changes {
@@ -391,18 +428,28 @@ impl Engine {
     /// ones repeating an applied write of the last [`ECHO_WINDOW`]. Warns
     /// (at most every [`WARN_EVERY`]) when there are any.
     fn count_captured(&self, changes: &[Change]) {
-        self.counters.captured.fetch_add(changes.len() as u64, Relaxed);
+        self.counters
+            .captured
+            .fetch_add(changes.len() as u64, Relaxed);
         let now = now_ms();
         let echoes = {
             let mut recent = self.recent.lock();
-            while recent.front().is_some_and(|r| now.saturating_sub(r.at_ms) > ECHO_WINDOW.as_millis() as u64) {
+            while recent
+                .front()
+                .is_some_and(|r| now.saturating_sub(r.at_ms) > ECHO_WINDOW.as_millis() as u64)
+            {
                 recent.pop_front();
             }
             changes
                 .iter()
                 .filter(|c| {
                     c.column.as_ref().is_some_and(|col| {
-                        recent.iter().any(|r| r.table == c.table && r.pk == c.pk && r.column == *col && r.value == c.value)
+                        recent.iter().any(|r| {
+                            r.table == c.table
+                                && r.pk == c.pk
+                                && r.column == *col
+                                && r.value == c.value
+                        })
                     })
                 })
                 .count() as u64
@@ -413,9 +460,16 @@ impl Engine {
         let total = self.counters.echo.fetch_add(echoes, Relaxed) + echoes;
         let last = self.counters.last_echo_warn_ms.load(Relaxed);
         if now.saturating_sub(last) >= WARN_EVERY.as_millis() as u64
-            && self.counters.last_echo_warn_ms.compare_exchange(last, now, Relaxed, Relaxed).is_ok()
+            && self
+                .counters
+                .last_echo_warn_ms
+                .compare_exchange(last, now, Relaxed, Relaxed)
+                .is_ok()
         {
-            let sample = changes.iter().find(|c| c.column.is_some()).map(|c| format!("{}.{}", c.table, c.pk));
+            let sample = changes
+                .iter()
+                .find(|c| c.column.is_some())
+                .map(|c| format!("{}.{}", c.table, c.pk));
             tracing::warn!(
                 "replica: {echoes} captured change(s) echo what a peer just wrote (total {total}); e.g. {}",
                 sample.unwrap_or_default()
@@ -490,7 +544,11 @@ impl Engine {
             known
                 .keys()
                 .map(|origin| {
-                    let min = held.iter().map(|m| m.get(origin).copied().unwrap_or(0)).min().unwrap_or(0);
+                    let min = held
+                        .iter()
+                        .map(|m| m.get(origin).copied().unwrap_or(0))
+                        .min()
+                        .unwrap_or(0);
                     (origin.clone(), min)
                 })
                 .collect()
@@ -514,10 +572,13 @@ impl Engine {
 /// `PRAGMA table_info`: one pk column and an `hlc TEXT` column, or an error
 /// naming the table.
 async fn inspect(pool: &SqlitePool, table: &str) -> anyhow::Result<TableInfo> {
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({})", quote(table))))
-        .fetch_all(pool)
-        .await
-        .with_context(|| format!("table {table}: table_info"))?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA table_info({})",
+        quote(table)
+    )))
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("table {table}: table_info"))?;
     anyhow::ensure!(!rows.is_empty(), "table {table}: does not exist");
     let mut pk = None;
     let mut columns = Vec::new();
@@ -567,7 +628,10 @@ async fn install_triggers(pool: &SqlitePool, table: &str, info: &TableInfo) -> a
     let lit = format!("'{}'", table.replace('\'', "''"));
     let mut sql = String::new();
     for kind in ["ai", "au", "ad"] {
-        sql.push_str(&format!("DROP TRIGGER IF EXISTS {};\n", quote(&format!("_replica_{kind}_{table}"))));
+        sql.push_str(&format!(
+            "DROP TRIGGER IF EXISTS {};\n",
+            quote(&format!("_replica_{kind}_{table}"))
+        ));
     }
     sql.push_str(&format!(
         "CREATE TRIGGER {} AFTER INSERT ON {t} BEGIN\n",
@@ -605,7 +669,9 @@ async fn install_triggers(pool: &SqlitePool, table: &str, info: &TableInfo) -> a
     ));
     // ponytail: a pk rewrite (UPDATE … SET pk = …) is logged as column writes under the new pk
     // and no delete of the old one; split into delete + insert if a plugin ever does that.
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -668,17 +734,20 @@ impl ReplicaHandle {
             let attached = self.engine.tables.lock().get(table).cloned();
             let Some(attached) = attached else { continue };
             let (t, pk) = (quote(table), quote(&attached.info.pk));
-            let pks: Vec<(String,)> =
-                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT CAST({pk} AS TEXT) FROM {t} WHERE \"hlc\" IS NULL")))
-                    .fetch_all(&self.pool)
-                    .await?;
+            let pks: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT CAST({pk} AS TEXT) FROM {t} WHERE \"hlc\" IS NULL"
+            )))
+            .fetch_all(&self.pool)
+            .await?;
             if pks.is_empty() {
                 continue;
             }
-            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {t} SET \"hlc\" = ? WHERE \"hlc\" IS NULL")))
-                .bind(self.engine.clock.tick(now_ms()).to_text())
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE {t} SET \"hlc\" = ? WHERE \"hlc\" IS NULL"
+            )))
+            .bind(self.engine.clock.tick(now_ms()).to_text())
+            .execute(&self.pool)
+            .await?;
             let mut changes = Vec::with_capacity(pks.len() * attached.info.columns.len());
             for (pk,) in &pks {
                 changes.extend(self.engine.row_as_changes(&attached, table, pk).await?);

@@ -97,7 +97,10 @@ mod tests {
     fn rules_a_b_c() {
         let t0 = Instant::now();
         let mut b = Batcher::new(25, 3, t0);
-        assert!(b.feed(u(Track::Mic, "hello"), t0 + Duration::from_secs(1)).is_none());
+        assert!(
+            b.feed(u(Track::Mic, "hello"), t0 + Duration::from_secs(1))
+                .is_none()
+        );
         assert!(b.tick(t0 + Duration::from_secs(24)).is_none());
         let a = b.tick(t0 + Duration::from_secs(25)).expect("rule a");
         assert_eq!(a.len(), 1);
@@ -110,8 +113,13 @@ mod tests {
         let bb = b.feed(u(Track::Mic, "three"), t1).expect("rule b");
         assert_eq!(bb.len(), 3);
 
-        assert!(b.feed(u(Track::Mic, "is it me?"), t1).is_none(), "a me: question waits");
-        let c = b.feed(u(Track::System, "what did we decide? "), t1).expect("rule c");
+        assert!(
+            b.feed(u(Track::Mic, "is it me?"), t1).is_none(),
+            "a me: question waits"
+        );
+        let c = b
+            .feed(u(Track::System, "what did we decide? "), t1)
+            .expect("rule c");
         assert_eq!(c.len(), 2);
         assert_eq!(c[1].text, "what did we decide? ");
     }

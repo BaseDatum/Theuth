@@ -54,7 +54,9 @@ impl Progress {
 
     /// `tracing::info!` per line.
     pub fn log() -> Self {
-        Self(Arc::new(|step, line| tracing::info!("sandbox {step}: {line}")))
+        Self(Arc::new(|step, line| {
+            tracing::info!("sandbox {step}: {line}")
+        }))
     }
 
     /// Drops every line (tests).
@@ -286,14 +288,22 @@ impl Message<MakeEngine> for SandboxActor {
 
     // ponytail: bring-up runs inside the handler (minutes) so one engine is
     // made at a time; spawn + progress events if the UI ever drives this.
-    async fn handle(&mut self, MakeEngine(target): MakeEngine, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        MakeEngine(target): MakeEngine,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let rt = self.rt.clone();
         make_engine(
             &self.rt.data_dir,
             target,
             move |name| async move {
-                let vault = secrets::handle(&rt).await.ok_or("secrets vault unavailable")?;
-                vault.get(&name, 0).ok_or_else(|| format!("no secret named {name}"))
+                let vault = secrets::handle(&rt)
+                    .await
+                    .ok_or("secrets vault unavailable")?;
+                vault
+                    .get(&name, 0)
+                    .ok_or_else(|| format!("no secret named {name}"))
             },
             &ActorJoin,
             &Progress::log(),
@@ -363,12 +373,18 @@ where
                     let pem = secret(key).await.map_err(anyhow::Error::msg)?;
                     ssh::SshSandbox::builtin(t, &pem)?
                 }
-                (false, None) => anyhow::bail!("--ssh needs --key <vault name> (built-in client) or --system-ssh"),
+                (false, None) => anyhow::bail!(
+                    "--ssh needs --key <vault name> (built-in client) or --system-ssh"
+                ),
                 (true, _) => ssh::SshSandbox::system(t),
             };
             (Box::new(sb), Spec::new(name))
         }
-        Target::Docker { name, image, local_t } => {
+        Target::Docker {
+            name,
+            image,
+            local_t,
+        } => {
             let sb = docker::DockerSandbox::connect(&name, image, local_t.clone()).await?;
             let spec = Spec {
                 local_t,
@@ -410,7 +426,9 @@ impl runtime::Plugin for SandboxPlugin {
 
 /// The sandbox actor; `None` before the plugin started.
 pub fn actor() -> Option<ActorRef<SandboxActor>> {
-    ActorRef::<SandboxActor>::lookup(SANDBOX_ACTOR).ok().flatten()
+    ActorRef::<SandboxActor>::lookup(SANDBOX_ACTOR)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -419,9 +437,18 @@ mod tests {
 
     #[test]
     fn uname_and_powershell_spellings() {
-        assert_eq!(parse_uname("Linux x86_64"), Some(("linux".into(), "x86_64".into())));
-        assert_eq!(parse_uname("Darwin arm64\n"), Some(("macos".into(), "aarch64".into())));
-        assert_eq!(parse_uname("Linux aarch64"), Some(("linux".into(), "aarch64".into())));
+        assert_eq!(
+            parse_uname("Linux x86_64"),
+            Some(("linux".into(), "x86_64".into()))
+        );
+        assert_eq!(
+            parse_uname("Darwin arm64\n"),
+            Some(("macos".into(), "aarch64".into()))
+        );
+        assert_eq!(
+            parse_uname("Linux aarch64"),
+            Some(("linux".into(), "aarch64".into()))
+        );
         assert_eq!(parse_uname("FreeBSD amd64"), None);
         assert_eq!(parse_arch("X64"), Some("x86_64".into()));
         assert_eq!(parse_arch("Arm64"), Some("aarch64".into()));

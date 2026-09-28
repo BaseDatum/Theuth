@@ -22,7 +22,9 @@ use self::model::DecisionModel;
 use self::weights::{SanitizedBackend, sanitize_name};
 
 use crate::engine::{ModelSha, Oracle};
-use crate::laya::{Batch, LayaConfig, RowOut, Sequence, Special, build_sequence, collate, postprocess};
+use crate::laya::{
+    Batch, LayaConfig, RowOut, Sequence, Special, build_sequence, collate, postprocess,
+};
 use crate::question::Question;
 
 /// One entry of the safetensors header: `(name, dtype, shape)`.
@@ -44,8 +46,14 @@ pub fn verify_header(
             .iter()
             .find(|(name, _, _)| sanitize_name(name) == want)
     };
-    let last_layer = enc.num_hidden_layers.checked_sub(1).ok_or("encoder has no layers")?;
-    let last_head = agent.head_layers.checked_sub(1).ok_or("head has no layers")?;
+    let last_layer = enc
+        .num_hidden_layers
+        .checked_sub(1)
+        .ok_or("encoder has no layers")?;
+    let last_head = agent
+        .head_layers
+        .checked_sub(1)
+        .ok_or("head has no layers")?;
     for name in [
         "encoder.embeddings.tok_embeddings.weight".to_owned(),
         "encoder.final_norm.weight".to_owned(),
@@ -165,7 +173,9 @@ impl Loaded {
             #[cfg(feature = "cuda")]
             Gpu::Cuda => Device::new_cuda(0).map_err(|e| format!("CUDA unavailable ({e})")),
             #[cfg(not(feature = "cuda"))]
-            Gpu::Cuda => Err("this build has no CUDA (needs `--features decision/cuda` and nvcc)".into()),
+            Gpu::Cuda => {
+                Err("this build has no CUDA (needs `--features decision/cuda` and nvcc)".into())
+            }
         };
         let (device, dtype) = match picked {
             Ok(d) => (d, dtype),
@@ -411,7 +421,11 @@ mod tests {
     /// `scorer.layers.3`) both verify.
     fn header(pytorch: bool, dtype: DType) -> Vec<HeaderEntry> {
         let (in_proj, scorer, act) = if pytorch {
-            ("head.layers.0.self_attn.in_proj_weight", "scorer.3.weight", "act_head.2.weight")
+            (
+                "head.layers.0.self_attn.in_proj_weight",
+                "scorer.3.weight",
+                "act_head.2.weight",
+            )
         } else {
             (
                 "head.layers.0.self_attn.in_proj.weight",
@@ -436,18 +450,31 @@ mod tests {
     #[test]
     fn header_verification() {
         let (enc, agent) = configs();
-        assert_eq!(verify_header(&header(true, DType::F16), &enc, &agent), Ok(()));
-        assert_eq!(verify_header(&header(false, DType::BF16), &enc, &agent), Ok(()));
+        assert_eq!(
+            verify_header(&header(true, DType::F16), &enc, &agent),
+            Ok(())
+        );
+        assert_eq!(
+            verify_header(&header(false, DType::BF16), &enc, &agent),
+            Ok(())
+        );
         // A layer short (the file is a smaller model than the config says).
         let mut h = header(true, DType::F16);
         h.retain(|(n, _, _)| n != "encoder.layers.1.attn.Wqkv.weight");
         let e = verify_header(&h, &enc, &agent).unwrap_err();
-        assert!(e.contains("missing tensors encoder.layers.1.attn.Wqkv.weight"), "{e}");
+        assert!(
+            e.contains("missing tensors encoder.layers.1.attn.Wqkv.weight"),
+            "{e}"
+        );
         assert!(e.contains("6 in file"));
         // Another vocabulary.
         let mut h = header(true, DType::F16);
         h[0].2 = vec![50368, 16];
-        assert!(verify_header(&h, &enc, &agent).unwrap_err().contains("[100, 16]"));
+        assert!(
+            verify_header(&h, &enc, &agent)
+                .unwrap_err()
+                .contains("[100, 16]")
+        );
         // A quantised export.
         let mut h = header(true, DType::F32);
         h[3].1 = DType::U8;

@@ -58,13 +58,15 @@ impl Dialer for MeshDialer {
 #[must_use]
 pub fn line_duplex(stream: Box<dyn ByteStream>) -> LineDuplex {
     let (read, write) = tokio::io::split(stream);
-    let incoming = futures::stream::unfold(BufReader::new(read).lines(), async |mut lines| {
-        match lines.next_line().await {
+    let incoming =
+        futures::stream::unfold(BufReader::new(read).lines(), async |mut lines| match lines
+            .next_line()
+            .await
+        {
             Ok(Some(line)) => Some((Ok(line), lines)),
             Ok(None) => None,
             Err(e) => Some((Err(e), lines)),
-        }
-    });
+        });
     let outgoing = futures::sink::unfold(write, async |mut w, mut line: String| {
         line.push('\n');
         w.write_all(line.as_bytes()).await?;
@@ -89,7 +91,10 @@ mod tests {
         let (a, b) = tokio::io::duplex(1024);
         let mut left = line_duplex(Box::new(a));
         let mut right = line_duplex(Box::new(b));
-        left.outgoing.send(r#"{"jsonrpc":"2.0","id":1}"#.into()).await.unwrap();
+        left.outgoing
+            .send(r#"{"jsonrpc":"2.0","id":1}"#.into())
+            .await
+            .unwrap();
         assert_eq!(
             right.incoming.next().await.unwrap().unwrap(),
             r#"{"jsonrpc":"2.0","id":1}"#

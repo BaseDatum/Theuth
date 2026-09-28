@@ -8,7 +8,12 @@ use crate::types::{EngineClass, EngineId, EngineStats};
 
 /// Probe everything. `workspaces` = `mesh.workspaces`; `data_dir` for
 /// `acp/agents.yaml`.
-pub fn probe(id: EngineId, uptime_since_ms: u64, data_dir: &Path, workspaces: &[String]) -> EngineStats {
+pub fn probe(
+    id: EngineId,
+    uptime_since_ms: u64,
+    data_dir: &Path,
+    workspaces: &[String],
+) -> EngineStats {
     let battery = has_battery();
     let display = has_display();
     let class = if in_container() {
@@ -38,7 +43,11 @@ fn in_container() -> bool {
         return true;
     }
     std::fs::read_to_string("/proc/1/cgroup")
-        .map(|s| ["docker", "containerd", "kubepods", "lxc", "podman"].iter().any(|k| s.contains(k)))
+        .map(|s| {
+            ["docker", "containerd", "kubepods", "lxc", "podman"]
+                .iter()
+                .any(|k| s.contains(k))
+        })
         .unwrap_or(false)
 }
 
@@ -85,7 +94,10 @@ fn has_gpu() -> bool {
     }
     Path::new("/dev/nvidia0").exists()
         || std::fs::read_dir("/dev/dri")
-            .map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")))
+            .map(|d| {
+                d.flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+            })
             .unwrap_or(false)
 }
 
@@ -165,7 +177,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(harnesses(dir.path()), ["native"]);
         std::fs::create_dir_all(dir.path().join("acp")).unwrap();
-        std::fs::write(dir.path().join("acp/agents.yaml"), "omp:\n  command: omp\nclaude:\n  command: x\n").unwrap();
+        std::fs::write(
+            dir.path().join("acp/agents.yaml"),
+            "omp:\n  command: omp\nclaude:\n  command: x\n",
+        )
+        .unwrap();
         assert_eq!(harnesses(dir.path()), ["native", "omp", "claude"]);
     }
 }

@@ -226,7 +226,10 @@ pub fn build(
         } else {
             out.push((
                 sx.priority,
-                Arc::new(searxng::Searxng::new(&sx.base_url, Duration::from_millis(sx.timeout_ms))),
+                Arc::new(searxng::Searxng::new(
+                    &sx.base_url,
+                    Duration::from_millis(sx.timeout_ms),
+                )),
             ));
         }
     }
@@ -234,7 +237,11 @@ pub fn build(
         match key(credentials, &fc.secret) {
             Some(k) => out.push((
                 fc.priority,
-                Arc::new(firecrawl::Firecrawl::new(&fc.base_url, k, Duration::from_millis(fc.timeout_ms))),
+                Arc::new(firecrawl::Firecrawl::new(
+                    &fc.base_url,
+                    k,
+                    Duration::from_millis(fc.timeout_ms),
+                )),
             )),
             None => tracing::info!(
                 secret = %fc.secret,
@@ -355,7 +362,10 @@ pub fn apply_settings(
         }
         let url = e.base_url.as_deref().map(str::trim).unwrap_or_default();
         if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(format!("{}: base_url must start with http:// or https://", e.name));
+            return Err(format!(
+                "{}: base_url must start with http:// or https://",
+                e.name
+            ));
         }
         let secret = e
             .secret
@@ -408,7 +418,12 @@ pub fn apply_settings(
                 c.timeout_ms = e.timeout_ms;
                 c.priority = e.priority;
             }
-            other => return Err(format!("unknown provider {other}; known: {}", NAMES.join(", "))),
+            other => {
+                return Err(format!(
+                    "unknown provider {other}; known: {}",
+                    NAMES.join(", ")
+                ));
+            }
         }
     }
     Ok(())
@@ -528,7 +543,9 @@ impl SearchProviders {
     }
 
     fn secret_set(&self, name: &str) -> bool {
-        self.vault.as_ref().is_some_and(|v| v.get(name, 0).is_some())
+        self.vault
+            .as_ref()
+            .is_some_and(|v| v.get(name, 0).is_some())
     }
 
     /// Register what the config + vault allow; unregister what no longer does.
@@ -720,7 +737,10 @@ mod tests {
             firecrawl: None,
             ..SearchProvidersConfig::default()
         };
-        assert!(build(&empty_sx, &HashMap::new()).is_empty(), "no base_url: skipped");
+        assert!(
+            build(&empty_sx, &HashMap::new()).is_empty(),
+            "no base_url: skipped"
+        );
     }
 
     #[test]
@@ -733,7 +753,11 @@ mod tests {
             cfg.firecrawl.as_ref().map(|f| f.base_url.as_str()),
             Some("http://127.0.0.1:3002")
         );
-        assert!(cfg.brave.as_ref().is_some_and(|b| b.enabled && b.secret == "brave"));
+        assert!(
+            cfg.brave
+                .as_ref()
+                .is_some_and(|b| b.enabled && b.secret == "brave")
+        );
         assert_eq!(cfg.openserp.as_ref().map(|o| o.engines.len()), Some(3));
         assert!(cfg.searxng.as_ref().is_some_and(|s| s.enabled));
     }
@@ -756,15 +780,30 @@ mod tests {
         edits[3].enabled = true;
         edits[3].timeout_ms = 7000;
         apply_settings(&mut cfg, &edits).expect("valid");
-        assert_eq!(cfg.searxng.as_ref().unwrap().base_url, "http://127.0.0.1:8089");
-        assert!(cfg.brave.as_ref().is_some_and(|b| b.enabled && b.timeout_ms == 7000));
+        assert_eq!(
+            cfg.searxng.as_ref().unwrap().base_url,
+            "http://127.0.0.1:8089"
+        );
+        assert!(
+            cfg.brave
+                .as_ref()
+                .is_some_and(|b| b.enabled && b.timeout_ms == 7000)
+        );
 
         let mut bad = edits.clone();
         bad[1].base_url = Some("ftp://x".into());
-        assert!(apply_settings(&mut cfg, &bad).unwrap_err().contains("openserp"));
+        assert!(
+            apply_settings(&mut cfg, &bad)
+                .unwrap_err()
+                .contains("openserp")
+        );
         bad = edits.clone();
         bad[2].timeout_ms = 10;
-        assert!(apply_settings(&mut cfg, &bad).unwrap_err().contains("timeout_ms"));
+        assert!(
+            apply_settings(&mut cfg, &bad)
+                .unwrap_err()
+                .contains("timeout_ms")
+        );
 
         let dir = std::env::temp_dir().join(format!("sp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -778,13 +817,24 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("agent:\n  model: x # keep\n"), "{text}");
         assert!(text.contains("  brave:\n"), "{text}");
-        assert!(text.contains("    base_url: \"http://127.0.0.1:7000\"\n"), "{text}");
+        assert!(
+            text.contains("    base_url: \"http://127.0.0.1:7000\"\n"),
+            "{text}"
+        );
         use figment::providers::Format as _;
         let figment = figment::Figment::new().merge(figment::providers::Yaml::file(&path));
-        let back: SearchProvidersConfig = figment.extract_inner("search_providers").expect("yaml parses back");
-        assert_eq!(back.searxng.as_ref().unwrap().base_url, "http://127.0.0.1:8089");
+        let back: SearchProvidersConfig = figment
+            .extract_inner("search_providers")
+            .expect("yaml parses back");
+        assert_eq!(
+            back.searxng.as_ref().unwrap().base_url,
+            "http://127.0.0.1:8089"
+        );
         assert!(back.brave.as_ref().unwrap().enabled);
-        assert_eq!(back.openserp.as_ref().unwrap().engines, ["google", "bing", "duckduckgo"]);
+        assert_eq!(
+            back.openserp.as_ref().unwrap().engines,
+            ["google", "bing", "duckduckgo"]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

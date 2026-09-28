@@ -306,7 +306,8 @@ pub struct Guest {
 impl Guest {
     /// `document` accepted a `doc_join` or a member call from this static.
     pub fn mark_joined(&self) {
-        self.joined.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.joined
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether some member call succeeded on this conn.
@@ -317,7 +318,9 @@ impl Guest {
     /// `document` refused a member call (not a member, viewer write); returns the running count (saturating).
     pub fn refuse(&self) -> u8 {
         use std::sync::atomic::Ordering::Relaxed;
-        let _ = self.refusals.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
+        let _ = self
+            .refusals
+            .fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
         self.refusals()
     }
 

@@ -103,7 +103,10 @@ async fn note_lives_through_start_summary_and_retry() {
     };
     let notes_md = mdir.join("notes.md");
     let text = wait_for(&notes_md, |s| s.contains("# Meeting 2026-09-21 14:00")).await;
-    assert!(text.trim().starts_with("# Meeting 2026-09-21 14:00"), "{text}");
+    assert!(
+        text.trim().starts_with("# Meeting 2026-09-21 14:00"),
+        "{text}"
+    );
 
     // The user types three lines during the meeting (owner updates).
     docs.ask(Edit {
@@ -169,22 +172,35 @@ async fn note_lives_through_start_summary_and_retry() {
 
     // The user's blocks: same ids, same text, regrouped; the sections follow.
     let after = blocks(&docs, &doc).await;
-    let after_user: Vec<&(String, String)> = after.iter().filter(|b| user.iter().any(|u| u.0 == b.0)).collect();
+    let after_user: Vec<&(String, String)> = after
+        .iter()
+        .filter(|b| user.iter().any(|u| u.0 == b.0))
+        .collect();
     assert_eq!(after_user.len(), 3, "{after:?}");
     for u in &user {
         assert!(after.contains(u), "user block {u:?} changed: {after:?}");
     }
     assert_eq!(
         after_user.iter().map(|b| b.1.as_str()).collect::<Vec<_>>(),
-        ["budget is 40k", "ask legal about the DPA", "Ana owns the rollout"]
+        [
+            "budget is 40k",
+            "ask legal about the DPA",
+            "Ana owns the rollout"
+        ]
     );
     let texts: Vec<&str> = after.iter().map(|b| b.1.as_str()).collect();
-    assert!(texts.contains(&"[h2] Summary") && texts.contains(&"[h2] Decisions"), "{texts:?}");
+    assert!(
+        texts.contains(&"[h2] Summary") && texts.contains(&"[h2] Decisions"),
+        "{texts:?}"
+    );
     // summary.md is the note's export; notes.md is gone; meeting_summary would read exactly the markdown.
     let summary_md = mdir.join("summary.md");
     assert_eq!(std::fs::read_to_string(&summary_md).unwrap(), markdown);
     assert!(!notes_md.exists(), "notes.md should be gone");
-    assert!(markdown.contains("## Summary") && markdown.contains("budget is 40k"), "{markdown}");
+    assert!(
+        markdown.contains("## Summary") && markdown.contains("budget is 40k"),
+        "{markdown}"
+    );
     let labels: Vec<String> = docs
         .ask(Snapshots { doc: doc.clone() })
         .await
@@ -192,7 +208,10 @@ async fn note_lives_through_start_summary_and_retry() {
         .into_iter()
         .map(|s| s.label)
         .collect();
-    assert!(labels.contains(&note::BEFORE_SUMMARY.to_owned()), "{labels:?}");
+    assert!(
+        labels.contains(&note::BEFORE_SUMMARY.to_owned()),
+        "{labels:?}"
+    );
     assert!(labels.contains(&note::SUMMARY.to_owned()), "{labels:?}");
 
     // post_retry: back to the before-summary text; the user's untouched blocks keep their ids.
@@ -204,7 +223,10 @@ async fn note_lives_through_start_summary_and_retry() {
     );
     assert_eq!(restored[0], before[0], "the heading never moved");
     assert_eq!(restored[1], before[1], "the first user block never moved");
-    wait_for(&summary_md, |s| !s.contains("## Summary") && s.contains("ask legal")).await;
+    wait_for(&summary_md, |s| {
+        !s.contains("## Summary") && s.contains("ask legal")
+    })
+    .await;
 
     docs.stop_gracefully().await.unwrap();
     docs.wait_for_shutdown().await;

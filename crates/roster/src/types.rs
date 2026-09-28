@@ -9,7 +9,17 @@ use serde::{Deserialize, Serialize};
 /// An agent name: `[a-z0-9-]{1,32}`. `theuth` is reserved for the built-in
 /// default agent and is never a roster entry (67 §6.1).
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    kameo::Reply,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, type = "string"))]
 #[serde(try_from = "String", into = "String")]
@@ -207,7 +217,9 @@ pub struct AgentSummary {
 }
 
 /// One desk episode (67 §6.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Episode {
     /// uuidv7.

@@ -18,8 +18,8 @@ use crate::model::{
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
 use crate::model::{Grouped, session_row, terminal_row};
-use crate::search::{self, Focus, Preview};
 use crate::pathac;
+use crate::search::{self, Focus, Preview};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -492,7 +492,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // `/attach` picked a row (66 §10): its token leads the draft.
                 if let Some(token) = m.attach_token.take() {
                     let v = input.read().to_string();
-                    let v = if v.is_empty() { token } else { format!("{token} {v}") };
+                    let v = if v.is_empty() {
+                        token
+                    } else {
+                        format!("{token} {v}")
+                    };
                     m.sync_slash(&v);
                     input.set(v);
                 }
@@ -504,9 +508,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let text = input.read().to_string();
                 let cursor = handle.read().cursor_offset().min(text.len());
                 let slash_busy = matches!(m.menu, Some(Menu::Slash { .. }))
-                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled).is_empty();
+                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled)
+                        .is_empty();
                 let session = m.session;
-                match m.path.key(code, &text, cursor, slash_busy, session, &commands) {
+                match m
+                    .path
+                    .key(code, &text, cursor, slash_busy, session, &commands)
+                {
                     pathac::Key::Pass => {}
                     pathac::Key::Consumed => return,
                     pathac::Key::Input(text, caret) => {

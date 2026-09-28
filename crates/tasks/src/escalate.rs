@@ -38,7 +38,11 @@ impl Escalations {
             Some(a) => {
                 let _ = tx.send(a.clone());
             }
-            None => self.pending.entry(decision.to_owned()).or_default().push(tx),
+            None => self
+                .pending
+                .entry(decision.to_owned())
+                .or_default()
+                .push(tx),
         }
         rx
     }
@@ -68,7 +72,10 @@ mod tests {
         assert_eq!(wait(rx, Duration::from_millis(10)).await, None);
         e.answer("decision:1", "ship it");
         let rx = e.subscribe("decision:1");
-        assert_eq!(wait(rx, Duration::from_millis(10)).await, Some("ship it".into()));
+        assert_eq!(
+            wait(rx, Duration::from_millis(10)).await,
+            Some("ship it".into())
+        );
     }
 
     #[tokio::test]

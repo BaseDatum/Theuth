@@ -28,7 +28,7 @@ use kameo::message::{Context, Message};
 use runtime::Runtime;
 use sqlx::SqlitePool;
 
-pub use engine::{stats, Clock, Engine, ReplicaHandle, Stats};
+pub use engine::{Clock, Engine, ReplicaHandle, Stats, stats};
 pub use types::{ByteStream, Change, ChangeBatch, Hlc, PeerEvent, PeerId, Transport};
 
 /// Registry name of the [`Replica`] actor.
@@ -118,7 +118,10 @@ pub async fn attach(pool: &SqlitePool, tables: &[&str]) -> anyhow::Result<Replic
 /// mesh registers it).
 #[derive(kameo::Actor)]
 pub struct Replica {
-    #[allow(dead_code, reason = "shutdown and lookups once the sync engine reads config")]
+    #[allow(
+        dead_code,
+        reason = "shutdown and lookups once the sync engine reads config"
+    )]
     rt: Runtime,
     engine: Arc<Engine>,
     transport: Option<Arc<dyn Transport>>,
@@ -127,7 +130,11 @@ pub struct Replica {
 impl Message<RegisterTransport> for Replica {
     type Reply = ();
 
-    async fn handle(&mut self, m: RegisterTransport, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: RegisterTransport,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.engine.register_transport(m.0.clone());
         self.transport = Some(m.0);
     }
@@ -146,7 +153,10 @@ impl Message<Attach> for Replica {
 
     async fn handle(&mut self, m: Attach, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let tables: Vec<&str> = m.tables.iter().map(String::as_str).collect();
-        self.engine.attach(&m.pool, &tables).await.map_err(|e| format!("{e:#}"))
+        self.engine
+            .attach(&m.pool, &tables)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -154,7 +164,10 @@ impl Message<Mirror> for Replica {
     type Reply = Result<ReplicaHandle, String>;
 
     async fn handle(&mut self, m: Mirror, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.engine.mirror(&m.pool, &m.dir, &m.table).await.map_err(|e| format!("{e:#}"))
+        self.engine
+            .mirror(&m.pool, &m.dir, &m.table)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 

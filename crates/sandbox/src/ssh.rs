@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use russh::client;
-use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, known_hosts};
+use russh::keys::{
+    HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, known_hosts,
+};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -44,7 +46,9 @@ impl Target {
             _ => (None, s),
         };
         let (host, port) = if let Some(r) = rest.strip_prefix('[') {
-            let (h, p) = r.split_once(']').ok_or_else(|| anyhow::anyhow!("bad target {s}"))?;
+            let (h, p) = r
+                .split_once(']')
+                .ok_or_else(|| anyhow::anyhow!("bad target {s}"))?;
             (h.to_owned(), p.strip_prefix(':'))
         } else {
             match rest.rsplit_once(':') {
@@ -56,7 +60,10 @@ impl Target {
             anyhow::bail!("bad target {s}: no host");
         }
         let port = port
-            .map(|p| p.parse::<u16>().map_err(|_| anyhow::anyhow!("bad port in {s}")))
+            .map(|p| {
+                p.parse::<u16>()
+                    .map_err(|_| anyhow::anyhow!("bad port in {s}"))
+            })
             .transpose()?;
         Ok(Self { user, host, port })
     }
@@ -99,7 +106,8 @@ impl SshSandbox {
     /// Built-in transport with a private key in OpenSSH / PKCS#8 / PKCS#1 PEM
     /// text (the vault value). Decoded here; the text is the caller's to drop.
     pub fn builtin(target: Target, key_pem: &str) -> anyhow::Result<Self> {
-        let key = russh::keys::decode_secret_key(key_pem, None).map_err(|e| anyhow::anyhow!("private key: {e}"))?;
+        let key = russh::keys::decode_secret_key(key_pem, None)
+            .map_err(|e| anyhow::anyhow!("private key: {e}"))?;
         Ok(Self {
             target,
             transport: Transport::Builtin {
@@ -132,12 +140,19 @@ impl SshSandbox {
             host: self.target.host.clone(),
             port: self.target.port(),
         };
-        let mut h = client::connect(config, (self.target.host.as_str(), self.target.port()), check)
-            .await
-            .map_err(|e| anyhow::anyhow!("connect {}: {e}", self.target.id()))?;
+        let mut h = client::connect(
+            config,
+            (self.target.host.as_str(), self.target.port()),
+            check,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("connect {}: {e}", self.target.id()))?;
         let hash = h.best_supported_rsa_hash().await?.flatten();
         let res = h
-            .authenticate_publickey(self.target.user(), PrivateKeyWithHashAlg::new(key.clone(), hash))
+            .authenticate_publickey(
+                self.target.user(),
+                PrivateKeyWithHashAlg::new(key.clone(), hash),
+            )
             .await?;
         if !res.success() {
             anyhow::bail!("{}: the key was not accepted", self.target.id());
@@ -174,7 +189,9 @@ impl SshSandbox {
             let Some(msg) = rx.wait().await else { break };
             match msg {
                 russh::ChannelMsg::Data { data } => out.stdout.extend_from_slice(&data),
-                russh::ChannelMsg::ExtendedData { data, ext: 1 } => out.stderr.extend_from_slice(&data),
+                russh::ChannelMsg::ExtendedData { data, ext: 1 } => {
+                    out.stderr.extend_from_slice(&data)
+                }
                 russh::ChannelMsg::ExitStatus { exit_status } => out.status = exit_status as i32,
                 russh::ChannelMsg::Close => break,
                 _ => {}
@@ -188,7 +205,12 @@ impl SshSandbox {
         let mut c = Command::new("ssh");
         c.arg("-o")
             .arg("BatchMode=yes")
-            .args(self.target.port.iter().flat_map(|p| ["-p".to_owned(), p.to_string()]))
+            .args(
+                self.target
+                    .port
+                    .iter()
+                    .flat_map(|p| ["-p".to_owned(), p.to_string()]),
+            )
             .arg(match &self.target.user {
                 Some(u) => format!("{u}@{}", self.target.host),
                 None => self.target.host.clone(),
@@ -226,7 +248,10 @@ struct HostKeyCheck {
 impl client::Handler for HostKeyCheck {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        server_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
         let key = server_key.public_key();
         if known_hosts::check_known_hosts(&self.host, self.port, &key)? {
             return Ok(true);
@@ -249,7 +274,9 @@ impl Sandbox for SshSandbox {
     }
 
     async fn create(&self, out: &Progress) -> anyhow::Result<Handle> {
-        let h = Handle { id: self.target.id() };
+        let h = Handle {
+            id: self.target.id(),
+        };
         let probe = self.exec(&h, Cmd::new("echo ok")).await?;
         if !probe.ok() {
             anyhow::bail!("{}: {}", self.target.id(), probe.reason());
@@ -285,8 +312,19 @@ impl Sandbox for SshSandbox {
     async fn put(&self, h: &Handle, path: &str, bytes: Bytes, mode: u32) -> anyhow::Result<()> {
         let dir = path.rsplit_once('/').map_or(".", |(d, _)| d);
         // Paths are used unquoted where they start with `$HOME` so the shell expands them.
-        let q = |p: &str| if p.starts_with('$') { p.to_owned() } else { sq(p) };
-        let line = format!("mkdir -p {} && cat > {} && chmod {mode:o} {}", q(dir), q(path), q(path));
+        let q = |p: &str| {
+            if p.starts_with('$') {
+                p.to_owned()
+            } else {
+                sq(p)
+            }
+        };
+        let line = format!(
+            "mkdir -p {} && cat > {} && chmod {mode:o} {}",
+            q(dir),
+            q(path),
+            q(path)
+        );
         let out = self.exec(h, Cmd::new(line).stdin(bytes)).await?;
         if !out.ok() {
             anyhow::bail!("put {path}: {}", out.reason());
@@ -305,7 +343,13 @@ impl Sandbox for SshSandbox {
     /// `preserve_data: false` also removes the data dir; the service unit goes either way.
     async fn destroy(&self, h: &Handle, preserve_data: bool) -> anyhow::Result<()> {
         let un = self
-            .exec(h, Cmd::new(format!("PATH=\"{}:$PATH\" t --uninstall-service", crate::bringup::BIN_DIR)))
+            .exec(
+                h,
+                Cmd::new(format!(
+                    "PATH=\"{}:$PATH\" t --uninstall-service",
+                    crate::bringup::BIN_DIR
+                )),
+            )
             .await?;
         if !un.ok() {
             tracing::warn!("uninstall-service on {}: {}", h.id, un.reason());
@@ -327,7 +371,10 @@ mod tests {
     #[test]
     fn target_forms() {
         let t = Target::parse("me@box.example:2222").unwrap();
-        assert_eq!((t.user.as_deref(), t.host.as_str(), t.port), (Some("me"), "box.example", Some(2222)));
+        assert_eq!(
+            (t.user.as_deref(), t.host.as_str(), t.port),
+            (Some("me"), "box.example", Some(2222))
+        );
         assert_eq!(t.id(), "me@box.example:2222");
         let t = Target::parse("me@[fe80::1]:22").unwrap();
         assert_eq!(t.host, "fe80::1");

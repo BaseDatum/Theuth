@@ -33,7 +33,11 @@ pub const OS: Os = if cfg!(target_os = "macos") {
 };
 
 /// The architecture this binary was built for (`X86_64` for anything not aarch64).
-pub const ARCH: Arch = if cfg!(target_arch = "aarch64") { Arch::Aarch64 } else { Arch::X86_64 };
+pub const ARCH: Arch = if cfg!(target_arch = "aarch64") {
+    Arch::Aarch64
+} else {
+    Arch::X86_64
+};
 
 /// The Rust target triple of this build, as release artifacts and the update
 /// manifest name it; `"unknown"` off the shipped matrix.
@@ -105,7 +109,9 @@ pub const SUPPORTED: &[Support] = &[
 
 /// This build's row, when it is on the matrix.
 pub fn supported() -> Option<&'static Support> {
-    SUPPORTED.iter().find(|s| s.os == OS && s.arches.contains(&ARCH))
+    SUPPORTED
+        .iter()
+        .find(|s| s.os == OS && s.arches.contains(&ARCH))
 }
 
 #[cfg(test)]
@@ -117,6 +123,10 @@ mod tests {
         assert_eq!(SUPPORTED.iter().filter(|s| s.host).count(), 3);
         assert!(supported().is_some(), "{OS:?}/{ARCH:?} is off the matrix");
         assert_ne!(target_triple(), "unknown");
-        assert!(target_triple().contains(if ARCH == Arch::Aarch64 { "aarch64" } else { "x86_64" }));
+        assert!(target_triple().contains(if ARCH == Arch::Aarch64 {
+            "aarch64"
+        } else {
+            "x86_64"
+        }));
     }
 }

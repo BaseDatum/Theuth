@@ -32,7 +32,9 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-pub use vault::{KEEP, KeyStore, MESH_PREFIX, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo};
+pub use vault::{
+    KEEP, KeyStore, MESH_PREFIX, OAUTH_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo,
+};
 
 /// How often the plugin looks for rows written by others (a peer's batch
 /// applied by the replica, `t --secret-set`) and refreshes the in-memory copy.
@@ -363,7 +365,11 @@ pub struct PendingRequests;
 impl Message<PendingRequests> for SecretsActor {
     type Reply = Vec<SecretsEvent>;
 
-    async fn handle(&mut self, _: PendingRequests, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: PendingRequests,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.pending.values().map(|(_, r, _)| r.clone()).collect()
     }
 }
@@ -388,7 +394,10 @@ impl Message<AdoptMeshKey> for SecretsActor {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: AdoptMeshKey, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.vault.adopt_mesh_key(m.0).await.map_err(|e| format!("{e:#}"))?;
+        self.vault
+            .adopt_mesh_key(m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         self.rt.publish(SecretsEvent::Changed).await;
         Ok(())
     }
@@ -419,14 +428,20 @@ pub async fn handle(rt: &Runtime) -> Option<Arc<Vault>> {
 /// (link) derives the keypair; secrets cannot name `link::Identity` without a
 /// dependency cycle.
 pub async fn mesh_device_key(rt: &Runtime) -> anyhow::Result<zeroize::Zeroizing<[u8; 32]>> {
-    let vault = handle(rt).await.ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
+    let vault = handle(rt)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
     vault.mesh_device_key().await
 }
 
 /// [`Vault::mesh_device_key_if_set`] for the runtime: the row when it exists, never minted.
 /// `Err` when the vault is unavailable.
-pub async fn mesh_device_key_existing(rt: &Runtime) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
-    let vault = handle(rt).await.ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
+pub async fn mesh_device_key_existing(
+    rt: &Runtime,
+) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+    let vault = handle(rt)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
     vault.mesh_device_key_if_set()
 }
 
@@ -462,9 +477,15 @@ impl ::oauth::Grants for Vault {
     }
 
     async fn store(&self, ns: &str, json: &str, expected: Option<u32>) -> Result<bool, String> {
-        Vault::set_if_version(self, &format!("{OAUTH_PREFIX}{ns}"), json, "oauth", expected)
-            .await
-            .map(|written| written.is_some())
+        Vault::set_if_version(
+            self,
+            &format!("{OAUTH_PREFIX}{ns}"),
+            json,
+            "oauth",
+            expected,
+        )
+        .await
+        .map(|written| written.is_some())
     }
 
     async fn remove(&self, ns: &str) -> Result<(), String> {
@@ -535,7 +556,11 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
     // refresh loop on it.
     let (rt2, v2) = (rt.clone(), vault.clone());
     tokio::spawn(async move {
-        if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+        if rt2
+            .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
+            .await
+            .is_none()
+        {
             return;
         }
         match replica::attach(v2.pool(), store::TABLES).await {
@@ -543,8 +568,12 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
             // before the replica is up) never fired a trigger: announce them whole once, else a
             // later column write ships alone and trips NOT NULL on every peer (69 smoke).
             Ok(h) => match h.announce_unstamped().await {
-                Ok(n) => tracing::info!("secrets: vault replicates ({n} pre-existing row(s) announced)"),
-                Err(e) => tracing::warn!("secrets: vault replicates; existing rows not announced: {e:#}"),
+                Ok(n) => {
+                    tracing::info!("secrets: vault replicates ({n} pre-existing row(s) announced)")
+                }
+                Err(e) => {
+                    tracing::warn!("secrets: vault replicates; existing rows not announced: {e:#}")
+                }
             },
             Err(e) => tracing::warn!("secrets: vault is local only: {e:#}"),
         }

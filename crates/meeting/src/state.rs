@@ -185,7 +185,11 @@ pub struct Live {
     pub carry: Vec<(String, Vec<Utterance>)>,
     /// 57 §3.4: oracle verdicts whose model turn has not finished — the event to update with
     /// the outcome, what the oracle expected, and the training example to amend (57 §11.4).
-    pub pending: Vec<(crate::OracleDecision, crate::oracle::Expected, Option<ExampleId>)>,
+    pub pending: Vec<(
+        crate::OracleDecision,
+        crate::oracle::Expected,
+        Option<ExampleId>,
+    )>,
     /// Cached rows (and titles) `meeting_topic` registered since the last turn ended.
     pub published: Vec<(Option<BriefId>, String)>,
     /// The topics behind `published`, same order, for the tap/dismiss amend rows.

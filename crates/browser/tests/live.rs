@@ -337,21 +337,48 @@ async fn drives_fixture_page() {
     assert_eq!(run_tool.spec().risk, tools::Risk::Mutating);
     assert!(run_tool.spec().description.contains("up to `max_steps`"));
     let engine = scripted_engine(&data_dir);
-    kit.ok("browser_open", json!({ "url": format!("http://127.0.0.1:{port}/") })).await;
+    kit.ok(
+        "browser_open",
+        json!({ "url": format!("http://127.0.0.1:{port}/") }),
+    )
+    .await;
     let run = kit
-        .call("browser_run", json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }))
+        .call(
+            "browser_run",
+            json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }),
+        )
         .await;
     assert!(!run.is_error, "browser_run: {}", run.content);
     let lines: Vec<&str> = run.content.lines().collect();
-    assert!(lines[0].starts_with("browser_run (active): 3 step(s)"), "{}", run.content);
-    assert!(lines[1].starts_with("step 1: TYPE_TEXT 0.90 [1] \"textbox\" (textbox) 1.00 = 'hello loop'"), "{}", run.content);
-    assert!(lines[2].starts_with("step 2: CLICK 0.90 [2] \"Go\" (button) 0.90"), "{}", run.content);
+    assert!(
+        lines[0].starts_with("browser_run (active): 3 step(s)"),
+        "{}",
+        run.content
+    );
+    assert!(
+        lines[1]
+            .starts_with("step 1: TYPE_TEXT 0.90 [1] \"textbox\" (textbox) 1.00 = 'hello loop'"),
+        "{}",
+        run.content
+    );
+    assert!(
+        lines[2].starts_with("step 2: CLICK 0.90 [2] \"Go\" (button) 0.90"),
+        "{}",
+        run.content
+    );
     assert!(lines[3].starts_with("step 3: DONE 0.90"), "{}", run.content);
     assert!(run.content.contains("stopped: DONE"), "{}", run.content);
     assert!(run.content.contains("/submitted"), "{}", run.content);
-    assert!(!run.content.contains("Continue with the browser_* tools"), "{}", run.content);
+    assert!(
+        !run.content.contains("Continue with the browser_* tools"),
+        "{}",
+        run.content
+    );
     let read = kit.ok("browser_read", json!({})).await;
-    assert!(read.contains("you sent: hello loop"), "after browser_run: {read}");
+    assert!(
+        read.contains("you sent: hello loop"),
+        "after browser_run: {read}"
+    );
 
     // Shadow: one decision, nothing executed, the hand-back carries the element listing.
     engine
@@ -361,15 +388,40 @@ async fn drives_fixture_page() {
         })
         .await
         .expect("set mode");
-    kit.ok("browser_open", json!({ "url": format!("http://127.0.0.1:{port}/") })).await;
+    kit.ok(
+        "browser_open",
+        json!({ "url": format!("http://127.0.0.1:{port}/") }),
+    )
+    .await;
     let shadow = kit
-        .call("browser_run", json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }))
+        .call(
+            "browser_run",
+            json!({ "goal": "Type 'hello loop' into the field and submit it with Go" }),
+        )
         .await;
     assert!(!shadow.is_error, "{}", shadow.content);
-    assert!(shadow.content.starts_with("browser_run (shadow): 1 step(s)"), "{}", shadow.content);
-    assert!(shadow.content.contains("step 1: TYPE_TEXT"), "{}", shadow.content);
-    assert!(shadow.content.contains("stopped: shadow mode"), "{}", shadow.content);
-    assert!(shadow.content.contains("Continue with the browser_* tools"), "{}", shadow.content);
+    assert!(
+        shadow
+            .content
+            .starts_with("browser_run (shadow): 1 step(s)"),
+        "{}",
+        shadow.content
+    );
+    assert!(
+        shadow.content.contains("step 1: TYPE_TEXT"),
+        "{}",
+        shadow.content
+    );
+    assert!(
+        shadow.content.contains("stopped: shadow mode"),
+        "{}",
+        shadow.content
+    );
+    assert!(
+        shadow.content.contains("Continue with the browser_* tools"),
+        "{}",
+        shadow.content
+    );
     assert!(shadow.content.contains("ref=e1"), "{}", shadow.content);
     let read = kit.ok("browser_read", json!({})).await;
     assert!(!read.contains("you sent"), "shadow must not act: {read}");
@@ -435,8 +487,13 @@ impl decision::Oracle for Scripted {
             let step = self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 3;
             let want = ["TYPE_TEXT", "CLICK", "DONE"][step];
             ids.iter().position(|i| *i == want).unwrap_or(ids.len() - 1)
-        } else if candidates.iter().any(|c| c.text.contains("(button)")) && !candidates.iter().any(|c| c.text.starts_with("[1] textbox")) {
-            candidates.iter().position(|c| c.text.contains("(button)")).unwrap()
+        } else if candidates.iter().any(|c| c.text.contains("(button)"))
+            && !candidates.iter().any(|c| c.text.starts_with("[1] textbox"))
+        {
+            candidates
+                .iter()
+                .position(|c| c.text.contains("(button)"))
+                .unwrap()
         } else {
             0
         };
@@ -461,7 +518,10 @@ impl decision::Oracle for Scripted {
             markers_lost: false,
         })
     }
-    fn run(&mut self, rows: &[decision::laya::Sequence]) -> anyhow::Result<Vec<decision::laya::RowOut>> {
+    fn run(
+        &mut self,
+        rows: &[decision::laya::Sequence],
+    ) -> anyhow::Result<Vec<decision::laya::RowOut>> {
         Ok(rows
             .iter()
             .map(|r| {

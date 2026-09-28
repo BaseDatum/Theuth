@@ -85,7 +85,9 @@ pub fn parse(s: &str) -> Option<Payload> {
     if version != "1" {
         return None;
     }
-    let bytes = BASE32_NOPAD.decode(body.to_ascii_uppercase().as_bytes()).ok()?;
+    let bytes = BASE32_NOPAD
+        .decode(body.to_ascii_uppercase().as_bytes())
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -113,7 +115,8 @@ pub struct PeerEntry {
 impl PeerEntry {
     /// The LWW clock of this row.
     pub fn stamp(&self) -> u64 {
-        self.removed_ms.map_or(self.added_ms, |r| r.max(self.added_ms))
+        self.removed_ms
+            .map_or(self.added_ms, |r| r.max(self.added_ms))
     }
 
     /// Tombstone?
@@ -133,8 +136,13 @@ pub fn newer(incoming: &PeerEntry, local: &PeerEntry) -> bool {
 
 /// Union of two peer sets under [`newer`]; `me` is never merged in (an
 /// engine is not its own peer). Returns the merged set and which rows changed.
-pub fn merge(local: &[PeerEntry], incoming: &[PeerEntry], me: &EngineId) -> (Vec<PeerEntry>, Vec<PeerEntry>) {
-    let mut by_id: BTreeMap<EngineId, PeerEntry> = local.iter().map(|p| (p.id.clone(), p.clone())).collect();
+pub fn merge(
+    local: &[PeerEntry],
+    incoming: &[PeerEntry],
+    me: &EngineId,
+) -> (Vec<PeerEntry>, Vec<PeerEntry>) {
+    let mut by_id: BTreeMap<EngineId, PeerEntry> =
+        local.iter().map(|p| (p.id.clone(), p.clone())).collect();
     let mut changed = Vec::new();
     for p in incoming {
         if &p.id == me {
@@ -178,7 +186,10 @@ mod tests {
         let s = build(&p);
         assert!(s.starts_with("1."), "{s}");
         assert_eq!(parse(&s).unwrap(), p);
-        assert_eq!(parse(&format!("  {}  ", s.to_ascii_lowercase())).unwrap(), p);
+        assert_eq!(
+            parse(&format!("  {}  ", s.to_ascii_lowercase())).unwrap(),
+            p
+        );
         assert!(parse("2.abc").is_none());
         assert!(parse("1.!!!").is_none());
     }

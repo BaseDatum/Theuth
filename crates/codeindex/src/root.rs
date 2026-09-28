@@ -35,14 +35,31 @@ pub fn db_file_name(root: &Path) -> String {
     let hash = Sha256::digest(s.as_bytes());
     let slug: String = s
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c.is_whitespace() { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
-    format!("{}-{:02x}{:02x}{:02x}{:02x}.sqlite", slug.trim_start_matches('-'), hash[0], hash[1], hash[2], hash[3])
+    format!(
+        "{}-{:02x}{:02x}{:02x}{:02x}.sqlite",
+        slug.trim_start_matches('-'),
+        hash[0],
+        hash[1],
+        hash[2],
+        hash[3]
+    )
 }
 
 /// Join a user path to `root` and require it to canonicalise under it (60 §11).
 pub fn under_root(root: &Path, p: &Path) -> anyhow::Result<PathBuf> {
-    let full = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
     let canon = full
         .canonicalize()
         .with_context(|| format!("{} does not exist", full.display()))?;

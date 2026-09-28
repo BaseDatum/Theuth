@@ -175,27 +175,66 @@ struct Tailed {
 
 /// Map one task event to a feed row. `None` = not feed-worthy (progress
 /// notes, placement, reviewer, title edits …).
-pub fn from_task_event(title: &str, parent: Option<&str>, e: &TaskEvent) -> Option<(ActivityKind, String)> {
+pub fn from_task_event(
+    title: &str,
+    parent: Option<&str>,
+    e: &TaskEvent,
+) -> Option<(ActivityKind, String)> {
     let after = e.after.as_deref().unwrap_or("");
     let before = e.before.as_deref().unwrap_or("");
     let q = |s: &str| format!("\u{201c}{s}\u{201d}");
     Some(match e.field.as_str() {
-        "created" if parent.is_some() => (ActivityKind::ChildSpawned, format!("spawned child {} ({after})", q(title))),
-        "created" => (ActivityKind::TaskCreated, format!("created {} ({after})", q(title))),
-        "state" if after == "done" && parent.is_some() => (ActivityKind::ChildReturned, format!("child {} returned", q(title))),
+        "created" if parent.is_some() => (
+            ActivityKind::ChildSpawned,
+            format!("spawned child {} ({after})", q(title)),
+        ),
+        "created" => (
+            ActivityKind::TaskCreated,
+            format!("created {} ({after})", q(title)),
+        ),
+        "state" if after == "done" && parent.is_some() => (
+            ActivityKind::ChildReturned,
+            format!("child {} returned", q(title)),
+        ),
         "state" if after == "done" => (ActivityKind::TaskDone, format!("{} done", q(title))),
-        "state" => (ActivityKind::TaskMoved, format!("{} {before} \u{2192} {after}", q(title))),
-        "owner" => (ActivityKind::TaskReassigned, format!("{} reassigned {before} \u{2192} {after}", q(title))),
-        "checkout" => (ActivityKind::TaskCheckedOut, format!("checked out {} ({after})", q(title))),
-        "comment" => (ActivityKind::TaskCommented, format!("on {}: {after}", q(title))),
-        "nudge" | "nudged" => (ActivityKind::TaskNudged, format!("nudged {}: {after}", q(title))),
+        "state" => (
+            ActivityKind::TaskMoved,
+            format!("{} {before} \u{2192} {after}", q(title)),
+        ),
+        "owner" => (
+            ActivityKind::TaskReassigned,
+            format!("{} reassigned {before} \u{2192} {after}", q(title)),
+        ),
+        "checkout" => (
+            ActivityKind::TaskCheckedOut,
+            format!("checked out {} ({after})", q(title)),
+        ),
+        "comment" => (
+            ActivityKind::TaskCommented,
+            format!("on {}: {after}", q(title)),
+        ),
+        "nudge" | "nudged" => (
+            ActivityKind::TaskNudged,
+            format!("nudged {}: {after}", q(title)),
+        ),
         "blockers" => {
-            let decisions = |s: &str| s.split(", ").filter(|b| b.starts_with("decision:")).map(str::to_owned).collect::<Vec<_>>();
+            let decisions = |s: &str| {
+                s.split(", ")
+                    .filter(|b| b.starts_with("decision:"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
             let (b, a) = (decisions(before), decisions(after));
             if let Some(d) = a.iter().find(|d| !b.contains(d)) {
-                (ActivityKind::EscalationRaised, format!("escalated {} ({d})", q(title)))
+                (
+                    ActivityKind::EscalationRaised,
+                    format!("escalated {} ({d})", q(title)),
+                )
             } else if let Some(d) = b.iter().find(|d| !a.contains(d)) {
-                (ActivityKind::EscalationAnswered, format!("decided {} ({d})", q(title)))
+                (
+                    ActivityKind::EscalationAnswered,
+                    format!("decided {} ({d})", q(title)),
+                )
             } else {
                 return None;
             }
@@ -241,7 +280,15 @@ impl Activity {
     }
 
     /// Append one row and publish it.
-    async fn append(&self, ts_ms: u64, kind: ActivityKind, actor: &str, subject: &str, summary: &str, cost: Option<f64>) {
+    async fn append(
+        &self,
+        ts_ms: u64,
+        kind: ActivityKind,
+        actor: &str,
+        subject: &str,
+        summary: &str,
+        cost: Option<f64>,
+    ) {
         match append(&self.pool, ts_ms, kind, actor, subject, summary, cost).await {
             Ok(entry) => self.rt.publish(ActivityAppended { entry }).await,
             Err(e) => tracing::warn!("activity not recorded: {e:#}"),
@@ -249,7 +296,15 @@ impl Activity {
     }
 }
 
-async fn append(pool: &SqlitePool, ts_ms: u64, kind: ActivityKind, actor: &str, subject: &str, summary: &str, cost: Option<f64>) -> anyhow::Result<ActivityEntry> {
+async fn append(
+    pool: &SqlitePool,
+    ts_ms: u64,
+    kind: ActivityKind,
+    actor: &str,
+    subject: &str,
+    summary: &str,
+    cost: Option<f64>,
+) -> anyhow::Result<ActivityEntry> {
     let id = sqlx::query("INSERT INTO activity (ts_ms, kind, actor, subject, summary, cost) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(ts_ms as i64)
         .bind(kind.as_str())
@@ -273,14 +328,17 @@ async fn append(pool: &SqlitePool, ts_ms: u64, kind: ActivityKind, actor: &str, 
 
 /// New `task_events` rows past the cursor, with their task's title and parent.
 async fn tail_rows(pool: &SqlitePool) -> anyhow::Result<Vec<Tailed>> {
-    let last: Option<(i64,)> = sqlx::query_as("SELECT last_event FROM activity_cursor WHERE id = 1")
-        .fetch_optional(pool)
-        .await?;
+    let last: Option<(i64,)> =
+        sqlx::query_as("SELECT last_event FROM activity_cursor WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
     // A store that predates the feed starts at its head: no backfill of history.
     let last = match last {
         Some((n,)) => n,
         None => {
-            let (head,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(id), 0) FROM task_events").fetch_one(pool).await?;
+            let (head,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(id), 0) FROM task_events")
+                .fetch_one(pool)
+                .await?;
             sqlx::query("INSERT INTO activity_cursor (id, last_event) VALUES (1, ?)")
                 .bind(head)
                 .execute(pool)
@@ -288,7 +346,18 @@ async fn tail_rows(pool: &SqlitePool) -> anyhow::Result<Vec<Tailed>> {
             head
         }
     };
-    type R = (i64, String, i64, String, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>);
+    type R = (
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let rows: Vec<R> = sqlx::query_as(
         "SELECT e.id, e.task, e.at_ms, e.actor, e.session, e.field, e.before, e.after, t.title, t.parent \
          FROM task_events e LEFT JOIN tasks t ON t.id = e.task WHERE e.id > ? ORDER BY e.id LIMIT ?",
@@ -299,31 +368,46 @@ async fn tail_rows(pool: &SqlitePool) -> anyhow::Result<Vec<Tailed>> {
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, task, at_ms, actor, session, field, before, after, title, parent)| Tailed {
-            id,
-            title: title.unwrap_or_else(|| task.clone()),
-            task,
-            parent,
-            event: TaskEvent {
-                at_ms: at_ms as u64,
-                actor,
-                session,
-                field,
-                before,
-                after,
+        .map(
+            |(id, task, at_ms, actor, session, field, before, after, title, parent)| Tailed {
+                id,
+                title: title.unwrap_or_else(|| task.clone()),
+                task,
+                parent,
+                event: TaskEvent {
+                    at_ms: at_ms as u64,
+                    actor,
+                    session,
+                    field,
+                    before,
+                    after,
+                },
             },
-        })
+        )
         .collect())
 }
 
 /// One tail pass: map, append, advance the cursor. Returns the appended rows.
 pub async fn tail_once(pool: &SqlitePool) -> anyhow::Result<Vec<ActivityEntry>> {
     let rows = tail_rows(pool).await?;
-    let Some(last) = rows.last().map(|r| r.id) else { return Ok(vec![]) };
+    let Some(last) = rows.last().map(|r| r.id) else {
+        return Ok(vec![]);
+    };
     let mut out = Vec::new();
     for r in rows {
         if let Some((kind, summary)) = from_task_event(&r.title, r.parent.as_deref(), &r.event) {
-            out.push(append(pool, r.event.at_ms, kind, &r.event.actor, &r.task, &summary, None).await?);
+            out.push(
+                append(
+                    pool,
+                    r.event.at_ms,
+                    kind,
+                    &r.event.actor,
+                    &r.task,
+                    &summary,
+                    None,
+                )
+                .await?,
+            );
         }
     }
     sqlx::query("UPDATE activity_cursor SET last_event = ? WHERE id = 1")
@@ -385,18 +469,30 @@ impl Message<Record> for Activity {
     type Reply = ();
 
     async fn handle(&mut self, m: Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.append(now_ms(), m.kind, &m.actor, &m.subject, &m.summary, m.cost).await;
+        self.append(now_ms(), m.kind, &m.actor, &m.subject, &m.summary, m.cost)
+            .await;
     }
 }
 
 impl Message<ScheduleEvent> for Activity {
     type Reply = ();
 
-    async fn handle(&mut self, m: ScheduleEvent, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ScheduleEvent,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let ScheduleEvent::Fired { name, session, at } = m {
             let ts = u64::try_from(at.timestamp_millis()).unwrap_or_else(|_| now_ms());
-            self.append(ts, ActivityKind::RoutineFired, "system", &name, &format!("routine {name} fired (session {session})"), None)
-                .await;
+            self.append(
+                ts,
+                ActivityKind::RoutineFired,
+                "system",
+                &name,
+                &format!("routine {name} fired (session {session})"),
+                None,
+            )
+            .await;
         }
     }
 }
@@ -438,21 +534,57 @@ mod tests {
 
     #[test]
     fn task_events_map_to_kinds() {
-        let k = |f, b, a, parent| from_task_event("fix deploy", parent, &ev(f, b, a)).map(|(k, _)| k);
-        assert_eq!(k("created", None, Some("owner agent:ops"), None), Some(ActivityKind::TaskCreated));
-        assert_eq!(k("created", None, Some("owner agent:ops"), Some("p")), Some(ActivityKind::ChildSpawned));
-        assert_eq!(k("state", Some("todo"), Some("doing"), None), Some(ActivityKind::TaskMoved));
-        assert_eq!(k("state", Some("review"), Some("done"), None), Some(ActivityKind::TaskDone));
-        assert_eq!(k("state", Some("review"), Some("done"), Some("p")), Some(ActivityKind::ChildReturned));
-        assert_eq!(k("owner", Some("agent:ops"), Some("agent:dev"), None), Some(ActivityKind::TaskReassigned));
-        assert_eq!(k("checkout", None, Some("s1 on mac (epoch 1)"), None), Some(ActivityKind::TaskCheckedOut));
-        assert_eq!(k("comment", None, Some("looks good"), None), Some(ActivityKind::TaskCommented));
-        assert_eq!(k("blockers", Some(""), Some("decision:abc"), None), Some(ActivityKind::EscalationRaised));
-        assert_eq!(k("blockers", Some("x, decision:abc"), Some("x"), None), Some(ActivityKind::EscalationAnswered));
+        let k =
+            |f, b, a, parent| from_task_event("fix deploy", parent, &ev(f, b, a)).map(|(k, _)| k);
+        assert_eq!(
+            k("created", None, Some("owner agent:ops"), None),
+            Some(ActivityKind::TaskCreated)
+        );
+        assert_eq!(
+            k("created", None, Some("owner agent:ops"), Some("p")),
+            Some(ActivityKind::ChildSpawned)
+        );
+        assert_eq!(
+            k("state", Some("todo"), Some("doing"), None),
+            Some(ActivityKind::TaskMoved)
+        );
+        assert_eq!(
+            k("state", Some("review"), Some("done"), None),
+            Some(ActivityKind::TaskDone)
+        );
+        assert_eq!(
+            k("state", Some("review"), Some("done"), Some("p")),
+            Some(ActivityKind::ChildReturned)
+        );
+        assert_eq!(
+            k("owner", Some("agent:ops"), Some("agent:dev"), None),
+            Some(ActivityKind::TaskReassigned)
+        );
+        assert_eq!(
+            k("checkout", None, Some("s1 on mac (epoch 1)"), None),
+            Some(ActivityKind::TaskCheckedOut)
+        );
+        assert_eq!(
+            k("comment", None, Some("looks good"), None),
+            Some(ActivityKind::TaskCommented)
+        );
+        assert_eq!(
+            k("blockers", Some(""), Some("decision:abc"), None),
+            Some(ActivityKind::EscalationRaised)
+        );
+        assert_eq!(
+            k("blockers", Some("x, decision:abc"), Some("x"), None),
+            Some(ActivityKind::EscalationAnswered)
+        );
         assert_eq!(k("blockers", Some("x"), Some("x, y"), None), None);
         assert_eq!(k("note", None, Some("progress"), None), None);
         assert_eq!(k("reviewer", None, Some("user"), None), None);
-        let (_, s) = from_task_event("fix deploy", None, &ev("state", Some("todo"), Some("doing"))).unwrap();
+        let (_, s) = from_task_event(
+            "fix deploy",
+            None,
+            &ev("state", Some("todo"), Some("doing")),
+        )
+        .unwrap();
         assert_eq!(s, "\u{201c}fix deploy\u{201d} todo \u{2192} doing");
     }
 
@@ -463,25 +595,88 @@ mod tests {
         let pool = store.pool();
         // A pre-existing event is history, not feed.
         let id = TaskId::new();
-        store.add_event(&id, &ev("created", None, Some("owner user"))).await.unwrap();
+        store
+            .add_event(&id, &ev("created", None, Some("owner user")))
+            .await
+            .unwrap();
         assert!(tail_once(pool).await.unwrap().is_empty());
         // New events land, titled from the task row when it exists, else by id.
-        store.add_event(&id, &ev("state", Some("todo"), Some("doing"))).await.unwrap();
-        store.add_event(&id, &ev("note", None, Some("progress"))).await.unwrap();
-        store.add_event(&id, &ev("state", Some("review"), Some("done"))).await.unwrap();
+        store
+            .add_event(&id, &ev("state", Some("todo"), Some("doing")))
+            .await
+            .unwrap();
+        store
+            .add_event(&id, &ev("note", None, Some("progress")))
+            .await
+            .unwrap();
+        store
+            .add_event(&id, &ev("state", Some("review"), Some("done")))
+            .await
+            .unwrap();
         let got = tail_once(pool).await.unwrap();
-        assert_eq!(got.iter().map(|e| e.kind).collect::<Vec<_>>(), [ActivityKind::TaskMoved, ActivityKind::TaskDone]);
+        assert_eq!(
+            got.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            [ActivityKind::TaskMoved, ActivityKind::TaskDone]
+        );
         assert_eq!(got[0].subject, id.0);
-        assert!(got[0].summary.contains(&id.0), "no task row: the id stands in for the title");
+        assert!(
+            got[0].summary.contains(&id.0),
+            "no task row: the id stands in for the title"
+        );
         assert!(tail_once(pool).await.unwrap().is_empty(), "cursor advanced");
-        append(pool, 5, ActivityKind::AgentPaused, "user", "ops", "paused ops", None).await.unwrap();
+        append(
+            pool,
+            5,
+            ActivityKind::AgentPaused,
+            "user",
+            "ops",
+            "paused ops",
+            None,
+        )
+        .await
+        .unwrap();
         let all = list(pool, &ActivityFilter::default()).await.unwrap();
-        assert_eq!(all.iter().map(|e| e.kind).collect::<Vec<_>>(), [ActivityKind::AgentPaused, ActivityKind::TaskDone, ActivityKind::TaskMoved]);
-        let only = list(pool, &ActivityFilter { kinds: Some(vec![ActivityKind::TaskDone]), limit: Some(10), since_ms: None }).await.unwrap();
+        assert_eq!(
+            all.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            [
+                ActivityKind::AgentPaused,
+                ActivityKind::TaskDone,
+                ActivityKind::TaskMoved
+            ]
+        );
+        let only = list(
+            pool,
+            &ActivityFilter {
+                kinds: Some(vec![ActivityKind::TaskDone]),
+                limit: Some(10),
+                since_ms: None,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(only.len(), 1);
-        let since = list(pool, &ActivityFilter { since_ms: Some(1), ..Default::default() }).await.unwrap();
-        assert_eq!(since.iter().map(|e| e.kind).collect::<Vec<_>>(), [ActivityKind::AgentPaused]);
-        let one = list(pool, &ActivityFilter { limit: Some(1), ..Default::default() }).await.unwrap();
+        let since = list(
+            pool,
+            &ActivityFilter {
+                since_ms: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            since.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            [ActivityKind::AgentPaused]
+        );
+        let one = list(
+            pool,
+            &ActivityFilter {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(one.len(), 1);
     }
 }

@@ -93,7 +93,11 @@ mod mobile {
             use objc2_ui_kit::{UIScreen, UITraitEnvironment, UIUserInterfaceStyle};
             #[allow(deprecated)]
             return MainThreadMarker::new().is_some_and(|mtm| {
-                let style = unsafe { UIScreen::mainScreen(mtm).traitCollection().userInterfaceStyle() };
+                let style = unsafe {
+                    UIScreen::mainScreen(mtm)
+                        .traitCollection()
+                        .userInterfaceStyle()
+                };
                 style == UIUserInterfaceStyle::Dark
             });
         }
@@ -428,7 +432,10 @@ mod desktop {
             return;
         }
         let dark = win.theme().is_ok_and(|t| t == tauri::Theme::Dark);
-        log_err(win.set_background_color(Some(crate::page_background(dark))), "window background");
+        log_err(
+            win.set_background_color(Some(crate::page_background(dark))),
+            "window background",
+        );
     }
 
     fn toggle(app: &AppHandle) {

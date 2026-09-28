@@ -45,7 +45,13 @@ impl Pending {
 /// scheme from `relay` (`wss`→`https`, else `http`). The 4th part (69
 /// decision 4) names the replicated `pending` row a mesh pairing uses; the
 /// engine identity's own pairing has none.
-pub fn build(relay: &str, harness_pub: &[u8; 32], secret: &[u8; 32], name: &str, pending: Option<&str>) -> String {
+pub fn build(
+    relay: &str,
+    harness_pub: &[u8; 32],
+    secret: &[u8; 32],
+    name: &str,
+    pending: Option<&str>,
+) -> String {
     let (scheme, host) = match relay.split_once("://") {
         Some((s, rest)) => (s, rest.trim_end_matches('/')),
         None => ("wss", relay.trim_end_matches('/')),
@@ -54,7 +60,11 @@ pub fn build(relay: &str, harness_pub: &[u8; 32], secret: &[u8; 32], name: &str,
     let mut both = [0u8; 64];
     both[..32].copy_from_slice(harness_pub);
     both[32..].copy_from_slice(secret);
-    let mut s = format!("{scheme}://{host}/link#1.{}.{}", b64(&both), b64(name.as_bytes()));
+    let mut s = format!(
+        "{scheme}://{host}/link#1.{}.{}",
+        b64(&both),
+        b64(name.as_bytes())
+    );
     if let Some(p) = pending {
         s.push('.');
         s.push_str(&b64(p.as_bytes()));
@@ -141,7 +151,11 @@ mod tests {
         assert_eq!(p.secret, secret);
         assert_eq!(p.name, "Sky’s Mac");
         assert_eq!(p.pending, None);
-        assert_eq!(key.matches('.').count() - "relay.example".matches('.').count(), 2, "3 parts");
+        assert_eq!(
+            key.matches('.').count() - "relay.example".matches('.').count(),
+            2,
+            "3 parts"
+        );
 
         let key = build("ws://127.0.0.1:8787", &hp, &secret, "x", None);
         assert!(key.starts_with("http://127.0.0.1:8787/link#1."), "{key}");
@@ -151,16 +165,31 @@ mod tests {
         assert_eq!(p.name, "x");
 
         // 69 decision 4: the 4th part names the pending row.
-        let key = build("wss://relay.example", &hp, &secret, "work", Some("AbC-_123"));
+        let key = build(
+            "wss://relay.example",
+            &hp,
+            &secret,
+            "work",
+            Some("AbC-_123"),
+        );
         let p = parse(&key).unwrap();
-        assert_eq!((p.name.as_str(), p.pending.as_deref()), ("work", Some("AbC-_123")));
+        assert_eq!(
+            (p.name.as_str(), p.pending.as_deref()),
+            ("work", Some("AbC-_123"))
+        );
         let bare = key.split_once('#').unwrap().1;
         assert_eq!(bare.matches('.').count(), 3, "4 parts");
         assert_eq!(parse(bare).unwrap().pending.as_deref(), Some("AbC-_123"));
 
         assert!(parse("2.abc.def").is_none());
         assert!(parse("https://h/link#1.short.eA").is_none());
-        assert!(parse(&format!("{bare}.eA")).is_none(), "5 parts is not a pairing string");
-        assert!(parse(&format!("{bare}.%%")).is_none(), "4th part must be base64url");
+        assert!(
+            parse(&format!("{bare}.eA")).is_none(),
+            "5 parts is not a pairing string"
+        );
+        assert!(
+            parse(&format!("{bare}.%%")).is_none(),
+            "4th part must be base64url"
+        );
     }
 }

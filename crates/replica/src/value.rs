@@ -3,8 +3,8 @@
 //! change is SQL NULL. Types survive the round trip so an INTEGER column stays
 //! an integer on the receiving engine.
 
-use sqlx::sqlite::{Sqlite, SqliteArguments};
 use sqlx::query::Query;
+use sqlx::sqlite::{Sqlite, SqliteArguments};
 use sqlx::{Row as _, sqlite::SqliteRow};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,7 +73,9 @@ impl Val {
         let Some(bytes) = bytes else {
             return Ok(Self::Null);
         };
-        let (tag, body) = bytes.split_first().ok_or_else(|| anyhow::anyhow!("empty value"))?;
+        let (tag, body) = bytes
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("empty value"))?;
         Ok(match tag {
             b'i' => Self::Int(i64::from_be_bytes(body.try_into()?)),
             b'r' => Self::Real(f64::from_be_bytes(body.try_into()?)),
@@ -84,7 +86,10 @@ impl Val {
     }
 
     /// Bind as the next positional parameter.
-    pub(crate) fn bind<'q>(self, q: Query<'q, Sqlite, SqliteArguments>) -> Query<'q, Sqlite, SqliteArguments> {
+    pub(crate) fn bind<'q>(
+        self,
+        q: Query<'q, Sqlite, SqliteArguments>,
+    ) -> Query<'q, Sqlite, SqliteArguments> {
         match self {
             Self::Null => q.bind(None::<i64>),
             Self::Int(i) => q.bind(i),

@@ -76,10 +76,9 @@ use tools::git::SyncResult;
 use tools::{
     AddRepo, AddServer, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalsState, AskId,
     AskRequested, CancelJob, CancelOrigin, Decision, Gate, GetApprovals, GetPtyIdle, JOBS_ACTOR,
-    JobId, JobView, Jobs,
-    ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress, McpServer, Progress,
-    RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden, SetPtyIdle, SyncMcp,
-    ToolRegistry, ToolSpec,
+    JobId, JobView, Jobs, ListJobs, ListServers, ListTools, Mcp, McpLogin, McpLogout, McpProgress,
+    McpServer, Progress, RemoveServer, RepoInfo, Resolve, SetApprovals, SetGate, SetHidden,
+    SetPtyIdle, SyncMcp, ToolRegistry, ToolSpec,
 };
 use tools::{
     Key, ListTerminals, PtyAttach, PtyChunk, PtyInput, PtyOut, PtyResize, PtyScreen,
@@ -175,7 +174,12 @@ pub trait Api {
     /// expand for the lookup only. Empty when nothing triggers, the
     /// directory is missing or the owner is unreachable: never an error.
     #[method(name = "path_complete", with_extensions)]
-    async fn path_complete(&self, session: Option<SessionId>, input: String, cursor: usize) -> RpcResult<PathCompletion>;
+    async fn path_complete(
+        &self,
+        session: Option<SessionId>,
+        input: String,
+        cursor: usize,
+    ) -> RpcResult<PathCompletion>;
     /// Queue a user message after the current tool batch (or, with
     /// `delivery: next_turn`, after the turn); returns the id (minted when
     /// omitted). `files` are image files (17 §2).
@@ -1244,11 +1248,18 @@ pub trait Api {
     /// apply them live: providers are re-registered with the `web` actor, the
     /// next `search_web` uses the new limits. A failed write changes nothing.
     #[method(name = "search_settings_set")]
-    async fn search_settings_set(&self, settings: search_providers::SearchSettings) -> RpcResult<search_providers::SearchSettings>;
+    async fn search_settings_set(
+        &self,
+        settings: search_providers::SearchSettings,
+    ) -> RpcResult<search_providers::SearchSettings>;
     /// One probe query through one registered provider (built-in or external):
     /// ok, latency, rows, error text. Unknown / unregistered names are errors.
     #[method(name = "search_provider_test")]
-    async fn search_provider_test(&self, name: String, query: String) -> RpcResult<web::settings::ProviderProbe>;
+    async fn search_provider_test(
+        &self,
+        name: String,
+        query: String,
+    ) -> RpcResult<web::settings::ProviderProbe>;
     /// Per-provider health from the last calls (rate-limited, captcha, parse
     /// error, …) for every registered provider, in registration order.
     #[method(name = "search_status")]
@@ -1256,7 +1267,12 @@ pub trait Api {
     /// Run the whole `search_web` tool once (fan-out, rank, read) from Settings
     /// › Search "Run a test search"; returns the model-facing text and the JSON.
     #[method(name = "search_test")]
-    async fn search_test(&self, query: String, site: Option<String>, recent: Option<web::Recency>) -> RpcResult<web::settings::SearchTestResult>;
+    async fn search_test(
+        &self,
+        query: String,
+        site: Option<String>,
+        recent: Option<web::Recency>,
+    ) -> RpcResult<web::settings::SearchTestResult>;
     /// `decision_mode("meeting")`.
     #[method(name = "meeting_oracle_mode")]
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo>;
@@ -1523,7 +1539,8 @@ pub trait Api {
     /// Answer a `SecretsEvent::Requested`: `value: Some` stores it as
     /// `source: user`, `None` declines. `true` if it was still pending.
     #[method(name = "answer_secret")]
-    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<bool>;
+    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>)
+    -> RpcResult<bool>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -2723,12 +2740,23 @@ impl ApiServer for Server {
         let mut cwd = None;
         if let Some(session) = session {
             if let Some(owner) = forward::owner_peer(session).await {
-                let forwarded: RpcResult<Option<PathCompletion>> =
-                    forward::to_peer(ext, &owner, "path_complete", (Some(session), &input, cursor)).await;
+                let forwarded: RpcResult<Option<PathCompletion>> = forward::to_peer(
+                    ext,
+                    &owner,
+                    "path_complete",
+                    (Some(session), &input, cursor),
+                )
+                .await;
                 return Ok(forwarded.ok().flatten().unwrap_or_default());
             }
             let store = ask::<Agents, _>(agent::AGENT_ACTOR, agent::DurableStore).await?;
-            cwd = store.session(session).await.ok().flatten().and_then(|s| s.cwd).map(PathBuf::from);
+            cwd = store
+                .session(session)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| s.cwd)
+                .map(PathBuf::from);
         }
         let cwd = cwd
             .or_else(|| std::env::current_dir().ok())
@@ -4360,22 +4388,30 @@ impl ApiServer for Server {
             search_providers::GetProviders,
         )
         .await?;
-        Ok(search_providers::SearchSettings { providers, defaults })
+        Ok(search_providers::SearchSettings {
+            providers,
+            defaults,
+        })
     }
 
     async fn search_settings_set(
         &self,
         settings: search_providers::SearchSettings,
     ) -> RpcResult<search_providers::SearchSettings> {
-        let defaults =
-            ask::<web::WebActor, _>(web::WEB_ACTOR, web::settings::SetDefaults(settings.defaults))
-                .await?;
+        let defaults = ask::<web::WebActor, _>(
+            web::WEB_ACTOR,
+            web::settings::SetDefaults(settings.defaults),
+        )
+        .await?;
         let providers = ask::<search_providers::SearchProviders, _>(
             search_providers::SEARCH_PROVIDERS_ACTOR,
             search_providers::SetProviders(settings.providers),
         )
         .await?;
-        Ok(search_providers::SearchSettings { providers, defaults })
+        Ok(search_providers::SearchSettings {
+            providers,
+            defaults,
+        })
     }
 
     async fn search_provider_test(
@@ -4782,7 +4818,11 @@ impl ApiServer for Server {
         send(&secrets()?, secrets::Delete { name }).await
     }
 
-    async fn answer_secret(&self, id: secrets::RequestId, value: Option<String>) -> RpcResult<bool> {
+    async fn answer_secret(
+        &self,
+        id: secrets::RequestId,
+        value: Option<String>,
+    ) -> RpcResult<bool> {
         send(&secrets()?, secrets::Answer { id, value })
             .await
             .map(|session| session.is_some())
@@ -5082,7 +5122,10 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"<svg/>");
         assert_eq!(decode_attachment(b64.clone(), "svg").unwrap(), b"<svg/>");
         let err = decode_attachment(b64, "exe").unwrap_err();
-        assert!(err.message().contains("unsupported attachment type .exe"), "{err}");
+        assert!(
+            err.message().contains("unsupported attachment type .exe"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -137,7 +137,12 @@ impl Respond for Fake {
                 .set_body_string("{\"error\":{\"message\":\"boom\"}}");
         }
         let text = all_text(&b);
-        if text.contains(knowledge::harvest::HARVEST_INSTRUCTION.lines().next().unwrap_or_default()) {
+        if text.contains(
+            knowledge::harvest::HARVEST_INSTRUCTION
+                .lines()
+                .next()
+                .unwrap_or_default(),
+        ) {
             let t = sse(HARVEST_REPLY, "stop", MAIN_USAGE);
             return match self.harvest_delay {
                 Some(d) => t.set_delay(d),
@@ -333,7 +338,9 @@ impl Harness {
             .build()
             .unwrap();
 
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
         store
             .create_session(id, "openai/textonly", None, None, None)
@@ -466,7 +473,10 @@ impl Harness {
     }
 
     /// Bus events up to and including the first `done` one.
-    pub(super) async fn drain_until(&mut self, done: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
+    pub(super) async fn drain_until(
+        &mut self,
+        done: impl Fn(&AgentEvent) -> bool,
+    ) -> Vec<AgentEvent> {
         let mut out = Vec::new();
         loop {
             let ev = tokio::time::timeout(Duration::from_secs(10), self.events.recv())
@@ -489,7 +499,11 @@ impl Harness {
     }
 
     /// [`Harness::compact`] with a ready-made head (`Compact::head`, 53 §0.7).
-    async fn compact_with(&mut self, style: CompactStyle, head: Option<String>) -> (u32, Vec<AgentEvent>) {
+    async fn compact_with(
+        &mut self,
+        style: CompactStyle,
+        head: Option<String>,
+    ) -> (u32, Vec<AgentEvent>) {
         let (mut turn, _) = self.turn("openai/textonly", CancellationToken::new()).await;
         let epoch = turn.compact_now(Some(style), head).await.unwrap();
         let events = self
@@ -1161,13 +1175,22 @@ async fn manual_summary_compaction_inspects_pending_images_first() {
     assert_eq!(errors(&events), Vec::<String>::new());
     let before = h.requests().await.len();
     let given = "# Weekly sync\n\n**Decisions**\n- Ship the MEETING-HEAD-MARKER fix".to_owned();
-    let (epoch, _) = h.compact_with(CompactStyle::Summary, Some(given.clone())).await;
+    let (epoch, _) = h
+        .compact_with(CompactStyle::Summary, Some(given.clone()))
+        .await;
     assert_eq!(epoch, 4);
-    assert_eq!(h.requests().await.len(), before, "no model call for a given head");
+    assert_eq!(
+        h.requests().await.len(),
+        before,
+        "no model call for a given head"
+    );
     let (n, head, _) = h.store.frame(h.id).await.unwrap();
     assert_eq!(n, 4);
     let head = text_of(&head.expect("epoch head").content);
-    assert!(head.contains("MEETING-HEAD-MARKER") && head.contains("Weekly sync"), "{head}");
+    assert!(
+        head.contains("MEETING-HEAD-MARKER") && head.contains("Weekly sync"),
+        "{head}"
+    );
     assert!(!head.contains("SUMMARY-EPOCH-HEAD"), "{head}");
 }
 
@@ -1218,13 +1241,25 @@ async fn cut_compaction_budgets_the_tail_and_folds_tool_results() {
     assert!(folded > 0, "no tool result folded");
     let tail_est: u32 = tail.iter().map(|(_, m)| compact::est(m)).sum();
     let budgets = AgentConfig::default().compaction;
-    assert!(tail_est <= budgets.tail_tokens, "tail {tail_est} over {}", budgets.tail_tokens);
+    assert!(
+        tail_est <= budgets.tail_tokens,
+        "tail {tail_est} over {}",
+        budgets.tail_tokens
+    );
     // `before` is 0 for a manual `/compact` (no projection); `after` is the
     // whole frame — head and system on top of the tail.
     let head_est = compact::est(head.as_ref().unwrap());
-    assert!(after >= tail_est + head_est, "after {after} tail {tail_est} head {head_est} (before {before})");
+    assert!(
+        after >= tail_est + head_est,
+        "after {after} tail {tail_est} head {head_est} (before {before})"
+    );
     let raw = h.store.messages(h.id).await.unwrap();
-    assert!(raw.iter().all(|(_, m)| m.content.tool_responses().iter().all(|r| !r.content.contains("folded"))));
+    assert!(raw.iter().all(|(_, m)| {
+        m.content
+            .tool_responses()
+            .iter()
+            .all(|r| !r.content.contains("folded"))
+    }));
 }
 
 /// 52 §5.3: a known secret the main quotes in its question is a placeholder

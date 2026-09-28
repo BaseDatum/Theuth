@@ -19,7 +19,11 @@ use decision::candle::{Gpu, Loaded};
 use decision::{Device, ProcessMemory, Question, process_memory};
 
 fn cell(m: ProcessMemory) -> String {
-    format!("{:.0} / {:.0}", m.footprint as f64 / 1e6, m.resident as f64 / 1e6)
+    format!(
+        "{:.0} / {:.0}",
+        m.footprint as f64 / 1e6,
+        m.resident as f64 / 1e6
+    )
 }
 
 fn main() {
@@ -58,18 +62,23 @@ fn main() {
     println!("|---|---|---|---|---|---|---|---|---|");
     for dir in dirs {
         if !dir.join("model.safetensors").is_file() {
-            println!("| {} | – | skipped: no checkpoint | | | | | | |", dir.display());
+            println!(
+                "| {} | – | skipped: no checkpoint | | | | | | |",
+                dir.display()
+            );
             continue;
         }
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         for run in 1..=repeat {
             let before = process_memory();
             let t = Instant::now();
-            let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype).expect("open");
+            let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, dtype)
+                .expect("open");
             let load = t.elapsed();
             let q = Question::Bool {
                 statement: "The speakers are only greeting, scheduling or saying goodbye".into(),
-                state: "them: hi all, can we push the standup to three? me: sure, works for me".into(),
+                state: "them: hi all, can we push the standup to three? me: sure, works for me"
+                    .into(),
             };
             let t = Instant::now();
             let seq = m.build(&q).unwrap();

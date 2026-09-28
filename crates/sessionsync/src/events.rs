@@ -151,8 +151,12 @@ impl EventRelay {
 
     /// Start the follower task for `session` unless one runs.
     fn spawn_follower(&mut self, session: SessionId) {
-        let Some(t) = self.transport.clone() else { return };
-        let Some(f) = self.following.get_mut(&session) else { return };
+        let Some(t) = self.transport.clone() else {
+            return;
+        };
+        let Some(f) = self.following.get_mut(&session) else {
+            return;
+        };
         if f.task.as_ref().is_some_and(|t| !t.is_finished()) {
             return;
         }
@@ -176,7 +180,13 @@ impl Message<Follow> for EventRelay {
     type Reply = ();
 
     async fn handle(&mut self, m: Follow, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.following.entry(m.0).or_insert(Followed { refs: 0, task: None }).refs += 1;
+        self.following
+            .entry(m.0)
+            .or_insert(Followed {
+                refs: 0,
+                task: None,
+            })
+            .refs += 1;
         self.spawn_follower(m.0);
     }
 }
@@ -185,7 +195,9 @@ impl Message<Unfollow> for EventRelay {
     type Reply = ();
 
     async fn handle(&mut self, m: Unfollow, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(f) = self.following.get_mut(&m.0) else { return };
+        let Some(f) = self.following.get_mut(&m.0) else {
+            return;
+        };
         f.refs = f.refs.saturating_sub(1);
         if f.refs == 0 {
             if let Some(t) = f.task.take() {
@@ -201,14 +213,23 @@ impl Message<Serve> for EventRelay {
 
     async fn handle(&mut self, m: Serve, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         // Only the owner streams; a stale request (the session moved) just closes.
-        let owner = self.store.owner(m.session.parse().unwrap_or_default()).await.ok().flatten();
+        let owner = self
+            .store
+            .owner(m.session.parse().unwrap_or_default())
+            .await
+            .ok()
+            .flatten();
         if !owner.is_some_and(|(o, _)| self.here(&o)) {
             return;
         }
-        self.served.entry(m.session).or_insert((0, Vec::new())).1.push(Remote {
-            from_seq: m.from_seq,
-            tx: m.tx,
-        });
+        self.served
+            .entry(m.session)
+            .or_insert((0, Vec::new()))
+            .1
+            .push(Remote {
+                from_seq: m.from_seq,
+                tx: m.tx,
+            });
     }
 }
 
@@ -251,8 +272,12 @@ impl Message<AgentEvent> for EventRelay {
             return;
         }
         let key = session.to_string();
-        let Some((seq, remotes)) = self.served.get_mut(&key) else { return };
-        let Ok(bytes) = serde_json::to_vec(&ev) else { return };
+        let Some((seq, remotes)) = self.served.get_mut(&key) else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(&ev) else {
+            return;
+        };
         *seq += 1;
         let msg = Msg::Event {
             session: key.clone(),
@@ -310,7 +335,12 @@ pub async fn serve(
 
 /// The codec every `theuth/sessions/1` stream uses.
 pub fn framed(stream: Box<dyn ByteStream>) -> Framed<Box<dyn ByteStream>, LengthDelimitedCodec> {
-    Framed::new(stream, LengthDelimitedCodec::builder().max_frame_length(MAX_FRAME).new_codec())
+    Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(MAX_FRAME)
+            .new_codec(),
+    )
 }
 
 /// Subscriber side: follow `session`'s owner until aborted; returns when the
@@ -421,18 +451,34 @@ mod tests {
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.inboxes.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.inboxes
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
 
         async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             let (mine, theirs) = tokio::io::duplex(1 << 20);
-            let to = self.inboxes.lock().get(peer).cloned().ok_or_else(|| anyhow::anyhow!("no such peer"))?;
-            to.send((self.me.clone(), Box::new(theirs))).map_err(|_| anyhow::anyhow!("peer gone"))?;
+            let to = self
+                .inboxes
+                .lock()
+                .get(peer)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            to.send((self.me.clone(), Box::new(theirs)))
+                .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
         }
 
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
-            self.inbox.lock().await.recv().await.ok_or_else(|| anyhow::anyhow!("closed"))
+            self.inbox
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("closed"))
         }
 
         fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
@@ -453,7 +499,12 @@ mod tests {
 
     async fn engine(dir: &std::path::Path, name: &str) -> (Runtime, Store) {
         let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
-        let store = Store::open(&dir.join(format!("{name}.sqlite")), Some(mesh::EngineId(name.into()))).await.unwrap();
+        let store = Store::open(
+            &dir.join(format!("{name}.sqlite")),
+            Some(mesh::EngineId(name.into())),
+        )
+        .await
+        .unwrap();
         (rt, store)
     }
 
@@ -466,12 +517,20 @@ mod tests {
         let (owner_t, front_t) = pair();
         let (rt_o, store_o) = engine(dir.path(), "owner").await;
         let session = SessionId::new();
-        store_o.create_session(session, "m", None, None, None).await.unwrap();
+        store_o
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
         // The front door's replica row says the owner is "owner": write it
         // under that identity, then reopen the file as "front".
         let front_path = dir.path().join("front.sqlite");
-        let theirs = Store::open(&front_path, Some(mesh::EngineId("owner".into()))).await.unwrap();
-        theirs.create_session(session, "m", None, None, None).await.unwrap();
+        let theirs = Store::open(&front_path, Some(mesh::EngineId("owner".into())))
+            .await
+            .unwrap();
+        theirs
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
         theirs.close().await;
         let (rt_f, store_f) = engine(dir.path(), "front").await;
 
@@ -482,10 +541,16 @@ mod tests {
         let (o2, acc) = (owner.clone(), owner_t.clone());
         tokio::spawn(async move {
             loop {
-                let Ok((_, stream)) = acc.accept(ALPN_SESSIONS).await else { return };
+                let Ok((_, stream)) = acc.accept(ALPN_SESSIONS).await else {
+                    return;
+                };
                 let mut framed = framed(stream);
-                let Some(Ok(first)) = framed.next().await else { continue };
-                let Ok(Msg::Events { session, from_seq }) = Msg::decode(&first) else { continue };
+                let Some(Ok(first)) = framed.next().await else {
+                    continue;
+                };
+                let Ok(Msg::Events { session, from_seq }) = Msg::decode(&first) else {
+                    continue;
+                };
                 let o = o2.clone();
                 tokio::spawn(async move { serve(&o, framed, session, from_seq).await });
             }
@@ -500,14 +565,35 @@ mod tests {
         let guard = follow(session).expect("relay registered");
         // Give the follower time to open the stream.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        rt_o.publish(AgentEvent::TitleChanged { session, title: "hi".into(), tags: vec![] }).await;
-        let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv()).await.unwrap().unwrap();
-        assert!(matches!(got, AgentEvent::TitleChanged { session: s, ref title, .. } if s == session && title == "hi"), "{got:?}");
+        rt_o.publish(AgentEvent::TitleChanged {
+            session,
+            title: "hi".into(),
+            tags: vec![],
+        })
+        .await;
+        let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(got, AgentEvent::TitleChanged { session: s, ref title, .. } if s == session && title == "hi"),
+            "{got:?}"
+        );
 
         drop(guard);
         tokio::time::sleep(Duration::from_millis(200)).await;
-        rt_o.publish(AgentEvent::TitleChanged { session, title: "after".into(), tags: vec![] }).await;
-        assert!(tokio::time::timeout(Duration::from_millis(500), tapped.recv()).await.is_err(), "unsubscribed");
+        rt_o.publish(AgentEvent::TitleChanged {
+            session,
+            title: "after".into(),
+            tags: vec![],
+        })
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), tapped.recv())
+                .await
+                .is_err(),
+            "unsubscribed"
+        );
         store_o.close().await;
         store_f.close().await;
     }

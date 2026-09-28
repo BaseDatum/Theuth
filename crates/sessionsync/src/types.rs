@@ -133,7 +133,9 @@ impl Msg {
 
     /// Inverse of [`Msg::encode`]; the tag must match the variant.
     pub fn decode(frame: &[u8]) -> anyhow::Result<Self> {
-        let (&tag, body) = frame.split_first().ok_or_else(|| anyhow::anyhow!("empty frame"))?;
+        let (&tag, body) = frame
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("empty frame"))?;
         let msg: Self = postcard::from_bytes(body)?;
         anyhow::ensure!(msg.tag() == tag, "frame tag {tag} does not match {msg:?}");
         Ok(msg)

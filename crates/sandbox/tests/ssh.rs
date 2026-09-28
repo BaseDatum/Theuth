@@ -9,7 +9,8 @@ use sandbox::{Cmd, DaemonKind, Progress, Sandbox};
 #[tokio::test]
 #[ignore = "needs SANDBOX_TEST_SSH=user@host"]
 async fn exec_put_detect_round_trip() {
-    let target = Target::parse(&std::env::var("SANDBOX_TEST_SSH").expect("SANDBOX_TEST_SSH")).unwrap();
+    let target =
+        Target::parse(&std::env::var("SANDBOX_TEST_SSH").expect("SANDBOX_TEST_SSH")).unwrap();
     let sb = match std::env::var("SANDBOX_TEST_KEY_FILE") {
         Ok(p) => SshSandbox::builtin(target, &std::fs::read_to_string(p).unwrap()).unwrap(),
         Err(_) => SshSandbox::system(target),
@@ -21,8 +22,14 @@ async fn exec_put_detect_round_trip() {
     assert!(caps.os == "linux" || caps.os == "macos", "{caps:?}");
     assert_eq!(caps.daemon, DaemonKind::Service);
 
-    let echo = sb.exec(&h, Cmd::new("printf hi; printf err >&2; exit 3")).await.unwrap();
-    assert_eq!((echo.status, echo.stdout.as_slice(), echo.stderr.as_slice()), (3, &b"hi"[..], &b"err"[..]));
+    let echo = sb
+        .exec(&h, Cmd::new("printf hi; printf err >&2; exit 3"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (echo.status, echo.stdout.as_slice(), echo.stderr.as_slice()),
+        (3, &b"hi"[..], &b"err"[..])
+    );
 
     let big = Bytes::from(vec![7u8; 3 << 20]);
     let path = format!("/tmp/sandbox-put-{}", std::process::id());

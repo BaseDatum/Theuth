@@ -62,23 +62,23 @@ pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
-pub use reminder::{CancelReminder, RearmReminder, ReminderEvent, ReminderView, SetReminder};
 pub use pty::{
     Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
     PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
 };
 pub use registry::{
     ActivityRecipient, AppInvoke, AppInvoked, ApprovalsState, CheckFence, DescribeTools,
-    ExternalApproval, FenceChecker, FenceError, GetApprovals, GetPtyIdle, HiddenTools,
-    InspectTool, InstallCommunicationAccess, InstallMcpAccess, Invoke, ListPrompts, ListTools, McpAccess, RegisterActivity,
-    RegisterFenceChecker, RegisterPrompt, RegisterTool, SetApprovals, SetCap, SetHidden,
-    SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt, UnregisterTool,
-    UserActivation,
+    ExternalApproval, FenceChecker, FenceError, GetApprovals, GetPtyIdle, HiddenTools, InspectTool,
+    InstallCommunicationAccess, InstallMcpAccess, Invoke, ListPrompts, ListTools, McpAccess,
+    RegisterActivity, RegisterFenceChecker, RegisterPrompt, RegisterTool, SetApprovals, SetCap,
+    SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
+    UnregisterTool, UserActivation,
 };
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
 pub use registry::{InstallResources, RemoveResources};
+pub use reminder::{CancelReminder, RearmReminder, ReminderEvent, ReminderView, SetReminder};
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
 
@@ -132,7 +132,9 @@ impl std::str::FromStr for Risk {
             "read_only" => Ok(Self::ReadOnly),
             "mutating" => Ok(Self::Mutating),
             "destructive" => Ok(Self::Destructive),
-            _ => Err(format!("unknown risk `{s}`; use read_only | mutating | destructive")),
+            _ => Err(format!(
+                "unknown risk `{s}`; use read_only | mutating | destructive"
+            )),
         }
     }
 }

@@ -63,7 +63,10 @@ pub fn list(data_dir: &Path) -> anyhow::Result<Vec<Computer>> {
     for entry in rd {
         let p = entry?.path();
         if p.extension().is_some_and(|e| e == "yaml") {
-            match std::fs::read_to_string(&p).map_err(anyhow::Error::from).and_then(|t| Ok(serde_yaml::from_str(&t)?)) {
+            match std::fs::read_to_string(&p)
+                .map_err(anyhow::Error::from)
+                .and_then(|t| Ok(serde_yaml::from_str(&t)?))
+            {
                 Ok(rec) => out.push(rec),
                 Err(e) => tracing::warn!("{}: {e:#}", p.display()),
             }
@@ -84,7 +87,9 @@ mod tests {
         let rec = Computer {
             name: "box".into(),
             backend: "ssh".into(),
-            handle: Handle { id: "me@box:22".into() },
+            handle: Handle {
+                id: "me@box:22".into(),
+            },
             engine: mesh::EngineId("abc".into()),
             created_ms: 7,
         };

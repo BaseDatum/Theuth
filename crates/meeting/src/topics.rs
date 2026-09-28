@@ -148,9 +148,15 @@ impl Topics {
         if !any {
             return None;
         }
-        let at = DateTime::parse_from_rfc3339(&row.updated_at).ok().map(|d| d.with_timezone(&Utc));
+        let at = DateTime::parse_from_rfc3339(&row.updated_at)
+            .ok()
+            .map(|d| d.with_timezone(&Utc));
         let mut topic = None;
-        for l in self.live.iter_mut().filter(|l| l.topic.cached == Some(row.id)) {
+        for l in self
+            .live
+            .iter_mut()
+            .filter(|l| l.topic.cached == Some(row.id))
+        {
             l.cached_at = at;
             topic = Some(l.topic.id);
         }
@@ -184,7 +190,10 @@ impl Topics {
 
     /// The live topic `id`, if it is live.
     pub fn topic(&self, id: TopicId) -> Option<&Topic> {
-        self.live.iter().find(|l| l.topic.id == id).map(|l| &l.topic)
+        self.live
+            .iter()
+            .find(|l| l.topic.id == id)
+            .map(|l| &l.topic)
     }
 
     /// `label` may become a topic: 1–4 words, not live, not dismissed.
@@ -214,7 +223,16 @@ impl Topics {
     ) -> Result<(Topic, Brief, Vec<Gone>), String> {
         self.admit(label)?;
         check_bullets(&bullets)?;
-        Ok(self.place(label, title, bullets, BriefSource::Auto, cached, None, now, at_ms))
+        Ok(self.place(
+            label,
+            title,
+            bullets,
+            BriefSource::Auto,
+            cached,
+            None,
+            now,
+            at_ms,
+        ))
     }
 
     /// The alias scan hit `row`, the model registered it by reference (05 §3–§4), or the
@@ -233,7 +251,9 @@ impl Topics {
         if self.cached_blocked(row.id) {
             return Err("cached brief already shown or dismissed this meeting".into());
         }
-        let at = DateTime::parse_from_rfc3339(&row.updated_at).ok().map(|d| d.with_timezone(&Utc));
+        let at = DateTime::parse_from_rfc3339(&row.updated_at)
+            .ok()
+            .map(|d| d.with_timezone(&Utc));
         Ok(self.place(
             label,
             &row.title,
@@ -405,11 +425,24 @@ mod tests {
         let mut t = Topics::new(600, 6);
         assert!(t.insert("a b c d e", "x", two(), None, t0, 0).is_err());
         assert!(t.insert(" ", "x", two(), None, t0, 0).is_err());
-        assert!(t.insert("SRE-2386", "x", vec!["only".into()], None, t0, 0).is_err());
-        assert!(t.insert("SRE-2386", "x", vec!["a".into(), " ".into()], None, t0, 0).is_err());
         assert!(
-            t.insert("SRE-2386", "x", vec!["1".into(), "2".into(), "3".into(), "4".into()], None, t0, 0)
+            t.insert("SRE-2386", "x", vec!["only".into()], None, t0, 0)
                 .is_err()
+        );
+        assert!(
+            t.insert("SRE-2386", "x", vec!["a".into(), " ".into()], None, t0, 0)
+                .is_err()
+        );
+        assert!(
+            t.insert(
+                "SRE-2386",
+                "x",
+                vec!["1".into(), "2".into(), "3".into(), "4".into()],
+                None,
+                t0,
+                0
+            )
+            .is_err()
         );
         let (topic, brief, expired) = t.insert("  SRE-2386 ", "x", two(), None, t0, 5).unwrap();
         assert!(expired.is_empty());
@@ -427,9 +460,27 @@ mod tests {
         );
         assert_eq!(t.dismissed_labels(), ["SRE-2386"]);
         assert!(t.live().is_empty());
-        assert_eq!(t.briefs().len(), 1, "the precomputed brief stays in the store");
-        assert!(t.add_brief("t", vec!["a".into()], None, None, BriefSource::Typed, None, 0).is_err());
-        assert!(t.add_brief(" ", two(), None, None, BriefSource::Typed, None, 0).is_err());
+        assert_eq!(
+            t.briefs().len(),
+            1,
+            "the precomputed brief stays in the store"
+        );
+        assert!(
+            t.add_brief(
+                "t",
+                vec!["a".into()],
+                None,
+                None,
+                BriefSource::Typed,
+                None,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            t.add_brief(" ", two(), None, None, BriefSource::Typed, None, 0)
+                .is_err()
+        );
     }
 
     /// At `max`, the oldest *untouched* topic expires — a re-touched older
@@ -441,7 +492,9 @@ mod tests {
         let s = Duration::from_secs;
         let mut t = Topics::new(600, 2);
         let (a, _, _) = t.insert("Alpha", "x", two(), None, t0, 0).unwrap();
-        let (b, _, _) = t.insert("DR cutover", "x", two(), None, t0 + s(1), 1).unwrap();
+        let (b, _, _) = t
+            .insert("DR cutover", "x", two(), None, t0 + s(1), 1)
+            .unwrap();
         assert_eq!(t.touch("the dr CUTOVER is Friday, alpha", t0 + s(2)), 2);
         assert_eq!(t.touch("nothing", t0 + s(3)), 0);
         // Both were touched at +2; Alpha again at +4, so the older-created Alpha
@@ -461,10 +514,19 @@ mod tests {
         assert!(t.expire(t0 + s(603)).is_empty());
         assert_eq!(t.expire(t0 + s(604)).len(), 1);
         assert_eq!(t.live_labels(), ["Gamma"]);
-        assert_eq!(t.expire(t0 + s(700)), [Gone { topic: c.id, why: TopicGone::Expired }]);
+        assert_eq!(
+            t.expire(t0 + s(700)),
+            [Gone {
+                topic: c.id,
+                why: TopicGone::Expired
+            }]
+        );
         assert!(t.live().is_empty());
         // Expired labels are not dismissed: the model may bring them back.
-        assert!(t.insert("Gamma", "x", two(), None, t0 + s(701), 701).is_ok());
+        assert!(
+            t.insert("Gamma", "x", two(), None, t0 + s(701), 701)
+                .is_ok()
+        );
         assert!(t.view(t.live()[0].id).is_some());
         assert!(t.dismissed_labels().is_empty());
     }
@@ -495,36 +557,90 @@ mod tests {
         let now: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
         let sre = row("SRE-2386", "2026-09-17T11:30:00Z");
         let keda = row("KEDA", "2026-09-20T09:00:00Z");
-        let (topic, brief, _) = t.insert_cached("sre-2386", &sre, BriefSource::Cache, t0, 1).unwrap();
-        assert_eq!((topic.label.as_str(), topic.cached, brief.cached), ("sre-2386", Some(sre.id), Some(sre.id)));
-        assert_eq!((brief.source, brief.topic), (BriefSource::Cache, Some(topic.id)));
+        let (topic, brief, _) = t
+            .insert_cached("sre-2386", &sre, BriefSource::Cache, t0, 1)
+            .unwrap();
+        assert_eq!(
+            (topic.label.as_str(), topic.cached, brief.cached),
+            ("sre-2386", Some(sre.id), Some(sre.id))
+        );
+        assert_eq!(
+            (brief.source, brief.topic),
+            (BriefSource::Cache, Some(topic.id))
+        );
         assert!(t.cached_blocked(sre.id));
-        assert!(t.insert_cached("two three eight six", &sre, BriefSource::Cache, t0, 2).is_err(), "already shown");
-        let (_, _, _) = t.insert_cached("KEDA", &keda, BriefSource::Cache, t0 + Duration::from_secs(1), 3).unwrap();
-        assert_eq!(t.batch_labels(now), ["sre-2386 (cached 3d)", "KEDA (cached 3h)"]);
+        assert!(
+            t.insert_cached("two three eight six", &sre, BriefSource::Cache, t0, 2)
+                .is_err(),
+            "already shown"
+        );
+        let (_, _, _) = t
+            .insert_cached(
+                "KEDA",
+                &keda,
+                BriefSource::Cache,
+                t0 + Duration::from_secs(1),
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            t.batch_labels(now),
+            ["sre-2386 (cached 3d)", "KEDA (cached 3h)"]
+        );
         // `max` = 2: an Auto topic expires the oldest untouched cached one.
-        let (_, _, expired) = t.insert("Gamma", "x", two(), None, t0 + Duration::from_secs(2), 4).unwrap();
+        let (_, _, expired) = t
+            .insert("Gamma", "x", two(), None, t0 + Duration::from_secs(2), 4)
+            .unwrap();
         assert_eq!(expired[0].topic, topic.id);
-        assert!(t.cached_blocked(sre.id), "expired stays shown for the meeting");
+        assert!(
+            t.cached_blocked(sre.id),
+            "expired stays shown for the meeting"
+        );
         // Dismiss the KEDA topic → its row is barred.
         let keda_topic = t.live().into_iter().find(|x| x.label == "KEDA").unwrap();
         assert!(t.dismiss(keda_topic.id).is_some());
         assert!(t.cached_blocked(keda.id));
-        assert!(t.insert_cached("keda scaling", &keda, BriefSource::Cache, t0, 5).is_err());
+        assert!(
+            t.insert_cached("keda scaling", &keda, BriefSource::Cache, t0, 5)
+                .is_err()
+        );
         // A new `Topics` (next meeting) admits it again.
-        assert!(Topics::new(600, 6).insert_cached("KEDA", &keda, BriefSource::Cache, t0, 0).is_ok());
+        assert!(
+            Topics::new(600, 6)
+                .insert_cached("KEDA", &keda, BriefSource::Cache, t0, 0)
+                .is_ok()
+        );
         // refresh: a live topic's brief takes the new bullets; the topic id comes back.
         let dana = row("Dana", "2026-09-20T11:00:00Z");
-        let (dt, _, _) = t.insert_cached("Dana", &dana, BriefSource::Cache, t0 + Duration::from_secs(3), 6).unwrap();
+        let (dt, _, _) = t
+            .insert_cached(
+                "Dana",
+                &dana,
+                BriefSource::Cache,
+                t0 + Duration::from_secs(3),
+                6,
+            )
+            .unwrap();
         let mut dana2 = dana.clone();
         dana2.bullets = vec!["new".into(), "bullets".into()];
         assert_eq!(t.refresh_cached(&dana2), Some(Some(dt.id)));
-        assert_eq!(t.brief(dt.brief.unwrap()).unwrap().bullets, ["new", "bullets"]);
-        assert_eq!(t.refresh_cached(&row("Other", "2026-09-20T11:00:00Z")), None);
+        assert_eq!(
+            t.brief(dt.brief.unwrap()).unwrap().bullets,
+            ["new", "bullets"]
+        );
+        assert_eq!(
+            t.refresh_cached(&row("Other", "2026-09-20T11:00:00Z")),
+            None
+        );
         // An Auto topic written to the cache carries the row too and blocks the scan.
         let mut t = Topics::new(600, 6);
-        let (at, ab, _) = t.insert("Auto one", "x", two(), Some(dana.id), t0, 0).unwrap();
-        assert_eq!((at.cached, ab.cached, ab.source), (Some(dana.id), Some(dana.id), BriefSource::Auto));
+        let (at, ab, _) = t
+            .insert("Auto one", "x", two(), Some(dana.id), t0, 0)
+            .unwrap();
+        assert_eq!(
+            (at.cached, ab.cached, ab.source),
+            (Some(dana.id), Some(dana.id), BriefSource::Auto)
+        );
         assert!(t.cached_blocked(dana.id));
     }
 
@@ -540,15 +656,17 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
             r#"{"removed":{"topic":"00000000-0000-0000-0000-000000000000","why":"Viewed","at_ms":7}}"#
         );
-        assert!(serde_json::to_string(&Record::Topic(Topic {
-            id: TopicId::new(),
-            label: "x".into(),
-            at_ms: 0,
-            brief: None,
-            cached: None,
-            source: None,
-        }))
-        .unwrap()
-        .starts_with(r#"{"topic":{"#));
+        assert!(
+            serde_json::to_string(&Record::Topic(Topic {
+                id: TopicId::new(),
+                label: "x".into(),
+                at_ms: 0,
+                brief: None,
+                cached: None,
+                source: None,
+            }))
+            .unwrap()
+            .starts_with(r#"{"topic":{"#)
+        );
     }
 }

@@ -37,9 +37,19 @@ pub struct Capabilities {
 #[tauri::command]
 pub fn island_capabilities() -> Capabilities {
     #[cfg(target_os = "macos")]
-    return Capabilities { hide_from_share: true, always_on_top: true, non_activating: true, placement: "notch" };
+    return Capabilities {
+        hide_from_share: true,
+        always_on_top: true,
+        non_activating: true,
+        placement: "notch",
+    };
     #[cfg(target_os = "windows")]
-    return Capabilities { hide_from_share: true, always_on_top: true, non_activating: true, placement: "top-centre" };
+    return Capabilities {
+        hide_from_share: true,
+        always_on_top: true,
+        non_activating: true,
+        placement: "top-centre",
+    };
     #[cfg(target_os = "linux")]
     return Capabilities {
         hide_from_share: false,
@@ -59,7 +69,10 @@ mod generic {
     use std::collections::HashMap;
 
     use anyhow::Context;
-    use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
+    use tauri::{
+        AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition,
+        WebviewWindow,
+    };
 
     use super::backend;
 
@@ -124,7 +137,8 @@ mod generic {
         if super::island_capabilities().hide_from_share {
             set_hidden(&app, hidden).map_err(|e| format!("{e:#}"))?;
         }
-        app.emit("capture-hidden", hidden).map_err(|e| e.to_string())
+        app.emit("capture-hidden", hidden)
+            .map_err(|e| e.to_string())
     }
 
     /// Size to `width × height` logical px (clamped) with the top-left fixed, then show without
@@ -133,7 +147,10 @@ mod generic {
     pub fn island_show(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
         let win = island(&app)?;
         let top_left = win.outer_position().map_err(|e| e.to_string())?;
-        let size = LogicalSize::new(width.clamp(MIN_WIDTH, MAX_WIDTH), height.clamp(MIN_HEIGHT, MAX_HEIGHT));
+        let size = LogicalSize::new(
+            width.clamp(MIN_WIDTH, MAX_WIDTH),
+            height.clamp(MIN_HEIGHT, MAX_HEIGHT),
+        );
         win.set_size(size).map_err(|e| e.to_string())?;
         win.set_position(top_left).map_err(|e| e.to_string())?;
         backend::show(&win).map_err(|e| format!("{e:#}"))
@@ -169,7 +186,8 @@ mod generic {
         let win = island(&app)?;
         let (x, y) = match positions.get(&key) {
             Some(&p) => {
-                win.set_position(LogicalPosition::new(p.0, p.1)).map_err(|e| e.to_string())?;
+                win.set_position(LogicalPosition::new(p.0, p.1))
+                    .map_err(|e| e.to_string())?;
                 p
             }
             None => {
@@ -202,7 +220,8 @@ mod generic {
     }
 
     pub(super) fn island(app: &AppHandle) -> Result<WebviewWindow, String> {
-        app.get_webview_window(LABEL).ok_or_else(|| "window `island`".into())
+        app.get_webview_window(LABEL)
+            .ok_or_else(|| "window `island`".into())
     }
 
     /// Every window, so a popout opened later is covered by the next toggle (`open_window`'s webview re-applies on boot).
@@ -217,7 +236,14 @@ mod generic {
     fn monitor_key(m: &Monitor) -> String {
         let p = m.position();
         let s = m.size();
-        format!("{}:{},{},{},{}", m.name().map_or("", String::as_str), p.x, p.y, s.width, s.height)
+        format!(
+            "{}:{},{},{},{}",
+            m.name().map_or("", String::as_str),
+            p.x,
+            p.y,
+            s.width,
+            s.height
+        )
     }
 
     /// The monitor under the cursor; `None` where the cursor cannot be read (Wayland).
@@ -227,7 +253,10 @@ mod generic {
     }
 
     fn monitors_file(app: &AppHandle) -> Option<std::path::PathBuf> {
-        app.path().app_config_dir().ok().map(|d| d.join(MONITORS_FILE))
+        app.path()
+            .app_config_dir()
+            .ok()
+            .map(|d| d.join(MONITORS_FILE))
     }
 
     fn load_monitors(app: &AppHandle) -> HashMap<String, String> {
@@ -238,7 +267,9 @@ mod generic {
     }
 
     fn save_monitors(app: &AppHandle, m: &HashMap<String, String>) {
-        let Some(path) = monitors_file(app) else { return };
+        let Some(path) = monitors_file(app) else {
+            return;
+        };
         let write = || -> anyhow::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;

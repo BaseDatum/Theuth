@@ -16,13 +16,29 @@ async fn container_round_trip() {
 
     let h = sb.create(&out).await.unwrap();
     let caps = sb.capabilities(&h).await.unwrap();
-    assert_eq!((caps.os.as_str(), caps.daemon), ("linux", DaemonKind::Entrypoint));
+    assert_eq!(
+        (caps.os.as_str(), caps.daemon),
+        ("linux", DaemonKind::Entrypoint)
+    );
 
     let v = sb.exec(&h, Cmd::new("t --version")).await.unwrap();
     assert!(v.ok(), "{}", v.reason());
 
-    sb.put(&h, "/workspace/dir/hello", Bytes::from_static(b"hello"), 0o640).await.unwrap();
-    let back = sb.exec(&h, Cmd::new("cat /workspace/dir/hello; stat -c ' %a %u' /workspace/dir/hello")).await.unwrap();
+    sb.put(
+        &h,
+        "/workspace/dir/hello",
+        Bytes::from_static(b"hello"),
+        0o640,
+    )
+    .await
+    .unwrap();
+    let back = sb
+        .exec(
+            &h,
+            Cmd::new("cat /workspace/dir/hello; stat -c ' %a %u' /workspace/dir/hello"),
+        )
+        .await
+        .unwrap();
     assert_eq!(back.stdout_str(), "hello 640 1000");
 
     // Second create adopts the running container.

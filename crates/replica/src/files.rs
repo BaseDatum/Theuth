@@ -23,7 +23,7 @@ use notify::Watcher as _;
 use parking_lot::Mutex;
 use sqlx::{Row as _, SqlitePool};
 
-use crate::engine::{now_ms, quote, Engine, ReplicaHandle};
+use crate::engine::{Engine, ReplicaHandle, now_ms, quote};
 
 /// Editors save in bursts; coalesce events this long before rescanning.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -56,7 +56,10 @@ pub async fn mirror_at(db: PathBuf, dir: PathBuf, table: &'static str, wait: Dur
     let deadline = tokio::time::Instant::now() + wait;
     while crate::actor().is_none() {
         if tokio::time::Instant::now() >= deadline {
-            tracing::info!("{table}: replica plugin not running; {} stays local", dir.display());
+            tracing::info!(
+                "{table}: replica plugin not running; {} stays local",
+                dir.display()
+            );
             return;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -66,10 +69,18 @@ pub async fn mirror_at(db: PathBuf, dir: PathBuf, table: &'static str, wait: Dur
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
-    let pool = match sqlx::sqlite::SqlitePoolOptions::new().max_connections(4).connect_with(opts).await {
+    let pool = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(opts)
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!("{table}: open {}: {e}; {} stays local", db.display(), dir.display());
+            tracing::warn!(
+                "{table}: open {}: {e}; {} stays local",
+                db.display(),
+                dir.display()
+            );
             return;
         }
     };
@@ -97,7 +108,12 @@ struct Mirror {
 
 impl Engine {
     /// [`mirror`] on this engine; see the module docs.
-    pub async fn mirror(self: &Arc<Self>, pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Result<ReplicaHandle> {
+    pub async fn mirror(
+        self: &Arc<Self>,
+        pool: &SqlitePool,
+        dir: &Path,
+        table: &str,
+    ) -> anyhow::Result<ReplicaHandle> {
         let m = Mirror::new(self, pool, dir, table).await?;
         let handle = m.handle.clone();
         m.scan().await?;
@@ -109,7 +125,10 @@ impl Engine {
                 let _ = tx.send(());
             }
         })
-        .and_then(|mut w| w.watch(dir, notify::RecursiveMode::NonRecursive).map(|()| w));
+        .and_then(|mut w| {
+            w.watch(dir, notify::RecursiveMode::NonRecursive)
+                .map(|()| w)
+        });
         match watcher {
             Ok(watcher) => {
                 let m = m.clone();
@@ -124,7 +143,10 @@ impl Engine {
                     }
                 });
             }
-            Err(e) => tracing::warn!("replica: {} not watched: {e}; hand edits need a restart", dir.display()),
+            Err(e) => tracing::warn!(
+                "replica: {} not watched: {e}; hand edits need a restart",
+                dir.display()
+            ),
         }
 
         // Rows from peers → files.
@@ -167,7 +189,12 @@ impl Engine {
 
 impl Mirror {
     /// Create `table` if missing, attach it, build the mirror (no scan, no tasks).
-    async fn new(engine: &Arc<Engine>, pool: &SqlitePool, dir: &Path, table: &str) -> anyhow::Result<Arc<Self>> {
+    async fn new(
+        engine: &Arc<Engine>,
+        pool: &SqlitePool,
+        dir: &Path,
+        table: &str,
+    ) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TABLE IF NOT EXISTS {} (
@@ -202,7 +229,9 @@ impl Mirror {
     async fn scan(&self) -> anyhow::Result<()> {
         let _io = self.io.lock().await;
         let mut seen = HashSet::new();
-        for entry in std::fs::read_dir(&self.dir).with_context(|| format!("read {}", self.dir.display()))? {
+        for entry in
+            std::fs::read_dir(&self.dir).with_context(|| format!("read {}", self.dir.display()))?
+        {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -226,13 +255,17 @@ impl Mirror {
             .fetch_optional(self.pool())
             .await?;
             let same = row.as_ref().is_some_and(|r| {
-                r.get::<i64, _>("deleted") == 0 && r.get::<Option<Vec<u8>>, _>("bytes").as_deref() == Some(&bytes[..])
+                r.get::<i64, _>("deleted") == 0
+                    && r.get::<Option<Vec<u8>>, _>("bytes").as_deref() == Some(&bytes[..])
             });
             if same {
                 continue;
             }
             if self.projection_pending(row.as_ref(), &name, mtime_ms) {
-                tracing::debug!("replica: mirror {}: {name} awaits projection; not rescanned", self.dir.display());
+                tracing::debug!(
+                    "replica: mirror {}: {name} awaits projection; not rescanned",
+                    self.dir.display()
+                );
                 continue;
             }
             let hlc = self.handle.stamp(mtime_ms).to_text();
@@ -280,7 +313,10 @@ impl Mirror {
             .execute(self.pool())
             .await?;
         }
-        for p in live.iter().filter(|p| !gone.contains(p) && !self.on_disk.lock().contains(*p)) {
+        for p in live
+            .iter()
+            .filter(|p| !gone.contains(p) && !self.on_disk.lock().contains(*p))
+        {
             self.project_locked(p).await?;
         }
         Ok(())
@@ -294,12 +330,15 @@ impl Mirror {
     /// Every live row to disk (after a lagged feed).
     async fn project_all(&self) -> anyhow::Result<()> {
         let _io = self.io.lock().await;
-        let paths: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT path FROM {}", quote(&self.table))))
-            .fetch_all(self.pool())
-            .await?
-            .into_iter()
-            .map(|r| r.get(0))
-            .collect();
+        let paths: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT path FROM {}",
+            quote(&self.table)
+        )))
+        .fetch_all(self.pool())
+        .await?
+        .into_iter()
+        .map(|r| r.get(0))
+        .collect();
         for p in &paths {
             self.project_locked(p).await?;
         }
@@ -340,7 +379,9 @@ impl Mirror {
             self.on_disk.lock().insert(path.to_owned());
             return Ok(());
         }
-        let tmp = self.dir.join(format!(".{path}.tmp-{}", uuid::Uuid::now_v7()));
+        let tmp = self
+            .dir
+            .join(format!(".{path}.tmp-{}", uuid::Uuid::now_v7()));
         std::fs::write(&tmp, &bytes).with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, &file).with_context(|| format!("rename to {}", file.display()))?;
         self.on_disk.lock().insert(path.to_owned());
@@ -351,7 +392,12 @@ impl Mirror {
     /// override: from another origin, stamped above the file's `mtime_ms`,
     /// and not the row the file was last projected from? Once the pending
     /// projection lands, `projected` names it and a later hand edit scans.
-    fn projection_pending(&self, row: Option<&sqlx::sqlite::SqliteRow>, path: &str, mtime_ms: u64) -> bool {
+    fn projection_pending(
+        &self,
+        row: Option<&sqlx::sqlite::SqliteRow>,
+        path: &str,
+        mtime_ms: u64,
+    ) -> bool {
         let Some(text) = row.and_then(|r| r.get::<Option<String>, _>("hlc")) else {
             return false;
         };
@@ -382,7 +428,9 @@ mod tests {
 
     async fn side() -> Side {
         let dir = tempfile::tempdir().unwrap();
-        let engine = Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+        let engine = Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
         let pool = open_pool(&dir.path().join("data.sqlite")).await;
         let files = dir.path().join("agents");
         let handle = engine.mirror(&pool, &files, "agents").await.unwrap();
@@ -420,7 +468,13 @@ mod tests {
         let have = to.engine.store.version_vector().await.unwrap();
         for (origin, seq) in from.engine.store.version_vector().await.unwrap() {
             let after = have.get(&origin).copied().unwrap_or(0);
-            for bytes in from.engine.store.batches_after(&origin, after).await.unwrap() {
+            for bytes in from
+                .engine
+                .store
+                .batches_after(&origin, after)
+                .await
+                .unwrap()
+            {
                 let _ = seq;
                 let batch: crate::ChangeBatch = postcard::from_bytes(&bytes).unwrap();
                 to.engine.apply(&batch).await.unwrap();
@@ -434,7 +488,10 @@ mod tests {
         std::fs::write(a.files.join("ops.md"), b"title: Ops\n---\ncharter").unwrap();
         until(async || row(&a, "ops.md").await.is_some()).await;
         let (bytes, deleted) = row(&a, "ops.md").await.unwrap();
-        assert_eq!((bytes.as_slice(), deleted), (&b"title: Ops\n---\ncharter"[..], 0));
+        assert_eq!(
+            (bytes.as_slice(), deleted),
+            (&b"title: Ops\n---\ncharter"[..], 0)
+        );
         let hlc: String = sqlx::query("SELECT hlc FROM agents WHERE path = 'ops.md'")
             .fetch_one(&a.handle.pool)
             .await
@@ -463,14 +520,26 @@ mod tests {
         std::fs::write(a.files.join("ops.md"), b"charter v1").unwrap();
         until(async || row(&a, "ops.md").await.is_some()).await;
         pump(&a, &b).await;
-        until(async || std::fs::read(b.files.join("ops.md")).is_ok_and(|x| x == b"charter v1")).await;
-        assert!(std::fs::read_dir(&b.files).unwrap().count() == 1, "no temp file left behind");
+        until(async || std::fs::read(b.files.join("ops.md")).is_ok_and(|x| x == b"charter v1"))
+            .await;
+        assert!(
+            std::fs::read_dir(&b.files).unwrap().count() == 1,
+            "no temp file left behind"
+        );
 
         // Let B's watcher see its own write; it must not turn into a B-origin batch.
         tokio::time::sleep(Duration::from_millis(700)).await;
-        assert!(b.handle.flush().await.unwrap().is_none(), "projection re-read as a change");
         assert!(
-            !b.engine.store.version_vector().await.unwrap().contains_key(b.engine.origin()),
+            b.handle.flush().await.unwrap().is_none(),
+            "projection re-read as a change"
+        );
+        assert!(
+            !b.engine
+                .store
+                .version_vector()
+                .await
+                .unwrap()
+                .contains_key(b.engine.origin()),
             "B never wrote a batch"
         );
 
@@ -482,7 +551,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(b.handle.flush().await.unwrap().is_none());
         // B holds A's delete batch now; still nothing of its own.
-        assert!(!b.engine.store.version_vector().await.unwrap().contains_key(b.engine.origin()));
+        assert!(
+            !b.engine
+                .store
+                .version_vector()
+                .await
+                .unwrap()
+                .contains_key(b.engine.origin())
+        );
     }
 
     /// 67 worker V: the three directories the plugins mirror at start, each
@@ -492,10 +568,16 @@ mod tests {
     /// `POLL` and may empty the log first; `pump` ships from the store either way.
     #[tokio::test]
     async fn schedules_skills_mcp_round_trip() {
-        for (table, file) in [("schedules", "nightly.md"), ("skills", "pdf.md"), ("mcp", "config.yaml")] {
+        for (table, file) in [
+            ("schedules", "nightly.md"),
+            ("skills", "pdf.md"),
+            ("mcp", "config.yaml"),
+        ] {
             let mk = async |table: &str| {
                 let dir = tempfile::tempdir().unwrap();
-                let engine = Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+                let engine = Engine::open(&dir.path().join("replica.sqlite"))
+                    .await
+                    .unwrap();
                 let pool = open_pool(&dir.path().join(format!("{table}.sqlite"))).await;
                 let files = dir.path().join(table);
                 let handle = engine.mirror(&pool, &files, table).await.unwrap();
@@ -513,8 +595,12 @@ mod tests {
             std::fs::write(a.files.join(file), b"hand edit").unwrap();
             until(async || row(&a, file).await.is_some()).await;
             pump(&a, &b).await;
-            until(async || std::fs::read(b.files.join(file)).is_ok_and(|x| x == b"hand edit")).await;
-            assert!(!b.files.join("some-repo").exists(), "{table}: clones are not mirrored");
+            until(async || std::fs::read(b.files.join(file)).is_ok_and(|x| x == b"hand edit"))
+                .await;
+            assert!(
+                !b.files.join("some-repo").exists(),
+                "{table}: clones are not mirrored"
+            );
 
             std::fs::remove_file(b.files.join(file)).unwrap();
             until(async || row(&b, file).await.is_some_and(|(_, d)| d == 1)).await;
@@ -532,10 +618,14 @@ mod tests {
     async fn scan_between_apply_and_projection_does_not_revert() {
         let a = side().await;
         let bdir = tempfile::tempdir().unwrap();
-        let b_engine = Engine::open(&bdir.path().join("replica.sqlite")).await.unwrap();
+        let b_engine = Engine::open(&bdir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
         let b_pool = open_pool(&bdir.path().join("data.sqlite")).await;
         let b_files = bdir.path().join("agents");
-        let b = super::Mirror::new(&b_engine, &b_pool, &b_files, "agents").await.unwrap();
+        let b = super::Mirror::new(&b_engine, &b_pool, &b_files, "agents")
+            .await
+            .unwrap();
         let b_side = Side {
             engine: b_engine.clone(),
             handle: b.handle.clone(),
@@ -555,26 +645,50 @@ mod tests {
         until(async || row(&a, "ops.md").await.is_some_and(|(x, _)| x == b"v2")).await;
         pump(&a, &b_side).await;
         assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v2");
-        assert_eq!(std::fs::read(b_files.join("ops.md")).unwrap(), b"v1", "projection pending");
+        assert_eq!(
+            std::fs::read(b_files.join("ops.md")).unwrap(),
+            b"v1",
+            "projection pending"
+        );
 
         // The race: a scan now sees file (v1) ≠ row (v2). Before: row ← v1 with a B stamp.
         b.scan().await.unwrap();
-        assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v2", "scan reverted the peer's write");
-        assert!(b.handle.flush().await.unwrap().is_none(), "the revert shipped back");
+        assert_eq!(
+            row(&b_side, "ops.md").await.unwrap().0,
+            b"v2",
+            "scan reverted the peer's write"
+        );
+        assert!(
+            b.handle.flush().await.unwrap().is_none(),
+            "the revert shipped back"
+        );
 
         // The projection lands; the file follows the row.
         b.project("ops.md").await.unwrap();
         assert_eq!(std::fs::read(b_files.join("ops.md")).unwrap(), b"v2");
         b.scan().await.unwrap();
         assert!(b.handle.flush().await.unwrap().is_none());
-        assert!(!b_engine.store.version_vector().await.unwrap().contains_key(b_engine.origin()), "B never wrote a batch");
+        assert!(
+            !b_engine
+                .store
+                .version_vector()
+                .await
+                .unwrap()
+                .contains_key(b_engine.origin()),
+            "B never wrote a batch"
+        );
 
         // A hand edit on B after the projection is a real change and does replicate.
         tokio::time::sleep(Duration::from_millis(5)).await;
         std::fs::write(b_files.join("ops.md"), b"v3").unwrap();
         b.scan().await.unwrap();
         assert_eq!(row(&b_side, "ops.md").await.unwrap().0, b"v3");
-        let batch = b.handle.flush().await.unwrap().expect("hand edit replicates");
+        let batch = b
+            .handle
+            .flush()
+            .await
+            .unwrap()
+            .expect("hand edit replicates");
         assert_eq!(batch.origin, *b_engine.origin());
     }
 }

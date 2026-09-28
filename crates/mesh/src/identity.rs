@@ -74,6 +74,9 @@ mod tests {
         let a = Identity::load_or_create(dir.path()).unwrap();
         let b = Identity::load_or_create(dir.path()).unwrap();
         assert_eq!(a.id(), b.id());
-        assert_eq!(std::fs::read(dir.path().join("identity")).unwrap().len(), 32);
+        assert_eq!(
+            std::fs::read(dir.path().join("identity")).unwrap().len(),
+            32
+        );
     }
 }

@@ -400,7 +400,12 @@ mod tests {
             serde_json::to_string(&m).unwrap(),
             r#"{"currency":"USD","nanos":"123000000"}"#
         );
-        assert_eq!(serde_json::from_str::<Money>(r#"{"currency":"USD","nanos":"5"}"#).unwrap().nanos, 5);
+        assert_eq!(
+            serde_json::from_str::<Money>(r#"{"currency":"USD","nanos":"5"}"#)
+                .unwrap()
+                .nanos,
+            5
+        );
     }
 
     #[test]
@@ -412,13 +417,28 @@ mod tests {
         add_by_currency(&mut v, &eur).unwrap();
         add_by_currency(&mut v, &usd).unwrap();
         assert_eq!(v.len(), 2);
-        assert_eq!((v[0].currency.as_str(), v[0].nanos), ("EUR", 2 * NANOS_PER_UNIT));
-        assert_eq!((v[1].currency.as_str(), v[1].nanos), ("USD", 2 * NANOS_PER_UNIT));
-        let max = Money { currency: "USD".into(), nanos: u64::MAX };
+        assert_eq!(
+            (v[0].currency.as_str(), v[0].nanos),
+            ("EUR", 2 * NANOS_PER_UNIT)
+        );
+        assert_eq!(
+            (v[1].currency.as_str(), v[1].nanos),
+            ("USD", 2 * NANOS_PER_UNIT)
+        );
+        let max = Money {
+            currency: "USD".into(),
+            nanos: u64::MAX,
+        };
         assert_eq!(add_by_currency(&mut v, &max), Err(Overflow));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].currency, "EUR");
-        assert_eq!("not_dispatched".parse::<CallStatus>(), Ok(CallStatus::NotDispatched));
-        assert_eq!(CostScope::OpaqueRemoteInclusive.as_str(), "opaque_remote_inclusive");
+        assert_eq!(
+            "not_dispatched".parse::<CallStatus>(),
+            Ok(CallStatus::NotDispatched)
+        );
+        assert_eq!(
+            CostScope::OpaqueRemoteInclusive.as_str(),
+            "opaque_remote_inclusive"
+        );
     }
 }

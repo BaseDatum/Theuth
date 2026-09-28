@@ -502,7 +502,11 @@ mod tests {
     #[test]
     fn prompt_front_loads_compact_signatures_and_a_complete_example() {
         let sigs = compact_signatures(&PROMPT_COMPONENTS);
-        assert_eq!(sigs.len(), PROMPT_COMPONENTS.len(), "every listed component is in the catalog: {sigs:?}");
+        assert_eq!(
+            sigs.len(),
+            PROMPT_COMPONENTS.len(),
+            "every listed component is in the catalog: {sigs:?}"
+        );
         assert!(
             sigs.contains(&"Stack(children, direction?, gap?, align?, justify?, wrap?)".to_owned()),
             "{sigs:?}"
@@ -528,7 +532,10 @@ mod tests {
         );
         // The explanatory set an inline reply fence reaches for is in the prompt; the rest is the skill's.
         assert!(sigs.contains(&"Accordion(items)".to_owned()), "{sigs:?}");
-        assert!(sigs.iter().any(|s| s.starts_with("OptionCards(")), "{sigs:?}");
+        assert!(
+            sigs.iter().any(|s| s.starts_with("OptionCards(")),
+            "{sigs:?}"
+        );
         assert!(!sigs.iter().any(|s| s.starts_with("Carousel(")), "{sigs:?}");
         assert!(compact_signatures(&["Carousel"]).len() == 1);
         let p = prompt();

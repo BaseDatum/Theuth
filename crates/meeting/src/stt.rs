@@ -130,7 +130,12 @@ pub fn run(
                 // Nothing more arrives; close what is open and reset the session.
                 let texts = live.close()?;
                 let position = live.position();
-                report(texts.into_iter().map(|t| piece(t, last, position, false)).collect());
+                report(
+                    texts
+                        .into_iter()
+                        .map(|t| piece(t, last, position, false))
+                        .collect(),
+                );
                 live.reset();
             } else {
                 // Whatever the producer pushed before its flag flipped is stale.

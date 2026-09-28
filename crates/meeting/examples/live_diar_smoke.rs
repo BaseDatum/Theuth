@@ -27,7 +27,10 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut audio: Option<PathBuf> = None;
     let mut secs: Option<usize> = None;
-    let mut data_dir = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".theuth");
+    let mut data_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".theuth");
     while let Some(a) = args.next() {
         match a.as_str() {
             "--secs" => secs = args.next().and_then(|s| s.parse().ok()),
@@ -35,9 +38,11 @@ fn main() -> anyhow::Result<()> {
             _ => audio = Some(PathBuf::from(a)),
         }
     }
-    let audio = audio.ok_or_else(|| anyhow::anyhow!("usage: live_diar_smoke <system.opus> [--secs N]"))?;
+    let audio =
+        audio.ok_or_else(|| anyhow::anyhow!("usage: live_diar_smoke <system.opus> [--secs N]"))?;
     let models_dir = data_dir.join("models");
-    let models = diarize::models(&models_dir, &data_dir).ok_or_else(|| anyhow::anyhow!("diarization models missing"))?;
+    let models = diarize::models(&models_dir, &data_dir)
+        .ok_or_else(|| anyhow::anyhow!("diarization models missing"))?;
 
     // The track at both rates: 48 kHz for the ring (what the capture delivers), 16 kHz for STT/offline.
     let (mut pcm48, rate) = voice::decode(std::fs::read(&audio)?, "opus")?;
@@ -55,12 +60,19 @@ fn main() -> anyhow::Result<()> {
     // 1. Live diariser task over a capture ring, producer paced by back-pressure (never drops).
     let t = Instant::now();
     let streamer = diar::open(&models)?;
-    println!("live session loaded in {:?} ({:?})", t.elapsed(), streamer.geometry());
+    println!(
+        "live session loaded in {:?} ({:?})",
+        t.elapsed(),
+        streamer.geometry()
+    );
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let (mut producer, ring) = rtrb::RingBuffer::<Sample>::new(250);
     let (tx, rx) = std::sync::mpsc::channel::<Labels>();
-    let flags = Flags { stop: stop.clone(), paused };
+    let flags = Flags {
+        stop: stop.clone(),
+        paused,
+    };
     let diar_thread = std::thread::spawn(move || {
         let t = Instant::now();
         let r = diar::run(ring, streamer, flags, |l| tx.send(l).is_ok());
@@ -73,7 +85,9 @@ fn main() -> anyhow::Result<()> {
         while producer.slots() == 0 {
             std::thread::sleep(Duration::from_millis(2));
         }
-        producer.push((Instant::now(), c.to_vec())).expect("slot checked");
+        producer
+            .push((Instant::now(), c.to_vec()))
+            .expect("slot checked");
     }
     while producer.slots() < 250 {
         std::thread::sleep(Duration::from_millis(5));
@@ -100,7 +114,10 @@ fn main() -> anyhow::Result<()> {
     let mut live = voice::live::Utterer::open(&stt_dir, &data_dir)?;
     let mut utterances: Vec<Utterance> = Vec::new();
     let mut close = |texts: Vec<voice::live::Text>, position: usize| {
-        for x in texts.into_iter().filter(|x| x.is_final && x.text.chars().any(char::is_alphanumeric)) {
+        for x in texts
+            .into_iter()
+            .filter(|x| x.is_final && x.text.chars().any(char::is_alphanumeric))
+        {
             utterances.push(Utterance {
                 track: Track::System,
                 t0_ms: (x.start as u64 * 1000) / u64::from(RATE),
@@ -119,7 +136,11 @@ fn main() -> anyhow::Result<()> {
     let texts = live.close()?;
     let position = live.position();
     close(texts, position);
-    println!("live STT: {} system utterances · wall {:.1} s", utterances.len(), t.elapsed().as_secs_f64());
+    println!(
+        "live STT: {} system utterances · wall {:.1} s",
+        utterances.len(),
+        t.elapsed().as_secs_f64()
+    );
 
     // 3. Hold-back replay: an utterance is labelled by the first view whose horizon passes
     // its end; at stop the actor labels the rest against the final view (07 §3).
@@ -140,9 +161,17 @@ fn main() -> anyhow::Result<()> {
         u.speaker = diar::speaker_of(u.t0_ms, u.t1_ms, &spans);
     }
     latencies.sort_unstable();
-    let pct = |p: f64| latencies.get(((latencies.len().max(1) - 1) as f64 * p) as usize).copied().unwrap_or(0);
+    let pct = |p: f64| {
+        latencies
+            .get(((latencies.len().max(1) - 1) as f64 * p) as usize)
+            .copied()
+            .unwrap_or(0)
+    };
     let labelled = utterances.iter().filter(|u| u.speaker.is_some()).count();
-    let mut live_ids: Vec<&str> = utterances.iter().filter_map(|u| u.speaker.as_deref()).collect();
+    let mut live_ids: Vec<&str> = utterances
+        .iter()
+        .filter_map(|u| u.speaker.as_deref())
+        .collect();
     live_ids.sort_unstable();
     live_ids.dedup();
     println!(
@@ -172,7 +201,10 @@ fn main() -> anyhow::Result<()> {
         "offline: {} speakers · {:.1} s · reconcile offline→live: {}",
         offline_count,
         t.elapsed().as_secs_f64(),
-        map.iter().map(|(a, b)| format!("{a}→{b}")).collect::<Vec<_>>().join(" ")
+        map.iter()
+            .map(|(a, b)| format!("{a}→{b}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     for s in &mut spans {
         if let Some(id) = renamed.get(&s.speaker) {

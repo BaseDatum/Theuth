@@ -139,7 +139,10 @@ impl Cancel {
 
     pub(crate) async fn notified(&self) -> CancelOrigin {
         self.notify.notified().await;
-        *self.origin.get().expect("fire records the origin before it notifies")
+        *self
+            .origin
+            .get()
+            .expect("fire records the origin before it notifies")
     }
 }
 

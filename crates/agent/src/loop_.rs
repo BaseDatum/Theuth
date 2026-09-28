@@ -67,11 +67,11 @@ use crate::communication::{
 use crate::context::{
     ContextBreakdown, ContextHistory, ContextRemoval, ContextSnapshot, ContextTarget,
 };
-use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::continuation::{
     self, DecideYield, InputConsumed, InputDropped, InputTicket, TurnEntered, TurnReturned,
     YieldDecision,
 };
+use crate::cost::{CallId, CallKind, CallStatus, CostObservation, Money};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -561,7 +561,11 @@ impl Actor for Session {
     /// 51 §6.1: nothing of this session outlives its actor — the detached
     /// title and harvest calls are fenced by `closed` and, when the state is
     /// home, joined.
-    async fn on_stop(&mut self, _: WeakActorRef<Self>, _: ActorStopReason) -> Result<(), Infallible> {
+    async fn on_stop(
+        &mut self,
+        _: WeakActorRef<Self>,
+        _: ActorStopReason,
+    ) -> Result<(), Infallible> {
         self.shared.closed.cancel();
         let detached = |s: &mut SessionState| [s.title_task.take(), s.harvest_task.take()];
         for task in self.state.as_mut().into_iter().flat_map(detached).flatten() {
@@ -1651,7 +1655,11 @@ impl Message<SetToolsetOverride> for Session {
 impl Message<GetToolset> for Session {
     type Reply = Option<Toolset>;
 
-    async fn handle(&mut self, _: GetToolset, _: &mut Context<Self, Self::Reply>) -> Option<Toolset> {
+    async fn handle(
+        &mut self,
+        _: GetToolset,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<Toolset> {
         self.shared.toolset.read().clone()
     }
 }
@@ -1706,7 +1714,9 @@ impl Message<HarvestNow> for Session {
             let started = turn.harvest_now().await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(match started {
-                Ok(landed) => landed.await.unwrap_or_else(|_| Err("session closed".into())),
+                Ok(landed) => landed
+                    .await
+                    .unwrap_or_else(|_| Err("session closed".into())),
                 Err(e) => Err(e),
             });
         });
@@ -2035,11 +2045,22 @@ impl Reserved {
         model: &Resolved,
     ) -> Result<Self, String> {
         let call = store
-            .reserve_call(owner, request_id, attempt, turn, kind, provider_of(model), Some(&model.id))
+            .reserve_call(
+                owner,
+                request_id,
+                attempt,
+                turn,
+                kind,
+                provider_of(model),
+                Some(&model.id),
+            )
             .await
             .map_err(|e| format!("accounting: {e:#}"))?;
         if let Err(e) = store.mark_dispatched(&call).await {
-            if let Err(e2) = store.mark_not_dispatched(&call, "dispatch marker failed").await {
+            if let Err(e2) = store
+                .mark_not_dispatched(&call, "dispatch marker failed")
+                .await
+            {
                 tracing::warn!(%call, "mark_not_dispatched: {e2:#}");
             }
             return Err(format!("accounting: {e:#}"));
@@ -2088,7 +2109,13 @@ impl Drop for Reserved {
 
 /// Commit the settlement and publish `ModelUsageChanged` for the owner and
 /// every live ancestor the store bumped.
-async fn settle(store: &Store, rt: &Runtime, call: &CallId, status: CallStatus, obs: CostObservation) {
+async fn settle(
+    store: &Store,
+    rt: &Runtime,
+    call: &CallId,
+    status: CallStatus,
+    obs: CostObservation,
+) {
     match store.settle_call(call, status, obs).await {
         Ok(bumped) => {
             for (session, revision) in bumped {
@@ -2155,7 +2182,8 @@ fn estimate(obs: &CostObservation, rates: &models::Cost) -> Money {
         + f64::from(read) * rates.cache_read.unwrap_or(rates.input)
         + f64::from(write) * rates.cache_write.unwrap_or(rates.input)
         + f64::from(obs.output_tokens.unwrap_or(0)) * rates.output;
-    Money::from_f64(usd / 1e6, "USD").unwrap_or_else(|_| Money::from_f64(0.0, "USD").expect("zero USD"))
+    Money::from_f64(usd / 1e6, "USD")
+        .unwrap_or_else(|_| Money::from_f64(0.0, "USD").expect("zero USD"))
 }
 
 /// Text of `history` worth matching against the bundle (10 §4.2): user
@@ -3305,7 +3333,12 @@ impl Turn {
             Ok(r) => r,
             Err(e) => return tracing::warn!(session = %session, "title: {e:#}"),
         };
-        let digest = title::digest(&old, &old_tags, self.state.head.as_ref(), &self.state.history);
+        let digest = title::digest(
+            &old,
+            &old_tags,
+            self.state.head.as_ref(),
+            &self.state.history,
+        );
         if let Some(prev) = self.state.title_task.take() {
             prev.abort();
             let _ = prev.await;
@@ -3337,7 +3370,10 @@ impl Turn {
             if closed.is_cancelled() {
                 return tracing::info!(session = %session, generation, "title: session closed before the write; discarded");
             }
-            match store.set_title_at_revision(session, &new, &tags, &revision).await {
+            match store
+                .set_title_at_revision(session, &new, &tags, &revision)
+                .await
+            {
                 Ok(true) => {
                     if closed.is_cancelled() {
                         return tracing::info!(session = %session, generation, "title: session closed after the write; not announced");
@@ -3463,7 +3499,11 @@ impl Turn {
         if let Some(limit) = self.threshold(window) {
             // Pressure is measured against the window (the configured fraction) or,
             // under a token override, against the override itself.
-            let span = if self.override_tokens().is_some() { limit } else { window };
+            let span = if self.override_tokens().is_some() {
+                limit
+            } else {
+                window
+            };
             let margin = span / 10;
             if projected >= limit {
                 if let Err(e) = self
@@ -3514,7 +3554,13 @@ impl Turn {
             // A retried round 0 or a text-less span has nothing to match.
             if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
                 match knowledge
-                    .hint_for(&query, &self.cwd, &self.state.hinted, cfg.hint_limit, Some(self.shared.id))
+                    .hint_for(
+                        &query,
+                        &self.cwd,
+                        &self.state.hinted,
+                        cfg.hint_limit,
+                        Some(self.shared.id),
+                    )
                     .await
                 {
                     Ok(metas) if !metas.is_empty() => {
@@ -3537,7 +3583,14 @@ impl Turn {
             vision: current.vision(),
         };
         let end = match self
-            .call(&current, frame, transport, Some(turn), self.shared.id, CallKind::Round)
+            .call(
+                &current,
+                frame,
+                transport,
+                Some(turn),
+                self.shared.id,
+                CallKind::Round,
+            )
             .await
         {
             Ok(end) => end,
@@ -3617,8 +3670,7 @@ impl Turn {
             // the provider billed for it; the ratio budgets the next tail.
             let estimated = self.est_frame();
             if estimated >= CALIBRATION_FLOOR {
-                self.state.calibration =
-                    Some((prompt as f32 / estimated as f32).clamp(0.5, 4.0));
+                self.state.calibration = Some((prompt as f32 / estimated as f32).clamp(0.5, 4.0));
             }
             self.state.last_provider = Some(self.state.used);
             // 07 §7 miss detection: the design checking itself in production.
@@ -3697,7 +3749,9 @@ impl Turn {
                 }
             }
             // 36 §2.6: output cap hit; the cut-off reply is persisted, ask for the rest.
-            if (stop == "max_tokens" || stop == "length") && self.salvaged < self.shared.cfg.max_salvages {
+            if (stop == "max_tokens" || stop == "length")
+                && self.salvaged < self.shared.cfg.max_salvages
+            {
                 self.salvaged += 1;
                 tracing::info!(session = %self.shared.id, stop = %stop, "salvaging length-capped reply");
                 self.note(
@@ -4078,7 +4132,9 @@ impl Turn {
 
     /// `/knowledge harvest` between turns (10 §5.2): rebase, then
     /// [`Turn::spawn_harvest`]; `Ok` resolves once the detached harvest lands.
-    async fn harvest_now(&mut self) -> Result<oneshot::Receiver<Result<HarvestResult, String>>, String> {
+    async fn harvest_now(
+        &mut self,
+    ) -> Result<oneshot::Receiver<Result<HarvestResult, String>>, String> {
         self.between_turns().await?;
         let (tx, rx) = oneshot::channel();
         self.spawn_harvest(Some(tx)).await?;
@@ -4121,14 +4177,20 @@ impl Turn {
         &mut self,
         reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
     ) -> Result<(), String> {
-        if self.state.harvest_task.as_ref().is_some_and(|t| !t.is_finished()) {
+        if self
+            .state
+            .harvest_task
+            .as_ref()
+            .is_some_and(|t| !t.is_finished())
+        {
             return Err("harvest in flight".into());
         }
-        self.knowledge().ok_or(if self.shared.resources.is_private() {
-            "knowledge harvest is disabled in a private session"
-        } else {
-            "knowledge is off"
-        })?;
+        self.knowledge()
+            .ok_or(if self.shared.resources.is_private() {
+                "knowledge harvest is disabled in a private session"
+            } else {
+                "knowledge is off"
+            })?;
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }
@@ -4624,11 +4686,13 @@ impl Turn {
         transport: Transport,
         images: &[VisionImage],
     ) -> Result<HarvestResult, String> {
-        let knowledge = self.knowledge().ok_or(if self.shared.resources.is_private() {
-            "knowledge harvest is disabled in a private session"
-        } else {
-            "knowledge is off"
-        })?;
+        let knowledge = self
+            .knowledge()
+            .ok_or(if self.shared.resources.is_private() {
+                "knowledge harvest is disabled in a private session"
+            } else {
+                "knowledge is off"
+            })?;
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }
@@ -4735,7 +4799,10 @@ impl Turn {
 
     /// The stored image index and notes when `current` is text-only and the
     /// frame has images (52 §5.1); `None` (no store read) otherwise.
-    async fn vision_frame(&self, current: &Current) -> Result<Option<crate::store::VisionFrame>, String> {
+    async fn vision_frame(
+        &self,
+        current: &Current,
+    ) -> Result<Option<crate::store::VisionFrame>, String> {
         if current.vision()
             || !(self.state.head.as_ref().is_some_and(has_images)
                 || self.state.history.iter().any(|(_, m)| has_images(m)))
@@ -4755,7 +4822,11 @@ impl Turn {
     /// be a second writer of the session — so an image still pending stays a
     /// stable marker in that one request.
     async fn image_index(&self, current: &Current) -> Result<Vec<VisionImage>, String> {
-        Ok(self.vision_frame(current).await?.map(|vf| vf.images).unwrap_or_default())
+        Ok(self
+            .vision_frame(current)
+            .await?
+            .map(|vf| vf.images)
+            .unwrap_or_default())
     }
 
     /// 52 §5.1: before a text-only request, every active image without an
@@ -5290,9 +5361,8 @@ mod tests {
                 spec(<SpawnSubagentTool as tools::Tool>::NAME, true),
             ]
         };
-        let names = |specs: Vec<ToolSpec>| -> Vec<String> {
-            specs.into_iter().map(|s| s.name).collect()
-        };
+        let names =
+            |specs: Vec<ToolSpec>| -> Vec<String> { specs.into_iter().map(|s| s.name).collect() };
         let live = Toolset {
             tools: vec!["brief_search".into(), "meeting_topic".into()],
             prompts: vec!["meeting".into(), "web".into()],
@@ -5309,12 +5379,24 @@ mod tests {
             runtime: true,
         };
         assert_eq!(
-            names(direct_specs(registry(), true, true, true, Some(&with_locals))),
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                true,
+                Some(&with_locals)
+            )),
             ["ask_user", "python", "todo"]
         );
         // `runtime: true` without a pool is still no python.
         assert_eq!(
-            names(direct_specs(registry(), false, true, true, Some(&with_locals))),
+            names(direct_specs(
+                registry(),
+                false,
+                true,
+                true,
+                Some(&with_locals)
+            )),
             ["ask_user", "todo"]
         );
         // The depth gate still applies to a listed `spawn_subagent`.
@@ -5327,11 +5409,24 @@ mod tests {
         // `None`: the floor with the runtime on, everything plus `todo` without.
         assert_eq!(
             names(direct_specs(registry(), true, true, true, None)),
-            ["ask_user", "meeting_topic", "python", "spawn_subagent", "todo"]
+            [
+                "ask_user",
+                "meeting_topic",
+                "python",
+                "spawn_subagent",
+                "todo"
+            ]
         );
         assert_eq!(
             names(direct_specs(registry(), false, true, true, None)),
-            ["ask_user", "brief_search", "meeting_topic", "shell", "spawn_subagent", "todo"]
+            [
+                "ask_user",
+                "brief_search",
+                "meeting_topic",
+                "shell",
+                "spawn_subagent",
+                "todo"
+            ]
         );
 
         let blocks = || {
@@ -5410,9 +5505,14 @@ mod tests {
     async fn context_edit_is_idle_only_and_installs_committed_frame() {
         let dir = std::env::temp_dir().join(format!("theuth-loop-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         for m in [
             ChatMessage::user("u1"),
             ChatMessage::assistant("a1"),
@@ -5574,7 +5674,10 @@ mod tests {
         assert_eq!(turn.threshold(0), Some(4_000));
         let instruction = turn.compact_instruction();
         assert!(instruction.starts_with(compact::COMPACT_INSTRUCTION));
-        assert!(instruction.ends_with("\n\nKeep the live topics."), "{instruction}");
+        assert!(
+            instruction.ends_with("\n\nKeep the live topics."),
+            "{instruction}"
+        );
         set(CompactionOverride::default());
         assert_eq!(turn.threshold(window), Some(cfg_limit));
         assert_eq!(turn.compact_instruction(), compact::COMPACT_INSTRUCTION);
@@ -5669,14 +5772,25 @@ mod tests {
         let mut state = SessionState::resume(0, None, Vec::new());
         let on = SurfaceConfig::default();
         let mut warned = false;
-        assert!(check_fences(None, "plain prose, no fence", &mut warned).await.is_empty());
+        assert!(
+            check_fences(None, "plain prose, no fence", &mut warned)
+                .await
+                .is_empty()
+        );
         let valid = "```json-render\n{\"root\": \"r\", \"elements\": {\"r\": {\"type\": \"Separator\", \"props\": {}}}}\n```";
         assert!(check_fences(None, valid, &mut warned).await.is_empty());
         // No registry: mermaid/openui count as valid, an unclosed one still fails.
-        assert!(check_fences(None, "```mermaid\ngraph TD\nA-->B[\n```\n", &mut warned).await.is_empty());
+        assert!(
+            check_fences(None, "```mermaid\ngraph TD\nA-->B[\n```\n", &mut warned)
+                .await
+                .is_empty()
+        );
         let unclosed = check_fences(None, "```openui\nroot = Stack([])\n", &mut warned).await;
         assert_eq!(unclosed.len(), 1);
-        assert_eq!((unclosed[0].lang.as_str(), unclosed[0].ordinal), ("openui", 1));
+        assert_eq!(
+            (unclosed[0].lang.as_str(), unclosed[0].ordinal),
+            ("openui", 1)
+        );
         assert_eq!(unclosed[0].errors[0].message, "fence not closed");
         assert!(!warned, "nothing to warn about without a registry");
 
@@ -5700,20 +5814,32 @@ mod tests {
         assert!(correction_wanted(&on, &state));
         let last = correction_message(&on, &mut state.surface_rounds, &failing).expect("final");
         assert_eq!(state.surface_rounds, 4);
-        assert!(last.starts_with("<surface_error final=\"true\">\n"), "{last}");
+        assert!(
+            last.starts_with("<surface_error final=\"true\">\n"),
+            "{last}"
+        );
         assert!(last.contains("after 3 attempts"), "{last}");
-        assert!(!correction_wanted(&on, &state), "the final reply is not checked");
+        assert!(
+            !correction_wanted(&on, &state),
+            "the final reply is not checked"
+        );
 
         let off = SurfaceConfig {
             correct: false,
             ..SurfaceConfig::default()
         };
-        assert!(!correction_wanted(&off, &SessionState::resume(0, None, Vec::new())));
+        assert!(!correction_wanted(
+            &off,
+            &SessionState::resume(0, None, Vec::new())
+        ));
         let disabled = SurfaceConfig {
             enabled: false,
             ..SurfaceConfig::default()
         };
-        assert!(!correction_wanted(&disabled, &SessionState::resume(0, None, Vec::new())));
+        assert!(!correction_wanted(
+            &disabled,
+            &SessionState::resume(0, None, Vec::new())
+        ));
     }
 
     #[test]
@@ -5905,11 +6031,20 @@ mod tests {
             defer: true,
             ..harness_input(None)
         };
-        let queue: Vec<Queued> = vec![(Some(steer_id), harness_input(None)), (Some(next_id), deferred)];
+        let queue: Vec<Queued> = vec![
+            (Some(steer_id), harness_input(None)),
+            (Some(next_id), deferred),
+        ];
 
         let (take, mut keep) = split_steer(queue, TurnScope::default());
-        assert_eq!(take.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [Some(steer_id)]);
-        assert_eq!(keep.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [Some(next_id)]);
+        assert_eq!(
+            take.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [Some(steer_id)]
+        );
+        assert_eq!(
+            keep.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [Some(next_id)]
+        );
         assert!(keep[0].1.defer);
 
         // `WithdrawInput` removes by id from the kept queue.
@@ -6006,10 +6141,18 @@ mod tests {
         use crate::store::communication::AcceptExchange;
         let dir = std::env::temp_dir().join(format!("theuth-peer-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let (mut policy, sender, id, generation) = route();
-        store.create_session(id, "m", None, None, None).await.unwrap();
-        store.create_session(sender, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(sender, "m", None, None, None)
+            .await
+            .unwrap();
         let (from, to) = (format!("session:{sender}"), format!("session:{id}"));
         let req = AcceptExchange {
             sender: &from,
@@ -6122,9 +6265,14 @@ mod tests {
     async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
         let dir = std::env::temp_dir().join(format!("theuth-vision-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         let shot = Binary::from_base64("image/png", "AAAA", Some("shot.png".into()));
         let user = ChatMessage::user(MessageContent::from_parts(vec![
             ContentPart::Text("look".into()),
@@ -6553,20 +6701,47 @@ mod tests {
             })
         };
 
-        let reported = observe(Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))), &model);
-        assert_eq!(reported.returned.as_ref().map(|m| m.nanos), Some(250_000_000));
+        let reported = observe(
+            Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))),
+            &model,
+        );
+        assert_eq!(
+            reported.returned.as_ref().map(|m| m.nanos),
+            Some(250_000_000)
+        );
         assert!(reported.estimated.is_none() && reported.unknown_reason.is_none());
         assert_eq!(
-            (reported.input_tokens, reported.output_tokens, reported.cache_read_tokens, reported.cache_write_tokens, reported.context_tokens),
+            (
+                reported.input_tokens,
+                reported.output_tokens,
+                reported.cache_read_tokens,
+                reported.cache_write_tokens,
+                reported.context_tokens
+            ),
             (Some(100), Some(20), Some(60), Some(5), Some(120))
         );
-        assert_eq!((reported.provider.as_deref(), reported.requested_model.as_deref()), (Some("openrouter"), Some("openrouter/x")));
+        assert_eq!(
+            (
+                reported.provider.as_deref(),
+                reported.requested_model.as_deref()
+            ),
+            (Some("openrouter"), Some("openrouter/x"))
+        );
 
-        let estimated = observe(Some(&usage(cost(0.1, "USD", UsageCostSource::AdapterEstimated))), &model);
+        let estimated = observe(
+            Some(&usage(cost(0.1, "USD", UsageCostSource::AdapterEstimated))),
+            &model,
+        );
         assert!(estimated.returned.is_none());
-        assert_eq!(estimated.estimated.as_ref().map(|m| m.nanos), Some(100_000_000));
+        assert_eq!(
+            estimated.estimated.as_ref().map(|m| m.nanos),
+            Some(100_000_000)
+        );
 
-        let bad = observe(Some(&usage(cost(-1.0, "USD", UsageCostSource::ProviderReported))), &model);
+        let bad = observe(
+            Some(&usage(cost(-1.0, "USD", UsageCostSource::ProviderReported))),
+            &model,
+        );
         assert!(bad.returned.is_none() && bad.estimated.is_none());
         assert_eq!(bad.unknown_reason.as_deref(), Some("invalid amount"));
 
@@ -6586,8 +6761,16 @@ mod tests {
             model: Some(models::Model {
                 id: "x".into(),
                 name: "x".into(),
-                limit: models::Limit { context: 1, output: 1 },
-                cost: Some(models::Cost { input: 3.0, output: 15.0, cache_read: Some(0.3), cache_write: Some(3.75) }),
+                limit: models::Limit {
+                    context: 1,
+                    output: 1,
+                },
+                cost: Some(models::Cost {
+                    input: 3.0,
+                    output: 15.0,
+                    cache_read: Some(0.3),
+                    cache_write: Some(3.75),
+                }),
                 reasoning: false,
                 tool_call: false,
                 image: false,
@@ -6597,9 +6780,17 @@ mod tests {
         };
         let est = observe(Some(&usage(None)), &priced);
         assert!(est.returned.is_none() && est.unknown_reason.is_none());
-        assert_eq!(est.estimated.as_ref().map(|m| (m.currency.as_str(), m.nanos)), Some(("USD", 441_750)));
+        assert_eq!(
+            est.estimated
+                .as_ref()
+                .map(|m| (m.currency.as_str(), m.nanos)),
+            Some(("USD", 441_750))
+        );
         // A provider-reported amount still wins over the catalog.
-        let reported = observe(Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))), &priced);
+        let reported = observe(
+            Some(&usage(cost(0.25, "USD", UsageCostSource::ProviderReported))),
+            &priced,
+        );
         assert!(reported.estimated.is_none() && reported.returned.is_some());
     }
 
@@ -6665,7 +6856,9 @@ mod tests {
                     if buf.len() >= want {
                         break;
                     }
-                    let Ok(n) = sock.read(&mut chunk).await else { break };
+                    let Ok(n) = sock.read(&mut chunk).await else {
+                        break;
+                    };
                     if n == 0 {
                         break;
                     }
@@ -6700,15 +6893,23 @@ mod tests {
         store: Store,
         id: SessionId,
         base_url: String,
-    ) -> (Turn, Current, Transport, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
+    ) -> (
+        Turn,
+        Current,
+        Transport,
+        tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) {
         let auth = Auth::stub(dir);
-        auth.gateways.write().unwrap_or_else(|p| p.into_inner()).insert(
-            "fake".into(),
-            crate::providers::Gateway {
-                base_url,
-                key: "k".into(),
-            },
-        );
+        auth.gateways
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                "fake".into(),
+                crate::providers::Gateway {
+                    base_url,
+                    key: "k".into(),
+                },
+            );
         let model = Resolved {
             id: "fake/m".into(),
             genai: "fake::m".into(),
@@ -6788,12 +6989,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "fake/m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
         let (base_url, hits) = fake_openai(vec![sse(
             r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#,
         )])
         .await;
-        let (turn, current, transport, mut events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+        let (turn, current, transport, mut events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
 
         let history = [ChatMessage::user("hi")];
         let frame = Frame {
@@ -6811,7 +7016,10 @@ mod tests {
 
         let rows = calls(&store, id).await;
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].2.as_str(), rows[0].3.as_str()), ("round", "settled"));
+        assert_eq!(
+            (rows[0].2.as_str(), rows[0].3.as_str()),
+            ("round", "settled")
+        );
         let cost = store.session_cost(id).await.unwrap().unwrap();
         assert_eq!(
             cost.direct.returned,
@@ -6821,10 +7029,17 @@ mod tests {
             }]
         );
         assert_eq!(
-            (cost.direct.calls, cost.direct.dispatched, cost.direct.unavailable),
+            (
+                cost.direct.calls,
+                cost.direct.dispatched,
+                cost.direct.unavailable
+            ),
             (1, 1, 0)
         );
-        assert_eq!((cost.direct.tokens.input, cost.direct.tokens.output), (10, 5));
+        assert_eq!(
+            (cost.direct.tokens.input, cost.direct.tokens.output),
+            (10, 5)
+        );
         assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -6838,13 +7053,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "fake/m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
         let (base_url, hits) = fake_openai(vec![
             http(500, "text/plain", "upstream hiccup"),
             sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#),
         ])
         .await;
-        let (turn, current, transport, _events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), id, base_url).await;
 
         let history = [ChatMessage::user("hi")];
         let frame = Frame {
@@ -6854,16 +7073,30 @@ mod tests {
             history: &history,
             vision: false,
         };
-        assert!(turn.call(&current, frame, transport, None, id, CallKind::Round).await.is_ok());
+        assert!(
+            turn.call(&current, frame, transport, None, id, CallKind::Round)
+                .await
+                .is_ok()
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
 
         let rows = calls(&store, id).await;
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].0, rows[1].0);
         assert_eq!(rows[0].1, rows[1].1);
-        assert_eq!((rows[0].3.as_str(), rows[1].3.as_str()), ("failed", "settled"));
+        assert_eq!(
+            (rows[0].3.as_str(), rows[1].3.as_str()),
+            ("failed", "settled")
+        );
         let cost = store.session_cost(id).await.unwrap().unwrap();
-        assert_eq!((cost.direct.calls, cost.direct.dispatched, cost.direct.unavailable), (2, 2, 1));
+        assert_eq!(
+            (
+                cost.direct.calls,
+                cost.direct.dispatched,
+                cost.direct.unavailable
+            ),
+            (2, 2, 1)
+        );
         assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -6877,8 +7110,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open_memory().await.unwrap();
         let orphan = SessionId::new();
-        let (base_url, hits) = fake_openai(vec![sse(r#"{"prompt_tokens":1,"completion_tokens":1}"#)]).await;
-        let (turn, current, transport, _events) = gateway_turn(&dir, store.clone(), orphan, base_url).await;
+        let (base_url, hits) =
+            fake_openai(vec![sse(r#"{"prompt_tokens":1,"completion_tokens":1}"#)]).await;
+        let (turn, current, transport, _events) =
+            gateway_turn(&dir, store.clone(), orphan, base_url).await;
 
         let history = [ChatMessage::user("hi")];
         let frame = Frame {
@@ -6888,7 +7123,10 @@ mod tests {
             history: &history,
             vision: false,
         };
-        let err = match turn.call(&current, frame, transport, None, orphan, CallKind::Round).await {
+        let err = match turn
+            .call(&current, frame, transport, None, orphan, CallKind::Round)
+            .await
+        {
             Err(Abort::Model(e)) => e,
             _ => panic!("a refused reservation is a local model abort"),
         };

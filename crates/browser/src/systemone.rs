@@ -344,13 +344,7 @@ impl Observation {
             title: page.title,
             text,
             elements,
-            recent_actions: recent
-                .iter()
-                .rev()
-                .take(RECENT)
-                .rev()
-                .cloned()
-                .collect(),
+            recent_actions: recent.iter().rev().take(RECENT).rev().cloned().collect(),
             more_below,
             scrolled: scroll != Scroll::default(),
         }
@@ -549,7 +543,9 @@ pub fn py_repr(s: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
             c => out.push(c),
         }
     }
@@ -582,9 +578,13 @@ pub fn cut_label(s: &mut String, n: usize) {
 /// goal (`'…'`, `"…"`, `“…”`). `None` → the loop makes its one side call.
 pub fn quoted_value(goal: &str) -> Option<String> {
     for (open, close) in [('\'', '\''), ('"', '"'), ('“', '”'), ('‘', '’')] {
-        let Some(start) = goal.find(open) else { continue };
+        let Some(start) = goal.find(open) else {
+            continue;
+        };
         let rest = &goal[start + open.len_utf8()..];
-        let Some(len) = rest.find(close) else { continue };
+        let Some(len) = rest.find(close) else {
+            continue;
+        };
         let v = rest[..len].trim();
         if !v.is_empty() {
             return Some(v.to_owned());
@@ -799,7 +799,12 @@ impl Run {
     /// continue with `browser_*` when the loop handed back (57 §4.1 item 4).
     pub fn render(&self) -> String {
         let mut s = String::new();
-        s.push_str(&format!("browser_run ({}): {} step(s) in {} ms\n", self.mode, self.steps.len(), self.elapsed_ms));
+        s.push_str(&format!(
+            "browser_run ({}): {} step(s) in {} ms\n",
+            self.mode,
+            self.steps.len(),
+            self.elapsed_ms
+        ));
         for step in &self.steps {
             s.push_str(&step.to_string());
             s.push('\n');
@@ -829,7 +834,8 @@ pub struct Pending {
 impl Pending {
     /// Report both rows against `actual` = `(op id, ref)` of the model's call.
     pub async fn report(self, actual: (String, Option<String>)) {
-        let Ok(Some(engine)) = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR) else {
+        let Ok(Some(engine)) = ActorRef::<decision::Engine>::lookup(decision::DECISION_ACTOR)
+        else {
             return;
         };
         let (op, target) = actual;
@@ -894,7 +900,10 @@ fn accepted(d: &Decision) -> bool {
 
 /// P of the chosen label.
 fn p_of(d: &Decision) -> f32 {
-    d.probabilities.iter().find(|(l, _)| *l == d.choice).map_or(0.0, |(_, p)| *p)
+    d.probabilities
+        .iter()
+        .find(|(l, _)| *l == d.choice)
+        .map_or(0.0, |(_, p)| *p)
 }
 
 impl Ctx {
@@ -914,7 +923,11 @@ impl Ctx {
             return Err(listing.content);
         }
         let raw = self
-            .call(session, "browser_evaluate", json!({ "expression": OBSERVE_JS }))
+            .call(
+                session,
+                "browser_evaluate",
+                json!({ "expression": OBSERVE_JS }),
+            )
             .await
             .map_err(|e| e.to_string())?;
         if raw.is_error {
@@ -959,10 +972,17 @@ impl Ctx {
             .map_err(|e| format!("text helper: {e}"))?;
         let start = reply.text.find('{').ok_or("text helper: no JSON")?;
         let v: Value = serde_json::from_str(&reply.text[start..])
-            .or_else(|_| serde_json::Deserializer::from_str(&reply.text[start..]).into_iter::<Value>().next().unwrap_or(Ok(Value::Null)))
+            .or_else(|_| {
+                serde_json::Deserializer::from_str(&reply.text[start..])
+                    .into_iter::<Value>()
+                    .next()
+                    .unwrap_or(Ok(Value::Null))
+            })
             .map_err(|e| format!("text helper: {e}"))?;
         match v.get("text") {
-            Some(Value::String(t)) if !t.trim().is_empty() => Ok(t.trim().chars().take(VALUE_MAX).collect()),
+            Some(Value::String(t)) if !t.trim().is_empty() => {
+                Ok(t.trim().chars().take(VALUE_MAX).collect())
+            }
             _ => Err("text helper: no value for the field".to_owned()),
         }
     }
@@ -987,7 +1007,12 @@ impl Ctx {
                 return run;
             }
         };
-        let info = match engine.ask(GetMode { prefix: "browser".into() }).await {
+        let info = match engine
+            .ask(GetMode {
+                prefix: "browser".into(),
+            })
+            .await
+        {
             Ok(i) => i,
             Err(e) => {
                 run.stop = Stop::Error(format!("decision: {e}"));
@@ -998,7 +1023,8 @@ impl Ctx {
         if info.effective == Mode::Off {
             run.stop = Stop::Error(format!(
                 "the browser decision oracle is off ({})",
-                info.reason.unwrap_or_else(|| "decision.families.browser.mode: off".into())
+                info.reason
+                    .unwrap_or_else(|| "decision.families.browser.mode: off".into())
             ));
             return run;
         }
@@ -1048,7 +1074,11 @@ impl Ctx {
             let decide_ms = t.elapsed().as_millis() as u64;
             let op_d = &ds[0];
             let Some(op) = Op::parse(&op_d.choice) else {
-                break Stop::Error(format!("operation `{}` ({:?})", op_d.choice, op_d.disposition.reason()));
+                break Stop::Error(format!(
+                    "operation `{}` ({:?})",
+                    op_d.choice,
+                    op_d.disposition.reason()
+                ));
             };
             if !accepted(op_d) {
                 break Stop::BelowGate(format!(
@@ -1123,7 +1153,10 @@ impl Ctx {
                     Pending {
                         operation: op_d.log_id,
                         target: target_d.map(|d| d.log_id),
-                        expected: (op.id().to_owned(), step.target.as_ref().map(|e| e.ref_.clone())),
+                        expected: (
+                            op.id().to_owned(),
+                            step.target.as_ref().map(|e| e.ref_.clone()),
+                        ),
                     },
                 );
                 run.steps.push(step);
@@ -1139,12 +1172,23 @@ impl Ctx {
                     .await
                     .map_err(|e| e.to_string())
                     .and_then(|o| if o.is_error { Err(o.content) } else { Ok(None) }),
-                (Op::TypeText, Some(e)) => match self.type_text_value(session, goal, e, &obs).await {
+                (Op::TypeText, Some(e)) => match self.type_text_value(session, goal, e, &obs).await
+                {
                     Ok(v) => self
-                        .call(session, "browser_fill", json!({ "ref": e.ref_, "value": v }))
+                        .call(
+                            session,
+                            "browser_fill",
+                            json!({ "ref": e.ref_, "value": v }),
+                        )
                         .await
                         .map_err(|e| e.to_string())
-                        .and_then(|o| if o.is_error { Err(o.content) } else { Ok(Some(v)) }),
+                        .and_then(|o| {
+                            if o.is_error {
+                                Err(o.content)
+                            } else {
+                                Ok(Some(v))
+                            }
+                        }),
                     Err(e) => {
                         step.act_ms = t.elapsed().as_millis() as u64;
                         run.steps.push(step);
@@ -1154,7 +1198,10 @@ impl Ctx {
                 (Op::ScrollDown | Op::ScrollUp, _) => {
                     let dir = if op == Op::ScrollDown { "down" } else { "up" };
                     scroll = if op == Op::ScrollDown {
-                        scroll.down(scroll.elements + obs.elements.len() + usize::from(obs.more_below), usize::MAX)
+                        scroll.down(
+                            scroll.elements + obs.elements.len() + usize::from(obs.more_below),
+                            usize::MAX,
+                        )
                     } else {
                         scroll.up()
                     };
@@ -1180,7 +1227,9 @@ impl Ctx {
             step.value = text.clone();
             step.error = error.clone();
             recent.push(RecentAction {
-                action: target.as_ref().map_or_else(|| op.criterion().to_owned(), |e| e.action_label(op)),
+                action: target
+                    .as_ref()
+                    .map_or_else(|| op.criterion().to_owned(), |e| e.action_label(op)),
                 kind: op.kind().to_owned(),
                 text,
                 page_changed: false,
@@ -1225,8 +1274,18 @@ impl Tool for RunTool {
     async fn call(&self, a: RunArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         // 57 §2.1: the browser checkpoint stays resident until this session's turn ends, it
         // calls `browser_close`, or its isolate goes (`Browsers::systemone_done`).
-        let _ = self.0.actor.tell(crate::SystemOne { session: cx.session, active: true }).await;
-        let run = self.0.run(cx.session, a.goal.trim(), a.max_steps.unwrap_or(MAX_STEPS)).await;
+        let _ = self
+            .0
+            .actor
+            .tell(crate::SystemOne {
+                session: cx.session,
+                active: true,
+            })
+            .await;
+        let run = self
+            .0
+            .run(cx.session, a.goal.trim(), a.max_steps.unwrap_or(MAX_STEPS))
+            .await;
         // TODO(capture): 57 §4.1 item 7 / §11.4 — one `Example` per step for family `browser`
         // (observation, the three questions with candidates, probabilities, the executed action,
         // the run's end state; the model's tier-3 correction as the gold label) through
@@ -1267,7 +1326,10 @@ mod tests {
         );
         let mut c = el(5, "Remember me", "checkbox", false);
         c.checked = Some("false".into());
-        assert_eq!(c.option_text(true), "[5] Remember me (checkbox) checked=false");
+        assert_eq!(
+            c.option_text(true),
+            "[5] Remember me (checkbox) checked=false"
+        );
         assert_eq!(el(1, "Go", "", false).option_text(true), "[1] Go");
     }
 
@@ -1298,7 +1360,12 @@ mod tests {
             cut("[1] Café — naïve résumé ünïcödé label that is long enough to be cut"),
             "[1] Café — naïve résumé ünïcödé label that is long"
         );
-        let mut e = el(12, "Search Wikipedia, the free encyclopedia that anyone can edit", "searchbox", true);
+        let mut e = el(
+            12,
+            "Search Wikipedia, the free encyclopedia that anyone can edit",
+            "searchbox",
+            true,
+        );
         e.value = "python".into();
         assert_eq!(
             e.option_text(true),
@@ -1360,7 +1427,9 @@ mod tests {
     #[test]
     fn instructions_are_json_dumps_of_jevs_dicts() {
         let ins = operation_instructions("Search for 'Python' — now");
-        assert!(ins.starts_with(r#"{"goal": "Search for 'Python' \u2014 now", "rules": "Advance the user's entire goal"#));
+        assert!(ins.starts_with(
+            r#"{"goal": "Search for 'Python' \u2014 now", "rules": "Advance the user's entire goal"#
+        ));
         assert!(ins.ends_with(r#"can make progress."}"#));
         assert!(!ins.contains('\n'), "newlines are escaped, one line");
         let t = target_instructions("g", Op::TypeText);
@@ -1376,7 +1445,14 @@ mod tests {
             title: "t".into(),
             text: "x".repeat(4000),
             elements: (1..=100)
-                .map(|i| el(0, &format!("l{i}"), if i % 10 == 0 { "textbox" } else { "link" }, i % 10 == 0))
+                .map(|i| {
+                    el(
+                        0,
+                        &format!("l{i}"),
+                        if i % 10 == 0 { "textbox" } else { "link" },
+                        i % 10 == 0,
+                    )
+                })
                 .collect(),
         };
         let obs = Observation::window(page.clone(), Scroll::default(), &[]);
@@ -1385,17 +1461,32 @@ mod tests {
         assert_eq!(obs.text.chars().count(), TEXT_MAX);
         assert_eq!(
             obs.operations(),
-            [Op::Click, Op::TypeText, Op::ScrollDown, Op::Wait, Op::Done, Op::Blocked]
+            [
+                Op::Click,
+                Op::TypeText,
+                Op::ScrollDown,
+                Op::Wait,
+                Op::Done,
+                Op::Blocked
+            ]
         );
         let asks = render("go", &obs);
         assert_eq!(asks.len(), 3);
-        let Question::Choice { candidates, .. } = &asks[2].question else { unreachable!() };
+        let Question::Choice { candidates, .. } = &asks[2].question else {
+            unreachable!()
+        };
         assert_eq!(candidates.len(), 6, "editable elements only");
         assert_eq!(candidates[0].id, "10");
         assert_eq!(candidates[0].text, "[10] l10 (textbox)");
 
         let down = Scroll::default().down(100, 4000);
-        assert_eq!(down, Scroll { elements: 40, text: 1200 });
+        assert_eq!(
+            down,
+            Scroll {
+                elements: 40,
+                text: 1200
+            }
+        );
         let obs = Observation::window(page.clone(), down, &[]);
         assert_eq!(obs.elements[0].label, "l41");
         assert!(obs.operations().contains(&Op::ScrollUp));
@@ -1420,7 +1511,11 @@ mod tests {
             })
             .collect();
         let obs = Observation::window(Page::default(), Scroll::default(), &recent);
-        let names: Vec<&str> = obs.recent_actions.iter().map(|a| a.action.as_str()).collect();
+        let names: Vec<&str> = obs
+            .recent_actions
+            .iter()
+            .map(|a| a.action.as_str())
+            .collect();
         assert_eq!(names, ["3", "4", "5", "6", "7", "8"]);
     }
 
@@ -1430,20 +1525,44 @@ mod tests {
             quoted_value("Search Wikipedia for 'Python programming language' and open it"),
             Some("Python programming language".into())
         );
-        assert_eq!(quoted_value("type \"hello world\" into the box"), Some("hello world".into()));
-        assert_eq!(quoted_value("look up “Planet Nine”"), Some("Planet Nine".into()));
+        assert_eq!(
+            quoted_value("type \"hello world\" into the box"),
+            Some("hello world".into())
+        );
+        assert_eq!(
+            quoted_value("look up “Planet Nine”"),
+            Some("Planet Nine".into())
+        );
         assert_eq!(quoted_value("open the settings page"), None);
-        assert_eq!(quoted_value("it's a test"), None, "an apostrophe alone is not a quote");
+        assert_eq!(
+            quoted_value("it's a test"),
+            None,
+            "an apostrophe alone is not a quote"
+        );
     }
 
     #[test]
     fn op_ids_round_trip() {
-        for op in [Op::Click, Op::TypeText, Op::ScrollDown, Op::ScrollUp, Op::Wait, Op::Done, Op::Blocked] {
+        for op in [
+            Op::Click,
+            Op::TypeText,
+            Op::ScrollDown,
+            Op::ScrollUp,
+            Op::Wait,
+            Op::Done,
+            Op::Blocked,
+        ] {
             assert_eq!(Op::parse(op.id()), Some(op));
         }
         assert_eq!(Op::parse("SELECT"), None);
-        assert_eq!(el(3, "Search Wikipedia", "searchbox", true).action_label(Op::Click), "Open Search Wikipedia");
-        assert_eq!(el(3, "Search Wikipedia", "searchbox", true).action_label(Op::TypeText), "Search Wikipedia");
+        assert_eq!(
+            el(3, "Search Wikipedia", "searchbox", true).action_label(Op::Click),
+            "Open Search Wikipedia"
+        );
+        assert_eq!(
+            el(3, "Search Wikipedia", "searchbox", true).action_label(Op::TypeText),
+            "Search Wikipedia"
+        );
     }
 
     #[test]

@@ -17,8 +17,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 
 use crate::repo::Repo;
 use crate::types::{
-    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Scoper, Source, Sync,
-    USER_OWNER, Visibility,
+    AgentScope, Change, Concept, History, Hit, KnowledgeOp, Meta, Put, Revision, Scoper, Source,
+    Sync, USER_OWNER, Visibility,
 };
 use crate::{BODY_MAX, DIR, INDEX_FILE, KnowledgeChanged};
 
@@ -45,7 +45,8 @@ const CREATE_CONCEPTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS concepts USING
     path UNINDEXED, mtime UNINDEXED, size UNINDEXED, \
     tokenize = 'porter unicode61 remove_diacritics 2')";
 /// Columns of [`MetaRow`], in `SELECT` order.
-pub(crate) const META_COLS: &str = "id, type, title, description, tags, scope, source, timestamp, owner, visibility";
+pub(crate) const META_COLS: &str =
+    "id, type, title, description, tags, scope, source, timestamp, owner, visibility";
 const CREATE_LINKS: &str = "CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))";
 const CREATE_LINKS_DST: &str = "CREATE INDEX IF NOT EXISTS links_dst ON links(dst)";
 
@@ -446,7 +447,9 @@ async fn open_db(path: &Path) -> anyhow::Result<SqlitePool> {
         .await
         .is_err()
     {
-        sqlx::query("DROP TABLE IF EXISTS concepts").execute(&pool).await?;
+        sqlx::query("DROP TABLE IF EXISTS concepts")
+            .execute(&pool)
+            .await?;
     }
     for sql in [CREATE_CONCEPTS, CREATE_LINKS, CREATE_LINKS_DST] {
         sqlx::query(sql).execute(&pool).await?;
@@ -674,7 +677,12 @@ impl Knowledge {
     /// report whether the concept was created (10 §2.3). From an agent's
     /// session the file is stamped `owner: agent:<name>` and, unless the put
     /// says otherwise, `visibility: private` (67 §9).
-    pub async fn put_for(&self, p: Put, source: Source, session: Option<SessionId>) -> anyhow::Result<(Meta, bool)> {
+    pub async fn put_for(
+        &self,
+        p: Put,
+        source: Source,
+        session: Option<SessionId>,
+    ) -> anyhow::Result<(Meta, bool)> {
         let cid = concept_id(&p.id)?;
         let id = cid.to_string();
         let type_ = p.type_.trim();
@@ -735,7 +743,12 @@ impl Knowledge {
 
     /// `knowledge_share` (67 §9): flip a concept's `visibility`. Allowed for
     /// the owner and its reporting line; the user's sessions always may.
-    pub async fn share(&self, id: &str, visibility: Visibility, session: Option<SessionId>) -> anyhow::Result<Meta> {
+    pub async fn share(
+        &self,
+        id: &str,
+        visibility: Visibility,
+        session: Option<SessionId>,
+    ) -> anyhow::Result<Meta> {
         let cid = concept_id(id)?;
         let id = cid.to_string();
         let text = tokio::fs::read_to_string(cid.to_path(&self.root))
@@ -948,7 +961,13 @@ impl Knowledge {
         let terms = terms(text);
         let need = terms.len().min(2);
         let hits = self
-            .ranked(&terms, cwd, limit + exclude.len() as u32, scope.as_ref(), false)
+            .ranked(
+                &terms,
+                cwd,
+                limit + exclude.len() as u32,
+                scope.as_ref(),
+                false,
+            )
             .await?;
         let mut out = Vec::new();
         for (hit, body) in hits {
@@ -1387,9 +1406,24 @@ mod tests {
         let (k, dir) = open().await;
         let (ops, cto, mkt) = (SessionId::new(), SessionId::new(), SessionId::new());
         let mut t = HashMap::new();
-        t.insert(ops, scope("agent:ops", &["agent:ops", "agent:cto", "agent:theuth", "user"]));
-        t.insert(cto, scope("agent:cto", &["agent:cto", "agent:ops", "agent:theuth", "user"]));
-        t.insert(mkt, scope("agent:mkt", &["agent:mkt", "agent:theuth", "user"]));
+        t.insert(
+            ops,
+            scope(
+                "agent:ops",
+                &["agent:ops", "agent:cto", "agent:theuth", "user"],
+            ),
+        );
+        t.insert(
+            cto,
+            scope(
+                "agent:cto",
+                &["agent:cto", "agent:ops", "agent:theuth", "user"],
+            ),
+        );
+        t.insert(
+            mkt,
+            scope("agent:mkt", &["agent:mkt", "agent:theuth", "user"]),
+        );
         k.set_scoper(Arc::new(Table(t)));
         (k, dir, ops, cto, mkt)
     }
@@ -1406,26 +1440,45 @@ mod tests {
         assert_eq!(m.owner, "user");
         assert_eq!(m.visibility, Visibility::Shared);
         // A user-side put is the user's and shared; the file carries both keys.
-        let (m, _) = k.put(put("facts/new", "New", "body"), Source::User).await.unwrap();
-        assert_eq!((m.owner.as_str(), m.visibility), ("user", Visibility::Shared));
+        let (m, _) = k
+            .put(put("facts/new", "New", "body"), Source::User)
+            .await
+            .unwrap();
+        assert_eq!(
+            (m.owner.as_str(), m.visibility),
+            ("user", Visibility::Shared)
+        );
         let text = k.get("facts/new").await.unwrap().text;
-        assert!(text.contains("owner: user") && text.contains("visibility: shared"), "{text}");
+        assert!(
+            text.contains("owner: user") && text.contains("visibility: shared"),
+            "{text}"
+        );
     }
 
     #[tokio::test]
     async fn agent_put_is_private_to_it_and_search_is_scoped() {
         let (k, _dir, ops, cto, mkt) = scoped().await;
         let (m, _) = k
-            .put_for(put("ops/runbook", "Relay runbook", "pelican restart steps"), Source::Model, Some(ops))
+            .put_for(
+                put("ops/runbook", "Relay runbook", "pelican restart steps"),
+                Source::Model,
+                Some(ops),
+            )
             .await
             .unwrap();
-        assert_eq!((m.owner.as_str(), m.visibility), ("agent:ops", Visibility::Private));
+        assert_eq!(
+            (m.owner.as_str(), m.visibility),
+            ("agent:ops", Visibility::Private)
+        );
         let mut team = put("ops/oncall", "Oncall pelican", "who is on call");
         team.visibility = Some(Visibility::Team);
         k.put_for(team, Source::Model, Some(ops)).await.unwrap();
-        k.put(put("user/pelican", "Pelican shared", "everyone knows"), Source::User)
-            .await
-            .unwrap();
+        k.put(
+            put("user/pelican", "Pelican shared", "everyone knows"),
+            Source::User,
+        )
+        .await
+        .unwrap();
 
         let cwd = Path::new("/tmp");
         let ids = |hits: &[Hit]| hits.iter().map(|h| h.meta.id.clone()).collect::<Vec<_>>();
@@ -1436,35 +1489,99 @@ mod tests {
         let boss = k.search_for("pelican", cwd, 10, Some(cto)).await.unwrap();
         let stub = boss.iter().find(|h| h.meta.id == "ops/runbook").unwrap();
         assert_eq!(stub.meta.title, "private — ask agent:ops");
-        assert_eq!((stub.meta.owner.as_str(), stub.snippet.as_str(), stub.meta.description.as_str()), ("agent:ops", "", ""));
-        assert!(boss.iter().any(|h| h.meta.id == "ops/oncall" && h.meta.title == "Oncall pelican"));
+        assert_eq!(
+            (
+                stub.meta.owner.as_str(),
+                stub.snippet.as_str(),
+                stub.meta.description.as_str()
+            ),
+            ("agent:ops", "", "")
+        );
+        assert!(
+            boss.iter()
+                .any(|h| h.meta.id == "ops/oncall" && h.meta.title == "Oncall pelican")
+        );
         // Another line: team and private items are both stubs; shared is full.
         let other = k.search_for("pelican", cwd, 10, Some(mkt)).await.unwrap();
-        assert!(other.iter().filter(|h| h.meta.title.starts_with("private — ask")).count() == 2);
-        assert!(other.iter().any(|h| h.meta.id == "user/pelican" && h.meta.title == "Pelican shared"));
+        assert!(
+            other
+                .iter()
+                .filter(|h| h.meta.title.starts_with("private — ask"))
+                .count()
+                == 2
+        );
+        assert!(
+            other
+                .iter()
+                .any(|h| h.meta.id == "user/pelican" && h.meta.title == "Pelican shared")
+        );
         // Hints never carry stubs; the user's side sees everything, no stubs.
-        let hints = k.hint_for("pelican shared", cwd, &BTreeSet::new(), 10, Some(mkt)).await.unwrap();
-        assert_eq!(hints.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["user/pelican"]);
+        let hints = k
+            .hint_for("pelican shared", cwd, &BTreeSet::new(), 10, Some(mkt))
+            .await
+            .unwrap();
+        assert_eq!(
+            hints.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["user/pelican"]
+        );
         let all = k.search("pelican", cwd, 10).await.unwrap();
-        assert!(all.iter().all(|h| !h.meta.title.starts_with("private — ask")));
+        assert!(
+            all.iter()
+                .all(|h| !h.meta.title.starts_with("private — ask"))
+        );
         assert_eq!(all.len(), 3);
-        assert_eq!(k.list_for(None, None, None, 10, Some(mkt)).await.unwrap().len(), 1);
+        assert_eq!(
+            k.list_for(None, None, None, 10, Some(mkt))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn share_is_for_the_owner_and_its_line() {
         let (k, _dir, ops, cto, mkt) = scoped().await;
-        k.put_for(put("ops/secret", "Secret", "body"), Source::Model, Some(ops))
+        k.put_for(
+            put("ops/secret", "Secret", "body"),
+            Source::Model,
+            Some(ops),
+        )
+        .await
+        .unwrap();
+        assert!(
+            k.share("ops/secret", Visibility::Team, Some(mkt))
+                .await
+                .is_err(),
+            "another line may not"
+        );
+        let m = k
+            .share("ops/secret", Visibility::Team, Some(cto))
             .await
             .unwrap();
-        assert!(k.share("ops/secret", Visibility::Team, Some(mkt)).await.is_err(), "another line may not");
-        let m = k.share("ops/secret", Visibility::Team, Some(cto)).await.unwrap();
         assert_eq!(m.visibility, Visibility::Team);
-        let m = k.share("ops/secret", Visibility::Shared, Some(ops)).await.unwrap();
+        let m = k
+            .share("ops/secret", Visibility::Shared, Some(ops))
+            .await
+            .unwrap();
         assert_eq!(m.visibility, Visibility::Shared);
-        assert!(k.search_for("secret", Path::new("/tmp"), 10, Some(mkt)).await.unwrap()[0].meta.title == "Secret");
-        let m = k.share("ops/secret", Visibility::Private, None).await.unwrap();
-        assert_eq!((m.owner.as_str(), m.visibility), ("agent:ops", Visibility::Private), "the user may; owner is kept");
+        assert!(
+            k.search_for("secret", Path::new("/tmp"), 10, Some(mkt))
+                .await
+                .unwrap()[0]
+                .meta
+                .title
+                == "Secret"
+        );
+        let m = k
+            .share("ops/secret", Visibility::Private, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (m.owner.as_str(), m.visibility),
+            ("agent:ops", Visibility::Private),
+            "the user may; owner is kept"
+        );
     }
 
     #[tokio::test]

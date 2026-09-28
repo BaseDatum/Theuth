@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 pub const USER_OWNER: &str = "user";
 
 /// Who may read a concept (frontmatter `visibility`, 67 §9). Absent = `shared`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Visibility {

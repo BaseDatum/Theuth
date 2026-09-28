@@ -346,7 +346,13 @@ async fn serve(c: &mut Conn, uplink: Uplink) -> Option<[u8; 32]> {
                 let st = &*guard;
                 let psk = st.live_pairing().filter(|_| !full).map(|p| p.secret);
                 st.identity.as_ref().and_then(|identity| {
-                    respond(&msg1, identity, st.name(), |k| st.devices.by_key(k).is_some(), |_hint| psk)
+                    respond(
+                        &msg1,
+                        identity,
+                        st.name(),
+                        |k| st.devices.by_key(k).is_some(),
+                        |_hint| psk,
+                    )
                 })
             }
             // 69 decision 4: the PSK is the replicated pending row the hello
@@ -361,15 +367,26 @@ async fn serve(c: &mut Conn, uplink: Uplink) -> Option<[u8; 32]> {
                     pending,
                     ..
                 } = &mut *guard;
-                let name = if cfg.name.is_empty() { hostname.as_str() } else { cfg.name.as_str() };
+                let name = if cfg.name.is_empty() {
+                    hostname.as_str()
+                } else {
+                    cfg.name.as_str()
+                };
                 mesh_identity.as_ref().and_then(|identity| {
-                    respond(&msg1, identity, name, |k| devices.by_key(k).is_some(), |hint| {
-                        if full {
-                            return None;
-                        }
-                        hint.and_then(|id| pending.take(id))
-                            .or_else(|| pending.single_live().and_then(|(id, _)| pending.take(&id)))
-                    })
+                    respond(
+                        &msg1,
+                        identity,
+                        name,
+                        |k| devices.by_key(k).is_some(),
+                        |hint| {
+                            if full {
+                                return None;
+                            }
+                            hint.and_then(|id| pending.take(id)).or_else(|| {
+                                pending.single_live().and_then(|(id, _)| pending.take(&id))
+                            })
+                        },
+                    )
                 })
             }
         }
@@ -412,7 +429,10 @@ async fn serve(c: &mut Conn, uplink: Uplink) -> Option<[u8; 32]> {
                 ok
             };
             if !admitted {
-                tracing::debug!(conn = c.id, "guest handshake over the per-minute budget; refused");
+                tracing::debug!(
+                    conn = c.id,
+                    "guest handshake over the per-minute budget; refused"
+                );
                 c.close(CLOSE_REFUSED).await;
                 return None;
             }
@@ -932,25 +952,43 @@ mod tests {
         };
         assert!(dev.read_message(&bad_msg2, &mut buf).is_err());
         // No PSK for the hint → refused before msg2.
-        assert!(respond(&msg1[..n], &harness, "h", |_| false, |hint| {
-            assert_eq!(hint, Some("p1"));
-            None
-        })
-        .is_none());
+        assert!(
+            respond(
+                &msg1[..n],
+                &harness,
+                "h",
+                |_| false,
+                |hint| {
+                    assert_eq!(hint, Some("p1"));
+                    None
+                }
+            )
+            .is_none()
+        );
         let Some(Handshake::Pair {
             mut transport,
             key,
             hello,
             psk: chosen,
             msg2,
-        }) = respond(&msg1[..n], &harness, "Sky", |_| false, |hint| (hint == Some("p1")).then_some(psk))
+        }) = respond(
+            &msg1[..n],
+            &harness,
+            "Sky",
+            |_| false,
+            |hint| (hint == Some("p1")).then_some(psk),
+        )
         else {
             panic!("expected pairing");
         };
         assert_eq!(key, dpub);
         assert_eq!(chosen, psk);
         assert_eq!(
-            (hello.name.as_str(), hello.platform.as_str(), hello.pending.as_deref()),
+            (
+                hello.name.as_str(),
+                hello.platform.as_str(),
+                hello.pending.as_deref()
+            ),
             ("iPhone", "ios", Some("p1"))
         );
         let n = dev.read_message(&msg2, &mut buf).unwrap();
@@ -1001,7 +1039,14 @@ mod tests {
             let req = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{m}","params":[]}}"#);
             assert!(guest_gate(req.as_bytes()).is_none(), "{m}");
         }
-        for m in ["list_sessions", "doc_list", "doc_link_create", "doc_members", "info", "send_input"] {
+        for m in [
+            "list_sessions",
+            "doc_list",
+            "doc_link_create",
+            "doc_members",
+            "info",
+            "send_input",
+        ] {
             let req = format!(r#"{{"jsonrpc":"2.0","id":"a-{m}","method":"{m}","params":[]}}"#);
             let refused = guest_gate(req.as_bytes()).expect(m);
             let v: serde_json::Value = serde_json::from_str(refused.get()).unwrap();
@@ -1009,8 +1054,12 @@ mod tests {
             assert_eq!(v["error"]["code"], -32601);
         }
         // No id → null id; no method → jsonrpsee's problem, not ours; garbage passes through too.
-        let v: serde_json::Value =
-            serde_json::from_str(guest_gate(br#"{"jsonrpc":"2.0","method":"info"}"#).unwrap().get()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            guest_gate(br#"{"jsonrpc":"2.0","method":"info"}"#)
+                .unwrap()
+                .get(),
+        )
+        .unwrap();
         assert!(v["id"].is_null());
         assert!(guest_gate(br#"{"jsonrpc":"2.0","id":1}"#).is_none());
         assert!(guest_gate(b"not json").is_none());
@@ -1067,7 +1116,9 @@ mod tests {
 
     /// Next frame from the conn as `(op, conn, payload)`.
     async fn frame(out: &mut mpsc::Receiver<Message>) -> (u8, u32, Bytes) {
-        let Some(Message::Binary(b)) = tokio::time::timeout(Duration::from_secs(5), out.recv()).await.expect("frame")
+        let Some(Message::Binary(b)) = tokio::time::timeout(Duration::from_secs(5), out.recv())
+            .await
+            .expect("frame")
         else {
             panic!("binary frame");
         };
@@ -1084,7 +1135,10 @@ mod tests {
     }
 
     /// One JSON-RPC response as the device reads it (records until FIN).
-    async fn device_recv(t: &mut TransportState, rx: &mut mpsc::Receiver<Message>) -> serde_json::Value {
+    async fn device_recv(
+        t: &mut TransportState,
+        rx: &mut mpsc::Receiver<Message>,
+    ) -> serde_json::Value {
         let mut asm = Reassembler::default();
         let mut buf = vec![0u8; MAX_MSG];
         loop {
@@ -1119,7 +1173,8 @@ mod tests {
         }
         assert_eq!(op, uplink::OP_DATA);
         let mut buf = vec![0u8; MAX_MSG];
-        hs.read_message(&payload, &mut buf).expect("msg2 under the right PSK");
+        hs.read_message(&payload, &mut buf)
+            .expect("msg2 under the right PSK");
         let mut t = hs.into_transport_mode().unwrap();
         // The first record is the proof; `{}` gets jsonrpsee's parse error back.
         let n = t.write_message(b"\x01{}", &mut buf).unwrap();
@@ -1151,8 +1206,14 @@ mod tests {
         let ctx = testing::ctx("ws://x", None, Some(hub.clone()));
         dispatch_with_info(&ctx);
         let dir = tempfile::tempdir().unwrap();
-        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
-        let store = crate::store::Store::open(&dir.path().join(crate::store::DB)).await.unwrap();
+        let vault = Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let store = crate::store::Store::open(&dir.path().join(crate::store::DB))
+            .await
+            .unwrap();
         ctx.lock().pending = crate::devices::Pending::new(Some(store.clone()), Some(vault.clone()));
 
         // Engine B shows the QR: its own mirror writes the row; ours learns it from the table.
@@ -1166,15 +1227,26 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert!(crate::follow::reload_pending(&ctx, rows.clone()));
-        assert!(!crate::follow::reload_pending(&ctx, rows), "already mirrored");
+        assert!(
+            !crate::follow::reload_pending(&ctx, rows),
+            "already mirrored"
+        );
 
         let (dpriv, dpub) = keypair();
         let hello = format!(r#"{{"name":"iPhone","platform":"ios","pending":"{pending_id}"}}"#);
-        let _out = pair_attempt(&ctx, 1, &hub, &dpriv, &psk, hello.as_bytes()).await.expect("paired");
+        let _out = pair_attempt(&ctx, 1, &hub, &dpriv, &psk, hello.as_bytes())
+            .await
+            .expect("paired");
         {
             let st = ctx.lock();
-            let row = st.devices.by_key(&dpub).expect("devices row written at the first record");
-            assert_eq!((row.name.as_str(), row.platform.as_str(), row.last_seen_ms), ("iPhone", "ios", 0));
+            let row = st
+                .devices
+                .by_key(&dpub)
+                .expect("devices row written at the first record");
+            assert_eq!(
+                (row.name.as_str(), row.platform.as_str(), row.last_seen_ms),
+                ("iPhone", "ios", 0)
+            );
             assert_eq!(st.mesh_conns[&1].device, Some(dpub), "online");
             assert!(st.pending.is_empty(), "the pending row was consumed");
         }
@@ -1193,8 +1265,20 @@ mod tests {
         let mut buf = vec![0u8; MAX_MSG];
         hs.read_message(&msg2, &mut buf).unwrap();
         let mut t = hs.into_transport_mode().unwrap();
-        testing::until(|| ctx.lock().mesh_conns.get(&2).is_some_and(|h| h.device == Some(dpub))).await;
-        device_send(&ctx, 2, &mut t, r#"{"jsonrpc":"2.0","id":1,"method":"info"}"#).await;
+        testing::until(|| {
+            ctx.lock()
+                .mesh_conns
+                .get(&2)
+                .is_some_and(|h| h.device == Some(dpub))
+        })
+        .await;
+        device_send(
+            &ctx,
+            2,
+            &mut t,
+            r#"{"jsonrpc":"2.0","id":1,"method":"info"}"#,
+        )
+        .await;
         assert_eq!(device_recv(&mut t, &mut out).await["result"], true);
         ctx.lock().mesh_conns.remove(&2);
         assert!(out.recv().await.is_none(), "conn task ended");
@@ -1207,9 +1291,15 @@ mod tests {
         let mut hs = initiator("IK", &dpriv, &hub, None);
         let n = hs.write_message(&[2], &mut msg1).unwrap();
         data(&ctx, 3, &msg1[..n]).await;
-        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 3, Bytes::from_static(&[CLOSE_REFUSED])));
+        assert_eq!(
+            frame(&mut out).await,
+            (uplink::OP_CLOSE, 3, Bytes::from_static(&[CLOSE_REFUSED]))
+        );
         assert!(out.recv().await.is_none(), "conn task ended");
-        assert!(ctx.lock().mesh_conns.is_empty(), "a refused conn leaves no handle behind");
+        assert!(
+            ctx.lock().mesh_conns.is_empty(),
+            "a refused conn leaves no handle behind"
+        );
     }
 
     /// A hint-less hello (older app, 3-part string) pairs only while exactly
@@ -1222,7 +1312,11 @@ mod tests {
         let ctx = testing::ctx("ws://x", None, Some(hub.clone()));
         dispatch_with_info(&ctx);
         let dir = tempfile::tempdir().unwrap();
-        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
+        let vault = Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
         ctx.lock().pending = crate::devices::Pending::new(None, Some(vault));
         let hello = br#"{"name":"Mac","platform":"macos"}"#;
 
@@ -1230,14 +1324,19 @@ mod tests {
         let (_, psk1, _) = ctx.lock().pending.create("a").unwrap();
         let (id_b, _, _) = ctx.lock().pending.create("b").unwrap();
         let (d1, _) = keypair();
-        assert_eq!(pair_attempt(&ctx, 1, &hub, &d1, &psk1, hello).await.err(), Some(CLOSE_REFUSED));
+        assert_eq!(
+            pair_attempt(&ctx, 1, &hub, &d1, &psk1, hello).await.err(),
+            Some(CLOSE_REFUSED)
+        );
         assert_eq!(ctx.lock().pending.len(), 2, "nothing consumed by a refusal");
 
         // Exactly one live row: a hint-less device gets it — so does one with a stale hint.
         assert!(ctx.lock().pending.take(&id_b).is_some());
         let (d2, d2pub) = keypair();
         let stale = br#"{"name":"Mac","platform":"macos","pending":"gone"}"#;
-        let _out = pair_attempt(&ctx, 2, &hub, &d2, &psk1, stale).await.expect("single live row");
+        let _out = pair_attempt(&ctx, 2, &hub, &d2, &psk1, stale)
+            .await
+            .expect("single live row");
         assert!(ctx.lock().devices.by_key(&d2pub).is_some());
         assert!(ctx.lock().pending.is_empty());
 
@@ -1245,8 +1344,15 @@ mod tests {
         let (_, psk3, _) = ctx.lock().pending.create("c").unwrap();
         ctx.lock().cfg.max_devices = 1;
         let (d3, _) = keypair();
-        assert_eq!(pair_attempt(&ctx, 3, &hub, &d3, &psk3, hello).await.err(), Some(CLOSE_REFUSED));
-        assert_eq!(ctx.lock().pending.len(), 1, "kept for when a device is revoked");
+        assert_eq!(
+            pair_attempt(&ctx, 3, &hub, &d3, &psk3, hello).await.err(),
+            Some(CLOSE_REFUSED)
+        );
+        assert_eq!(
+            ctx.lock().pending.len(),
+            1,
+            "kept for when a device is revoked"
+        );
     }
 
     /// 69 §5 (Y): a mesh-uplink conn answers `IK` with the MESH static; an unknown static is a guest
@@ -1264,7 +1370,10 @@ mod tests {
         let mut module = jsonrpsee::RpcModule::new(());
         module
             .register_method("doc_join", |_, _, ext| {
-                let g = ext.get::<RpcPeer>().and_then(|p| p.guest()).expect("guest peer");
+                let g = ext
+                    .get::<RpcPeer>()
+                    .and_then(|p| p.guest())
+                    .expect("guest peer");
                 g.mark_joined();
                 crate::devices::device_id(&g.key)
             })
@@ -1285,25 +1394,52 @@ mod tests {
         let mut buf = vec![0u8; MAX_MSG];
         dev.read_message(&msg2, &mut buf).unwrap();
         let mut dev = dev.into_transport_mode().unwrap();
-        assert_eq!(ctx.lock().mesh_conns[&1].device, Some(gpub), "registered under the guest static");
+        assert_eq!(
+            ctx.lock().mesh_conns[&1].device,
+            Some(gpub),
+            "registered under the guest static"
+        );
 
         // Off the guest list: refused by the gate, never dispatched.
-        device_send(&ctx, 1, &mut dev, r#"{"jsonrpc":"2.0","id":1,"method":"doc_link_create","params":[]}"#).await;
+        device_send(
+            &ctx,
+            1,
+            &mut dev,
+            r#"{"jsonrpc":"2.0","id":1,"method":"doc_link_create","params":[]}"#,
+        )
+        .await;
         let v = device_recv(&mut dev, &mut out).await;
         assert_eq!(v["error"]["code"], -32601);
         // `doc_join` reaches the dispatch as this guest.
-        device_send(&ctx, 1, &mut dev, r#"{"jsonrpc":"2.0","id":2,"method":"doc_join","params":[]}"#).await;
+        device_send(
+            &ctx,
+            1,
+            &mut dev,
+            r#"{"jsonrpc":"2.0","id":2,"method":"doc_join","params":[]}"#,
+        )
+        .await;
         let v = device_recv(&mut dev, &mut out).await;
         assert_eq!(v["result"], crate::devices::device_id(&gpub));
 
         // `DropGuest` (59 §8.4, C2): the actor cancels every conn of both uplinks with this static —
         // so this one goes with `CLOSE 0`.
-        let dropped: Vec<_> = ctx.lock().all_conns().filter(|c| c.device == Some(gpub)).map(|c| c.cancel.clone()).collect();
+        let dropped: Vec<_> = ctx
+            .lock()
+            .all_conns()
+            .filter(|c| c.device == Some(gpub))
+            .map(|c| c.cancel.clone())
+            .collect();
         assert_eq!(dropped.len(), 1);
         dropped[0].cancel();
-        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_NORMAL])));
+        assert_eq!(
+            frame(&mut out).await,
+            (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_NORMAL]))
+        );
         assert!(out.recv().await.is_none(), "conn task ended");
-        assert!(ctx.lock().mesh_conns.is_empty(), "the conn task removed itself");
+        assert!(
+            ctx.lock().mesh_conns.is_empty(),
+            "the conn task removed itself"
+        );
 
         // The engine identity does not answer for the mesh: a guest dialling the ENGINE static on the
         // mesh uplink fails the handshake and is refused.
@@ -1311,7 +1447,10 @@ mod tests {
         let mut dev = initiator("IK", &gpriv, &engine, None);
         let n = dev.write_message(&[2], &mut msg1).unwrap();
         data(&ctx, 1, &msg1[..n]).await;
-        assert_eq!(frame(&mut out).await, (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_REFUSED])));
+        assert_eq!(
+            frame(&mut out).await,
+            (uplink::OP_CLOSE, 1, Bytes::from_static(&[CLOSE_REFUSED]))
+        );
         assert!(out.recv().await.is_none(), "conn task ended");
     }
 }

@@ -11,7 +11,9 @@ use search_providers::openserp::Openserp;
 use search_providers::searxng::Searxng;
 use serde_json::json;
 use web::{Category, FeatureKind, Provider, ProviderError, Query, Recency};
-use wiremock::matchers::{body_partial_json, header, method, path, query_param, query_param_contains};
+use wiremock::matchers::{
+    body_partial_json, header, method, path, query_param, query_param_contains,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn query(category: Category) -> Query {
@@ -60,7 +62,11 @@ async fn brave_maps_results_features_and_statuses() {
         results[0].snippet,
         "Type erasure for async trait methods & more."
     );
-    assert_eq!(results[1].published.as_deref(), Some("2023-12-21T00:00:00"), "page_age (ISO) preferred over age");
+    assert_eq!(
+        results[1].published.as_deref(),
+        Some("2023-12-21T00:00:00"),
+        "page_age (ISO) preferred over age"
+    );
     assert_eq!(
         kinds(&features),
         BTreeSet::from([
@@ -371,5 +377,8 @@ async fn openserp_maps_serp_features_and_renders() {
         .search(&client, &query(Category::General))
         .await
         .expect_err("all engines failed");
-    assert!(matches!(&err, ProviderError::Blocked(d) if d.contains("captcha")), "{err}");
+    assert!(
+        matches!(&err, ProviderError::Blocked(d) if d.contains("captcha")),
+        "{err}"
+    );
 }

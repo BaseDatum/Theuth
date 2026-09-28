@@ -43,7 +43,8 @@ fn reply_title(reply: &str) -> Option<String> {
         .find(|l| !l.is_empty())?
         .trim_start_matches('#')
         .trim();
-    (!line.is_empty() && line.chars().count() <= 120 && !line.contains("`")).then(|| line.to_owned())
+    (!line.is_empty() && line.chars().count() <= 120 && !line.contains("`"))
+        .then(|| line.to_owned())
 }
 
 /// The title: the first `#` heading, else the first non-empty line; ≤ 200 chars.
@@ -109,13 +110,13 @@ pub async fn finished_turn(session: SessionId) -> Result<bool, String> {
 /// The tail of a history holds a finished summary turn: the last user row starting with
 /// [`SUMMARY_HEAD`] has a non-empty assistant reply after it.
 fn holds_summary(history: &[agent::HistoryEntry]) -> bool {
-    let form = history.iter().rposition(|h| {
-        matches!(h, agent::HistoryEntry::User { text, .. } if text.starts_with(SUMMARY_HEAD))
-    });
+    let form = history.iter().rposition(
+        |h| matches!(h, agent::HistoryEntry::User { text, .. } if text.starts_with(SUMMARY_HEAD)),
+    );
     form.is_some_and(|at| {
-        history[at..]
-            .iter()
-            .any(|h| matches!(h, agent::HistoryEntry::Assistant { text, .. } if !text.trim().is_empty()))
+        history[at..].iter().any(
+            |h| matches!(h, agent::HistoryEntry::Assistant { text, .. } if !text.trim().is_empty()),
+        )
     })
 }
 
@@ -157,7 +158,10 @@ async fn finish(store: &Store, m: &mut Manifest) -> Result<String, String> {
     }
     // 10 §5: harvest the meeting's frame. A turn still settling → one retry.
     let mut harvest = agents.ask(agent::Harvest { session }).await;
-    if harvest.as_ref().is_err_and(|e| e.to_string().contains("turn in flight")) {
+    if harvest
+        .as_ref()
+        .is_err_and(|e| e.to_string().contains("turn in flight"))
+    {
         tokio::time::sleep(Duration::from_secs(3)).await;
         harvest = agents.ask(agent::Harvest { session }).await;
     }
@@ -237,7 +241,10 @@ mod tests {
     #[test]
     fn reply_title_is_one_plain_line_or_nothing() {
         assert_eq!(reply_title("# Weekly sync\n"), Some("Weekly sync".into()));
-        assert_eq!(reply_title("\n  Budget review  \n"), Some("Budget review".into()));
+        assert_eq!(
+            reply_title("\n  Budget review  \n"),
+            Some("Budget review".into())
+        );
         assert_eq!(reply_title("I ran `doc_insert` and it failed"), None);
         assert_eq!(reply_title(&"x".repeat(121)), None);
         assert_eq!(reply_title("  \n"), None);
@@ -258,9 +265,22 @@ mod tests {
             context: None,
         };
         assert!(!holds_summary(&[]));
-        assert!(!holds_summary(&[user("[meeting batch] hi"), reply("a brief")]));
-        assert!(!holds_summary(&[reply("earlier"), user(SUMMARY_FORM)]), "form sent, no reply yet");
-        assert!(!holds_summary(&[user(SUMMARY_FORM), reply("   ")]), "an empty reply is none");
-        assert!(holds_summary(&[reply("earlier"), user(SUMMARY_FORM), reply("# Sync\n**Topics**")]));
+        assert!(!holds_summary(&[
+            user("[meeting batch] hi"),
+            reply("a brief")
+        ]));
+        assert!(
+            !holds_summary(&[reply("earlier"), user(SUMMARY_FORM)]),
+            "form sent, no reply yet"
+        );
+        assert!(
+            !holds_summary(&[user(SUMMARY_FORM), reply("   ")]),
+            "an empty reply is none"
+        );
+        assert!(holds_summary(&[
+            reply("earlier"),
+            user(SUMMARY_FORM),
+            reply("# Sync\n**Topics**")
+        ]));
     }
 }

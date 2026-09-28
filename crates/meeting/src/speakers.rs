@@ -74,9 +74,10 @@ impl Profiles {
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| {
-                serde_json::from_slice::<Stored>(&b).map_err(anyhow::Error::from)
-            }) {
+            match std::fs::read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| serde_json::from_slice::<Stored>(&b).map_err(anyhow::Error::from))
+            {
                 Ok(s) => list.push(s),
                 Err(e) => tracing::warn!("speaker profile {}: {e:#}", path.display()),
             }
@@ -151,12 +152,19 @@ impl Profiles {
                 id
             }
         };
-        let s = self.list.iter().find(|s| s.profile.id == id).expect("just placed");
+        let s = self
+            .list
+            .iter()
+            .find(|s| s.profile.id == id)
+            .expect("just placed");
         let path = self.path(id);
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?)
-            .and_then(|()| std::fs::rename(&tmp, &path))
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        std::fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?,
+        )
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
         Ok(id)
     }
 
@@ -186,7 +194,9 @@ mod tests {
         let mut p = Profiles::load(tmp.path()).unwrap();
         assert!(p.best_match(&[1.0, 0.0]).is_none(), "nothing enrolled");
         let dana = p.enroll("Dana", None, &[1.0, 0.0]).unwrap();
-        let john = p.enroll("John", Some("people/john".into()), &[0.0, 1.0]).unwrap();
+        let john = p
+            .enroll("John", Some("people/john".into()), &[0.0, 1.0])
+            .unwrap();
         // (1, 0.9): cosine 0.743 to Dana, 0.669 to John → Dana; (0.17, 0.98) → John; (-1,-1) → nobody.
         let (id, name, score) = p.best_match(&[1.0, 0.9]).unwrap();
         assert_eq!((id, name.as_str()), (dana, "Dana"));
@@ -200,7 +210,10 @@ mod tests {
         assert_eq!(d.embedding, vec![0.5, 0.5]);
         assert_eq!(d.profile.samples, 2);
         assert_eq!(reloaded.list().len(), 2);
-        assert!(p.enroll("john", None, &[1.0]).is_err(), "size mismatch into a profile is refused");
+        assert!(
+            p.enroll("john", None, &[1.0]).is_err(),
+            "size mismatch into a profile is refused"
+        );
         let mut p = reloaded;
         p.delete(john).unwrap();
         assert!(p.delete(john).is_err());

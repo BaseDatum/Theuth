@@ -25,13 +25,17 @@ fn now() -> String {
 }
 
 fn parse_id(s: &str) -> anyhow::Result<SessionId> {
-    s.parse().map_err(|e| anyhow::anyhow!("bad session id {s:?}: {e}"))
+    s.parse()
+        .map_err(|e| anyhow::anyhow!("bad session id {s:?}: {e}"))
 }
 
 /// Bump `owner` and every live ancestor; returns `(owner, new revision)` for
 /// each row touched (tombstoned rows are skipped, so a settlement landing on
 /// a deleted child still invalidates its surviving ancestors).
-async fn bump_in(conn: &mut SqliteConnection, owner: &str) -> anyhow::Result<Vec<(SessionId, u64)>> {
+async fn bump_in(
+    conn: &mut SqliteConnection,
+    owner: &str,
+) -> anyhow::Result<Vec<(SessionId, u64)>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "WITH RECURSIVE up(id, parent_id, deleted_at, depth) AS (
              SELECT id, parent_id, deleted_at, 0 FROM cost_owners WHERE id = ?
@@ -93,14 +97,18 @@ pub(crate) async fn ensure_owner_in(
 }
 
 /// Child delete: keep lineage and ledger, mark the owner gone.
-pub(crate) async fn tombstone_owner_in(conn: &mut SqliteConnection, id: SessionId) -> anyhow::Result<()> {
+pub(crate) async fn tombstone_owner_in(
+    conn: &mut SqliteConnection,
+    id: SessionId,
+) -> anyhow::Result<()> {
     let sid = id.to_string();
-    let changed = sqlx::query("UPDATE cost_owners SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .bind(now())
-        .bind(&sid)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
+    let changed =
+        sqlx::query("UPDATE cost_owners SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(now())
+            .bind(&sid)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
     if changed > 0 {
         bump_in(conn, &sid).await?;
     }
@@ -108,12 +116,17 @@ pub(crate) async fn tombstone_owner_in(conn: &mut SqliteConnection, id: SessionI
 }
 
 /// Root delete: every call, meter and owner under `root`, owners child-first.
-pub(crate) async fn delete_root_ledger_in(conn: &mut SqliteConnection, root: SessionId) -> anyhow::Result<()> {
+pub(crate) async fn delete_root_ledger_in(
+    conn: &mut SqliteConnection,
+    root: SessionId,
+) -> anyhow::Result<()> {
     let rid = root.to_string();
-    sqlx::query("DELETE FROM model_calls WHERE owner_id IN (SELECT id FROM cost_owners WHERE root_id = ?)")
-        .bind(&rid)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "DELETE FROM model_calls WHERE owner_id IN (SELECT id FROM cost_owners WHERE root_id = ?)",
+    )
+    .bind(&rid)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("DELETE FROM remote_meters WHERE owner_id IN (SELECT id FROM cost_owners WHERE root_id = ?)")
         .bind(&rid)
         .execute(&mut *conn)
@@ -233,7 +246,11 @@ struct Node {
 }
 
 /// Recursive total of `id`: direct plus every child's total.
-fn total_of(id: &str, nodes: &HashMap<String, Node>, children: &BTreeMap<String, Vec<String>>) -> CostBucket {
+fn total_of(
+    id: &str,
+    nodes: &HashMap<String, Node>,
+    children: &BTreeMap<String, Vec<String>>,
+) -> CostBucket {
     let mut total = nodes[id].direct.clone();
     for c in children.get(id).into_iter().flatten() {
         total.absorb(&total_of(c, nodes, children));
@@ -243,7 +260,11 @@ fn total_of(id: &str, nodes: &HashMap<String, Node>, children: &BTreeMap<String,
 
 impl Store {
     /// Register `id` as an accounting owner under `parent` (see [`ensure_owner_in`]).
-    pub async fn ensure_owner(&self, id: SessionId, parent: Option<SessionId>) -> anyhow::Result<()> {
+    pub async fn ensure_owner(
+        &self,
+        id: SessionId,
+        parent: Option<SessionId>,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         ensure_owner_in(&mut tx, id, parent).await?;
         tx.commit().await?;
@@ -289,14 +310,16 @@ impl Store {
     /// Mark a pending attempt dispatched; commit before invoking transport.
     pub async fn mark_dispatched(&self, call: &CallId) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        let n = sqlx::query("UPDATE model_calls SET status = ?, dispatched_at = ? WHERE call_id = ? AND status = ?")
-            .bind(CallStatus::Dispatched.as_str())
-            .bind(now())
-            .bind(&call.0)
-            .bind(CallStatus::Pending.as_str())
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let n = sqlx::query(
+            "UPDATE model_calls SET status = ?, dispatched_at = ? WHERE call_id = ? AND status = ?",
+        )
+        .bind(CallStatus::Dispatched.as_str())
+        .bind(now())
+        .bind(&call.0)
+        .bind(CallStatus::Pending.as_str())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         tx.commit().await?;
         anyhow::ensure!(n == 1, "call {call} is not pending");
         Ok(())
@@ -318,7 +341,14 @@ impl Store {
         let (coverage, unknown_reason) = if obs.returned.is_some() || obs.estimated.is_some() {
             (Coverage::Complete, None)
         } else {
-            (Coverage::Unknown, Some(obs.unknown_reason.as_deref().unwrap_or("no cost observation")))
+            (
+                Coverage::Unknown,
+                Some(
+                    obs.unknown_reason
+                        .as_deref()
+                        .unwrap_or("no cost observation"),
+                ),
+            )
         };
         let mut tx = self.begin_write().await?;
         let owner: Option<(String,)> = sqlx::query_as(
@@ -406,10 +436,18 @@ impl Store {
 
     /// Apply one cumulative meter observation (§6.3 state machine) keyed by
     /// `(origin, external_session, epoch)`; persists before returning.
-    pub async fn apply_meter(&self, owner: SessionId, update: MeterUpdate) -> anyhow::Result<Vec<(SessionId, u64)>> {
+    pub async fn apply_meter(
+        &self,
+        owner: SessionId,
+        update: MeterUpdate,
+    ) -> anyhow::Result<Vec<(SessionId, u64)>> {
         let total = &update.cumulative;
-        anyhow::ensure!(crate::cost::valid_currency(&total.currency), "invalid currency");
-        let total_nanos = i64::try_from(total.nanos).map_err(|_| anyhow::anyhow!("amount out of range"))?;
+        anyhow::ensure!(
+            crate::cost::valid_currency(&total.currency),
+            "invalid currency"
+        );
+        let total_nanos =
+            i64::try_from(total.nanos).map_err(|_| anyhow::anyhow!("amount out of range"))?;
         let oid = owner.to_string();
         let mut tx = self.begin_write().await?;
         let state: Option<MeterState> = sqlx::query_as(
@@ -470,17 +508,23 @@ impl Store {
                             true
                         }
                     };
-                    let bumped = if changed { bump_in(&mut tx, &oid).await? } else { Vec::new() };
+                    let bumped = if changed {
+                        bump_in(&mut tx, &oid).await?
+                    } else {
+                        Vec::new()
+                    };
                     tx.commit().await?;
                     return Ok(bumped);
                 }
                 // Currency change: unobserved boundary, new epoch with an imported baseline.
-                sqlx::query("UPDATE remote_meters SET coverage_boundary = ?, updated_at = ? WHERE id = ?")
-                    .bind("currency_change")
-                    .bind(now())
-                    .bind(&s.id)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(
+                    "UPDATE remote_meters SET coverage_boundary = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind("currency_change")
+                .bind(now())
+                .bind(&s.id)
+                .execute(&mut *tx)
+                .await?;
                 (s.epoch + 1, false)
             }
         };
@@ -573,7 +617,15 @@ impl Store {
         let mut nodes: HashMap<String, Node> = owners
             .into_iter()
             .map(|(id, parent, deleted)| {
-                (id, Node { parent, deleted, direct: CostBucket::default(), scope: CostScope::Native })
+                (
+                    id,
+                    Node {
+                        parent,
+                        deleted,
+                        direct: CostBucket::default(),
+                        scope: CostScope::Native,
+                    },
+                )
             })
             .collect();
         for r in &calls {
@@ -622,7 +674,9 @@ impl Store {
                 scope: n.scope,
             });
         }
-        let me = nodes.remove(&sid).ok_or_else(|| anyhow::anyhow!("owner {sid} vanished"))?;
+        let me = nodes
+            .remove(&sid)
+            .ok_or_else(|| anyhow::anyhow!("owner {sid} vanished"))?;
         let mut total = me.direct.clone();
         total.absorb(&descendants);
         Ok(Some(SessionCost {
@@ -662,7 +716,9 @@ mod tests {
     async fn fresh() -> Store {
         let dir = std::env::temp_dir().join(format!("theuth-acct-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir.join("sessions.sqlite"), None).await.unwrap()
+        Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap()
     }
 
     fn usd(amount: f64) -> Money {
@@ -675,12 +731,18 @@ mod tests {
             .await
             .unwrap();
         store.mark_dispatched(&call).await.unwrap();
-        store.settle_call(&call, CallStatus::Settled, obs).await.unwrap();
+        store
+            .settle_call(&call, CallStatus::Settled, obs)
+            .await
+            .unwrap();
         call
     }
 
     fn returned(b: &CostBucket) -> Vec<(&str, u64)> {
-        b.returned.iter().map(|m| (m.currency.as_str(), m.nanos)).collect()
+        b.returned
+            .iter()
+            .map(|m| (m.currency.as_str(), m.nanos))
+            .collect()
     }
 
     #[tokio::test]
@@ -690,11 +752,40 @@ mod tests {
         store.ensure_owner(r, None).await.unwrap();
         store.ensure_owner(c, Some(r)).await.unwrap();
         store.ensure_owner(g, Some(c)).await.unwrap();
-        assert!(store.ensure_owner(SessionId::new(), Some(SessionId::new())).await.is_err());
+        assert!(
+            store
+                .ensure_owner(SessionId::new(), Some(SessionId::new()))
+                .await
+                .is_err()
+        );
 
-        charge(&store, r, CostObservation { returned: Some(usd(0.10)), ..Default::default() }).await;
-        charge(&store, c, CostObservation { returned: Some(usd(0.20)), ..Default::default() }).await;
-        let gc = charge(&store, g, CostObservation { returned: Some(usd(0.30)), ..Default::default() }).await;
+        charge(
+            &store,
+            r,
+            CostObservation {
+                returned: Some(usd(0.10)),
+                ..Default::default()
+            },
+        )
+        .await;
+        charge(
+            &store,
+            c,
+            CostObservation {
+                returned: Some(usd(0.20)),
+                ..Default::default()
+            },
+        )
+        .await;
+        let gc = charge(
+            &store,
+            g,
+            CostObservation {
+                returned: Some(usd(0.30)),
+                ..Default::default()
+            },
+        )
+        .await;
 
         let rc = store.session_cost(r).await.unwrap().unwrap();
         assert_eq!(returned(&rc.direct), vec![("USD", 100_000_000)]);
@@ -710,7 +801,14 @@ mod tests {
         // Replay: same call_id settled again → totals unchanged, revisions of the chain bumped.
         let before = rc.revision;
         let bumped = store
-            .settle_call(&gc, CallStatus::Settled, CostObservation { returned: Some(usd(0.30)), ..Default::default() })
+            .settle_call(
+                &gc,
+                CallStatus::Settled,
+                CostObservation {
+                    returned: Some(usd(0.30)),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(bumped.len(), 3);
@@ -726,7 +824,14 @@ mod tests {
         assert!(rc.children[0].deleted);
         // A late settlement on a tombstoned child bumps only live ancestors.
         let bumped = store
-            .settle_call(&gc, CallStatus::Failed, CostObservation { returned: Some(usd(0.30)), ..Default::default() })
+            .settle_call(
+                &gc,
+                CallStatus::Failed,
+                CostObservation {
+                    returned: Some(usd(0.30)),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(bumped.iter().map(|(s, _)| *s).collect::<Vec<_>>(), vec![r]);
@@ -734,7 +839,10 @@ mod tests {
         store.delete_root_ledger(r).await.unwrap();
         assert!(store.session_cost(r).await.unwrap().is_none());
         assert!(store.session_cost(g).await.unwrap().is_none());
-        let (calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_calls").fetch_one(&store.read).await.unwrap();
+        let (calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_calls")
+            .fetch_one(&store.read)
+            .await
+            .unwrap();
         assert_eq!(calls, 0);
     }
 
@@ -746,19 +854,36 @@ mod tests {
         charge(
             &store,
             o,
-            CostObservation { returned: Some(usd(0.10)), estimated: Some(usd(9.0)), ..Default::default() },
+            CostObservation {
+                returned: Some(usd(0.10)),
+                estimated: Some(usd(9.0)),
+                ..Default::default()
+            },
         )
         .await;
         charge(
             &store,
             o,
-            CostObservation { estimated: Some(usd(0.02)), input_tokens: Some(5), ..Default::default() },
+            CostObservation {
+                estimated: Some(usd(0.02)),
+                input_tokens: Some(5),
+                ..Default::default()
+            },
         )
         .await;
         charge(&store, o, CostObservation::default()).await;
-        let skipped = store.reserve_call(o, "req", 0, None, CallKind::Title, None, None).await.unwrap();
-        store.mark_not_dispatched(&skipped, "no model").await.unwrap();
-        let open = store.reserve_call(o, "req2", 0, None, CallKind::Round, None, None).await.unwrap();
+        let skipped = store
+            .reserve_call(o, "req", 0, None, CallKind::Title, None, None)
+            .await
+            .unwrap();
+        store
+            .mark_not_dispatched(&skipped, "no model")
+            .await
+            .unwrap();
+        let open = store
+            .reserve_call(o, "req2", 0, None, CallKind::Round, None, None)
+            .await
+            .unwrap();
         store.mark_dispatched(&open).await.unwrap();
         assert_eq!(store.unresolve_open_calls().await.unwrap(), 1);
 
@@ -771,7 +896,12 @@ mod tests {
         assert_eq!(c.direct.dispatched, 4);
         assert_eq!(c.direct.tokens.unknown_calls, 2);
         assert_eq!(c.direct.tokens.input, 5);
-        assert!(store.settle_call(&skipped, CallStatus::Pending, CostObservation::default()).await.is_err());
+        assert!(
+            store
+                .settle_call(&skipped, CallStatus::Pending, CostObservation::default())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -780,7 +910,15 @@ mod tests {
         let (r, child) = (SessionId::new(), SessionId::new());
         store.ensure_owner(r, None).await.unwrap();
         store.ensure_owner(child, Some(r)).await.unwrap();
-        charge(&store, r, CostObservation { returned: Some(usd(0.10)), ..Default::default() }).await;
+        charge(
+            &store,
+            r,
+            CostObservation {
+                returned: Some(usd(0.10)),
+                ..Default::default()
+            },
+        )
+        .await;
         let upd = |amount: f64, cur: &str, new: bool| MeterUpdate {
             origin: "omp".into(),
             external_session: "ext-1".into(),
@@ -788,9 +926,21 @@ mod tests {
             confirmed_new_session: new,
             report_id: None,
         };
-        store.apply_meter(child, upd(0.20, "USD", true)).await.unwrap();
-        assert!(store.apply_meter(child, upd(0.20, "USD", true)).await.unwrap().is_empty());
-        let bumped = store.apply_meter(child, upd(0.35, "USD", true)).await.unwrap();
+        store
+            .apply_meter(child, upd(0.20, "USD", true))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .apply_meter(child, upd(0.20, "USD", true))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let bumped = store
+            .apply_meter(child, upd(0.35, "USD", true))
+            .await
+            .unwrap();
         assert_eq!(bumped.len(), 2);
         let rc = store.session_cost(r).await.unwrap().unwrap();
         assert_eq!(returned(&rc.total), vec![("USD", 450_000_000)]);
@@ -799,16 +949,28 @@ mod tests {
         assert_eq!(rc.remote_meter_gaps, 0);
 
         // Lower total: ambiguous, high water kept.
-        store.apply_meter(child, upd(0.30, "USD", true)).await.unwrap();
+        store
+            .apply_meter(child, upd(0.30, "USD", true))
+            .await
+            .unwrap();
         let rc = store.session_cost(r).await.unwrap().unwrap();
         assert_eq!(returned(&rc.total), vec![("USD", 450_000_000)]);
         assert_eq!(rc.remote_meter_gaps, 1);
 
         // Currency change: new epoch, grouped separately, boundary unknown.
-        store.apply_meter(child, upd(1.0, "EUR", true)).await.unwrap();
-        store.apply_meter(child, upd(1.5, "EUR", true)).await.unwrap();
+        store
+            .apply_meter(child, upd(1.0, "EUR", true))
+            .await
+            .unwrap();
+        store
+            .apply_meter(child, upd(1.5, "EUR", true))
+            .await
+            .unwrap();
         let cc = store.session_cost(child).await.unwrap().unwrap();
-        assert_eq!(returned(&cc.direct), vec![("EUR", 500_000_000), ("USD", 350_000_000)]);
+        assert_eq!(
+            returned(&cc.direct),
+            vec![("EUR", 500_000_000), ("USD", 350_000_000)]
+        );
         assert_eq!(cc.remote_meter_gaps, 2);
 
         // Imported baseline: first observation attributes nothing.
@@ -825,7 +987,13 @@ mod tests {
         let oc = store.session_cost(other).await.unwrap().unwrap();
         assert_eq!(returned(&oc.direct), vec![("USD", 0)]);
         assert_eq!(oc.remote_meter_gaps, 1);
-        assert!(store.apply_meter(other, imported(0.70, "a")).await.unwrap().is_empty());
+        assert!(
+            store
+                .apply_meter(other, imported(0.70, "a"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         store.apply_meter(other, imported(0.70, "b")).await.unwrap();
         let oc = store.session_cost(other).await.unwrap().unwrap();
         assert_eq!(returned(&oc.direct), vec![("USD", 200_000_000)]);

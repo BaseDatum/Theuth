@@ -152,7 +152,8 @@ pub fn default_effort(resolved: &models::Resolved) -> Option<ReasoningEffort> {
         "bedrock_sigv4" => slug.split('.').any(|seg| seg == "anthropic"),
         _ => false,
     };
-    (anthropic && resolved.model.as_ref().is_some_and(|m| m.reasoning)).then_some(ReasoningEffort::Medium)
+    (anthropic && resolved.model.as_ref().is_some_and(|m| m.reasoning))
+        .then_some(ReasoningEffort::Medium)
 }
 
 /// One model call's input, borrowed from session state (design doc 07 §2.1).
@@ -651,12 +652,32 @@ mod tests {
         let data_dir =
             std::env::temp_dir().join(format!("theuth-identity-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(data_dir.join("prompt.md"), "Theuth — home automation, chat anywhere.\n").unwrap();
+        std::fs::write(
+            data_dir.join("prompt.md"),
+            "Theuth — home automation, chat anywhere.\n",
+        )
+        .unwrap();
         let karol = "You are Infrastructure (`karol`), an agent on this theuth roster; you report to theuth.";
-        let p = baseline(&data_dir, Some(karol), "", "## Tools\nT", false, None, false);
+        let p = baseline(
+            &data_dir,
+            Some(karol),
+            "",
+            "## Tools\nT",
+            false,
+            None,
+            false,
+        );
         std::fs::remove_dir_all(&data_dir).unwrap();
-        assert!(p.starts_with(&format!("{karol}\nWorking directory: ")), "{p}");
-        assert!(!p.contains("You are theuth") && !p.contains("Theuth —") && !p.contains("home automation"), "{p}");
+        assert!(
+            p.starts_with(&format!("{karol}\nWorking directory: ")),
+            "{p}"
+        );
+        assert!(
+            !p.contains("You are theuth")
+                && !p.contains("Theuth —")
+                && !p.contains("home automation"),
+            "{p}"
+        );
         assert!(p.contains("## Tools\nT\n\n## Guidance"));
     }
 }

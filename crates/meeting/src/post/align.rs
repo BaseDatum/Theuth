@@ -72,9 +72,9 @@ fn group<'a>(
         prev = Some(sp);
         let cut = cuts.iter().any(|&c| prev_t0 < c && c <= w.t0_ms);
         prev_t0 = w.t0_ms;
-        let open = out.last_mut().filter(|s| {
-            s.speaker == sp && !cut && w.t0_ms.saturating_sub(s.t1_ms) <= GAP_MS
-        });
+        let open = out
+            .last_mut()
+            .filter(|s| s.speaker == sp && !cut && w.t0_ms.saturating_sub(s.t1_ms) <= GAP_MS);
         match open {
             Some(s) => {
                 s.t1_ms = s.t1_ms.max(w.t1_ms);
@@ -136,7 +136,10 @@ pub fn reconcile(live: &[Utterance], spans: &[Span]) -> HashMap<String, String> 
     let mut overlap = vec![vec![0u64; live_ids.len()]; offline.len()];
     let mut speech = vec![0u64; offline.len()];
     for s in spans {
-        let o = offline.iter().position(|&id| id == s.speaker).expect("collected above");
+        let o = offline
+            .iter()
+            .position(|&id| id == s.speaker)
+            .expect("collected above");
         speech[o] += s.t1_ms - s.t0_ms;
         for u in &live {
             let l = live_ids
@@ -162,7 +165,9 @@ pub fn reconcile(live: &[Utterance], spans: &[Span]) -> HashMap<String, String> 
     }
     // Unmatched offline labels: the lowest ids no matched live label holds.
     let used: Vec<&str> = to.iter().flatten().copied().collect();
-    let mut next = (1u32..).map(|n| format!("s{n}")).filter(|id| !used.contains(&id.as_str()));
+    let mut next = (1u32..)
+        .map(|n| format!("s{n}"))
+        .filter(|id| !used.contains(&id.as_str()));
     offline
         .iter()
         .zip(&to)
@@ -196,18 +201,27 @@ mod tests {
     }
 
     fn texts(segs: &[Segment]) -> Vec<(String, String)> {
-        segs.iter().map(|s| (s.speaker.clone(), s.text.clone())).collect()
+        segs.iter()
+            .map(|s| (s.speaker.clone(), s.text.clone()))
+            .collect()
     }
 
     #[test]
     fn midpoint_inside_a_span_wins() {
         let spans = [span(0, 2_000, "s1"), span(2_000, 4_000, "s2")];
         // "there" straddles the boundary (1 800–2 400): midpoint 2 100 → s2.
-        let sys = [w("Hello", 0, 500), w("there", 1_800, 2_400), w("Bob", 2_500, 3_000)];
+        let sys = [
+            w("Hello", 0, 500),
+            w("there", 1_800, 2_400),
+            w("Bob", 2_500, 3_000),
+        ];
         let segs = segments(&[], &sys, &spans);
         assert_eq!(
             texts(&segs),
-            [("s1".into(), "Hello".into()), ("s2".into(), "there Bob".into())]
+            [
+                ("s1".into(), "Hello".into()),
+                ("s2".into(), "there Bob".into())
+            ]
         );
         assert_eq!((segs[1].t0_ms, segs[1].t1_ms), (1_800, 3_000));
     }
@@ -219,7 +233,10 @@ mod tests {
         // midpoint 4 600: 400 ms before s2 → s2.
         let sys = [w("a", 1_200, 1_400), w("b", 4_500, 4_700)];
         let segs = segments(&[], &sys, &spans);
-        assert_eq!(texts(&segs), [("s1".into(), "a".into()), ("s2".into(), "b".into())]);
+        assert_eq!(
+            texts(&segs),
+            [("s1".into(), "a".into()), ("s2".into(), "b".into())]
+        );
     }
 
     #[test]
@@ -228,10 +245,17 @@ mod tests {
         // 4 000–4 400: midpoint 4 200, 3 200 ms from either span → the previous word's s1.
         let sys = [w("a", 500, 900), w("b", 4_000, 4_400)];
         let segs = segments(&[], &sys, &spans);
-        assert_eq!(segs.len(), 2, "same speaker, but a > 1 s gap closes the segment");
+        assert_eq!(
+            segs.len(),
+            2,
+            "same speaker, but a > 1 s gap closes the segment"
+        );
         assert!(segs.iter().all(|s| s.speaker == "s1"));
         // No previous word and no near span: the first span's speaker; no spans at all: s1.
-        assert_eq!(segments(&[], &[w("x", 4_000, 4_400)], &spans)[0].speaker, "s1");
+        assert_eq!(
+            segments(&[], &[w("x", 4_000, 4_400)], &spans)[0].speaker,
+            "s1"
+        );
         assert_eq!(segments(&[], &[w("x", 4_000, 4_400)], &[])[0].speaker, "s1");
     }
 
@@ -276,7 +300,12 @@ mod tests {
     fn mic_row_closes_where_a_system_row_starts() {
         let spans = [span(0, 10_000, "s1")];
         // Gap-free mic words (far-end residual) across a system row at 2 000.
-        let mic = [w("first", 0, 900), w("thing", 1_000, 1_900), w("second", 2_100, 2_900), w("thing", 3_000, 3_900)];
+        let mic = [
+            w("first", 0, 900),
+            w("thing", 1_000, 1_900),
+            w("second", 2_100, 2_900),
+            w("thing", 3_000, 3_900),
+        ];
         let sys = [w("theirs", 2_000, 2_800)];
         let segs = segments(&mic, &sys, &spans);
         assert_eq!(
@@ -305,12 +334,19 @@ mod tests {
         // Offline: s1 0–10 s, s2 10–20 s, s3 20–22 s (2 s, matched by nothing).
         // Live: what offline calls s1 was live s2, and vice versa; live s3 only overlaps
         // a sliver of offline s3 (below the 50 % cover) and a mic line carries no label.
-        let spans = [span(0, 10_000, "s1"), span(10_000, 20_000, "s2"), span(20_000, 22_000, "s3")];
+        let spans = [
+            span(0, 10_000, "s1"),
+            span(10_000, 20_000, "s2"),
+            span(20_000, 22_000, "s3"),
+        ];
         let lines = [
             live(300, 9_800, Some("s2")),
             live(10_200, 19_900, Some("s1")),
             live(21_500, 23_000, Some("s3")),
-            Utterance { track: Track::Mic, ..live(0, 1_000, None) },
+            Utterance {
+                track: Track::Mic,
+                ..live(0, 1_000, None)
+            },
         ];
         let map = reconcile(&lines, &spans);
         // s1 ↔ s2 swap; offline s3 gets the lowest id no matched live label holds: s3 is

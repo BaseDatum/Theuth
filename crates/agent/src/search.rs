@@ -389,7 +389,9 @@ impl Index {
                 let t = by_id.get(&c.session);
                 SearchHit {
                     session: c.session,
-                    title: t.map(|t| t.display_title()).unwrap_or_else(|| "Untitled chat".to_owned()),
+                    title: t
+                        .map(|t| t.display_title())
+                        .unwrap_or_else(|| "Untitled chat".to_owned()),
                     kind: c.kind,
                     seq: c.seq,
                     role: c.role,
@@ -468,10 +470,20 @@ mod tests {
         let long = "x".repeat(70);
         let idx = index(
             &[(1, "deploy runbook"), (2, ""), (3, ""), (4, "")],
-            &[(1, 1, "deploy it"), (2, 1, "please deploy the relay"), (3, 1, &long)],
+            &[
+                (1, 1, "deploy it"),
+                (2, 1, "please deploy the relay"),
+                (3, 1, &long),
+            ],
         );
         let hits = idx.search("deploy", 10);
-        let by = |n: u128| hits.iter().find(|h| h.session == sid(n)).unwrap().title.clone();
+        let by = |n: u128| {
+            hits.iter()
+                .find(|h| h.session == sid(n))
+                .unwrap()
+                .title
+                .clone()
+        };
         assert_eq!(by(1), "deploy runbook");
         assert_eq!(by(2), "please deploy the relay");
         let mut idx2 = index(&[(4, "")], &[(4, 1, "deploy")]);
@@ -610,9 +622,14 @@ mod tests {
         use ::search::PageState;
         let dir = std::env::temp_dir().join(format!("theuth-search-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         store.set_title(id, "deploy checklist").await.unwrap();
         let cache = Arc::new(Cache::default());
 

@@ -72,11 +72,21 @@ impl Tool for MeshPeersTool {
                 Some(s) => (
                     crate::store::class_str(s.class).to_owned(),
                     s.harnesses.join(","),
-                    if s.repos.is_empty() { "-".to_owned() } else { s.repos.join(",") },
+                    if s.repos.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        s.repos.join(",")
+                    },
                     s.display,
                     s.gpu,
                 ),
-                None => ("unknown".to_owned(), "-".to_owned(), "-".to_owned(), false, false),
+                None => (
+                    "unknown".to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                    false,
+                    false,
+                ),
             };
             lines.push(format!(
                 "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{hub}",

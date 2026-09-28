@@ -50,11 +50,17 @@ pub(crate) struct SyncMesh;
 
 /// Subscribe the actor to the lease, resolve the self id, start the table
 /// refresh, and reconcile once (a lone engine serves from the start).
-pub(crate) async fn start(rt: &Runtime, actor: &ActorRef<LinkActor>, ctx: Arc<Ctx>, store: Option<Store>) {
+pub(crate) async fn start(
+    rt: &Runtime,
+    actor: &ActorRef<LinkActor>,
+    ctx: Arc<Ctx>,
+    store: Option<Store>,
+) {
     rt.subscribe::<LinkActor, mesh::MeshEvent>(actor).await;
     // The mesh identity row may land after this engine became hub (a pairing shown on another
     // engine mints it; replication brings it): the vault's change event re-runs the reconcile.
-    rt.subscribe::<LinkActor, secrets::SecretsEvent>(actor).await;
+    rt.subscribe::<LinkActor, secrets::SecretsEvent>(actor)
+        .await;
     let me = actor.clone();
     let rt2 = rt.clone();
     tokio::spawn(async move {
@@ -62,7 +68,8 @@ pub(crate) async fn start(rt: &Runtime, actor: &ActorRef<LinkActor>, ctx: Arc<Ct
         // against it) so a restarting engine does not register the mesh id for the 100 ms before
         // it learns another engine holds the lease — every device would bounce. No mesh within
         // MESH_WAIT (a slimmer plugin set) → a lone engine, serve.
-        let mesh = tokio::time::timeout(MESH_WAIT, rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR)).await;
+        let mesh =
+            tokio::time::timeout(MESH_WAIT, rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR)).await;
         match mesh {
             Ok(Some(mesh)) => match mesh.ask(mesh::Status).await {
                 Ok(st) => {
@@ -97,7 +104,8 @@ impl Message<secrets::SecretsEvent> for LinkActor {
     type Reply = ();
 
     async fn handle(&mut self, m: secrets::SecretsEvent, ctx: &mut Context<Self, ()>) {
-        let wanted = matches!(m, secrets::SecretsEvent::Changed) && self.ctx.lock().mesh_identity.is_none();
+        let wanted =
+            matches!(m, secrets::SecretsEvent::Changed) && self.ctx.lock().mesh_identity.is_none();
         if wanted {
             self.sync_mesh(ctx.actor_ref().clone()).await;
         }
@@ -135,14 +143,18 @@ impl Message<MeshIdentityLoaded> for LinkActor {
         let me = ctx.actor_ref().clone();
         match m.0 {
             Err(e) => {
-                tracing::warn!("mesh identity unavailable ({e}); the mesh uplink retries in {RETRY_AFTER:?}");
+                tracing::warn!(
+                    "mesh identity unavailable ({e}); the mesh uplink retries in {RETRY_AFTER:?}"
+                );
                 let later = me.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(RETRY_AFTER).await;
                     let _ = later.tell(SyncMesh).await;
                 });
             }
-            Ok(None) => tracing::debug!("no mesh identity yet: the mesh uplink starts once a device pairing mints it"),
+            Ok(None) => tracing::debug!(
+                "no mesh identity yet: the mesh uplink starts once a device pairing mints it"
+            ),
             Ok(Some(_)) => self.sync_mesh(me).await,
         }
     }
@@ -251,7 +263,10 @@ pub(crate) fn reload_devices(ctx: &Ctx, rows: Vec<Row>) -> bool {
         .collect();
     st.devices.reload(rows);
     if !revoked.is_empty() {
-        for c in st.all_conns().filter(|c| c.device.is_some_and(|k| revoked.contains(&k))) {
+        for c in st
+            .all_conns()
+            .filter(|c| c.device.is_some_and(|k| revoked.contains(&k)))
+        {
             c.cancel.cancel();
         }
     }
@@ -263,7 +278,10 @@ pub(crate) fn reload_devices(ctx: &Ctx, rows: Vec<Row>) -> bool {
 pub(crate) fn reload_pending(ctx: &Ctx, rows: Vec<PendingRow>) -> bool {
     let mut st = ctx.lock();
     let now = now_ms();
-    if !rows.iter().any(|r| r.expires_ms > now && st.pending.expires_ms(&r.id).is_none()) {
+    if !rows
+        .iter()
+        .any(|r| r.expires_ms > now && st.pending.expires_ms(&r.id).is_none())
+    {
         return false;
     }
     st.pending.reload(rows);
@@ -315,12 +333,20 @@ mod tests {
 
         let mut registered = vec![relay.next().await, relay.next().await];
         registered.sort_by_key(|e| format!("{e:?}"));
-        let mut want = vec![Event::Registered(engine.id.clone()), Event::Registered(mesh_id.id.clone())];
+        let mut want = vec![
+            Event::Registered(engine.id.clone()),
+            Event::Registered(mesh_id.id.clone()),
+        ];
         want.sort_by_key(|e| format!("{e:?}"));
-        assert_eq!(registered, want, "a lone engine is its own hub: both identities serve");
+        assert_eq!(
+            registered, want,
+            "a lone engine is its own hub: both identities serve"
+        );
         until(|| {
             let st = ctx.lock();
-            st.mesh.as_ref().is_some_and(|m| m.connected) && st.connected && st.mesh_conns.contains_key(&1)
+            st.mesh.as_ref().is_some_and(|m| m.connected)
+                && st.connected
+                && st.mesh_conns.contains_key(&1)
         })
         .await;
 
@@ -334,7 +360,9 @@ mod tests {
         assert_eq!(relay.next().await, Event::Closed(mesh_id.id.clone()));
         let quiet = relay.drain(Duration::from_millis(2500)).await;
         assert!(
-            !quiet.iter().any(|e| matches!(e, Event::Registered(_) | Event::Closed(_))),
+            !quiet
+                .iter()
+                .any(|e| matches!(e, Event::Registered(_) | Event::Closed(_))),
             "no redial, and the engine socket stays: {quiet:?}"
         );
         let st = actor.ask(Status).await.unwrap();
@@ -349,7 +377,12 @@ mod tests {
         // A repeated lease for us is not a transition: nothing restarts.
         actor.tell(lease("a")).await.unwrap();
         let quiet = relay.drain(Duration::from_millis(300)).await;
-        assert!(!quiet.iter().any(|e| matches!(e, Event::Registered(_) | Event::Closed(_))), "{quiet:?}");
+        assert!(
+            !quiet
+                .iter()
+                .any(|e| matches!(e, Event::Registered(_) | Event::Closed(_))),
+            "{quiet:?}"
+        );
     }
 
     /// A revoke replicated from another engine: the mirror reloads, the
@@ -368,7 +401,10 @@ mod tests {
             last_seen_ms: 0,
             revoked_ms: None,
         };
-        assert!(reload_devices(&ctx, vec![row.clone()]), "a row from another engine");
+        assert!(
+            reload_devices(&ctx, vec![row.clone()]),
+            "a row from another engine"
+        );
         assert!(!reload_devices(&ctx, vec![row.clone()]), "same rows again");
 
         // A local pairing the table has not caught up with yet: not a reload.
@@ -378,7 +414,10 @@ mod tests {
             ..row.clone()
         };
         ctx.lock().devices.insert(local.clone());
-        assert!(!reload_devices(&ctx, vec![row.clone()]), "the table lags; keep the mirror");
+        assert!(
+            !reload_devices(&ctx, vec![row.clone()]),
+            "the table lags; keep the mirror"
+        );
         assert_eq!(ctx.lock().devices.len(), 2);
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);

@@ -241,7 +241,11 @@ mod tests {
                 872_000,
                 "so the DR sync for two-three-eight-six is blocked on the image tags",
             ),
-            u(Track::Mic, 875_500, " right, I think the app patches those "),
+            u(
+                Track::Mic,
+                875_500,
+                " right, I think the app patches those ",
+            ),
         ];
         let live = ["SRE-2386".to_owned(), "DR cutover".to_owned()];
         let dismissed = ["KEDA".to_owned()];
@@ -251,7 +255,10 @@ mod tests {
              them: so the DR sync for two-three-eight-six is blocked on the image tags\n\
              me: right, I think the app patches those"
         );
-        let labelled = [Utterance { speaker: Some("s2".into()), ..batch[0].clone() }];
+        let labelled = [Utterance {
+            speaker: Some("s2".into()),
+            ..batch[0].clone()
+        }];
         assert_eq!(
             batch_line(&labelled, &[], &[]),
             "[meeting 00:14:32] live: none · dismissed: none\n\
@@ -267,10 +274,16 @@ mod tests {
         assert_eq!(age_of("2026-09-17T11:59:00Z", now), "3d");
         assert_eq!(age_of("2026-09-20T09:01:00Z", now), "2h");
         assert_eq!(age_of("2026-09-20T11:48:30Z", now), "11m");
-        assert_eq!(age_of("2026-09-21T00:00:00Z", now), "0m", "a future stamp is not negative");
+        assert_eq!(
+            age_of("2026-09-21T00:00:00Z", now),
+            "0m",
+            "a future stamp is not negative"
+        );
         assert_eq!(age_of("garbage", now), "?");
         let live = [cached_label("SRE-2386", "3d"), "DR cutover".to_owned()];
-        assert!(batch_line(&batch, &live, &[]).starts_with("[meeting 00:14:32] live: SRE-2386 (cached 3d), DR cutover · dismissed: none\n"));
+        assert!(batch_line(&batch, &live, &[]).starts_with(
+            "[meeting 00:14:32] live: SRE-2386 (cached 3d), DR cutover · dismissed: none\n"
+        ));
     }
 
     #[test]
@@ -279,12 +292,18 @@ mod tests {
             started_line(Some("  weekly DR sync ")),
             "[meeting 00:00:00] started. context: weekly DR sync"
         );
-        assert_eq!(started_line(Some("  ")), "[meeting 00:00:00] started. context: none");
+        assert_eq!(
+            started_line(Some("  ")),
+            "[meeting 00:00:00] started. context: none"
+        );
         assert_eq!(
             request_line(true, "what is the DR cutover date", None),
             "[meeting request, spoken] what is the DR cutover date"
         );
-        assert_eq!(request_line(false, "who owns KEDA", None), "[meeting request, typed] who owns KEDA");
+        assert_eq!(
+            request_line(false, "who owns KEDA", None),
+            "[meeting request, typed] who owns KEDA"
+        );
         assert_eq!(
             request_line(false, "what's the KEDA limit", Some("KEDA scaling")),
             "[meeting request, typed] what's the KEDA limit (cached brief \"KEDA scaling\" already shown — add only what it lacks)"
@@ -297,10 +316,17 @@ mod tests {
         let id = BriefId(uuid::Uuid::nil());
         assert_eq!(
             deeper_line(id, "DR cutover", &["b1".into(), "b2 ".into()]),
-            format!("[meeting deeper on \"DR cutover\" — parent: {}] - b1\n- b2", id.0)
+            format!(
+                "[meeting deeper on \"DR cutover\" — parent: {}] - b1\n- b2",
+                id.0
+            )
         );
-        assert!(nudge_line(Prompted::Request { spoken: true }, "cutover date")
-            .starts_with("[meeting: no brief was produced for the request \"cutover date\""));
-        assert!(nudge_line(Prompted::Deeper(id), "DR cutover").contains(&format!("parent: {}", id.0)));
+        assert!(
+            nudge_line(Prompted::Request { spoken: true }, "cutover date")
+                .starts_with("[meeting: no brief was produced for the request \"cutover date\"")
+        );
+        assert!(
+            nudge_line(Prompted::Deeper(id), "DR cutover").contains(&format!("parent: {}", id.0))
+        );
     }
 }

@@ -89,7 +89,10 @@ impl Store {
             .connect_with(opts)
             .await
             .with_context(|| format!("open {}", path.display()))?;
-        sqlx::migrate!("./migrations").run(&pool).await.context("run migrations")?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .context("run migrations")?;
         let (writer, mut rx) = mpsc::unbounded_channel::<Op>();
         let p = pool.clone();
         tokio::spawn(async move {
@@ -130,7 +133,10 @@ impl Store {
             let Some(key) = unb64(&r.get::<Option<String>, _>("static_pub").unwrap_or_default())
                 .and_then(|v| <[u8; 32]>::try_from(v).ok())
             else {
-                tracing::warn!("link.sqlite: devices.{}: bad static_pub; skipped", r.get::<String, _>("id"));
+                tracing::warn!(
+                    "link.sqlite: devices.{}: bad static_pub; skipped",
+                    r.get::<String, _>("id")
+                );
                 continue;
             };
             out.push(Row {
@@ -148,14 +154,17 @@ impl Store {
 
     /// Every pending row (the caller filters expiry and opens the PSK).
     pub async fn pending(&self) -> anyhow::Result<Vec<PendingRow>> {
-        let rows = sqlx::query("SELECT id, psk_sealed, name, created_ms, expires_ms FROM pending ORDER BY created_ms")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id, psk_sealed, name, created_ms, expires_ms FROM pending ORDER BY created_ms",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .iter()
             .map(|r| PendingRow {
                 id: r.get("id"),
-                psk_sealed: unb64(&r.get::<Option<String>, _>("psk_sealed").unwrap_or_default()).unwrap_or_default(),
+                psk_sealed: unb64(&r.get::<Option<String>, _>("psk_sealed").unwrap_or_default())
+                    .unwrap_or_default(),
                 name: r.get::<Option<String>, _>("name").unwrap_or_default(),
                 created_ms: r.get::<Option<i64>, _>("created_ms").unwrap_or_default() as u64,
                 expires_ms: r.get::<Option<i64>, _>("expires_ms").unwrap_or_default() as u64,
@@ -220,7 +229,10 @@ async fn apply(pool: &SqlitePool, op: &Op) -> anyhow::Result<()> {
             .await?;
         }
         Op::DeletePending(id) => {
-            sqlx::query("DELETE FROM pending WHERE id = ?").bind(id).execute(pool).await?;
+            sqlx::query("DELETE FROM pending WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
         }
     }
     Ok(())
@@ -237,7 +249,9 @@ mod tests {
     async fn tables_attach_and_rows_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join(DB)).await.unwrap();
-        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
         engine.attach(store.pool(), TABLES).await.unwrap();
 
         let key = [9u8; 32];
@@ -252,11 +266,32 @@ mod tests {
         };
         store.apply(&Op::PutDevice(row.clone())).await.unwrap();
         assert_eq!(store.devices().await.unwrap(), [row.clone()]);
-        store.apply(&Op::Rename { id: row.id.clone(), name: "Phone".into() }).await.unwrap();
-        store.apply(&Op::TouchLastSeen { id: row.id.clone(), at_ms: 20 }).await.unwrap();
-        store.apply(&Op::Revoke { id: row.id.clone(), at_ms: 30 }).await.unwrap();
+        store
+            .apply(&Op::Rename {
+                id: row.id.clone(),
+                name: "Phone".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .apply(&Op::TouchLastSeen {
+                id: row.id.clone(),
+                at_ms: 20,
+            })
+            .await
+            .unwrap();
+        store
+            .apply(&Op::Revoke {
+                id: row.id.clone(),
+                at_ms: 30,
+            })
+            .await
+            .unwrap();
         let got = store.devices().await.unwrap();
-        assert_eq!((got[0].name.as_str(), got[0].last_seen_ms, got[0].revoked_ms), ("Phone", 20, Some(30)));
+        assert_eq!(
+            (got[0].name.as_str(), got[0].last_seen_ms, got[0].revoked_ms),
+            ("Phone", 20, Some(30))
+        );
 
         let p = PendingRow {
             id: "p1".into(),

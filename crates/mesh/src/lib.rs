@@ -38,8 +38,8 @@ use tokio_util::sync::CancellationToken;
 pub use config::MeshConfig;
 pub use net::ALPN_MESH;
 pub use types::{
-    AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent, MeshStatus, Peer, PeerEvent,
-    PeerId,
+    AlpnTraffic, EngineClass, EngineId, EngineStats, HubPref, LeaseState, MeshEvent, MeshStatus,
+    Peer, PeerEvent, PeerId,
 };
 
 use crate::identity::now_ms;
@@ -191,7 +191,11 @@ impl Ctx {
 
     async fn status(&self) -> Result<MeshStatus, String> {
         let peers = self.store.peers().await.map_err(|e| e.to_string())?;
-        let mesh_name = self.store.meta_get("name").await.map_err(|e| e.to_string())?;
+        let mesh_name = self
+            .store
+            .meta_get("name")
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(MeshStatus {
             self_id: self.net.id.clone(),
             self_name: self.net.name.clone(),
@@ -218,9 +222,16 @@ impl Ctx {
     /// rewritten: every write is a replicated batch, and heartbeats already
     /// carry liveness.
     async fn refresh_stats(&self) {
-        let (id, started, data_dir, workspaces) =
-            (self.net.id.clone(), self.started_ms, self.rt.data_dir.clone(), self.cfg().workspaces);
-        let Ok(s) = tokio::task::spawn_blocking(move || stats::probe(id, started, &data_dir, &workspaces)).await else {
+        let (id, started, data_dir, workspaces) = (
+            self.net.id.clone(),
+            self.started_ms,
+            self.rt.data_dir.clone(),
+            self.cfg().workspaces,
+        );
+        let Ok(s) =
+            tokio::task::spawn_blocking(move || stats::probe(id, started, &data_dir, &workspaces))
+                .await
+        else {
             return;
         };
         if Self::lock(&self.live).self_stats == s {
@@ -231,7 +242,11 @@ impl Ctx {
 
     /// Write `s` as our `engine_stats` row (current `hub_pref`), remember it.
     async fn write_stats(&self, s: EngineStats) {
-        match self.store.put_stats(&s, self.cfg().hub, self.first_seen_ms, now_ms()).await {
+        match self
+            .store
+            .put_stats(&s, self.cfg().hub, self.first_seen_ms, now_ms())
+            .await
+        {
             Ok(hlc) => {
                 let mut live = Self::lock(&self.live);
                 live.self_stats = s;
@@ -252,12 +267,20 @@ impl Ctx {
         let mut cands = Vec::new();
         let (incumbent, self_stats, seen) = {
             let live = Self::lock(&self.live);
-            (live.lease.holder.clone(), live.self_stats.clone(), live.seen.clone())
+            (
+                live.lease.holder.clone(),
+                live.self_stats.clone(),
+                live.seen.clone(),
+            )
         };
         cands.push(Candidate {
             id: self.net.id.clone(),
             hub_pref: cfg.hub,
-            availability_30d: self.store.availability_30d(&self.net.id, now).await.unwrap_or(1.0),
+            availability_30d: self
+                .store
+                .availability_30d(&self.net.id, now)
+                .await
+                .unwrap_or(1.0),
             class: self_stats.class,
             uptime_since_ms: self.started_ms,
             first_seen_ms: self.first_seen_ms,
@@ -272,7 +295,11 @@ impl Ctx {
             if let Some(s) = seen.get(&id)
                 && now.saturating_sub(s.last_hb_ms) > lapse_ms
             {
-                tracing::debug!("mesh: no heartbeat from {id} for {} s while connected (last stats {}); gossip lagging", (now - s.last_hb_ms) / 1000, s.stats_hlc);
+                tracing::debug!(
+                    "mesh: no heartbeat from {id} for {} s while connected (last stats {}); gossip lagging",
+                    (now - s.last_hb_ms) / 1000,
+                    s.stats_hlc
+                );
             }
             match self.store.candidate(&id, since_ms, now).await {
                 Ok(Some(c)) => cands.push(c),
@@ -280,13 +307,25 @@ impl Ctx {
                 Err(e) => tracing::warn!("mesh: engine_stats for {id}: {e:#}"),
             }
         }
-        let holder = lease::elect(&cands, incumbent.as_ref(), now, cfg.probation_secs * 1000, cfg.handover_secs * 1000);
+        let holder = lease::elect(
+            &cands,
+            incumbent.as_ref(),
+            now,
+            cfg.probation_secs * 1000,
+            cfg.handover_secs * 1000,
+        );
         if holder == incumbent {
             return;
         }
         let reason = match (&holder, &incumbent) {
             (None, _) => "none",
-            (Some(h), _) if cands.iter().any(|c| &c.id == h && c.hub_pref == HubPref::Prefer) => "prefer",
+            (Some(h), _)
+                if cands
+                    .iter()
+                    .any(|c| &c.id == h && c.hub_pref == HubPref::Prefer) =>
+            {
+                "prefer"
+            }
             (Some(_), None) => "elected",
             (Some(_), Some(inc)) if cands.iter().any(|c| &c.id == inc) => "handover",
             (Some(_), Some(_)) => hint,
@@ -297,7 +336,10 @@ impl Ctx {
             reason: reason.to_owned(),
         };
         Self::lock(&self.live).lease = lease.clone();
-        tracing::info!("mesh: lease → {:?} ({reason})", holder.as_ref().map(|h| &h.0[..8.min(h.0.len())]));
+        tracing::info!(
+            "mesh: lease → {:?} ({reason})",
+            holder.as_ref().map(|h| &h.0[..8.min(h.0.len())])
+        );
         if let Err(e) = self.store.lease_log(now, holder.as_ref(), reason).await {
             tracing::warn!("mesh: lease_log: {e:#}");
         }
@@ -312,14 +354,25 @@ impl Ctx {
         if id == self.net.id {
             return;
         }
-        Self::lock(&self.live).seen.insert(id, Seen { last_hb_ms: now_ms(), stats_hlc });
+        Self::lock(&self.live).seen.insert(
+            id,
+            Seen {
+                last_hb_ms: now_ms(),
+                stats_hlc,
+            },
+        );
     }
 
     /// Everything that keeps the lease honest: heartbeats out and in,
     /// availability intervals, re-election on every change, release on stop.
     async fn run_lease(self: Arc<Self>, cancel: CancellationToken) {
         let topic = TopicId::from_bytes(sha2::Sha256::digest(b"theuth/mesh/lease/1").into());
-        let Ok(topic) = self.net.gossip.subscribe(topic, self.net.paired_ids()).await else {
+        let Ok(topic) = self
+            .net
+            .gossip
+            .subscribe(topic, self.net.paired_ids())
+            .await
+        else {
             tracing::warn!("mesh: gossip subscribe failed; lease disabled");
             return;
         };
@@ -331,7 +384,10 @@ impl Ctx {
         // Every peer starts an "unreachable" interval; connects flip it.
         if let Ok(peers) = self.store.peers().await {
             for p in &peers {
-                let _ = self.store.availability_open(&self.net.id, &p.id, false, now_ms()).await;
+                let _ = self
+                    .store
+                    .availability_open(&self.net.id, &p.id, false, now_ms())
+                    .await;
             }
         }
         // An engine with stored peers does not elect itself at start: it says "no holder" (every
@@ -340,11 +396,19 @@ impl Ctx {
         // mesh id at the relay and bounced every device five times before the incumbent's view
         // reached it; a lone engine (no peers) still elects itself at once.
         let mut warming = !known.is_empty();
-        let warm_deadline = tokio::time::Instant::now() + Duration::from_secs(self.cfg().lapse_secs.max(1));
+        let warm_deadline =
+            tokio::time::Instant::now() + Duration::from_secs(self.cfg().lapse_secs.max(1));
         if warming {
-            let lease = LeaseState { holder: None, since_ms: now_ms(), reason: "start".into() };
+            let lease = LeaseState {
+                holder: None,
+                since_ms: now_ms(),
+                reason: "start".into(),
+            };
             Self::lock(&self.live).lease = lease.clone();
-            tracing::info!("mesh: lease → None (start: {} stored peer(s), waiting for one to connect)", known.len());
+            tracing::info!(
+                "mesh: lease → None (start: {} stored peer(s), waiting for one to connect)",
+                known.len()
+            );
             self.emit(MeshEvent::Lease(lease)).await;
         } else {
             self.recompute("start").await;
@@ -433,10 +497,16 @@ impl Ctx {
             let _ = self.store.availability_touch(&self.net.id, &id, now).await;
         }
         if self.is_hub()
-            && let Ok(bytes) = serde_json::to_vec(&GossipMsg::LeaseRelease { id: self.net.id.clone() })
+            && let Ok(bytes) = serde_json::to_vec(&GossipMsg::LeaseRelease {
+                id: self.net.id.clone(),
+            })
         {
             let _ = sender.broadcast(bytes.into()).await;
-            let lease = LeaseState { holder: None, since_ms: now_ms(), reason: "release".into() };
+            let lease = LeaseState {
+                holder: None,
+                since_ms: now_ms(),
+                reason: "release".into(),
+            };
             Self::lock(&self.live).lease = lease.clone();
             let _ = self.store.lease_log(now_ms(), None, "release").await;
             self.emit(MeshEvent::Lease(lease)).await;
@@ -482,7 +552,11 @@ impl Message<RemovePeer> for Mesh {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: RemovePeer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ctx.net.remove_peer(&m.0).await.map_err(|e| format!("{e:#}"))?;
+        self.ctx
+            .net
+            .remove_peer(&m.0)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         self.ctx.net.push_peers().await;
         Ctx::lock(&self.ctx.live).seen.remove(&m.0);
         self.ctx.recompute("remove").await;
@@ -494,8 +568,13 @@ impl Message<SetHubPref> for Mesh {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: SetHubPref, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        runtime::write_config_value(&self.ctx.config_path, "mesh", "hub", store::hub_pref_str(m.0))
-            .map_err(|e| format!("write {}: {e}", self.ctx.config_path.display()))?;
+        runtime::write_config_value(
+            &self.ctx.config_path,
+            "mesh",
+            "hub",
+            store::hub_pref_str(m.0),
+        )
+        .map_err(|e| format!("write {}: {e}", self.ctx.config_path.display()))?;
         Ctx::lock(&self.ctx.cfg).hub = m.0;
         self.ctx.net.set_hub_pref(m.0);
         let s = Ctx::lock(&self.ctx.live).self_stats.clone();
@@ -508,7 +587,11 @@ impl Message<SetHubPref> for Mesh {
 impl Message<PairingString> for Mesh {
     type Reply = Result<String, String>;
 
-    async fn handle(&mut self, _: PairingString, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: PairingString,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         Ok(self.ctx.net.pairing_string().await)
     }
 }
@@ -594,7 +677,12 @@ impl runtime::Plugin for MeshPlugin {
                 return Ok(());
             }
         };
-        tracing::info!("mesh: engine {} on relay {} (discovery {})", net.id, cfg.relay, cfg.discovery);
+        tracing::info!(
+            "mesh: engine {} on relay {} (discovery {})",
+            net.id,
+            cfg.relay,
+            cfg.discovery
+        );
 
         // 69 decision 8: the mesh's name defaults to the first engine's own,
         // stamped at this engine's first_seen so the oldest engine's default
@@ -604,19 +692,22 @@ impl runtime::Plugin for MeshPlugin {
         let (events, _) = broadcast::channel(256);
         let started_ms = now_ms();
         let self_stats = {
-            let (id, data_dir, workspaces) = (net.id.clone(), rt.data_dir.clone(), cfg.workspaces.clone());
-            tokio::task::spawn_blocking(move || stats::probe(id, started_ms, &data_dir, &workspaces))
-                .await
-                .unwrap_or_else(|_| EngineStats {
-                    id: net.id.clone(),
-                    uptime_since_ms: started_ms,
-                    class: EngineClass::Desktop,
-                    availability_30d: 1.0,
-                    harnesses: vec!["native".into()],
-                    repos: vec![],
-                    display: false,
-                    gpu: false,
-                })
+            let (id, data_dir, workspaces) =
+                (net.id.clone(), rt.data_dir.clone(), cfg.workspaces.clone());
+            tokio::task::spawn_blocking(move || {
+                stats::probe(id, started_ms, &data_dir, &workspaces)
+            })
+            .await
+            .unwrap_or_else(|_| EngineStats {
+                id: net.id.clone(),
+                uptime_since_ms: started_ms,
+                class: EngineClass::Desktop,
+                availability_30d: 1.0,
+                harnesses: vec!["native".into()],
+                repos: vec![],
+                display: false,
+                gpu: false,
+            })
         };
         // Written after the attach (below): a row that lands before the replica
         // is up never fires a trigger and only its later column writes ship —
@@ -651,11 +742,21 @@ impl runtime::Plugin for MeshPlugin {
         // plugin set may never start it), then write the start-up rows.
         let (c, name, stats) = (ctx.clone(), net.name.clone(), self_stats);
         tokio::spawn(async move {
-            let replica =
-                tokio::time::timeout(ATTACH_WAIT, c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)).await;
+            let replica = tokio::time::timeout(
+                ATTACH_WAIT,
+                c.rt.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR),
+            )
+            .await;
             if matches!(replica, Ok(Some(_))) {
-                match replica::attach(c.store.pool(), &["peers", "engine_stats", "availability", "mesh_meta"]).await {
-                    Ok(_) => tracing::info!("mesh: peers/engine_stats/availability/mesh_meta replicated"),
+                match replica::attach(
+                    c.store.pool(),
+                    &["peers", "engine_stats", "availability", "mesh_meta"],
+                )
+                .await
+                {
+                    Ok(_) => {
+                        tracing::info!("mesh: peers/engine_stats/availability/mesh_meta replicated")
+                    }
                     Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
                 }
             }
@@ -668,7 +769,10 @@ impl runtime::Plugin for MeshPlugin {
         // The transport, to the replica plugin whenever it comes up.
         let (rt2, transport) = (rt.clone(), net.clone());
         tokio::spawn(async move {
-            if let Some(replica) = rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await {
+            if let Some(replica) = rt2
+                .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
+                .await
+            {
                 let t: Arc<dyn replica::Transport> = transport;
                 let _ = replica.ask(replica::RegisterTransport(t)).await;
             }
@@ -679,7 +783,8 @@ impl runtime::Plugin for MeshPlugin {
         tokio::spawn(net.clone().run_connector(cancel.clone()));
         let c = ctx.clone();
         tokio::spawn(async move {
-            let mut every = tokio::time::interval(Duration::from_secs(cfg.capabilities_secs.max(30)));
+            let mut every =
+                tokio::time::interval(Duration::from_secs(cfg.capabilities_secs.max(30)));
             every.tick().await;
             loop {
                 tokio::select! {

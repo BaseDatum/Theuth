@@ -101,7 +101,10 @@ impl Tool for SearchTool {
 
     async fn call(&self, a: SearchArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let limit = a.limit.unwrap_or(10).clamp(1, 50);
-        let hits = self.0.search_for(&a.query, &cwd(), limit, Some(cx.session)).await?;
+        let hits = self
+            .0
+            .search_for(&a.query, &cwd(), limit, Some(cx.session))
+            .await?;
         let mut s = String::new();
         let mut rows = Vec::with_capacity(hits.len());
         for h in &hits {
@@ -296,7 +299,11 @@ impl Tool for ShareTool {
     async fn call(&self, a: ShareArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         writable(&cx)?;
         let meta = self.0.share(&a.id, a.visibility, Some(cx.session)).await?;
-        Ok(ToolOutput::ok(format!("{} is now {}", meta.id, meta.visibility.as_str())))
+        Ok(ToolOutput::ok(format!(
+            "{} is now {}",
+            meta.id,
+            meta.visibility.as_str()
+        )))
     }
 }
 

@@ -16,7 +16,8 @@ use super::*;
 /// land mid-compaction, short enough for the 10 s event timeout.
 const HOLD: Duration = Duration::from_secs(2);
 
-const JOB: &str = "<job_result id=\"j1\" command=\"make\" exit=\"0\" secs=\"3\">\nok\n</job_result>";
+const JOB: &str =
+    "<job_result id=\"j1\" command=\"make\" exit=\"0\" secs=\"3\">\nok\n</job_result>";
 const HUMAN: &str = "And then do this.";
 
 fn user_input(id: Option<InputId>, text: &str) -> UserInput {
@@ -96,12 +97,18 @@ async fn two_inputs(actor: &ActorRef<Session>) -> InputId {
 /// Both inputs opened exactly one turn, in arrival order, delivered once.
 fn assert_one_turn_in_order(events: &[AgentEvent], human: InputId) {
     assert_eq!(
-        count(events, |e| matches!(e, AgentEvent::InputQueued { id, .. } if *id == human)),
+        count(
+            events,
+            |e| matches!(e, AgentEvent::InputQueued { id, .. } if *id == human)
+        ),
         1,
         "the human message shows as queued while the compaction runs"
     );
     assert_eq!(
-        count(events, |e| matches!(e, AgentEvent::InputInjected { id, .. } if *id == human)),
+        count(
+            events,
+            |e| matches!(e, AgentEvent::InputInjected { id, .. } if *id == human)
+        ),
         1,
         "delivered exactly once"
     );
@@ -139,7 +146,10 @@ async fn manual_compaction_commits_then_the_queue_opens_a_turn() {
         .drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
         .await;
     assert_eq!(task.await.unwrap(), Ok(1), "compaction committed epoch 1");
-    assert_eq!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })), 1);
+    assert_eq!(
+        count(&events, |e| matches!(e, AgentEvent::Compacted { .. })),
+        1
+    );
     assert_eq!(count(&events, |e| matches!(e, AgentEvent::Error { .. })), 0);
     assert_one_turn_in_order(&events, human);
     assert!(actor.ask(QueuedInputs).await.unwrap().is_empty());
@@ -182,9 +192,16 @@ async fn auto_compaction_mid_turn_commits_and_the_queue_follows() {
     // `InputQueued` fires during the compacting turn; the injection and the
     // turn the inputs open come after it, so both drains are read together.
     let mut events = h.drain().await;
-    assert_eq!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })), 1);
+    assert_eq!(
+        count(&events, |e| matches!(e, AgentEvent::Compacted { .. })),
+        1
+    );
     assert_eq!(count(&events, |e| matches!(e, AgentEvent::Error { .. })), 0);
-    assert_eq!(stop_reasons(&events), ["stop"], "the compacting turn finishes normally");
+    assert_eq!(
+        stop_reasons(&events),
+        ["stop"],
+        "the compacting turn finishes normally"
+    );
     // No tool round in this turn, so the inputs open the next one.
     events.extend(h.drain().await);
     assert_eq!(stop_reasons(&events), ["stop", "stop"]);
@@ -209,7 +226,10 @@ async fn failed_compaction_rolls_back_and_keeps_the_queue() {
         .await;
     let err = task.await.unwrap().unwrap_err();
     assert!(err.starts_with("summariser:"), "{err}");
-    assert_eq!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })), 0);
+    assert_eq!(
+        count(&events, |e| matches!(e, AgentEvent::Compacted { .. })),
+        0
+    );
     assert_one_turn_in_order(&events, human);
 
     let after = h.store.frame(h.id).await.unwrap();
@@ -238,9 +258,16 @@ async fn interrupted_compaction_rolls_back_and_keeps_the_queue() {
         .await;
     let err = task.await.unwrap().unwrap_err();
     assert!(err.contains("cancelled"), "{err}");
-    assert_eq!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })), 0);
+    assert_eq!(
+        count(&events, |e| matches!(e, AgentEvent::Compacted { .. })),
+        0
+    );
     assert_one_turn_in_order(&events, human);
-    assert_eq!(stop_reasons(&events), ["stop"], "the cancel hit the compaction, not the queued turn");
+    assert_eq!(
+        stop_reasons(&events),
+        ["stop"],
+        "the cancel hit the compaction, not the queued turn"
+    );
 
     let (epoch, head, _) = h.store.frame(h.id).await.unwrap();
     assert_eq!(epoch, 0);

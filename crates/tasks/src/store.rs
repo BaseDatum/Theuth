@@ -9,7 +9,9 @@ use std::time::Duration;
 use anyhow::Context as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-use crate::types::{Checkout, Owner, Task, TaskEvent, TaskFilter, TaskId, TaskState, Wake, WakeReason};
+use crate::types::{
+    Checkout, Owner, Task, TaskEvent, TaskFilter, TaskId, TaskState, Wake, WakeReason,
+};
 
 /// Origin stamped into every `hlc`: the mesh engine id once known, else `local`.
 static HLC_ORIGIN: OnceLock<String> = OnceLock::new();
@@ -203,10 +205,12 @@ impl Store {
 
     /// One task.
     pub async fn get(&self, id: &TaskId) -> anyhow::Result<Option<Task>> {
-        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLS} FROM tasks WHERE id = ?")))
-            .bind(&id.0)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLS} FROM tasks WHERE id = ?"
+        )))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(Task::from))
     }
 
@@ -262,11 +266,12 @@ impl Store {
 
     /// Direct children of `parent`, any state, oldest first.
     pub async fn children(&self, parent: &TaskId) -> anyhow::Result<Vec<Task>> {
-        let rows: Vec<Row> =
-            sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLS} FROM tasks WHERE parent = ? ORDER BY created_ms")))
-                .bind(&parent.0)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLS} FROM tasks WHERE parent = ? ORDER BY created_ms"
+        )))
+        .bind(&parent.0)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows.into_iter().map(Task::from).collect())
     }
 
@@ -290,7 +295,14 @@ impl Store {
 
     /// Events of `task`, oldest first.
     pub async fn events(&self, task: &TaskId) -> anyhow::Result<Vec<TaskEvent>> {
-        type R = (i64, String, Option<String>, String, Option<String>, Option<String>);
+        type R = (
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        );
         let rows: Vec<R> = sqlx::query_as(
             "SELECT at_ms, actor, session, field, before, after FROM task_events \
              WHERE task = ? ORDER BY id",
@@ -312,7 +324,11 @@ impl Store {
     }
 
     /// The newest event of `task` on `field`.
-    pub async fn last_event(&self, task: &TaskId, field: &str) -> anyhow::Result<Option<TaskEvent>> {
+    pub async fn last_event(
+        &self,
+        task: &TaskId,
+        field: &str,
+    ) -> anyhow::Result<Option<TaskEvent>> {
         Ok(self
             .events(task)
             .await?
@@ -352,7 +368,16 @@ impl Store {
 
     /// Wakes satisfying `cond` (one `?` bound to `arg`), oldest first.
     async fn wakes_where(&self, cond: &str, arg: &str) -> anyhow::Result<Vec<Wake>> {
-        type R = (String, String, Option<String>, String, String, i64, Option<String>, i64);
+        type R = (
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            i64,
+            Option<String>,
+            i64,
+        );
         let rows: Vec<R> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT id, agent, task, reason, key, count, claimed_by, created_ms FROM wakes \
              WHERE {cond} ORDER BY created_ms, id"
@@ -362,16 +387,18 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, agent, task, reason, key, count, claimed_by, created_ms)| Wake {
-                id,
-                agent,
-                task: task.map(TaskId),
-                reason: reason_of(&reason),
-                key,
-                count: count as u32,
-                claimed_by,
-                created_ms: created_ms as u64,
-            })
+            .map(
+                |(id, agent, task, reason, key, count, claimed_by, created_ms)| Wake {
+                    id,
+                    agent,
+                    task: task.map(TaskId),
+                    reason: reason_of(&reason),
+                    key,
+                    count: count as u32,
+                    claimed_by,
+                    created_ms: created_ms as u64,
+                },
+            )
             .collect())
     }
 
@@ -404,7 +431,10 @@ impl Store {
 
     /// Delete one wake (its desk turn ended, or it was found stale).
     pub async fn finish_wake(&self, id: &str) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM wakes WHERE id = ?").bind(id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM wakes WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -412,12 +442,19 @@ impl Store {
     /// purpose in `state` ([`WakeReason::applies_to`]); a closed task loses
     /// them all. Returns how many went.
     pub async fn drop_stale_wakes(&self, task: &TaskId, state: TaskState) -> anyhow::Result<u64> {
-        let stale: Vec<&str> = WakeReason::ALL.iter().filter(|r| !r.applies_to(state)).map(|r| r.as_str()).collect();
+        let stale: Vec<&str> = WakeReason::ALL
+            .iter()
+            .filter(|r| !r.applies_to(state))
+            .map(|r| r.as_str())
+            .collect();
         if stale.is_empty() {
             return Ok(0);
         }
         let marks = vec!["?"; stale.len()].join(", ");
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM wakes WHERE task = ? AND reason IN ({marks})"))).bind(&task.0);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM wakes WHERE task = ? AND reason IN ({marks})"
+        )))
+        .bind(&task.0);
         for r in stale {
             q = q.bind(r);
         }
@@ -439,7 +476,12 @@ impl Store {
     /// Charge a write by `session` to a task it does not own against a budget of
     /// `cap` distinct tasks (67 §7.3). `Ok(true)` = allowed (a repeat write to a
     /// task already charged is free); `Ok(false)` = budget spent, nothing recorded.
-    pub async fn budget_write(&self, session: &str, task: &TaskId, cap: u32) -> anyhow::Result<bool> {
+    pub async fn budget_write(
+        &self,
+        session: &str,
+        task: &TaskId,
+        cap: u32,
+    ) -> anyhow::Result<bool> {
         sqlx::query(
             "INSERT OR IGNORE INTO write_budget (session, task) SELECT ?1, ?2 \
              WHERE (SELECT COUNT(*) FROM write_budget WHERE session = ?1) < ?3",
@@ -449,24 +491,32 @@ impl Store {
         .bind(cap)
         .execute(&self.pool)
         .await?;
-        let (n,): (u32,) = sqlx::query_as("SELECT COUNT(*) FROM write_budget WHERE session = ? AND task = ?")
-            .bind(session)
-            .bind(&task.0)
-            .fetch_one(&self.pool)
-            .await?;
+        let (n,): (u32,) =
+            sqlx::query_as("SELECT COUNT(*) FROM write_budget WHERE session = ? AND task = ?")
+                .bind(session)
+                .bind(&task.0)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(n > 0)
     }
 
     /// Mark chat message `(sender, timestamp)` as answered (67 §4.7).
     /// `Ok(true)` = first to mark it; `Ok(false)` = some engine already had.
-    pub async fn mark_answered(&self, sender: &str, timestamp: u64, now_ms: u64) -> anyhow::Result<bool> {
-        let r = sqlx::query("INSERT OR IGNORE INTO answered (id, sender, timestamp, hlc) VALUES (?, ?, ?, ?)")
-            .bind(format!("{sender}:{timestamp}"))
-            .bind(sender)
-            .bind(timestamp as i64)
-            .bind(hlc(now_ms))
-            .execute(&self.pool)
-            .await?;
+    pub async fn mark_answered(
+        &self,
+        sender: &str,
+        timestamp: u64,
+        now_ms: u64,
+    ) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "INSERT OR IGNORE INTO answered (id, sender, timestamp, hlc) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("{sender}:{timestamp}"))
+        .bind(sender)
+        .bind(timestamp as i64)
+        .bind(hlc(now_ms))
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected() == 1)
     }
 }

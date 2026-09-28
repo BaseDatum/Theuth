@@ -19,10 +19,10 @@
 //! 4. RoPE tables are built in f32 and cast afterwards; building them directly
 //!    in f16 loses precision at long positions.
 
-use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
+use candle_core::{D, DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{
-    embedding, layer_norm, layer_norm_no_bias, linear, linear_no_bias, ops::softmax_last_dim,
-    Embedding, LayerNorm, LayerNormConfig, Linear, Module, VarBuilder,
+    Embedding, LayerNorm, LayerNormConfig, Linear, Module, VarBuilder, embedding, layer_norm,
+    layer_norm_no_bias, linear, linear_no_bias, ops::softmax_last_dim,
 };
 use std::sync::Arc;
 

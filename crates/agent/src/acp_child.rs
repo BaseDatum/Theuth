@@ -1947,7 +1947,9 @@ mod tests {
         assert_eq!(t.meter, None);
 
         let ev = translate(
-            SessionUpdate::UsageUpdate(UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.35, "USD"))),
+            SessionUpdate::UsageUpdate(
+                UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.35, "USD")),
+            ),
             &mut t,
         );
         assert!(ev.is_empty());
@@ -1974,7 +1976,10 @@ mod tests {
             store.apply_meter(child, u).await.unwrap();
         }
         let cost = store.session_cost(child).await.unwrap().unwrap();
-        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.35, "USD").unwrap()]);
+        assert_eq!(
+            cost.direct.returned,
+            vec![Money::from_f64(0.35, "USD").unwrap()]
+        );
         assert_eq!(cost.scope, crate::cost::CostScope::OpaqueRemoteInclusive);
         assert_eq!(cost.remote_meter_gaps, 0);
     }
@@ -1988,9 +1993,14 @@ mod tests {
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
         let dir = std::env::temp_dir().join(format!("theuth-acp-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         let entry = |c: &str, s| PlanEntry::new(c, PlanEntryPriority::Medium, s);
 
         let plan = Plan::new(vec![

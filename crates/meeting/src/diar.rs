@@ -19,8 +19,8 @@ use rubato::Resampler as _;
 use crate::capture::{RATE, Sample};
 use crate::post::align::Span;
 use crate::post::diarize::{
-    Geometry, LIVE, LIVE_INTRA_THREADS, MERGE_GAP_MS, MIN_TURN_MS, Models, RATE as MODEL_RATE, SPEECH,
-    Streamer,
+    Geometry, LIVE, LIVE_INTRA_THREADS, MERGE_GAP_MS, MIN_TURN_MS, Models, RATE as MODEL_RATE,
+    SPEECH, Streamer,
 };
 use crate::state::LiveLabels;
 use crate::{Degradation, Degrade, Meeting};
@@ -61,7 +61,9 @@ impl Labels {
     /// `(position − s) / 16 kHz` before it.
     pub fn view(&self, at_ms: u64) -> LiveLabels {
         let ms = |s: usize| {
-            at_ms.saturating_sub((self.position.saturating_sub(s) as u64 * 1000) / u64::from(MODEL_RATE))
+            at_ms.saturating_sub(
+                (self.position.saturating_sub(s) as u64 * 1000) / u64::from(MODEL_RATE),
+            )
         };
         LiveLabels {
             horizon_ms: ms(self.scored),
@@ -114,7 +116,12 @@ pub struct Flags {
 
 /// Open the live session: `LIVE` geometry, [`LIVE_INTRA_THREADS`]. Blocking.
 pub fn open(models: &Models) -> anyhow::Result<Streamer> {
-    Streamer::open(&models.diarization, &models.data_dir, LIVE, Some(LIVE_INTRA_THREADS))
+    Streamer::open(
+        &models.diarization,
+        &models.data_dir,
+        LIVE,
+        Some(LIVE_INTRA_THREADS),
+    )
 }
 
 /// Incremental `turns()` (04 §5) over a growing stream of 10 ms probabilities: per
@@ -261,7 +268,9 @@ pub fn run(
             drops += 1;
         }
         if drops > 0 && drop_log.elapsed() >= Duration::from_secs(60) {
-            tracing::warn!("meeting: live diarization behind real time: {drops} full-ring chunks in the last minute");
+            tracing::warn!(
+                "meeting: live diarization behind real time: {drops} full-ring chunks in the last minute"
+            );
             drops = 0;
             drop_log = Instant::now();
         }
@@ -328,7 +337,9 @@ pub fn spawn(
     tokio::spawn(async move {
         let actor = me.clone();
         let r = tokio::task::spawn_blocking(move || {
-            run(ring, streamer, flags, |l| me.tell(l).blocking_send().is_ok())
+            run(ring, streamer, flags, |l| {
+                me.tell(l).blocking_send().is_ok()
+            })
         })
         .await;
         match r {
@@ -373,10 +384,18 @@ mod tests {
     fn utterance_speaker_is_the_dominant_label_past_the_preroll_or_none() {
         // 1.0–4.0 s: s1 covers 1.3–2.5 (1.2 s of the 2.68 s after the pre-roll), s2 2.5–4.0
         // (1.5 s) → s2. The pre-roll head (1.0–1.32) belonging to s3 does not count.
-        let spans = [span(0, 1_320, "s3"), span(1_300, 2_500, "s1"), span(2_500, 4_000, "s2")];
+        let spans = [
+            span(0, 1_320, "s3"),
+            span(1_300, 2_500, "s1"),
+            span(2_500, 4_000, "s2"),
+        ];
         assert_eq!(speaker_of(1_000, 4_000, &spans).as_deref(), Some("s2"));
         // Two runs of one label add up: s1 1.3–2.0 and 3.4–4.0 (1.3 s) beat s2 2.0–3.0 (1.0 s).
-        let spans = [span(1_300, 2_000, "s1"), span(2_000, 3_000, "s2"), span(3_400, 4_000, "s1")];
+        let spans = [
+            span(1_300, 2_000, "s1"),
+            span(2_000, 3_000, "s2"),
+            span(3_400, 4_000, "s1"),
+        ];
         assert_eq!(speaker_of(1_000, 4_000, &spans).as_deref(), Some("s1"));
         // Under 30 % coverage: nobody.
         assert_eq!(speaker_of(1_000, 4_000, &[span(1_500, 2_000, "s1")]), None);
@@ -396,7 +415,10 @@ mod tests {
         // `at` is 100.5 s on the recording clock: 100 s of audio ↔ 100.5 s → +500 ms offset.
         let v = l.view(100_500);
         assert_eq!(v.horizon_ms, 92_500);
-        assert_eq!(v.spans, vec![span(10_500, 12_500, "s1"), span(90_500, 92_500, "s2")]);
+        assert_eq!(
+            v.spans,
+            vec![span(10_500, 12_500, "s1"), span(90_500, 92_500, "s2")]
+        );
     }
 
     #[test]
@@ -415,7 +437,13 @@ mod tests {
         l.push(&frames(&[(0, 30..100), (3, 150..250), (5, 250..300)], 300));
         assert_eq!(
             l.spans(),
-            vec![(0, 100, 1), (120, 200, 2), (330, 400, 2), (450, 550, 1), (550, 600, 3)]
+            vec![
+                (0, 100, 1),
+                (120, 200, 2),
+                (330, 400, 2),
+                (450, 550, 1),
+                (550, 600, 3)
+            ]
         );
         assert_eq!(l.frames(), 600);
     }

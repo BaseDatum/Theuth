@@ -258,7 +258,9 @@ fn tail_2k(s: &str) -> &str {
 async fn until_check(cmd: &str, cwd: Option<&Path>) -> Result<(Option<i32>, String), String> {
     // ponytail: ShellKind::Brush is 58 §11 step 3
     let Some(mut c) = platform::shell().command(cmd, true) else {
-        return Err("until: no login shell on this platform (brush in-process is 58 step 3)".into());
+        return Err(
+            "until: no login shell on this platform (brush in-process is 58 step 3)".into(),
+        );
     };
     c.kill_on_drop(true);
     if let Some(d) = cwd {
@@ -399,7 +401,11 @@ pub struct Schedule {
 impl Message<RegisterTaskCreator> for Schedule {
     type Reply = ();
 
-    async fn handle(&mut self, m: RegisterTaskCreator, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: RegisterTaskCreator,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.task_creator = Some(m.0);
     }
 }
@@ -476,7 +482,6 @@ impl Schedule {
         let (agent, project) = (spec.agent.clone(), spec.project.clone());
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
-
 
         if self.is_running(entry) {
             if let Err(e) = self
@@ -575,7 +580,11 @@ impl Schedule {
             if let Some(e) = self.entries.get_mut(name) {
                 e.last = Some(now);
                 e.last_result = Some(format!("task {task}"));
-                e.next = if one_shot { None } else { next_of(&e.spec, now, Some(now)) };
+                e.next = if one_shot {
+                    None
+                } else {
+                    next_of(&e.spec, now, Some(now))
+                };
             }
             self.rt.publish(ScheduleEvent::Changed).await;
             return Ok(Fired::Task(task));
@@ -1309,7 +1318,12 @@ impl runtime::Plugin for SchedulePlugin {
             return Ok(());
         }
         // 67 §5.1: the directory is a replicated table; a hand edit anywhere lands everywhere.
-        tokio::spawn(replica::files::mirror_at(rt.data_dir.join(DB), dir.clone(), DIR, std::time::Duration::from_secs(120)));
+        tokio::spawn(replica::files::mirror_at(
+            rt.data_dir.join(DB),
+            dir.clone(),
+            DIR,
+            std::time::Duration::from_secs(120),
+        ));
         let store = match store::Store::open(&rt.data_dir.join(DB)).await {
             Ok(s) => s,
             Err(e) => {
@@ -1446,7 +1460,10 @@ mod fire_tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut s, rec) = actor(
             dir.path(),
-            &[("nightly", "---\nevery: 1h\nagent: ops\nproject: argo\n---\ncheck the deploy\n")],
+            &[(
+                "nightly",
+                "---\nevery: 1h\nagent: ops\nproject: argo\n---\ncheck the deploy\n",
+            )],
         )
         .await;
         let now = Local::now();
@@ -1459,7 +1476,9 @@ mod fire_tests {
         let (name, fire_ms, agent, prompt, project, cwd) = &calls[0];
         assert_eq!((name.as_str(), agent.as_str()), ("nightly", "ops"));
         assert_eq!(*fire_ms, now.timestamp_millis() as u64);
-        assert!(prompt.starts_with("<schedule name=\"nightly\"") && prompt.contains("check the deploy"));
+        assert!(
+            prompt.starts_with("<schedule name=\"nightly\"") && prompt.contains("check the deploy")
+        );
         assert_eq!((project.as_deref(), cwd.as_deref()), (Some("argo"), None));
         // the run row carries the task, and counts toward the loop cap
         let h = s.store.history("nightly", 5).await.unwrap();
@@ -1469,8 +1488,13 @@ mod fire_tests {
         let e = &s.entries["nightly"];
         assert!(e.session.is_none() && e.last.is_some() && e.next.is_some());
         // the same instant fires again with the same key (tasks coalesces on it)
-        let Fired::Task(_) = s.fire("nightly", now, true).await.unwrap() else { panic!() };
-        assert_eq!(rec.calls.lock().unwrap()[1].1, now.timestamp_millis() as u64);
+        let Fired::Task(_) = s.fire("nightly", now, true).await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            rec.calls.lock().unwrap()[1].1,
+            now.timestamp_millis() as u64
+        );
     }
 
     #[tokio::test]
@@ -1485,11 +1509,17 @@ mod fire_tests {
         let e = s.fire("once", Local::now(), false).await.unwrap_err();
         assert!(e.starts_with("max_runs 1 reached"), "{e}");
         assert_eq!(rec.calls.lock().unwrap().len(), 1, "no task past the cap");
-        assert!(rec.closed.lock().unwrap().is_empty(), "a cap is not `until` passing");
+        assert!(
+            rec.closed.lock().unwrap().is_empty(),
+            "a cap is not `until` passing"
+        );
         // `until` passing ends the loop and closes the agent's tasks
         let (mut s, rec) = actor(
             dir.path(),
-            &[("loop", "---\nevery: 1h\nagent: ops\nuntil: \"true\"\n---\ngo\n")],
+            &[(
+                "loop",
+                "---\nevery: 1h\nagent: ops\nuntil: \"true\"\n---\ngo\n",
+            )],
         )
         .await;
         let e = s.fire("loop", Local::now(), false).await.unwrap_err();
@@ -1503,7 +1533,10 @@ mod fire_tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut s, rec) = actor(dir.path(), &[("plain", "---\nevery: 1h\n---\ngo\n")]).await;
         // No agent actor in a unit test: the session path is the one taken, and it says so.
-        assert_eq!(s.fire("plain", Local::now(), true).await.unwrap_err(), "agent is not running");
+        assert_eq!(
+            s.fire("plain", Local::now(), true).await.unwrap_err(),
+            "agent is not running"
+        );
         assert!(rec.calls.lock().unwrap().is_empty());
     }
 }
@@ -1567,15 +1600,26 @@ mod hub_tests {
         s.entries.get_mut("e").unwrap().next = Some(yesterday);
         s.entries.get_mut("ended").unwrap().next = None;
         s.tick(now).await;
-        assert_eq!(s.entries["c"].next, Some(yesterday), "the non-hub does not re-arm");
+        assert_eq!(
+            s.entries["c"].next,
+            Some(yesterday),
+            "the non-hub does not re-arm"
+        );
         let mut list = Vec::new();
         for (name, e) in &s.entries {
             list.push(s.info(name, e).await);
         }
         mesh::set_hub(true);
         let by = |n: &str| list.iter().find(|i| i.name == n).unwrap().next;
-        assert!(by("c").is_some_and(|t| t > now), "cron: next occurrence after now, {:?}", by("c"));
-        assert!(by("e").is_some_and(|t| t >= now), "every: now when the hub's last fire is unknown");
+        assert!(
+            by("c").is_some_and(|t| t > now),
+            "cron: next occurrence after now, {:?}",
+            by("c")
+        );
+        assert!(
+            by("e").is_some_and(|t| t >= now),
+            "every: now when the hub's last fire is unknown"
+        );
         assert_eq!(by("ended"), None, "an ended entry stays ended");
     }
 
@@ -1587,7 +1631,10 @@ mod hub_tests {
             dir.path(),
             &[
                 ("skip", "---\ncron: \"*/5 * * * *\"\nagent: ops\n---\ngo\n"),
-                ("run", "---\ncron: \"*/5 * * * *\"\nagent: ops\nmissed: run\n---\ngo\n"),
+                (
+                    "run",
+                    "---\ncron: \"*/5 * * * *\"\nagent: ops\nmissed: run\n---\ngo\n",
+                ),
             ],
         )
         .await;
@@ -1607,7 +1654,10 @@ mod hub_tests {
         s.tick(back).await;
         let calls = rec.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3, "{calls:?}");
-        assert_eq!((calls[2].0.as_str(), calls[2].1), ("run", back.timestamp_millis() as u64));
+        assert_eq!(
+            (calls[2].0.as_str(), calls[2].1),
+            ("run", back.timestamp_millis() as u64)
+        );
         assert!(s.entries["skip"].next.is_some_and(|t| t > back));
         assert_eq!(s.entries["skip"].last, Some(t0));
     }

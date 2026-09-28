@@ -130,9 +130,18 @@ mod tests {
         assert_eq!(
             at,
             vec![
-                ("health", "Query not allowed in a reply fence; use the `app` tool"),
-                ("go", "@ToAssistant not allowed in a reply fence; use the `app` tool"),
-                ("save", "Mutation not allowed in a reply fence; use the `app` tool"),
+                (
+                    "health",
+                    "Query not allowed in a reply fence; use the `app` tool"
+                ),
+                (
+                    "go",
+                    "@ToAssistant not allowed in a reply fence; use the `app` tool"
+                ),
+                (
+                    "save",
+                    "Mutation not allowed in a reply fence; use the `app` tool"
+                ),
             ]
         );
         assert!(dynamic_statements("root = Stack([a])\na = TextContent(\"q\")").is_empty());

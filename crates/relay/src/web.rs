@@ -115,9 +115,19 @@ mod tests {
             assert!(req.uri().to_string().find('#').is_none());
             let res = router.clone().oneshot(req).await.unwrap();
             assert_eq!(res.status(), StatusCode::OK, "{path}");
-            assert_eq!(res.headers().get(CONTENT_SECURITY_POLICY).unwrap(), CSP, "{path}");
-            assert!(res.headers().get(SET_COOKIE).is_some_and(|c| c.to_str().unwrap().starts_with("__Host-link=")));
-            let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+            assert_eq!(
+                res.headers().get(CONTENT_SECURITY_POLICY).unwrap(),
+                CSP,
+                "{path}"
+            );
+            assert!(
+                res.headers()
+                    .get(SET_COOKIE)
+                    .is_some_and(|c| c.to_str().unwrap().starts_with("__Host-link="))
+            );
+            let body = axum::body::to_bytes(res.into_body(), 1 << 16)
+                .await
+                .unwrap();
             assert_eq!(&body[..], b"<!doctype html><div id=root></div>", "{path}");
         }
         // Browsers never send the fragment (RFC 9112 §3.2); were one to arrive, `http` keeps it out of

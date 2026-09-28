@@ -298,8 +298,10 @@ mod tests {
     /// the sentence back, cased and punctuated; the start lands inside the leading silence.
     #[test]
     fn utterer_returns_the_spoken_sentence_punctuated() {
-        let (Some((data_dir, dir)), Some(pcm)) = (model_dir(), speech("The deploy is blocked on the image tags."))
-        else {
+        let (Some((data_dir, dir)), Some(pcm)) = (
+            model_dir(),
+            speech("The deploy is blocked on the image tags."),
+        ) else {
             eprintln!("skipped: no streaming model or no `say`");
             return;
         };
@@ -332,7 +334,10 @@ mod tests {
             .to_lowercase();
         assert_eq!(words, "the deploy is blocked on the image tags", "{f:?}");
         assert!(f.text.ends_with('.') && f.text.starts_with('T'), "{f:?}");
-        assert!(pieces.iter().any(|p| !p.is_final), "no rolling piece: {pieces:?}");
+        assert!(
+            pieces.iter().any(|p| !p.is_final),
+            "no rolling piece: {pieces:?}"
+        );
         // Pre-roll: the utterance opens before the speech, inside the leading second.
         assert!(f.start < 16_000, "{}", f.start);
         assert!(f.start >= 16_000 - (Gate::PREROLL + Gate::ONSET) * FRAME - 8 * FRAME);
@@ -341,6 +346,10 @@ mod tests {
         u.reset();
         assert!(!u.is_open());
         let fed = 48_000 * 2 + pcm.len() / 960 * 960;
-        assert!((u.position() as i64 - (fed / 3) as i64).abs() < 1_600, "{}", u.position());
+        assert!(
+            (u.position() as i64 - (fed / 3) as i64).abs() < 1_600,
+            "{}",
+            u.position()
+        );
     }
 }

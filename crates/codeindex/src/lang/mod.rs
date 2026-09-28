@@ -75,7 +75,8 @@ impl Language {
     pub fn tags(self) -> Option<&'static TagsConfiguration> {
         macro_rules! lazy {
             ($l:expr) => {{
-                static CFG: LazyLock<Option<TagsConfiguration>> = LazyLock::new(|| build_or_warn($l));
+                static CFG: LazyLock<Option<TagsConfiguration>> =
+                    LazyLock::new(|| build_or_warn($l));
                 CFG.as_ref()
             }};
         }
@@ -246,7 +247,12 @@ const TS_LOCALS: &str = "\
 
 /// Receiver shapes: a method name is its own namespace, so a local variable
 /// `len` must not hide `x.len()` (60 §19.3 deviation 11, reversed in step 2).
-const RECEIVER_NODES: [&str; 4] = ["(field_expression", "(member_expression", "(attribute", "(selector_expression"];
+const RECEIVER_NODES: [&str; 4] = [
+    "(field_expression",
+    "(member_expression",
+    "(attribute",
+    "(selector_expression",
+];
 
 /// Append `(#is-not? local)` to every top-level pattern carrying
 /// `@reference.call` except the receiver shapes in [`RECEIVER_NODES`]. A
@@ -274,7 +280,9 @@ pub fn not_local_calls(query: &str) -> String {
                     }
                     if j < b.len() && b[j] == b'@' {
                         j += 1;
-                        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'.' || b[j] == b'_') {
+                        while j < b.len()
+                            && (b[j].is_ascii_alphanumeric() || b[j] == b'.' || b[j] == b'_')
+                        {
                             j += 1;
                         }
                         end = j;
@@ -283,7 +291,9 @@ pub fn not_local_calls(query: &str) -> String {
                     }
                 }
                 let expr = &query[i..end];
-                if expr.contains("@reference.call") && !RECEIVER_NODES.iter().any(|n| expr.contains(n)) {
+                if expr.contains("@reference.call")
+                    && !RECEIVER_NODES.iter().any(|n| expr.contains(n))
+                {
                     let inner = expr[1..].trim_start();
                     if b[i] == b'(' && inner.starts_with('(') && expr.ends_with(')') {
                         // Already a group: insert before the closing paren.
@@ -309,7 +319,10 @@ pub fn not_local_calls(query: &str) -> String {
 }
 
 fn memchr_nl(b: &[u8], from: usize) -> usize {
-    b[from..].iter().position(|&c| c == b'\n').map_or(b.len(), |p| from + p)
+    b[from..]
+        .iter()
+        .position(|&c| c == b'\n')
+        .map_or(b.len(), |p| from + p)
 }
 
 /// End (exclusive) of the balanced S-expression starting at `b[start]`.
@@ -356,8 +369,10 @@ mod tests {
             Language::Python,
             Language::Go,
         ] {
-            l.build(false).unwrap_or_else(|e| panic!("{l:?} without locals: {e}"));
-            l.build(true).unwrap_or_else(|e| panic!("{l:?} with locals: {e}"));
+            l.build(false)
+                .unwrap_or_else(|e| panic!("{l:?} without locals: {e}"));
+            l.build(true)
+                .unwrap_or_else(|e| panic!("{l:?} with locals: {e}"));
             assert!(l.tags().is_some(), "{l:?}");
         }
     }

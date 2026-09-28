@@ -153,7 +153,9 @@ pub(crate) async fn load_mesh_identity(ctx: &Ctx) -> Result<Identity, String> {
     if let Some(id) = ctx.lock().mesh_identity.clone() {
         return Ok(id);
     }
-    let key = secrets::mesh_device_key(&ctx.rt).await.map_err(|e| format!("mesh device key: {e:#}"))?;
+    let key = secrets::mesh_device_key(&ctx.rt)
+        .await
+        .map_err(|e| format!("mesh device key: {e:#}"))?;
     Ok(cache_mesh_identity(ctx, Identity::from_private(*key)))
 }
 
@@ -356,20 +358,34 @@ impl Message<DevicesList> for LinkActor {
     type Reply = Vec<DeviceInfo>;
 
     async fn handle(&mut self, _: DevicesList, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ctx.lock().devices.all().iter().map(devices::Row::info).collect()
+        self.ctx
+            .lock()
+            .devices
+            .all()
+            .iter()
+            .map(devices::Row::info)
+            .collect()
     }
 }
 
 impl Message<DevicePairStart> for LinkActor {
     type Reply = Result<PairingPayload, String>;
 
-    async fn handle(&mut self, m: DevicePairStart, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: DevicePairStart,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let identity = self.mesh_identity().await?;
         // A pairing may have just minted the mesh identity: a hub registers it now, not at the
         // next vault change.
         self.sync_mesh(ctx.actor_ref().clone()).await;
         // The name the QR shows: the caller's, else the mesh's, else ours.
-        let name = match m.name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()) {
+        let name = match m
+            .name
+            .map(|n| n.trim().to_owned())
+            .filter(|n| !n.is_empty())
+        {
             Some(n) => n,
             None => match mesh::actor() {
                 Some(a) => match a.ask(mesh::Status).await {
@@ -381,11 +397,20 @@ impl Message<DevicePairStart> for LinkActor {
         };
         let mut st = self.ctx.lock();
         if st.devices.len() >= st.cfg.max_devices {
-            return Err(format!("max_devices ({}) reached; revoke one first", st.cfg.max_devices));
+            return Err(format!(
+                "max_devices ({}) reached; revoke one first",
+                st.cfg.max_devices
+            ));
         }
         let (pending_id, psk, expires_ms) = st.pending.create(&name)?;
         Ok(PairingPayload {
-            string: pairing::build(&st.cfg.relay, &identity.public, &psk, &name, Some(&pending_id)),
+            string: pairing::build(
+                &st.cfg.relay,
+                &identity.public,
+                &psk,
+                &name,
+                Some(&pending_id),
+            ),
             expires_ms,
             pending_id,
         })
@@ -447,7 +472,11 @@ impl runtime::Plugin for LinkPlugin {
         if let Some(pool) = store.as_ref().map(|s| s.pool().clone()) {
             let rt2 = rt.clone();
             tokio::spawn(async move {
-                if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+                if rt2
+                    .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
+                    .await
+                    .is_none()
+                {
                     return;
                 }
                 match replica::attach(&pool, store::TABLES).await {

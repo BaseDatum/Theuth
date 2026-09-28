@@ -133,7 +133,11 @@ impl Tool for SiteLearnTool {
 
     async fn call(&self, a: SiteLearnArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let url = a.url.as_deref().map(parse_url).transpose()?;
-        let reply = match self.0.learn(cx.session, private_root(&cx), url.as_ref()).await {
+        let reply = match self
+            .0
+            .learn(cx.session, private_root(&cx), url.as_ref())
+            .await
+        {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(e.to_string())),
         };

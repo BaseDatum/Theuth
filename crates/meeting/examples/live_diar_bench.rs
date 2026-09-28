@@ -68,17 +68,83 @@ impl Geometry {
 /// does both. Accuracy-side (07 §1, the owner's steer): `acc2`/`acc4`/`acc8` grow the
 /// chunk and the look-ahead towards the offline geometry at 2.1 / 3.8 / 8.0 s buffers.
 const GEOMETRIES: [Geometry; 11] = [
-    Geometry { name: "offline", chunk: 340, right: 40, fifo: 40, update: 300 },
-    Geometry { name: "low", chunk: 9, right: 4, fifo: 264, update: 222 },
-    Geometry { name: "very_low", chunk: 6, right: 2, fifo: 264, update: 222 },
-    Geometry { name: "ultra_low", chunk: 3, right: 1, fifo: 264, update: 222 },
-    Geometry { name: "mid", chunk: 18, right: 4, fifo: 264, update: 222 },
-    Geometry { name: "low_fifo124", chunk: 9, right: 4, fifo: 124, update: 100 },
-    Geometry { name: "low_fifo40", chunk: 9, right: 4, fifo: 40, update: 300 },
-    Geometry { name: "mid_fifo40", chunk: 18, right: 4, fifo: 40, update: 300 },
-    Geometry { name: "acc2", chunk: 18, right: 8, fifo: 264, update: 222 },
-    Geometry { name: "acc4", chunk: 36, right: 12, fifo: 264, update: 222 },
-    Geometry { name: "acc8", chunk: 80, right: 20, fifo: 264, update: 222 },
+    Geometry {
+        name: "offline",
+        chunk: 340,
+        right: 40,
+        fifo: 40,
+        update: 300,
+    },
+    Geometry {
+        name: "low",
+        chunk: 9,
+        right: 4,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "very_low",
+        chunk: 6,
+        right: 2,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "ultra_low",
+        chunk: 3,
+        right: 1,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "mid",
+        chunk: 18,
+        right: 4,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "low_fifo124",
+        chunk: 9,
+        right: 4,
+        fifo: 124,
+        update: 100,
+    },
+    Geometry {
+        name: "low_fifo40",
+        chunk: 9,
+        right: 4,
+        fifo: 40,
+        update: 300,
+    },
+    Geometry {
+        name: "mid_fifo40",
+        chunk: 18,
+        right: 4,
+        fifo: 40,
+        update: 300,
+    },
+    Geometry {
+        name: "acc2",
+        chunk: 18,
+        right: 8,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "acc4",
+        chunk: 36,
+        right: 12,
+        fifo: 264,
+        update: 222,
+    },
+    Geometry {
+        name: "acc8",
+        chunk: 80,
+        right: 20,
+        fifo: 264,
+        update: 222,
+    },
 ];
 /// Without `--configs`: the model card's rows.
 const DEFAULT_CONFIGS: &str = "low,very_low,ultra_low";
@@ -109,7 +175,11 @@ fn main() -> anyhow::Result<()> {
     let model = data_dir.join("models").join(DIAR_DIR).join(DIAR_MODEL);
     anyhow::ensure!(model.is_file(), "no model at {}", model.display());
     let chosen: Vec<&Geometry> = std::iter::once(&GEOMETRIES[0])
-        .chain(configs.split(',').filter_map(|n| GEOMETRIES.iter().find(|g| g.name == n.trim())))
+        .chain(
+            configs
+                .split(',')
+                .filter_map(|n| GEOMETRIES.iter().find(|g| g.name == n.trim())),
+        )
         .collect();
 
     let mut pcm = pcm16k(&audio)?;
@@ -128,7 +198,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut sess = session(&model, &data_dir, threads)?;
     // Warm-up: the first `run` pays for kernel selection and arena growth.
-    let _ = stream(&pcm[..pcm.len().min(RATE as usize * 40)], &mut sess, &GEOMETRIES[1]);
+    let _ = stream(
+        &pcm[..pcm.len().min(RATE as usize * 40)],
+        &mut sess,
+        &GEOMETRIES[1],
+    );
 
     let mut runs = Vec::new();
     for g in chosen {
@@ -137,11 +211,19 @@ fn main() -> anyhow::Result<()> {
         runs.push(r);
     }
 
-    let system_words = words.as_deref().map(load_words).transpose()?.unwrap_or_default();
+    let system_words = words
+        .as_deref()
+        .map(load_words)
+        .transpose()?
+        .unwrap_or_default();
     println!();
     println!(
         "agreement vs offline (channels matched by overlap; DER = miss+false+confusion over offline speech){}",
-        if system_words.is_empty() { "" } else { "; words = stored system-track words by midpoint" }
+        if system_words.is_empty() {
+            ""
+        } else {
+            "; words = stored system-track words by midpoint"
+        }
     );
     println!(
         "{:<12} {:>5} {:>10} {:>8} {:>9} {:>10} {:>14} channel map",
@@ -172,7 +254,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn dirs_home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// `ort::Error<R>` is not `Send + Sync` (it carries the failed builder); stringify.
@@ -237,7 +321,8 @@ fn stream(pcm: &[f32], sess: &mut Session, g: &Geometry) -> Run {
                 "attention_mask" => Tensor::from_array((vec![1i64, n_in as i64], vec![1i64; n_in])).expect("shape"),
             ])
             .expect("run");
-        let get = |name: &str| -> &[f32] { outputs[name].try_extract_tensor::<f32>().expect("f32").1 };
+        let get =
+            |name: &str| -> &[f32] { outputs[name].try_extract_tensor::<f32>().expect("f32").1 };
         let logits = get("logits");
         assert_eq!(logits.len(), n_in * SUBSAMPLING * SPEAKERS);
         let own = n_cached * SUBSAMPLING * SPEAKERS..(n_cached + n_chunk) * SUBSAMPLING * SPEAKERS;
@@ -261,7 +346,15 @@ fn stream(pcm: &[f32], sess: &mut Session, g: &Geometry) -> Run {
     let mut labels: Vec<&str> = spans.iter().map(|s| s.speaker.as_str()).collect();
     labels.sort_unstable();
     labels.dedup();
-    Run { geometry: *g, probs: out, step_ms, wall, cpu, speakers: labels.len(), turns: spans.len() }
+    Run {
+        geometry: *g,
+        probs: out,
+        step_ms,
+        wall,
+        cpu,
+        speakers: labels.len(),
+        turns: spans.len(),
+    }
 }
 
 fn report(r: &Run, audio_s: f64) {
@@ -272,7 +365,12 @@ fn report(r: &Run, audio_s: f64) {
     println!();
     println!(
         "[{}] chunk {} · right {} · fifo {} · update {} · buffer {} ms",
-        g.name, g.chunk, g.right, g.fifo, g.update, g.buffer_ms()
+        g.name,
+        g.chunk,
+        g.right,
+        g.fifo,
+        g.update,
+        g.buffer_ms()
     );
     println!(
         "  steps {} · step ms p50 {:.1} · p95 {:.1} · max {:.1} · wall {:.1} s · RTF {:.3} · cpu {:.1} s = {:.0}% of one core live · threads×{:.1}",
@@ -304,7 +402,10 @@ fn channel_seconds(probs: &[f32]) -> String {
             s[k] += usize::from(p >= SPEECH);
         }
     }
-    s.iter().map(|&n| format!("{:.0}", n as f32 * FRAME_MS / 1000.0)).collect::<Vec<_>>().join("/")
+    s.iter()
+        .map(|&n| format!("{:.0}", n as f32 * FRAME_MS / 1000.0))
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 struct Agreement {
@@ -410,7 +511,14 @@ fn best_permutation(overlap: &[[usize; SPEAKERS]; SPEAKERS]) -> [usize; SPEAKERS
         for r in 0..SPEAKERS {
             if used & (1 << r) == 0 {
                 cur[h] = r;
-                go(h + 1, used | (1 << r), cur, best, acc + overlap[r][h], overlap);
+                go(
+                    h + 1,
+                    used | (1 << r),
+                    cur,
+                    best,
+                    acc + overlap[r][h],
+                    overlap,
+                );
             }
         }
     }
@@ -440,17 +548,30 @@ fn load_words(path: &Path) -> anyhow::Result<Vec<(u64, u64)>> {
 /// The live STT path (`voice::live::Utterer`: VAD + gate + Nemotron streaming, 20 ms
 /// pushes as the capture ring delivers) alone, then concurrently with the `low`
 /// diariser on a second thread.
-fn stt_bench(pcm: &[f32], data_dir: &Path, model: &Path, audio_s: f64, threads: Option<usize>) -> anyhow::Result<()> {
+fn stt_bench(
+    pcm: &[f32],
+    data_dir: &Path,
+    model: &Path,
+    audio_s: f64,
+    threads: Option<usize>,
+) -> anyhow::Result<()> {
     let dir = data_dir.join("models").join(voice::STREAMING_MODEL_SUBDIR);
     println!();
-    println!("live STT ({}) over the same audio, 20 ms pushes", dir.display());
+    println!(
+        "live STT ({}) over the same audio, 20 ms pushes",
+        dir.display()
+    );
     let run_stt = |pcm: &[f32]| -> anyhow::Result<(Duration, Duration, usize)> {
         let mut live = voice::live::Utterer::open(&dir, data_dir)?;
         let cpu0 = cpu_time();
         let t0 = Instant::now();
         let mut pieces = 0;
         for chunk in pcm.chunks(RATE as usize / 50) {
-            pieces += live.chunk(chunk)?.into_iter().filter(|t| t.is_final).count();
+            pieces += live
+                .chunk(chunk)?
+                .into_iter()
+                .filter(|t| t.is_final)
+                .count();
         }
         pieces += live.close()?.len();
         Ok((t0.elapsed(), cpu_time() - cpu0, pieces))
@@ -503,7 +624,11 @@ fn max_rss_mb() -> u64 {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
     // macOS reports bytes, Linux kilobytes.
-    if cfg!(target_os = "macos") { ru.ru_maxrss as u64 >> 20 } else { ru.ru_maxrss as u64 >> 10 }
+    if cfg!(target_os = "macos") {
+        ru.ru_maxrss as u64 >> 20
+    } else {
+        ru.ru_maxrss as u64 >> 10
+    }
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -522,7 +647,14 @@ struct SpeakerCache {
 
 impl SpeakerCache {
     fn new(fifo_len: usize, update_period: usize) -> Self {
-        Self { fifo_len, update_period, embeds: Vec::new(), probs: Vec::new(), fifo: Vec::new(), compressed: false }
+        Self {
+            fifo_len,
+            update_period,
+            embeds: Vec::new(),
+            probs: Vec::new(),
+            fifo: Vec::new(),
+            compressed: false,
+        }
     }
 
     fn cached(&self) -> Vec<f32> {
@@ -538,10 +670,17 @@ impl SpeakerCache {
         let mut fifo = std::mem::take(&mut self.fifo);
         fifo.extend_from_slice(&chunk_embeds[..n_chunk * HIDDEN]);
         let len = n_fifo + n_chunk;
-        let popped = if len <= self.fifo_len { 0 } else { self.update_period.max(len - self.fifo_len).min(len) };
+        let popped = if len <= self.fifo_len {
+            0
+        } else {
+            self.update_period.max(len - self.fifo_len).min(len)
+        };
         if popped > 0 {
-            let mut cache_probs =
-                if self.compressed { std::mem::take(&mut self.probs) } else { probs[..n_cache * SPEAKERS].to_vec() };
+            let mut cache_probs = if self.compressed {
+                std::mem::take(&mut self.probs)
+            } else {
+                probs[..n_cache * SPEAKERS].to_vec()
+            };
             let fifo_probs = &probs[n_cache * SPEAKERS..(n_cache + len) * SPEAKERS];
             cache_probs.extend_from_slice(&fifo_probs[..popped * SPEAKERS]);
             let mut cache = std::mem::take(&mut self.embeds);
@@ -565,7 +704,11 @@ fn compress(embeds: &[f32], probs: &[f32], silence: &[f32]) -> (Vec<f32>, Vec<f3
         *s += LATEST_BOOST;
     }
     let ln2 = 2f32.ln();
-    boost(&mut scores, (BUDGET as f32 * STRONG_BOOST_RATE) as usize, 2.0 * ln2);
+    boost(
+        &mut scores,
+        (BUDGET as f32 * STRONG_BOOST_RATE) as usize,
+        2.0 * ln2,
+    );
     boost(&mut scores, (BUDGET as f32 * WEAK_BOOST_RATE) as usize, ln2);
     let rows = n + SILENCE_SLOTS;
     let sentinel = rows * SPEAKERS;
@@ -575,8 +718,16 @@ fn compress(embeds: &[f32], probs: &[f32], silence: &[f32]) -> (Vec<f32>, Vec<f3
         all.extend((n..rows).map(|f| (f32::INFINITY, s * rows + f)));
     }
     all.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut keep: Vec<usize> =
-        all[..CACHE].iter().map(|&(score, i)| if score == f32::NEG_INFINITY { sentinel } else { i }).collect();
+    let mut keep: Vec<usize> = all[..CACHE]
+        .iter()
+        .map(|&(score, i)| {
+            if score == f32::NEG_INFINITY {
+                sentinel
+            } else {
+                i
+            }
+        })
+        .collect();
     keep.sort_unstable();
     let mut out_embeds = Vec::with_capacity(CACHE * HIDDEN);
     let mut out_probs = Vec::with_capacity(CACHE * SPEAKERS);
@@ -599,7 +750,10 @@ fn frame_scores(probs: &[f32]) -> Vec<f32> {
     let mut scores = vec![f32::NEG_INFINITY; n * SPEAKERS];
     let mut positive = [0usize; SPEAKERS];
     for (f, p) in probs.chunks_exact(SPEAKERS).enumerate() {
-        let complements: Vec<f32> = p.iter().map(|&x| (1.0 - x).max(SCORE_THRESHOLD).ln()).collect();
+        let complements: Vec<f32> = p
+            .iter()
+            .map(|&x| (1.0 - x).max(SCORE_THRESHOLD).ln())
+            .collect();
         let sum: f32 = complements.iter().sum();
         for s in 0..SPEAKERS {
             if p[s] > 0.5 {
@@ -626,7 +780,9 @@ fn boost(scores: &mut [f32], k: usize, by: f32) {
     let n = scores.len() / SPEAKERS;
     let mut order: Vec<usize> = (0..n).collect();
     for s in 0..SPEAKERS {
-        order.sort_unstable_by(|&a, &b| scores[b * SPEAKERS + s].total_cmp(&scores[a * SPEAKERS + s]));
+        order.sort_unstable_by(|&a, &b| {
+            scores[b * SPEAKERS + s].total_cmp(&scores[a * SPEAKERS + s])
+        });
         for &f in &order[..k.min(n)] {
             scores[f * SPEAKERS + s] += by;
         }

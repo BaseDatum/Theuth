@@ -315,7 +315,11 @@ fn skipped(url: &str, why: impl Into<String>) -> ReadPage {
 /// rest are `not-relevant` (decoys, homonyms), non-http URLs are `error: …`,
 /// and rows past the slots are `budget`. Returns one `Ok(url)` (read it) or
 /// `Err(page)` (already explained) per row.
-fn plan_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<Result<String, ReadPage>> {
+fn plan_reads(
+    results: &[RankedResult],
+    terms: &[String],
+    read: usize,
+) -> Vec<Result<String, ReadPage>> {
     let need_alone = terms.len().div_ceil(2).clamp(1, 2);
     let mut slots = read;
     results
@@ -333,7 +337,11 @@ fn plan_reads(results: &[RankedResult], terms: &[String], read: usize) -> Vec<Re
                 .iter()
                 .filter(|t| hay.contains(t.as_str()) || squashed.contains(t.as_str()))
                 .count();
-            let need = if r.providers.len() >= 2 { 1 } else { need_alone };
+            let need = if r.providers.len() >= 2 {
+                1
+            } else {
+                need_alone
+            };
             if matched < need {
                 return Err(skipped(&r.url, "not-relevant"));
             }
@@ -615,7 +623,12 @@ mod tests {
         let results = [
             hit(1, "RTINGS monitor review", "https://d.example/", ""),
             hit(2, "Unrelated", "https://c.example/", "nothing here"),
-            hit(3, "Encyclopedia: Monitor", "https://b.example/", "rtings monitor review methodology"),
+            hit(
+                3,
+                "Encyclopedia: Monitor",
+                "https://b.example/",
+                "rtings monitor review methodology",
+            ),
             hit(4, "rtings monitor", "ftp://a.example/", ""),
             hit(5, "RTINGS monitor review 2", "https://e.example/", ""),
         ];
@@ -634,8 +647,18 @@ mod tests {
     #[test]
     fn one_token_query_needs_one_match() {
         let results = [
-            hit(1, "Bun releases", "https://github.com/oven-sh/bun/releases", ""),
-            hit(2, "Android 17", "https://en.wikipedia.org/wiki/Android_17", ""),
+            hit(
+                1,
+                "Bun releases",
+                "https://github.com/oven-sh/bun/releases",
+                "",
+            ),
+            hit(
+                2,
+                "Android 17",
+                "https://en.wikipedia.org/wiki/Android_17",
+                "",
+            ),
         ];
         assert_eq!(
             plan(&results, "bun", 8),
@@ -649,20 +672,54 @@ mod tests {
     #[test]
     fn two_token_queries_need_one_match_and_camel_case_matches_spaced_text() {
         let results = [
-            hit(1, "Introducing Claude Opus 5.5 - Anthropic", "https://www.anthropic.com/claude-opus-5-5", "5 days ago"),
-            hit(2, "How to print to PDF - Microsoft Q&A", "https://learn.microsoft.com/en-us/answers/q/1", "Microsoft Print to PDF"),
+            hit(
+                1,
+                "Introducing Claude Opus 5.5 - Anthropic",
+                "https://www.anthropic.com/claude-opus-5-5",
+                "5 days ago",
+            ),
+            hit(
+                2,
+                "How to print to PDF - Microsoft Q&A",
+                "https://learn.microsoft.com/en-us/answers/q/1",
+                "Microsoft Print to PDF",
+            ),
             hit(3, "Unrelated", "https://c.example/", "nothing"),
         ];
-        assert_eq!(plan(&results, "Anthropic announcement", 8)[0], "read https://www.anthropic.com/claude-opus-5-5");
-        assert_eq!(plan(&results, "PrintToPdf", 8)[1], "read https://learn.microsoft.com/en-us/answers/q/1");
-        assert_eq!(plan(&results, "PrintToPdf", 8)[2], "not-relevant https://c.example/");
+        assert_eq!(
+            plan(&results, "Anthropic announcement", 8)[0],
+            "read https://www.anthropic.com/claude-opus-5-5"
+        );
+        assert_eq!(
+            plan(&results, "PrintToPdf", 8)[1],
+            "read https://learn.microsoft.com/en-us/answers/q/1"
+        );
+        assert_eq!(
+            plan(&results, "PrintToPdf", 8)[2],
+            "not-relevant https://c.example/"
+        );
         let agreed = RankedResult {
             providers: vec!["a".into(), "b".into()],
-            ..hit(1, "Releases: oven-sh/bun - GitHub", "https://github.com/oven-sh/bun/releases", "")
+            ..hit(
+                1,
+                "Releases: oven-sh/bun - GitHub",
+                "https://github.com/oven-sh/bun/releases",
+                "",
+            )
         };
-        assert_eq!(plan(&[agreed.clone()], "bun latest version", 8)[0], "read https://github.com/oven-sh/bun/releases");
         assert_eq!(
-            plan(&[RankedResult { providers: vec!["a".into()], ..agreed }], "bun latest version", 8)[0],
+            plan(&[agreed.clone()], "bun latest version", 8)[0],
+            "read https://github.com/oven-sh/bun/releases"
+        );
+        assert_eq!(
+            plan(
+                &[RankedResult {
+                    providers: vec!["a".into()],
+                    ..agreed
+                }],
+                "bun latest version",
+                8
+            )[0],
             "not-relevant https://github.com/oven-sh/bun/releases"
         );
     }
@@ -686,8 +743,13 @@ mod tests {
             &self,
             _: &reqwest::Client,
             _: &Query,
-        ) -> Result<(Vec<crate::provider::RawResult>, Vec<crate::provider::Feature>), crate::provider::ProviderError>
-        {
+        ) -> Result<
+            (
+                Vec<crate::provider::RawResult>,
+                Vec<crate::provider::Feature>,
+            ),
+            crate::provider::ProviderError,
+        > {
             Err(crate::provider::ProviderError::Unsupported)
         }
 
@@ -727,7 +789,11 @@ mod tests {
             Duration::from_secs(6),
         )
         .await;
-        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
         let err = page.error.expect("capped read is an error");
         assert!(err.starts_with("render cap of 0.3s exceeded"), "{err}");
         assert!(page.excerpts.is_empty() && page.skipped.is_none());

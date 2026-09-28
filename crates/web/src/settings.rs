@@ -75,8 +75,10 @@ impl SearchDefaults {
             ("render_cap_ms", self.render_cap_ms.to_string()),
             (
                 "recent_default",
-                self.recent_default
-                    .map_or_else(|| "null".to_owned(), |r| crate::aggregate::recency_name(r).to_owned()),
+                self.recent_default.map_or_else(
+                    || "null".to_owned(),
+                    |r| crate::aggregate::recency_name(r).to_owned(),
+                ),
             ),
             ("keyless_fallback", self.keyless_fallback.to_string()),
             ("degraded_is_error", self.degraded_is_error.to_string()),

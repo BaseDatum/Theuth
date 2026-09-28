@@ -22,8 +22,12 @@ impl Ts {
             root: root.to_path_buf(),
             resolver: Resolver::new(ResolveOptions {
                 tsconfig: Some(TsconfigDiscovery::Auto),
-                condition_names: ["types", "import", "require", "node", "default"].map(String::from).to_vec(),
-                extensions: [".ts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".d.ts"].map(String::from).to_vec(),
+                condition_names: ["types", "import", "require", "node", "default"]
+                    .map(String::from)
+                    .to_vec(),
+                extensions: [".ts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".d.ts"]
+                    .map(String::from)
+                    .to_vec(),
                 main_fields: ["types", "module", "main"].map(String::from).to_vec(),
                 ..ResolveOptions::default()
             }),

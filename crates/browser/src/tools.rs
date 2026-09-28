@@ -32,7 +32,8 @@ pub struct Ctx {
     pub rt: Runtime,
     /// 57 §4.1 item 5: a shadow `browser_run` decided but did not act; the session's next
     /// acting `browser_*` call is the label and settles it ([`Ctx::settle`]).
-    pub pending: parking_lot::Mutex<std::collections::HashMap<SessionId, crate::systemone::Pending>>,
+    pub pending:
+        parking_lot::Mutex<std::collections::HashMap<SessionId, crate::systemone::Pending>>,
 }
 
 impl Ctx {

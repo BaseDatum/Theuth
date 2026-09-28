@@ -24,10 +24,7 @@ pub struct Scratch {
 impl Scratch {
     /// `temp_dir()/theuth-private-<128 random bits>`, created 0700 and locked.
     pub fn create() -> io::Result<Self> {
-        let root = std::env::temp_dir().join(format!(
-            "{PREFIX}{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let root = std::env::temp_dir().join(format!("{PREFIX}{}", uuid::Uuid::new_v4().simple()));
         platform::files::private_dir(&root)?;
         let lock = lock_file(&root)?;
         Ok(Self { root, lock })

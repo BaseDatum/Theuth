@@ -3002,7 +3002,8 @@ mod tests {
     /// session, the task and its initiating exchange.
     async fn exported_task(a: &mut Agents, principal: &str) -> (SessionId, A2aTask, PeerReceipt) {
         let session = SessionId::new();
-        a.store.create_session(session, "m", None, None, None)
+        a.store
+            .create_session(session, "m", None, None, None)
             .await
             .unwrap();
         a.communication
@@ -3195,7 +3196,8 @@ mod tests {
         let (session, task, _) = exported_task(&mut a, "peer:lab").await;
         let rs = task.request_scope;
         let child = SessionId::new();
-        a.store.create_session(child, "m", Some(session), Some("kid"), None)
+        a.store
+            .create_session(child, "m", Some(session), Some("kid"), None)
             .await
             .unwrap();
         a.network_bind_work(rs, &format!("child:{child}")).await;
@@ -3445,7 +3447,8 @@ mod tests {
         assert!(fresh.contains("inbound-only"), "{fresh}");
 
         let other = SessionId::new();
-        a.store.create_session(other, "m", None, None, None)
+        a.store
+            .create_session(other, "m", None, None, None)
             .await
             .unwrap();
         a.communication

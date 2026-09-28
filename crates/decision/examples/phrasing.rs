@@ -118,12 +118,27 @@ const TWO_WAY: [(&str, &str, &str); 3] = [
 
 /// `Bool` variants: (statement, truth is `true` when kind == small_talk).
 const BOOLS: [(&str, bool); 6] = [
-    ("The speakers are only greeting, scheduling or saying goodbye", true),
+    (
+        "The speakers are only greeting, scheduling or saying goodbye",
+        true,
+    ),
     ("This is small talk with nothing to look up", true),
-    ("Nothing of substance is discussed: only greetings, thanks, scheduling or goodbyes", true),
-    ("The speakers only exchange pleasantries, thanks, scheduling or goodbyes; no subject is discussed", true),
-    ("The speakers discuss a specific named subject: a person, system, product, ticket, place or event", false),
-    ("The conversation has a subject someone could look up", false),
+    (
+        "Nothing of substance is discussed: only greetings, thanks, scheduling or goodbyes",
+        true,
+    ),
+    (
+        "The speakers only exchange pleasantries, thanks, scheduling or goodbyes; no subject is discussed",
+        true,
+    ),
+    (
+        "The speakers discuss a specific named subject: a person, system, product, ticket, place or event",
+        false,
+    ),
+    (
+        "The conversation has a subject someone could look up",
+        false,
+    ),
 ];
 
 /// 1b instructions (unchanged from step 4, `oracle::BRIEF_INSTRUCTIONS`).
@@ -152,7 +167,12 @@ struct KindVariant {
 
 fn kind_variants() -> Vec<KindVariant> {
     let mut v = Vec::new();
-    let kind_index = |b: &Batch| KINDS.iter().position(|k| *k == b.kind).expect("labelled kind");
+    let kind_index = |b: &Batch| {
+        KINDS
+            .iter()
+            .position(|k| *k == b.kind)
+            .expect("labelled kind")
+    };
     for (lname, texts) in LABEL_SETS {
         for instr in INSTRUCTIONS {
             v.push(KindVariant {
@@ -241,8 +261,14 @@ fn main() -> anyhow::Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir.join("models").join(decision::MODEL_SUBDIR));
-    if !decision::engine::MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
-        println!("phrasing: no checkpoint in {} — nothing to bench", dir.display());
+    if !decision::engine::MODEL_FILES
+        .iter()
+        .all(|f| dir.join(f).is_file())
+    {
+        println!(
+            "phrasing: no checkpoint in {} — nothing to bench",
+            dir.display()
+        );
         return Ok(());
     }
     let fixture: Fixture = match &fixture_path {
@@ -257,12 +283,24 @@ fn main() -> anyhow::Result<()> {
         batches.iter().filter(|b| b.kind == "small_talk").count(),
         batches.iter().filter(|b| b.kind == "named_subject").count(),
         batches.iter().filter(|b| b.kind == "general").count(),
-        batches.iter().filter(|b| b.expected_brief.is_some()).count(),
+        batches
+            .iter()
+            .filter(|b| b.expected_brief.is_some())
+            .count(),
     );
 
     let t = Instant::now();
-    let m = Loaded::open(&dir, if metal { Gpu::Metal } else { Gpu::None }, if metal { DType::F16 } else { DType::F32 })?;
-    println!("model: {} loaded in {} ms on {:?}\n", dir.display(), t.elapsed().as_millis(), m.device.location());
+    let m = Loaded::open(
+        &dir,
+        if metal { Gpu::Metal } else { Gpu::None },
+        if metal { DType::F16 } else { DType::F32 },
+    )?;
+    println!(
+        "model: {} loaded in {} ms on {:?}\n",
+        dir.display(),
+        t.elapsed().as_millis(),
+        m.device.location()
+    );
     // Warm-up run so the first row's shader compile does not land in a p50.
     let warm = m
         .build(&Question::Bool {
@@ -285,11 +323,19 @@ fn main() -> anyhow::Result<()> {
     if part("1a") {
         let variants = kind_variants();
         println!("## 1a `meeting.kind` — {} variants\n", variants.len());
-        println!("Confusion rows = truth, cols = argmax, option order as listed. `skips@τ` = skip verdicts (`small_talk` / `true`) with P ≥ τ, as `small talk / other / hidden` — `other` are non-small-talk batches skipped (the false positives), `hidden` those among them whose turn published a brief (the cost that matters).\n");
-        println!("| # | variant | labels | acc | mean P(correct) | P(correct) per truth | confusion | skips@0.6 | skips@0.8 | skips@0.9 | p50 / p95 ms |");
+        println!(
+            "Confusion rows = truth, cols = argmax, option order as listed. `skips@τ` = skip verdicts (`small_talk` / `true`) with P ≥ τ, as `small talk / other / hidden` — `other` are non-small-talk batches skipped (the false positives), `hidden` those among them whose turn published a brief (the cost that matters).\n"
+        );
+        println!(
+            "| # | variant | labels | acc | mean P(correct) | P(correct) per truth | confusion | skips@0.6 | skips@0.8 | skips@0.9 | p50 / p95 ms |"
+        );
         println!("|---|---|---|---|---|---|---|---|---|---|---|");
         let mut best: Option<((usize, usize, i64), String)> = None;
-        for (n, v) in variants.iter().enumerate().filter(|(n, _)| variant.is_none_or(|w| w == n + 1)) {
+        for (n, v) in variants
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| variant.is_none_or(|w| w == n + 1))
+        {
             let k = v.labels.len();
             let mut conf = vec![vec![0usize; k]; k];
             let mut p_sum = vec![0f32; k];
@@ -319,7 +365,10 @@ fn main() -> anyhow::Result<()> {
                                 hidden_ids.push(format!(
                                     "{} ({}, {p:.2})",
                                     b.id,
-                                    b.published.as_ref().and_then(|p| p.first()).map_or("?", |p| p.title.as_str())
+                                    b.published
+                                        .as_ref()
+                                        .and_then(|p| p.first())
+                                        .map_or("?", |p| p.title.as_str())
                                 ));
                             }
                         }
@@ -331,7 +380,10 @@ fn main() -> anyhow::Result<()> {
                         b.id,
                         v.labels[truth],
                         v.labels[pred],
-                        out.probs.iter().map(|p| (p * 100.0).round() / 100.0).collect::<Vec<_>>()
+                        out.probs
+                            .iter()
+                            .map(|p| (p * 100.0).round() / 100.0)
+                            .collect::<Vec<_>>()
                     );
                 }
             }
@@ -340,7 +392,17 @@ fn main() -> anyhow::Result<()> {
             let correct: usize = (0..k).map(|i| conf[i][i]).sum();
             let mean_p = p_sum.iter().sum::<f32>() / total as f32;
             let per: Vec<String> = (0..k)
-                .map(|i| format!("{} {:.2}", v.labels[i], if p_n[i] == 0 { 0.0 } else { p_sum[i] / p_n[i] as f32 }))
+                .map(|i| {
+                    format!(
+                        "{} {:.2}",
+                        v.labels[i],
+                        if p_n[i] == 0 {
+                            0.0
+                        } else {
+                            p_sum[i] / p_n[i] as f32
+                        }
+                    )
+                })
                 .collect();
             let cell = |s: &[usize; 3]| format!("{} / {} / {}", s[0], s[1], s[2]);
             println!(
@@ -372,13 +434,19 @@ fn main() -> anyhow::Result<()> {
     // ---- 1b: brief -----------------------------------------------------------------------
     if part("1b") {
         println!("## 1b `meeting.brief` — `{BRIEF_INSTRUCTIONS}`, title-only candidates + none\n");
-        println!("Truth = the published cached row when it is among the K candidates, else `none`. `publish@0.6/0.3` = accepted picks (P ≥ 0.6 and margin ≥ 0.3 over the runner-up) that name a brief: right / wrong (wrong = a brief when the truth was `none` or another row).\n");
-        println!("| K | ids | batches | acc | mean P(correct) | mean P(correct) when a brief is the truth | publish@0.6/0.3 right / wrong | none-accepted right / wrong | truncated | p50 / p95 ms |");
+        println!(
+            "Truth = the published cached row when it is among the K candidates, else `none`. `publish@0.6/0.3` = accepted picks (P ≥ 0.6 and margin ≥ 0.3 over the runner-up) that name a brief: right / wrong (wrong = a brief when the truth was `none` or another row).\n"
+        );
+        println!(
+            "| K | ids | batches | acc | mean P(correct) | mean P(correct) when a brief is the truth | publish@0.6/0.3 right / wrong | none-accepted right / wrong | truncated | p50 / p95 ms |"
+        );
         println!("|---|---|---|---|---|---|---|---|---|---|");
         for k in [4usize, 8] {
             for short in [false, true] {
-                let (mut n_b, mut correct, mut p_sum, mut p_sum_brief, mut n_brief) = (0usize, 0usize, 0f32, 0f32, 0usize);
-                let (mut pub_right, mut pub_wrong, mut none_right, mut none_wrong, mut trunc) = (0usize, 0usize, 0usize, 0usize, 0usize);
+                let (mut n_b, mut correct, mut p_sum, mut p_sum_brief, mut n_brief) =
+                    (0usize, 0usize, 0f32, 0f32, 0usize);
+                let (mut pub_right, mut pub_wrong, mut none_right, mut none_wrong, mut trunc) =
+                    (0usize, 0usize, 0usize, 0usize, 0usize);
                 let mut times = Vec::new();
                 for b in batches {
                     let cands: Vec<&Cand> = b.candidates.iter().take(k).collect();
@@ -390,7 +458,11 @@ fn main() -> anyhow::Result<()> {
                         .iter()
                         .enumerate()
                         .map(|(i, c)| Candidate {
-                            id: if short { format!("b{}", i + 1) } else { c.id.clone() },
+                            id: if short {
+                                format!("b{}", i + 1)
+                            } else {
+                                c.id.clone()
+                            },
                             text: c.title.clone(),
                         })
                         .collect();
@@ -420,7 +492,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     let mut ranked = out.probs.clone();
                     ranked.sort_by(|a, b| b.total_cmp(a));
-                    let accepted = ranked[0] >= 0.6 && ranked[0] - ranked.get(1).copied().unwrap_or(0.0) >= 0.3;
+                    let accepted = ranked[0] >= 0.6
+                        && ranked[0] - ranked.get(1).copied().unwrap_or(0.0) >= 0.3;
                     if accepted {
                         match (pred == cands.len(), pred == truth) {
                             (false, true) => pub_right += 1,
@@ -434,9 +507,20 @@ fn main() -> anyhow::Result<()> {
                             "    K{k} {:<5} {:<16} truth {} → {} {:?}",
                             if short { "short" } else { "uuid" },
                             b.id,
-                            if truth < cands.len() { cands[truth].title.as_str() } else { "none" },
-                            if pred < cands.len() { cands[pred].title.as_str() } else { "none" },
-                            out.probs.iter().map(|p| (p * 100.0).round() / 100.0).collect::<Vec<_>>()
+                            if truth < cands.len() {
+                                cands[truth].title.as_str()
+                            } else {
+                                "none"
+                            },
+                            if pred < cands.len() {
+                                cands[pred].title.as_str()
+                            } else {
+                                "none"
+                            },
+                            out.probs
+                                .iter()
+                                .map(|p| (p * 100.0).round() / 100.0)
+                                .collect::<Vec<_>>()
                         );
                     }
                 }
@@ -445,7 +529,11 @@ fn main() -> anyhow::Result<()> {
                     "| {k} | {} | {n_b} | {correct}/{n_b} | {:.3} | {:.3} (n={n_brief}) | {pub_right} / {pub_wrong} | {none_right} / {none_wrong} | {trunc} | {:.0} / {:.0} |",
                     if short { "b1..bK" } else { "uuid" },
                     p_sum / n_b as f32,
-                    if n_brief == 0 { 0.0 } else { p_sum_brief / n_brief as f32 },
+                    if n_brief == 0 {
+                        0.0
+                    } else {
+                        p_sum_brief / n_brief as f32
+                    },
                     pct(&times, 0.5).as_secs_f64() * 1e3,
                     pct(&times, 0.95).as_secs_f64() * 1e3,
                 );

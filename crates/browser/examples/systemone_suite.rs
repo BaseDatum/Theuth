@@ -23,22 +23,86 @@ use serde_json::json;
 
 /// `(name, url, goal)`; the check is [`passed`].
 const TASKS: [(&str, &str, &str); 16] = [
-    ("wiki-einstein", "https://en.wikipedia.org/wiki/Main_Page", "Open the Wikipedia article about Albert Einstein."),
-    ("wiki-search", "https://en.wikipedia.org/wiki/Main_Page", "Search Wikipedia for 'Python programming language' and open the article about the Python language."),
-    ("hn-new", "https://news.ycombinator.com/", "Open the 'new' page that lists the newest submissions."),
-    ("hn-login-page", "https://news.ycombinator.com/", "Go to the login page."),
-    ("gh-issues", "https://github.com/tile-ai/tilelang", "Open the Issues tab of this repository."),
-    ("py-downloads", "https://www.python.org/", "Go to the Downloads page."),
-    ("books-travel", "https://books.toscrape.com/", "Open the 'Travel' category."),
-    ("books-open-book", "https://books.toscrape.com/", "Open the product page of the book 'A Light in the Attic'."),
-    ("internet-dropdown", "https://the-internet.herokuapp.com/dropdown", "Select 'Option 2' in the dropdown."),
-    ("internet-checkbox", "https://the-internet.herokuapp.com/checkboxes", "Tick the first checkbox."),
-    ("books-page2", "https://books.toscrape.com/", "Go to page 2 of the catalogue."),
-    ("quotes-tag-love", "https://quotes.toscrape.com/", "Show the quotes tagged 'love'."),
-    ("hn-past", "https://news.ycombinator.com/", "Open the 'past' page (front pages from previous days)."),
-    ("ddg-search", "https://duckduckgo.com/", "Search for 'tilelang github' and show the results."),
-    ("arxiv-search", "https://arxiv.org/", "Search arXiv for 'flash attention' papers and show the results list."),
-    ("flights", "https://www.google.com/travel/flights?hl=en", "Find one-way flights from Zurich to London on September 28, 2026, for one adult in economy. Stop when matching flight options are visible."),
+    (
+        "wiki-einstein",
+        "https://en.wikipedia.org/wiki/Main_Page",
+        "Open the Wikipedia article about Albert Einstein.",
+    ),
+    (
+        "wiki-search",
+        "https://en.wikipedia.org/wiki/Main_Page",
+        "Search Wikipedia for 'Python programming language' and open the article about the Python language.",
+    ),
+    (
+        "hn-new",
+        "https://news.ycombinator.com/",
+        "Open the 'new' page that lists the newest submissions.",
+    ),
+    (
+        "hn-login-page",
+        "https://news.ycombinator.com/",
+        "Go to the login page.",
+    ),
+    (
+        "gh-issues",
+        "https://github.com/tile-ai/tilelang",
+        "Open the Issues tab of this repository.",
+    ),
+    (
+        "py-downloads",
+        "https://www.python.org/",
+        "Go to the Downloads page.",
+    ),
+    (
+        "books-travel",
+        "https://books.toscrape.com/",
+        "Open the 'Travel' category.",
+    ),
+    (
+        "books-open-book",
+        "https://books.toscrape.com/",
+        "Open the product page of the book 'A Light in the Attic'.",
+    ),
+    (
+        "internet-dropdown",
+        "https://the-internet.herokuapp.com/dropdown",
+        "Select 'Option 2' in the dropdown.",
+    ),
+    (
+        "internet-checkbox",
+        "https://the-internet.herokuapp.com/checkboxes",
+        "Tick the first checkbox.",
+    ),
+    (
+        "books-page2",
+        "https://books.toscrape.com/",
+        "Go to page 2 of the catalogue.",
+    ),
+    (
+        "quotes-tag-love",
+        "https://quotes.toscrape.com/",
+        "Show the quotes tagged 'love'.",
+    ),
+    (
+        "hn-past",
+        "https://news.ycombinator.com/",
+        "Open the 'past' page (front pages from previous days).",
+    ),
+    (
+        "ddg-search",
+        "https://duckduckgo.com/",
+        "Search for 'tilelang github' and show the results.",
+    ),
+    (
+        "arxiv-search",
+        "https://arxiv.org/",
+        "Search arXiv for 'flash attention' papers and show the results list.",
+    ),
+    (
+        "flights",
+        "https://www.google.com/travel/flights?hl=en",
+        "Find one-way flights from Zurich to London on September 28, 2026, for one adult in economy. Stop when matching flight options are visible.",
+    ),
 ];
 
 /// Their `check(url, title, text)` per task; the two state checks read the page like theirs.
@@ -65,9 +129,12 @@ fn passed(name: &str, url: &str, title: &str, text: &str, state: &str) -> bool {
             (text.contains("ZRH") || text.contains("Zurich") || text.contains("Zürich"))
                 && text.contains("London")
                 && lower.contains("one way")
-                && text.split(|c: char| !c.is_ascii_digit() && c != ':').any(|w| {
-                    w.split_once(':').is_some_and(|(h, m)| (1..=2).contains(&h.len()) && m.len() == 2)
-                })
+                && text
+                    .split(|c: char| !c.is_ascii_digit() && c != ':')
+                    .any(|w| {
+                        w.split_once(':')
+                            .is_some_and(|(h, m)| (1..=2).contains(&h.len()) && m.len() == 2)
+                    })
         }
         _ => false,
     }
@@ -109,24 +176,35 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth"));
     let browser_dir = browser_dir.unwrap_or_else(|| data_dir.join("models/decision-browser"));
-    if !decision::engine::MODEL_FILES.iter().all(|f| browser_dir.join(f).is_file()) {
-        anyhow::bail!("no laya-browser checkpoint in {} (scripts/fetch-laya-browser.sh)", browser_dir.display());
+    if !decision::engine::MODEL_FILES
+        .iter()
+        .all(|f| browser_dir.join(f).is_file())
+    {
+        anyhow::bail!(
+            "no laya-browser checkpoint in {} (scripts/fetch-laya-browser.sh)",
+            browser_dir.display()
+        );
     }
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
         .try_init();
 
     // The decision engines: default (unused here) + browser, browser families active.
     let mut dcfg = DecisionConfig::default();
-    dcfg.checkpoints.insert("browser".into(), browser_dir.clone().into());
+    dcfg.checkpoints
+        .insert("browser".into(), browser_dir.clone().into());
     for g in dcfg.families.values_mut() {
         g.mode = Mode::Active;
     }
-    let scratch = std::env::temp_dir().join(format!("theuth-systemone-suite-{}", std::process::id()));
+    let scratch =
+        std::env::temp_dir().join(format!("theuth-systemone-suite-{}", std::process::id()));
     std::fs::create_dir_all(&scratch)?;
     let log = Log::new(scratch.join("decisions"));
     let default_dir = dcfg.model_dir_in(&data_dir);
-    Engine::spawn(Engine::new(dcfg.clone(), default_dir.clone(), log.clone())).register(decision::DECISION_ACTOR)?;
+    Engine::spawn(Engine::new(dcfg.clone(), default_dir.clone(), log.clone()))
+        .register(decision::DECISION_ACTOR)?;
     Engine::spawn(Engine::new(dcfg, default_dir, log).with_checkpoint("browser", browser_dir))
         .register(decision::actor_name("browser"))?;
 
@@ -163,7 +241,11 @@ async fn main() -> anyhow::Result<()> {
                 .call(session, "browser_navigate", json!({ "url": url }))
                 .await?;
             if open.is_error {
-                println!("{name} run {}: open failed: {}", r + 1, open.content.lines().next().unwrap_or(""));
+                println!(
+                    "{name} run {}: open failed: {}",
+                    r + 1,
+                    open.content.lines().next().unwrap_or("")
+                );
                 row.passes.push(false);
                 row.steps.push(0);
                 row.stops.push(Stop::Error("open".into()));
@@ -178,12 +260,20 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .unwrap_or_default();
             let state = ctx
-                .call(session, "browser_evaluate", json!({ "expression": STATE_JS }))
+                .call(
+                    session,
+                    "browser_evaluate",
+                    json!({ "expression": STATE_JS }),
+                )
                 .await
                 .map(|o| o.content.trim().trim_matches('"').to_owned())
                 .unwrap_or_default();
             let ok = passed(name, &page.url, &page.title, &page.text, &state);
-            let executed = run.steps.iter().filter(|s| !matches!(s.op, Op::Done | Op::Blocked)).count();
+            let executed = run
+                .steps
+                .iter()
+                .filter(|s| !matches!(s.op, Op::Done | Op::Blocked))
+                .count();
             if matches!(run.stop, Stop::BelowGate(_)) {
                 row.escalations += 1;
             }
@@ -198,7 +288,11 @@ async fn main() -> anyhow::Result<()> {
                 executed,
                 run.stop,
                 page.url,
-                run.steps.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" | ")
+                run.steps
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             );
             row.passes.push(ok);
             row.steps.push(executed);
@@ -216,7 +310,11 @@ async fn main() -> anyhow::Result<()> {
     for r in &rows {
         let mut d = r.decide_ms.clone();
         d.sort_unstable();
-        let marks: String = r.passes.iter().map(|p| if *p { '✓' } else { '✗' }).collect();
+        let marks: String = r
+            .passes
+            .iter()
+            .map(|p| if *p { '✓' } else { '✗' })
+            .collect();
         let n_pass = r.passes.iter().filter(|p| **p).count();
         runs_pass += n_pass;
         runs_total += r.passes.len();
@@ -227,10 +325,22 @@ async fn main() -> anyhow::Result<()> {
             "| {} | {marks} ({n_pass}/{}) | {} | {} | {} | {} |",
             r.name,
             r.passes.len(),
-            r.steps.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" / "),
+            r.steps
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(" / "),
             pct(&d, 0.5),
             r.escalations,
-            r.stops.iter().map(|s| format!("{s:?}").split('(').next().unwrap_or("").to_lowercase()).collect::<Vec<_>>().join(" / ")
+            r.stops
+                .iter()
+                .map(|s| format!("{s:?}")
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" / ")
         );
     }
     all_steps.sort_unstable();
@@ -246,11 +356,24 @@ async fn main() -> anyhow::Result<()> {
         pct(&all_steps, 0.5),
         pct(&all_steps, 0.95),
         all_steps.last().copied().unwrap_or(0),
-        if pct(&all_steps, 0.95) <= 300 { "within" } else { "OVER" },
+        if pct(&all_steps, 0.95) <= 300 {
+            "within"
+        } else {
+            "OVER"
+        },
         suite_t.elapsed().as_secs_f64()
     );
     println!("\nstep latency histogram (ms):");
-    for (lo, hi) in [(0, 100), (100, 200), (200, 300), (300, 500), (500, 800), (800, 1200), (1200, 2000), (2000, u64::MAX)] {
+    for (lo, hi) in [
+        (0, 100),
+        (100, 200),
+        (200, 300),
+        (300, 500),
+        (500, 800),
+        (800, 1200),
+        (1200, 2000),
+        (2000, u64::MAX),
+    ] {
         let n = all_steps.iter().filter(|&&d| d >= lo && d < hi).count();
         if hi == u64::MAX {
             println!("  {lo:>5}+      {:<40} {n}", "#".repeat(n.min(40)));

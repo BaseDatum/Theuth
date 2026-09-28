@@ -65,7 +65,12 @@ impl Store {
         } else {
             g.1 += 1;
         }
-        replica::Hlc { wall_ms: g.0, counter: g.1, origin: replica::PeerId(self.me.0.clone()) }.to_text()
+        replica::Hlc {
+            wall_ms: g.0,
+            counter: g.1,
+            origin: replica::PeerId(self.me.0.clone()),
+        }
+        .to_text()
     }
 
     // --- peers ---------------------------------------------------------
@@ -95,7 +100,12 @@ impl Store {
 
     /// Live (not removed) peers.
     pub async fn peers(&self) -> anyhow::Result<Vec<PeerEntry>> {
-        Ok(self.peer_entries().await?.into_iter().filter(|p| !p.removed()).collect())
+        Ok(self
+            .peer_entries()
+            .await?
+            .into_iter()
+            .filter(|p| !p.removed())
+            .collect())
     }
 
     /// Upsert one row verbatim.
@@ -158,11 +168,18 @@ impl Store {
     /// Election inputs for `id` from its replicated row plus our ledger;
     /// `None` until the row has arrived (67 §4.5: nothing to request, the
     /// change feed delivers it).
-    pub async fn candidate(&self, id: &EngineId, connected_since_ms: u64, now_ms: u64) -> anyhow::Result<Option<Candidate>> {
-        let Some(r) = sqlx::query("SELECT class, uptime_since_ms, hub_pref, first_seen_ms FROM engine_stats WHERE id = ?")
-            .bind(&id.0)
-            .fetch_optional(&self.pool)
-            .await?
+    pub async fn candidate(
+        &self,
+        id: &EngineId,
+        connected_since_ms: u64,
+        now_ms: u64,
+    ) -> anyhow::Result<Option<Candidate>> {
+        let Some(r) = sqlx::query(
+            "SELECT class, uptime_since_ms, hub_pref, first_seen_ms FROM engine_stats WHERE id = ?",
+        )
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await?
         else {
             return Ok(None);
         };
@@ -187,13 +204,16 @@ impl Store {
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let id = EngineId(r.get::<String, _>("id"));
-            let availability_30d = self.availability_30d(&id, crate::identity::now_ms()).await?;
+            let availability_30d = self
+                .availability_30d(&id, crate::identity::now_ms())
+                .await?;
             out.push(EngineStats {
                 id,
                 uptime_since_ms: r.get::<i64, _>("uptime_since_ms") as u64,
                 class: class_from(&r.get::<String, _>("class")),
                 availability_30d,
-                harnesses: serde_json::from_str(&r.get::<String, _>("harnesses_json")).unwrap_or_default(),
+                harnesses: serde_json::from_str(&r.get::<String, _>("harnesses_json"))
+                    .unwrap_or_default(),
                 repos: serde_json::from_str(&r.get::<String, _>("repos_json")).unwrap_or_default(),
                 display: r.get::<i32, _>("display") != 0,
                 gpu: r.get::<i32, _>("gpu") != 0,
@@ -232,7 +252,12 @@ impl Store {
 
     /// Extend the latest interval of `subject` (as seen by `observer`) to `now_ms`.
     /// A replicated write: [`Touches`] decides when a heartbeat gets to call it.
-    pub async fn availability_touch(&self, observer: &EngineId, subject: &EngineId, now_ms: u64) -> anyhow::Result<()> {
+    pub async fn availability_touch(
+        &self,
+        observer: &EngineId,
+        subject: &EngineId,
+        now_ms: u64,
+    ) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE availability SET to_ms = ?, hlc = ? WHERE observer = ? AND subject = ?
              AND from_ms = (SELECT MAX(from_ms) FROM availability WHERE observer = ? AND subject = ?)",
@@ -253,11 +278,13 @@ impl Store {
     /// seen fail is not penalised (probation guards the newcomer case).
     pub async fn availability_30d(&self, subject: &EngineId, now_ms: u64) -> anyhow::Result<f32> {
         let since = now_ms.saturating_sub(WINDOW_MS) as i64;
-        let rows = sqlx::query("SELECT from_ms, to_ms, reachable FROM availability WHERE subject = ? AND to_ms > ?")
-            .bind(&subject.0)
-            .bind(since)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT from_ms, to_ms, reachable FROM availability WHERE subject = ? AND to_ms > ?",
+        )
+        .bind(&subject.0)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
         let (mut up, mut total) = (0u64, 0u64);
         for r in &rows {
             let from = (r.get::<i64, _>("from_ms") as u64).max(since as u64);
@@ -268,13 +295,22 @@ impl Store {
                 up += len;
             }
         }
-        Ok(if total == 0 { 1.0 } else { up as f32 / total as f32 })
+        Ok(if total == 0 {
+            1.0
+        } else {
+            up as f32 / total as f32
+        })
     }
 
     // --- lease_log -----------------------------------------------------
 
     /// Append one lease change.
-    pub async fn lease_log(&self, at_ms: u64, holder: Option<&EngineId>, reason: &str) -> anyhow::Result<()> {
+    pub async fn lease_log(
+        &self,
+        at_ms: u64,
+        holder: Option<&EngineId>,
+        reason: &str,
+    ) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO lease_log (at_ms, holder, reason) VALUES (?, ?, ?)")
             .bind(at_ms as i64)
             .bind(holder.map(|h| h.0.as_str()))
@@ -315,13 +351,20 @@ impl Store {
     /// merge, whichever engine wrote it first. Two engines' defaults tie on
     /// the clock and the larger origin id wins. Returns whether this call wrote.
     pub async fn meta_default(&self, key: &str, value: &str) -> anyhow::Result<bool> {
-        let hlc = replica::Hlc { wall_ms: 0, counter: 0, origin: replica::PeerId(self.me.0.clone()) }.to_text();
-        let r = sqlx::query("INSERT INTO mesh_meta (key, value, hlc) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING")
-            .bind(key)
-            .bind(value)
-            .bind(hlc)
-            .execute(&self.pool)
-            .await?;
+        let hlc = replica::Hlc {
+            wall_ms: 0,
+            counter: 0,
+            origin: replica::PeerId(self.me.0.clone()),
+        }
+        .to_text();
+        let r = sqlx::query(
+            "INSERT INTO mesh_meta (key, value, hlc) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(hlc)
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected() == 1)
     }
 }
@@ -338,7 +381,10 @@ pub struct Touches {
 impl Touches {
     /// A gate that lets a heartbeat write every `every_ms`.
     pub fn new(every_ms: u64) -> Self {
-        Self { every_ms, last: HashMap::new() }
+        Self {
+            every_ms,
+            last: HashMap::new(),
+        }
     }
 
     /// The row of `subject` was written at `now_ms` (interval opened or closed).
@@ -403,13 +449,26 @@ mod tests {
     async fn tables_attach_to_replication() {
         let dir = tempfile::tempdir().unwrap();
         let me = EngineId("me".into());
-        let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone()).await.unwrap();
-        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
-        let handle = engine.attach(store.pool(), &["peers", "engine_stats", "availability", "mesh_meta"]).await.unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone())
+            .await
+            .unwrap();
+        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let handle = engine
+            .attach(
+                store.pool(),
+                &["peers", "engine_stats", "availability", "mesh_meta"],
+            )
+            .await
+            .unwrap();
         let mut feed = handle.subscribe();
 
         let peer = EngineId("peer".into());
-        store.availability_open(&me, &peer, true, 1_000).await.unwrap();
+        store
+            .availability_open(&me, &peer, true, 1_000)
+            .await
+            .unwrap();
         store.availability_touch(&me, &peer, 2_000).await.unwrap();
         let stats = EngineStats {
             id: me.clone(),
@@ -421,7 +480,10 @@ mod tests {
             display: false,
             gpu: false,
         };
-        let hlc = store.put_stats(&stats, HubPref::Prefer, 5, 3_000).await.unwrap();
+        let hlc = store
+            .put_stats(&stats, HubPref::Prefer, 5, 3_000)
+            .await
+            .unwrap();
         assert_eq!(replica::Hlc::parse(&hlc).unwrap().origin.0, "me");
 
         // The 200 ms poller may already have captured some rows: drain the feed
@@ -429,34 +491,60 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let _ = handle.flush().await.unwrap();
         while seen.len() < 2 {
-            let batch = tokio::time::timeout(Duration::from_secs(5), feed.recv()).await.unwrap().unwrap();
-            assert!(batch.changes.iter().all(|c| c.hlc.origin.0 == "me"), "{batch:?}");
+            let batch = tokio::time::timeout(Duration::from_secs(5), feed.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                batch.changes.iter().all(|c| c.hlc.origin.0 == "me"),
+                "{batch:?}"
+            );
             seen.extend(batch.changes.iter().map(|c| c.table.clone()));
-            assert!(batch.changes.iter().all(|c| c.table != "availability" || c.pk == "me|peer|1000"), "{batch:?}");
+            assert!(
+                batch
+                    .changes
+                    .iter()
+                    .all(|c| c.table != "availability" || c.pk == "me|peer|1000"),
+                "{batch:?}"
+            );
         }
         assert_eq!(store.availability_30d(&peer, 2_000).await.unwrap(), 1.0);
 
         let c = store.candidate(&me, 0, 3_000).await.unwrap().unwrap();
-        assert!((c.hub_pref, c.first_seen_ms, c.class) == (HubPref::Prefer, 5, EngineClass::Server));
+        assert!(
+            (c.hub_pref, c.first_seen_ms, c.class) == (HubPref::Prefer, 5, EngineClass::Server)
+        );
         assert!(store.candidate(&peer, 0, 3_000).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn meta_default_keeps_the_first_value_and_stamps_zero() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into())).await.unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId("me".into()))
+            .await
+            .unwrap();
         assert_eq!(store.meta_get("name").await.unwrap(), None);
         assert!(store.meta_default("name", "work").await.unwrap());
         assert!(!store.meta_default("name", "other").await.unwrap());
-        assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("work"));
+        assert_eq!(
+            store.meta_get("name").await.unwrap().as_deref(),
+            Some("work")
+        );
         let hlc: String = sqlx::query("SELECT hlc FROM mesh_meta WHERE key = 'name'")
             .fetch_one(store.pool())
             .await
             .unwrap()
             .get("hlc");
-        assert_eq!(replica::Hlc::parse(&hlc).unwrap().wall_ms, 0, "a default is stamped at zero, not now");
+        assert_eq!(
+            replica::Hlc::parse(&hlc).unwrap().wall_ms,
+            0,
+            "a default is stamped at zero, not now"
+        );
         store.meta_set("name", "renamed").await.unwrap();
-        assert_eq!(store.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
+        assert_eq!(
+            store.meta_get("name").await.unwrap().as_deref(),
+            Some("renamed")
+        );
     }
 
     /// A rename on A, then a fresh B's default written *later*: the rename
@@ -464,10 +552,21 @@ mod tests {
     /// its first-seen stamp, newer than the rename, and won everywhere).
     #[tokio::test]
     async fn an_explicit_rename_beats_a_later_default_across_engines() {
-        async fn side(name: &str) -> (Store, std::sync::Arc<replica::engine::Engine>, replica::engine::ReplicaHandle, tempfile::TempDir) {
+        async fn side(
+            name: &str,
+        ) -> (
+            Store,
+            std::sync::Arc<replica::engine::Engine>,
+            replica::engine::ReplicaHandle,
+            tempfile::TempDir,
+        ) {
             let dir = tempfile::tempdir().unwrap();
-            let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(name.into())).await.unwrap();
-            let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
+            let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(name.into()))
+                .await
+                .unwrap();
+            let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
+                .await
+                .unwrap();
             let handle = engine.attach(store.pool(), &["mesh_meta"]).await.unwrap();
             (store, engine, handle, dir)
         }
@@ -483,8 +582,14 @@ mod tests {
         while let Some(batch) = b_handle.flush().await.unwrap() {
             a_engine.apply(&batch).await.unwrap();
         }
-        assert_eq!(a.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
-        assert_eq!(b.meta_get("name").await.unwrap().as_deref(), Some("renamed"));
+        assert_eq!(
+            a.meta_get("name").await.unwrap().as_deref(),
+            Some("renamed")
+        );
+        assert_eq!(
+            b.meta_get("name").await.unwrap().as_deref(),
+            Some("renamed")
+        );
     }
 
     /// 69 audit, idle writer: three heartbeats while connected write no row
@@ -493,9 +598,16 @@ mod tests {
     async fn heartbeats_do_not_write_availability() {
         let dir = tempfile::tempdir().unwrap();
         let me = EngineId("me".into());
-        let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone()).await.unwrap();
-        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite")).await.unwrap();
-        let handle = engine.attach(store.pool(), &["availability"]).await.unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), me.clone())
+            .await
+            .unwrap();
+        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let handle = engine
+            .attach(store.pool(), &["availability"])
+            .await
+            .unwrap();
         let mut feed = handle.subscribe();
         // Every batch (poller's or flush's) is on the feed once `flush` returns.
         let mut replicated = async || {
@@ -510,7 +622,10 @@ mod tests {
         let mut touches = Touches::new(600_000);
 
         // Connect: one write.
-        store.availability_open(&me, &peer, true, 1_000).await.unwrap();
+        store
+            .availability_open(&me, &peer, true, 1_000)
+            .await
+            .unwrap();
         touches.wrote(&peer, 1_000);
         assert!(!replicated().await.is_empty());
 
@@ -529,11 +644,22 @@ mod tests {
         assert!(touches.due(&peer, 601_000));
         assert!(!touches.due(&peer, 611_000));
         store.availability_touch(&me, &peer, 601_000).await.unwrap();
-        store.availability_open(&me, &peer, false, 700_000).await.unwrap();
+        store
+            .availability_open(&me, &peer, false, 700_000)
+            .await
+            .unwrap();
         touches.wrote(&peer, 700_000);
         let changes = replicated().await;
-        assert!(changes.iter().any(|c| c.pk == "me|peer|1000" && c.column.as_deref() == Some("to_ms")), "{changes:?}");
-        assert!(changes.iter().any(|c| c.pk == "me|peer|700000"), "{changes:?}");
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.pk == "me|peer|1000" && c.column.as_deref() == Some("to_ms")),
+            "{changes:?}"
+        );
+        assert!(
+            changes.iter().any(|c| c.pk == "me|peer|700000"),
+            "{changes:?}"
+        );
         assert!((store.availability_30d(&peer, 700_000).await.unwrap() - 1.0).abs() < f32::EPSILON);
     }
 }

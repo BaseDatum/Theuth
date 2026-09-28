@@ -471,7 +471,8 @@ impl runtime::Plugin for BrowserPlugin {
             tracing::info!("browser disabled by config");
             return Ok(());
         }
-        let actor = Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
+        let actor =
+            Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
         actor.register(BROWSER_ACTOR)?;
         // 57 §2.1: a turn ending releases the browser checkpoint its `browser_run` loaded.
         rt.subscribe::<Browsers, agent::AgentEvent>(&actor).await;

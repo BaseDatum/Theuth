@@ -360,7 +360,9 @@ mod tests {
     }
 
     async fn vault(dir: &tempfile::TempDir) -> secrets::Vault {
-        secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap()
+        secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

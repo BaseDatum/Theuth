@@ -551,7 +551,8 @@ impl Streamer {
         );
         // The chunk's own frames, at 10 ms (a padded last group is cut to the real
         // frames); the look-ahead is scored again next step.
-        let own = n_cached * SUBSAMPLING * SPEAKERS..(n_cached * SUBSAMPLING + (m_end - m0)) * SPEAKERS;
+        let own =
+            n_cached * SUBSAMPLING * SPEAKERS..(n_cached * SUBSAMPLING + (m_end - m0)) * SPEAKERS;
         let probs: Vec<f32> = logits[own].iter().map(|&x| sigmoid(x)).collect();
         // Pooled to encoder frames for the cache policy.
         let pooled: Vec<f32> = (0..n_in * SPEAKERS)

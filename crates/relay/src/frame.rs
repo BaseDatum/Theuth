@@ -162,7 +162,12 @@ mod tests {
     fn hub_moved_reparks_like_harness_gone() {
         assert!(reason::reparks(reason::HARNESS_GONE));
         assert!(reason::reparks(reason::HUB_MOVED));
-        for r in [reason::NORMAL, reason::QUEUE_FULL, reason::IDLE, reason::REFUSED] {
+        for r in [
+            reason::NORMAL,
+            reason::QUEUE_FULL,
+            reason::IDLE,
+            reason::REFUSED,
+        ] {
             assert!(!reason::reparks(r), "{r}");
         }
         assert!((reason::HUB_MOVED as usize) < reason::COUNT);

@@ -12,8 +12,8 @@
 //! rather than by materialising a renamed copy of every tensor.
 
 use candle_core::{DType, Device, Shape, Tensor};
-use candle_nn::var_builder::SimpleBackend;
 use candle_nn::Init;
+use candle_nn::var_builder::SimpleBackend;
 
 /// Map an upstream parameter name onto the name this port uses.
 ///

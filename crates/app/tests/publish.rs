@@ -322,20 +322,25 @@ async fn publish_open_call_edit_end_to_end() {
         })
         .await
         .unwrap();
-    assert!(from_ui.artifact.call_id.starts_with("ui-"), "{}", from_ui.artifact.call_id);
+    assert!(
+        from_ui.artifact.call_id.starts_with("ui-"),
+        "{}",
+        from_ui.artifact.call_id
+    );
     assert_eq!(from_ui.artifact.name, "fence.openui");
     assert_eq!(from_ui.artifact.session, session);
     assert_eq!(from_ui.library_hash, app::hash());
     assert_eq!(from_ui.bindings.len(), 3);
-    let listed: Vec<artifact::Artifact> = ActorRef::<artifact::ArtifactActor>::lookup(artifact::ARTIFACT_ACTOR)
-        .unwrap()
-        .unwrap()
-        .ask(artifact::List {
-            session: Some(session),
-            descendants: false,
-        })
-        .await
-        .unwrap();
+    let listed: Vec<artifact::Artifact> =
+        ActorRef::<artifact::ArtifactActor>::lookup(artifact::ARTIFACT_ACTOR)
+            .unwrap()
+            .unwrap()
+            .ask(artifact::List {
+                session: Some(session),
+                descendants: false,
+            })
+            .await
+            .unwrap();
     let mut ids: Vec<&str> = listed.iter().map(|a| a.call_id.as_str()).collect();
     ids.sort();
     assert_eq!(ids, vec!["call-1", from_ui.artifact.call_id.as_str()]);

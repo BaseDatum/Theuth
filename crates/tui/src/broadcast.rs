@@ -96,7 +96,12 @@ pub fn glyph<'a>(state: &AgentState, spinner: &'a str) -> &'a str {
 /// anything whose parent is not listed trails.
 pub fn group(list: Vec<AgentInfo>) -> Vec<AgentInfo> {
     // ponytail: O(n²) over the active set; index by parent if it ever grows past dozens.
-    fn children(list: &[AgentInfo], parent: SessionId, seen: &mut HashSet<SessionId>, out: &mut Vec<AgentInfo>) {
+    fn children(
+        list: &[AgentInfo],
+        parent: SessionId,
+        seen: &mut HashSet<SessionId>,
+        out: &mut Vec<AgentInfo>,
+    ) {
         for a in list.iter().filter(|a| a.depth > 0 && a.parent == parent) {
             if seen.insert(a.id) {
                 out.push(a.clone());
@@ -229,7 +234,11 @@ impl Broadcast {
                     };
                     format!(
                         "[{}] {} {name:<20} {:<9}{}  {}",
-                        if self.selected.contains(&a.id) { "x" } else { " " },
+                        if self.selected.contains(&a.id) {
+                            "x"
+                        } else {
+                            " "
+                        },
                         glyph(&a.activity.state, spinner),
                         a.activity.state.word(),
                         counts(&a.activity),

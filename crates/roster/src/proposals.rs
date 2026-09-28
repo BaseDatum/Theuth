@@ -55,9 +55,16 @@ mod tests {
         let t = hire_task(&f, "agent:cto", tasks::Owner::Agent("cto".into()));
         assert_eq!(t.title, "Hire agent ops (Ops)");
         assert_eq!(t.owner, tasks::Owner::Agent("cto".into()));
-        assert!(t.brief.starts_with("agent:cto proposes hiring **Ops** (`ops`)."));
-        assert!(t.brief.contains("- reports_to: cto\n- budget: 40 USD/month\n- tools: mutating\n- mcp: grafana\n"));
+        assert!(
+            t.brief
+                .starts_with("agent:cto proposes hiring **Ops** (`ops`).")
+        );
+        assert!(t.brief.contains(
+            "- reports_to: cto\n- budget: 40 USD/month\n- tools: mutating\n- mcp: grafana\n"
+        ));
         assert!(t.brief.contains("## Charter\n\nYou run prod.\n"));
-        assert!(t.brief.ends_with("Approve with `agent_approve` (Agents view / RPC); refuse by deleting `agents/ops.md`."));
+        assert!(t.brief.ends_with(
+            "Approve with `agent_approve` (Agents view / RPC); refuse by deleting `agents/ops.md`."
+        ));
     }
 }

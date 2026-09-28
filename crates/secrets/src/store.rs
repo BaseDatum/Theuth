@@ -44,7 +44,10 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .connect_with(opts)
         .await
         .with_context(|| format!("open {}", path.display()))?;
-    sqlx::migrate!("./migrations").run(&pool).await.context("run migrations")?;
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .context("run migrations")?;
     Ok(pool)
 }
 
@@ -90,10 +93,12 @@ pub async fn meta_get(pool: &SqlitePool, k: &str) -> anyhow::Result<Option<Vec<u
 
 /// Set the local-only `meta` value under `k`.
 pub async fn meta_put(pool: &SqlitePool, k: &str, v: &[u8]) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
-        .bind(k)
-        .bind(v)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+    )
+    .bind(k)
+    .bind(v)
+    .execute(pool)
+    .await?;
     Ok(())
 }

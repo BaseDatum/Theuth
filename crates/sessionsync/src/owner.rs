@@ -84,12 +84,22 @@ impl Take {
         // Re-read: a concurrent take moved the fence meanwhile.
         match self.store.fence(id).await.map_err(|e| e.to_string())? {
             Some((e, o)) if e == epoch && o == owner => {}
-            other => return Err(format!("{id}: ownership moved to {other:?} during the take")),
+            other => {
+                return Err(format!(
+                    "{id}: ownership moved to {other:?} during the take"
+                ));
+            }
         }
         unload(id).await;
         let next = epoch + 1;
-        self.store.set_owner(id, &me, next).await.map_err(|e| format!("{e:#}"))?;
-        self.store.set_fence(id, next, &me).await.map_err(|e| format!("{e:#}"))?;
+        self.store
+            .set_owner(id, &me, next)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        self.store
+            .set_fence(id, next, &me)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         self.rt
             .publish(AgentEvent::SessionOwnerChanged {
                 session: id,
@@ -108,7 +118,14 @@ impl Take {
         let t = self.transport.as_ref().context("no transport")?;
         let wait = Duration::from_secs(self.config.release_wait_secs);
         let mut framed = crate::events::framed(t.open(peer, ALPN_SESSIONS).await?);
-        framed.send(Msg::Release { session: id.to_string() }.encode()?).await?;
+        framed
+            .send(
+                Msg::Release {
+                    session: id.to_string(),
+                }
+                .encode()?,
+            )
+            .await?;
         let frame = tokio::time::timeout(wait, framed.next())
             .await
             .context("release timed out")?
@@ -129,7 +146,10 @@ impl Take {
             if applied >= last_seq {
                 return Ok(());
             }
-            anyhow::ensure!(Instant::now() < deadline, "tail not replicated: cursor {applied} < {last_seq}");
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "tail not replicated: cursor {applied} < {last_seq}"
+            );
             tokio::time::sleep(CURSOR_POLL).await;
         }
     }
@@ -141,7 +161,9 @@ impl Take {
             return Ok(());
         };
         if p.reachable {
-            return Err(format!("owner {owner} is reachable but has no sessions stream yet; retry"));
+            return Err(format!(
+                "owner {owner} is reachable but has no sessions stream yet; retry"
+            ));
         }
         let ago = now_ms().saturating_sub(p.last_seen_ms);
         let need = self.config.takeover_secs * 1000;
@@ -174,7 +196,9 @@ pub(crate) async fn answer_release(
     framed: &mut crate::sync::Stream,
 ) -> anyhow::Result<()> {
     let last_seq = release(store, session.parse()?).await?;
-    framed.send(Msg::Released { session, last_seq }.encode()?).await?;
+    framed
+        .send(Msg::Released { session, last_seq }.encode()?)
+        .await?;
     Ok(())
 }
 
@@ -191,7 +215,9 @@ pub async fn demote(rt: &Runtime, store: &Store, m: Demote) -> anyhow::Result<u6
         .into_iter()
         .find(|c| c.origin == me && c.peer == m.by.0)
         .map_or(0, |c| c.seq);
-    let n = store.log_orphan_after(m.session, m.old_epoch, shipped).await?;
+    let n = store
+        .log_orphan_after(m.session, m.old_epoch, shipped)
+        .await?;
     let (owner, epoch) = store
         .owner(m.session)
         .await?
@@ -218,7 +244,9 @@ pub async fn demote(rt: &Runtime, store: &Store, m: Demote) -> anyhow::Result<u6
         store
             .append_local_note(
                 m.session,
-                &format!("{n} turns from {from} were not delivered on {me}; `session_orphans` to view"),
+                &format!(
+                    "{n} turns from {from} were not delivered on {me}; `session_orphans` to view"
+                ),
             )
             .await?;
     }
@@ -228,17 +256,29 @@ pub async fn demote(rt: &Runtime, store: &Store, m: Demote) -> anyhow::Result<u6
 /// Called after a row of `origin` was applied: if it raised the epoch of a
 /// session we owned, the actor demotes (a `tell`, so the apply path never
 /// waits on it).
-pub(crate) async fn on_applied(store: &Store, origin: &PeerId, session: SessionId, before: Option<(u32, String)>, epoch: u32) {
+pub(crate) async fn on_applied(
+    store: &Store,
+    origin: &PeerId,
+    session: SessionId,
+    before: Option<(u32, String)>,
+    epoch: u32,
+) {
     let Some((old, owner)) = before else { return };
     if epoch <= old || owner.is_empty() || owner != store.engine() {
         return;
     }
-    let m = Demote { session, old_epoch: old, by: origin.clone() };
+    let m = Demote {
+        session,
+        old_epoch: old,
+        by: origin.clone(),
+    };
     match crate::actor() {
         Some(a) => {
             let _ = a.tell(m).await;
         }
-        None => tracing::warn!("sessions: {session} taken by {origin} but no sessions actor to demote"),
+        None => {
+            tracing::warn!("sessions: {session} taken by {origin} but no sessions actor to demote")
+        }
     }
 }
 
@@ -251,11 +291,17 @@ async fn unload(id: SessionId) {
 
 /// Hourly until shutdown: delete orphaned rows older than `keep_days`
 /// (`sessions.orphan_keep_days`, 68 §4.3). The demoted owner's note stays.
-pub async fn sweep_orphans(store: Store, keep_days: u64, shutdown: tokio_util::sync::CancellationToken) {
+pub async fn sweep_orphans(
+    store: Store,
+    keep_days: u64,
+    shutdown: tokio_util::sync::CancellationToken,
+) {
     loop {
         let before = now_ms().saturating_sub(keep_days * 86_400_000);
         match store.prune_orphans_before(before).await {
-            Ok(n) if n > 0 => tracing::info!("sessions: pruned {n} orphaned log rows older than {keep_days} days"),
+            Ok(n) if n > 0 => {
+                tracing::info!("sessions: pruned {n} orphaned log rows older than {keep_days} days")
+            }
             Ok(_) => {}
             Err(e) => tracing::warn!("sessions: orphan sweep: {e:#}"),
         }
@@ -303,24 +349,43 @@ mod tests {
             let me = PeerId(name.to_owned());
             let (tx, rx) = mpsc::unbounded_channel();
             switch.0.lock().insert(me.clone(), tx);
-            Arc::new(Self { me, switch: switch.clone(), inbox: tokio::sync::Mutex::new(rx), events: broadcast::channel(8).0 })
+            Arc::new(Self {
+                me,
+                switch: switch.clone(),
+                inbox: tokio::sync::Mutex::new(rx),
+                events: broadcast::channel(8).0,
+            })
         }
     }
 
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.switch.0.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.switch
+                .0
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
         async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
             let (mine, theirs) = tokio::io::duplex(1 << 20);
             let inboxes = self.switch.0.lock();
-            let to = inboxes.get(peer).ok_or_else(|| anyhow::anyhow!("no such peer"))?;
-            to.send((self.me.clone(), Box::new(theirs))).map_err(|_| anyhow::anyhow!("peer gone"))?;
+            let to = inboxes
+                .get(peer)
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            to.send((self.me.clone(), Box::new(theirs)))
+                .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
         }
         async fn accept(&self, _alpn: &str) -> anyhow::Result<Inbound> {
-            self.inbox.lock().await.recv().await.ok_or_else(|| anyhow::anyhow!("switch closed"))
+            self.inbox
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("switch closed"))
         }
         fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
             self.events.subscribe()
@@ -336,9 +401,15 @@ mod tests {
     }
 
     async fn engine(name: &str) -> Engine {
-        let dir = std::env::temp_dir().join(format!("theuth-owner-{name}-{}", uuid::Uuid::now_v7()));
+        let dir =
+            std::env::temp_dir().join(format!("theuth-owner-{name}-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId(name.into()))).await.unwrap();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId(name.into())),
+        )
+        .await
+        .unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         Engine { store, rt, dir }
     }
@@ -355,19 +426,32 @@ mod tests {
             let mut out = Vec::new();
             for row in from.store.log_after(0).await.unwrap() {
                 let seq = row.seq;
-                let r = apply_log_row(&self.store, &origin, &row.into()).await.unwrap();
+                let r = apply_log_row(&self.store, &origin, &row.into())
+                    .await
+                    .unwrap();
                 if r != Applied::Duplicate {
-                    from.store.set_cursor(&origin.0, self.store.engine(), seq).await.unwrap();
+                    from.store
+                        .set_cursor(&origin.0, self.store.engine(), seq)
+                        .await
+                        .unwrap();
                 }
                 out.push(r);
             }
             out
         }
 
-        fn take(&self, transport: Option<Arc<dyn Transport>>, connected: Vec<PeerId>, peers: Vec<mesh::Peer>) -> Take {
+        fn take(
+            &self,
+            transport: Option<Arc<dyn Transport>>,
+            connected: Vec<PeerId>,
+            peers: Vec<mesh::Peer>,
+        ) -> Take {
             Take {
                 rt: self.rt.clone(),
-                config: SessionsConfig { release_wait_secs: 2, ..SessionsConfig::default() },
+                config: SessionsConfig {
+                    release_wait_secs: 2,
+                    ..SessionsConfig::default()
+                },
                 store: self.store.clone(),
                 transport,
                 connected,
@@ -399,7 +483,10 @@ mod tests {
     async fn take_from_a_reachable_owner_moves_the_tail_and_the_epoch() {
         let (a, b) = (engine("a").await, engine("b").await);
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &agent_msg("u1")).await.unwrap();
         b.pull(&a).await;
         assert_eq!(b.store.fence(id).await.unwrap(), Some((1, "a".into())));
@@ -414,24 +501,38 @@ mod tests {
         let la2 = la.clone();
         let served = tokio::spawn(async move {
             let (peer, stream) = la2.accept(ALPN_SESSIONS).await.unwrap();
-            crate::SessionSync::serve(shipper, peer, stream).await.unwrap();
+            crate::SessionSync::serve(shipper, peer, stream)
+                .await
+                .unwrap();
         });
         let (sb, sa, bid) = (b.store.clone(), a.store.clone(), b.id());
         let shipper = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(300)).await;
             for row in sa.log_after(0).await.unwrap() {
                 let seq = row.seq;
-                if apply_log_row(&sb, &PeerId("a".into()), &row.into()).await.unwrap() == Applied::Applied {
+                if apply_log_row(&sb, &PeerId("a".into()), &row.into())
+                    .await
+                    .unwrap()
+                    == Applied::Applied
+                {
                     sa.set_cursor("a", &bid.0, seq).await.unwrap();
                 }
             }
         });
 
-        let got = b.take(Some(lb.clone()), vec![a.id()], vec![]).run(id, TakeReason::Write).await.unwrap();
+        let got = b
+            .take(Some(lb.clone()), vec![a.id()], vec![])
+            .run(id, TakeReason::Write)
+            .await
+            .unwrap();
         assert_eq!(got, ("b".into(), 2));
         served.await.unwrap();
         shipper.await.unwrap();
-        assert_eq!(b.store.messages(id).await.unwrap().len(), 2, "the tail arrived before the take");
+        assert_eq!(
+            b.store.messages(id).await.unwrap().len(),
+            2,
+            "the tail arrived before the take"
+        );
         assert_eq!(b.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
         b.store.append(id, &agent_msg("u3 on b")).await.unwrap();
@@ -439,11 +540,28 @@ mod tests {
         // B's take row reaches A: A demotes with nothing to orphan.
         assert!(a.pull(&b).await.iter().all(|r| *r == Applied::Applied));
         assert_eq!(a.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
-        let n = demote(&a.rt, &a.store, Demote { session: id, old_epoch: 1, by: b.id() }).await.unwrap();
+        let n = demote(
+            &a.rt,
+            &a.store,
+            Demote {
+                session: id,
+                old_epoch: 1,
+                by: b.id(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(n, 0);
         assert_eq!(a.store.fence(id).await.unwrap(), Some((2, "b".into())));
-        assert_eq!(a.store.messages(id).await.unwrap().len(), 3, "no note when nothing was lost");
-        assert!(a.store.append(id, &agent_msg("late")).await.is_err(), "A is fenced out");
+        assert_eq!(
+            a.store.messages(id).await.unwrap().len(),
+            3,
+            "no note when nothing was lost"
+        );
+        assert!(
+            a.store.append(id, &agent_msg("late")).await.is_err(),
+            "A is fenced out"
+        );
         assert_eq!(a.store.session_log_seq(id).await.unwrap(), tail);
         a.close().await;
         b.close().await;
@@ -455,28 +573,61 @@ mod tests {
     async fn take_from_an_unreachable_owner_respects_takeover_secs() {
         let (a, b) = (engine("a").await, engine("b").await);
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         b.pull(&a).await;
         let now = now_ms();
 
         let recent = vec![peer("a", false, now - 100_000)];
-        let e = b.take(None, vec![], recent.clone()).run(id, TakeReason::Write).await.unwrap_err();
+        let e = b
+            .take(None, vec![], recent.clone())
+            .run(id, TakeReason::Write)
+            .await
+            .unwrap_err();
         assert!(e.contains("takeover after 300s"), "{e}");
         assert_eq!(b.store.owner(id).await.unwrap(), Some(("a".into(), 1)));
-        let e = b.take(None, vec![], vec![peer("a", true, now)]).run(id, TakeReason::Write).await.unwrap_err();
+        let e = b
+            .take(None, vec![], vec![peer("a", true, now)])
+            .run(id, TakeReason::Write)
+            .await
+            .unwrap_err();
         assert!(e.contains("reachable"), "{e}");
 
-        assert_eq!(b.take(None, vec![], recent).run(id, TakeReason::Orphan).await.unwrap(), ("b".into(), 2));
+        assert_eq!(
+            b.take(None, vec![], recent)
+                .run(id, TakeReason::Orphan)
+                .await
+                .unwrap(),
+            ("b".into(), 2)
+        );
         // Already ours: a no-op at the current epoch.
-        assert_eq!(b.take(None, vec![], vec![]).run(id, TakeReason::User).await.unwrap(), ("b".into(), 2));
+        assert_eq!(
+            b.take(None, vec![], vec![])
+                .run(id, TakeReason::User)
+                .await
+                .unwrap(),
+            ("b".into(), 2)
+        );
 
         let c = engine("c").await;
         c.pull(&a).await;
         c.pull(&b).await;
         assert_eq!(c.store.fence(id).await.unwrap(), Some((2, "b".into())));
         let old = vec![peer("b", false, now - 301_000)];
-        assert_eq!(c.take(None, vec![], old).run(id, TakeReason::Write).await.unwrap(), ("c".into(), 3));
-        let e = c.take(None, vec![], vec![]).run(SessionId::new(), TakeReason::User).await.unwrap_err();
+        assert_eq!(
+            c.take(None, vec![], old)
+                .run(id, TakeReason::Write)
+                .await
+                .unwrap(),
+            ("c".into(), 3)
+        );
+        let e = c
+            .take(None, vec![], vec![])
+            .run(SessionId::new(), TakeReason::User)
+            .await
+            .unwrap_err();
         assert!(e.contains("no such session"), "{e}");
         a.close().await;
         b.close().await;
@@ -490,37 +641,78 @@ mod tests {
     async fn stale_owner_demotes_with_its_unshipped_rows_orphaned() {
         let (a, b) = (engine("a").await, engine("b").await);
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &agent_msg("u1")).await.unwrap();
         b.pull(&a).await;
         // Partition: A keeps writing; B takes.
         a.store.append(id, &agent_msg("u2")).await.unwrap();
         a.store.append(id, &agent_msg("u3")).await.unwrap();
-        assert_eq!(b.take(None, vec![], vec![peer("a", false, now_ms())]).run(id, TakeReason::User).await.unwrap(), ("b".into(), 2));
+        assert_eq!(
+            b.take(None, vec![], vec![peer("a", false, now_ms())])
+                .run(id, TakeReason::User)
+                .await
+                .unwrap(),
+            ("b".into(), 2)
+        );
         b.store.append(id, &agent_msg("b1")).await.unwrap();
 
         // A comes back: B's rows land, A demotes.
         let applied = a.pull(&b).await;
-        assert!(applied.iter().all(|r| *r == Applied::Applied), "{applied:?}");
-        let n = demote(&a.rt, &a.store, Demote { session: id, old_epoch: 1, by: b.id() }).await.unwrap();
+        assert!(
+            applied.iter().all(|r| *r == Applied::Applied),
+            "{applied:?}"
+        );
+        let n = demote(
+            &a.rt,
+            &a.store,
+            Demote {
+                session: id,
+                old_epoch: 1,
+                by: b.id(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(n, 2);
         let orphans = crate::orphans(&a.store, id).await.unwrap();
         assert_eq!(orphans.len(), 1);
-        assert_eq!((orphans[0].epoch, orphans[0].to_seq - orphans[0].from_seq), (1, 1));
+        assert_eq!(
+            (orphans[0].epoch, orphans[0].to_seq - orphans[0].from_seq),
+            (1, 1)
+        );
         assert!(!orphans[0].at.is_empty());
         let last = a.store.messages(id).await.unwrap().pop().unwrap().1;
         let text = last.content.joined_texts().unwrap_or_default();
-        assert!(text.starts_with("2 turns from ") && text.contains("on a;"), "{text}");
+        assert!(
+            text.starts_with("2 turns from ") && text.contains("on a;"),
+            "{text}"
+        );
         assert_eq!(a.store.fence(id).await.unwrap(), Some((2, "b".into())));
         assert_eq!(a.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         // A's stale rows never ship (orphans leave `log_after`); forced through, B drops them.
-        assert!(a.store.log_after(0).await.unwrap().iter().all(|r| r.epoch != 1 || r.seq <= 2));
+        assert!(
+            a.store
+                .log_after(0)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.epoch != 1 || r.seq <= 2)
+        );
         for row in a.store.log_orphans(id).await.unwrap() {
-            assert_eq!(apply_log_row(&b.store, &a.id(), &row.into()).await.unwrap(), Applied::StaleEpoch);
+            assert_eq!(
+                apply_log_row(&b.store, &a.id(), &row.into()).await.unwrap(),
+                Applied::StaleEpoch
+            );
         }
         assert!(a.store.append(id, &agent_msg("late")).await.is_err());
         // Release on a non-owner is harmless: the session's last seq, nothing stopped.
-        assert_eq!(release(&b.store, id).await.unwrap(), b.store.session_log_seq(id).await.unwrap() as u64);
+        assert_eq!(
+            release(&b.store, id).await.unwrap(),
+            b.store.session_log_seq(id).await.unwrap() as u64
+        );
         a.close().await;
         b.close().await;
     }

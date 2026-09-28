@@ -16,8 +16,8 @@ use crate::cache::{CachedBrief, CachedBriefPut};
 use crate::store::Store;
 use crate::transcript::mmss;
 use crate::{
-    AddBrief, AddTopic, BriefDelete, BriefId, BriefList, BriefPut, BriefSearch, LIVE_LOG, Meeting, MeetingId,
-    MeetingState, TopicId, Track, Utterance, session,
+    AddBrief, AddTopic, BriefDelete, BriefId, BriefList, BriefPut, BriefSearch, LIVE_LOG, Meeting,
+    MeetingId, MeetingState, TopicId, Track, Utterance, session,
 };
 
 /// Most lines one `meeting_read` returns (53 §3.3).
@@ -200,7 +200,11 @@ pub async fn unregister() {
 
 /// The meeting a call means: the given one, else the one owning the calling
 /// session, else the most recent.
-async fn resolve(store: &Store, given: Option<MeetingId>, cx: &ToolCx) -> Result<MeetingId, String> {
+async fn resolve(
+    store: &Store,
+    given: Option<MeetingId>,
+    cx: &ToolCx,
+) -> Result<MeetingId, String> {
     if let Some(id) = given {
         return Ok(id);
     }
@@ -269,7 +273,10 @@ impl MeetingReadTool {
         let manifest = self.0.manifest(id).map_err(|e| format!("{e:#}"))?;
         let recording = matches!(
             manifest.state,
-            MeetingState::Starting | MeetingState::Recording | MeetingState::Paused | MeetingState::Stopping
+            MeetingState::Starting
+                | MeetingState::Recording
+                | MeetingState::Paused
+                | MeetingState::Stopping
         );
         let lines: Vec<String> = match self.0.transcript(id) {
             Ok(t) if !recording => t.lines(a.from_ms, a.to_ms, a.speaker.as_deref()).collect(),
@@ -498,7 +505,9 @@ pub async fn register_post(reg: &ActorRef<ToolRegistry>, store: Arc<Store>) {
             speakers,
         })))
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(MeetingListTool(store)))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(MeetingListTool(store))))
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +544,10 @@ fn brief_lines(rows: &[CachedBrief], empty: &str) -> String {
         return empty.to_owned();
     }
     let now = chrono::Utc::now();
-    rows.iter().map(|b| brief_line(b, now)).collect::<Vec<_>>().join("\n")
+    rows.iter()
+        .map(|b| brief_line(b, now))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `brief_search` arguments.

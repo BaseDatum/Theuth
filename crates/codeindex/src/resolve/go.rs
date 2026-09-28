@@ -25,7 +25,11 @@ impl Go {
 
     /// Target `.go` files of `specifier` from `by_dir` (directory → files):
     /// `None` = external; `Some(&[])` = inside the module, no such package.
-    pub fn resolve<'a>(&self, by_dir: &'a HashMap<String, Vec<String>>, specifier: &str) -> Option<&'a [String]> {
+    pub fn resolve<'a>(
+        &self,
+        by_dir: &'a HashMap<String, Vec<String>>,
+        specifier: &str,
+    ) -> Option<&'a [String]> {
         let rel = if specifier == self.module {
             "."
         } else {

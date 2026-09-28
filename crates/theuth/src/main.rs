@@ -176,7 +176,12 @@ enum MeshCmd {
         #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker"])]
         ssh: Option<String>,
         /// Vault name of the private key for the built-in SSH client (store it with `t --secret-set NAME < key`).
-        #[arg(long, value_name = "NAME", requires = "ssh", conflicts_with = "system_ssh")]
+        #[arg(
+            long,
+            value_name = "NAME",
+            requires = "ssh",
+            conflicts_with = "system_ssh"
+        )]
         key: Option<String>,
         /// Use the system `ssh` binary (your `~/.ssh/config`, agent, ProxyJump) instead of the built-in client.
         #[arg(long, requires = "ssh")]
@@ -188,7 +193,12 @@ enum MeshCmd {
         #[arg(long, value_name = "N")]
         name: Option<String>,
         /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile.
-        #[arg(long, value_name = "I", requires = "docker", conflicts_with = "local_t")]
+        #[arg(
+            long,
+            value_name = "I",
+            requires = "docker",
+            conflicts_with = "local_t"
+        )]
         image: Option<String>,
         /// --docker: a locally built Linux `t`, baked in with deploy/computer/Dockerfile.dev.
         #[arg(long, value_name = "PATH", requires = "docker")]
@@ -314,8 +324,9 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
             }
             MeshCmd::Remove { id } => client.request("mesh_remove", rpc_params![id]).await,
             MeshCmd::Hub { pref } => {
-                let pref: mesh::HubPref = serde_json::from_value(serde_json::Value::String(pref))
-                    .map_err(|_| anyhow::anyhow!("hub: expected prefer|eligible|never"))?;
+                let pref: mesh::HubPref =
+                    serde_json::from_value(serde_json::Value::String(pref))
+                        .map_err(|_| anyhow::anyhow!("hub: expected prefer|eligible|never"))?;
                 client.request("mesh_set_hub", rpc_params![pref]).await
             }
             MeshCmd::Devices { cmd } => match cmd {
@@ -325,14 +336,21 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                         client.request("device_pair_start", rpc_params![name]).await;
                     match r {
                         Ok(p) => {
-                            println!("{}\n{}\npending {} — expires in 5 min", link::qr(&p.string), p.string, p.pending_id);
+                            println!(
+                                "{}\n{}\npending {} — expires in 5 min",
+                                link::qr(&p.string),
+                                p.string,
+                                p.pending_id
+                            );
                             return Ok(());
                         }
                         Err(e) => Err(e),
                     }
                 }
                 DevicesCmd::Revoke { id } => client.request("device_revoke", rpc_params![id]).await,
-                DevicesCmd::Rename { id, name } => client.request("device_rename", rpc_params![id, name]).await,
+                DevicesCmd::Rename { id, name } => {
+                    client.request("device_rename", rpc_params![id, name]).await
+                }
             },
         },
         Cmd::Tasks { cmd } => match cmd {
@@ -349,7 +367,9 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                             .collect::<Result<Vec<tasks::TaskState>, _>>()
                     })
                     .transpose()
-                    .map_err(|_| anyhow::anyhow!("state: expected todo|doing|review|blocked|done|cancelled"))?;
+                    .map_err(|_| {
+                        anyhow::anyhow!("state: expected todo|doing|review|blocked|done|cancelled")
+                    })?;
                 let filter = tasks::TaskFilter {
                     owner,
                     state,
@@ -411,12 +431,22 @@ async fn make_engine(
         secrets::SecretsConfig::default()
     };
     let secret = move |name: String| async move {
-        let vault = secrets::Vault::open(data_dir, cfg.key_store).await.map_err(|e| format!("vault: {e:#}"))?;
-        vault
-            .get(&name, 0)
-            .ok_or_else(|| format!("no secret named {name}; store the key with `t --secret-set {name} < key`"))
+        let vault = secrets::Vault::open(data_dir, cfg.key_store)
+            .await
+            .map_err(|e| format!("vault: {e:#}"))?;
+        vault.get(&name, 0).ok_or_else(|| {
+            format!("no secret named {name}; store the key with `t --secret-set {name} < key`")
+        })
     };
-    match sandbox::make_engine(data_dir, target, secret, &RpcJoin(client), &sandbox::Progress::stdout()).await {
+    match sandbox::make_engine(
+        data_dir,
+        target,
+        secret,
+        &RpcJoin(client),
+        &sandbox::Progress::stdout(),
+    )
+    .await
+    {
         Ok(peer) => {
             println!("engine {} ({}) joined the mesh", peer.name, peer.id);
             Ok(())
@@ -813,10 +843,9 @@ async fn run() -> anyhow::Result<()> {
         let decision_cfg: decision::DecisionConfig =
             config.extract_inner("decision").unwrap_or_default();
         let accel = cli.accelerator.unwrap_or(models_cfg.accelerator);
-        let code = tokio::task::spawn_blocking(move || {
-            bench_models::run(&data_dir, &decision_cfg, accel)
-        })
-        .await?;
+        let code =
+            tokio::task::spawn_blocking(move || bench_models::run(&data_dir, &decision_cfg, accel))
+                .await?;
         std::process::exit(code);
     }
     if cli.update {
@@ -835,7 +864,11 @@ async fn run() -> anyhow::Result<()> {
         match cli.out {
             Some(path) => {
                 std::fs::write(&path, text)?;
-                eprintln!("wrote {n} examples from {} to {}", store.family_dir(&prefix).display(), path.display());
+                eprintln!(
+                    "wrote {n} examples from {} to {}",
+                    store.family_dir(&prefix).display(),
+                    path.display()
+                );
             }
             None => println!("{text}"),
         }
@@ -900,7 +933,10 @@ async fn run() -> anyhow::Result<()> {
     let listen = if cli.serve || cli.headless {
         Some(link_cli::listen(&config))
     } else {
-        config.find_value("rpc.listen").ok().and_then(|v| v.into_string())
+        config
+            .find_value("rpc.listen")
+            .ok()
+            .and_then(|v| v.into_string())
     };
     // `Some` = attached to the running engine (63 §0.3): TUI, `-p`, `--acp`.
     let attached = match rpc::engine::acquire(&data_dir, host, listen) {

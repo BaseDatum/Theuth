@@ -26,9 +26,13 @@ use kameo::actor::Spawn;
 use serde_json::Value;
 
 fn fixture(name: &str) -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
-        .unwrap()
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+    )
+    .unwrap()
 }
 
 /// The Wikipedia step as an [`Observation`], reconstructed from the request: page from
@@ -60,7 +64,12 @@ fn wikipedia() -> (String, Observation) {
             let editable = typeable.contains_key(&index);
             let label = if editable {
                 let t = &typeable[&index];
-                t.strip_prefix(&format!("[{index}] ")).unwrap().rsplit_once(" (").unwrap().0.to_owned()
+                t.strip_prefix(&format!("[{index}] "))
+                    .unwrap()
+                    .rsplit_once(" (")
+                    .unwrap()
+                    .0
+                    .to_owned()
             } else {
                 label.to_owned()
             };
@@ -79,7 +88,12 @@ fn wikipedia() -> (String, Observation) {
     let obs = Observation {
         url: page["url"].as_str().unwrap().to_owned(),
         title: page["title"].as_str().unwrap().to_owned(),
-        text: page["text"].as_str().unwrap().chars().take(systemone::TEXT_MAX).collect(),
+        text: page["text"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .take(systemone::TEXT_MAX)
+            .collect(),
         elements,
         recent_actions: Vec::<RecentAction>::new(),
         // The recorded page is the top of Wikipedia's main page with more below: jev offered
@@ -99,13 +113,30 @@ fn renders_cklxx_sample_request_byte_for_byte() {
     let names = ["operation", "click_target", "type_text_target"];
     for (ask, name) in asks.iter().zip(names) {
         let want = &rendered["questions"][name];
-        let Question::Choice { instructions, candidates, state } = &ask.question else {
+        let Question::Choice {
+            instructions,
+            candidates,
+            state,
+        } = &ask.question
+        else {
             panic!("{name}: not a choice")
         };
-        assert_eq!(instructions, want["instructions"].as_str().unwrap(), "{name} instructions");
+        assert_eq!(
+            instructions,
+            want["instructions"].as_str().unwrap(),
+            "{name} instructions"
+        );
         // laya's `render_options`: "id: text" per criterion, in the request's order.
-        let ours: Vec<String> = candidates.iter().map(|c| format!("{}: {}", c.id, c.text)).collect();
-        let theirs: Vec<&str> = want["options"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let ours: Vec<String> = candidates
+            .iter()
+            .map(|c| format!("{}: {}", c.id, c.text))
+            .collect();
+        let theirs: Vec<&str> = want["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(ours.len(), theirs.len(), "{name} option count");
         for (i, (o, t)) in ours.iter().zip(&theirs).enumerate() {
             assert_eq!(o, t, "{name} option {i}");
@@ -116,8 +147,13 @@ fn renders_cklxx_sample_request_byte_for_byte() {
     assert_eq!(asks[1].family.0, "browser.target");
     assert_eq!(asks[2].family.0, "browser.type_target");
     // The whole head laya tokenizes: "<type> question: <instructions>".
-    let Question::Choice { instructions, .. } = &asks[0].question else { unreachable!() };
-    assert_eq!(format!("choice question: {instructions}"), rendered["questions"]["operation"]["head"].as_str().unwrap());
+    let Question::Choice { instructions, .. } = &asks[0].question else {
+        unreachable!()
+    };
+    assert_eq!(
+        format!("choice question: {instructions}"),
+        rendered["questions"]["operation"]["head"].as_str().unwrap()
+    );
 }
 
 /// The browser checkpoint dir, or `None` with a printed reason.
@@ -131,7 +167,10 @@ fn model_dir() -> Option<PathBuf> {
     if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
         Some(dir)
     } else {
-        eprintln!("skipped: no laya-browser checkpoint in {} (scripts/fetch-laya-browser.sh)", dir.display());
+        eprintln!(
+            "skipped: no laya-browser checkpoint in {} (scripts/fetch-laya-browser.sh)",
+            dir.display()
+        );
         None
     }
 }
@@ -143,14 +182,22 @@ async fn browser_checkpoint_answers_type_text_into_the_search_box() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = DecisionConfig::default();
     cfg.checkpoints.insert("browser".into(), dir.clone().into());
-    for f in [systemone::FAMILY_OPERATION, systemone::FAMILY_TARGET, systemone::FAMILY_TYPE_TARGET] {
+    for f in [
+        systemone::FAMILY_OPERATION,
+        systemone::FAMILY_TARGET,
+        systemone::FAMILY_TYPE_TARGET,
+    ] {
         let g: &mut FamilyGate = cfg.families.get_mut(f).unwrap();
         g.mode = Mode::Active;
         g.budget = Duration::from_secs(120); // cold load + Metal shader compile on the first run
     }
     let engine = Engine::spawn(
-        Engine::new(cfg, tmp.path().join("decision"), Log::new(tmp.path().join("decisions")))
-            .with_checkpoint("browser", dir),
+        Engine::new(
+            cfg,
+            tmp.path().join("decision"),
+            Log::new(tmp.path().join("decisions")),
+        )
+        .with_checkpoint("browser", dir),
     );
     let mut asks = systemone::render(&goal, &obs);
     for a in &mut asks {
@@ -160,16 +207,25 @@ async fn browser_checkpoint_answers_type_text_into_the_search_box() {
     let ds = engine.ask(AskMany { asks }).await.unwrap();
     let first = t.elapsed();
     for d in &ds {
-        eprintln!("{} → {} {:?} (top: {:?})", d.family, d.choice, d.disposition.kind(), {
-            let mut p = d.probabilities.clone();
-            p.sort_by(|a, b| b.1.total_cmp(&a.1));
-            p.truncate(3);
-            p
-        });
+        eprintln!(
+            "{} → {} {:?} (top: {:?})",
+            d.family,
+            d.choice,
+            d.disposition.kind(),
+            {
+                let mut p = d.probabilities.clone();
+                p.sort_by(|a, b| b.1.total_cmp(&a.1));
+                p.truncate(3);
+                p
+            }
+        );
     }
     assert_eq!(ds[0].choice, "TYPE_TEXT", "{:?}", ds[0].probabilities);
     assert_eq!(ds[2].choice, "2", "{:?}", ds[2].probabilities);
-    assert!(matches!(ds[0].disposition, Disposition::Accept | Disposition::Escalate(_)));
+    assert!(matches!(
+        ds[0].disposition,
+        Disposition::Accept | Disposition::Escalate(_)
+    ));
     assert_eq!(ds[1].probabilities.len(), 58, "no `none` on the closed set");
     // Warm step latency, the §4.1 ≤ 300 ms target, printed (not asserted: it is the bench's job).
     let asks = systemone::render(&goal, &obs);
