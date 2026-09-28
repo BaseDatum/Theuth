@@ -230,13 +230,12 @@ pub fn from_task_event(
                     ActivityKind::EscalationRaised,
                     format!("escalated {} ({d})", q(title)),
                 )
-            } else if let Some(d) = b.iter().find(|d| !a.contains(d)) {
+            } else {
+                let d = b.iter().find(|d| !a.contains(d))?;
                 (
                     ActivityKind::EscalationAnswered,
                     format!("decided {} ({d})", q(title)),
                 )
-            } else {
-                return None;
             }
         }
         _ => return None,

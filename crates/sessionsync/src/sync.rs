@@ -61,8 +61,11 @@ pub struct Node {
     /// multi-part snapshot cannot interleave with newer log rows.
     origins: Mutex<HashMap<PeerId, Arc<tokio::sync::Mutex<()>>>>,
     /// Per origin: rows that arrived ahead of the cursor, and since when.
-    pending: Mutex<HashMap<PeerId, (Instant, BTreeMap<u64, LogRow>)>>,
+    pending: Mutex<HashMap<PeerId, Ahead>>,
 }
+
+/// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
+type Ahead = (Instant, BTreeMap<u64, LogRow>);
 
 impl Node {
     /// A node over `store`; `rt` publishes `AgentEvent`s when present.
@@ -803,7 +806,7 @@ mod tests {
         let s = b.store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.epoch, s.here), ("A", 1, false));
         // B acked: A knows what B holds, and B's cursor for A is A's head.
-        let head = i64::try_from(a.store.log_seq()).unwrap();
+        let head = a.store.log_seq();
         until("A records B's ack", || async {
             a.store
                 .cursors()
@@ -994,7 +997,7 @@ mod tests {
 
         // Prune A's log (C acked it all): a newcomer can only be served a snapshot.
         until("C's ack reached A", || async {
-            let head = i64::try_from(a.store.log_seq()).unwrap();
+            let head = a.store.log_seq();
             a.store
                 .cursors()
                 .await
@@ -1018,7 +1021,7 @@ mod tests {
         })
         .await;
         assert_eq!(sessions(&b.store).await, sessions(&c.store).await);
-        let head = i64::try_from(a.store.log_seq()).unwrap();
+        let head = a.store.log_seq();
         assert!(
             b.store
                 .cursors()

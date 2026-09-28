@@ -42,9 +42,12 @@ pub const DIR: &str = "computers";
 /// Per-command ceiling (`sandbox.step_timeout_secs` in 64 §4.7; a constant here).
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// One progress sink: `(step, line)`.
+type Sink = dyn Fn(&str, &str) + Send + Sync;
+
 /// Where progress lines go: `(step, line)`. The CLI prints them; the actor logs them.
 #[derive(Clone)]
-pub struct Progress(Arc<dyn Fn(&str, &str) + Send + Sync>);
+pub struct Progress(Arc<Sink>);
 
 impl Progress {
     /// `[step] line` on stdout.
@@ -202,17 +205,17 @@ pub trait Sandbox: Send + Sync {
 /// there is no `uname` (Windows OpenSSH).
 pub async fn detect(sb: &(impl Sandbox + ?Sized), h: &Handle) -> anyhow::Result<(String, String)> {
     let out = sb.exec(h, Cmd::new("uname -sm")).await?;
-    if out.ok() {
-        if let Some(p) = parse_uname(&out.stdout_str()) {
-            return Ok(p);
-        }
+    if out.ok()
+        && let Some(p) = parse_uname(&out.stdout_str())
+    {
+        return Ok(p);
     }
     let ps = "powershell -NoProfile -Command \"[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture\"";
     let out = sb.exec(h, Cmd::new(ps)).await?;
-    if out.ok() {
-        if let Some(arch) = parse_arch(&out.stdout_str()) {
-            return Ok(("windows".into(), arch));
-        }
+    if out.ok()
+        && let Some(arch) = parse_arch(&out.stdout_str())
+    {
+        return Ok(("windows".into(), arch));
     }
     anyhow::bail!("cannot detect os/arch: {}", out.reason())
 }

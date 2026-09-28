@@ -319,7 +319,7 @@ impl Vault {
             return Ok(k);
         }
         let fresh: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
-        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*fresh));
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*fresh));
         match self
             .set_if_version(Self::MESH_DEVICE_KEY, &encoded, "link", None)
             .await

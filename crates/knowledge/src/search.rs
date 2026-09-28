@@ -1074,7 +1074,7 @@ mod tests {
                 .await
                 .hits
                 .iter()
-                .any(|h| h.commit == merge.to_string()),
+                .any(|h| h.commit == merge),
             "a merge with no first-parent change has no record"
         );
 

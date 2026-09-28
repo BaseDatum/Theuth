@@ -1599,7 +1599,7 @@ impl Message<ApproveAgent> for Roster {
             .delete_proposal(&m.0)
             .await
             .map_err(|e| e.to_string())?;
-        if approval.is_none() && !f.is_some_and(|f| f.proposed_by.is_some()) {
+        if approval.is_none() && f.is_none_or(|f| f.proposed_by.is_none()) {
             return Err("not a proposal".into());
         }
         let text = file::set_key(&text, "paused", None);

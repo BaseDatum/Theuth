@@ -77,7 +77,10 @@ fn apply_lww(conn: &Connection, changeset: &[u8]) {
     .unwrap();
 }
 
-fn rows(conn: &Connection) -> Vec<(String, Option<String>, Option<i64>, Option<String>)> {
+/// `(id, a, b, hlc)` of table `t`.
+type Row = (String, Option<String>, Option<i64>, Option<String>);
+
+fn rows(conn: &Connection) -> Vec<Row> {
     let mut st = conn
         .prepare("SELECT id, a, b, hlc FROM t ORDER BY id")
         .unwrap();

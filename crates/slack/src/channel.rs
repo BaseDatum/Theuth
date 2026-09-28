@@ -1348,11 +1348,7 @@ impl Channel {
         // ponytail: no desk and no prior thread → a placeholder session nobody
         // emits for; the next message in the thread re-reads the desk.
         let mut thread = bound.unwrap_or_else(|| {
-            Thread::new(
-                desk.unwrap_or_else(SessionId::new),
-                m.user.clone(),
-                m.team.clone(),
-            )
+            Thread::new(desk.unwrap_or_default(), m.user.clone(), m.team.clone())
         });
         if let Some(d) = desk {
             thread.session = d;

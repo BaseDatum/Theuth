@@ -361,7 +361,7 @@ pub fn apply_settings(
             return Err(format!("{}: timeout_ms must be 500..=60000", e.name));
         }
         let url = e.base_url.as_deref().map(str::trim).unwrap_or_default();
-        if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !(url.is_empty() || url.starts_with("http://") || url.starts_with("https://")) {
             return Err(format!(
                 "{}: base_url must start with http:// or https://",
                 e.name
@@ -488,13 +488,14 @@ fn open_flow_blocks(path: &std::path::Path) -> std::io::Result<()> {
                 in_section = l.trim_end() == "search_providers:";
                 return l.to_owned();
             }
-            if in_section && l.len() - l.trim_start().len() == 2 {
-                if let Some((k, v)) = l.trim().split_once(':') {
-                    if v.trim().starts_with('{') && v.trim().ends_with('}') {
-                        changed = true;
-                        return format!("  {k}:");
-                    }
-                }
+            if in_section
+                && l.len() - l.trim_start().len() == 2
+                && let Some((k, v)) = l.trim().split_once(':')
+                && v.trim().starts_with('{')
+                && v.trim().ends_with('}')
+            {
+                changed = true;
+                return format!("  {k}:");
             }
             l.to_owned()
         })

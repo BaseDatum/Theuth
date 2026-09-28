@@ -309,10 +309,8 @@ fn attach_impl_methods(
 fn qualifier(prefix: &[u8]) -> Option<String> {
     let (chain, sep): (&[u8], &[u8]) = if let Some(c) = prefix.strip_suffix(b"::") {
         (c, b"::")
-    } else if let Some(c) = prefix.strip_suffix(b".") {
-        (c, b".")
     } else {
-        return None;
+        (prefix.strip_suffix(b".")?, b".")
     };
     let is_ident = |s: &[u8]| {
         s.first()

@@ -295,7 +295,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .unwrap_or_default()
             .hidden(now_ms)
     });
-    out.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    out.sort_by_key(|i| std::cmp::Reverse(i.at_ms));
     out
 }
 

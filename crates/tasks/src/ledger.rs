@@ -1682,7 +1682,7 @@ impl Ledger {
                 if by == DISPATCHING {
                     continue;
                 }
-                if !router.desk_for(&w.agent).is_some_and(|d| d == *by) {
+                if router.desk_for(&w.agent).is_none_or(|d| d != *by) {
                     self.store.claim(&w.id, None, now).await.map_err(db)?;
                 }
             }
