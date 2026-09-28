@@ -21,6 +21,12 @@ use crate::{CodeindexConfig, IndexStats};
 
 /// Open pools kept at once (60 §3).
 const POOL_LRU: usize = 8;
+/// Reconcile guard: a diff that would delete more than this share of the
+/// indexed files keeps the old rows instead (moved root, unmounted volume,
+/// half-checked-out worktree).
+const SUSPECT_GONE_PERCENT: usize = 80;
+/// Envelope `hint` when the guard fires.
+pub const SUSPECT_ROOT_HINT: &str = "most indexed files are missing from the walk; kept the old index — check the root is fully checked out and mounted, or force a reconcile";
 
 /// Everything the plugin shares: config, the index directory, open roots.
 pub struct Codeindex {
@@ -47,6 +53,7 @@ pub struct RootIndex {
     write: tokio::sync::Mutex<()>,
     background: AtomicBool,
     pending: AtomicUsize,
+    suspect_logged: AtomicBool,
 }
 
 /// What one reconcile did (the envelope's freshness fields, 60 §8).
@@ -66,6 +73,11 @@ pub struct Reconciled {
     pub indexed_files: i64,
     /// The co-change walk ran this call (HEAD moved): `(commits walked, ms)`.
     pub cochange_walk: Option<(usize, u128)>,
+    /// The walk lost more than [`SUSPECT_GONE_PERCENT`] of the indexed files;
+    /// nothing was deleted, the answer comes from the old rows.
+    pub suspect_root: bool,
+    /// Why the answer may be off, when `suspect_root`.
+    pub hint: Option<&'static str>,
 }
 
 impl Codeindex {
@@ -97,6 +109,7 @@ impl Codeindex {
             write: tokio::sync::Mutex::new(()),
             background: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
+            suspect_logged: AtomicBool::new(false),
         });
         lru.map.insert(root.to_path_buf(), ri.clone());
         lru.order.push_back(root.to_path_buf());
@@ -127,6 +140,15 @@ impl Codeindex {
         if d.changed.is_empty() && d.delete.is_empty() {
             out.stale = ri.background.load(Ordering::Acquire);
             out.pending = ri.pending.load(Ordering::Acquire);
+        } else if !force && d.suspect() {
+            out.stale = true;
+            out.suspect_root = true;
+            out.hint = Some(SUSPECT_ROOT_HINT);
+            out.indexed_files = store::counts(&ri.pool).await?.files;
+            if !ri.suspect_logged.swap(true, Ordering::AcqRel) {
+                tracing::warn!(root = %ri.root.display(), known = d.known, gone = d.gone, "codeindex reconcile refused: most indexed files missing from the walk");
+            }
+            return Ok(out);
         } else if force || d.known == 0 || d.changed.len() + d.gone <= self.cfg.sync_limit {
             let t = Instant::now();
             out.removed = d.gone;
@@ -147,6 +169,12 @@ impl Codeindex {
                     // Re-diff under the lock: the world may have moved on.
                     let _g = ri2.write.lock().await;
                     let r = match me.diff(&ri2).await {
+                        Ok(d) if d.suspect() => {
+                            if !ri2.suspect_logged.swap(true, Ordering::AcqRel) {
+                                tracing::warn!(root = %ri2.root.display(), known = d.known, gone = d.gone, "codeindex reconcile refused: most indexed files missing from the walk");
+                            }
+                            Ok((0, 0))
+                        }
                         Ok(d) => me
                             .write(&ri2, d.changed, d.delete)
                             .await
@@ -372,6 +400,13 @@ struct Diff {
     known: usize,
     /// The walk hit [`walk::MAX_FILES`].
     truncated: bool,
+}
+
+impl Diff {
+    /// More than [`SUSPECT_GONE_PERCENT`] of the indexed files vanished.
+    fn suspect(&self) -> bool {
+        self.gone * 100 > self.known * SUSPECT_GONE_PERCENT
+    }
 }
 
 struct Parsed {

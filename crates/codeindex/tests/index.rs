@@ -801,6 +801,70 @@ async fn affected_set_is_re_resolved() {
     );
 }
 
+/// Reconcile guard: a walk that loses more than 80 % of the indexed files
+/// (here: every file but one removed from a temp copy) deletes nothing and
+/// answers `stale` + `suspect_root` with a hint; a smaller loss reconciles
+/// normally; `force` overrides the guard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconcile_refuses_to_empty_the_index() {
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    for i in 0..10 {
+        std::fs::write(d.join(format!("src/m{i}.rs")), format!("pub fn f{i}() {{}}\n")).unwrap();
+    }
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ri = ix.open_root(&d).await.unwrap();
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert_eq!((r.reparsed, r.indexed_files, r.suspect_root), (10, 10, false), "{r:?}");
+
+    // 2 of 10 gone: normal delete.
+    std::fs::remove_file(d.join("src/m8.rs")).unwrap();
+    std::fs::remove_file(d.join("src/m9.rs")).unwrap();
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert_eq!((r.removed, r.indexed_files, r.suspect_root), (2, 8, false), "{r:?}");
+
+    // 7 of 8 gone (87 %): refused, rows kept, envelope says why.
+    for i in 1..8 {
+        std::fs::remove_file(d.join(format!("src/m{i}.rs"))).unwrap();
+    }
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert!(r.stale && r.suspect_root && r.hint.is_some(), "{r:?}");
+    assert_eq!((r.removed, r.reparsed, r.indexed_files), (0, 0, 8), "{r:?}");
+    assert_eq!(store::counts(&ri.pool).await.unwrap().files, 8);
+    // Still refused on the next call (nothing changed on disk).
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert!(r.suspect_root, "{r:?}");
+
+    // The tool envelope carries it and `content` ends with the hint.
+    {
+        use codeindex::tools::{CodeFindArgs, CodeFindTool};
+        use tools::Tool;
+        let out = CodeFindTool(ix.clone())
+            .call(
+                CodeFindArgs {
+                    name: "f0".into(),
+                    kind: None,
+                    exact: None,
+                    root: Some(d.clone()),
+                    budget: None,
+                },
+                cx(&data),
+            )
+            .await
+            .unwrap();
+        let v = out.structured.unwrap();
+        assert_eq!(v["suspect_root"], true, "{v}");
+        assert!(v["hint"].as_str().unwrap().contains("kept the old index"), "{v}");
+        assert!(v["content"].as_str().unwrap().contains("[stale: most indexed"), "{v}");
+    }
+
+    // force: the explicit rebuild wins.
+    let r = ix.reconcile(&ri, true).await.unwrap();
+    assert_eq!((r.removed, r.indexed_files, r.suspect_root), (7, 1, false), "{r:?}");
+}
+
 /// 60 §16 rows 1–2 on this repository: ≥ 290 `.rs` files, `ToolRegistry` in
 /// `registry.rs` as `class`, `fs.rs` outline, one touched file → one reparse;
 /// imports `cargo` > 500 and `unresolved` < 5 % of non-external; refs by

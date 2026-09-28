@@ -81,6 +81,8 @@ struct Envelope {
     pending: usize,
     dropped: usize,
     truncated_walk: bool,
+    suspect_root: bool,
+    hint: Option<&'static str>,
 }
 
 impl Envelope {
@@ -92,7 +94,19 @@ impl Envelope {
             pending: r.pending,
             dropped,
             truncated_walk: r.truncated_walk,
+            suspect_root: r.suspect_root,
+            hint: r.hint,
         }
+    }
+}
+
+/// Trailer of `content` when the answer is not fresh: the background count,
+/// or the reconcile guard's hint.
+fn stale_note(r: &Reconciled) -> String {
+    match (r.stale, r.hint) {
+        (true, Some(h)) => format!("\n[stale: {h}]"),
+        (true, None) => format!("\n[stale: {} files still indexing]", r.pending),
+        _ => String::new(),
     }
 }
 
@@ -199,15 +213,14 @@ impl Tool for CodeFindTool {
         if rows.is_empty() {
             text = format!("no definition named {name:?}");
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let env = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": env.root, "indexed_files": env.indexed_files, "stale": env.stale,
                 "pending": env.pending, "dropped": env.dropped, "truncated_walk": env.truncated_walk,
+                "suspect_root": env.suspect_root, "hint": env.hint,
                 "rows": &rows[..kept],
                 "content": text,
             }),
@@ -346,15 +359,14 @@ impl Tool for CodeOutlineTool {
             text.push('\n');
             text.push_str(&body);
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let env = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": env.root, "indexed_files": env.indexed_files, "stale": env.stale,
                 "pending": env.pending, "dropped": env.dropped, "truncated_walk": env.truncated_walk,
+                "suspect_root": env.suspect_root, "hint": env.hint,
                 "path": file.path, "language": file.language, "lines": file.lines,
                 "parse_errors": file.parse_errors,
                 "imports": imports.iter().map(|i| serde_json::json!({
@@ -492,6 +504,7 @@ impl Tool for CodeRefsTool {
                     serde_json::json!({
                         "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                         "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                        "suspect_root": e.suspect_root, "hint": e.hint,
                         "candidates": defs[..kept].iter().map(|d| serde_json::json!({
                             "symbol_id": d.symbol_id, "path": d.path, "line": d.line_start, "kind": d.kind, "signature": d.signature,
                         })).collect::<Vec<_>>(),
@@ -561,15 +574,14 @@ impl Tool for CodeRefsTool {
             text.push('\n');
             text.push_str(&body);
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = env(dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                 "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                "suspect_root": e.suspect_root, "hint": e.hint,
                 "definition": def,
                 "direction": if outward { "out" } else { "in" },
                 "refs": &refs[..kept],
@@ -896,6 +908,7 @@ impl Tool for CodeSymbolTool {
                     serde_json::json!({
                         "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                         "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                        "suspect_root": e.suspect_root, "hint": e.hint,
                         "candidates": defs[..kept].iter().map(|d| serde_json::json!({
                             "symbol_id": d.symbol_id, "path": d.path, "line": d.line_start, "kind": d.kind, "signature": d.signature,
                         })).collect::<Vec<_>>(),
@@ -1038,13 +1051,12 @@ impl Tool for CodeSymbolTool {
             }
             text.push_str(block.trim_end());
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = env(dropped);
         let mut v = serde_json::json!({
             "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
             "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "suspect_root": e.suspect_root, "hint": e.hint,
             "sections": wanted,
             "content": text,
         });
@@ -1471,15 +1483,14 @@ impl Tool for CodeImpactTool {
                 .saturating_sub(estimate_tokens(header.len())),
         );
         let mut text = format!("{header}\n{body}");
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                 "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                "suspect_root": e.suspect_root, "hint": e.hint,
                 "mode": mode,
                 "range": range_ids.map(|(o, n)| serde_json::json!({"old": o, "new": n})),
                 "include_tests": include_tests,
