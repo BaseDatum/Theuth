@@ -2001,7 +2001,8 @@ pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
 }
 
-/// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB).
+/// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
+/// `.svg` (a saved diagram) shares the cap.
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
 /// Largest decoded PDF `put_attachment` accepts (20 §2.5: Anthropic's 32 MB).
 const MAX_PDF: usize = 32 * 1024 * 1024;
@@ -2012,7 +2013,7 @@ const MAX_AUDIO: usize = 16 * 1024 * 1024;
 /// (`put_attachment`, `put_session_attachment`).
 fn decode_attachment(bytes: String, ext: &str) -> RpcResult<Vec<u8>> {
     let cap = match ext {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => MAX_IMAGE,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => MAX_IMAGE,
         "pdf" => MAX_PDF,
         "m4a" | "mp4" | "webm" | "ogg" | "opus" | "mp3" | "wav" => MAX_AUDIO,
         _ => return Err(failed(format!("unsupported attachment type .{ext}"))),
@@ -5073,6 +5074,16 @@ fn wanted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A diagram's "Save SVG…" goes through `put_attachment` on the desktop shell:
+    /// `.svg` must be accepted (image cap), unknown extensions still refused.
+    #[test]
+    fn decode_attachment_accepts_svg_and_refuses_unknown() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"<svg/>");
+        assert_eq!(decode_attachment(b64.clone(), "svg").unwrap(), b"<svg/>");
+        let err = decode_attachment(b64, "exe").unwrap_err();
+        assert!(err.message().contains("unsupported attachment type .exe"), "{err}");
+    }
 
     #[test]
     fn communication_changed_reaches_scoped_and_tree_subscribers() {
