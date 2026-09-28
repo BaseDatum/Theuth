@@ -596,6 +596,59 @@ pub struct CodeMapArgs {
     /// Output budget in estimated tokens (chars/3); rows beyond it are dropped and counted. Default 4000.
     #[serde(default)]
     pub budget: Option<u32>,
+    /// `full` (default): the ranked map. `changed`: only the files changed in the worktree vs HEAD, their changed definitions and direct importers, most recently modified first.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// Importers listed per changed file in `mode="changed"` before `+N`.
+const CHANGED_IMPORTERS: usize = 5;
+
+/// One changed file of the `changed` map, in render order.
+struct ChangedBlock<'a> {
+    path: &'a str,
+    status: git::Status,
+    /// `files.mtime_ns`; deletions sort first.
+    mtime: i64,
+    symbols: Vec<OutlineRow>,
+    importers: Vec<&'a str>,
+}
+
+impl ChangedBlock<'_> {
+    fn text(&self, facts: &rank::MapFacts) -> String {
+        let mut s = facts.file_line(self.path);
+        match self.status {
+            git::Status::Added => s.push_str(" [added]"),
+            git::Status::Deleted => s.push_str(" [deleted]"),
+            git::Status::Modified => {}
+        }
+        s.push('\n');
+        for r in &self.symbols {
+            s.push_str(&facts.tag_line(self.path, r.line_start, &r.signature));
+            s.push('\n');
+        }
+        if !self.importers.is_empty() {
+            s.push_str("  ← ");
+            s.push_str(&self.importers[..self.importers.len().min(CHANGED_IMPORTERS)].join(", "));
+            if self.importers.len() > CHANGED_IMPORTERS {
+                s.push_str(&format!(" (+{})", self.importers.len() - CHANGED_IMPORTERS));
+            }
+            s.push('\n');
+        }
+        s
+    }
+}
+
+/// Badge fields every `code_map` row carries beside the tag.
+fn badge_fields(v: &mut serde_json::Value, facts: &rank::MapFacts, path: &str, line: i64) {
+    if let Some(m) = v.as_object_mut() {
+        m.insert(
+            "importers".into(),
+            facts.importers.get(path).copied().unwrap_or(0).into(),
+        );
+        m.insert("recent".into(), facts.recent.contains(path).into());
+        m.insert("callers".into(), facts.callers(path, line).unwrap_or(0).into());
+    }
 }
 
 /// `code_map`: the ranked map of a tree (60 §7), optionally personalised.
@@ -611,7 +664,7 @@ impl Tool for CodeMapTool {
     type Args = CodeMapArgs;
 
     fn description(&self) -> String {
-        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high). Returns {rows: [{path, line, kind, name, signature, rank}], root, indexed_files, stale, pending, dropped, content}; content is the map as text (path, then indented `line: signature` per definition) fitted to budget — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); paths_only=true returns ranked files {path, rank, lines, language} instead.".into()
+        "Ranked map of a source tree (aider-style PageRank over the file graph: files referenced from many places rank high). Returns {rows: [{path, line, kind, name, signature, rank, importers, recent, callers}], root, indexed_files, stale, pending, dropped, cached, coverage_added, content}; content is the map as text: `path (→N importing/referencing files) [NEW if modified < 48 h]`, then indented `line: signature  ↑callers` per definition, fitted to budget, plus one line for any large directory the fit left out — put it in a subagent brief. focus=[identifiers or paths] personalises toward them (their definers and importers rise); paths_only=true returns ranked files {path, rank, lines, language} instead; mode=\"changed\" renders only the files changed in the worktree vs HEAD with their changed definitions and direct importers (`← a, b`), most recently modified first — a few hundred tokens to brief a child about what is being worked on. Unchanged index + same arguments → served from cache (cached: true).".into()
     }
 
     async fn call(&self, a: CodeMapArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -627,12 +680,131 @@ impl Tool for CodeMapTool {
             .filter(|s| !s.trim().is_empty())
             .collect();
         let paths_only = a.paths_only.unwrap_or(false);
+        let mode = a.mode.as_deref().map_or("full", str::trim);
+        let changed = match mode {
+            "full" => false,
+            "changed" => true,
+            m => return Ok(ToolOutput::err(format!("mode {m:?}: expected \"full\" or \"changed\""))),
+        };
+        if changed && paths_only {
+            return Ok(ToolOutput::err("paths_only has no meaning with mode=\"changed\""));
+        }
+        // HEAD for the cache key; `changed` without a repository has no diff to render.
+        let head = {
+            let root = ri.root.clone();
+            let head = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                Ok(Git::open(&root)?.map(|g| g.head().map(|h| h.to_string())))
+            })
+            .await??;
+            match head {
+                Some(h) => h,
+                None if changed => {
+                    return Ok(ToolOutput::err(format!(
+                        "{} is not in a git repository; mode=\"changed\" needs HEAD",
+                        ri.root.display()
+                    )));
+                }
+                None => None,
+            }
+        };
+        // Rendered-map cache (recon item 4): keyed on everything the text
+        // depends on; the hour bucket ages `[NEW]` out. Stale answers are
+        // neither served from nor written to it.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
+        let (count, max_mtime) = store::map_state(&ri.pool).await?;
+        let state = format!(
+            "{}/{count}/{max_mtime}/{}/{}",
+            store::SCHEMA_VERSION,
+            head.as_deref().unwrap_or("-"),
+            now / 3_600_000_000_000
+        );
+        let mut sorted = focus.clone();
+        sorted.sort();
+        let key = format!(
+            "{state}:b={budget};p={paths_only};m={mode};f={}",
+            sorted.join("\u{1f}")
+        );
+        if !r.stale
+            && let Some(hit) = store::map_cache_get(&ri.pool, &key).await?
+            && let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&hit)
+        {
+            let text = v["content"].as_str().unwrap_or_default().to_owned();
+            v["cached"] = true.into();
+            return Ok(structured(text, v));
+        }
+        let facts = store::map_facts(&ri.pool, now - rank::RECENT_NS).await?;
+        let mut extra = serde_json::Map::new();
+        let (mut text, rows, dropped) = if changed {
+            // The worktree diff hashes every indexed HEAD blob against disk
+            // (as `code_impact(git_range="WORKTREE")` does): only on a miss.
+            let known = store::known_files(&ri.pool).await?;
+            let root = ri.root.clone();
+            let paths: Vec<String> = known.keys().cloned().collect();
+            let changes = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let Some(g) = Git::open(&root)? else {
+                    anyhow::bail!("{} is not in a git repository", root.display())
+                };
+                g.changes(&git::Range::Worktree, &root, paths.iter().map(String::as_str))
+            })
+            .await?;
+            let changes = match changes {
+                Ok(c) => c,
+                Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+            };
+            self.changed(&ri, &known, changes, &facts, budget, &mut extra).await?
+        } else {
+            self.full(&ri, &focus, paths_only, &facts, budget, &mut extra).await?
+        };
+        if text.is_empty() {
+            text = if changed {
+                "changed 0 files, 0 symbols".into()
+            } else {
+                "no ranked definitions: the index has no resolved cross-file references yet".into()
+            };
+        }
+        if r.stale {
+            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        }
+        let e = Envelope::new(&ri, &r, dropped);
+        let mut v = serde_json::json!({
+            "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
+            "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "estimated_tokens": estimate_tokens(text.len()),
+            "mode": mode,
+            "cached": false,
+            "rows": rows,
+            "content": text,
+        });
+        if let Some(m) = v.as_object_mut() {
+            m.extend(extra);
+        }
+        if !r.stale {
+            store::map_cache_put(&ri.pool, &state, &key, &v.to_string()).await?;
+        }
+        Ok(structured(text, v))
+    }
+}
+
+impl CodeMapTool {
+    /// `mode="full"`: the ranked map (60 §7), personalised when `focus` is
+    /// given, ranked files only when `paths_only`. Returns `(text, rows, dropped)`.
+    async fn full(
+        &self,
+        ri: &RootIndex,
+        focus: &[String],
+        paths_only: bool,
+        facts: &rank::MapFacts,
+        budget: u32,
+        extra: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<(String, Vec<serde_json::Value>, usize)> {
         // Without focus the stored ranks are the answer (60 §7); a focus is a fresh personalised run.
         let ranked = if focus.is_empty() && !paths_only {
             None
         } else {
             let g = Graph::load(&ri.pool).await?;
-            let f = g.focus(&focus);
+            let f = g.focus(focus);
             let rk = if focus.is_empty() {
                 None
             } else {
@@ -640,7 +812,6 @@ impl Tool for CodeMapTool {
             };
             Some((g, f, rk))
         };
-        let mut extra = serde_json::Map::new();
         if let Some((g, f, rk)) = &ranked {
             extra.insert(
                 "focus_files".into(),
@@ -658,7 +829,7 @@ impl Tool for CodeMapTool {
                 extra.insert("pagerank_iterations".into(), rk.iterations.into());
             }
         }
-        let (mut text, rows, dropped) = if paths_only {
+        if paths_only {
             let (g, _, rk) = ranked.as_ref().expect("loaded for paths_only");
             let mut files: Vec<(&rank::FileNode, f64)> = match rk {
                 Some(rk) => g.files.iter().zip(rk.files.iter().copied()).collect(),
@@ -667,45 +838,142 @@ impl Tool for CodeMapTool {
             files.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.path.cmp(&b.0.path)));
             let lines: Vec<String> = files
                 .iter()
-                .map(|(f, r)| format!("{}  {r:.5}  {} lines  {}", f.path, f.lines, f.language))
+                .map(|(f, r)| {
+                    format!("{}  {r:.5}  {} lines  {}", facts.file_line(&f.path), f.lines, f.language)
+                })
                 .collect();
             let (text, kept, dropped) = budget_render(&lines, budget);
             let rows: Vec<serde_json::Value> = files[..kept]
                 .iter()
-                .map(|(f, r)| serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language}))
+                .map(|(f, r)| {
+                    let mut v = serde_json::json!({"path": f.path, "rank": r, "lines": f.lines, "language": f.language});
+                    badge_fields(&mut v, facts, &f.path, 0);
+                    v
+                })
                 .collect();
-            (text, rows, dropped)
-        } else {
-            let tags: Vec<Tag> = match &ranked {
-                Some((_, _, Some(rk))) => rk.tags.iter().map(|(_, t)| t.clone()).collect(),
-                _ => store::ranked_tags(&ri.pool).await?,
-            };
-            let (text, kept) = rank::render(&tags, budget);
-            let rows = tags[..kept]
-                .iter()
-                .map(|t| serde_json::to_value(t).unwrap_or_default())
-                .collect();
-            (text, rows, tags.len() - kept)
+            return Ok((text, rows, dropped));
+        }
+        let tags: Vec<Tag> = match &ranked {
+            Some((_, _, Some(rk))) => rk.tags.iter().map(|(_, t)| t.clone()).collect(),
+            _ => store::ranked_tags(&ri.pool).await?,
         };
-        if text.is_empty() {
-            text =
-                "no ranked definitions: the index has no resolved cross-file references yet".into();
+        let rendered = rank::render(&tags, budget, facts);
+        let rows = rendered
+            .kept
+            .iter()
+            .map(|&i| {
+                let t = &tags[i];
+                let mut v = serde_json::to_value(t).unwrap_or_default();
+                badge_fields(&mut v, facts, &t.path, t.line);
+                v
+            })
+            .collect();
+        extra.insert("coverage_added".into(), rendered.coverage_added.into());
+        Ok((rendered.text, rows, tags.len() - rendered.kept.len()))
+    }
+
+    /// `mode="changed"` (recon item 6): the worktree's changed files with the
+    /// definitions their hunks touch (mapped like `code_impact`) and their
+    /// direct importers, most recently modified first, under a one-line
+    /// header. Returns `(text, rows, dropped files)`.
+    async fn changed(
+        &self,
+        ri: &RootIndex,
+        known: &HashMap<String, (i64, i64, i64)>,
+        changes: Vec<Change>,
+        facts: &rank::MapFacts,
+        budget: u32,
+        extra: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<(String, Vec<serde_json::Value>, usize)> {
+        // The reconcile just made the index describe the disk, which is the
+        // diff's new side: hunks map straight onto the stored rows (no
+        // new-side parse as `code_impact` needs for commit ranges).
+        let by_id: HashMap<i64, &str> = known.iter().map(|(p, &(id, ..))| (id, p.as_str())).collect();
+        let edges = store::import_edges(&ri.pool).await?;
+        let mut blocks: Vec<ChangedBlock<'_>> = Vec::with_capacity(changes.len());
+        for c in &changes {
+            let Some(&(id, mtime, _)) = known.get(c.path.as_str()) else {
+                if c.status == git::Status::Deleted {
+                    blocks.push(ChangedBlock {
+                        path: &c.path,
+                        status: c.status,
+                        mtime: i64::MAX,
+                        symbols: Vec::new(),
+                        importers: Vec::new(),
+                    });
+                }
+                continue;
+            };
+            let rows = store::outline(&ri.pool, id).await?;
+            let syms: Vec<Sym> = rows
+                .iter()
+                .map(|r| Sym {
+                    id: Some(r.id),
+                    name: r.name.clone(),
+                    kind: r.kind.clone(),
+                    line_start: r.line_start,
+                    line_end: r.line_end,
+                })
+                .collect();
+            let hit: HashSet<i64> = touched(&syms, &c.spans).iter().filter_map(|s| s.id).collect();
+            let symbols: Vec<OutlineRow> =
+                rows.into_iter().filter(|r| hit.contains(&r.id)).collect();
+            let mut importers: Vec<&str> = edges
+                .iter()
+                .filter(|&&(_, dst)| dst == id)
+                .filter_map(|(src, _)| by_id.get(src).copied())
+                .collect();
+            importers.sort_unstable();
+            importers.dedup();
+            blocks.push(ChangedBlock {
+                path: &c.path,
+                status: c.status,
+                mtime,
+                symbols,
+                importers,
+            });
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        blocks.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(b.path)));
+        let n_sym: usize = blocks.iter().map(|b| b.symbols.len()).sum();
+        let mut text = format!("changed {} files, {n_sym} symbols\n", blocks.len());
+        let mut kept = 0;
+        for b in &blocks {
+            let t = b.text(facts);
+            if kept > 0 && estimate_tokens(text.len() + t.len()) > budget {
+                break;
+            }
+            text.push_str(&t);
+            kept += 1;
         }
-        let e = Envelope::new(&ri, &r, dropped);
-        let mut v = serde_json::json!({
-            "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
-            "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
-            "estimated_tokens": estimate_tokens(text.len()),
-            "rows": rows,
-            "content": text,
-        });
-        if let Some(m) = v.as_object_mut() {
-            m.extend(extra);
+        let dropped = blocks.len() - kept;
+        if dropped > 0 {
+            text.push_str(&format!("… +{dropped} files\n"));
         }
-        Ok(structured(text, v))
+        if blocks.is_empty() {
+            text.clear();
+        }
+        let rows: Vec<serde_json::Value> = blocks[..kept]
+            .iter()
+            .flat_map(|b| {
+                b.symbols.iter().map(move |s| {
+                    let mut v = serde_json::json!({
+                        "path": b.path, "line": s.line_start, "kind": s.kind, "name": s.name,
+                        "signature": s.signature, "status": b.status,
+                    });
+                    badge_fields(&mut v, facts, b.path, s.line_start);
+                    v
+                })
+            })
+            .collect();
+        extra.insert(
+            "changed_files".into(),
+            blocks[..kept]
+                .iter()
+                .map(|b| serde_json::json!({"path": b.path, "status": b.status, "importers": b.importers}))
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        Ok((text, rows, dropped))
     }
 }
 

@@ -1123,6 +1123,95 @@ pub async fn import_edges(pool: &SqlitePool) -> anyhow::Result<Vec<(i64, i64)>> 
     .await?)
 }
 
+// --- code_map render facts and cache (60 §7, CI-RENDER) -------------------
+
+/// Badge data for the map render: per file the distinct files that import
+/// or reference it (`imports.target_file` ∪ `refs.to_symbol` at
+/// `confidence ≥ 0.5`, `mod:` rows excluded like the rank graph), the files
+/// with `mtime_ns ≥ since_ns`, per definition its cross-file resolved
+/// references, and every parsed file's path (directory coverage).
+pub async fn map_facts(pool: &SqlitePool, since_ns: i64) -> anyhow::Result<crate::rank::MapFacts> {
+    let importers: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT f.path, count(*) FROM (\
+           SELECT target_file AS dst, file_id AS src FROM imports \
+             WHERE target_file IS NOT NULL AND target_file <> file_id AND specifier NOT LIKE 'mod:%' \
+           UNION \
+           SELECT s.file_id, r.file_id FROM refs r JOIN symbols s ON s.id = r.to_symbol \
+             WHERE r.confidence >= 0.5 AND r.file_id <> s.file_id\
+         ) e JOIN files f ON f.id = e.dst GROUP BY e.dst",
+    )
+    .fetch_all(pool)
+    .await?;
+    let recent: Vec<String> = sqlx::query_scalar("SELECT path FROM files WHERE mtime_ns >= ?")
+        .bind(since_ns)
+        .fetch_all(pool)
+        .await?;
+    let callers: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT f.path, s.line_start, count(*) FROM refs r JOIN symbols s ON s.id = r.to_symbol JOIN files f ON f.id = s.file_id \
+         WHERE r.confidence >= 0.5 AND r.file_id <> s.file_id GROUP BY s.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let files: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM files WHERE language <> 'other' ORDER BY path")
+            .fetch_all(pool)
+            .await?;
+    let mut out = crate::rank::MapFacts {
+        importers: importers.into_iter().collect(),
+        recent: recent.into_iter().collect(),
+        callers: HashMap::new(),
+        files,
+    };
+    for (path, line, n) in callers {
+        // Two definitions on one line (rare) share the badge.
+        *out.callers.entry((path, line)).or_default() += n;
+    }
+    Ok(out)
+}
+
+/// `(files rows, max mtime_ns)`: the index state a rendered map depends on.
+pub async fn map_state(pool: &SqlitePool) -> anyhow::Result<(i64, i64)> {
+    Ok(
+        sqlx::query_as("SELECT count(*), coalesce(max(mtime_ns), 0) FROM files")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Prefix of every rendered-map cache row in `meta`.
+const MAP_CACHE: &str = "map_cache:";
+
+/// A cached `code_map` envelope for `key` (see [`crate::tools`]).
+pub async fn map_cache_get(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+    meta(pool, &format!("{MAP_CACHE}{key}")).await
+}
+
+/// Store one rendered map and drop every cached map whose key does not
+/// start with `state` (the index moved on; only the current state's
+/// renders are worth keeping).
+pub async fn map_cache_put(
+    pool: &SqlitePool,
+    state: &str,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM meta WHERE key LIKE ? AND key NOT LIKE ?")
+        .bind(format!("{MAP_CACHE}%"))
+        .bind(format!("{MAP_CACHE}{state}%"))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(format!("{MAP_CACHE}{key}"))
+    .bind(value)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// `imports` rows of `file_ids` that stayed unresolved.
 pub async fn unresolved_imports_in(pool: &SqlitePool, file_ids: &[i64]) -> anyhow::Result<i64> {
     let mut n = 0i64;
