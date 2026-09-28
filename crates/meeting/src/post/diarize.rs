@@ -428,7 +428,7 @@ fn frame_scores(probs: &[f32]) -> Vec<f32> {
     let min_positive = (BUDGET as f32 * MIN_POSITIVE_RATE) as usize;
     let mut scores = vec![f32::NEG_INFINITY; n * SPEAKERS];
     let mut positive = [0usize; SPEAKERS];
-    for (f, p) in probs.chunks_exact(SPEAKERS).enumerate() {
+    for (f, p) in probs.as_chunks::<SPEAKERS>().0.iter().enumerate() {
         let complements: Vec<f32> = p
             .iter()
             .map(|&x| (1.0 - x).max(SCORE_THRESHOLD).ln())
@@ -787,7 +787,7 @@ mod tests {
         let silence = vec![-1f32; HIDDEN];
         let (e, p) = compress(&embeds, &probs, &silence);
         assert_eq!((e.len(), p.len()), (CACHE * HIDDEN, CACHE * SPEAKERS));
-        let ids: Vec<f32> = e.chunks_exact(HIDDEN).map(|r| r[0]).collect();
+        let ids: Vec<f32> = e.as_chunks::<HIDDEN>().0.iter().map(|r| r[0]).collect();
         // Speaker 0's frames first (in time order), then their silence slot, then speaker
         // 1's, then six more silence slots for the speakers never heard.
         let silences = ids.iter().filter(|&&x| x == -1.0).count();
@@ -812,10 +812,12 @@ mod tests {
         assert!(!ids.contains(&299.0), "{ids:?}");
         // The silence slots carry zero probability.
         let silent_probs: Vec<&[f32]> = p
-            .chunks_exact(SPEAKERS)
+            .as_chunks::<SPEAKERS>()
+            .0
+            .iter()
             .zip(&ids)
             .filter(|(_, id)| **id == -1.0)
-            .map(|(row, _)| row)
+            .map(|(row, _)| row.as_slice())
             .collect();
         assert!(silent_probs.iter().all(|r| r.iter().all(|&x| x == 0.0)));
     }

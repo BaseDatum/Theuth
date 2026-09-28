@@ -2155,7 +2155,7 @@ impl Message<StopMeeting> for Meeting {
             live.labels = labels.view(clock.elapsed_at(labels.at).as_millis() as u64);
         }
         let mut finals: Vec<Utterance> = Vec::new();
-        let tasks: Vec<_> = live.stt.drain(..).collect();
+        let tasks: Vec<_> = std::mem::take(&mut live.stt);
         for task in tasks {
             let Ok(pieces) = task.await else { continue };
             for p in pieces
@@ -2173,7 +2173,7 @@ impl Message<StopMeeting> for Meeting {
                 });
             }
         }
-        let held: Vec<Utterance> = live.held_system.drain(..).collect();
+        let held: Vec<Utterance> = std::mem::take(&mut live.held_system);
         // 02 §4: the engines are gone (the tasks owned them); pending lines go
         // out as one last input, then the session compacts like any other. 57 §3.2:
         // batches the oracle kept back ride along as context, unfiltered at stop.

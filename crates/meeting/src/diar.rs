@@ -151,7 +151,7 @@ impl Labeller {
     pub fn push(&mut self, probs: &[f32]) {
         let merge = MERGE_GAP_MS / FRAME_MS;
         let min = MIN_TURN_MS / FRAME_MS;
-        for row in probs.chunks_exact(SPEAKERS) {
+        for row in probs.as_chunks::<SPEAKERS>().0 {
             let t = self.frames;
             for (s, &p) in row.iter().enumerate() {
                 let c = &mut self.channels[s];

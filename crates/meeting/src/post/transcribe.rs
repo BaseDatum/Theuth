@@ -37,7 +37,7 @@ pub fn speech(pcm: &[f32]) -> anyhow::Result<Vec<(u64, u64)>> {
     let mut out = Vec::new();
     let mut open: Option<usize> = None;
     // Frame by frame so a `Turn` resets the VAD's hidden state exactly where the live path does.
-    for (i, frame) in pcm.chunks_exact(FRAME).enumerate() {
+    for (i, frame) in pcm.as_chunks::<FRAME>().0.iter().enumerate() {
         let end = (i + 1) * FRAME;
         let Some(&p) = vad.process(frame).first() else {
             continue;

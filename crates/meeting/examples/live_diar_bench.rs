@@ -397,7 +397,7 @@ fn report(r: &Run, audio_s: f64) {
 
 fn channel_seconds(probs: &[f32]) -> String {
     let mut s = [0usize; SPEAKERS];
-    for row in probs.chunks_exact(SPEAKERS) {
+    for row in probs.as_chunks::<SPEAKERS>().0 {
         for (k, &p) in row.iter().enumerate() {
             s[k] += usize::from(p >= SPEECH);
         }
@@ -749,7 +749,7 @@ fn frame_scores(probs: &[f32]) -> Vec<f32> {
     let min_positive = (BUDGET as f32 * MIN_POSITIVE_RATE) as usize;
     let mut scores = vec![f32::NEG_INFINITY; n * SPEAKERS];
     let mut positive = [0usize; SPEAKERS];
-    for (f, p) in probs.chunks_exact(SPEAKERS).enumerate() {
+    for (f, p) in probs.as_chunks::<SPEAKERS>().0.iter().enumerate() {
         let complements: Vec<f32> = p
             .iter()
             .map(|&x| (1.0 - x).max(SCORE_THRESHOLD).ln())
