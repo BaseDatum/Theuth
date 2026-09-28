@@ -263,6 +263,9 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         open.mode(mode);
     }
+    // No POSIX mode bits off unix; the per-user profile directory carries the ACL.
+    #[cfg(not(unix))]
+    let _ = mode;
     open.open(&tmp)
         .and_then(|mut f| f.write_all(bytes))
         .map_err(|e| e.to_string())?;

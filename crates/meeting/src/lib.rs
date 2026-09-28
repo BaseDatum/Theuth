@@ -1583,7 +1583,8 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
         .collect())
 }
 
-/// `statvfs` on `dir`: under [`DISK_LOW_BYTES`] free. Unknown → `false`.
+/// Free space on `dir`'s volume under [`DISK_LOW_BYTES`] (`statvfs` on unix, `GetDiskFreeSpaceExW` on
+/// Windows). Unknown → `false`.
 fn disk_low(dir: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
@@ -1598,7 +1599,24 @@ fn disk_low(dir: &std::path::Path) -> bool {
         }
         (st.f_bavail as u64).saturating_mul(st.f_frsize as u64) < DISK_LOW_BYTES
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        use windows::core::PCWSTR;
+        let path: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut free_to_caller = 0u64;
+        // SAFETY: `path` is a valid NUL-terminated wide string; the out pointer is valid for the call.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(PCWSTR(path.as_ptr()), Some(&mut free_to_caller), None, None)
+        };
+        ok.is_ok() && free_to_caller < DISK_LOW_BYTES
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = dir;
         false

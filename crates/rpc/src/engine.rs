@@ -259,6 +259,7 @@ pub fn alive(pid: u32) -> bool {
     ok || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Is a process with `pid` alive? `OpenProcess` + `GetExitCodeProcess == STILL_ACTIVE` on Windows.
 #[cfg(windows)]
 pub fn alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
