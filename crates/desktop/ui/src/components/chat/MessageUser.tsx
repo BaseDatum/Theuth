@@ -14,6 +14,7 @@ import { BoardQuoteCard } from './BoardQuoteCard'
 import { Attachments } from './Attachments'
 import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 import { SkillCard } from './SkillCard'
+import { Stamp, useStampToggle } from './Stamp'
 
 /** The message's references as a chip row above the bubble (66 §7.9); `onDrop` (editing) adds a `×` per chip. */
 function ChipRow({ refs, session, onDrop }: { refs: AttachRef[]; session?: string; onDrop?: (i: number) => void }) {
@@ -98,6 +99,7 @@ export const MessageUser = memo(function MessageUser({
   session,
   turn,
   context,
+  at,
   readOnly,
 }: {
   text: string
@@ -106,6 +108,7 @@ export const MessageUser = memo(function MessageUser({
   session: string
   turn?: number
   context?: ContextEntry
+  at?: number
   readOnly?: boolean
 }) {
   const api = useApi()
@@ -118,8 +121,10 @@ export const MessageUser = memo(function MessageUser({
   const note = parseNote(body)
   // 71 §2.9: a `[board …]` header behind the markers is a place on a board — the quote card, not a bubble.
   const ask = note ? null : parseAsk(body)
+  const stamp = useStampToggle()
+  const actions = !readOnly && !editing && !context?.removed && (context || (turn != null && !running))
   return (
-    <div className="group flex flex-col items-end gap-2 py-2">
+    <div className="group flex flex-col items-end gap-2 py-2" onClick={stamp.onClick}>
       {skill && <SkillCard name={skill} />}
       <Attachments files={files} occurrences={context?.attachments} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />
       {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}
@@ -148,15 +153,20 @@ export const MessageUser = memo(function MessageUser({
           </div>
         ))
       )}
-      {!readOnly && !editing && !context?.removed && (context || (turn != null && !running)) && (
-        <div className="-mr-2 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
-          {turn != null && !running && (
-            <>
-              <ActionButton icon={Pencil} label="Edit" onClick={() => useDrafts.getState().beginEdit(session, { turn, text: body, refs })} />
-              <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
-            </>
+      {(at !== undefined || actions) && (
+        <div className="-mr-2 flex items-center justify-end gap-2">
+          {actions && (
+            <div className="flex opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+              {turn != null && !running && (
+                <>
+                  <ActionButton icon={Pencil} label="Edit" onClick={() => useDrafts.getState().beginEdit(session, { turn, text: body, refs })} />
+                  <ActionButton icon={GitFork} label="Fork from here" onClick={() => void fork(turn)} />
+                </>
+              )}
+              {context && <RemoveButton session={session} target={context.target} active={context.active} />}
+            </div>
           )}
-          {context && <RemoveButton session={session} target={context.target} active={context.active} />}
+          <Stamp at={at} shown={stamp.shown} className="mr-2" />
         </div>
       )}
     </div>

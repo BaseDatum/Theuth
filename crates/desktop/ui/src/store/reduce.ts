@@ -2,6 +2,7 @@ import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
+import { stripTime } from "@/lib/time";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -311,11 +312,20 @@ function peerEntry(origin: PeerOrigin, text: string, seq?: number, context?: Con
   return { id: nextId(), kind: 'peer', from: origin.from, text, origin, seq, context }
 }
 
-/** Transcript entries for one history record; `context` (48 §3.3) rides along on every card the record becomes. */
+/** Transcript entries for one history record; `context` (48 §3.3) rides along on every card the record becomes, and
+ * the stored row time becomes `at` (73 §5). */
 export function fromHistory(h: HistoryEntry): Entry[] {
+  const out = historyEntries(h);
+  const at = h.context?.at ? Date.parse(h.context.at) : NaN;
+  return Number.isNaN(at) ? out : out.map((e) => ({ ...e, at }));
+}
+
+function historyEntries(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined;
   switch (h.role) {
     case "user": {
+      // 73 §3: the engine's `<time …/>` line is for the model; the row's `at` is what the human sees.
+      const text = stripTime(h.text);
       // 52 §6: the typed metadata, never the `<vision_observation>` prose, makes a row a consultation note.
       const vision = h.vision ?? context?.vision;
       if (vision)
@@ -326,16 +336,16 @@ export function fromHistory(h: HistoryEntry): Entry[] {
             model: vision.vision_model,
             sources: vision.observations.map((o) => o.source),
             note: vision,
-            text: h.text,
+            text,
             seq: context?.target.kind === "message" ? context.target.seq : undefined,
             context,
           },
         ];
       if (h.peer)
-        return [peerEntry(h.peer, peerBody(h.text), undefined, context)];
+        return [peerEntry(h.peer, peerBody(text), undefined, context)];
       return userEntries(
-        h.text,
-        classify(h.text),
+        text,
+        classify(text),
         undefined,
         h.turn ?? undefined,
         context,
@@ -370,7 +380,7 @@ export function fromHistory(h: HistoryEntry): Entry[] {
           ...(h.result
             ? {
                 result: {
-                  output: h.result[0],
+                  output: stripTime(h.result[0]),
                   isError: h.result[1],
                   files: h.files ?? [],
                 },
@@ -683,7 +693,7 @@ function turn(
         ? stampUser(s.entries, e.turn_seq)
         : wrapped
           ? s.entries
-          : [...s.entries, ...userEntries(e.text, cls, undefined, e.turn_seq)];
+          : [...s.entries, ...userEntries(e.text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
       return {
         ...s,
         entries,
@@ -706,7 +716,7 @@ function turn(
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...userEntries(q.text, classify(q.text), true)],
+        entries: [...s.entries, ...userEntries(q.text, classify(q.text), true).map((x) => ({ ...x, at: Date.now() }))],
         lastInjected: e.turn,
       };
     }
@@ -724,6 +734,7 @@ function turn(
                 text: e.text,
                 open: true,
                 turn: s.turnSeq,
+                at: Date.now(),
               },
             ];
       return { ...s, entries, waiting: false, activity: "streaming" };
@@ -778,6 +789,7 @@ function turn(
         // A `.` in the id marks a call made from inside a `python` cell (08 §4.1).
         child: e.call_id.includes("."),
         startedAt: Date.now(),
+        at: Date.now(),
       };
       const entries =
         at < 0 ? [...s.entries, tool] : replaceAt(s.entries, at, tool);

@@ -62,8 +62,10 @@ export type AppDraft = {
 
 /** One transcript row. `id` is the React key; ids are process-unique. `context` is the row's stored
  * identity in the model's context (48 §3.3): its removal target, membership and attachment occurrences.
- * Only history rows carry it; live cards get theirs on the settled reload after the turn. */
-export type Entry = { id: string; context?: ContextEntry } & (
+ * Only history rows carry it; live cards get theirs on the settled reload after the turn. `at` is the row's
+ * wall-clock time in ms (73 §5): `context.at` on load, `Date.now()` for a live card; absent for rows stored
+ * before the column existed. */
+export type Entry = { id: string; context?: ContextEntry; at?: number } & (
   | {
       kind: "user";
       text: string;
@@ -402,6 +404,7 @@ export const createSessions = (): SessionsApi =>
             id: nextId(),
             kind: "user",
             text,
+            at: Date.now(),
             ...(files?.length ? { files } : {}),
           };
           return {
