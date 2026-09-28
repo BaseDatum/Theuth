@@ -416,16 +416,19 @@ mod tests {
         let legacy = row(key, "iPhone");
         std::fs::write(
             link_dir.join("devices.yaml"),
-            serde_yaml::to_string(&[legacy.clone()]).unwrap(),
+            serde_yaml::to_string(std::slice::from_ref(&legacy)).unwrap(),
         )
         .unwrap();
 
         let store = Store::open(&dir.path().join(DB)).await.unwrap();
         let mut d = Devices::open(store.clone(), &link_dir).await;
-        assert_eq!(d.rows().cloned().collect::<Vec<_>>(), [legacy.clone()]);
+        assert_eq!(
+            d.rows().cloned().collect::<Vec<_>>(),
+            std::slice::from_ref(&legacy)
+        );
         assert_eq!(
             store.devices().await.unwrap(),
-            [legacy.clone()],
+            std::slice::from_ref(&legacy),
             "imported into the table"
         );
         assert!(link_dir.join("devices.yaml").exists(), "left in place");

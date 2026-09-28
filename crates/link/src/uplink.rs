@@ -311,6 +311,8 @@ mod liveness_tests {
     /// A relay that completes `NK` and then holds the socket open without ever polling it — a
     /// replaced backend behind a proxy as the harness experiences it: ESTABLISHED, silent, no pongs
     /// (an unpolled tungstenite server never auto-answers a `Ping`).
+    // The header callback's `Err` is tungstenite's `ErrorResponse`, fixed by its `Callback` trait.
+    #[allow(clippy::result_large_err)]
     async fn silent_relay(harness: &Identity) -> (String, tokio::sync::oneshot::Receiver<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

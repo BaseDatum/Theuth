@@ -265,7 +265,7 @@ mod tests {
             revoked_ms: None,
         };
         store.apply(&Op::PutDevice(row.clone())).await.unwrap();
-        assert_eq!(store.devices().await.unwrap(), [row.clone()]);
+        assert_eq!(store.devices().await.unwrap(), std::slice::from_ref(&row));
         store
             .apply(&Op::Rename {
                 id: row.id.clone(),
@@ -301,7 +301,7 @@ mod tests {
             expires_ms: 2,
         };
         store.apply(&Op::PutPending(p.clone())).await.unwrap();
-        assert_eq!(store.pending().await.unwrap(), [p.clone()]);
+        assert_eq!(store.pending().await.unwrap(), std::slice::from_ref(&p));
         store.apply(&Op::DeletePending(p.id.clone())).await.unwrap();
         assert!(store.pending().await.unwrap().is_empty());
     }

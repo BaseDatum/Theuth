@@ -425,6 +425,8 @@ pub(crate) mod testing {
         }
     }
 
+    // The header callback's `Err` is tungstenite's `ErrorResponse`, fixed by its `Callback` trait.
+    #[allow(clippy::result_large_err)]
     async fn serve(
         tcp: tokio::net::TcpStream,
         identities: Vec<Identity>,
