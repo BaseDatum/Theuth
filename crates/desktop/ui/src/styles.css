@@ -249,6 +249,11 @@
   }
 }
 
+/* NumberFlow (the header pills' rolling digits) pads its digits by the roll mask height, which would grow a `text-xs` pill 22 → 26 px; pull the margin box back to the text's line box. */
+number-flow-react {
+  margin-block: -0.17em;
+}
+
 /* Sweep on an in-flight crawl/search label (LibreChat `.shimmer`). */
 .shimmer {
   background-image: linear-gradient(90deg, var(--fg-tertiary) 40%, var(--fg-primary) 50%, var(--fg-tertiary) 60%);

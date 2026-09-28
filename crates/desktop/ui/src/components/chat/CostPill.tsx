@@ -1,8 +1,9 @@
+import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins } from 'lucide-react'
-import { useEffect } from 'react'
+import { Fragment, useEffect } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { costLines, costShort } from '@/lib/money'
+import { costLines, costShort, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
@@ -66,13 +67,31 @@ const useCost = (session: string) => {
   return useQuery({ queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
 }
 
+/** Three fixed decimals, no grouping: `formatMoney`'s digits. */
+const MILLI = { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }
+
+/** `costShort` with rolling digits: returned money, else `~` estimates, joined ` + `; `—` stays text. Reads the same at rest. */
+function RollingCost({ bucket }: { bucket: CostBucket }) {
+  const monies = bucket.returned.length ? bucket.returned : bucket.estimated_for_unavailable
+  if (!monies.length) return '—'
+  return monies.map((m, i) => {
+    const { prefix, value } = moneyParts(m)
+    return (
+      <Fragment key={i}>
+        {i > 0 && ' + '}
+        {!bucket.returned.length && '~'}
+        <NumberFlow value={value} prefix={prefix} locales="en" format={MILLI} />
+      </Fragment>
+    )
+  })
+}
+
 /** Header pill with the session's returned total, else its estimate (51 §6.2); `row`: the compact menu's line. Click opens `CostDialog`. */
 export function CostPill({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
   const data = useCost(session)
   if (!data) return null
-  const amount = costShort(data.total)
   const lines = costLines(data.total)
-  if (row) return <MenuRow icon={Coins} label="Cost" detail={amount} onSelect={onOpen} />
+  if (row) return <MenuRow icon={Coins} label="Cost" detail={costShort(data.total)} onSelect={onOpen} />
   return (
     <button
       type="button"
@@ -81,7 +100,7 @@ export function CostPill({ session, row, onOpen }: { session: string; row?: bool
       aria-label="Cost"
       onClick={onOpen}
     >
-      {amount}
+      <RollingCost bucket={data.total} />
     </button>
   )
 }
