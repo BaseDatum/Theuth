@@ -1,7 +1,7 @@
 //! The shared engine behind the actor and the tools: open roots (LRU of 8
 //! pools), per-root writer lock, reconcile-on-call (60 §5.4, §0.8).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -342,6 +342,9 @@ impl Codeindex {
         let t = Instant::now();
         resolve::resolve(&ri.pool, &ws, &targets).await?;
         let resolve_ms = t.elapsed().as_millis();
+        let t = Instant::now();
+        let subjects = test_subjects(&ri.pool).await?;
+        let subjects_ms = t.elapsed().as_millis();
         // 60 §7: unpersonalised ranks stored after every write, so `code_map`
         // without `focus` and `code_find`'s ordering are lookups.
         let t = Instant::now();
@@ -353,6 +356,8 @@ impl Codeindex {
             parse_ms,
             apply_ms,
             resolve_ms,
+            subjects_ms,
+            test_subjects = subjects,
             rank_ms,
             rank_nodes = nodes,
             rank_iterations = iterations,
@@ -385,6 +390,45 @@ impl Codeindex {
             pending: ri.pending.load(Ordering::Acquire),
         })
     }
+}
+
+/// 60 §8 `test_subject`: for every test file the file it most plausibly
+/// exercises — the first [`walk::subject_candidates`] that is an indexed
+/// non-test file, else the non-test file it imports most (ties: first path).
+/// Recomputed whole after every write (test files are a small share; a
+/// new non-test file can become the subject of an old test) and stored as
+/// `meta.test_subjects` JSON. Returns the number of tests with a subject.
+async fn test_subjects(pool: &SqlitePool) -> anyhow::Result<usize> {
+    let files = store::all_files(pool).await?;
+    let by_id: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let sources: HashSet<&str> = files
+        .iter()
+        .filter(|f| !f.is_test)
+        .map(|f| f.path.as_str())
+        .collect();
+    let mut most: HashMap<i64, (i64, &str)> = HashMap::new();
+    for (test, target, n) in store::test_import_counts(pool).await? {
+        let Some(&path) = by_id.get(&target) else {
+            continue;
+        };
+        let e = most.entry(test).or_insert((n, path));
+        if n > e.0 || n == e.0 && path < e.1 {
+            *e = (n, path);
+        }
+    }
+    let map: BTreeMap<String, String> = files
+        .iter()
+        .filter(|f| f.is_test)
+        .filter_map(|f| {
+            walk::subject_candidates(&f.path)
+                .into_iter()
+                .find(|c| sources.contains(c.as_str()))
+                .or_else(|| most.get(&f.id).map(|(_, p)| (*p).to_owned()))
+                .map(|s| (f.path.clone(), s))
+        })
+        .collect();
+    store::set_test_subjects(pool, &map).await?;
+    Ok(map.len())
 }
 
 /// Walk vs `files`.

@@ -103,13 +103,92 @@ fn generated_file(name: &str) -> bool {
 /// directory, `*_test.go`, `test_*.py`/`*_test.py`, `*.test.*`/`*.spec.*`.
 pub fn is_test_path(path: &str) -> bool {
     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
-    dir.split('/')
-        .any(|d| matches!(d, "test" | "tests" | "__tests__" | "testdata"))
+    dir.split('/').any(is_test_dir)
         || name.ends_with("_test.go")
         || name.starts_with("test_") && name.ends_with(".py")
         || name.ends_with("_test.py")
         || name.contains(".test.")
         || name.contains(".spec.")
+}
+
+fn is_test_dir(d: &str) -> bool {
+    matches!(d, "test" | "tests" | "__tests__" | "testdata")
+}
+
+/// The files a test at `path` most plausibly exercises, by convention, best
+/// first (60 §8 `test_subject`): the test marker stripped from the name
+/// (`foo.test.ts`, `foo.spec.ts`, `foo_test.go`, `test_foo.py`, `foo_test.py`
+/// → `foo.*`), looked for in the same directory, beside the `tests`/
+/// `__tests__` directory (`__tests__/foo.tsx → ../foo.tsx`) and under a
+/// sibling `src` (`tests/…/foo → src/…/foo`, `crates/x/tests/foo.rs →
+/// crates/x/src/foo.rs`); a Rust test under `tests/` falls back to the
+/// crate's `src/lib.rs` then `src/main.rs`. The caller keeps the first
+/// candidate that is an indexed non-test file.
+pub fn subject_candidates(path: &str) -> Vec<String> {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    let mut stems: Vec<&str> = Vec::with_capacity(4);
+    for s in [
+        stem.strip_suffix(".test"),
+        stem.strip_suffix(".spec"),
+        stem.strip_suffix("_test"),
+        stem.strip_prefix("test_"),
+        Some(stem),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !stems.contains(&s) {
+            stems.push(s);
+        }
+    }
+    let parts: Vec<&str> = dir.split('/').filter(|d| !d.is_empty()).collect();
+    let join = |segs: &[&str]| segs.join("/");
+    let mut dirs: Vec<String> = Vec::with_capacity(4);
+    let mut crate_root: Option<String> = None;
+    match parts.iter().rposition(|d| is_test_dir(d)) {
+        Some(i) => {
+            let (before, after) = (&parts[..i], &parts[i + 1..]);
+            let src: Vec<&str> = before
+                .iter()
+                .chain(["src"].iter())
+                .chain(after)
+                .copied()
+                .collect();
+            dirs.push(join(&[before, after].concat()));
+            dirs.push(join(&src));
+            if !after.is_empty() {
+                dirs.push(join(before));
+                dirs.push(join(&[before, &["src"]].concat()));
+            }
+            crate_root = Some(join(&[before, &["src"]].concat()));
+        }
+        None => dirs.push(dir.to_owned()),
+    }
+    let file = |d: &str, s: &str| {
+        let dot = if ext.is_empty() { "" } else { "." };
+        if d.is_empty() {
+            format!("{s}{dot}{ext}")
+        } else {
+            format!("{d}/{s}{dot}{ext}")
+        }
+    };
+    let mut out: Vec<String> = Vec::with_capacity(dirs.len() * stems.len() + 2);
+    for d in &dirs {
+        for s in &stems {
+            let c = file(d, s);
+            if c != path && !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    if ext == "rs"
+        && let Some(root) = crate_root
+    {
+        out.push(file(&root, "lib"));
+        out.push(file(&root, "main"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -128,5 +207,26 @@ mod tests {
         assert!(is_test_path("src/store.test.ts"));
         assert!(!is_test_path("src/testing.rs"));
         assert!(!is_test_path("src/contest.py"));
+    }
+
+    #[test]
+    fn subject_candidates_by_convention() {
+        let first = |p: &str| subject_candidates(p).remove(0);
+        assert_eq!(first("src/store.test.ts"), "src/store.ts");
+        assert_eq!(first("src/store.spec.tsx"), "src/store.tsx");
+        assert_eq!(first("pkg/a_test.go"), "pkg/a.go");
+        assert_eq!(first("pkg/test_store.py"), "pkg/store.py");
+        assert_eq!(first("pkg/store_test.py"), "pkg/store.py");
+        assert_eq!(first("src/__tests__/foo.tsx"), "src/foo.tsx");
+        let c = subject_candidates("crates/x/tests/rank.rs");
+        assert_eq!(c[0], "crates/x/rank.rs");
+        assert!(c.contains(&"crates/x/src/rank.rs".to_owned()), "{c:?}");
+        assert!(c.contains(&"crates/x/src/lib.rs".to_owned()), "{c:?}");
+        assert_eq!(c.last().unwrap(), "crates/x/src/main.rs");
+        let c = subject_candidates("tests/unit/test_store.py");
+        assert!(c.contains(&"src/unit/store.py".to_owned()), "{c:?}");
+        assert!(c.contains(&"src/store.py".to_owned()), "{c:?}");
+        assert!(c.contains(&"store.py".to_owned()), "{c:?}");
+        assert!(!subject_candidates("tests/it.rs").contains(&"tests/it.rs".to_owned()));
     }
 }

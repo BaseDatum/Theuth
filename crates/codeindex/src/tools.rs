@@ -839,7 +839,7 @@ impl Tool for CodeSymbolTool {
     type Args = CodeSymbolArgs;
 
     fn description(&self) -> String {
-        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
+        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), tests: [path] (tests whose subject file is the definition's file), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
     }
 
     async fn call(&self, a: CodeSymbolArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1051,6 +1051,22 @@ impl Tool for CodeSymbolTool {
             }
             text.push_str(block.trim_end());
         }
+        // 60 §8 `test_subject`: the tests whose subject is the definition's file.
+        let tests: Vec<String> = store::test_subjects(&ri.pool)
+            .await?
+            .into_iter()
+            .filter(|(_, s)| *s == def.path)
+            .map(|(t, _)| t)
+            .collect();
+        if !tests.is_empty() {
+            text.push_str(&format!(
+                "\n-- tests: {} file{} (subject {}) --\n{}",
+                tests.len(),
+                if tests.len() == 1 { "" } else { "s" },
+                def.path,
+                tests.join("\n")
+            ));
+        }
         text.push_str(&stale_note(&r));
         let e = env(dropped);
         let mut v = serde_json::json!({
@@ -1058,6 +1074,7 @@ impl Tool for CodeSymbolTool {
             "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
             "suspect_root": e.suspect_root, "hint": e.hint,
             "sections": wanted,
+            "tests": tests,
             "content": text,
         });
         if let Some(m) = v.as_object_mut() {
@@ -1192,7 +1209,7 @@ impl Tool for CodeImpactTool {
     type Args = CodeImpactArgs;
 
     fn description(&self) -> String {
-        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
+        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive that reference the change), tests_by_subject: [path] (tests whose subject file — by naming convention or most-imported file — is changed or direct; content lists each test once, marked (ref)/(subject)), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
     }
 
     async fn call(&self, a: CodeImpactArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1404,6 +1421,30 @@ impl Tool for CodeImpactTool {
             .collect();
         tests.sort_unstable();
         tests.dedup();
+        // 60 §8 `test_subject`: tests whose subject is a changed or direct file —
+        // API-level tests that never name the changed definition.
+        let subjects = store::test_subjects(&ri.pool).await?;
+        let impacted: HashSet<&str> = changed_files
+            .iter()
+            .chain(direct.keys())
+            .map(|id| by_id[id].path.as_str())
+            .collect();
+        let tests_by_subject: Vec<&str> = subjects
+            .iter()
+            .filter(|(_, s)| impacted.contains(s.as_str()))
+            .map(|(t, _)| t.as_str())
+            .collect();
+        let mut all_tests: Vec<(&str, bool, bool)> = tests
+            .iter()
+            .map(|t| (*t, true, tests_by_subject.binary_search(t).is_ok()))
+            .collect();
+        all_tests.extend(
+            tests_by_subject
+                .iter()
+                .filter(|t| tests.binary_search(t).is_err())
+                .map(|t| (*t, false, true)),
+        );
+        all_tests.sort_unstable();
         let mut direct: Vec<(&str, Vec<String>, bool, bool)> = direct
             .into_iter()
             .filter(|(id, _)| include_tests || !is_test(id))
@@ -1449,7 +1490,7 @@ impl Tool for CodeImpactTool {
             if symbol_ids.len() == 1 { "" } else { "s" },
             direct.len(),
             transitive.len(),
-            tests.len(),
+            all_tests.len(),
             if unindexed.is_empty() {
                 String::new()
             } else {
@@ -1474,8 +1515,17 @@ impl Tool for CodeImpactTool {
         }));
         lines.push(format!("-- transitive: {} files --", transitive.len()));
         lines.extend(transitive.iter().map(|(p, d)| format!("{p} (depth {d})")));
-        lines.push(format!("-- tests: {} files --", tests.len()));
-        lines.extend(tests.iter().map(|p| (*p).to_owned()));
+        lines.push(format!("-- tests: {} files --", all_tests.len()));
+        lines.extend(all_tests.iter().map(|(p, r, s)| {
+            format!(
+                "{p} ({})",
+                match (r, s) {
+                    (true, true) => "ref, subject",
+                    (true, false) => "ref",
+                    _ => "subject",
+                }
+            )
+        }));
         let (body, _, dropped) = budget_render(
             &lines,
             a.budget
@@ -1499,6 +1549,7 @@ impl Tool for CodeImpactTool {
                 "direct": direct.iter().map(|(p, via, t, c)| serde_json::json!({"path": p, "via": via, "is_test": t, "changed": c})).collect::<Vec<_>>(),
                 "transitive": transitive.iter().map(|(p, d)| serde_json::json!({"path": p, "depth": d})).collect::<Vec<_>>(),
                 "tests": tests,
+                "tests_by_subject": tests_by_subject,
                 "ambiguous_skipped": ambiguous_skipped,
                 "unresolved_imports": unresolved_imports,
                 "content": text,

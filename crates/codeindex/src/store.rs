@@ -2,7 +2,7 @@
 //! migrations: a schema change bumps [`SCHEMA_VERSION`] and the file is
 //! removed and rebuilt (10 §3, §11). Nothing here is truth; `rm` at will.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1138,6 +1138,40 @@ pub async fn unresolved_imports_in(pool: &SqlitePool, file_ids: &[i64]) -> anyho
         n += q.build_query_scalar::<i64>().fetch_one(pool).await?;
     }
     Ok(n)
+}
+
+// --- test → subject (60 §8 `test_subject`) --------------------------------
+
+/// `meta` key of the `{test path: subject path}` JSON map.
+const TEST_SUBJECTS_KEY: &str = "test_subjects";
+
+/// Import counts from test files into non-test files, for the "file it
+/// imports most" fallback: `(test file_id, target file_id, imports)`.
+pub async fn test_import_counts(pool: &SqlitePool) -> anyhow::Result<Vec<(i64, i64, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT i.file_id, i.target_file, count(*) FROM imports i \
+         JOIN files f ON f.id = i.file_id JOIN files t ON t.id = i.target_file \
+         WHERE f.is_test = 1 AND t.is_test = 0 AND i.target_file <> i.file_id AND i.specifier NOT LIKE 'mod:%' \
+         GROUP BY i.file_id, i.target_file",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Replace the stored test → subject map.
+pub async fn set_test_subjects(
+    pool: &SqlitePool,
+    map: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    set_meta(pool, TEST_SUBJECTS_KEY, &serde_json::to_string(map)?).await
+}
+
+/// The stored test → subject map (empty before the first write).
+pub async fn test_subjects(pool: &SqlitePool) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(match meta(pool, TEST_SUBJECTS_KEY).await? {
+        Some(s) => serde_json::from_str(&s)?,
+        None => BTreeMap::new(),
+    })
 }
 
 #[cfg(test)]
