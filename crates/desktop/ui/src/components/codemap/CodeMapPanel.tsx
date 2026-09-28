@@ -86,11 +86,14 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
   })
   const realRoot = root === '?' ? (stats.data?.root ?? null) : root
 
-  // ── lens state machine (§6.1); seeded from the last call so a panel opened late shows what the agent looked at ──
-  const [lens, setLens] = useState<LensState>(() => {
-    const l = codemap?.last
-    return l && l.root === root ? onCodeToolRan(initialLens(), { type: 'CodeToolRan', session, root, call_id: l.callId, tool: l.tool, args: l.args as Record<string, unknown>, summary: l.summary, seq: l.seq }) : initialLens()
-  })
+  // ── lens state machine (§6.1); seeded by replaying this root's trail oldest→newest, so a panel opened late shows what the
+  // agent looked at and every lens already has the params of its last call ──
+  const [lens, setLens] = useState<LensState>(() =>
+    (codemap?.trail ?? [])
+      .filter((t) => t.root === root)
+      .reverse()
+      .reduce((s, t) => onCodeToolRan(s, { type: 'CodeToolRan', session, root, call_id: t.callId, tool: t.tool, args: t.args, summary: t.summary, seq: t.seq }), initialLens()),
+  )
   const lastSeq = codemap?.last?.seq ?? -1
   const seenSeq = useRef(lastSeq)
   useEffect(() => {
@@ -292,7 +295,8 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
       <header className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-border-subtle px-2 whitespace-nowrap">
         <span className="font-semibold">CodeMap</span>
         <RootPicker session={session} root={root} roots={codemap?.roots ?? []} popped={popped} />
-        {stats.data && (
+        {/* §6.9 phones: the lens tabs and actions win the row; counts return above 520 px */}
+        {width >= 520 && stats.data && (
           <span className="text-fg-secondary">
             {Number(stats.data.files).toLocaleString()} files · {Number(stats.data.symbols).toLocaleString()} symbols
           </span>
@@ -300,7 +304,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
         {fresh && <Chip>{fresh}</Chip>}
         {meta?.truncated_walk && <Chip>walk capped</Chip>}
         {busy && lens.lens === 'change' && data.change && <Chip>computing…</Chip>}
-        <span className="text-fg-secondary">{calls} calls</span>
+        {width >= 520 && <span className="text-fg-secondary">{calls} calls</span>}
         <nav className="ml-auto flex items-center gap-1" aria-label="Lens">
           {LENSES.map((l) => (
             <button
@@ -322,7 +326,7 @@ export function CodeMapPanel({ session, root, onClose, popped = false }: { sessi
           <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Snapshot to board" aria-label="Snapshot to board" onClick={() => setSnap((v) => !v)}>
             ⊡
           </button>
-          {!popped && !isPopout() && canPopout() && realRoot && (
+          {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
             <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={() => void openPopout({ kind: 'codemap', session, root: realRoot })}>
               ⤢
             </button>

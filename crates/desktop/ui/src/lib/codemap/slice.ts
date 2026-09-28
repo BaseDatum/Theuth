@@ -29,7 +29,7 @@ export function codeToolRan(c: CodemapSlice, e: CodeToolRan, at = Date.now()): C
     ...c,
     roots,
     last: { root: e.root, tool: e.tool, callId: e.call_id, args: e.args, summary: e.summary, seq: e.seq },
-    trail: [{ root: e.root, tool: e.tool, callId: e.call_id, target: trailTarget(e), seq: e.seq, at, args: e.args, summary: e.summary }, ...c.trail].slice(0, MAX_TRAIL),
+    trail: [{ root: e.root, tool: e.tool, callId: e.call_id, target: trailTarget(e), seq: e.seq, at, args: e.args, summary: e.summary }, ...c.trail.filter((t) => t.callId !== e.call_id)].slice(0, MAX_TRAIL),
   }
 }
 

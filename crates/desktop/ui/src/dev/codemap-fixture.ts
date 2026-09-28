@@ -8,18 +8,17 @@ import { dispatch } from '@/store/sessions'
 import { active } from '@/store/engine-scope'
 
 const SCRIPT = events as (CodeToolRan | CodeReconciled)[]
+const played = new Set<string>()
 
-/** Replays one event every 1.5 s (the trail fills, the lens follows the agent), then an `edit` so `~` and `touch` fire. Returns stop. */
-export function play(session: string): () => void {
-  const timers: number[] = []
+/** Replays one event every 1.5 s (the trail fills, the lens follows the agent), then an `edit` so `~` and `touch` fire. Once per session per page load; a remount neither restarts nor stops it. */
+export function play(session: string): void {
+  if (played.has(session)) return
+  played.add(session)
   SCRIPT.forEach((e, i) => {
-    timers.push(window.setTimeout(() => dispatch([e.type === 'CodeToolRan' ? { ...e, session } : e], active()), 800 + i * 1500))
+    window.setTimeout(() => dispatch([e.type === 'CodeToolRan' ? { ...e, session } : e], active()), 800 + i * 1500)
   })
-  timers.push(
-    window.setTimeout(
-      () => dispatch([{ type: 'ToolCallStarted', session, turn: 'fixture', call_id: 'toolu_edit', name: 'edit', args: { path: 'crates/tools/src/registry.rs' } }], active()),
-      800 + SCRIPT.length * 1500,
-    ),
+  window.setTimeout(
+    () => dispatch([{ type: 'ToolCallStarted', session, turn: 'fixture', call_id: 'toolu_edit', name: 'edit', args: { path: 'crates/tools/src/registry.rs' } }], active()),
+    800 + SCRIPT.length * 1500,
   )
-  return () => timers.forEach(clearTimeout)
 }

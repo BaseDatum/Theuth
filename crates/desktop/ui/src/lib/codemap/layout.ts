@@ -12,6 +12,9 @@ export const BAND_GAP = 40
 const CHAR_PX = FONT_PX * 0.62
 const PAD = 12
 const TITLE = 28
+/** Badge words sit above a pill's top-right corner (mono 11 px): the first row starts below them and a pill is never narrower than its badge. */
+const BADGE_H = 14
+const BADGE_PX = 6.8
 type N = GraphData['nodes'][number]
 
 export function nodeSize(label: string): { w: number; h: number } {
@@ -65,6 +68,10 @@ export function columnsLayout(fit: FitLens, slots: Slots, width: number, opts: {
   const hatch: string[] = []
   const drawn: { node: N; layer: number }[] = []
   const column = (items: FitNode[], layer: number) => {
+    // 73 §6.5 "text is the map": a name that repeats in a column carries its file's shortest distinguishing suffix
+    const names: Record<string, number> = {}
+    for (const x of items) names[x.name] = (names[x.name] ?? 0) + 1
+    const paths = shortLabels(items.map((x) => x.path))
     for (const x of items) {
       const g = per[layer / 2]![x.path]!
       const id = g.length > 1 ? `${x.moniker.slice(0, x.moniker.indexOf(':'))}:${x.path}` : x.moniker
@@ -72,7 +79,7 @@ export function columnsLayout(fit: FitLens, slots: Slots, width: number, opts: {
       if (g[0] !== x) continue
       const test = g.some((y) => y.is_test)
       if (test) badges[id] = BADGE.test
-      const label = g.length > 1 ? `${short.get(x.path)} ×${g.length}` : symLabel(x)
+      const label = g.length > 1 ? `${short.get(x.path)} ×${g.length}` : names[x.name]! > 1 ? `${symLabel(x)} ${paths.get(x.path)}` : symLabel(x)
       drawn.push({ node: { id, label, state: test ? GRAPH_STATE.test : undefined, ref: g.length > 1 ? x.path : anchorOf(x.path, x.line_start, x.line_end) }, layer })
     }
   }
@@ -179,14 +186,15 @@ export function bandsLayout(change: ChangeLens, slots: Slots, width: number, opt
       const n: N = { id: f.path, label: `${prefix} ${short.get(f.path)}`.trim(), kind: 'pill', group: band, state: GRAPH_STATE[BAND_STATE[layer]!], ref: f.path }
       badges[f.path] = BADGE[BAND_STATE[layer]!]
       if (stale[f.path]) withStale(badges, hatch, f.path)
-      const { w, h } = nodeSize(n.label)
+      const { w: lw, h } = nodeSize(n.label)
+      const w = Math.max(lw, Math.ceil((badges[f.path]?.length ?? 0) * BADGE_PX) + 8)
       placeSlot(slots, f.path, layer, w, h)
       drawn.push(n)
     }
     // Flow over every slot of the layer (reserved ones too): a pill's place depends only on the slots before it
     const at: Record<number, { x: number; y: number }> = {}
     let x = PAD
-    let y = top + TITLE
+    let y = top + TITLE + BADGE_H
     let row = 0
     const step = (w: number, h: number) => {
       if (x > PAD && x + w > width - PAD) {

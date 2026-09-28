@@ -91,15 +91,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
     if (focused) document.title = `${title || (row ? chatName(row) : '')}${running ? ' ·' : ''}`
   }, [title, row, running, focused])
   useEffect(() => {
-    if (!import.meta.env.DEV || import.meta.env.VITE_CODEMAP_MOCK !== '1') return
-    let stop: (() => void) | null = () => {}
-    void import('@/dev/codemap-fixture').then((m) => {
-      if (stop) stop = m.play(session)
-    })
-    return () => {
-      stop?.()
-      stop = null
-    }
+    if (import.meta.env.DEV && import.meta.env.VITE_CODEMAP_MOCK === '1') void import('@/dev/codemap-fixture').then((m) => m.play(session))
   }, [session])
 
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
