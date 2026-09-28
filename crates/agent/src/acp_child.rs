@@ -1344,7 +1344,7 @@ impl Message<PeerInput> for AcpChild {
         let q = Queued {
             id: None,
             ticket: Some(m.ticket),
-            text: peer_wrapper(&m.record, m.reply_expected),
+            text: peer_wrapper(&m.record, m.reply_expected, chrono::Local::now()),
             scope: m.request_scope,
             peer: Some(PeerMeta {
                 id: m.record.receipt.id,

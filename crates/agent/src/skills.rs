@@ -215,7 +215,9 @@ pub fn inject_text(name: &str, text: &str, args: &str) -> String {
 /// Split an input made by [`inject_text`]: `(name, body, rest)`, `rest`
 /// being the user's words (possibly empty). `None` for anything else.
 pub fn injected(text: &str) -> Option<(&str, &str, &str)> {
-    let rest = text.trim_start().strip_prefix("<skill name=\"")?;
+    let rest = crate::clock::strip(text)
+        .trim_start()
+        .strip_prefix("<skill name=\"")?;
     let (name, after) = rest.split_once("\">")?;
     let (body, rest) = after.split_once("</skill>")?;
     Some((name, body.trim(), rest.trim()))

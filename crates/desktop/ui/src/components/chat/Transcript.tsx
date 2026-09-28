@@ -7,6 +7,7 @@ import { useNudges } from '@/lib/nudges'
 import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
+import { withGaps } from '@/lib/time'
 import type { AgentInfo } from '@/rpc/extra'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
 import { useScope } from '@/store/engine-scope'
@@ -43,6 +44,11 @@ type Row =
   | { key: string; entry: Entry; prompts: Prompt[] | null }
   | { key: string; run: Run; prompts: Prompt[] | null }
   | { key: string; prompt: Prompt; from?: AgentInfo }
+  /** `1 h 12 min later · 15:15` between two rows at least an hour apart (74 §5). */
+  | { key: string; gap: string }
+
+/** `at` of a row: the entry's, or the first entry's of a folded run. */
+const rowAt = (row: Row): number | undefined => ('entry' in row ? row.entry.at : 'run' in row ? row.run[0]?.at : undefined)
 
 /** Entries (consecutive tool calls folded into one run row when `collapse`, 70), each with the prompts waiting on its
  * (unfinished, same-named) tool call; prompts with no such row come last.
@@ -72,7 +78,7 @@ function buildRows(entries: Entry[], pending: Prompt[], session: string, childre
     if (row && 'prompts' in row) row.prompts = [...(row.prompts ?? []), prompt]
     else loose.push({ key: prompt.id, prompt })
   }
-  return rows.concat(loose)
+  return withGaps(rows.concat(loose), rowAt)
 }
 
 type Tick = { index: number; ask: string; reply: string }
@@ -252,6 +258,12 @@ export function Transcript({ session, compact = false }: { session: string; comp
                     <Message entry={row.entry} prompts={row.prompts} session={session} />
                   ) : 'run' in row ? (
                     <ToolRunCard run={row.run} prompts={row.prompts} session={session} />
+                  ) : 'gap' in row ? (
+                    <div className="flex items-center gap-3 py-2 text-xs text-fg-tertiary">
+                      <span className="h-px flex-1 bg-border-subtle" />
+                      <span className="tabular-nums">{row.gap}</span>
+                      <span className="h-px flex-1 bg-border-subtle" />
+                    </div>
                   ) : (
                     <PromptCard prompt={row.prompt} from={row.from} />
                   )}

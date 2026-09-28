@@ -11260,6 +11260,7 @@ mod tests {
                 remove_with: vec![],
                 attachments,
                 vision: None,
+                at: None,
             })
         };
         let shot = |removed| ContextAttachment {
@@ -11483,6 +11484,7 @@ mod tests {
                 remove_with: vec![],
                 attachments: vec![],
                 vision: None,
+                at: None,
             }),
         };
         let loaded = Loaded {
@@ -14674,6 +14676,7 @@ mod tests {
                 remove_with: vec![],
                 attachments: vec![],
                 vision: Some(note.clone()),
+                at: None,
             }),
             peer: None,
             vision: Some(note),

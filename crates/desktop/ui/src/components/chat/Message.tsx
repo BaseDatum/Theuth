@@ -31,10 +31,10 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       // 46 §6.3: an app's `@ToAssistant` action is app data with provenance, not a `you` bubble.
       const app = parseAppInput(entry.text)
       if (app) return <AppInputCard input={app} />
-      return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
+      return <MessageUser text={entry.text} skill={entry.skill} files={entry.files} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
     }
     case 'assistant':
-      return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} readOnly={readOnly} />
+      return <MessageAssistant id={entry.id} text={entry.text} open={entry.open} session={session} turn={entry.turn} context={entry.context} at={entry.at} readOnly={readOnly} />
     case 'reasoning':
       return <MessageReasoning text={entry.text} done={entry.done} />
     case 'tool':

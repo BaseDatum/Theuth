@@ -108,7 +108,7 @@ pub fn digest(
     let asks: Vec<String> = history
         .iter()
         .filter(|(_, m)| m.role == ChatRole::User)
-        .map(|(_, m)| text_of(&m.content))
+        .map(|(_, m)| crate::clock::strip(&text_of(&m.content)).to_owned())
         .filter(|t| !t.trim_start().starts_with('<') && !t.trim().is_empty())
         .map(|t| {
             let p = crate::attach::parse(&t);

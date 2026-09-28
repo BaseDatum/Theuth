@@ -17,6 +17,7 @@ import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
 import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
+import { Stamp, useStampToggle } from './Stamp'
 
 // Module scope: a new object per render would re-initialise the highlighter.
 // `json-render`, `mermaid` and `openui` fences use streamdown's `plugins.renderers` (matched by language before the
@@ -178,6 +179,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   session,
   turn,
   context,
+  at,
   readOnly,
 }: {
   id: string
@@ -186,6 +188,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   session: string
   turn?: number
   context?: ContextEntry
+  at?: number
   readOnly?: boolean
 }) {
   const api = useApi()
@@ -219,8 +222,9 @@ export const MessageAssistant = memo(function MessageAssistant({
       speech.speak(api, session, id, text).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
     }
   }
+  const stamp = useStampToggle()
   return (
-    <div className="py-2">
+    <div className="group py-2" onClick={stamp.onClick}>
       <FenceContext value={fence}>
         <Streamdown
           mode={open ? undefined : 'static'}
@@ -233,7 +237,7 @@ export const MessageAssistant = memo(function MessageAssistant({
         </Streamdown>
       </FenceContext>
       {!open && (
-        <div className="-ml-2 flex">
+        <div className="-ml-2 flex items-center">
           {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}
           <CopyButton text={text} />
           {!readOnly && turn != null && !running && !context?.removed && (
@@ -243,6 +247,7 @@ export const MessageAssistant = memo(function MessageAssistant({
             </>
           )}
           {!readOnly && context && !context.removed && <RemoveButton session={session} target={context.target} active={context.active} />}
+          <Stamp at={at} shown={stamp.shown} className="ml-auto" />
         </div>
       )}
     </div>

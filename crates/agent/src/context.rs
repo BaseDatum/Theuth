@@ -251,6 +251,11 @@ pub struct ContextEntry {
     /// Typed consultation metadata when the row is a vision note (52 §6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<crate::vision::VisionNote>,
+    /// Wall-clock time the row was appended (RFC 3339 UTC, 74 §5); absent
+    /// for rows stored before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub at: Option<String>,
 }
 
 /// Result of a committed (or no-op) removal.
@@ -1001,6 +1006,7 @@ pub fn entry(
         remove_with,
         attachments: attachments(owner, m, mask),
         vision: None,
+        at: None,
     }
 }
 

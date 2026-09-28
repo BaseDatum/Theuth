@@ -99,7 +99,7 @@ use crate::{
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{DurableStore, SessionCostQuery, UnloadSession};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
-use crate::{attach, frame, repl, search, spill};
+use crate::{attach, clock, frame, repl, search, spill};
 use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
 };
@@ -1971,7 +1971,8 @@ impl Agents {
                         self.cfg.max_tool_output_chars,
                         &self.rt.data_dir.join("spill"),
                     );
-                    let wrapped = job_result(&id, &command, &exit, secs, &text, pty);
+                    let wrapped =
+                        job_result(&id, &command, &exit, secs, &text, pty, chrono::Local::now());
                     // A job an exported task's turn started reports to that
                     // task's scope, never to a private turn (50 §6.3).
                     let scope = self.network_operation_scope(op);
@@ -1999,6 +2000,7 @@ impl Agents {
                         &tools::reminder::local_rfc3339(set_at),
                         late,
                         &message,
+                        chrono::Local::now(),
                     );
                     let scope = self.network_operation_scope(op);
                     self.inject(session, &format!("reminder {id}"), message, wrapped, scope)
@@ -2085,6 +2087,7 @@ impl Agents {
             nudge,
             user_typed_secs,
             &text,
+            chrono::Local::now(),
         );
         let scope = self.network_operation_scope(op);
         self.inject(session, &format!("job {id}"), text, wrapped, scope)
@@ -2196,7 +2199,8 @@ impl Message<GetTodos> for Agents {
 }
 
 /// The `<job_result>` wrapper (14 §1.2): `command` cut to 120 chars and
-/// attribute-escaped; `exit` is the code, `timeout` or `killed`. PTY jobs
+/// attribute-escaped; `exit` is the code, `timeout` or `killed`; `secs` the
+/// job's wall time; `at` the local delivery clock (74 §4). PTY jobs
 /// (22 §2.2) carry ` pty="true"` and `text` is the final screen.
 pub(crate) fn job_result(
     id: &JobId,
@@ -2205,6 +2209,7 @@ pub(crate) fn job_result(
     secs: u64,
     text: &str,
     pty: bool,
+    now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let cmd: String = command.chars().take(120).collect();
     let exit = match exit {
@@ -2214,14 +2219,15 @@ pub(crate) fn job_result(
     };
     let pty = if pty { " pty=\"true\"" } else { "" };
     format!(
-        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty}>\n{text}\n</job_result>",
-        attr(&cmd)
+        "<job_result id=\"{id}\" command=\"{}\" exit=\"{exit}\" secs=\"{secs}\"{pty} at=\"{}\">\n{text}\n</job_result>",
+        attr(&cmd),
+        clock::hhmm(now)
     )
 }
 
 /// The `<job_idle>` wrapper (61 §2.2): `command` cut and escaped as
-/// [`job_result`]; `name` and `user_typed` only when present; `text` is the
-/// screen with its `cursor:` line.
+/// [`job_result`]; `name` and `user_typed` only when present; `at` the local
+/// clock (74 §4); `text` is the screen with its `cursor:` line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn job_idle(
     id: &JobId,
@@ -2232,24 +2238,35 @@ pub(crate) fn job_idle(
     nudge: u32,
     user_typed: Option<u64>,
     text: &str,
+    now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let cmd: String = command.chars().take(120).collect();
     let name = name.map_or_else(String::new, |n| format!(" name=\"{}\"", attr(n)));
     let typed = user_typed.map_or_else(String::new, |t| format!(" user_typed=\"{t}\""));
     format!(
-        "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{typed}>\n{text}\n</job_idle>",
-        attr(&cmd)
+        "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{typed} at=\"{}\">\n{text}\n</job_idle>",
+        attr(&cmd),
+        clock::hhmm(now)
     )
 }
 
 /// The `<reminder>` wrapper (14 as-built 2026-09-23): `after` is the
 /// requested delay in seconds, `set_at` RFC 3339 local, `late` true when it
-/// was re-armed past due after a restart; `text` is the model's message.
-pub(crate) fn reminder(id: &str, after: u64, set_at: &str, late: bool, text: &str) -> String {
+/// was re-armed past due after a restart, `at` the local clock when it fired
+/// (74 §4); `text` is the model's message.
+pub(crate) fn reminder(
+    id: &str,
+    after: u64,
+    set_at: &str,
+    late: bool,
+    text: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
     format!(
-        "<reminder id=\"{}\" after=\"{after}\" set_at=\"{}\" late=\"{late}\">\n{text}\n</reminder>",
+        "<reminder id=\"{}\" after=\"{after}\" set_at=\"{}\" late=\"{late}\" at=\"{}\">\n{text}\n</reminder>",
         attr(id),
-        attr(set_at)
+        attr(set_at),
+        clock::hhmm(now)
     )
 }
 
@@ -7998,6 +8015,7 @@ pub(crate) mod tests {
                     vision_model: "x/eyes".into(),
                     observations: Vec::new(),
                 }),
+                at: None,
             },
         );
         let turns: Vec<Option<i64>> = render(&messages, &entries)
@@ -8105,6 +8123,7 @@ pub(crate) mod tests {
                 remove_with: vec![ContextTarget::Message { seq: 0 }],
                 attachments: vec![attachment(0, "a.png"), attachment(1, "b.png")],
                 vision: None,
+                at: None,
             },
         );
         let got = render(&messages, &entries);
@@ -8184,6 +8203,7 @@ pub(crate) mod tests {
                 remove_with: Vec::new(),
                 attachments,
                 vision: None,
+                at: None,
             })
         };
         let mut history = vec![
@@ -8430,26 +8450,50 @@ pub(crate) mod tests {
         assert_eq!((h.len(), first, more), (0, None, true));
     }
 
+    /// A fixed local wall clock for wrapper `at` attributes.
+    fn at() -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone as _;
+        chrono::Local
+            .with_ymd_and_hms(2026, 9, 28, 14, 3, 0)
+            .unwrap()
+    }
+
     #[test]
     fn job_result_wrapper_escapes_and_names_exit() {
         let id = JobId("j3".into());
-        let w = job_result(&id, "echo \"a\" <b>", &JobExit::Exited(0), 7, "out", false);
+        let w = job_result(
+            &id,
+            "echo \"a\" <b>",
+            &JobExit::Exited(0),
+            7,
+            "out",
+            false,
+            at(),
+        );
         assert_eq!(
             w,
-            "<job_result id=\"j3\" command=\"echo &quot;a&quot; &lt;b&gt;\" exit=\"0\" secs=\"7\">\nout\n</job_result>"
+            "<job_result id=\"j3\" command=\"echo &quot;a&quot; &lt;b&gt;\" exit=\"0\" secs=\"7\" at=\"14:03\">\nout\n</job_result>"
         );
         assert!(!w.contains("pty"));
-        let w = job_result(&id, "python3 -q", &JobExit::Exited(0), 41, ">>> ", true);
+        let w = job_result(
+            &id,
+            "python3 -q",
+            &JobExit::Exited(0),
+            41,
+            ">>> ",
+            true,
+            at(),
+        );
         assert_eq!(
             w,
-            "<job_result id=\"j3\" command=\"python3 -q\" exit=\"0\" secs=\"41\" pty=\"true\">\n>>> \n</job_result>"
+            "<job_result id=\"j3\" command=\"python3 -q\" exit=\"0\" secs=\"41\" pty=\"true\" at=\"14:03\">\n>>> \n</job_result>"
         );
-        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "", false);
+        let w = job_result(&id, "sleep 9", &JobExit::Timeout, 1800, "", false, at());
         assert!(w.contains(" exit=\"timeout\" "));
-        let w = job_result(&id, "x", &JobExit::Killed, 1, "", false);
+        let w = job_result(&id, "x", &JobExit::Killed, 1, "", false, at());
         assert!(w.contains(" exit=\"killed\" "));
         let long = "a".repeat(200);
-        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", false);
+        let w = job_result(&id, &long, &JobExit::Exited(1), 0, "", false, at());
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
     }
@@ -8462,15 +8506,16 @@ pub(crate) mod tests {
             "2026-09-23T10:00:00+02:00",
             false,
             "check \"a\" <b>",
+            at(),
         );
         assert_eq!(
             w,
-            "<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck \"a\" <b>\n</reminder>"
+            "<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\" at=\"14:03\">\ncheck \"a\" <b>\n</reminder>"
         );
-        let w = reminder("r<1>", 5, "\"t\"", true, "");
+        let w = reminder("r<1>", 5, "\"t\"", true, "", at());
         assert_eq!(
             w,
-            "<reminder id=\"r&lt;1&gt;\" after=\"5\" set_at=\"&quot;t&quot;\" late=\"true\">\n\n</reminder>"
+            "<reminder id=\"r&lt;1&gt;\" after=\"5\" set_at=\"&quot;t&quot;\" late=\"true\" at=\"14:03\">\n\n</reminder>"
         );
     }
 
@@ -8486,18 +8531,19 @@ pub(crate) mod tests {
             1,
             None,
             ">>> \ncursor: row 1 col 5",
+            at(),
         );
         assert_eq!(
             w,
-            "<job_idle id=\"j4\" command=\"echo &quot;a&quot; &lt;b&gt;\" quiet=\"63\" secs=\"912\" nudge=\"1\">\n>>> \ncursor: row 1 col 5\n</job_idle>"
+            "<job_idle id=\"j4\" command=\"echo &quot;a&quot; &lt;b&gt;\" quiet=\"63\" secs=\"912\" nudge=\"1\" at=\"14:03\">\n>>> \ncursor: row 1 col 5\n</job_idle>"
         );
-        let w = job_idle(&id, "omp", Some("omp<1>"), 120, 30, 2, Some(12), "");
+        let w = job_idle(&id, "omp", Some("omp<1>"), 120, 30, 2, Some(12), "", at());
         assert_eq!(
             w,
-            "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"120\" secs=\"30\" nudge=\"2\" user_typed=\"12\">\n\n</job_idle>"
+            "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"120\" secs=\"30\" nudge=\"2\" user_typed=\"12\" at=\"14:03\">\n\n</job_idle>"
         );
         let long = "a".repeat(200);
-        let w = job_idle(&id, &long, None, 0, 0, 1, None, "");
+        let w = job_idle(&id, &long, None, 0, 0, 1, None, "", at());
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
     }
