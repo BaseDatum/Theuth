@@ -1308,7 +1308,8 @@ async fn expand(raw: &str) -> anyhow::Result<String> {
     }
     // ponytail: `ShellKind::Brush` (Windows) is 58 §11 step 3 — brush runs the
     // heredoc in-process there; until then the string is kept as written.
-    let Some(mut cmd) = platform::shell().command(&format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"), false)
+    let Some(mut cmd) =
+        platform::shell().command(&format!("cat <<__theuth_mcp__\n{s}\n__theuth_mcp__"), false)
     else {
         tracing::warn!(value = %raw, "mcp expansion: no login shell on this platform; value kept as written");
         return Ok(s);
@@ -1688,7 +1689,12 @@ pub async fn start(
     let dir = rt.data_dir.join("mcp");
     std::fs::create_dir_all(&dir)?;
     // 67 §5.1: `mcp/*.json` and `mcp/config.yaml` replicate; `repos/` does not (a directory).
-    tokio::spawn(::replica::files::mirror_at(rt.data_dir.join("mcp.sqlite"), dir.clone(), "mcp", std::time::Duration::from_secs(120)));
+    tokio::spawn(::replica::files::mirror_at(
+        rt.data_dir.join("mcp.sqlite"),
+        dir.clone(),
+        "mcp",
+        std::time::Duration::from_secs(120),
+    ));
     let sources: [DynTool; 4] = [
         Arc::new(tools::AddMcpServer),
         Arc::new(tools::RemoveMcpServer),

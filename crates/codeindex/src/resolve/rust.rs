@@ -63,17 +63,29 @@ impl CargoWorkspace {
             };
             // Members are globs over directories: walk the depth the longest
             // pattern needs (a pattern without `*` is one directory).
-            let depth = w.members.iter().map(|m| m.split('/').count()).max().unwrap_or(0);
+            let depth = w
+                .members
+                .iter()
+                .map(|m| m.split('/').count())
+                .max()
+                .unwrap_or(0);
             let mut found = Vec::new();
             member_dirs(root, root, depth, &mut found);
             for d in found {
-                if members.is_match(&d) && !exclude.is_match(&d) && root.join(&d).join("Cargo.toml").is_file() {
+                if members.is_match(&d)
+                    && !exclude.is_match(&d)
+                    && root.join(&d).join("Cargo.toml").is_file()
+                {
                     dirs.push(d);
                 }
             }
         }
         for dir in dirs {
-            let path = if dir.is_empty() { ws_path.clone() } else { root.join(&dir).join("Cargo.toml") };
+            let path = if dir.is_empty() {
+                ws_path.clone()
+            } else {
+                root.join(&dir).join("Cargo.toml")
+            };
             let m = if dir.is_empty() {
                 ws.clone()
             } else {
@@ -88,16 +100,31 @@ impl CargoWorkspace {
             let Some(pkg) = &m.package else { continue };
             let rel = |p: &str| -> String {
                 let p = p.trim_start_matches("./");
-                if dir.is_empty() { p.to_owned() } else { format!("{dir}/{p}") }
+                if dir.is_empty() {
+                    p.to_owned()
+                } else {
+                    format!("{dir}/{p}")
+                }
             };
             let lib_root = m
                 .lib
                 .as_ref()
                 .and_then(|l| l.path.as_deref())
                 .map(rel)
-                .or_else(|| root.join(&dir).join("src/lib.rs").is_file().then(|| rel("src/lib.rs")));
+                .or_else(|| {
+                    root.join(&dir)
+                        .join("src/lib.rs")
+                        .is_file()
+                        .then(|| rel("src/lib.rs"))
+                });
             let mut roots: Vec<String> = lib_root.iter().cloned().collect();
-            for p in m.bin.iter().chain(&m.test).chain(&m.bench).chain(&m.example) {
+            for p in m
+                .bin
+                .iter()
+                .chain(&m.test)
+                .chain(&m.bench)
+                .chain(&m.example)
+            {
                 if let Some(path) = &p.path {
                     roots.push(rel(path));
                 }
@@ -111,7 +138,12 @@ impl CargoWorkspace {
                 .iter()
                 .chain(&m.dev_dependencies)
                 .chain(&m.build_dependencies)
-                .chain(m.target.values().flat_map(|t| t.dependencies.iter().chain(&t.dev_dependencies).chain(&t.build_dependencies)))
+                .chain(m.target.values().flat_map(|t| {
+                    t.dependencies
+                        .iter()
+                        .chain(&t.dev_dependencies)
+                        .chain(&t.build_dependencies)
+                }))
             {
                 let target = match d {
                     Dependency::Detailed(det) => det.package.clone().unwrap_or_else(|| k.clone()),
@@ -147,7 +179,12 @@ impl CargoWorkspace {
     pub fn package_of(&self, rel: &str) -> Option<&Package> {
         self.packages
             .iter()
-            .filter(|p| p.dir.is_empty() || rel.strip_prefix(p.dir.as_str()).is_some_and(|r| r.starts_with('/')))
+            .filter(|p| {
+                p.dir.is_empty()
+                    || rel
+                        .strip_prefix(p.dir.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
             .max_by_key(|p| p.dir.len())
     }
 
@@ -161,10 +198,15 @@ fn member_dirs(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
     if depth == 0 {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
-        if !p.is_dir() || p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+        if !p.is_dir()
+            || p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        {
             continue;
         }
         if let Ok(rel) = p.strip_prefix(root) {
@@ -202,10 +244,17 @@ impl Modules {
     /// Walk from every product root through `mods` = `(file, name, #[path])`
     /// rows; only files in `rust_files` count. A file reached twice keeps its
     /// first assignment.
-    pub fn build(ws: &CargoWorkspace, rust_files: &HashSet<String>, mods: &[(String, String, Option<String>)]) -> Self {
+    pub fn build(
+        ws: &CargoWorkspace,
+        rust_files: &HashSet<String>,
+        mods: &[(String, String, Option<String>)],
+    ) -> Self {
         let mut decls: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
         for (f, n, p) in mods {
-            decls.entry(f.as_str()).or_default().push((n.as_str(), p.as_deref()));
+            decls
+                .entry(f.as_str())
+                .or_default()
+                .push((n.as_str(), p.as_deref()));
         }
         let mut me = Self::default();
         let roots: HashSet<&String> = ws.packages.iter().flat_map(|p| &p.roots).collect();
@@ -219,7 +268,9 @@ impl Modules {
         }
         while let Some(f) = queue.pop_front() {
             let (root, m) = me.path_of[&f].clone();
-            let Some(ds) = decls.get(f.as_str()) else { continue };
+            let Some(ds) = decls.get(f.as_str()) else {
+                continue;
+            };
             let dir = f.rsplit_once('/').map_or("", |(d, _)| d);
             let stem = f.rsplit('/').next().unwrap_or(&f).trim_end_matches(".rs");
             let base = if roots.contains(&f) || stem == "mod" {
@@ -232,10 +283,16 @@ impl Modules {
             for (name, attr) in ds {
                 let candidates: Vec<String> = match attr {
                     Some(p) => vec![normalize(&format!("{dir}/{p}"))],
-                    None => vec![join(&base, &format!("{name}.rs")), join(&base, &format!("{name}/mod.rs"))],
+                    None => vec![
+                        join(&base, &format!("{name}.rs")),
+                        join(&base, &format!("{name}/mod.rs")),
+                    ],
                 };
-                let Some(child) = candidates.into_iter().find(|c| rust_files.contains(c)) else { continue };
-                me.child.insert((f.clone(), (*name).to_owned()), child.clone());
+                let Some(child) = candidates.into_iter().find(|c| rust_files.contains(c)) else {
+                    continue;
+                };
+                me.child
+                    .insert((f.clone(), (*name).to_owned()), child.clone());
                 if me.path_of.contains_key(&child) {
                     continue;
                 }
@@ -251,7 +308,9 @@ impl Modules {
 
     /// The child file a `mod name;` in `parent` declares, if it exists.
     pub fn mod_child(&self, parent: &str, name: &str) -> Option<&str> {
-        self.child.get(&(parent.to_owned(), name.to_owned())).map(String::as_str)
+        self.child
+            .get(&(parent.to_owned(), name.to_owned()))
+            .map(String::as_str)
     }
 
     /// `(root, module path)` of `file`, when reached by the walk.
@@ -269,22 +328,31 @@ impl Modules {
     pub fn resolve(&self, ws: &CargoWorkspace, from: &str, segs: &[&str]) -> Target {
         let global = segs.first() == Some(&"");
         let segs = if global { &segs[1..] } else { segs };
-        let Some(head) = segs.first() else { return Target::Unresolved };
+        let Some(head) = segs.first() else {
+            return Target::Unresolved;
+        };
         let pkg = ws.package_of(from);
         let own = self.path_of.get(from).cloned().or_else(|| {
-            pkg.and_then(|p| p.lib_root.clone()).map(|r| (r, Vec::new()))
+            pkg.and_then(|p| p.lib_root.clone())
+                .map(|r| (r, Vec::new()))
         });
         match *head {
             "crate" => {
-                let Some((root, _)) = own else { return Target::Unresolved };
+                let Some((root, _)) = own else {
+                    return Target::Unresolved;
+                };
                 self.walk(&root, &[], &segs[1..])
             }
             "self" => {
-                let Some((root, m)) = own else { return Target::Unresolved };
+                let Some((root, m)) = own else {
+                    return Target::Unresolved;
+                };
                 self.walk(&root, &m, &segs[1..])
             }
             "super" => {
-                let Some((root, mut m)) = own else { return Target::Unresolved };
+                let Some((root, mut m)) = own else {
+                    return Target::Unresolved;
+                };
                 let mut rest = segs;
                 while rest.first() == Some(&"super") {
                     if m.pop().is_none() {
@@ -303,7 +371,9 @@ impl Modules {
                         return self.walk(root, m, segs);
                     }
                 }
-                let Some(pkg) = pkg else { return Target::Unknown };
+                let Some(pkg) = pkg else {
+                    return Target::Unknown;
+                };
                 let target = if h == pkg.lib_name {
                     Some(pkg)
                 } else {
@@ -348,7 +418,11 @@ impl Modules {
 }
 
 fn join(dir: &str, name: &str) -> String {
-    if dir.is_empty() { name.to_owned() } else { format!("{dir}/{name}") }
+    if dir.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{dir}/{name}")
+    }
 }
 
 /// Collapse `.` and `..` in a `/`-joined relative path.

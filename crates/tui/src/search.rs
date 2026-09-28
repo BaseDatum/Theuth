@@ -244,7 +244,9 @@ impl Hit {
             Hit::Artifact(h) => format!("{} · {}", h.artifact.name, h.artifact.title),
             Hit::Knowledge(h) => format!("{} · {}", h.meta.title, h.meta.id),
             Hit::History(h) => format!("{} · {}", h.title, h.id),
-            Hit::Note(h) if h.doc.title.trim().is_empty() => format!("Untitled note · {}", h.doc.id),
+            Hit::Note(h) if h.doc.title.trim().is_empty() => {
+                format!("Untitled note · {}", h.doc.id)
+            }
             Hit::Note(h) => h.doc.title.clone(),
             Hit::Meeting(h) => meeting::search::title_of(&h.meeting).to_owned(),
         }
@@ -1180,7 +1182,11 @@ impl State {
             return None;
         }
         match self.rows.get(self.cursor)? {
-            Row::Recent(i) => self.recent.as_ref()?.get(*i).map(crate::attach::from_session),
+            Row::Recent(i) => self
+                .recent
+                .as_ref()?
+                .get(*i)
+                .map(crate::attach::from_session),
             Row::Hit(g, i) => {
                 let group = self.groups.get(*g)?;
                 if group.generation != self.generation {
@@ -1346,8 +1352,10 @@ impl State {
                 self.recent_loading = false;
                 match result {
                     Ok(list) => {
-                        let mut list: Vec<SessionSummary> =
-                            list.into_iter().filter(|s| s.parent.is_none() && s.desk.is_none()).collect();
+                        let mut list: Vec<SessionSummary> = list
+                            .into_iter()
+                            .filter(|s| s.parent.is_none() && s.desk.is_none())
+                            .collect();
                         list.truncate(RECENT);
                         self.recent = Some(list);
                     }
@@ -1868,10 +1876,13 @@ pub fn runs(snippet: &str, ranges: &[MatchRange], max: usize) -> Vec<(String, bo
     out
 }
 
+/// One wrapped row of chips: `(chip index, text)` per chip.
+pub type ChipRow = Vec<(usize, String)>;
+
 /// Chip texts wrapped into rows of `width` cells, whitespace between chips
 /// (49 §6): `(chip index, text)` per chip, full labels always.
-pub fn chip_rows(state: &State, width: usize) -> Vec<Vec<(usize, String)>> {
-    let mut rows: Vec<Vec<(usize, String)>> = vec![Vec::new()];
+pub fn chip_rows(state: &State, width: usize) -> Vec<ChipRow> {
+    let mut rows: Vec<ChipRow> = vec![Vec::new()];
     let mut used = 0;
     let mark = |on: bool| if on { "✓" } else { " " };
     let chips = std::iter::once(format!("[{} All]", mark(state.all()))).chain(

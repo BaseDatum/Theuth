@@ -28,7 +28,13 @@ impl Py {
         {
             let tool = doc.get("tool");
             let dirs = tool
-                .and_then(|t| t.get("setuptools")?.get("packages")?.get("find")?.get("where")?.as_array())
+                .and_then(|t| {
+                    t.get("setuptools")?
+                        .get("packages")?
+                        .get("find")?
+                        .get("where")?
+                        .as_array()
+                })
                 .into_iter()
                 .flatten()
                 .filter_map(|v| v.as_str())
@@ -51,7 +57,10 @@ impl Py {
     /// `from` is root-relative; `specifier` is `a.b`, `..a`, `.`.
     pub fn resolve(&self, files: &HashSet<String>, from: &str, specifier: &str) -> Resolved {
         let dots = specifier.bytes().take_while(|&b| b == b'.').count();
-        let dotted: Vec<&str> = specifier[dots..].split('.').filter(|s| !s.is_empty()).collect();
+        let dotted: Vec<&str> = specifier[dots..]
+            .split('.')
+            .filter(|s| !s.is_empty())
+            .collect();
         if dots > 0 {
             let mut base = from.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
             for _ in 1..dots {
@@ -60,7 +69,8 @@ impl Py {
                 }
                 base = base.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
             }
-            return module_file(files, &base, &dotted).map_or(Resolved::Unresolved, |f| Resolved::File(f, "relative"));
+            return module_file(files, &base, &dotted)
+                .map_or(Resolved::Unresolved, |f| Resolved::File(f, "relative"));
         }
         for r in &self.roots {
             if let Some(f) = module_file(files, r, &dotted) {
@@ -83,7 +93,11 @@ impl Py {
         let mut best = None;
         let mut dir = String::new();
         for seg in from.split('/').take(from.matches('/').count()) {
-            dir = if dir.is_empty() { seg.to_owned() } else { format!("{dir}/{seg}") };
+            dir = if dir.is_empty() {
+                seg.to_owned()
+            } else {
+                format!("{dir}/{seg}")
+            };
             if files.contains(&format!("{dir}/__init__.py")) {
                 best.get_or_insert_with(|| seg.to_owned());
             } else {
@@ -105,7 +119,13 @@ fn module_file(files: &HashSet<String>, base: &str, dotted: &[&str]) -> Option<S
             }
             p.push_str(s);
         }
-        let file = if n == 0 { format!("{p}/__init__.py").trim_start_matches('/').to_owned() } else { format!("{p}.py") };
+        let file = if n == 0 {
+            format!("{p}/__init__.py")
+                .trim_start_matches('/')
+                .to_owned()
+        } else {
+            format!("{p}.py")
+        };
         if files.contains(&file) {
             return Some(file);
         }
@@ -123,18 +143,50 @@ mod tests {
 
     #[test]
     fn relative_and_absolute() {
-        let files: HashSet<String> = ["pkg/__init__.py", "pkg/store.py", "pkg/sub/__init__.py", "pkg/sub/app.py", "src/lib/x.py"]
-            .map(String::from)
-            .into();
-        let py = Py { roots: vec![String::new(), "src".into()] };
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "..store"), Resolved::File("pkg/store.py".into(), "relative"));
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "."), Resolved::File("pkg/sub/__init__.py".into(), "relative"));
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "pkg.store"), Resolved::File("pkg/store.py".into(), "package"));
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "pkg"), Resolved::File("pkg/__init__.py".into(), "package"));
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "lib.x"), Resolved::File("src/lib/x.py".into(), "package"));
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "os.path"), Resolved::External);
-        assert_eq!(py.resolve(&files, "pkg/sub/app.py", "...nope"), Resolved::Unresolved);
-        assert_eq!(Py::package(&files, "pkg/sub/app.py").as_deref(), Some("pkg"));
+        let files: HashSet<String> = [
+            "pkg/__init__.py",
+            "pkg/store.py",
+            "pkg/sub/__init__.py",
+            "pkg/sub/app.py",
+            "src/lib/x.py",
+        ]
+        .map(String::from)
+        .into();
+        let py = Py {
+            roots: vec![String::new(), "src".into()],
+        };
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "..store"),
+            Resolved::File("pkg/store.py".into(), "relative")
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "."),
+            Resolved::File("pkg/sub/__init__.py".into(), "relative")
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "pkg.store"),
+            Resolved::File("pkg/store.py".into(), "package")
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "pkg"),
+            Resolved::File("pkg/__init__.py".into(), "package")
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "lib.x"),
+            Resolved::File("src/lib/x.py".into(), "package")
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "os.path"),
+            Resolved::External
+        );
+        assert_eq!(
+            py.resolve(&files, "pkg/sub/app.py", "...nope"),
+            Resolved::Unresolved
+        );
+        assert_eq!(
+            Py::package(&files, "pkg/sub/app.py").as_deref(),
+            Some("pkg")
+        );
         assert_eq!(Py::package(&files, "src/lib/x.py"), None);
     }
 }

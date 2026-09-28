@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use futures::StreamExt as _;
 use genai::chat::{ChatMessage, ChatStreamEvent, ReasoningEffort, StreamEnd, Tool, ToolResponse};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
@@ -29,7 +28,9 @@ struct Fake(Arc<Mutex<Vec<Value>>>);
 
 impl Respond for Fake {
     fn respond(&self, req: &Request) -> ResponseTemplate {
-        self.0.lock().push(serde_json::from_slice(&req.body).unwrap());
+        self.0
+            .lock()
+            .push(serde_json::from_slice(&req.body).unwrap());
         let ev = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
         let body = [
             ev(
@@ -164,7 +165,10 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         "amazon-bedrock/anthropic.claude-opus-4-8",
         "amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     ] {
-        assert!(matches!(default_effort(&r(id)), Some(ReasoningEffort::Medium)), "{id}");
+        assert!(
+            matches!(default_effort(&r(id)), Some(ReasoningEffort::Medium)),
+            "{id}"
+        );
     }
     // Other providers keep their own default; a non-thinking or unknown model gets nothing.
     for id in [
@@ -188,7 +192,11 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         history: &user(),
         vision: false,
     }
-    .request(Transport::OpenAiLike, SessionId::new(), default_effort(&r("openai/gpt-5.6-sol")));
+    .request(
+        Transport::OpenAiLike,
+        SessionId::new(),
+        default_effort(&r("openai/gpt-5.6-sol")),
+    );
     assert!(opts.reasoning_effort.is_none());
 }
 
@@ -200,7 +208,11 @@ async fn anthropic_request_carries_thinking_per_effort() {
 
     // None → the default: adaptive thinking (summarised for display) at medium effort.
     let (b, _) = h.round(&fable, None, &user()).await;
-    assert_eq!(b["thinking"], json!({"type": "adaptive", "display": "summarized"}), "{b}");
+    assert_eq!(
+        b["thinking"],
+        json!({"type": "adaptive", "display": "summarized"}),
+        "{b}"
+    );
     assert_eq!(b["output_config"]["effort"], "medium", "{b}");
 
     // off → nothing sent (Fable's API default is off).
@@ -215,11 +227,23 @@ async fn anthropic_request_carries_thinking_per_effort() {
 
     // A budget-only model gets the legacy shape: medium = 8k by default, or the budget asked for.
     let (b, _) = h.round(&sonnet45, None, &user()).await;
-    assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": 8000}), "{b}");
+    assert_eq!(
+        b["thinking"],
+        json!({"type": "enabled", "budget_tokens": 8000}),
+        "{b}"
+    );
     assert!(b.get("output_config").is_none(), "{b}");
-    let (b, _) = h.round(&sonnet45, Some(ReasoningEffort::Budget(4096)), &user()).await;
-    assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": 4096}), "{b}");
-    let (b, _) = h.round(&sonnet45, Some(ReasoningEffort::Zero), &user()).await;
+    let (b, _) = h
+        .round(&sonnet45, Some(ReasoningEffort::Budget(4096)), &user())
+        .await;
+    assert_eq!(
+        b["thinking"],
+        json!({"type": "enabled", "budget_tokens": 4096}),
+        "{b}"
+    );
+    let (b, _) = h
+        .round(&sonnet45, Some(ReasoningEffort::Zero), &user())
+        .await;
     assert!(b.get("thinking").is_none(), "{b}");
 }
 
@@ -230,7 +254,10 @@ async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
     let (_, end) = h.round(&fable, None, &user()).await;
 
     // Thinking tokens are inside `output_tokens`, which is what the loop bills as output.
-    assert_eq!(end.captured_usage.as_ref().unwrap().completion_tokens, Some(OUTPUT_TOKENS as i32));
+    assert_eq!(
+        end.captured_usage.as_ref().unwrap().completion_tokens,
+        Some(OUTPUT_TOKENS as i32)
+    );
     assert_eq!(end.captured_reasoning_content.as_deref(), Some(THINKING));
 
     // The loop persists this message for the tool round (loop_.rs `into_assistant_message_for_tool_use`).
@@ -242,7 +269,10 @@ async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
         matches!(&rendered[1], (1, crate::HistoryEntry::Reasoning { text, .. }) if text == THINKING),
         "{rendered:?}"
     );
-    assert!(matches!(&rendered[2], (1, crate::HistoryEntry::Tool { .. })), "{rendered:?}");
+    assert!(
+        matches!(&rendered[2], (1, crate::HistoryEntry::Tool { .. })),
+        "{rendered:?}"
+    );
     let mut history = user();
     history.push(assistant);
     history.push(ChatMessage::from(ToolResponse::new("toolu_1", "ok")));

@@ -78,16 +78,17 @@ impl Thread for DocThread {
 /// `tasks.thread` to its task; idempotent (an already-bound thread is a no-op), so it runs at each start.
 pub async fn adopt_threads(pool: &sqlx::SqlitePool) {
     let Some(h) = Handle::lookup() else { return };
-    let rows: Vec<(String, String)> = match sqlx::query_as("SELECT id, thread FROM tasks WHERE thread IS NOT NULL")
-        .fetch_all(pool)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("task threads not adopted: {e}");
-            return;
-        }
-    };
+    let rows: Vec<(String, String)> =
+        match sqlx::query_as("SELECT id, thread FROM tasks WHERE thread IS NOT NULL")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("task threads not adopted: {e}");
+                return;
+            }
+        };
     for (task, doc) in rows {
         match h
             .actor()

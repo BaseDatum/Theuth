@@ -18,8 +18,8 @@ use crate::model::{
     gate_name, k, meta_line, now_ms, progress_line, result_line, short, slash_matches, window,
 };
 use crate::model::{Grouped, session_row, terminal_row};
-use crate::search::{self, Focus, Preview};
 use crate::pathac;
+use crate::search::{self, Focus, Preview};
 
 /// Channels handed to the app through iocraft context (owned so the receiver
 /// can be taken out on first render, per design doc §11.5).
@@ -492,7 +492,11 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 // `/attach` picked a row (66 §10): its token leads the draft.
                 if let Some(token) = m.attach_token.take() {
                     let v = input.read().to_string();
-                    let v = if v.is_empty() { token } else { format!("{token} {v}") };
+                    let v = if v.is_empty() {
+                        token
+                    } else {
+                        format!("{token} {v}")
+                    };
                     m.sync_slash(&v);
                     input.set(v);
                 }
@@ -504,9 +508,13 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let text = input.read().to_string();
                 let cursor = handle.read().cursor_offset().min(text.len());
                 let slash_busy = matches!(m.menu, Some(Menu::Slash { .. }))
-                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled).is_empty();
+                    && !slash_matches(text.split(' ').next().unwrap_or_default(), m.app_enabled)
+                        .is_empty();
                 let session = m.session;
-                match m.path.key(code, &text, cursor, slash_busy, session, &commands) {
+                match m
+                    .path
+                    .key(code, &text, cursor, slash_busy, session, &commands)
+                {
                     pathac::Key::Pass => {}
                     pathac::Key::Consumed => return,
                     pathac::Key::Input(text, caret) => {
@@ -675,7 +683,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     };
     element! {
         View(flex_direction: FlexDirection::Column, width, height) {
-            View(flex_grow: 1.0, min_height: 0, flex_direction: FlexDirection::Column) {
+            View(flex_grow: 1.0_f32, min_height: 0, flex_direction: FlexDirection::Column) {
                 #(transcript)
             }
             // Activity and steers not yet in the context sit under the
@@ -1406,7 +1414,7 @@ fn search_layout(
     m: &Model,
     width: u16,
     budget: usize,
-) -> (usize, usize, Vec<Vec<(usize, String)>>, bool) {
+) -> (usize, usize, Vec<search::ChipRow>, bool) {
     // Border 2 + padding 2; rows stay one cell short of the inner width so
     // taffy never wraps them (see `menu_box_is_tight_at_any_width`).
     let inner = usize::from(width).saturating_sub(5).max(8);
@@ -1482,7 +1490,7 @@ fn search_box(
         element! {
             View(flex_direction: FlexDirection::Row, height: 1) {
                 Text(content: "Query: ", color: if query_focus { BONE } else { dim }, weight: Weight::Bold)
-                View(flex_grow: 1.0, height: 1) {
+                View(flex_grow: 1.0_f32, height: 1) {
                     TextInput(
                         handle,
                         has_focus: query_focus,
@@ -2104,7 +2112,7 @@ mod tests {
                 let top = lines.iter().position(|l| l.starts_with('╭')).unwrap();
                 let bottom = lines.iter().position(|l| l.starts_with('╰')).unwrap();
                 assert!(
-                    bottom - top + 1 <= budget,
+                    bottom - top < budget,
                     "width {width} budget {budget} {focus:?}: box spans {} rows",
                     bottom - top + 1
                 );
@@ -2147,7 +2155,7 @@ mod tests {
             let modal = menu(&m, "", width, 30).unwrap();
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width, height: 30u16) {
-                    View(flex_grow: 1.0, min_height: 0)
+                    View(flex_grow: 1.0_f32, min_height: 0)
                     #(Some(modal))
                     View(height: 3)
                 }
@@ -2186,7 +2194,7 @@ mod tests {
         for width in 60..=120u16 {
             let frame = element! {
                 View(flex_direction: FlexDirection::Column, width, height: 30u16) {
-                    View(flex_grow: 1.0, min_height: 0)
+                    View(flex_grow: 1.0_f32, min_height: 0)
                     #(board(&m, width))
                     View(height: 3)
                 }

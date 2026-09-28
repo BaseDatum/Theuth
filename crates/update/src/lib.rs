@@ -453,17 +453,19 @@ async fn install(tarball: &Path, exe: &Path) -> anyhow::Result<()> {
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = match unpack(tarball, exe, dir, &tag, &mut staged) {
         // `unpack` sorts `t` last.
-        Ok(hash) => probe(&staged[staged.len() - 1].0, &hash).await.and_then(|()| {
-            for (new, dest) in &staged {
-                if dest != exe && dest.exists() {
-                    let _ = std::fs::remove_file(new);
-                    continue;
+        Ok(hash) => probe(&staged[staged.len() - 1].0, &hash)
+            .await
+            .and_then(|()| {
+                for (new, dest) in &staged {
+                    if dest != exe && dest.exists() {
+                        let _ = std::fs::remove_file(new);
+                        continue;
+                    }
+                    platform::files::replace_executable(new, dest)
+                        .with_context(|| format!("replace {}", dest.display()))?;
                 }
-                platform::files::replace_executable(new, dest)
-                    .with_context(|| format!("replace {}", dest.display()))?;
-            }
-            Ok(())
-        }),
+                Ok(())
+            }),
         Err(e) => Err(e),
     };
     if result.is_err() {
@@ -485,9 +487,9 @@ async fn probe(new_theuth: &Path, hash: &str) -> anyhow::Result<()> {
         .kill_on_drop(true);
     platform::process::hide_console(cmd.as_std_mut());
     let out = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
-    .await
-    .context("probe `t.new --app-parser-hash`: timed out")?
-    .context("probe `t.new --app-parser-hash`")?;
+        .await
+        .context("probe `t.new --app-parser-hash`: timed out")?
+        .context("probe `t.new --app-parser-hash`")?;
     let got = String::from_utf8_lossy(&out.stdout);
     let got = got.trim();
     if !out.status.success() {
@@ -562,8 +564,7 @@ fn unpack(
         staged.push((new.clone(), dest));
         std::io::copy(&mut entry, &mut file).with_context(|| new.display().to_string())?;
         drop(file);
-        platform::files::set_executable(&new)
-            .with_context(|| new.display().to_string())?;
+        platform::files::set_executable(&new).with_context(|| new.display().to_string())?;
     }
     let Some(hash) = helper else {
         anyhow::bail!("tarball has no `{HELPER_PREFIX}<hash>` entry");
@@ -803,9 +804,16 @@ mod tests {
             std::fs::read(dir.path().join(&helper)).unwrap(),
             b"#!/bin/sh\necho helper\n"
         );
-        assert_eq!(std::fs::read(dir.path().join(&doc_helper)).unwrap(), b"docs");
+        assert_eq!(
+            std::fs::read(dir.path().join(&doc_helper)).unwrap(),
+            b"docs"
+        );
         #[cfg(unix)]
-        for f in [&exe, &dir.path().join(&helper), &dir.path().join(&doc_helper)] {
+        for f in [
+            &exe,
+            &dir.path().join(&helper),
+            &dir.path().join(&doc_helper),
+        ] {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
                 std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
@@ -833,7 +841,10 @@ mod tests {
         // A payload without the documents helper (pre-59) still installs.
         let tb = tarball(dir.path(), &[file(&helper, b"h2"), file("t", &new_theuth)]);
         install(&tb, &exe).await.unwrap();
-        assert_eq!(std::fs::read(dir.path().join(&doc_helper)).unwrap(), b"docs");
+        assert_eq!(
+            std::fs::read(dir.path().join(&doc_helper)).unwrap(),
+            b"docs"
+        );
     }
 
     #[tokio::test]
@@ -873,7 +884,11 @@ mod tests {
             ),
             (
                 "unqualified documents helper",
-                vec![file("t", b"new"), file(&helper, b"h"), file("theuth-documents", b"d")],
+                vec![
+                    file("t", b"new"),
+                    file(&helper, b"h"),
+                    file("theuth-documents", b"d"),
+                ],
             ),
             (
                 "documents helper with a non-version suffix",
@@ -902,11 +917,7 @@ mod tests {
             ),
             (
                 "two t",
-                vec![
-                    file("t", b"new"),
-                    file("t", b"new2"),
-                    file(&helper, b"h"),
-                ],
+                vec![file("t", b"new"), file("t", b"new2"), file(&helper, b"h")],
             ),
             (
                 "stray file",
@@ -922,10 +933,7 @@ mod tests {
             ),
             ("absolute", vec![file("/t", b"new"), file(&helper, b"h")]),
             ("nested", vec![file("bin/t", b"new"), file(&helper, b"h")]),
-            (
-                "symlink t",
-                vec![typed("t", Symlink), file(&helper, b"h")],
-            ),
+            ("symlink t", vec![typed("t", Symlink), file(&helper, b"h")]),
             (
                 "symlink helper",
                 vec![file("t", b"new"), typed(&helper, Symlink)],

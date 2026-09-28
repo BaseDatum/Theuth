@@ -70,9 +70,9 @@ pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
         .expect("test runtime")
         .block_on(body)
 }
-pub mod private;
-pub mod lifecycle;
 pub mod cost;
+pub mod lifecycle;
+pub mod private;
 
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
@@ -87,27 +87,27 @@ pub use context::{
     ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
     ContextRemoval, ContextSnapshot, ContextTarget,
 };
+pub use cost::{
+    CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
+    MeterUpdate, Money, Provenance, SessionCost, TokenTotals,
+};
+pub use lifecycle::{
+    Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
+};
+pub use lifecycle::{
+    CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
+    SessionOpen,
+};
 pub use supervisor::{
     Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity, RegisterNode,
     UnregisterNode,
 };
+pub use tools::Retention;
 pub use user::{
     Deliver, MessageUserTool, Outbound, OutboundFile, RegisterUserSink, USER_ACTOR, UserChannels,
     UserSink,
 };
 pub use vision::{VisionNote, VisionObservation, VisionSource, VisionStatus};
-pub use lifecycle::{
-    CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
-    SessionOpen,
-};
-pub use lifecycle::{
-    Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
-};
-pub use tools::Retention;
-pub use cost::{
-    CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
-    MeterUpdate, Money, Provenance, SessionCost, TokenTotals,
-};
 
 /// Registry name of the [`Agents`] supervisor actor.
 pub const AGENT_ACTOR: &str = "agent";
@@ -115,7 +115,9 @@ pub const AGENT_ACTOR: &str = "agent";
 /// How a human input lands on a busy session (62 §0.3): `Steer` joins the
 /// running turn after the current tool batch; `NextTurn` waits for the turn to
 /// end. An idle session starts a turn now either way.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {

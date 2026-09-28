@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+use crate::ALPN_RECORDS;
 use crate::engine::Engine;
 use crate::types::{ByteStream, ChangeBatch, PeerEvent, PeerId, Transport};
-use crate::ALPN_RECORDS;
 
 const TAG_HELLO: u8 = 0;
 const TAG_BATCH: u8 = 1;
@@ -71,7 +71,8 @@ impl Engine {
         tokio::spawn(async move {
             let mut events = transport.subscribe();
             let mut dialers: HashMap<PeerId, tokio::task::JoinHandle<()>> = HashMap::new();
-            let ensure = |dialers: &mut HashMap<PeerId, tokio::task::JoinHandle<()>>, peer: PeerId| {
+            let ensure = |dialers: &mut HashMap<PeerId, tokio::task::JoinHandle<()>>,
+                          peer: PeerId| {
                 if dialers.get(&peer).is_some_and(|h| !h.is_finished()) {
                     return;
                 }
@@ -104,7 +105,11 @@ impl Engine {
     /// `true` once per (remote, batch): records that `remote` holds it.
     pub(crate) fn mark_sent(&self, remote: &PeerId, batch: &ChangeBatch) -> bool {
         let mut vv = self.remote_vv.lock();
-        let held = vv.entry(remote.clone()).or_default().entry(batch.origin.clone()).or_insert(0);
+        let held = vv
+            .entry(remote.clone())
+            .or_default()
+            .entry(batch.origin.clone())
+            .or_insert(0);
         if batch.seq > *held {
             *held = batch.seq;
             true
@@ -146,7 +151,9 @@ fn frame(tag: u8, body: &[u8]) -> Bytes {
 
 /// The symmetric protocol on one stream, opened or accepted.
 async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow::Result<()> {
-    let codec = LengthDelimitedCodec::builder().max_frame_length(MAX_FRAME).new_codec();
+    let codec = LengthDelimitedCodec::builder()
+        .max_frame_length(MAX_FRAME)
+        .new_codec();
     let mut framed = Framed::new(stream, codec);
     // Subscribe before snapshotting the vector so nothing falls between them.
     let mut feed = engine.subscribe();
@@ -155,8 +162,13 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
         origin: engine.origin.clone(),
         version_vector: engine.store.version_vector().await?,
     };
-    framed.send(frame(TAG_HELLO, &postcard::to_allocvec(&hello)?)).await?;
-    let first = framed.next().await.ok_or_else(|| anyhow::anyhow!("closed before hello"))??;
+    framed
+        .send(frame(TAG_HELLO, &postcard::to_allocvec(&hello)?))
+        .await?;
+    let first = framed
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("closed before hello"))??;
     anyhow::ensure!(first.first() == Some(&TAG_HELLO), "expected hello");
     let theirs: Hello = postcard::from_bytes(&first[1..])?;
     let remote = theirs.origin.clone();
@@ -169,7 +181,13 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
     let mut behind = false;
     for (origin, seq) in &hello.version_vector {
         let after = theirs.version_vector.get(origin).copied().unwrap_or(0);
-        if *seq > after && engine.store.oldest_seq(origin).await?.is_some_and(|oldest| after + 1 < oldest) {
+        if *seq > after
+            && engine
+                .store
+                .oldest_seq(origin)
+                .await?
+                .is_some_and(|oldest| after + 1 < oldest)
+        {
             behind = true;
         }
     }
@@ -180,7 +198,9 @@ async fn run_stream(engine: &Arc<Engine>, stream: Box<dyn ByteStream>) -> anyhow
             batch.seq
         );
         if engine.mark_sent(&remote, &batch) {
-            framed.send(frame(TAG_BATCH, &postcard::to_allocvec(&batch)?)).await?;
+            framed
+                .send(frame(TAG_BATCH, &postcard::to_allocvec(&batch)?))
+                .await?;
         }
     }
     for (origin, seq) in &hello.version_vector {

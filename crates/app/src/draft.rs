@@ -92,23 +92,42 @@ impl Tool for TaskDraftTool {
             return Ok(ToolOutput::err("task_draft: at least one task"));
         }
         if let Some(i) = args.tasks.iter().position(|d| d.title.trim().is_empty()) {
-            return Ok(ToolOutput::err(format!("task_draft: task {} has no title", i + 1)));
+            return Ok(ToolOutput::err(format!(
+                "task_draft: task {} has no title",
+                i + 1
+            )));
         }
         let context = turn_attachments(cx.session).await;
         for d in &mut args.tasks {
             offer(&mut d.attachments, &context);
         }
-        let alnum: Vec<char> = cx.call_id.chars().filter(char::is_ascii_alphanumeric).collect();
+        let alnum: Vec<char> = cx
+            .call_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
         let suffix: String = alnum[alnum.len().saturating_sub(4)..].iter().collect();
         let (source, ids) = source(&args.tasks, &suffix);
         let app = AppArgs {
             name: APP_NAME.into(),
             source,
-            title: Some(if ids.len() == 1 { "Task draft".into() } else { format!("{} task drafts", ids.len()) }),
+            title: Some(if ids.len() == 1 {
+                "Task draft".into()
+            } else {
+                format!("{} task drafts", ids.len())
+            }),
             edit: false,
             base_call_id: None,
         };
-        let (loaded, _) = match commit_source(&self.core, app, cx.session, cx.call_id.clone(), Origin::Tool).await {
+        let (loaded, _) = match commit_source(
+            &self.core,
+            app,
+            cx.session,
+            cx.call_id.clone(),
+            Origin::Tool,
+        )
+        .await
+        {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::err(format!("task_draft: {e}"))),
         };
@@ -118,7 +137,14 @@ impl Tool for TaskDraftTool {
             .map(|(id, d)| {
                 let mut l = format!("{id} · {}", d.title.trim());
                 if !d.attachments.is_empty() {
-                    l.push_str(&format!(" · attachments: {}", d.attachments.iter().map(label).collect::<Vec<_>>().join(", ")));
+                    l.push_str(&format!(
+                        " · attachments: {}",
+                        d.attachments
+                            .iter()
+                            .map(label)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 l
             })
@@ -150,7 +176,11 @@ pub(crate) fn lit(s: &str) -> String {
 
 /// `<kind> "<title>"`.
 fn label(r: &AttachRef) -> String {
-    format!("{} \"{}\"", r.kind, if r.title.is_empty() { &r.id } else { &r.title })
+    format!(
+        "{} \"{}\"",
+        r.kind,
+        if r.title.is_empty() { &r.id } else { &r.title }
+    )
 }
 
 /// Add `context` refs (the user's message attachments) that `refs` lacks, by kind + id.
@@ -165,13 +195,26 @@ pub fn offer(refs: &mut Vec<AttachRef>, context: &[AttachRef]) {
 /// The `[attached …]` references of the calling session's latest user turn — the
 /// message the drafts are being made from. Empty when the transcript is unreadable.
 async fn turn_attachments(session: runtime::SessionId) -> Vec<AttachRef> {
-    let Ok(Some(agents)) = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else { return vec![] };
-    let Ok(read) = agents.ask(agent::ReadSession { session, caller: session }).await else { return vec![] };
+    let Ok(Some(agents)) = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+    else {
+        return vec![];
+    };
+    let Ok(read) = agents
+        .ask(agent::ReadSession {
+            session,
+            caller: session,
+        })
+        .await
+    else {
+        return vec![];
+    };
     read.history
         .iter()
         .rev()
         .find_map(|e| match e {
-            agent::HistoryEntry::User { text, .. } => Some(agent::attach::parse(text.as_str()).refs),
+            agent::HistoryEntry::User { text, .. } => {
+                Some(agent::attach::parse(text.as_str()).refs)
+            }
             _ => None,
         })
         .unwrap_or_default()
@@ -181,7 +224,15 @@ async fn turn_attachments(session: runtime::SessionId) -> Vec<AttachRef> {
 /// Every button's `@ToAssistant` message is `draft <id>: <choice>` so the approval
 /// names the card without any state on the engine.
 pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
-    let ids: Vec<String> = (1..=tasks.len()).map(|i| if suffix.is_empty() { format!("d{i}") } else { format!("d{i}-{suffix}") }).collect();
+    let ids: Vec<String> = (1..=tasks.len())
+        .map(|i| {
+            if suffix.is_empty() {
+                format!("d{i}")
+            } else {
+                format!("d{i}-{suffix}")
+            }
+        })
+        .collect();
     let mut out = String::new();
     let cards: Vec<String> = (1..=tasks.len()).map(|i| format!("c{i}")).collect();
     out.push_str(&format!("root = Stack([intro, {}])\n", cards.join(", ")));
@@ -198,7 +249,10 @@ pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
         let mut meta = vec![
             format!("owner `{}`", d.owner.as_deref().unwrap_or("you")),
             format!("project `{}`", d.project.as_deref().unwrap_or("session's")),
-            format!("where `{}`", d.where_.as_deref().unwrap_or("theuth decides")),
+            format!(
+                "where `{}`",
+                d.where_.as_deref().unwrap_or("theuth decides")
+            ),
         ];
         if !d.blocked_by.is_empty() {
             meta.push(format!("blocked by {}", d.blocked_by.join(", ")));
@@ -206,21 +260,48 @@ pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
         if !d.blocks.is_empty() {
             meta.push(format!("blocks {}", d.blocks.join(", ")));
         }
-        let brief = if d.brief.trim().is_empty() { "_No brief._" } else { d.brief.trim() };
-        let brief = match d.done_when.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+        let brief = if d.brief.trim().is_empty() {
+            "_No brief._"
+        } else {
+            d.brief.trim()
+        };
+        let brief = match d
+            .done_when
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+        {
             Some(w) => format!("{brief}\n\n**Done when:** {w}"),
             None => brief.to_owned(),
         };
         let brief = if d.attachments.is_empty() {
             brief
         } else {
-            format!("{brief}\n\n**Attached:** {}", d.attachments.iter().map(label).collect::<Vec<_>>().join(" · "))
+            format!(
+                "{brief}\n\n**Attached:** {}",
+                d.attachments
+                    .iter()
+                    .map(label)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
         };
-        out.push_str(&format!("{c} = Card([{c}_head, {c}_brief, {c}_meta, {c}_buttons])\n"));
-        out.push_str(&format!("{c}_head = CardHeader({}, {})\n", lit(d.title.trim()), lit(&format!("draft {id}"))));
+        out.push_str(&format!(
+            "{c} = Card([{c}_head, {c}_brief, {c}_meta, {c}_buttons])\n"
+        ));
+        out.push_str(&format!(
+            "{c}_head = CardHeader({}, {})\n",
+            lit(d.title.trim()),
+            lit(&format!("draft {id}"))
+        ));
         out.push_str(&format!("{c}_brief = TextContent({})\n", lit(&brief)));
-        out.push_str(&format!("{c}_meta = TextContent({}, \"small\")\n", lit(&meta.join(" · "))));
-        out.push_str(&format!("{c}_buttons = Buttons([{c}_backlog, {c}_start, {c}_discard])\n"));
+        out.push_str(&format!(
+            "{c}_meta = TextContent({}, \"small\")\n",
+            lit(&meta.join(" · "))
+        ));
+        out.push_str(&format!(
+            "{c}_buttons = Buttons([{c}_backlog, {c}_start, {c}_discard])\n"
+        ));
         out.push_str(&format!(
             "{c}_backlog = Button(\"Add to backlog\", Action([@ToAssistant({})]))\n",
             lit(&format!("draft {id}: add to backlog"))
@@ -244,8 +325,19 @@ mod tests {
     #[test]
     fn card_buttons_carry_the_draft_id_and_choice() {
         let drafts = vec![
-            Draft { title: "Fix the \"flaky\" deploy".into(), brief: "line one\nline two".into(), owner: Some("agent:ops".into()), project: Some("sre".into()), ..Default::default() },
-            Draft { title: "Write release notes".into(), brief: String::new(), blocked_by: vec!["0192-abc".into()], ..Default::default() },
+            Draft {
+                title: "Fix the \"flaky\" deploy".into(),
+                brief: "line one\nline two".into(),
+                owner: Some("agent:ops".into()),
+                project: Some("sre".into()),
+                ..Default::default()
+            },
+            Draft {
+                title: "Write release notes".into(),
+                brief: String::new(),
+                blocked_by: vec!["0192-abc".into()],
+                ..Default::default()
+            },
         ];
         let (src, ids) = source(&drafts, "ab12");
         assert_eq!(ids, ["d1-ab12", "d2-ab12"]);
@@ -254,13 +346,20 @@ mod tests {
             assert!(src.contains(&format!("{c}_backlog = Button(\"Add to backlog\", Action([@ToAssistant(\"draft {id}: add to backlog\")]))")), "{src}");
             assert!(src.contains(&format!("{c}_start = Button(\"Start now\", Action([@ToAssistant(\"draft {id}: start now\")]), \"secondary\")")), "{src}");
             assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", Action([@ToAssistant(\"draft {id}: discard\")]), \"tertiary\", \"destructive\")")), "{src}");
-            assert!(src.contains(&format!("\"draft {id}\"")), "the header names the draft");
+            assert!(
+                src.contains(&format!("\"draft {id}\"")),
+                "the header names the draft"
+            );
         }
         // strings are JSON literals: quotes and newlines survive the tokenizer
-        assert!(src.contains(r#"c1_head = CardHeader("Fix the \"flaky\" deploy", "draft d1-ab12")"#));
+        assert!(
+            src.contains(r#"c1_head = CardHeader("Fix the \"flaky\" deploy", "draft d1-ab12")"#)
+        );
         assert!(src.contains(r#"c1_brief = TextContent("line one\nline two")"#));
         assert!(src.contains("owner `agent:ops` · project `sre` · where `theuth decides`"));
-        assert!(src.contains("owner `you` · project `session's` · where `theuth decides` · blocked by 0192-abc"));
+        assert!(src.contains(
+            "owner `you` · project `session's` · where `theuth decides` · blocked by 0192-abc"
+        ));
         assert!(src.contains(r#"c2_brief = TextContent("_No brief._")"#));
         // one statement per line, every card reachable from root
         assert!(src.lines().all(|l| l.contains(" = ")));
@@ -272,12 +371,27 @@ mod tests {
     #[test]
     fn drafts_carry_attachments() {
         use agent::attach::Kind;
-        let note = AttachRef { kind: Kind::Note, id: "n1".into(), title: "Groceries".into(), meta: String::new() };
-        let art = AttachRef { kind: Kind::Artifact, id: "toolu_1".into(), title: "Q3 \"report\"".into(), meta: "pdf".into() };
+        let note = AttachRef {
+            kind: Kind::Note,
+            id: "n1".into(),
+            title: "Groceries".into(),
+            meta: String::new(),
+        };
+        let art = AttachRef {
+            kind: Kind::Artifact,
+            id: "toolu_1".into(),
+            title: "Q3 \"report\"".into(),
+            meta: "pdf".into(),
+        };
         let mut refs = vec![note.clone()];
         offer(&mut refs, &[note.clone(), art.clone()]);
         assert_eq!(refs, vec![note, art]);
-        let d = Draft { title: "Fold it".into(), brief: "b".into(), attachments: refs, ..Default::default() };
+        let d = Draft {
+            title: "Fold it".into(),
+            brief: "b".into(),
+            attachments: refs,
+            ..Default::default()
+        };
         let (src, _) = source(&[d], "");
         assert!(src.contains(r#"c1_brief = TextContent("b\n\n**Attached:** note \"Groceries\" · artifact \"Q3 \"report\"\"")"#), "{src}");
     }

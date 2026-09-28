@@ -86,7 +86,11 @@ pub fn helper_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default();
-    dir.join(format!("theuth-app-parser-{}{}", hash(), std::env::consts::EXE_SUFFIX))
+    dir.join(format!(
+        "theuth-app-parser-{}{}",
+        hash(),
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 
 /// How a client reached a bound tool (46 §6.2).
@@ -338,13 +342,19 @@ impl runtime::Plugin for AppPlugin {
                 .await
             {
                 let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(AppTool { core: core.clone() })))
+                    .ask(tools::RegisterTool(Arc::new(AppTool {
+                        core: core.clone(),
+                    })))
                     .await;
                 let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(TaskDraftTool { core: core.clone() })))
+                    .ask(tools::RegisterTool(Arc::new(TaskDraftTool {
+                        core: core.clone(),
+                    })))
                     .await;
                 let _ = reg
-                    .ask(tools::RegisterTool(Arc::new(AgentDraftTool { core: core.clone() })))
+                    .ask(tools::RegisterTool(Arc::new(AgentDraftTool {
+                        core: core.clone(),
+                    })))
                     .await;
                 let _ = reg
                     .ask(tools::RegisterPrompt {
@@ -353,7 +363,10 @@ impl runtime::Plugin for AppPlugin {
                     })
                     .await;
                 for (lang, checker) in [
-                    ("mermaid", Arc::new(fence::Mermaid(core.clone())) as Arc<dyn tools::FenceChecker>),
+                    (
+                        "mermaid",
+                        Arc::new(fence::Mermaid(core.clone())) as Arc<dyn tools::FenceChecker>,
+                    ),
                     ("openui", Arc::new(fence::OpenUi(core))),
                 ] {
                     let _ = reg
@@ -398,8 +411,19 @@ mod tests {
         if std::env::var_os("THEUTH_APP_PARSER").is_some_and(|p| !p.is_empty()) {
             return; // override in effect (app-parser-env.sh); the default path is not built
         }
-        let name = helper_path().file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(name, format!("theuth-app-parser-{}{}", hash(), std::env::consts::EXE_SUFFIX));
+        let name = helper_path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            name,
+            format!(
+                "theuth-app-parser-{}{}",
+                hash(),
+                std::env::consts::EXE_SUFFIX
+            )
+        );
     }
 
     #[test]

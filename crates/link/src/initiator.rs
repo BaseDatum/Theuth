@@ -145,7 +145,13 @@ mod tests {
         let (hs, msg1) = pair(&d, &h.public, &psk, &hello).unwrap();
         let Some(Handshake::Pair {
             key, hello, msg2, ..
-        }) = respond(&msg1, &h, "Node", |_| false, |hint| hint.is_none().then_some(psk))
+        }) = respond(
+            &msg1,
+            &h,
+            "Node",
+            |_| false,
+            |hint| hint.is_none().then_some(psk),
+        )
         else {
             panic!("expected pairing");
         };

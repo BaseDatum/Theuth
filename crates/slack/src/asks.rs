@@ -330,7 +330,13 @@ mod tests {
             "✅ **Question 1/2** — Which language?\n→ Go"
         );
         assert_eq!(
-            answered_card(&r, 1, &Answer::Text { text: "theuth".into() })[0]["text"],
+            answered_card(
+                &r,
+                1,
+                &Answer::Text {
+                    text: "theuth".into()
+                }
+            )[0]["text"],
             "✅ **Question 2/2** — Project name?\n→ theuth"
         );
         assert_eq!(

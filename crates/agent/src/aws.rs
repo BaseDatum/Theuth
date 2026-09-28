@@ -144,7 +144,11 @@ mod tests {
         let creds = dir.join("credentials");
         let config = dir.join("config");
         std::fs::write(&creds, "[work]\naws_access_key_id = x\n").unwrap();
-        std::fs::write(&config, "[profile personal]\nregion = us-west-2\n[default]\nregion = eu-west-1\n").unwrap();
+        std::fs::write(
+            &config,
+            "[profile personal]\nregion = us-west-2\n[default]\nregion = eu-west-1\n",
+        )
+        .unwrap();
         let both = || (Some(creds.clone()), Some(config.clone()));
         assert!(has_profile(both().0, both().1, "work"));
         assert!(has_profile(both().0, both().1, "personal"));

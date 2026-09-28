@@ -147,7 +147,14 @@ impl Tool for ReadFile {
                 None => notes.push("no outline for this language, showing text".into()),
             }
         }
-        Ok(ToolOutput::ok(paginate("read_file", &shown, note.as_deref(), &text, &a, notes)?))
+        Ok(ToolOutput::ok(paginate(
+            "read_file",
+            &shown,
+            note.as_deref(),
+            &text,
+            &a,
+            notes,
+        )?))
     }
 }
 
@@ -161,7 +168,9 @@ pub async fn text_of(bytes: Vec<u8>, shown: &str) -> anyhow::Result<(Option<Stri
             let md = crate::doc::to_markdown(bytes, fmt)
                 .await
                 .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
-            let note = format!("[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]");
+            let note = format!(
+                "[{shown}: {fmt:?} rendered as Markdown; offset/limit count Markdown lines]"
+            );
             (Some(note), md)
         }
         None => (None, String::from_utf8_lossy(&bytes).into_owned()),

@@ -101,7 +101,10 @@ pub struct Devices {
 impl Devices {
     /// Memory only.
     pub fn empty() -> Self {
-        Self { rows: Vec::new(), store: None }
+        Self {
+            rows: Vec::new(),
+            store: None,
+        }
     }
 
     /// Load the table; when it is empty and `<link_dir>/devices.yaml` exists,
@@ -127,12 +130,18 @@ impl Devices {
                     }
                 }
                 if !imported.is_empty() {
-                    tracing::info!("link: imported {} device(s) from devices.yaml", imported.len());
+                    tracing::info!(
+                        "link: imported {} device(s) from devices.yaml",
+                        imported.len()
+                    );
                 }
                 rows = imported;
             }
         }
-        Self { rows, store: Some(store) }
+        Self {
+            rows,
+            store: Some(store),
+        }
     }
 
     /// Replace the mirror with what the table holds now (replicated rows).
@@ -190,7 +199,10 @@ impl Devices {
         let at_ms = now_ms();
         row.revoked_ms = Some(at_ms);
         let row = row.clone();
-        self.write(Op::Revoke { id: id.to_owned(), at_ms });
+        self.write(Op::Revoke {
+            id: id.to_owned(),
+            at_ms,
+        });
         Some(row)
     }
 
@@ -200,7 +212,10 @@ impl Devices {
             return false;
         };
         row.name = name.to_owned();
-        self.write(Op::Rename { id: id.to_owned(), name: name.to_owned() });
+        self.write(Op::Rename {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        });
         true
     }
 
@@ -247,14 +262,21 @@ pub struct Pending {
 impl Pending {
     /// Wrap; `reload` with the table's rows to pick up what other engines wrote.
     pub fn new(store: Option<Store>, vault: Option<Arc<secrets::Vault>>) -> Self {
-        Self { rows: Vec::new(), store, vault }
+        Self {
+            rows: Vec::new(),
+            store,
+            vault,
+        }
     }
 
     /// A fresh row: `(id, psk, expires_ms)`, persisted sealed. `Err` when the
     /// vault is unavailable (nothing to seal with).
     pub fn create(&mut self, name: &str) -> Result<(String, [u8; 32], u64), String> {
         self.sweep();
-        let vault = self.vault.as_ref().ok_or("secrets vault unavailable; cannot seal the pairing secret")?;
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or("secrets vault unavailable; cannot seal the pairing secret")?;
         let id = b64(&rand::random::<[u8; 16]>());
         let psk: [u8; 32] = rand::random();
         let now = now_ms();
@@ -269,7 +291,11 @@ impl Pending {
         if let Some(s) = &self.store {
             s.write(Op::PutPending(row));
         }
-        self.rows.push(Live { id: id.clone(), psk, expires_ms });
+        self.rows.push(Live {
+            id: id.clone(),
+            psk,
+            expires_ms,
+        });
         Ok((id, psk, expires_ms))
     }
 
@@ -294,7 +320,12 @@ impl Pending {
     /// Drop expired rows (and their table rows).
     pub fn sweep(&mut self) {
         let now = now_ms();
-        let expired: Vec<String> = self.rows.iter().filter(|r| r.expires_ms <= now).map(|r| r.id.clone()).collect();
+        let expired: Vec<String> = self
+            .rows
+            .iter()
+            .filter(|r| r.expires_ms <= now)
+            .map(|r| r.id.clone())
+            .collect();
         for id in &expired {
             self.delete(id);
         }
@@ -331,7 +362,11 @@ impl Pending {
                     .as_slice()
                     .try_into()
                     .ok()?;
-                Some(Live { id: r.id, psk, expires_ms: r.expires_ms })
+                Some(Live {
+                    id: r.id,
+                    psk,
+                    expires_ms: r.expires_ms,
+                })
             })
             .collect();
     }
@@ -379,12 +414,23 @@ mod tests {
         std::fs::create_dir_all(&link_dir).unwrap();
         let key = [7u8; 32];
         let legacy = row(key, "iPhone");
-        std::fs::write(link_dir.join("devices.yaml"), serde_yaml::to_string(&[legacy.clone()]).unwrap()).unwrap();
+        std::fs::write(
+            link_dir.join("devices.yaml"),
+            serde_yaml::to_string(std::slice::from_ref(&legacy)).unwrap(),
+        )
+        .unwrap();
 
         let store = Store::open(&dir.path().join(DB)).await.unwrap();
         let mut d = Devices::open(store.clone(), &link_dir).await;
-        assert_eq!(d.rows().cloned().collect::<Vec<_>>(), [legacy.clone()]);
-        assert_eq!(store.devices().await.unwrap(), [legacy.clone()], "imported into the table");
+        assert_eq!(
+            d.rows().cloned().collect::<Vec<_>>(),
+            std::slice::from_ref(&legacy)
+        );
+        assert_eq!(
+            store.devices().await.unwrap(),
+            std::slice::from_ref(&legacy),
+            "imported into the table"
+        );
         assert!(link_dir.join("devices.yaml").exists(), "left in place");
 
         assert!(d.rename(&legacy.id, "Phone"));
@@ -398,7 +444,11 @@ mod tests {
         assert_eq!((rows[0].name.as_str(), rows[0].last_seen_ms), ("Phone", 5));
 
         // A second open does not re-import: the table is not empty.
-        std::fs::write(link_dir.join("devices.yaml"), serde_yaml::to_string(&[row([8u8; 32], "x")]).unwrap()).unwrap();
+        std::fs::write(
+            link_dir.join("devices.yaml"),
+            serde_yaml::to_string(&[row([8u8; 32], "x")]).unwrap(),
+        )
+        .unwrap();
         let d2 = Devices::open(store.clone(), &link_dir).await;
         assert_eq!(d2.all().len(), 1);
         assert!(d2.is_empty(), "no active rows");
@@ -413,7 +463,11 @@ mod tests {
     #[tokio::test]
     async fn pending_rows_seal_take_and_expire() {
         let dir = tempfile::tempdir().unwrap();
-        let vault = Arc::new(secrets::Vault::open(dir.path(), secrets::KeyStore::File).await.unwrap());
+        let vault = Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
         let store = Store::open(&dir.path().join(DB)).await.unwrap();
         let mut p = Pending::new(Some(store.clone()), Some(vault.clone()));
         assert!(p.single_live().is_none());
@@ -433,7 +487,11 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         };
-        assert!(rows.iter().all(|r| r.psk_sealed != psk && r.psk_sealed != psk2), "never plaintext");
+        assert!(
+            rows.iter()
+                .all(|r| r.psk_sealed != psk && r.psk_sealed != psk2),
+            "never plaintext"
+        );
         let mut other = Pending::new(Some(store.clone()), Some(vault.clone()));
         other.reload(rows.clone());
         assert_eq!(other.take(&id2), Some(psk2));
@@ -442,7 +500,11 @@ mod tests {
 
         // A different mesh key opens nothing.
         let far = tempfile::tempdir().unwrap();
-        let other_vault = Arc::new(secrets::Vault::open(far.path(), secrets::KeyStore::File).await.unwrap());
+        let other_vault = Arc::new(
+            secrets::Vault::open(far.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
         let mut stranger = Pending::new(None, Some(other_vault));
         stranger.reload(rows);
         assert!(stranger.is_empty());

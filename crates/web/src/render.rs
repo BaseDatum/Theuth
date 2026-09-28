@@ -343,7 +343,10 @@ mod tests {
         assert!(s.starts_with("WARNING: degraded search"), "{s}");
         assert!(s.contains("(brave: rate_limited, google: http)"), "{s}");
         assert!(s.contains("1 pages read"), "{s}");
-        assert!(s.contains("\nNote: 2 off-site rows dropped (site=x.example)\n"), "{s}");
+        assert!(
+            s.contains("\nNote: 2 off-site rows dropped (site=x.example)\n"),
+            "{s}"
+        );
         assert!(s.contains("\nsb\n(not read: not-relevant)"), "{s}");
     }
 

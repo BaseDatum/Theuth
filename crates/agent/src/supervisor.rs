@@ -29,9 +29,9 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, Jobs, ListPrompts,
-    ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
-    RegisterTool, ReminderEvent, Risk, SetCap, SetParent, Settle, ToolRegistry,
+    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, Jobs, ListPrompts, ListTools,
+    Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt, RegisterTool,
+    ReminderEvent, Risk, SetCap, SetParent, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -48,24 +48,29 @@ use crate::communication::{
 
 use crate::acp_child::AcpChild;
 use crate::context::{
-    ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget,
-    save_blob,
+    ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot,
+    ContextTarget, save_blob,
 };
 use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
+use crate::lifecycle::{
+    Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
+    PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
+};
 use crate::loop_::{
-    CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextHistoryNow,
-    ContextBreakdownNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput, QueuedInputs,
-    RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState, SetCompactionOverride,
-    SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel, UndoTurn, UserInput,
-    WithdrawInput, prompt_blocks, text_of,
+    CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
+    ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
+    QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState,
+    SetCompactionOverride, SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel,
+    UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
     node_lines,
 };
+use crate::private::Scratch;
 use crate::skills::{
     self, AddSkillRepoTool, AddSkillTool, LoadSkillTool, RemoveSkillRepoTool, RemoveSkillTool,
     SyncSkillsTool,
@@ -75,32 +80,26 @@ use crate::store::{self, Epoch, Store};
 use crate::user::{MessageUserTool, USER_ACTOR, UserChannels};
 use crate::{
     AGENT_ACTOR, AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentEvent, AgentInfo,
-    ArchiveSession,
-    AgentState, AncestorInfo, Ancestors, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
-    BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems, Delivery,
-    SessionActivity,
-    DeleteSession, EditTurn, ForkSession, GetCompactStyle, GetMaxSalvages, GetMaxToolRounds,
-    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, GetEscalateModel, SetEscalateModel, EscalateModel, SideCall, SideReply,
-    HistoryEntry, ListAcp, ListAgents,
-    ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
-    LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, ModelInfo,
-    DeskSession, MarkDesk, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp,
-    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SessionContextBreakdown,
-    SearchSessionPage, SendInput, SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetEffort,
-    SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
-    SetVisionModel, ShowPrompt, SkillBody, SkillMeta,
-    Steer, SyncSkills, Undo, UseSkill, Withdraw, effort_of,
+    AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
+    BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems,
+    DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession, GetCompactStyle,
+    GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetStreamIdle, GetSubagentModel,
+    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAcp,
+    ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions,
+    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk,
+    ModelInfo, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession,
+    Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    RenameSession, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
+    SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
+    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
+    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
+    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
-use crate::{attach, frame, repl, search, spill};
-use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
 use crate::{DurableStore, SessionCostQuery, UnloadSession};
-use crate::lifecycle::{
-    Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
-    PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
-};
-use crate::private::Scratch;
+use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
+use crate::{attach, frame, repl, search, spill};
 use tools::{
     CloseTree, CloseTreeAll, OpenTree, ParticipantsReady, Retention, SessionResources, TreeOpened,
 };
@@ -642,7 +641,13 @@ impl Agents {
                 };
                 let model = self.resolve_model(model);
                 store
-                    .create_session(id, &model.0.id, parent.map(|p| p.0), parent.map(|p| p.1), None)
+                    .create_session(
+                        id,
+                        &model.0.id,
+                        parent.map(|p| p.0),
+                        parent.map(|p| p.1),
+                        None,
+                    )
                     .await?;
                 if let Some(e) = &effort {
                     store.set_effort(id, Some(e)).await?;
@@ -802,7 +807,8 @@ impl Agents {
                 self.store.acp_session(id).await?,
             ),
             None => {
-                self.store.create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
+                self.store
+                    .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
                 self.store.set_acp(id, &name, cwd.as_deref()).await?;
                 (parent.map(|(p, n)| (p, n.to_string())), cwd, None)
@@ -961,7 +967,10 @@ impl Agents {
     /// A closed private id has no row anywhere and gets none (51 §4.4).
     async fn error(&self, session: SessionId, message: String) {
         if !self.closing.contains(&session)
-            && let Err(e) = self.store_for(session).record_error(session, &message).await
+            && let Err(e) = self
+                .store_for(session)
+                .record_error(session, &message)
+                .await
         {
             tracing::warn!(session = %session, "record_error: {e:#}");
         }
@@ -1057,7 +1066,9 @@ impl Agents {
                     None => Err(unknown()),
                 }
             }
-            PeerAddress::Relative(name) if name == "parent" && self.remote_parent.contains_key(&from) => {
+            PeerAddress::Relative(name)
+                if name == "parent" && self.remote_parent.contains_key(&from) =>
+            {
                 Ok(Target::Uplink)
             }
             PeerAddress::Relative(name) if name == "parent" => {
@@ -2410,7 +2421,11 @@ impl Message<EditTurn> for Agents {
 impl Message<ForkSession> for Agents {
     type Reply = Result<SessionId, String>;
 
-    async fn handle(&mut self, m: ForkSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ForkSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let Some(&root) = self.private_member.get(&m.session) {
             return self.fork_private(root, m, ctx.actor_ref().clone()).await;
         }
@@ -2573,7 +2588,11 @@ impl Message<SetCompaction> for Agents {
 impl Message<SetToolset> for Agents {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: SetToolset, _: &mut Context<Self, Self::Reply>) -> Result<(), String> {
+    async fn handle(
+        &mut self,
+        m: SetToolset,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
         self.actor(m.session)
             .await?
             .native()?
@@ -2858,7 +2877,10 @@ impl Message<SetSubagentModel> for Agents {
             None => None,
         };
         let info = resolved.as_ref().map(ModelInfo::from);
-        *self.subagent_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        *self
+            .subagent_model
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = resolved;
         let path = self.rt.data_dir.join("config.yaml");
         let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
         if let Err(e) =
@@ -3007,15 +3029,16 @@ impl Message<SpawnChild> for Agents {
         // through its model option, picks its own effort, and reads the
         // ceiling only as the first line of its brief.
         let m = SpawnChild {
-            agent: m.agent.and_then(|a| crate::peers::canonical_agent(&self.nodes, &a)),
+            agent: m
+                .agent
+                .and_then(|a| crate::peers::canonical_agent(&self.nodes, &a)),
             ..m
         };
         let (harness, engine) = match m.agent.as_deref() {
             Some(a) => crate::peers::parse_agent(a)?,
             None => (None, ""),
         };
-        let node = m.agent.is_some()
-            && self.nodes.read().is_ok_and(|n| n.contains_key(engine));
+        let node = m.agent.is_some() && self.nodes.read().is_ok_and(|n| n.contains_key(engine));
         let external = harness.is_some() || (m.agent.is_some() && !node);
         if external && m.effort.is_some() {
             return Err("`effort` does not apply to an external harness; it picks its own".into());
@@ -3264,7 +3287,10 @@ impl Agents {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("unknown peer `session:{}`", m.session))?;
         if !row.here {
-            return Err(format!("session:{} is owned by {}, not here", m.session, row.owner));
+            return Err(format!(
+                "session:{} is owned by {}, not here",
+                m.session, row.owner
+            ));
         }
         // The sender is a replicated row: its lineage must be known to the
         // policy before `route` (as `resolve` does for the recipient).
@@ -3370,7 +3396,11 @@ impl Agents {
 
     /// [`Deliver`]'s body. `id`: the message id when another engine minted
     /// it ([`Self::peer_deliver`]); minted by the store otherwise.
-    pub(crate) async fn deliver(&mut self, m: Deliver, id: Option<Uuid>) -> Result<Delivered, String> {
+    pub(crate) async fn deliver(
+        &mut self,
+        m: Deliver,
+        id: Option<Uuid>,
+    ) -> Result<Delivered, String> {
         let revoked = || {
             format!(
                 "send_message: {}: {}",
@@ -3511,7 +3541,9 @@ impl Agents {
         // 69 P: the recipient lives on another engine — its owner runs the
         // intake; nothing here is woken.
         if let Some(owner) = self.remote_owner(to).await {
-            return self.forward_peer(owner, to, &m, body, receipt, generation).await;
+            return self
+                .forward_peer(owner, to, &m, body, receipt, generation)
+                .await;
         }
         let record = self
             .store
@@ -3858,9 +3890,10 @@ impl Agents {
                     // `"<node>"` is a theuth there and answers back over its
                     // conn (67 §8); `"<harness>@<node>"` is that harness, which
                     // has no peer tools, like a local one.
-                    Some(a) if crate::peers::parse_agent(a).is_ok_and(|(h, e)| {
-                        h.is_none() && self.nodes.read().is_ok_and(|n| n.contains_key(e))
-                    }) =>
+                    Some(a)
+                        if crate::peers::parse_agent(a).is_ok_and(|(h, e)| {
+                            h.is_none() && self.nodes.read().is_ok_and(|n| n.contains_key(e))
+                        }) =>
                     {
                         PeerKind::Node
                     }
@@ -4086,7 +4119,7 @@ impl Message<ListPeerMessages> for Agents {
                     messages.push(r);
                 }
             }
-            messages.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            messages.sort_by_key(|m| std::cmp::Reverse(m.created_at));
             return Ok(PeerMessagePage {
                 awaiting_answer: received,
                 awaiting_reply: sent,
@@ -4437,7 +4470,10 @@ impl Agents {
             let state = self.state_of(row.id, Some(parent), &names);
             let mut activity = activity.remove(&row.id).unwrap_or_default();
             activity.state = state.clone();
-            out.push(self.info_row(store, row, *depth, parent, state, activity).await);
+            out.push(
+                self.info_row(store, row, *depth, parent, state, activity)
+                    .await,
+            );
         }
         out
     }
@@ -4477,7 +4513,10 @@ impl Agents {
         let names = HashMap::new();
         let mut out = HashMap::with_capacity(ids.len());
         for &id in ids {
-            let parent = self.sessions.get(&id).and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
+            let parent = self
+                .sessions
+                .get(&id)
+                .and_then(|l| l.parent.as_ref().map(|(p, _)| *p));
             let turn_started_at = self.child_turns.get(&id).map(|ct| ct.started_at);
             let mut last_active = [
                 self.last_input.get(&id).copied(),
@@ -4735,7 +4774,12 @@ impl Agents {
             if !matches!(r.outcome, BroadcastOutcome::Skipped { .. }) {
                 continue;
             }
-            let store_row = self.store_for(r.session).session(r.session).await.ok().flatten();
+            let store_row = self
+                .store_for(r.session)
+                .session(r.session)
+                .await
+                .ok()
+                .flatten();
             let reason = if store_row
                 .as_ref()
                 .and_then(|s| s.agent.as_deref())
@@ -5086,11 +5130,17 @@ impl Message<ReadSession> for Agents {
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| format!("session {} not found", m.session))?;
         summary.retention = self.retention_of(m.session);
-        let h = store.context_history(m.session).await.map_err(|e| format!("{e:#}"))?;
+        let h = store
+            .context_history(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let mut out = render(&h.messages, &h.entries);
         // Peer provenance (50 §9), as `load_session` marks it.
         if let Ok(rows) = store.consumed_exchanges(m.session).await {
-            let peers: HashMap<i64, PeerOrigin> = rows.into_iter().map(|(seq, r)| (seq, origin_of(&r))).collect();
+            let peers: HashMap<i64, PeerOrigin> = rows
+                .into_iter()
+                .map(|(seq, r)| (seq, origin_of(&r)))
+                .collect();
             for (seq, entry) in &mut out {
                 if let HistoryEntry::User { peer, .. } = entry
                     && let Some(o) = peers.get(seq)
@@ -5270,13 +5320,10 @@ impl Message<LoadSession> for Agents {
                 )
             }
         };
-        let undone = store
-            .hidden_turns(m.session)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::error!(session = %m.session, "hidden_turns: {e:#}");
-                0
-            });
+        let undone = store.hidden_turns(m.session).await.unwrap_or_else(|e| {
+            tracing::error!(session = %m.session, "hidden_turns: {e:#}");
+            0
+        });
         let (model, effort, agent, harness_model, name, parent, project) = row
             .map(|r| {
                 (
@@ -5671,7 +5718,11 @@ impl Message<MarkDesk> for Agents {
 impl Message<DeskSession> for Agents {
     type Reply = Option<SessionId>;
 
-    async fn handle(&mut self, m: DeskSession, _: &mut Context<Self, Self::Reply>) -> Option<SessionId> {
+    async fn handle(
+        &mut self,
+        m: DeskSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<SessionId> {
         self.store.desk_session(&m.0).await.unwrap_or_else(|e| {
             tracing::error!(agent = %m.0, "desk session lookup: {e:#}");
             None
@@ -5884,7 +5935,12 @@ impl Message<SetModel> for Agents {
     ) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
-            let Some(row) = self.store_for(id).session(id).await.map_err(|e| e.to_string())? else {
+            let Some(row) = self
+                .store_for(id)
+                .session(id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
                 return Err(format!("unknown session {id}"));
             };
             let actor = self.actor(id).await?.native()?.clone();
@@ -6821,11 +6877,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let rt2 = rt.clone();
         let store = store.clone();
         tokio::spawn(async move {
-            if rt2.lookup_when::<replica::Replica>(replica::REPLICA_ACTOR).await.is_none() {
+            if rt2
+                .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
+                .await
+                .is_none()
+            {
                 return;
             }
             match store.replicate_records().await {
-                Ok(n) => tracing::info!("accounting: projects/cost_owners replicated ({n} row(s) announced)"),
+                Ok(n) => tracing::info!(
+                    "accounting: projects/cost_owners replicated ({n} row(s) announced)"
+                ),
                 Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
             }
         });
@@ -7055,7 +7117,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         }
         let dir = skills::dir(&data_dir);
         // 67 §5.1: flat skill files replicate; `skills/<repo>/` clones sync by `sync_skills`.
-        tokio::spawn(replica::files::mirror_at(data_dir.join("skills.sqlite"), dir.clone(), "skills", std::time::Duration::from_secs(120)));
+        tokio::spawn(replica::files::mirror_at(
+            data_dir.join("skills.sqlite"),
+            dir.clone(),
+            "skills",
+            std::time::Duration::from_secs(120),
+        ));
         let _ = reg
             .ask(RegisterTool(Arc::new(LoadSkillTool { dir: dir.clone() })))
             .await;
@@ -7164,15 +7231,26 @@ impl Message<SetSessionProject> for Agents {
 impl Message<ListProjectStyles> for Agents {
     type Reply = Result<Vec<crate::ProjectStyle>, String>;
 
-    async fn handle(&mut self, _: ListProjectStyles, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.store.list_project_styles().await.map_err(|e| e.to_string())
+    async fn handle(
+        &mut self,
+        _: ListProjectStyles,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .list_project_styles()
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
 impl Message<SetProjectStyle> for Agents {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: SetProjectStyle, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SetProjectStyle,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         // Same label rule as `SetSessionProject`, so a style row always names
         // a label a session can carry. Styles live in the durable store only,
         // like the session list the sidebar groups (`ListSessions`).
@@ -7493,7 +7571,11 @@ impl Agents {
 impl Message<CreateSession> for Agents {
     type Reply = Result<SessionOpen, String>;
 
-    async fn handle(&mut self, m: CreateSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CreateSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let project = project::normalize_project(m.options.project.as_deref())?;
         // 67 §8: `agent: "<harness>@<engine>"` landed here — the root is a
         // child of our own `acp/agents.yaml` entry, `model` goes to it through
@@ -7557,10 +7639,13 @@ impl Message<CreateSession> for Agents {
                     model.as_deref(),
                     effort,
                     m.options.cap,
-                    m.options.parent_session.clone().map(|session| RemoteParent {
-                        session,
-                        engine: m.options.parent_engine.clone(),
-                    }),
+                    m.options
+                        .parent_session
+                        .clone()
+                        .map(|session| RemoteParent {
+                            session,
+                            engine: m.options.parent_engine.clone(),
+                        }),
                 )
                 .await?;
             return Ok(SessionOpen {
@@ -7682,12 +7767,19 @@ impl Message<PrivateTrees> for Agents {
 impl Message<ResumePrivate> for Agents {
     type Reply = Result<SessionOpen, String>;
 
-    async fn handle(&mut self, m: ResumePrivate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ResumePrivate,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let root = *self
             .private_member
             .get(&m.session)
             .ok_or("no such private session")?;
-        let p = self.private.get_mut(&root).ok_or("no such private session")?;
+        let p = self
+            .private
+            .get_mut(&root)
+            .ok_or("no such private session")?;
         if p.closing {
             return Err("session closing".into());
         }
@@ -7714,7 +7806,11 @@ impl Message<ResumePrivate> for Agents {
 impl Message<LeaveSession> for Agents {
     type Reply = Result<CloseResult, String>;
 
-    async fn handle(&mut self, m: LeaveSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: LeaveSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let Some(&root) = self.private_member.get(&m.session) else {
             return Err(if self.closing.contains(&m.session) {
                 "session closed".into()
@@ -7745,10 +7841,9 @@ impl Message<PrivateExpired> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: PrivateExpired, ctx: &mut Context<Self, Self::Reply>) {
-        let still_held = self
-            .private
-            .get(&m.root)
-            .is_some_and(|p| !p.closing && p.owner.peer == m.peer && p.owner.generation == m.generation);
+        let still_held = self.private.get(&m.root).is_some_and(|p| {
+            !p.closing && p.owner.peer == m.peer && p.owner.generation == m.generation
+        });
         if still_held {
             tracing::info!(session = %m.root, "private owner gone; closing");
             self.close_private(m.root, ctx.actor_ref().clone()).await;
@@ -7772,7 +7867,9 @@ impl Message<PrivateClosed> for Agents {
         }
         // Children first, then the root: the order `DeleteSession` uses.
         for session in p.members.into_iter().rev() {
-            self.rt.publish(AgentEvent::SessionDeleted { session }).await;
+            self.rt
+                .publish(AgentEvent::SessionDeleted { session })
+                .await;
         }
     }
 }
@@ -7780,7 +7877,11 @@ impl Message<PrivateClosed> for Agents {
 impl Message<SessionCostQuery> for Agents {
     type Reply = Result<Option<crate::cost::SessionCost>, String>;
 
-    async fn handle(&mut self, m: SessionCostQuery, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SessionCostQuery,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.store_for(m.0)
             .session_cost(m.0)
             .await
@@ -8355,7 +8456,13 @@ pub(crate) mod tests {
 
     #[test]
     fn reminder_wrapper_escapes_attributes_and_names_late() {
-        let w = reminder("r3", 600, "2026-09-23T10:00:00+02:00", false, "check \"a\" <b>");
+        let w = reminder(
+            "r3",
+            600,
+            "2026-09-23T10:00:00+02:00",
+            false,
+            "check \"a\" <b>",
+        );
         assert_eq!(
             w,
             "<reminder id=\"r3\" after=\"600\" set_at=\"2026-09-23T10:00:00+02:00\" late=\"false\">\ncheck \"a\" <b>\n</reminder>"
@@ -8474,7 +8581,11 @@ pub(crate) mod tests {
 
     /// [`agents_with`] over `dir`'s store opened as mesh engine `engine`
     /// (69 P: two of these, each holding the other's rows, are two engines).
-    pub(crate) async fn agents_on(dir: PathBuf, engine: Option<&str>, communication: bool) -> Agents {
+    pub(crate) async fn agents_on(
+        dir: PathBuf,
+        engine: Option<&str>,
+        communication: bool,
+    ) -> Agents {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Arc::new(AgentConfig::default());
         let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
@@ -8492,7 +8603,9 @@ pub(crate) mod tests {
             catalog: Arc::new(Catalog::load(&dir)),
             pool: None,
             configured: Arc::new(|_: &str| false),
-            store: Store::open(&dir.join("sessions.sqlite"), engine).await.unwrap(),
+            store: Store::open(&dir.join("sessions.sqlite"), engine)
+                .await
+                .unwrap(),
             client: Client::new().unwrap(),
             auth: Auth::stub(&dir),
             sessions: HashMap::new(),
@@ -8796,7 +8909,12 @@ pub(crate) mod tests {
         let rev = a.store.context_revision(other).await.unwrap();
         assert!(
             a.store
-                .set_title_at_revision(other, "Merge design 62", &["rust".into(), "merge".into()], &rev)
+                .set_title_at_revision(
+                    other,
+                    "Merge design 62",
+                    &["rust".into(), "merge".into()],
+                    &rev
+                )
                 .await
                 .unwrap()
         );
@@ -8883,7 +9001,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let rows = a.directory(child).await.unwrap();
-        let parent = rows.iter().find(|r| r.relationship == PeerRelationship::Parent).unwrap();
+        let parent = rows
+            .iter()
+            .find(|r| r.relationship == PeerRelationship::Parent)
+            .unwrap();
         assert_eq!(parent.title.as_deref(), Some("deploy checklist"));
         assert_eq!(parent.activity.as_ref().unwrap().state, PeerLiveState::Idle);
 
@@ -8900,7 +9021,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(cold_row.relationship, PeerRelationship::Sibling);
         assert_eq!(cold_row.state, PeerState::Stored);
-        assert_eq!(cold_row.activity.as_ref().unwrap().state, PeerLiveState::Stored);
+        assert_eq!(
+            cold_row.activity.as_ref().unwrap().state,
+            PeerLiveState::Stored
+        );
     }
 
     /// 62 §3.4: `active_only` drops an idle jobless row and keeps one with a
@@ -8939,7 +9063,10 @@ pub(crate) mod tests {
         ];
         arrange(&mut rows, false);
         let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
-        assert_eq!(order, ["pty", "running", "idle-new", "idle-old", "peer:lab"]);
+        assert_eq!(
+            order,
+            ["pty", "running", "idle-new", "idle-old", "peer:lab"]
+        );
         arrange(&mut rows, true);
         let order: Vec<&str> = rows.iter().map(|r| r.address.as_str()).collect();
         assert_eq!(order, ["pty", "running"]);
@@ -9463,15 +9590,16 @@ pub(crate) mod tests {
     async fn routing_failure_releases_the_ticket() {
         let mut a = agents().await;
         let (p, _) = in_turn(&mut a).await;
-        let r = a.input(
-            p,
-            None,
-            "x".into(),
-            vec![PathBuf::from("/nonexistent/theuth.png")],
-            InputOrigin::External,
-            Delivery::Steer,
-        )
-        .await;
+        let r = a
+            .input(
+                p,
+                None,
+                "x".into(),
+                vec![PathBuf::from("/nonexistent/theuth.png")],
+                InputOrigin::External,
+                Delivery::Steer,
+            )
+            .await;
         assert!(r.is_err(), "the caller learns the drop too (62 §3.3)");
         assert_eq!(a.ledger.activity(p), None);
     }
@@ -9483,14 +9611,20 @@ pub(crate) mod tests {
         let mut a = agents().await;
         let (p, _) = in_turn(&mut a).await;
         let id = InputId::new();
-        let sid = a.human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer).await;
+        let sid = a
+            .human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer)
+            .await;
         assert_eq!(sid.unwrap(), p);
         a.last_input.clear();
-        let sid = a.human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer).await;
+        let sid = a
+            .human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer)
+            .await;
         assert_eq!(sid.unwrap(), p);
         assert!(a.last_input.is_empty(), "the retry routed nothing");
         let fresh = Some(InputId::new());
-        a.human_input(Some(p), fresh, "x".into(), vec![], Delivery::Steer).await.unwrap();
+        a.human_input(Some(p), fresh, "x".into(), vec![], Delivery::Steer)
+            .await
+            .unwrap();
         assert!(a.last_input.contains_key(&p), "a fresh id routes");
     }
 
@@ -9508,7 +9642,10 @@ pub(crate) mod tests {
         assert_eq!(act.state, AgentState::Idle);
         assert_eq!((act.jobs, act.ptys, act.children), (0, 1, 0));
         assert!(act.live);
-        assert!(act.last_active.is_some(), "a cold row falls back to `updated_at`");
+        assert!(
+            act.last_active.is_some(),
+            "a cold row falls back to `updated_at`"
+        );
         assert!(act.turn_started_at.is_none());
     }
 
@@ -9536,7 +9673,10 @@ pub(crate) mod tests {
         assert!(ids.contains(&live_child) && !ids.contains(&cold_child));
         let by_id: HashMap<SessionId, &AgentInfo> = rows.iter().map(|r| (r.id, r)).collect();
         assert_eq!((by_id[&root].depth, by_id[&root].parent), (0, root));
-        assert_eq!((by_id[&live_child].depth, by_id[&live_child].parent), (1, root));
+        assert_eq!(
+            (by_id[&live_child].depth, by_id[&live_child].parent),
+            (1, root)
+        );
         assert!(by_id[&root].activity.live && !by_id[&cold_root].activity.live);
         assert_eq!(by_id[&root].activity.children, 1);
         // Pre-order: a child right after its root.
@@ -9657,7 +9797,10 @@ pub(crate) mod tests {
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         store.set_title(id, "deploy checklist").await.unwrap();
 
         let page = |q: &'static str| {
@@ -9767,8 +9910,15 @@ pub(crate) mod tests {
         );
         let rows = a.directory(capped).await.unwrap();
         let p = &rows[0];
-        assert_eq!((p.address.as_str(), p.kind, p.reply), ("parent", PeerKind::Parent, true));
-        assert!(p.name.contains("parent-1") && p.name.contains("Ab3dEf9h"), "{}", p.name);
+        assert_eq!(
+            (p.address.as_str(), p.kind, p.reply),
+            ("parent", PeerKind::Parent, true)
+        );
+        assert!(
+            p.name.contains("parent-1") && p.name.contains("Ab3dEf9h"),
+            "{}",
+            p.name
+        );
         assert!(a.peer_context(capped).contains("address it as `parent`"));
         // Its `send_message{to: "parent"}` is accepted as an uplink; a reply
         // cannot be awaited across the conn.
@@ -9782,9 +9932,17 @@ pub(crate) mod tests {
             admitted: CancellationToken::new(),
         };
         let d = a.uplink(&deliver(false), "done".into()).await.unwrap();
-        assert_eq!((d.receipt.to.as_str(), d.receipt.state), ("parent", PeerMessageState::Accepted));
+        assert_eq!(
+            (d.receipt.to.as_str(), d.receipt.state),
+            ("parent", PeerMessageState::Accepted)
+        );
         assert!(d.reply.is_none());
-        assert!(a.uplink(&deliver(true), "done".into()).await.unwrap_err().contains("await_reply"));
+        assert!(
+            a.uplink(&deliver(true), "done".into())
+                .await
+                .unwrap_err()
+                .contains("await_reply")
+        );
 
         let plain = a
             .create_durable(None, None, None, None, None, None)
@@ -9794,7 +9952,13 @@ pub(crate) mod tests {
         let row = a.store.session(plain).await.unwrap().unwrap();
         assert_eq!(row.effort, a.default_effort);
         assert!(a.resolve_all(plain, &["parent".to_owned()]).await[0].is_err());
-        assert!(a.directory(plain).await.unwrap().iter().all(|p| p.address != "parent"));
+        assert!(
+            a.directory(plain)
+                .await
+                .unwrap()
+                .iter()
+                .all(|p| p.address != "parent")
+        );
     }
 
     /// 51 §4.1–§4.2: a private root needs a view and an owning peer; once
@@ -9868,7 +10032,10 @@ pub(crate) mod tests {
                 .iter()
                 .any(|s| s.id == durable.root && s.project.as_deref() == Some("ops"))
         );
-        assert!(!listed.iter().any(|s| s.id == open.root), "private root listed");
+        assert!(
+            !listed.iter().any(|s| s.id == open.root),
+            "private root listed"
+        );
         assert_eq!(
             agents.ask(PrivateTrees).await.unwrap(),
             vec![(open.root, open.root, 7)]
@@ -9917,7 +10084,10 @@ pub(crate) mod tests {
         assert!(e.starts_with("session clos"), "{e}");
         // Still listed while closing: a subscriber seeded now must filter its
         // closing/deleted events (RPC filter map is insert-only).
-        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 7)]);
+        assert_eq!(
+            agents.ask(PrivateTrees).await.unwrap(),
+            vec![(root, root, 7)]
+        );
         assert_eq!(refused(leave(7).await), "session closed");
         // Input to the closed id is refused (the caller learns it), not turned
         // into a durable row.
@@ -9990,12 +10160,18 @@ pub(crate) mod tests {
         );
         authorize(9).await.unwrap();
         assert_eq!(refused(authorize(7).await), "unauthorized");
-        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 9)]);
+        assert_eq!(
+            agents.ask(PrivateTrees).await.unwrap(),
+            vec![(root, root, 9)]
+        );
 
         // The old connection dies well past the (200 ms) grace: the root stays.
         old_closed.cancel();
         tokio::time::sleep(Duration::from_millis(600)).await;
-        assert_eq!(agents.ask(PrivateTrees).await.unwrap(), vec![(root, root, 9)]);
+        assert_eq!(
+            agents.ask(PrivateTrees).await.unwrap(),
+            vec![(root, root, 9)]
+        );
         // The holder's connection dies: the root closes itself after the grace.
         new_closed.cancel();
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -10018,9 +10194,12 @@ pub(crate) mod tests {
     }
 
     async fn seed(dir: &Path, as_engine: &str, id: SessionId) {
-        let s = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId(as_engine.into())))
-            .await
-            .unwrap();
+        let s = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId(as_engine.into())),
+        )
+        .await
+        .unwrap();
         s.create_session(id, "m", None, None, None).await.unwrap();
         s.set_root_scope(id, PeerScope::Owner, None).await.unwrap();
         s.close().await;
@@ -10055,9 +10234,12 @@ pub(crate) mod tests {
     }
 
     /// The owner side of `theuth/rpc/1` for one engine, as `rpc::forward::serve`
-    /// + `api::peer_deliver` do it: one request line per stream, dispatched
+    /// and `api::peer_deliver` do it: one request line per stream, dispatched
     /// into the supervisor's [`Agents::peer_deliver`], one response line.
-    fn serve_peer_deliver(t: Arc<peer_mesh::loopback::Loop>, agents: Arc<tokio::sync::Mutex<Agents>>) {
+    fn serve_peer_deliver(
+        t: Arc<peer_mesh::loopback::Loop>,
+        agents: Arc<tokio::sync::Mutex<Agents>>,
+    ) {
         use replica::Transport;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         tokio::spawn(async move {
@@ -10069,11 +10251,20 @@ pub(crate) mod tests {
                     BufReader::new(read).read_line(&mut line).await.unwrap();
                     let req: serde_json::Value = serde_json::from_str(&line).unwrap();
                     assert_eq!(req["method"], peer_mesh::METHOD);
-                    let session: SessionId = serde_json::from_value(req["params"][0].clone()).unwrap();
-                    let envelope: PeerEnvelope = serde_json::from_value(req["params"][1].clone()).unwrap();
-                    let rp = match agents.lock().await.peer_deliver(PeerDeliver { session, envelope }).await {
+                    let session: SessionId =
+                        serde_json::from_value(req["params"][0].clone()).unwrap();
+                    let envelope: PeerEnvelope =
+                        serde_json::from_value(req["params"][1].clone()).unwrap();
+                    let rp = match agents
+                        .lock()
+                        .await
+                        .peer_deliver(PeerDeliver { session, envelope })
+                        .await
+                    {
                         Ok(r) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": r}),
-                        Err(e) => serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e}}),
+                        Err(e) => {
+                            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": e}})
+                        }
                     };
                     write.write_all(format!("{rp}\n").as_bytes()).await.unwrap();
                     write.flush().await.unwrap();
@@ -10082,7 +10273,13 @@ pub(crate) mod tests {
         });
     }
 
-    fn deliver(from: SessionId, to: SessionId, text: &str, await_reply: bool, reply_to: Option<Uuid>) -> Deliver {
+    fn deliver(
+        from: SessionId,
+        to: SessionId,
+        text: &str,
+        await_reply: bool,
+        reply_to: Option<Uuid>,
+    ) -> Deliver {
         Deliver {
             from,
             to: format!("session:{to}"),
@@ -10107,7 +10304,10 @@ pub(crate) mod tests {
             b_root,
             net,
         } = two_engines().await;
-        let (a, b) = (Arc::new(tokio::sync::Mutex::new(a)), Arc::new(tokio::sync::Mutex::new(b)));
+        let (a, b) = (
+            Arc::new(tokio::sync::Mutex::new(a)),
+            Arc::new(tokio::sync::Mutex::new(b)),
+        );
         serve_peer_deliver(net[0].clone(), a.clone());
         serve_peer_deliver(net[1].clone(), b.clone());
 
@@ -10122,13 +10322,32 @@ pub(crate) mod tests {
         let id = d.receipt.id;
         {
             let a = a.lock().await;
-            assert!(!a.enqueued.contains(&id), "nothing here consumes a forwarded message");
-            assert!(a.sessions.get(&b_root).is_none(), "the remote row was not woken here");
-            assert!(a.waits.contains_key(&id), "the wait is registered as for a local recipient");
-            assert_eq!(a.store.exchange_receipt(id).await.unwrap().unwrap().state, PeerMessageState::Accepted);
+            assert!(
+                !a.enqueued.contains(&id),
+                "nothing here consumes a forwarded message"
+            );
+            assert!(
+                !a.sessions.contains_key(&b_root),
+                "the remote row was not woken here"
+            );
+            assert!(
+                a.waits.contains_key(&id),
+                "the wait is registered as for a local recipient"
+            );
+            assert_eq!(
+                a.store.exchange_receipt(id).await.unwrap().unwrap().state,
+                PeerMessageState::Accepted
+            );
         }
         // The owner's intake: same id, reversed view, its own row.
-        let theirs = b.lock().await.store.peer_record(b_root, id).await.unwrap().unwrap();
+        let theirs = b
+            .lock()
+            .await
+            .store
+            .peer_record(b_root, id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(theirs.from, format!("session:{a_root}"));
         assert_eq!(theirs.text, "question");
         assert_ne!(theirs.receipt.state, PeerMessageState::Failed);
@@ -10140,11 +10359,17 @@ pub(crate) mod tests {
             .deliver(deliver(b_root, a_root, "42", false, Some(id)), None)
             .await
             .unwrap();
-        assert_eq!((r.receipt.state, r.receipt.reply_to), (PeerMessageState::Accepted, Some(id)));
+        assert_eq!(
+            (r.receipt.state, r.receipt.reply_to),
+            (PeerMessageState::Accepted, Some(id))
+        );
         let fin = d.reply.unwrap().await.unwrap();
         assert_eq!((fin.id, fin.state), (id, PeerMessageState::Replied));
         assert_eq!(fin.reply.as_deref(), Some("42"));
-        assert_eq!(fin.answered_by.as_deref(), Some(format!("session:{b_root}").as_str()));
+        assert_eq!(
+            fin.answered_by.as_deref(),
+            Some(format!("session:{b_root}").as_str())
+        );
         assert!(a.lock().await.waits.is_empty());
     }
 
@@ -10160,7 +10385,10 @@ pub(crate) mod tests {
         } = two_engines().await;
         // A switch on which `b` is not connected.
         a.transport = Some(peer_mesh::loopback::nodes(&["a"]).remove(0));
-        let d = a.deliver(deliver(a_root, b_root, "hello?", true, None), None).await.unwrap();
+        let d = a
+            .deliver(deliver(a_root, b_root, "hello?", true, None), None)
+            .await
+            .unwrap();
         assert_eq!(d.receipt.state, PeerMessageState::Failed);
         assert_eq!(
             d.receipt.error.as_deref(),
@@ -10169,7 +10397,12 @@ pub(crate) mod tests {
         assert!(d.reply.is_none());
         assert!(a.waits.is_empty());
         assert_eq!(
-            a.store.exchange_receipt(d.receipt.id).await.unwrap().unwrap().state,
+            a.store
+                .exchange_receipt(d.receipt.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
             PeerMessageState::Failed
         );
         // The owner's intake refuses the row it does not own (never a take).
@@ -10205,16 +10438,29 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.address, format!("session:{b_root}"));
-        assert_eq!((r.state, r.relationship), (PeerState::Remote, PeerRelationship::Root));
-        assert_eq!(r.engine.as_deref(), Some("b"), "no mesh actor: the id itself (short)");
+        assert_eq!(
+            (r.state, r.relationship),
+            (PeerState::Remote, PeerRelationship::Root)
+        );
+        assert_eq!(
+            r.engine.as_deref(),
+            Some("b"),
+            "no mesh actor: the id itself (short)"
+        );
         assert!(r.activity.is_none());
         arrange(&mut rows, true);
-        assert!(rows.is_empty(), "remote activity is unknown: active_only keeps none");
+        assert!(
+            rows.is_empty(),
+            "remote activity is unknown: active_only keeps none"
+        );
         // Seen from b, a's root is the remote one.
         let rows = b.directory(b_root).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].address, format!("session:{a_root}"));
-        assert_eq!((rows[0].state, rows[0].engine.as_deref()), (PeerState::Remote, Some("a")));
+        assert_eq!(
+            (rows[0].state, rows[0].engine.as_deref()),
+            (PeerState::Remote, Some("a"))
+        );
     }
 
     /// A mesh of one: every row is ours, so `Deliver` takes today's local
@@ -10229,13 +10475,22 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(a.remote_owner(child).await, None);
-        let d = a.deliver(deliver(root, child, "hi", false, None), None).await.unwrap();
+        let d = a
+            .deliver(deliver(root, child, "hi", false, None), None)
+            .await
+            .unwrap();
         assert_eq!(d.receipt.state, PeerMessageState::Accepted);
-        assert!(a.enqueued.contains(&d.receipt.id), "queued for the local recipient");
+        assert!(
+            a.enqueued.contains(&d.receipt.id),
+            "queued for the local recipient"
+        );
         assert!(a.transport.is_none(), "no mesh was consulted");
         let rows = a.directory(root).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_ne!(rows[0].state, PeerState::Remote);
-        assert_eq!(rows[0].engine.as_deref(), Some(platform::process::hostname()));
+        assert_eq!(
+            rows[0].engine.as_deref(),
+            Some(platform::process::hostname())
+        );
     }
 }

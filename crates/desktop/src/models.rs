@@ -53,7 +53,9 @@ impl Entry {
 
     /// Meant for this build ([`platform::target::target_triple`]).
     fn for_this_platform(&self) -> bool {
-        self.platform.as_deref().is_none_or(|p| p == platform::target::target_triple())
+        self.platform
+            .as_deref()
+            .is_none_or(|p| p == platform::target::target_triple())
     }
 }
 
@@ -260,7 +262,10 @@ mod tests {
         .unwrap();
         assert_eq!(m.files[0].key(), "parakeet-tdt/vocab.txt");
         assert!(m.files[0].for_this_platform());
-        assert_eq!(m.files[1].key(), "onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib");
+        assert_eq!(
+            m.files[1].key(),
+            "onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib"
+        );
         // Exactly one of the two runtime rows is for this build (whichever it is).
         let mine: Vec<&str> = m.files[1..]
             .iter()
@@ -283,7 +288,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.files.len(), 1);
-        assert_eq!((m.files[0].key(), m.files[0].size), ("decision/model.safetensors", 5));
+        assert_eq!(
+            (m.files[0].key(), m.files[0].size),
+            ("decision/model.safetensors", 5)
+        );
         assert!(m.files[0].for_this_platform());
     }
 

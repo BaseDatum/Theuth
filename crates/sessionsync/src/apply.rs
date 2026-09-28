@@ -28,7 +28,11 @@ pub enum Applied {
 
 /// Apply one log row of `origin`. Idempotent under the fence: a duplicate or
 /// a stale epoch changes nothing.
-pub async fn apply_log_row(store: &Store, origin: &PeerId, row: &LogRow) -> anyhow::Result<Applied> {
+pub async fn apply_log_row(
+    store: &Store,
+    origin: &PeerId,
+    row: &LogRow,
+) -> anyhow::Result<Applied> {
     let session = row.session_id.parse()?;
     let before = store.fence(session).await?;
     if let Some((epoch, _owner)) = &before
@@ -86,15 +90,24 @@ pub(crate) async fn apply_changeset(tx: &mut ApplyTx<'_>, changeset: &[u8]) -> a
             )
         })
         .await?;
-    anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3changeset_apply failed (rc {rc})");
+    anyhow::ensure!(
+        rc == ffi::SQLITE_OK,
+        "sqlite3changeset_apply failed (rc {rc})"
+    );
     Ok(())
 }
 
 /// Conflict handler: the owner wrote it, so its row wins (`REPLACE` on
 /// `DATA`/`CONFLICT`); a delete of a row we never had is nothing (`OMIT`).
-unsafe extern "C" fn owner_wins(_ctx: *mut c_void, conflict: c_int, _iter: *mut ffi::sqlite3_changeset_iter) -> c_int {
+unsafe extern "C" fn owner_wins(
+    _ctx: *mut c_void,
+    conflict: c_int,
+    _iter: *mut ffi::sqlite3_changeset_iter,
+) -> c_int {
     match conflict {
-        ffi::SQLITE_CHANGESET_DATA | ffi::SQLITE_CHANGESET_CONFLICT => ffi::SQLITE_CHANGESET_REPLACE,
+        ffi::SQLITE_CHANGESET_DATA | ffi::SQLITE_CHANGESET_CONFLICT => {
+            ffi::SQLITE_CHANGESET_REPLACE
+        }
         _ => ffi::SQLITE_CHANGESET_OMIT,
     }
 }

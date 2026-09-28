@@ -37,12 +37,11 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
-use runtime::SessionId;
 use parking_lot::Mutex;
+use runtime::SessionId;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::{FromRow, Sqlite, SqliteConnection, Transaction};
 
-use crate::{ProjectStyle, SessionSummary};
 use crate::context::{
     Active, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot, ContextTarget, Mask,
     entry, project,
@@ -50,10 +49,11 @@ use crate::context::{
 use crate::loop_::text_of;
 use crate::todo::{Todo, TodoSnapshot, TodoSource};
 use crate::vision::{VisionImage, VisionNote};
+use crate::{ProjectStyle, SessionSummary};
 
-pub mod communication;
 pub mod accounting;
 mod capture;
+pub mod communication;
 pub use capture::ATTACHED;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
@@ -209,7 +209,10 @@ impl WriteTx<'_> {
                 .iter()
                 .filter_map(|o| Some((o.session.as_deref()?, o.deleted_session.clone()?)))
                 .collect();
-            let sessions: Vec<String> = ops.iter().map(|o| o.session.clone().unwrap_or_default()).collect();
+            let sessions: Vec<String> = ops
+                .iter()
+                .map(|o| o.session.clone().unwrap_or_default())
+                .collect();
             let groups = capture::split(&changeset, &sessions)?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -234,7 +237,9 @@ impl WriteTx<'_> {
                 };
                 if !(owner.is_empty() || *owner == *store.me) {
                     anyhow::bail!(StoreError::NotOwner {
-                        session: sid.parse().with_context(|| format!("bad session id {sid}"))?,
+                        session: sid
+                            .parse()
+                            .with_context(|| format!("bad session id {sid}"))?,
                         owner,
                         epoch: u32::try_from(epoch).unwrap_or(u32::MAX),
                     });
@@ -253,7 +258,9 @@ impl WriteTx<'_> {
             }
         }
         self.tx.commit().await?;
-        store.log_tx.send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
+        store
+            .log_tx
+            .send_if_modified(|s| std::mem::replace(s, store.seq.load(Ordering::SeqCst)) != *s);
         Ok(())
     }
 }
@@ -285,7 +292,10 @@ impl DerefMut for ApplyTx<'_> {
 impl ApplyTx<'_> {
     /// Run `f` with the raw `sqlite3*` of the write connection (for
     /// `sqlite3changeset_apply`), the worker thread locked out meanwhile.
-    pub async fn with_raw<R>(&mut self, f: impl FnOnce(std::ptr::NonNull<libsqlite3_sys::sqlite3>) -> R) -> anyhow::Result<R> {
+    pub async fn with_raw<R>(
+        &mut self,
+        f: impl FnOnce(std::ptr::NonNull<libsqlite3_sys::sqlite3>) -> R,
+    ) -> anyhow::Result<R> {
         let mut handle = self.deref_mut().lock_handle().await?;
         Ok(f(handle.as_raw_handle()))
     }
@@ -417,7 +427,12 @@ impl SessionRow {
             created_at: r.created_at.parse().context("bad created_at")?,
             updated_at: r.updated_at.parse().context("bad updated_at")?,
             title: r.title,
-            tags: r.tags.split(',').filter(|t| !t.is_empty()).map(str::to_owned).collect(),
+            tags: r
+                .tags
+                .split(',')
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .collect(),
             model: r.model,
             parent: r
                 .parent
@@ -531,7 +546,9 @@ impl Store {
                     if let Some(stale) = slot.lock().replace(fresh) {
                         // Its connection is gone (sqlx replaced it); deleting a
                         // session on a closed handle is undefined, so leak it.
-                        tracing::warn!("store: write connection replaced; leaking its capture session");
+                        tracing::warn!(
+                            "store: write connection replaced; leaking its capture session"
+                        );
                         std::mem::forget(stale);
                     }
                     Ok(())
@@ -632,10 +649,16 @@ impl Store {
     /// changeset (68 §6). Serialized with every local write by the single
     /// connection; capture resumes when the returned value commits or drops.
     pub async fn begin_apply(&self) -> anyhow::Result<ApplyTx<'_>> {
-        anyhow::ensure!(!self.private, "a private store never applies remote changes");
+        anyhow::ensure!(
+            !self.private,
+            "a private store never applies remote changes"
+        );
         let tx = self.write.begin_with("BEGIN IMMEDIATE").await?;
         self.set_capture(false);
-        Ok(ApplyTx { tx: Some(tx), store: self })
+        Ok(ApplyTx {
+            tx: Some(tx),
+            store: self,
+        })
     }
 
     fn set_capture(&self, on: bool) {
@@ -697,7 +720,12 @@ impl Store {
 
     /// [`Store::log_orphan`] for the rows above `after` only: what the new
     /// owner had not applied when it took over (68 §4.3).
-    pub async fn log_orphan_after(&self, session: SessionId, epoch: u32, after: i64) -> anyhow::Result<u64> {
+    pub async fn log_orphan_after(
+        &self,
+        session: SessionId,
+        epoch: u32,
+        after: i64,
+    ) -> anyhow::Result<u64> {
         let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "UPDATE session_log SET orphaned = 1 WHERE session_id = ? AND epoch = ? AND seq > ? AND orphaned = 0",
@@ -714,10 +742,11 @@ impl Store {
 
     /// `MAX(seq)` of the log rows of `session` (orphaned or not); `0` when none.
     pub async fn session_log_seq(&self, session: SessionId) -> anyhow::Result<i64> {
-        let (seq,): (Option<i64>,) = sqlx::query_as("SELECT MAX(seq) FROM session_log WHERE session_id = ?")
-            .bind(session.to_string())
-            .fetch_one(&self.read)
-            .await?;
+        let (seq,): (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(seq) FROM session_log WHERE session_id = ?")
+                .bind(session.to_string())
+                .fetch_one(&self.read)
+                .await?;
         Ok(seq.unwrap_or(0))
     }
 
@@ -754,11 +783,12 @@ impl Store {
     pub async fn prune_orphans_before(&self, wall_ms: u64) -> anyhow::Result<u64> {
         let bound = format!("{wall_ms:016x}");
         let mut tx = self.begin_write().await?;
-        let n = sqlx::query("DELETE FROM session_log WHERE orphaned = 1 AND substr(hlc, 1, 16) < ?")
-            .bind(bound)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let n =
+            sqlx::query("DELETE FROM session_log WHERE orphaned = 1 AND substr(hlc, 1, 16) < ?")
+                .bind(bound)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
         tx.commit().await?;
         Ok(n)
     }
@@ -776,17 +806,21 @@ impl Store {
     /// Does this engine own at least one session? What a peer can
     /// bootstrap from us even when the log is empty (a migrated store).
     pub async fn owns_sessions(&self) -> anyhow::Result<bool> {
-        Ok(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE owner = ?)")
-            .bind(&*self.me)
-            .fetch_one(&self.read)
-            .await?)
+        Ok(
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE owner = ?)")
+                .bind(&*self.me)
+                .fetch_one(&self.read)
+                .await?,
+        )
     }
 
     /// Every `(origin, peer) → seq` cursor.
     pub async fn cursors(&self) -> anyhow::Result<Vec<Cursor>> {
-        Ok(sqlx::query_as("SELECT origin, peer, seq FROM session_cursors ORDER BY origin, peer")
-            .fetch_all(&self.read)
-            .await?)
+        Ok(
+            sqlx::query_as("SELECT origin, peer, seq FROM session_cursors ORDER BY origin, peer")
+                .fetch_all(&self.read)
+                .await?,
+        )
     }
 
     /// Record that `peer` has applied `origin`'s log through `seq`
@@ -818,12 +852,18 @@ impl Store {
         .bind(&sid)
         .fetch_optional(&self.read)
         .await?;
-        row.map(|(e, o)| Ok((u32::try_from(e).context("bad epoch")?, o))).transpose()
+        row.map(|(e, o)| Ok((u32::try_from(e).context("bad epoch")?, o)))
+            .transpose()
     }
 
     /// Raise the fence of `session` to `(epoch, owner)`; a lower epoch is
     /// ignored. Returns whether it moved.
-    pub async fn set_fence(&self, session: SessionId, epoch: u32, owner: &str) -> anyhow::Result<bool> {
+    pub async fn set_fence(
+        &self,
+        session: SessionId,
+        epoch: u32,
+        owner: &str,
+    ) -> anyhow::Result<bool> {
         let mut tx = self.begin_write().await?;
         let n = sqlx::query(
             "INSERT INTO session_epochs (session_id, epoch, owner) VALUES (?, ?, ?) \
@@ -842,11 +882,13 @@ impl Store {
 
     /// `(owner, epoch)` of the session row; `None` for an unknown id.
     pub async fn owner(&self, session: SessionId) -> anyhow::Result<Option<(String, u32)>> {
-        let row: Option<(String, i64)> = sqlx::query_as("SELECT owner, epoch FROM sessions WHERE id = ?")
-            .bind(session.to_string())
-            .fetch_optional(&self.read)
-            .await?;
-        row.map(|(o, e)| Ok((o, u32::try_from(e).context("bad epoch")?))).transpose()
+        let row: Option<(String, i64)> =
+            sqlx::query_as("SELECT owner, epoch FROM sessions WHERE id = ?")
+                .bind(session.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        row.map(|(o, e)| Ok((o, u32::try_from(e).context("bad epoch")?)))
+            .transpose()
     }
 
     /// Write `owner`/`epoch` on the session row (68 §4.2 step 2): the take
@@ -854,7 +896,12 @@ impl Store {
     /// on every replica. Passes the owner guard only when `owner` is this
     /// engine (or the session is already ours). `Err("no such session")` when
     /// the row is missing.
-    pub async fn set_owner(&self, session: SessionId, owner: &str, epoch: u32) -> anyhow::Result<()> {
+    pub async fn set_owner(
+        &self,
+        session: SessionId,
+        owner: &str,
+        epoch: u32,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         let n = sqlx::query("UPDATE sessions SET owner = ?, epoch = ? WHERE id = ?")
             .bind(owner)
@@ -877,7 +924,10 @@ impl Store {
             return Vec::new();
         }
         let rows = self.log_after(*since).await.unwrap();
-        assert!(!rows.is_empty(), "{what}: no session_log row from the write connection");
+        assert!(
+            !rows.is_empty(),
+            "{what}: no session_log row from the write connection"
+        );
         *since = rows.last().map_or(*since, |r| r.seq);
         rows
     }
@@ -1380,7 +1430,9 @@ impl Store {
 
     /// `(id, title, created_at, updated_at, archived)` of every session, for the search
     /// index (26 §2); `archived` is the root's (49 §7: hits mark archived chats).
-    pub async fn search_titles(&self) -> anyhow::Result<Vec<(SessionId, String, String, String, bool)>> {
+    pub async fn search_titles(
+        &self,
+    ) -> anyhow::Result<Vec<(SessionId, String, String, String, bool)>> {
         let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(concat!(
             "SELECT id, title, created_at, updated_at, ",
             root_col!("archived"),
@@ -2238,25 +2290,29 @@ impl Store {
 
     /// The style row of project `name`, if any (51 §3 as-built).
     pub async fn project_style(&self, name: &str) -> anyhow::Result<Option<ProjectStyle>> {
-        Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT name, icon, color FROM projects WHERE name = ?",
+        Ok(
+            sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                "SELECT name, icon, color FROM projects WHERE name = ?",
+            )
+            .bind(name)
+            .fetch_optional(&self.read)
+            .await?
+            .map(|(name, icon, color)| ProjectStyle { name, icon, color }),
         )
-        .bind(name)
-        .fetch_optional(&self.read)
-        .await?
-        .map(|(name, icon, color)| ProjectStyle { name, icon, color }))
     }
 
     /// Every styled project, by name.
     pub async fn list_project_styles(&self) -> anyhow::Result<Vec<ProjectStyle>> {
-        Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT name, icon, color FROM projects ORDER BY name",
+        Ok(
+            sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                "SELECT name, icon, color FROM projects ORDER BY name",
+            )
+            .fetch_all(&self.read)
+            .await?
+            .into_iter()
+            .map(|(name, icon, color)| ProjectStyle { name, icon, color })
+            .collect(),
         )
-        .fetch_all(&self.read)
-        .await?
-        .into_iter()
-        .map(|(name, icon, color)| ProjectStyle { name, icon, color })
-        .collect())
     }
 
     /// Upsert the style of project `name` (the caller normalized the label);
@@ -2375,7 +2431,11 @@ async fn table_meta(pool: &SqlitePool) -> anyhow::Result<Vec<capture::TableMeta>
 /// The HLC origin of this engine's log rows: its id, or `local` before it
 /// has one (such rows never ship; [`replica::Hlc::parse`] needs a non-empty origin).
 fn hlc_origin(me: &str) -> replica::PeerId {
-    replica::PeerId(if me.is_empty() { "local".to_owned() } else { me.to_owned() })
+    replica::PeerId(if me.is_empty() {
+        "local".to_owned()
+    } else {
+        me.to_owned()
+    })
 }
 
 /// A user message that opens a turn: first in the session or right after an
@@ -2686,9 +2746,14 @@ mod tests {
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("theuth-store-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         (store, id, dir)
     }
 
@@ -2743,7 +2808,8 @@ mod tests {
         assert_eq!(list[0].title, "");
 
         let child = SessionId::new();
-        store.create_session(child, "m", Some(id), Some("kid"), None)
+        store
+            .create_session(child, "m", Some(id), Some("kid"), None)
             .await
             .unwrap();
         let list = store.list_sessions().await.unwrap();
@@ -2820,18 +2886,24 @@ mod tests {
         let b = SessionId::new();
         let a1 = SessionId::new();
         let other = SessionId::new();
-        store.create_session(a, "m", Some(root), Some("a"), None)
+        store
+            .create_session(a, "m", Some(root), Some("a"), None)
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(2)).await;
-        store.create_session(a1, "m", Some(a), Some("a1"), None)
+        store
+            .create_session(a1, "m", Some(a), Some("a1"), None)
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(2)).await;
-        store.create_session(b, "m", Some(root), Some("b"), None)
+        store
+            .create_session(b, "m", Some(root), Some("b"), None)
             .await
             .unwrap();
-        store.create_session(other, "m", None, None, None).await.unwrap();
+        store
+            .create_session(other, "m", None, None, None)
+            .await
+            .unwrap();
 
         let got: Vec<(u8, SessionId)> = store
             .descendants(root)
@@ -2978,7 +3050,11 @@ mod tests {
         let texts: Vec<(i64, String)> = tail
             .iter()
             .map(|(s, m)| {
-                let body = m.content.tool_responses().first().map_or("", |r| r.content.as_str());
+                let body = m
+                    .content
+                    .tool_responses()
+                    .first()
+                    .map_or("", |r| r.content.as_str());
                 (*s, body.to_owned())
             })
             .collect();
@@ -3190,7 +3266,9 @@ mod tests {
             [(0, "u1".into()), (1, "a1".into()), (2, "u2".into())]
         );
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         assert_eq!(store.errors(id).await.unwrap(), all);
 
         assert_eq!(store.undo(id).await.unwrap().as_deref(), Some("u2"));
@@ -4118,13 +4196,33 @@ mod tests {
         assert_eq!((r.revision.as_str(), r.messages), ("9", 1));
         // Conditional title + tags: only at the current revision; tags round-trip as a list.
         let tags = vec!["theuth".to_owned(), "merge".to_owned()];
-        assert!(!store.set_title_at_revision(id, "old", &tags, "8").await.unwrap());
-        assert!(store.set_title_at_revision(id, "new", &tags, "9").await.unwrap());
+        assert!(
+            !store
+                .set_title_at_revision(id, "old", &tags, "8")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .set_title_at_revision(id, "new", &tags, "9")
+                .await
+                .unwrap()
+        );
         let row = store.session(id).await.unwrap().unwrap();
         assert_eq!((row.title.as_str(), &row.tags), ("new", &tags));
-        assert!(store.set_title_at_revision(id, "new", &[], "9").await.unwrap());
+        assert!(
+            store
+                .set_title_at_revision(id, "new", &[], "9")
+                .await
+                .unwrap()
+        );
         assert!(store.session(id).await.unwrap().unwrap().tags.is_empty());
-        assert!(store.set_title_at_revision(id, "x", &[], "bad").await.is_err());
+        assert!(
+            store
+                .set_title_at_revision(id, "x", &[], "bad")
+                .await
+                .is_err()
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4349,7 +4447,9 @@ mod tests {
         store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         assert_eq!(store.context_revision(id).await.unwrap(), "5");
         assert_eq!(
             serde_json::to_string(&store.frame(id).await.unwrap()).unwrap(),
@@ -4436,9 +4536,8 @@ mod tests {
             .create_session(child, "m", Some(root), Some("kid"), Some("ignored"))
             .await
             .unwrap();
-        let project_of = |list: Vec<SessionSummary>, id| {
-            list.into_iter().find(|s| s.id == id).unwrap().project
-        };
+        let project_of =
+            |list: Vec<SessionSummary>, id| list.into_iter().find(|s| s.id == id).unwrap().project;
 
         // A child call mutates the root; the caller already normalized.
         assert_eq!(store.set_project(child, Some("Alpha")).await.unwrap(), root);
@@ -4446,7 +4545,10 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(list.iter().all(|s| s.project.as_deref() == Some("Alpha")));
         assert_eq!(
-            store.descendants(root).await.unwrap()[0].1.project.as_deref(),
+            store.descendants(root).await.unwrap()[0]
+                .1
+                .project
+                .as_deref(),
             Some("Alpha")
         );
         assert_eq!(
@@ -4458,7 +4560,13 @@ mod tests {
         store.append(child, &ChatMessage::user("hi")).await.unwrap();
         let fork = store.fork(child, None, None).await.unwrap();
         assert_eq!(
-            store.session(fork).await.unwrap().unwrap().project.as_deref(),
+            store
+                .session(fork)
+                .await
+                .unwrap()
+                .unwrap()
+                .project
+                .as_deref(),
             Some("Alpha")
         );
 
@@ -4489,26 +4597,60 @@ mod tests {
             color: color.map(str::to_owned),
         };
         assert_eq!(store.project_style("Alpha").await.unwrap(), None);
-        store.set_project_style("Alpha", Some("Rocket"), Some("teal")).await.unwrap();
-        store.set_project_style("Beta", None, Some("red")).await.unwrap();
-        assert_eq!(store.project_style("Alpha").await.unwrap(), Some(style("Rocket", Some("teal"))));
+        store
+            .set_project_style("Alpha", Some("Rocket"), Some("teal"))
+            .await
+            .unwrap();
+        store
+            .set_project_style("Beta", None, Some("red"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.project_style("Alpha").await.unwrap(),
+            Some(style("Rocket", Some("teal")))
+        );
         assert_eq!(store.list_project_styles().await.unwrap().len(), 2);
         // A second set replaces, never merges; both `None` drops the row.
-        store.set_project_style("Alpha", Some("Bug"), None).await.unwrap();
-        assert_eq!(store.project_style("Alpha").await.unwrap(), Some(style("Bug", None)));
+        store
+            .set_project_style("Alpha", Some("Bug"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.project_style("Alpha").await.unwrap(),
+            Some(style("Bug", None))
+        );
         store.set_project_style("Alpha", None, None).await.unwrap();
         assert_eq!(
-            store.list_project_styles().await.unwrap().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            store
+                .list_project_styles()
+                .await
+                .unwrap()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
             ["Beta"]
         );
         // Allow-listed keys only, and the rejected write leaves the row alone.
-        assert!(store.set_project_style("Beta", Some("Skull"), None).await.is_err());
-        assert!(store.set_project_style("Beta", Some("Bug"), Some("#ff0000")).await.is_err());
-        assert_eq!(store.project_style("Beta").await.unwrap(), Some(ProjectStyle {
-            name: "Beta".into(),
-            icon: None,
-            color: Some("red".into()),
-        }));
+        assert!(
+            store
+                .set_project_style("Beta", Some("Skull"), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .set_project_style("Beta", Some("Bug"), Some("#ff0000"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.project_style("Beta").await.unwrap(),
+            Some(ProjectStyle {
+                name: "Beta".into(),
+                icon: None,
+                color: Some("red".into()),
+            })
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4530,7 +4672,10 @@ mod tests {
         store.insert_reminder(&row(a, 2_000_000_000)).await.unwrap();
         store.insert_reminder(&row(b, 1_000_000_000)).await.unwrap();
         // Ordered by `fires_at`: the overdue one first.
-        assert_eq!(store.reminders().await.unwrap(), [row(b, 1_000_000_000), row(a, 2_000_000_000)]);
+        assert_eq!(
+            store.reminders().await.unwrap(),
+            [row(b, 1_000_000_000), row(a, 2_000_000_000)]
+        );
         store.delete_reminder(b, "r1").await.unwrap();
         assert_eq!(store.reminders().await.unwrap(), [row(a, 2_000_000_000)]);
         drop(store);
@@ -4812,7 +4957,9 @@ mod tests {
         // Resume: a fresh handle reloads the committed note, no inference implied.
         store.close().await;
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let frame = store.vision_frame(id).await.unwrap();
         assert_eq!(frame.notes, BTreeMap::from([(3, n.clone())]));
         assert_eq!(coords(&frame), [(bin(0, 1, None), 1, None)]);
@@ -4870,7 +5017,9 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("theuth-capture-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         assert!(!store.is_private());
         let id = SessionId::new();
         let mut since = store.log_seq();
@@ -4883,46 +5032,137 @@ mod tests {
             reason: None,
         }];
 
-        store.create_session(id, "m", None, None, None).await.unwrap();
-        rows.push(store.assert_write_pool("create_session", &mut since).await.len());
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("create_session", &mut since)
+                .await
+                .len(),
+        );
         store.set_title(id, "t").await.unwrap();
         rows.push(store.assert_write_pool("set_title", &mut since).await.len());
         store.set_pinned(id, true).await.unwrap();
-        rows.push(store.assert_write_pool("set_pinned", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("set_pinned", &mut since)
+                .await
+                .len(),
+        );
         store.set_archived(id, true).await.unwrap();
-        rows.push(store.assert_write_pool("set_archived", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("set_archived", &mut since)
+                .await
+                .len(),
+        );
         store.set_model(id, "m2").await.unwrap();
         rows.push(store.assert_write_pool("set_model", &mut since).await.len());
         store.set_effort(id, Some("high")).await.unwrap();
-        rows.push(store.assert_write_pool("set_effort", &mut since).await.len());
-        store.set_acp(id, "codex", Some(Path::new("/tmp"))).await.unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_effort", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .set_acp(id, "codex", Some(Path::new("/tmp")))
+            .await
+            .unwrap();
         rows.push(store.assert_write_pool("set_acp", &mut since).await.len());
         store.set_acp_session(id, "x").await.unwrap();
-        rows.push(store.assert_write_pool("set_acp_session", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("set_acp_session", &mut since)
+                .await
+                .len(),
+        );
         store.set_harness_model(id, "hm").await.unwrap();
-        rows.push(store.assert_write_pool("set_harness_model", &mut since).await.len());
-        store.set_cwd(id, Path::new("/tmp/elsewhere")).await.unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_harness_model", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .set_cwd(id, Path::new("/tmp/elsewhere"))
+            .await
+            .unwrap();
         rows.push(store.assert_write_pool("set_cwd", &mut since).await.len());
         store.set_unattended(id).await.unwrap();
-        rows.push(store.assert_write_pool("set_unattended", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("set_unattended", &mut since)
+                .await
+                .len(),
+        );
         store.set_project(id, Some("p")).await.unwrap();
-        rows.push(store.assert_write_pool("set_project", &mut since).await.len());
-        store.set_root_scope(id, PeerScope::Owner, Some("alias")).await.unwrap();
-        rows.push(store.assert_write_pool("set_root_scope", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("set_project", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .set_root_scope(id, PeerScope::Owner, Some("alias"))
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_root_scope", &mut since)
+                .await
+                .len(),
+        );
         store.append(id, &ChatMessage::user("hi")).await.unwrap();
         rows.push(store.assert_write_pool("append", &mut since).await.len());
         store.append(id, &asst("a")).await.unwrap();
         rows.push(store.assert_write_pool("append", &mut since).await.len());
-        store.append_with_todos(id, &resp("c1"), TodoSource::Native, &plan).await.unwrap();
-        rows.push(store.assert_write_pool("append_with_todos", &mut since).await.len());
+        store
+            .append_with_todos(id, &resp("c1"), TodoSource::Native, &plan)
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("append_with_todos", &mut since)
+                .await
+                .len(),
+        );
         store.save_todos(id, TodoSource::Native, &[]).await.unwrap();
-        rows.push(store.assert_write_pool("save_todos", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("save_todos", &mut since)
+                .await
+                .len(),
+        );
         store.record_error(id, "boom").await.unwrap();
-        rows.push(store.assert_write_pool("record_error", &mut since).await.len());
-        store.inner_call_started(id, "c1.1", "read", &serde_json::json!({})).await.unwrap();
-        rows.push(store.assert_write_pool("inner_call_started", &mut since).await.len());
-        store.inner_call_finished(id, "c1.1", "ok", false, &[]).await.unwrap();
-        rows.push(store.assert_write_pool("inner_call_finished", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("record_error", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .inner_call_started(id, "c1.1", "read", &serde_json::json!({}))
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("inner_call_started", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .inner_call_finished(id, "c1.1", "ok", false, &[])
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("inner_call_finished", &mut since)
+                .await
+                .len(),
+        );
         let reminder = ReminderRow {
             id: "r1".into(),
             session: id,
@@ -4932,22 +5172,56 @@ mod tests {
             seconds: 1,
         };
         store.insert_reminder(&reminder).await.unwrap();
-        rows.push(store.assert_write_pool("insert_reminder", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("insert_reminder", &mut since)
+                .await
+                .len(),
+        );
         store.delete_reminder(id, "r1").await.unwrap();
-        rows.push(store.assert_write_pool("delete_reminder", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("delete_reminder", &mut since)
+                .await
+                .len(),
+        );
         let revision = store.context_revision(id).await.unwrap();
-        store.set_title_at_revision(id, "t2", &[], &revision).await.unwrap();
-        rows.push(store.assert_write_pool("set_title_at_revision", &mut since).await.len());
-        store.compact(id, 1, 2, 3, &ChatMessage::system("head")).await.unwrap();
+        store
+            .set_title_at_revision(id, "t2", &[], &revision)
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("set_title_at_revision", &mut since)
+                .await
+                .len(),
+        );
+        store
+            .compact(id, 1, 2, 3, &ChatMessage::system("head"))
+            .await
+            .unwrap();
         rows.push(store.assert_write_pool("compact", &mut since).await.len());
         store.append(id, &ChatMessage::user("u2")).await.unwrap();
         rows.push(store.assert_write_pool("append", &mut since).await.len());
         store.append(id, &asst("a2")).await.unwrap();
         rows.push(store.assert_write_pool("append", &mut since).await.len());
-        store.compact_with_todos(id, 2, 4, 5, &ChatMessage::system("head2"), (TodoSource::Native, &plan))
+        store
+            .compact_with_todos(
+                id,
+                2,
+                4,
+                5,
+                &ChatMessage::system("head2"),
+                (TodoSource::Native, &plan),
+            )
             .await
             .unwrap();
-        rows.push(store.assert_write_pool("compact_with_todos", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("compact_with_todos", &mut since)
+                .await
+                .len(),
+        );
         store.append(id, &ChatMessage::user("u3")).await.unwrap();
         rows.push(store.assert_write_pool("append", &mut since).await.len());
         store.undo(id).await.unwrap();
@@ -4957,7 +5231,12 @@ mod tests {
         store.cut_to(id, 5).await.unwrap();
         rows.push(store.assert_write_pool("cut_to", &mut since).await.len());
         store.commit_cut(id).await.unwrap();
-        rows.push(store.assert_write_pool("commit_cut", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("commit_cut", &mut since)
+                .await
+                .len(),
+        );
         let forked = store.fork(id, None, None).await.unwrap();
         rows.push(store.assert_write_pool("fork", &mut since).await.len());
 
@@ -4965,29 +5244,67 @@ mod tests {
             .reserve_call(id, "req", 0, None, CallKind::Round, Some("p"), Some("m"))
             .await
             .unwrap();
-        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("reserve_call", &mut since)
+                .await
+                .len(),
+        );
         store.mark_dispatched(&call).await.unwrap();
-        rows.push(store.assert_write_pool("mark_dispatched", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("mark_dispatched", &mut since)
+                .await
+                .len(),
+        );
         let obs = CostObservation {
             returned: Some(Money::from_f64(0.1, "USD").unwrap()),
             ..Default::default()
         };
-        store.settle_call(&call, CallStatus::Settled, obs).await.unwrap();
-        rows.push(store.assert_write_pool("settle_call", &mut since).await.len());
+        store
+            .settle_call(&call, CallStatus::Settled, obs)
+            .await
+            .unwrap();
+        rows.push(
+            store
+                .assert_write_pool("settle_call", &mut since)
+                .await
+                .len(),
+        );
         let call = store
             .reserve_call(id, "req2", 0, None, CallKind::Round, Some("p"), Some("m"))
             .await
             .unwrap();
-        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("reserve_call", &mut since)
+                .await
+                .len(),
+        );
         store.mark_not_dispatched(&call, "no").await.unwrap();
-        rows.push(store.assert_write_pool("mark_not_dispatched", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("mark_not_dispatched", &mut since)
+                .await
+                .len(),
+        );
         store
             .reserve_call(id, "req3", 0, None, CallKind::Round, Some("p"), Some("m"))
             .await
             .unwrap();
-        rows.push(store.assert_write_pool("reserve_call", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("reserve_call", &mut since)
+                .await
+                .len(),
+        );
         store.unresolve_open_calls().await.unwrap();
-        rows.push(store.assert_write_pool("unresolve_open_calls", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("unresolve_open_calls", &mut since)
+                .await
+                .len(),
+        );
         store
             .apply_meter(
                 id,
@@ -5001,12 +5318,27 @@ mod tests {
             )
             .await
             .unwrap();
-        rows.push(store.assert_write_pool("apply_meter", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("apply_meter", &mut since)
+                .await
+                .len(),
+        );
 
         store.delete_session(forked).await.unwrap();
-        rows.push(store.assert_write_pool("delete_session(fork)", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("delete_session(fork)", &mut since)
+                .await
+                .len(),
+        );
         store.delete_session(id).await.unwrap();
-        rows.push(store.assert_write_pool("delete_session", &mut since).await.len());
+        rows.push(
+            store
+                .assert_write_pool("delete_session", &mut since)
+                .await
+                .len(),
+        );
 
         let single = rows.iter().filter(|&&n| n == 1).count();
         eprintln!(
@@ -5026,8 +5358,16 @@ mod tests {
         // A private store captures nothing and never panics here.
         let private = Store::open_memory().await.unwrap();
         assert!(private.is_private());
-        private.create_session(id, "m", None, None, None).await.unwrap();
-        assert!(private.assert_write_pool("private", &mut 0).await.is_empty());
+        private
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            private
+                .assert_write_pool("private", &mut 0)
+                .await
+                .is_empty()
+        );
 
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -5042,7 +5382,10 @@ mod tests {
         let path = dir.join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         let s = store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.epoch, s.here), ("", 1, true));
         store.close().await;
@@ -5051,15 +5394,25 @@ mod tests {
         let store = Store::open(&path, Some(a.clone())).await.unwrap();
         let s = store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("engine-a", true));
-        store.create_session(SessionId::new(), "m", Some(id), None, None).await.unwrap();
+        store
+            .create_session(SessionId::new(), "m", Some(id), None, None)
+            .await
+            .unwrap();
         store.append(id, &ChatMessage::user("u")).await.unwrap();
         let forked = store.fork(id, None, None).await.unwrap();
         for s in store.list_sessions().await.unwrap() {
-            assert_eq!((s.owner.as_str(), s.epoch, s.here), ("engine-a", 1, true), "{}", s.id);
+            assert_eq!(
+                (s.owner.as_str(), s.epoch, s.here),
+                ("engine-a", 1, true),
+                "{}",
+                s.id
+            );
         }
         store.close().await;
 
-        let store = Store::open(&path, Some(mesh::EngineId("engine-b".into()))).await.unwrap();
+        let store = Store::open(&path, Some(mesh::EngineId("engine-b".into())))
+            .await
+            .unwrap();
         let s = store.session(forked).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("engine-a", false));
         store.close().await;
@@ -5075,25 +5428,53 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("theuth-desk-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sessions.sqlite");
-        let theirs = Store::open(&path, Some(mesh::EngineId("them".into()))).await.unwrap();
+        let theirs = Store::open(&path, Some(mesh::EngineId("them".into())))
+            .await
+            .unwrap();
         let remote = SessionId::new();
-        theirs.create_session(remote, "m", None, None, None).await.unwrap();
+        theirs
+            .create_session(remote, "m", None, None, None)
+            .await
+            .unwrap();
         theirs.set_desk(remote, Some("ops")).await.unwrap();
         theirs.close().await;
 
-        let store = Store::open(&path, Some(mesh::EngineId("me".into()))).await.unwrap();
-        assert_eq!(store.desk_session("ops").await.unwrap(), None, "another engine's desk is not reopened here");
+        let store = Store::open(&path, Some(mesh::EngineId("me".into())))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.desk_session("ops").await.unwrap(),
+            None,
+            "another engine's desk is not reopened here"
+        );
         let (a, b) = (SessionId::new(), SessionId::new());
-        store.create_session(a, "m", None, None, None).await.unwrap();
-        store.create_session(b, "m", None, None, None).await.unwrap();
+        store
+            .create_session(a, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(b, "m", None, None, None)
+            .await
+            .unwrap();
         store.set_desk(a, Some("ops")).await.unwrap();
         assert_eq!(store.desk_session("ops").await.unwrap(), Some(a));
-        assert!(store.set_desk(b, Some("ops")).await.is_err(), "a second desk for ops is refused");
+        assert!(
+            store.set_desk(b, Some("ops")).await.is_err(),
+            "a second desk for ops is refused"
+        );
         store.set_archived(a, true).await.unwrap();
-        assert_eq!(store.desk_session("ops").await.unwrap(), Some(a), "a put-away desk is still the desk");
+        assert_eq!(
+            store.desk_session("ops").await.unwrap(),
+            Some(a),
+            "a put-away desk is still the desk"
+        );
         store.set_desk(a, None).await.unwrap();
         store.set_desk(b, Some("ops")).await.unwrap();
-        assert_eq!(store.desk_session("ops").await.unwrap(), Some(b), "retired → the next one is the desk");
+        assert_eq!(
+            store.desk_session("ops").await.unwrap(),
+            Some(b),
+            "retired → the next one is the desk"
+        );
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5105,30 +5486,76 @@ mod tests {
     async fn migration_dedupes_desks_by_last_update() {
         let dir = std::env::temp_dir().join(format!("theuth-dedupe-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("me".into()))).await.unwrap();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("me".into())),
+        )
+        .await
+        .unwrap();
         // The fixture predates the index: drop it, build the duplicates, replay the migration.
-        sqlx::query("DROP INDEX sessions_desk_owner").execute(&store.read).await.unwrap();
-        let rows = [("old-t", "theuth", "2026-09-26T10:06:48+00:00"), ("new-t", "theuth", "2026-09-26T11:43:05+00:00"),
-            ("old-s", "stas", "2026-09-26T10:27:45+00:00"), ("new-s", "stas", "2026-09-26T11:43:00+00:00"), ("only", "ops", "2026-09-26T09:00:00+00:00")];
+        sqlx::query("DROP INDEX sessions_desk_owner")
+            .execute(&store.read)
+            .await
+            .unwrap();
+        let rows = [
+            ("old-t", "theuth", "2026-09-26T10:06:48+00:00"),
+            ("new-t", "theuth", "2026-09-26T11:43:05+00:00"),
+            ("old-s", "stas", "2026-09-26T10:27:45+00:00"),
+            ("new-s", "stas", "2026-09-26T11:43:00+00:00"),
+            ("only", "ops", "2026-09-26T09:00:00+00:00"),
+        ];
         for (id, desk, at) in rows {
             sqlx::query("INSERT INTO sessions (id, created_at, updated_at, title, model, desk, pinned, owner) VALUES (?, ?, ?, ?, 'm', ?, 1, 'me')")
                 .bind(id).bind(at).bind(at).bind(format!("{desk} · desk")).bind(desk)
                 .execute(&store.read).await.unwrap();
         }
-        sqlx::raw_sql(include_str!("../migrations/0025_one_desk_per_agent.sql")).execute(&store.read).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0025_one_desk_per_agent.sql"))
+            .execute(&store.read)
+            .await
+            .unwrap();
         let got: Vec<(String, Option<String>, bool, bool, String)> =
             sqlx::query_as("SELECT id, desk, pinned, archived, title FROM sessions WHERE id IN ('old-t','new-t','old-s','new-s','only') ORDER BY id")
                 .fetch_all(&store.read).await.unwrap();
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let sup = |a: &str| format!("{a} · desk (superseded {date})");
-        assert_eq!(got, vec![
-            ("new-s".into(), Some("stas".into()), true, false, "stas · desk".into()),
-            ("new-t".into(), Some("theuth".into()), true, false, "theuth · desk".into()),
-            ("old-s".into(), None, false, true, sup("stas")),
-            ("old-t".into(), None, false, true, sup("theuth")),
-            ("only".into(), Some("ops".into()), true, false, "ops · desk".into()),
-        ]);
-        assert_eq!(store.desk_session("theuth").await.unwrap().map(|s| s.to_string()).as_deref(), None, "fixture ids are not uuids");
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "new-s".into(),
+                    Some("stas".into()),
+                    true,
+                    false,
+                    "stas · desk".into()
+                ),
+                (
+                    "new-t".into(),
+                    Some("theuth".into()),
+                    true,
+                    false,
+                    "theuth · desk".into()
+                ),
+                ("old-s".into(), None, false, true, sup("stas")),
+                ("old-t".into(), None, false, true, sup("theuth")),
+                (
+                    "only".into(),
+                    Some("ops".into()),
+                    true,
+                    false,
+                    "ops · desk".into()
+                ),
+            ]
+        );
+        assert_eq!(
+            store
+                .desk_session("theuth")
+                .await
+                .unwrap()
+                .map(|s| s.to_string())
+                .as_deref(),
+            None,
+            "fixture ids are not uuids"
+        );
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5142,14 +5569,24 @@ mod tests {
         store.record_error(id, "first").await.unwrap();
         store.record_error(id, "second").await.unwrap();
         let forked = store.fork(id, None, None).await.unwrap();
-        let ids: Vec<(String, String)> = sqlx::query_as("SELECT id, session_id FROM errors ORDER BY id")
-            .fetch_all(&store.read)
-            .await
-            .unwrap();
+        let ids: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, session_id FROM errors ORDER BY id")
+                .fetch_all(&store.read)
+                .await
+                .unwrap();
         assert_eq!(ids.len(), 4);
-        assert!(ids.iter().all(|(i, _)| uuid::Uuid::parse_str(i.split(':').next().unwrap()).is_ok()));
+        assert!(
+            ids.iter()
+                .all(|(i, _)| uuid::Uuid::parse_str(i.split(':').next().unwrap()).is_ok())
+        );
         assert_eq!(
-            store.errors(forked).await.unwrap().iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            store
+                .errors(forked)
+                .await
+                .unwrap()
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>(),
             ["first", "second"]
         );
         drop(store);
@@ -5164,15 +5601,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("theuth-guard-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sessions.sqlite");
-        let store = Store::open(&path, Some(mesh::EngineId("a".into()))).await.unwrap();
+        let store = Store::open(&path, Some(mesh::EngineId("a".into())))
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         store.append(id, &ChatMessage::user("u")).await.unwrap();
         store.close().await;
 
-        let store = Store::open(&path, Some(mesh::EngineId("b".into()))).await.unwrap();
+        let store = Store::open(&path, Some(mesh::EngineId("b".into())))
+            .await
+            .unwrap();
         let before = store.log_seq();
-        let err = store.append(id, &ChatMessage::user("nope")).await.unwrap_err();
+        let err = store
+            .append(id, &ChatMessage::user("nope"))
+            .await
+            .unwrap_err();
         assert_eq!(
             err.downcast_ref::<StoreError>(),
             Some(&StoreError::NotOwner {
@@ -5183,13 +5630,25 @@ mod tests {
         );
         assert_eq!(store.messages(id).await.unwrap().len(), 1, "rolled back");
         assert_eq!(store.log_seq(), before, "nothing logged");
-        assert!(store.set_owner(id, "c", 2).await.is_err(), "only a take by this engine passes");
+        assert!(
+            store.set_owner(id, "c", 2).await.is_err(),
+            "only a take by this engine passes"
+        );
         store.set_owner(id, "b", 2).await.unwrap();
         let rows = store.log_after(before).await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].session_id.as_str(), rows[0].epoch), (id.to_string().as_str(), 2));
-        store.append(id, &ChatMessage::user("mine now")).await.unwrap();
-        assert_eq!(store.log_after(before).await.unwrap().last().unwrap().epoch, 2);
+        assert_eq!(
+            (rows[0].session_id.as_str(), rows[0].epoch),
+            (id.to_string().as_str(), 2)
+        );
+        store
+            .append(id, &ChatMessage::user("mine now"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.log_after(before).await.unwrap().last().unwrap().epoch,
+            2
+        );
         assert_eq!(store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         assert_eq!(store.fence(id).await.unwrap(), Some((2, "b".into())));
         store.close().await;
@@ -5207,7 +5666,12 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("theuth-fence-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into()))).await.unwrap();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
         let id = SessionId::new();
         let plan = [Todo {
             text: "t".into(),
@@ -5216,7 +5680,10 @@ mod tests {
         }];
         // State every conditional write needs: two turns, a reminder, an
         // inner call, two reserved model calls.
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         store.append(id, &ChatMessage::user("u1")).await.unwrap();
         store.append(id, &asst("a1")).await.unwrap();
         store.append(id, &ChatMessage::user("u2")).await.unwrap();
@@ -5230,9 +5697,18 @@ mod tests {
             seconds: 1,
         };
         store.insert_reminder(&reminder).await.unwrap();
-        store.inner_call_started(id, "c1.1", "read", &serde_json::json!({})).await.unwrap();
-        let call = store.reserve_call(id, "req", 0, None, CallKind::Round, Some("p"), Some("m")).await.unwrap();
-        let call2 = store.reserve_call(id, "req2", 0, None, CallKind::Round, Some("p"), Some("m")).await.unwrap();
+        store
+            .inner_call_started(id, "c1.1", "read", &serde_json::json!({}))
+            .await
+            .unwrap();
+        let call = store
+            .reserve_call(id, "req", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
+        let call2 = store
+            .reserve_call(id, "req2", 0, None, CallKind::Round, Some("p"), Some("m"))
+            .await
+            .unwrap();
         let revision = store.context_revision(id).await.unwrap();
         let messages = store.messages(id).await.unwrap().len();
 
@@ -5243,10 +5719,22 @@ mod tests {
 
         macro_rules! refused {
             ($what:expr, $call:expr) => {{
-                let err = $call.await.err().unwrap_or_else(|| panic!("{} passed behind a foreign fence", $what));
+                let err = $call
+                    .await
+                    .err()
+                    .unwrap_or_else(|| panic!("{} passed behind a foreign fence", $what));
                 match err.downcast_ref::<StoreError>() {
-                    Some(StoreError::NotOwner { session, owner, epoch }) => {
-                        assert_eq!((*session, owner.as_str(), *epoch), (id, "x", 2), "{}", $what);
+                    Some(StoreError::NotOwner {
+                        session,
+                        owner,
+                        epoch,
+                    }) => {
+                        assert_eq!(
+                            (*session, owner.as_str(), *epoch),
+                            (id, "x", 2),
+                            "{}",
+                            $what
+                        );
                     }
                     _ => panic!("{}: {err:#}", $what),
                 }
@@ -5257,32 +5745,69 @@ mod tests {
         refused!("set_archived", store.set_archived(id, true));
         refused!("set_model", store.set_model(id, "m2"));
         refused!("set_effort", store.set_effort(id, Some("high")));
-        refused!("set_acp", store.set_acp(id, "codex", Some(Path::new("/tmp"))));
+        refused!(
+            "set_acp",
+            store.set_acp(id, "codex", Some(Path::new("/tmp")))
+        );
         refused!("set_acp_session", store.set_acp_session(id, "x"));
         refused!("set_harness_model", store.set_harness_model(id, "hm"));
         refused!("set_cwd", store.set_cwd(id, Path::new("/tmp/elsewhere")));
         refused!("set_unattended", store.set_unattended(id));
         refused!("set_project", store.set_project(id, Some("p")));
-        refused!("set_root_scope", store.set_root_scope(id, PeerScope::Owner, Some("alias")));
+        refused!(
+            "set_root_scope",
+            store.set_root_scope(id, PeerScope::Owner, Some("alias"))
+        );
         refused!("append", store.append(id, &ChatMessage::user("nope")));
-        refused!("append_with_todos", store.append_with_todos(id, &resp("c1"), TodoSource::Native, &plan));
-        refused!("save_todos", store.save_todos(id, TodoSource::Native, &plan));
+        refused!(
+            "append_with_todos",
+            store.append_with_todos(id, &resp("c1"), TodoSource::Native, &plan)
+        );
+        refused!(
+            "save_todos",
+            store.save_todos(id, TodoSource::Native, &plan)
+        );
         refused!("record_error", store.record_error(id, "boom"));
-        refused!("inner_call_started", store.inner_call_started(id, "c1.2", "read", &serde_json::json!({})));
-        refused!("inner_call_finished", store.inner_call_finished(id, "c1.1", "ok", false, &[]));
-        let r2 = ReminderRow { id: "r2".into(), ..reminder.clone() };
+        refused!(
+            "inner_call_started",
+            store.inner_call_started(id, "c1.2", "read", &serde_json::json!({}))
+        );
+        refused!(
+            "inner_call_finished",
+            store.inner_call_finished(id, "c1.1", "ok", false, &[])
+        );
+        let r2 = ReminderRow {
+            id: "r2".into(),
+            ..reminder.clone()
+        };
         refused!("insert_reminder", store.insert_reminder(&r2));
         refused!("delete_reminder", store.delete_reminder(id, "r1"));
-        refused!("set_title_at_revision", store.set_title_at_revision(id, "t2", &[], &revision));
-        refused!("compact", store.compact(id, 1, 2, 3, &ChatMessage::system("head")));
+        refused!(
+            "set_title_at_revision",
+            store.set_title_at_revision(id, "t2", &[], &revision)
+        );
+        refused!(
+            "compact",
+            store.compact(id, 1, 2, 3, &ChatMessage::system("head"))
+        );
         refused!(
             "compact_with_todos",
-            store.compact_with_todos(id, 2, 4, 5, &ChatMessage::system("head2"), (TodoSource::Native, &plan))
+            store.compact_with_todos(
+                id,
+                2,
+                4,
+                5,
+                &ChatMessage::system("head2"),
+                (TodoSource::Native, &plan)
+            )
         );
         refused!("undo", store.undo(id));
         refused!("cut_to", store.cut_to(id, 2));
         refused!("mark_dispatched", store.mark_dispatched(&call));
-        refused!("mark_not_dispatched", store.mark_not_dispatched(&call2, "no"));
+        refused!(
+            "mark_not_dispatched",
+            store.mark_not_dispatched(&call2, "no")
+        );
         refused!(
             "settle_call",
             store.settle_call(
@@ -5309,21 +5834,38 @@ mod tests {
         );
         // A take for someone else is judged on its post-state: refused as `y`'s.
         let err = store.set_owner(id, "y", 3).await.unwrap_err();
-        assert!(matches!(err.downcast_ref::<StoreError>(), Some(StoreError::NotOwner { owner, epoch: 3, .. }) if owner == "y"), "{err:#}");
+        assert!(
+            matches!(err.downcast_ref::<StoreError>(), Some(StoreError::NotOwner { owner, epoch: 3, .. }) if owner == "y"),
+            "{err:#}"
+        );
         refused!("delete_session", store.delete_session(id));
 
         assert_eq!(store.log_seq(), before, "nothing logged");
-        assert_eq!(store.messages(id).await.unwrap().len(), messages, "everything rolled back");
+        assert_eq!(
+            store.messages(id).await.unwrap().len(),
+            messages,
+            "everything rolled back"
+        );
         assert!(store.session(id).await.unwrap().is_some());
         // A fork reads the foreign session and writes only the new one, which is ours.
         let forked = store.fork(id, None, None).await.unwrap();
         assert_eq!(store.owner(forked).await.unwrap(), Some(("a".into(), 1)));
-        assert_eq!(store.owner(id).await.unwrap(), Some(("a".into(), 1)), "the source row is untouched");
+        assert_eq!(
+            store.owner(id).await.unwrap(),
+            Some(("a".into(), 1)),
+            "the source row is untouched"
+        );
 
         // Taking it back here (epoch 3 > fence) is the one write that passes.
         store.set_owner(id, "a", 3).await.unwrap();
-        store.append(id, &ChatMessage::user("mine again")).await.unwrap();
-        assert_eq!(store.log_after(before).await.unwrap().last().unwrap().epoch, 3);
+        store
+            .append(id, &ChatMessage::user("mine again"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.log_after(before).await.unwrap().last().unwrap().epoch,
+            3
+        );
         store.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5335,9 +5877,17 @@ mod tests {
     async fn orphans_above_the_shipped_cursor_and_local_notes_are_not_logged() {
         let dir = std::env::temp_dir().join(format!("theuth-orphan-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into()))).await.unwrap();
+        let store = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         store.append(id, &ChatMessage::user("u1")).await.unwrap();
         let shipped = store.log_seq();
         assert_eq!(store.session_log_seq(id).await.unwrap(), shipped);
@@ -5349,13 +5899,23 @@ mod tests {
 
         assert_eq!(store.log_orphan_after(id, 1, shipped).await.unwrap(), 2);
         let orphans = store.log_orphans(id).await.unwrap();
-        assert_eq!(orphans.iter().map(|r| r.seq).collect::<Vec<_>>(), [shipped + 1, shipped + 2]);
-        assert_eq!(store.log_after(0).await.unwrap().len(), shipped as usize, "orphans left the shipping view");
+        assert_eq!(
+            orphans.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            [shipped + 1, shipped + 2]
+        );
+        assert_eq!(
+            store.log_after(0).await.unwrap().len(),
+            shipped as usize,
+            "orphans left the shipping view"
+        );
 
         // The taker's row landed: the fence is theirs; the local note still writes and is not logged.
         assert!(store.set_fence(id, 2, "b").await.unwrap());
         let before = store.log_seq();
-        let seq = store.append_local_note(id, "2 turns were not delivered").await.unwrap();
+        let seq = store
+            .append_local_note(id, "2 turns were not delivered")
+            .await
+            .unwrap();
         assert_eq!(store.log_seq(), before);
         let last = store.messages(id).await.unwrap().pop().unwrap();
         assert_eq!((last.0, last.1.role), (seq, ChatRole::System));
@@ -5381,12 +5941,22 @@ mod tests {
         });
         assert!(per_session.contains_key(id.to_string().as_str()));
         assert!(per_session.contains_key(other.to_string().as_str()));
-        assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), (first + 1..=store.log_seq()).collect::<Vec<_>>());
+        assert_eq!(
+            rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            (first + 1..=store.log_seq()).collect::<Vec<_>>()
+        );
 
         // Orphans: marked rows leave the shipping view and appear in the orphan view.
         let n = store.log_orphan(other, 1).await.unwrap();
         assert!(n >= 1);
-        assert!(store.log_after(first).await.unwrap().iter().all(|r| r.session_id != other.to_string()));
+        assert!(
+            store
+                .log_after(first)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.session_id != other.to_string())
+        );
         assert_eq!(store.log_orphans(other).await.unwrap().len(), n as usize);
         // Prune keeps orphans; pruning orphans by time removes them.
         let top = store.log_seq();
@@ -5403,8 +5973,16 @@ mod tests {
         assert_eq!(
             store.cursors().await.unwrap(),
             [
-                Cursor { origin: "o".into(), peer: "".into(), seq: 7 },
-                Cursor { origin: "o".into(), peer: "p".into(), seq: 3 },
+                Cursor {
+                    origin: "o".into(),
+                    peer: "".into(),
+                    seq: 7
+                },
+                Cursor {
+                    origin: "o".into(),
+                    peer: "p".into(),
+                    seq: 3
+                },
             ]
         );
         // (On `other`: a fence raised to a foreign owner also guards writes, see

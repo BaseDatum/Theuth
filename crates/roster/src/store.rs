@@ -78,7 +78,12 @@ impl Store {
     }
 
     /// A desk opened (67 §6.2).
-    pub async fn open_episode(&self, agent: &str, session: &str, now_ms: u64) -> anyhow::Result<Episode> {
+    pub async fn open_episode(
+        &self,
+        agent: &str,
+        session: &str,
+        now_ms: u64,
+    ) -> anyhow::Result<Episode> {
         let ep = Episode {
             id: uuid::Uuid::now_v7().to_string(),
             agent: agent.to_owned(),
@@ -152,10 +157,11 @@ impl Store {
 
     /// Approved or withdrawn: the row's approval id when a row was there.
     pub async fn delete_proposal(&self, name: &str) -> anyhow::Result<Option<String>> {
-        let r: Option<(String,)> = sqlx::query_as("DELETE FROM proposals WHERE name = ? RETURNING approval_id")
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await?;
+        let r: Option<(String,)> =
+            sqlx::query_as("DELETE FROM proposals WHERE name = ? RETURNING approval_id")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(r.map(|(id,)| id))
     }
 
@@ -188,11 +194,13 @@ impl Store {
 
     /// The month's spend across every engine.
     pub async fn spent_month(&self, agent: &str, month: &str) -> anyhow::Result<f64> {
-        let (sum,): (f64,) = sqlx::query_as("SELECT COALESCE(SUM(spent), 0.0) FROM budget WHERE agent = ? AND month = ?")
-            .bind(agent)
-            .bind(month)
-            .fetch_one(&self.pool)
-            .await?;
+        let (sum,): (f64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(spent), 0.0) FROM budget WHERE agent = ? AND month = ?",
+        )
+        .bind(agent)
+        .bind(month)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(sum)
     }
 

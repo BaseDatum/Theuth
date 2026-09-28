@@ -216,7 +216,13 @@ fn now_ms() -> u64 {
 }
 
 impl Roster {
-    async fn load(rt: Runtime, cfg: RosterConfig, dir: PathBuf, store: store::Store, shared: Arc<Shared>) -> Self {
+    async fn load(
+        rt: Runtime,
+        cfg: RosterConfig,
+        dir: PathBuf,
+        store: store::Store,
+        shared: Arc<Shared>,
+    ) -> Self {
         let mut me = Self {
             rt,
             cfg,
@@ -258,7 +264,10 @@ impl Roster {
                 continue;
             }
             if stem == AgentName::DEFAULT {
-                tracing::warn!("{}/{stem}.md ignored: theuth is reserved", self.dir.display());
+                tracing::warn!(
+                    "{}/{stem}.md ignored: theuth is reserved",
+                    self.dir.display()
+                );
                 continue;
             }
             if before.get(&stem) != Some(&parsed) {
@@ -272,7 +281,13 @@ impl Roster {
                         if let Err(e) = self.store.upsert_agent(f, mtime).await {
                             tracing::warn!(agent = %stem, "agents row not written: {e:#}");
                         }
-                        push_charter(before.get(&stem).and_then(|p| p.as_ref().ok()).map(|f| f.body.as_str()), f);
+                        push_charter(
+                            before
+                                .get(&stem)
+                                .and_then(|p| p.as_ref().ok())
+                                .map(|f| f.body.as_str()),
+                            f,
+                        );
                     }
                     Err(e) => tracing::warn!("{}/{stem}.md: {e}", self.dir.display()),
                 }
@@ -310,7 +325,8 @@ impl Roster {
     /// Whether a desk for `name` may stay open: wanted, or `theuth`'s while
     /// this engine holds the lease.
     fn allowed(&self, name: &str) -> bool {
-        self.lease.holding && (name == AgentName::DEFAULT || self.wanted().iter().any(|f| f.name.as_str() == name))
+        self.lease.holding
+            && (name == AgentName::DEFAULT || self.wanted().iter().any(|f| f.name.as_str() == name))
     }
 
     /// Open the desks that are missing, close the ones no longer wanted.
@@ -321,7 +337,12 @@ impl Roster {
                 self.open_desk(f).await;
             }
         }
-        let stale: Vec<String> = self.desks.keys().filter(|n| !self.allowed(n)).cloned().collect();
+        let stale: Vec<String> = self
+            .desks
+            .keys()
+            .filter(|n| !self.allowed(n))
+            .cloned()
+            .collect();
         for name in stale {
             self.close_desk(&name, "paused").await;
         }
@@ -338,7 +359,11 @@ impl Roster {
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
             return;
         };
-        let existing = agents.ask(agent::DeskSession(name.to_owned())).await.ok().flatten();
+        let existing = agents
+            .ask(agent::DeskSession(name.to_owned()))
+            .await
+            .ok()
+            .flatten();
         let session = match existing {
             Some(s) => s,
             None => {
@@ -381,7 +406,12 @@ impl Roster {
         };
         if existing.is_some() {
             // A desk put away by an earlier build was archived; it is the desk again.
-            let _ = agents.ask(agent::ArchiveSession { session, archived: false }).await;
+            let _ = agents
+                .ask(agent::ArchiveSession {
+                    session,
+                    archived: false,
+                })
+                .await;
             // Whatever turn claimed wakes on it died with the last process.
             if let Some(t) = tasks::actor() {
                 let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
@@ -398,8 +428,12 @@ impl Roster {
         }
         // 67 §6.3: the file's `tools:` is the registry ceiling on the desk root;
         // children inherit it by the min-over-ancestors rule.
-        if let Some(cap) = f.tools.as_deref().and_then(|t| t.parse::<::tools::Risk>().ok())
-            && let Ok(Some(reg)) = ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
+        if let Some(cap) = f
+            .tools
+            .as_deref()
+            .and_then(|t| t.parse::<::tools::Risk>().ok())
+            && let Ok(Some(reg)) =
+                ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
         {
             let _ = reg
                 .tell(::tools::SetCap {
@@ -409,7 +443,11 @@ impl Roster {
                 .await;
         }
         let now = now_ms();
-        let episode = match self.store.open_episode(name, &session.to_string(), now).await {
+        let episode = match self
+            .store
+            .open_episode(name, &session.to_string(), now)
+            .await
+        {
             Ok(ep) => ep.id,
             Err(e) => {
                 tracing::warn!(agent = %name, "episode not recorded: {e:#}");
@@ -438,8 +476,12 @@ impl Roster {
         if let Some(d) = self.desks.get(name) {
             return Ok(d.session);
         }
-        let file = if name == AgentName::DEFAULT { self.shared.theuth() } else { self.shared.file(name) }
-            .ok_or_else(|| "no such agent".to_owned())?;
+        let file = if name == AgentName::DEFAULT {
+            self.shared.theuth()
+        } else {
+            self.shared.file(name)
+        }
+        .ok_or_else(|| "no such agent".to_owned())?;
         if !self.lease.holding {
             return Err("another engine holds the hub lease; desks open there".into());
         }
@@ -453,7 +495,10 @@ impl Roster {
             return Err("desk is closing; try again in a moment".into());
         }
         self.open_desk(&file).await;
-        self.desks.get(name).map(|d| d.session).ok_or_else(|| "desk not opened (agent actor not running)".to_owned())
+        self.desks
+            .get(name)
+            .map(|d| d.session)
+            .ok_or_else(|| "desk not opened (agent actor not running)".to_owned())
     }
 
     /// Close the agent's episode (67 §6.2): the desk stops taking wakes now;
@@ -466,7 +511,9 @@ impl Roster {
         };
         // 67 §7.3 last rule (70 DESK-PROTOCOL 3): a task the episode leaves in
         // `doing` with no continuation is blocked and the manager woken.
-        if d.primed && let Some(t) = tasks::actor() {
+        if d.primed
+            && let Some(t) = tasks::actor()
+        {
             match t
                 .ask(tasks::EpisodeClosing {
                     agent: name.to_owned(),
@@ -478,15 +525,19 @@ impl Roster {
                     tracing::warn!(agent = %name, ?blocked, "episode closed with tasks left in doing: blocked, manager woken")
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(agent = %name, "episode closing not applied to tasks: {e}"),
+                Err(e) => {
+                    tracing::warn!(agent = %name, "episode closing not applied to tasks: {e}")
+                }
             }
         }
         if !d.primed {
-            self.put_away(name, d.session, &d.episode, reason, None).await;
+            self.put_away(name, d.session, &d.episode, reason, None)
+                .await;
             return;
         }
         let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
-            self.put_away(name, d.session, &d.episode, reason, None).await;
+            self.put_away(name, d.session, &d.episode, reason, None)
+                .await;
             return;
         };
         if let Err(e) = agents
@@ -500,7 +551,8 @@ impl Roster {
             .await
         {
             tracing::warn!(agent = %name, "closing turn not started: {e}");
-            self.put_away(name, d.session, &d.episode, reason, None).await;
+            self.put_away(name, d.session, &d.episode, reason, None)
+                .await;
             return;
         }
         self.closing.insert(
@@ -521,7 +573,8 @@ impl Roster {
         let Some(c) = self.closing.remove(&session) else {
             return;
         };
-        self.put_away(&c.agent, session, &c.episode, &c.reason, Some(&c.text)).await;
+        self.put_away(&c.agent, session, &c.episode, &c.reason, Some(&c.text))
+            .await;
     }
 
     /// The episode is over. The session stays the agent's desk — pinned,
@@ -539,7 +592,12 @@ impl Roster {
         journal: Option<&str>,
     ) {
         if let Some(j) = journal.map(str::trim).filter(|j| !j.is_empty()) {
-            match desk::write_journal(&self.rt.data_dir, name, j, self.cfg.journal_max_bytes as usize) {
+            match desk::write_journal(
+                &self.rt.data_dir,
+                name,
+                j,
+                self.cfg.journal_max_bytes as usize,
+            ) {
                 Ok(p) => tracing::info!(agent = %name, "journal written to {}", p.display()),
                 Err(e) => tracing::warn!(agent = %name, "journal not written: {e}"),
             }
@@ -551,7 +609,12 @@ impl Roster {
         }
         if reason == "context" {
             if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
-                let _ = agents.ask(agent::MarkDesk { session, agent: None }).await;
+                let _ = agents
+                    .ask(agent::MarkDesk {
+                        session,
+                        agent: None,
+                    })
+                    .await;
                 let date = chrono::Local::now().format("%Y-%m-%d");
                 let _ = agents
                     .ask(agent::RenameSession {
@@ -559,8 +622,18 @@ impl Roster {
                         title: format!("{name} · desk (superseded {date})"),
                     })
                     .await;
-                let _ = agents.ask(agent::PinSession { session, pinned: false }).await;
-                let _ = agents.ask(agent::ArchiveSession { session, archived: true }).await;
+                let _ = agents
+                    .ask(agent::PinSession {
+                        session,
+                        pinned: false,
+                    })
+                    .await;
+                let _ = agents
+                    .ask(agent::ArchiveSession {
+                        session,
+                        archived: true,
+                    })
+                    .await;
             }
             self.shared.clear_desk(name);
             self.shared.forget(session);
@@ -603,7 +676,9 @@ impl Roster {
     /// row is deleted durably (STALE-WAKE-DESKS), so it can neither hold the
     /// agent busy nor be re-armed by a later restart.
     async fn clear_serving(&mut self, name: &str) {
-        let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.take()) else { return };
+        let Some(s) = self.desks.get_mut(name).and_then(|d| d.serving.take()) else {
+            return;
+        };
         if let Some(t) = tasks::actor() {
             let _ = t.tell(tasks::FinishWake(s.wake)).await;
         }
@@ -639,7 +714,9 @@ impl Roster {
         if !desk::nudges::yielded(stop_reason) {
             return;
         }
-        let Some(d) = self.desks.get(name) else { return };
+        let Some(d) = self.desks.get(name) else {
+            return;
+        };
         let Some(s) = d.serving.clone() else { return };
         let session = d.session;
         let Some(id) = s.wake.task.clone() else {
@@ -651,7 +728,15 @@ impl Roster {
             self.clear_serving(name).await;
             return;
         };
-        let desk::nudges::Nudge::TurnEnd { name: rule, unhandled, text, .. } = row else { return };
+        let desk::nudges::Nudge::TurnEnd {
+            name: rule,
+            unhandled,
+            text,
+            ..
+        } = row
+        else {
+            return;
+        };
         let (Ok(task), Ok(events)) = (
             tasks.ask(tasks::GetTask(id.clone())).await,
             tasks.ask(tasks::TaskEvents(id.clone())).await,
@@ -659,13 +744,24 @@ impl Roster {
             return;
         };
         let me = format!("agent:{name}");
-        let mine: Vec<tasks::TaskEvent> = events.into_iter().skip(s.events).filter(|e| e.actor == me).collect();
-        let live_child = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten() {
+        let mine: Vec<tasks::TaskEvent> = events
+            .into_iter()
+            .skip(s.events)
+            .filter(|e| e.actor == me)
+            .collect();
+        let live_child = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten()
+        {
             Some(a) => a
                 .ask(agent::ListAgents { session })
                 .await
                 // Running, or spawned this turn and not yet started: its result is still to come.
-                .map(|kids| kids.iter().any(|k| !matches!(k.state, agent::AgentState::Idle) || k.finished_at.is_none()))
+                .map(|kids| {
+                    kids.iter().any(|k| {
+                        !matches!(k.state, agent::AgentState::Idle) || k.finished_at.is_none()
+                    })
+                })
                 .unwrap_or(false),
             None => false,
         };
@@ -684,8 +780,19 @@ impl Roster {
                     s.rounds, self.cfg.max_rounds
                 ));
             }
-            self.thread_note(&task, &format!("nudged: {rule} — task {} still {} after the turn woken `{}`", task.id, task.state.as_str(), s.wake.reason.as_str())).await;
-            if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
+            self.thread_note(
+                &task,
+                &format!(
+                    "nudged: {rule} — task {} still {} after the turn woken `{}`",
+                    task.id,
+                    task.state.as_str(),
+                    s.wake.reason.as_str()
+                ),
+            )
+            .await;
+            if let Some(a) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                .ok()
+                .flatten()
                 && a.ask(agent::SendInput {
                     session: Some(session),
                     text: desk::notice("nudge", &nudge),
@@ -744,7 +851,8 @@ impl Roster {
     }
 
     fn read_text(&self, name: &str) -> Result<String, String> {
-        std::fs::read_to_string(self.dir.join(format!("{name}.md"))).map_err(|_| "no such agent".to_owned())
+        std::fs::read_to_string(self.dir.join(format!("{name}.md")))
+            .map_err(|_| "no such agent".to_owned())
     }
 
     /// Tasks the agent owns in `todo | doing | blocked | review`, and whether
@@ -812,7 +920,9 @@ impl Roster {
     /// wakes not released as if the hub had moved.
     fn lease_event_applies(&self) -> bool {
         if self.rt.shutdown.is_cancelled() {
-            tracing::info!("lease event during shutdown ignored: desks stay mapped, wakes stay claimed");
+            tracing::info!(
+                "lease event during shutdown ignored: desks stay mapped, wakes stay claimed"
+            );
             return false;
         }
         true
@@ -855,8 +965,11 @@ impl Roster {
     /// Rewrite the file's `paused:` line (`PauseAgent`, the budget cap).
     async fn set_paused(&self, name: &str, paused: bool) -> Result<(), String> {
         let text = self.read_text(name)?;
-        self.write_text(name, &file::set_key(&text, "paused", paused.then_some("true")))
-            .await
+        self.write_text(
+            name,
+            &file::set_key(&text, "paused", paused.then_some("true")),
+        )
+        .await
     }
 
     /// File a task; `None` (logged) when the tasks plugin is down or refuses.
@@ -913,7 +1026,8 @@ impl Roster {
                 .map(|m| m.nanos)
                 .sum()
         };
-        let total = (money(&cost.direct.returned) + money(&cost.direct.estimated_for_unavailable)) as f64
+        let total = (money(&cost.direct.returned) + money(&cost.direct.estimated_for_unavailable))
+            as f64
             / agent::cost::NANOS_PER_UNIT as f64;
         let delta = self.costs.delta(session, total);
         if delta <= 0.0 {
@@ -926,7 +1040,11 @@ impl Roster {
             .self_id
             .clone()
             .unwrap_or_else(|| platform::process::hostname().to_owned());
-        if let Err(e) = self.store.add_spent(&name, &month, &engine, delta, &currency, now).await {
+        if let Err(e) = self
+            .store
+            .add_spent(&name, &month, &engine, delta, &currency, now)
+            .await
+        {
             tracing::warn!(agent = %name, "spend not recorded: {e:#}");
             return;
         }
@@ -954,8 +1072,19 @@ impl Roster {
             attachments: vec![],
         };
         if let Some(t) = budget::crossed(&f.budget, before, after) {
-            let pct = if t == budget::Threshold::Warn { "80 %" } else { "100 %, paused" };
-            tasks::activity::record(&self.rt, tasks::activity::ActivityKind::BudgetThreshold, "system", &name, format!("{name} at {pct} of budget ({after:.2} of {amount:.2} {currency})")).await;
+            let pct = if t == budget::Threshold::Warn {
+                "80 %"
+            } else {
+                "100 %, paused"
+            };
+            tasks::activity::record(
+                &self.rt,
+                tasks::activity::ActivityKind::BudgetThreshold,
+                "system",
+                &name,
+                format!("{name} at {pct} of budget ({after:.2} of {amount:.2} {currency})"),
+            )
+            .await;
         }
         match budget::crossed(&f.budget, before, after) {
             None => {}
@@ -975,7 +1104,12 @@ impl Roster {
                 .await;
             }
             Some(budget::Threshold::Cap) => {
-                if self.store.has_override(&name, &month).await.unwrap_or(false) {
+                if self
+                    .store
+                    .has_override(&name, &month)
+                    .await
+                    .unwrap_or(false)
+                {
                     return;
                 }
                 if let Err(e) = self.set_paused(&name, true).await {
@@ -1057,7 +1191,10 @@ impl Message<DeliverWake> for Roster {
         }
         // 70 DESK-PROTOCOL (f): gates re-checked on every wake; a held wake
         // records one diagnostic instead of starting a run.
-        let file = self.shared.file(&m.agent).ok_or_else(|| "no such agent".to_owned())?;
+        let file = self
+            .shared
+            .file(&m.agent)
+            .ok_or_else(|| "no such agent".to_owned())?;
         let gate = if file.paused {
             Some("agent is paused".to_owned())
         } else if let Some(t) = &m.task
@@ -1065,7 +1202,10 @@ impl Message<DeliverWake> for Roster {
             && !t.blockers.is_empty()
             && !matches!(
                 m.wake.reason,
-                tasks::WakeReason::Comment | tasks::WakeReason::Mention | tasks::WakeReason::Answer | tasks::WakeReason::Manual
+                tasks::WakeReason::Comment
+                    | tasks::WakeReason::Mention
+                    | tasks::WakeReason::Answer
+                    | tasks::WakeReason::Manual
             )
         {
             Some(format!("task is blocked on {}", t.blockers.join(", ")))
@@ -1076,7 +1216,15 @@ impl Message<DeliverWake> for Roster {
             if self.diagnosed.insert(m.wake.key.clone())
                 && let Some(t) = &m.task
             {
-                self.thread_note(t, &format!("wake `{}` for {} held: {why}", m.wake.reason.as_str(), m.agent)).await;
+                self.thread_note(
+                    t,
+                    &format!(
+                        "wake `{}` for {} held: {why}",
+                        m.wake.reason.as_str(),
+                        m.agent
+                    ),
+                )
+                .await;
             }
             // `Err` leaves the wake unclaimed and retried by the ledger (5 s → 5 min):
             // it is delivered once the gate opens; the diagnostic is written once.
@@ -1094,8 +1242,16 @@ impl Message<DeliverWake> for Roster {
         // (`Identities`, 70 DESK-PROTOCOL); the input is the wake, plus the
         // fit-check roster on an assignment (70 (e)).
         let mut text = desk::wake_text(&m.wake, m.task.as_ref());
-        if matches!(m.wake.reason, tasks::WakeReason::Assigned | tasks::WakeReason::Reassigned) {
-            let files: Vec<AgentFile> = self.shared.files().into_values().filter_map(Result::ok).collect();
+        if matches!(
+            m.wake.reason,
+            tasks::WakeReason::Assigned | tasks::WakeReason::Reassigned
+        ) {
+            let files: Vec<AgentFile> = self
+                .shared
+                .files()
+                .into_values()
+                .filter_map(Result::ok)
+                .collect();
             text.push_str("\n\n");
             text.push_str(&desk::roster_block(&m.agent, files.iter()));
         }
@@ -1109,7 +1265,11 @@ impl Message<DeliverWake> for Roster {
             .and_then(|c| c.session.parse().ok());
         // 70 DESK-PROTOCOL 3: what this turn is for, judged at its end.
         let events = match (&m.task, tasks::actor()) {
-            (Some(t), Some(tasks)) => tasks.ask(tasks::TaskEvents(t.id.clone())).await.map(|e| e.len()).unwrap_or(0),
+            (Some(t), Some(tasks)) => tasks
+                .ask(tasks::TaskEvents(t.id.clone()))
+                .await
+                .map(|e| e.len())
+                .unwrap_or(0),
             _ => 0,
         };
         agents
@@ -1158,7 +1318,10 @@ impl Message<agent::AgentEvent> for Roster {
                 }
             }
             E::TurnFinished {
-                session, context, stop_reason, ..
+                session,
+                context,
+                stop_reason,
+                ..
             } => {
                 if self.closing.contains_key(&session) {
                     self.finish_closing(session).await;
@@ -1204,13 +1367,17 @@ impl Message<agent::AgentEvent> for Roster {
                 self.shared.forget(session);
                 self.costs.forget(session);
                 if let Some(c) = self.closing.remove(&session) {
-                    self.put_away(&c.agent, session, &c.episode, &c.reason, Some(&c.text)).await;
+                    self.put_away(&c.agent, session, &c.episode, &c.reason, Some(&c.text))
+                        .await;
                 } else if let Some(name) = self.desk_name(session)
                     && let Some(d) = self.desks.remove(&name)
                 {
                     self.shared.clear_desk(&name);
                     if !d.episode.is_empty()
-                        && let Err(e) = self.store.close_episode(&d.episode, now_ms(), "thread_end").await
+                        && let Err(e) = self
+                            .store
+                            .close_episode(&d.episode, now_ms(), "thread_end")
+                            .await
                     {
                         tracing::warn!(agent = %name, "episode not closed: {e:#}");
                     }
@@ -1262,7 +1429,11 @@ impl Message<TasksUp> for Roster {
 impl Message<RoutableAgents> for Roster {
     type Reply = Result<Vec<Routable>, String>;
 
-    async fn handle(&mut self, _: RoutableAgents, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: RoutableAgents,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         Ok(self
             .shared
             .files()
@@ -1360,7 +1531,9 @@ impl Message<PutAgent> for Roster {
 
     async fn handle(&mut self, m: PutAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if m.0.name.is_default() {
-            return Err("theuth is the built-in default agent: edit prompt.md, not the roster".into());
+            return Err(
+                "theuth is the built-in default agent: edit prompt.md, not the roster".into(),
+            );
         }
         // Validate through the parser so the file on disk is always readable.
         file::parse(m.0.name.as_str(), &file::render(&m.0))?;
@@ -1380,7 +1553,8 @@ impl Message<PauseAgent> for Roster {
         // 67 §6.4: un-pausing an agent past its cap is the manager's override
         // for the month; the cap does not pause it again.
         if !m.paused
-            && let Some(Budget::Monthly { amount, .. }) = self.shared.file(&m.name).map(|f| f.budget)
+            && let Some(Budget::Monthly { amount, .. }) =
+                self.shared.file(&m.name).map(|f| f.budget)
         {
             let month = budget::month(now_ms());
             if self.store.spent_month(&m.name, &month).await.unwrap_or(0.0) >= amount
@@ -1390,7 +1564,18 @@ impl Message<PauseAgent> for Roster {
             }
         }
         self.set_paused(&m.name, m.paused).await?;
-        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentPaused, "user", &m.name, format!("{} {}", if m.paused { "paused" } else { "un-paused" }, m.name)).await;
+        tasks::activity::record(
+            &self.rt,
+            tasks::activity::ActivityKind::AgentPaused,
+            "user",
+            &m.name,
+            format!(
+                "{} {}",
+                if m.paused { "paused" } else { "un-paused" },
+                m.name
+            ),
+        )
+        .await;
         let _ = ctx.actor_ref().tell(Reconcile).await;
         Ok(())
     }
@@ -1399,7 +1584,11 @@ impl Message<PauseAgent> for Roster {
 impl Message<ApproveAgent> for Roster {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: ApproveAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ApproveAgent,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if m.0 == AgentName::DEFAULT {
             return Err("not a proposal".into());
         }
@@ -1410,14 +1599,21 @@ impl Message<ApproveAgent> for Roster {
             .delete_proposal(&m.0)
             .await
             .map_err(|e| e.to_string())?;
-        if approval.is_none() && !f.is_some_and(|f| f.proposed_by.is_some()) {
+        if approval.is_none() && f.is_none_or(|f| f.proposed_by.is_none()) {
             return Err("not a proposal".into());
         }
         let text = file::set_key(&text, "paused", None);
         let text = file::set_key(&text, "proposed_by", None);
         self.write_text(&m.0, &text).await?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
-        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentHired, "user", &m.0, format!("hired {}", m.0)).await;
+        tasks::activity::record(
+            &self.rt,
+            tasks::activity::ActivityKind::AgentHired,
+            "user",
+            &m.0,
+            format!("hired {}", m.0),
+        )
+        .await;
         // 67 §6.5: the hire task was the approval; close it.
         if let Some(id) = approval {
             close_hire_task(&m.0, id, "approved").await;
@@ -1429,7 +1625,11 @@ impl Message<ApproveAgent> for Roster {
 impl Message<RemoveAgent> for Roster {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: RemoveAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: RemoveAgent,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let approval = self.remove_agent(&m.name).await?;
         // Reconcile drops the read model, the `agents` row and the desk; the charter document goes to `.trash`.
         let _ = ctx.actor_ref().tell(Reconcile).await;
@@ -1441,10 +1641,22 @@ impl Message<RemoveAgent> for Roster {
                 }
             });
         }
-        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentRemoved, "user", &m.name, format!("removed {}", m.name)).await;
+        tasks::activity::record(
+            &self.rt,
+            tasks::activity::ActivityKind::AgentRemoved,
+            "user",
+            &m.name,
+            format!("removed {}", m.name),
+        )
+        .await;
         if let Some(id) = approval {
             let note = m.note.as_deref().map(str::trim).filter(|s| !s.is_empty());
-            close_hire_task(&m.name, id, &note.map_or_else(|| "rejected".to_owned(), |n| format!("rejected: {n}"))).await;
+            close_hire_task(
+                &m.name,
+                id,
+                &note.map_or_else(|| "rejected".to_owned(), |n| format!("rejected: {n}")),
+            )
+            .await;
         }
         Ok(())
     }
@@ -1457,12 +1669,19 @@ fn push_charter(old_body: Option<&str>, f: &AgentFile) {
     if old_body == Some(f.body.as_str()) {
         return;
     }
-    let Some(docs) = document::Handle::lookup() else { return };
+    let Some(docs) = document::Handle::lookup() else {
+        return;
+    };
     let (name, body) = (f.name.as_str().to_owned(), f.body.clone());
     tokio::spawn(async move {
         let binding = document::Binding::AgentCharter(name.clone());
-        let Ok(Some(doc)) = docs.actor().ask(document::Lookup { binding }).await else { return };
-        if let Err(e) = docs.import_markdown(doc, body, document::Principal::File).await {
+        let Ok(Some(doc)) = docs.actor().ask(document::Lookup { binding }).await else {
+            return;
+        };
+        if let Err(e) = docs
+            .import_markdown(doc, body, document::Principal::File)
+            .await
+        {
             tracing::warn!(agent = %name, "charter document not updated from the file: {e}");
         }
     });
@@ -1484,8 +1703,12 @@ impl Roster {
     /// wizard's draft, `theuth`) has nothing to write yet; an empty export would make the file
     /// invalid (`empty charter`) and is ignored. Answers whether the file was rewritten.
     async fn charter_exported(&self, name: &str, path: &std::path::Path) -> bool {
-        let Some(mut f) = self.shared.file(name).filter(|f| !f.name.is_default()) else { return false };
-        let Ok(text) = std::fs::read_to_string(path) else { return false };
+        let Some(mut f) = self.shared.file(name).filter(|f| !f.name.is_default()) else {
+            return false;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return false;
+        };
         let body = text.trim();
         if body.is_empty() || body == f.body {
             return false;
@@ -1507,7 +1730,8 @@ impl Roster {
         if name == AgentName::DEFAULT {
             return Err("theuth is the built-in default agent and cannot be removed".into());
         }
-        std::fs::remove_file(self.dir.join(format!("{name}.md"))).map_err(|_| "no such agent".to_owned())?;
+        std::fs::remove_file(self.dir.join(format!("{name}.md")))
+            .map_err(|_| "no such agent".to_owned())?;
         self.store
             .delete_proposal(name)
             .await
@@ -1553,13 +1777,20 @@ async fn close_hire_task(agent: &str, id: String, text: &str) {
 impl Message<ProposeAgent> for Roster {
     type Reply = Result<String, String>;
 
-    async fn handle(&mut self, m: ProposeAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ProposeAgent,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let mut f = m.file;
         if f.name.is_default() {
             return Err("theuth is reserved".into());
         }
         if self.shared.files().contains_key(f.name.as_str()) {
-            return Err(format!("agent {} exists; pick another name or create a task for it", f.name));
+            return Err(format!(
+                "agent {} exists; pick another name or create a task for it",
+                f.name
+            ));
         }
         f.paused = true;
         f.proposed_by = Some(m.proposed_by.clone());
@@ -1567,14 +1798,20 @@ impl Message<ProposeAgent> for Roster {
         self.write_file(&f).await?;
         // 67 §6.5: the hire task, owned by the proposer's manager, is the
         // approval; without the tasks plugin a bare uuid stands in.
-        let proposer = m.proposed_by.strip_prefix("agent:").unwrap_or(&m.proposed_by);
+        let proposer = m
+            .proposed_by
+            .strip_prefix("agent:")
+            .unwrap_or(&m.proposed_by);
         let manager = if proposer == "user" {
             tasks::Owner::User
         } else {
             self.manager_owner(proposer)
         };
         let approval_id = match self
-            .file_task(proposals::hire_task(&f, &m.proposed_by, manager), &m.proposed_by)
+            .file_task(
+                proposals::hire_task(&f, &m.proposed_by, manager),
+                &m.proposed_by,
+            )
             .await
         {
             Some(id) => id.0,
@@ -1588,7 +1825,14 @@ impl Message<ProposeAgent> for Roster {
             .await
             .map_err(|e| e.to_string())?;
         let _ = ctx.actor_ref().tell(Reconcile).await;
-        tasks::activity::record(&self.rt, tasks::activity::ActivityKind::AgentProposed, &m.proposed_by, f.name.as_str(), format!("proposed hiring {} ({})", f.name, f.title)).await;
+        tasks::activity::record(
+            &self.rt,
+            tasks::activity::ActivityKind::AgentProposed,
+            &m.proposed_by,
+            f.name.as_str(),
+            format!("proposed hiring {} ({})", f.name, f.title),
+        )
+        .await;
         Ok(approval_id)
     }
 }
@@ -1627,7 +1871,10 @@ impl tasks::DeskRouter for Desks {
 
     /// The file's `reports_to`; `user` (the top of the line) is `None`.
     fn manager_of(&self, agent: &str) -> Option<String> {
-        self.0.file(agent).map(|f| f.reports_to).filter(|m| m != "user")
+        self.0
+            .file(agent)
+            .map(|f| f.reports_to)
+            .filter(|m| m != "user")
     }
 
     fn agent_for(&self, session: &str) -> Option<String> {
@@ -1695,8 +1942,11 @@ impl agent::IdentitySource for Identities {
                 .await
                 .ok()
                 .and_then(|v| {
-                    v.into_iter()
-                        .find(|t| t.checkout.as_ref().is_some_and(|c| Some(&c.session) == desk.as_ref()))
+                    v.into_iter().find(|t| {
+                        t.checkout
+                            .as_ref()
+                            .is_some_and(|c| Some(&c.session) == desk.as_ref())
+                    })
                 }),
             None => None,
         };
@@ -1831,10 +2081,7 @@ impl runtime::Plugin for RosterPlugin {
         let desks = shared.clone();
         let me = actor.clone();
         tokio::spawn(async move {
-            if let Some(t) = rt2
-                .lookup_when::<tasks::Tasks>(tasks::TASKS_ACTOR)
-                .await
-            {
+            if let Some(t) = rt2.lookup_when::<tasks::Tasks>(tasks::TASKS_ACTOR).await {
                 let _ = t
                     .ask(tasks::RegisterDeskRouter(Arc::new(Desks(desks))))
                     .await;
@@ -1848,11 +2095,10 @@ impl runtime::Plugin for RosterPlugin {
             max_rounds,
         };
         tokio::spawn(async move {
-            if let Some(a) = rt2
-                .lookup_when::<agent::Agents>(agent::AGENT_ACTOR)
-                .await
-            {
-                let _ = a.ask(agent::InstallIdentitySource(Arc::new(identities))).await;
+            if let Some(a) = rt2.lookup_when::<agent::Agents>(agent::AGENT_ACTOR).await {
+                let _ = a
+                    .ask(agent::InstallIdentitySource(Arc::new(identities)))
+                    .await;
             }
         });
         let rt2 = rt.clone();
@@ -1900,7 +2146,11 @@ mod tests {
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("roster-{tag}-{}-{}", std::process::id(), uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!(
+            "roster-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
         std::fs::create_dir_all(dir.join(file::DIR)).unwrap();
         dir
     }
@@ -1922,7 +2172,11 @@ mod tests {
     async fn scan_valid_invalid_and_theuth() {
         let data = tmp("scan");
         let dir = data.join(file::DIR);
-        std::fs::write(dir.join("ops.md"), "---\ntitle: Ops\ntools: mutating\n---\nYou are Ops.\n").unwrap();
+        std::fs::write(
+            dir.join("ops.md"),
+            "---\ntitle: Ops\ntools: mutating\n---\nYou are Ops.\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("bad.md"), "---\ncomputer: build-A\n---\nNope.\n").unwrap();
         std::fs::write(dir.join("Bad Name.md"), "charter\n").unwrap();
         std::fs::write(data.join("prompt.md"), "Standing instructions.\n").unwrap();
@@ -1931,8 +2185,17 @@ mod tests {
         let files = r.shared.files();
         assert_eq!(files.len(), 2);
         assert_eq!(files["ops"].as_ref().unwrap().title, "Ops");
-        assert!(files["bad"].as_ref().unwrap_err().starts_with("front matter"));
-        assert_eq!(r.store.agent_names().await.unwrap(), ["ops"], "only valid files are mirrored");
+        assert!(
+            files["bad"]
+                .as_ref()
+                .unwrap_err()
+                .starts_with("front matter")
+        );
+        assert_eq!(
+            r.store.agent_names().await.unwrap(),
+            ["ops"],
+            "only valid files are mirrored"
+        );
 
         let t = r.shared.file("theuth").unwrap();
         assert_eq!(t.body, "Standing instructions.");
@@ -1948,7 +2211,10 @@ mod tests {
     async fn no_files_means_no_eager_desk_and_theuth_on_demand_only() {
         let data = tmp("lazy");
         let r = roster(&data).await;
-        assert!(r.lease.holding, "a lone engine holds the lease from the start");
+        assert!(
+            r.lease.holding,
+            "a lone engine holds the lease from the start"
+        );
         assert!(r.wanted().is_empty());
         assert!(r.allowed("theuth"));
         assert!(!r.allowed("ops"));
@@ -1956,10 +2222,19 @@ mod tests {
         std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
         let mut r = r;
         r.reconcile().await;
-        assert_eq!(r.wanted().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["ops"]);
+        assert_eq!(
+            r.wanted()
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ops"]
+        );
         assert!(r.allowed("ops") && r.allowed("theuth"));
         r.lease.holding = false;
-        assert!(!r.allowed("theuth") && r.wanted().is_empty(), "duties follow the lease");
+        assert!(
+            !r.allowed("theuth") && r.wanted().is_empty(),
+            "duties follow the lease"
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -1967,22 +2242,48 @@ mod tests {
     async fn desk_or_open_returns_the_open_desk_and_names_its_refusals() {
         let data = tmp("open-desk");
         std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
-        std::fs::write(data.join(file::DIR).join("nap.md"), "---\npaused: true\n---\nNap.\n").unwrap();
+        std::fs::write(
+            data.join(file::DIR).join("nap.md"),
+            "---\npaused: true\n---\nNap.\n",
+        )
+        .unwrap();
         let mut r = roster(&data).await;
         r.reconcile().await;
         assert_eq!(r.desk_or_open("nobody").await, Err("no such agent".into()));
         assert_eq!(r.desk_or_open("nap").await, Err("agent is paused".into()));
         // no agent actor in this test: the open is attempted and reported, not silently swallowed
-        assert!(r.desk_or_open("theuth").await.unwrap_err().contains("not opened"));
+        assert!(
+            r.desk_or_open("theuth")
+                .await
+                .unwrap_err()
+                .contains("not opened")
+        );
         let session = runtime::SessionId::new();
         r.desks.insert(
             "ops".into(),
-            desk::Desk { session, episode: String::new(), last_active_ms: 0, working: false, primed: false, model: None, serving: None },
+            desk::Desk {
+                session,
+                episode: String::new(),
+                last_active_ms: 0,
+                working: false,
+                primed: false,
+                model: None,
+                serving: None,
+            },
         );
         assert_eq!(r.desk_or_open("ops").await, Ok(session));
         r.lease.holding = false;
-        assert_eq!(r.desk_or_open("ops").await, Ok(session), "an open desk is returned regardless");
-        assert!(r.desk_or_open("theuth").await.unwrap_err().contains("lease"));
+        assert_eq!(
+            r.desk_or_open("ops").await,
+            Ok(session),
+            "an open desk is returned regardless"
+        );
+        assert!(
+            r.desk_or_open("theuth")
+                .await
+                .unwrap_err()
+                .contains("lease")
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -1995,11 +2296,22 @@ mod tests {
         let mut r = roster(&data).await;
         r.lease.set_self("me".into());
         assert!(r.lease.holding);
-        let release = mesh::LeaseState { holder: None, since_ms: 0, reason: "release".into() };
+        let release = mesh::LeaseState {
+            holder: None,
+            since_ms: 0,
+            reason: "release".into(),
+        };
         // Not shutting down: the loss is applied.
         let actor = Roster::spawn(r);
-        actor.tell(mesh::MeshEvent::Lease(release.clone())).await.unwrap();
-        let err = actor.ask(OpenDesk("theuth".into())).await.unwrap_err().to_string();
+        actor
+            .tell(mesh::MeshEvent::Lease(release.clone()))
+            .await
+            .unwrap();
+        let err = actor
+            .ask(OpenDesk("theuth".into()))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("hub lease"), "{err}");
         actor.kill();
         // Shutting down: the same event changes nothing — the desks stay mapped for the next start.
@@ -2009,7 +2321,11 @@ mod tests {
         assert!(!r.lease_event_applies());
         let actor = Roster::spawn(r);
         actor.tell(mesh::MeshEvent::Lease(release)).await.unwrap();
-        let err = actor.ask(OpenDesk("theuth".into())).await.unwrap_err().to_string();
+        let err = actor
+            .ask(OpenDesk("theuth".into()))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("not opened"), "still holding: {err}");
         actor.kill();
         let _ = std::fs::remove_dir_all(&data);
@@ -2021,10 +2337,20 @@ mod tests {
         let s = Arc::new(Shared::default());
         let mut files = BTreeMap::new();
         files.insert("cto".into(), file::parse("cto", "Boss."));
-        files.insert("ops".into(), file::parse("ops", "---\nreports_to: cto\n---\nOps."));
+        files.insert(
+            "ops".into(),
+            file::parse("ops", "---\nreports_to: cto\n---\nOps."),
+        );
         files.insert("mkt".into(), file::parse("mkt", "Marketing."));
-        s.set_files(files, file::default_agent(std::path::Path::new("/nonexistent")));
-        let (ops, theuth, user) = (runtime::SessionId::new(), runtime::SessionId::new(), runtime::SessionId::new());
+        s.set_files(
+            files,
+            file::default_agent(std::path::Path::new("/nonexistent")),
+        );
+        let (ops, theuth, user) = (
+            runtime::SessionId::new(),
+            runtime::SessionId::new(),
+            runtime::SessionId::new(),
+        );
         s.set_desk("ops", ops);
         s.set_desk("theuth", theuth);
         let desks = Desks(s);
@@ -2042,18 +2368,35 @@ mod tests {
     async fn put_round_trip_and_theuth_refused() {
         let data = tmp("put");
         let mut r = roster(&data).await;
-        let f = file::parse("qa", "---\ntitle: QA\nmcp: [grafana]\nbudget: 10 EUR/month\n---\nTest everything.\n").unwrap();
+        let f = file::parse(
+            "qa",
+            "---\ntitle: QA\nmcp: [grafana]\nbudget: 10 EUR/month\n---\nTest everything.\n",
+        )
+        .unwrap();
         r.write_file(&f).await.unwrap();
         r.reconcile().await;
         assert_eq!(r.shared.file("qa"), Some(f.clone()));
-        assert_eq!(file::parse("qa", &std::fs::read_to_string(data.join("agents/qa.md")).unwrap()).unwrap(), f);
+        assert_eq!(
+            file::parse(
+                "qa",
+                &std::fs::read_to_string(data.join("agents/qa.md")).unwrap()
+            )
+            .unwrap(),
+            f
+        );
         assert_eq!(r.store.agent_names().await.unwrap(), ["qa"]);
 
         // Pause rewrites one line; the rest of the file is byte-for-byte.
         let text = r.read_text("qa").unwrap();
-        r.write_text("qa", &file::set_key(&text, "paused", Some("true"))).await.unwrap();
+        r.write_text("qa", &file::set_key(&text, "paused", Some("true")))
+            .await
+            .unwrap();
         assert!(r.shared.file("qa").unwrap().paused);
-        assert!(std::fs::read_to_string(data.join("agents/qa.md")).unwrap().contains("budget: 10 EUR/month\n"));
+        assert!(
+            std::fs::read_to_string(data.join("agents/qa.md"))
+                .unwrap()
+                .contains("budget: 10 EUR/month\n")
+        );
 
         // Removing the file drops the row.
         std::fs::remove_file(data.join("agents/qa.md")).unwrap();
@@ -2069,7 +2412,11 @@ mod tests {
     async fn charter_export_replaces_the_body_and_keeps_the_front_matter() {
         let data = tmp("charter");
         let r = roster(&data).await;
-        let f = file::parse("qa", "---\ntitle: QA\nmcp: [grafana]\nbudget: 10 EUR/month\n---\nTest everything.\n").unwrap();
+        let f = file::parse(
+            "qa",
+            "---\ntitle: QA\nmcp: [grafana]\nbudget: 10 EUR/month\n---\nTest everything.\n",
+        )
+        .unwrap();
         r.write_file(&f).await.unwrap();
         let export = data.join("charter.md");
 
@@ -2078,8 +2425,14 @@ mod tests {
         let on_disk = std::fs::read_to_string(data.join("agents/qa.md")).unwrap();
         assert!(on_disk.contains("budget: 10 EUR/month\n"), "{on_disk}");
         assert!(on_disk.contains("grafana"), "{on_disk}");
-        assert_eq!(r.shared.file("qa").unwrap().body, "# QA\n\nTest everything, twice.");
-        assert_eq!(file::parse("qa", &on_disk).unwrap(), r.shared.file("qa").unwrap());
+        assert_eq!(
+            r.shared.file("qa").unwrap().body,
+            "# QA\n\nTest everything, twice."
+        );
+        assert_eq!(
+            file::parse("qa", &on_disk).unwrap(),
+            r.shared.file("qa").unwrap()
+        );
 
         // The same text again, an empty export, an unknown name and theuth change nothing.
         assert!(!r.charter_exported("qa", &export).await);
@@ -2088,7 +2441,10 @@ mod tests {
         std::fs::write(&export, "# Draft\n").unwrap();
         assert!(!r.charter_exported("not-hired-yet", &export).await);
         assert!(!r.charter_exported("theuth", &export).await);
-        assert_eq!(r.shared.file("qa").unwrap().body, "# QA\n\nTest everything, twice.");
+        assert_eq!(
+            r.shared.file("qa").unwrap().body,
+            "# QA\n\nTest everything, twice."
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -2096,18 +2452,37 @@ mod tests {
     async fn remove_deletes_file_and_proposal_and_refuses_theuth() {
         let data = tmp("remove");
         let mut r = roster(&data).await;
-        let f = file::parse("qa", "---\ntitle: QA\nproposed_by: agent:ops\npaused: true\n---\nTest.\n").unwrap();
+        let f = file::parse(
+            "qa",
+            "---\ntitle: QA\nproposed_by: agent:ops\npaused: true\n---\nTest.\n",
+        )
+        .unwrap();
         r.write_file(&f).await.unwrap();
-        r.store.insert_proposal("qa", "agent:ops", "approval-1", 0).await.unwrap();
+        r.store
+            .insert_proposal("qa", "agent:ops", "approval-1", 0)
+            .await
+            .unwrap();
 
-        assert_eq!(r.remove_agent("qa").await, Ok(Some("approval-1".to_owned())));
+        assert_eq!(
+            r.remove_agent("qa").await,
+            Ok(Some("approval-1".to_owned()))
+        );
         assert!(!data.join("agents/qa.md").exists());
         r.reconcile().await;
         assert!(r.shared.file("qa").is_none());
-        assert_eq!(r.store.delete_proposal("qa").await.unwrap(), None, "proposal row is gone");
+        assert_eq!(
+            r.store.delete_proposal("qa").await.unwrap(),
+            None,
+            "proposal row is gone"
+        );
 
         assert_eq!(r.remove_agent("qa").await, Err("no such agent".to_owned()));
-        assert!(r.remove_agent("theuth").await.unwrap_err().contains("built-in"));
+        assert!(
+            r.remove_agent("theuth")
+                .await
+                .unwrap_err()
+                .contains("built-in")
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -2117,57 +2492,114 @@ mod tests {
         let s = Arc::new(Shared::default());
         let mut files = BTreeMap::new();
         files.insert("cto".into(), file::parse("cto", "Boss."));
-        files.insert("ops".into(), file::parse("ops", "---\nreports_to: cto\n---\nOps."));
-        files.insert("bad".into(), file::parse("bad", "---\ncomputer: x\n---\nNope."));
-        s.set_files(files, file::default_agent(std::path::Path::new("/nonexistent")));
+        files.insert(
+            "ops".into(),
+            file::parse("ops", "---\nreports_to: cto\n---\nOps."),
+        );
+        files.insert(
+            "bad".into(),
+            file::parse("bad", "---\ncomputer: x\n---\nNope."),
+        );
+        s.set_files(
+            files,
+            file::default_agent(std::path::Path::new("/nonexistent")),
+        );
         let ops = runtime::SessionId::new();
         s.set_desk("ops", ops);
         let desks = Desks(s);
         assert_eq!(desks.manager_of("ops").as_deref(), Some("cto"));
         assert_eq!(desks.manager_of("cto").as_deref(), Some("theuth"));
-        assert_eq!(desks.manager_of("theuth"), None, "theuth reports to the user");
+        assert_eq!(
+            desks.manager_of("theuth"),
+            None,
+            "theuth reports to the user"
+        );
         assert_eq!(desks.manager_of("nobody"), None);
         assert_eq!(desks.agent_for(&ops.to_string()).as_deref(), Some("ops"));
         assert_eq!(desks.agent_for("not-a-session"), None);
-        assert_eq!(desks.agents(), ["cto", "ops", "theuth"], "valid files, then theuth");
+        assert_eq!(
+            desks.agents(),
+            ["cto", "ops", "theuth"],
+            "valid files, then theuth"
+        );
     }
 
     #[tokio::test]
     async fn lease_gates_desks_and_budget_rows_sum() {
         let data = tmp("lease");
-        std::fs::write(data.join("agents/ops.md"), "---\nbudget: 10 USD/month\n---\nOps.\n").unwrap();
+        std::fs::write(
+            data.join("agents/ops.md"),
+            "---\nbudget: 10 USD/month\n---\nOps.\n",
+        )
+        .unwrap();
         let mut r = roster(&data).await;
         r.reconcile().await;
-        assert_eq!(r.wanted().len(), 1, "ops while we hold by default; theuth's desk is lazy (opens on its first wake)");
-        assert!(r.allowed("theuth"), "theuth's desk is allowed while we hold");
+        assert_eq!(
+            r.wanted().len(),
+            1,
+            "ops while we hold by default; theuth's desk is lazy (opens on its first wake)"
+        );
+        assert!(
+            r.allowed("theuth"),
+            "theuth's desk is allowed while we hold"
+        );
 
         let lease = |h: &str| mesh::LeaseState {
             holder: Some(mesh::EngineId(h.into())),
             since_ms: 0,
             reason: "test".into(),
         };
-        assert_eq!(r.lease.observe(&lease("other")), None, "self unknown: nothing moves");
+        assert_eq!(
+            r.lease.observe(&lease("other")),
+            None,
+            "self unknown: nothing moves"
+        );
         assert_eq!(r.lease.set_self("me".into()), Some(false));
         assert!(r.wanted().is_empty(), "no desks wanted on a non-hub");
         assert_eq!(r.lease.observe(&lease("me")), Some(true));
-        assert_eq!(r.wanted().len(), 1, "ops again once we hold; theuth stays lazy");
+        assert_eq!(
+            r.wanted().len(),
+            1,
+            "ops again once we hold; theuth stays lazy"
+        );
 
         // Budget rows: one per engine, the month sums them; the override is per month.
         let month = budget::month(now_ms());
-        r.store.add_spent("ops", &month, "a", 3.0, "USD", 1).await.unwrap();
-        r.store.add_spent("ops", &month, "a", 2.0, "USD", 2).await.unwrap();
-        r.store.add_spent("ops", &month, "b", 4.0, "USD", 3).await.unwrap();
-        r.store.add_spent("ops", "1999-01", "a", 40.0, "USD", 4).await.unwrap();
+        r.store
+            .add_spent("ops", &month, "a", 3.0, "USD", 1)
+            .await
+            .unwrap();
+        r.store
+            .add_spent("ops", &month, "a", 2.0, "USD", 2)
+            .await
+            .unwrap();
+        r.store
+            .add_spent("ops", &month, "b", 4.0, "USD", 3)
+            .await
+            .unwrap();
+        r.store
+            .add_spent("ops", "1999-01", "a", 40.0, "USD", 4)
+            .await
+            .unwrap();
         assert_eq!(r.store.spent_month("ops", &month).await.unwrap(), 9.0);
-        assert_eq!(r.summary(r.shared.file("ops").unwrap()).await.spent_month, 9.0);
+        assert_eq!(
+            r.summary(r.shared.file("ops").unwrap()).await.spent_month,
+            9.0
+        );
         assert!(!r.store.has_override("ops", &month).await.unwrap());
         r.store.set_override("ops", &month, 5).await.unwrap();
         assert!(r.store.has_override("ops", &month).await.unwrap());
         assert!(!r.store.has_override("ops", "1999-01").await.unwrap());
 
         // The proposal row answers its approval id once.
-        r.store.insert_proposal("qa", "agent:ops", "task-1", 6).await.unwrap();
-        assert_eq!(r.store.delete_proposal("qa").await.unwrap().as_deref(), Some("task-1"));
+        r.store
+            .insert_proposal("qa", "agent:ops", "task-1", 6)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.store.delete_proposal("qa").await.unwrap().as_deref(),
+            Some("task-1")
+        );
         assert_eq!(r.store.delete_proposal("qa").await.unwrap(), None);
         let _ = std::fs::remove_dir_all(&data);
     }

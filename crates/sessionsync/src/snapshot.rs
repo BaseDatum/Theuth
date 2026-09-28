@@ -21,16 +21,16 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr::{self, NonNull};
 
-use agent::store::{ApplyTx, Store, ATTACHED};
+use agent::store::{ATTACHED, ApplyTx, Store};
 use libsqlite3_sys as ffi;
 use replica::PeerId;
 use sqlx::Row as _;
 
 use crate::apply::apply_changeset;
-use crate::types::{Msg, MAX_FRAME};
+use crate::types::{MAX_FRAME, Msg};
 
 /// Rows per changeset entry.
 const CHUNK_ROWS: i64 = 1000;
@@ -64,7 +64,10 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             keyed.iter().map(|c| format!("\"{}\"", c.name)).collect()
         };
         anyhow::ensure!(!pk.is_empty(), "{table}: no primary key");
-        let defs: Vec<String> = cols.iter().map(|c| format!("\"{}\" {}", c.name, c.ty)).collect();
+        let defs: Vec<String> = cols
+            .iter()
+            .map(|c| format!("\"{}\" {}", c.name, c.ty))
+            .collect();
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TEMP TABLE \"{table}\" ({}, PRIMARY KEY ({}))",
             defs.join(", "),
@@ -91,7 +94,9 @@ pub async fn build(store: &Store, origin: &PeerId) -> anyhow::Result<Msg> {
             let (Some(&first), Some(&end)) = (ids.first(), ids.last()) else {
                 break;
             };
-            let scratch = tx.with_raw(|db| unsafe { Scratch::create(db, table) }).await??;
+            let scratch = tx
+                .with_raw(|db| unsafe { Scratch::create(db, table) })
+                .await??;
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO temp.\"{table}\" SELECT * FROM main.\"{table}\" WHERE rowid BETWEEN ? AND ? AND {filter}"
             )))
@@ -206,7 +211,9 @@ pub async fn apply(
         let idx = position(col)?;
         if table == "sessions" {
             let local = local_fences(&mut tx).await?;
-            for (id, own, ep) in scan_sessions(changeset, idx, position("owner")?, position("epoch")?)? {
+            for (id, own, ep) in
+                scan_sessions(changeset, idx, position("owner")?, position("epoch")?)?
+            {
                 if local.get(&id).is_some_and(|&e| e > ep) {
                     fenced.insert(id);
                 } else {
@@ -271,9 +278,11 @@ struct Column {
 }
 
 async fn table_info(tx: &mut ApplyTx<'_>, table: &str) -> anyhow::Result<Vec<Column>> {
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA main.table_info(\"{table}\")")))
-        .fetch_all(&mut **tx)
-        .await?;
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA main.table_info(\"{table}\")"
+    )))
+    .fetch_all(&mut **tx)
+    .await?;
     Ok(rows
         .iter()
         .map(|r| Column {
@@ -313,7 +322,10 @@ impl Scratch {
         let mut n: c_int = 0;
         let mut p: *mut c_void = ptr::null_mut();
         let rc = unsafe { ffi::sqlite3session_changeset(self.0.as_ptr(), &mut n, &mut p) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3session_changeset failed (rc {rc})");
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK,
+            "sqlite3session_changeset failed (rc {rc})"
+        );
         Ok(take_blob(p, n))
     }
 }
@@ -364,9 +376,16 @@ impl Iter {
     fn table(&self) -> anyhow::Result<String> {
         let mut tab: *const c_char = ptr::null();
         let (mut ncol, mut op, mut indirect) = (0, 0, 0);
-        let rc = unsafe { ffi::sqlite3changeset_op(self.0.as_ptr(), &mut tab, &mut ncol, &mut op, &mut indirect) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK && !tab.is_null(), "sqlite3changeset_op failed (rc {rc})");
-        Ok(unsafe { CStr::from_ptr(tab) }.to_string_lossy().into_owned())
+        let rc = unsafe {
+            ffi::sqlite3changeset_op(self.0.as_ptr(), &mut tab, &mut ncol, &mut op, &mut indirect)
+        };
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK && !tab.is_null(),
+            "sqlite3changeset_op failed (rc {rc})"
+        );
+        Ok(unsafe { CStr::from_ptr(tab) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     /// Column `i` as text: new.* first (INSERT/UPDATE), then old.* (DELETE,
@@ -387,7 +406,9 @@ impl Iter {
                 if p.is_null() || n < 0 {
                     return None;
                 }
-                return Some(String::from_utf8_lossy(std::slice::from_raw_parts(p, n as usize)).into_owned());
+                return Some(
+                    String::from_utf8_lossy(std::slice::from_raw_parts(p, n as usize)).into_owned(),
+                );
             }
         }
         None
@@ -401,7 +422,12 @@ impl Drop for Iter {
 }
 
 /// `(id, owner, epoch)` of every `sessions` record.
-fn scan_sessions(changeset: &[u8], id: c_int, owner: c_int, epoch: c_int) -> anyhow::Result<Vec<AppliedSession>> {
+fn scan_sessions(
+    changeset: &[u8],
+    id: c_int,
+    owner: c_int,
+    epoch: c_int,
+) -> anyhow::Result<Vec<AppliedSession>> {
     let mut it = Iter::start(changeset)?;
     let mut out = Vec::new();
     while it.next()? {
@@ -421,19 +447,28 @@ fn filter(changeset: &[u8], col: c_int, fenced: &HashSet<String>) -> anyhow::Res
     let mut it = Iter::start(changeset)?;
     let mut grp: *mut ffi::sqlite3_changegroup = ptr::null_mut();
     let rc = unsafe { ffi::sqlite3changegroup_new(&mut grp) };
-    anyhow::ensure!(rc == ffi::SQLITE_OK && !grp.is_null(), "sqlite3changegroup_new failed (rc {rc})");
+    anyhow::ensure!(
+        rc == ffi::SQLITE_OK && !grp.is_null(),
+        "sqlite3changegroup_new failed (rc {rc})"
+    );
     let result = (|| {
         while it.next()? {
             if it.text(col).is_some_and(|s| fenced.contains(&s)) {
                 continue;
             }
             let rc = unsafe { ffi::sqlite3changegroup_add_change(grp, it.0.as_ptr()) };
-            anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3changegroup_add_change failed (rc {rc})");
+            anyhow::ensure!(
+                rc == ffi::SQLITE_OK,
+                "sqlite3changegroup_add_change failed (rc {rc})"
+            );
         }
         let mut n: c_int = 0;
         let mut p: *mut c_void = ptr::null_mut();
         let rc = unsafe { ffi::sqlite3changegroup_output(grp, &mut n, &mut p) };
-        anyhow::ensure!(rc == ffi::SQLITE_OK, "sqlite3changegroup_output failed (rc {rc})");
+        anyhow::ensure!(
+            rc == ffi::SQLITE_OK,
+            "sqlite3changegroup_output failed (rc {rc})"
+        );
         Ok(take_blob(p, n))
     })();
     unsafe { ffi::sqlite3changegroup_delete(grp) };

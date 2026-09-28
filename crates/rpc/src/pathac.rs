@@ -65,7 +65,10 @@ pub fn trigger(input: &str, cursor: usize, windows: bool) -> Option<(usize, usiz
         .rev()
         .find(|&(i, c)| {
             (c == '"' || c == '\'')
-                && line[..i].chars().next_back().is_none_or(char::is_whitespace)
+                && line[..i]
+                    .chars()
+                    .next_back()
+                    .is_none_or(char::is_whitespace)
                 && !line[i + 1..].contains(c)
         })
         .map(|(i, _)| i + 1);
@@ -100,18 +103,24 @@ fn is_path(token: &str, windows: bool) -> bool {
     if let Some(rest) = token.strip_prefix('~') {
         return rest.is_empty()
             || rest.starts_with('/')
-            || rest
-                .split_once('/')
-                .is_some_and(|(user, _)| !user.is_empty() && user.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.'));
+            || rest.split_once('/').is_some_and(|(user, _)| {
+                !user.is_empty()
+                    && user
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+            });
     }
     if let Some(rest) = token.strip_prefix('$') {
-        return rest
-            .split_once('/')
-            .is_some_and(|(var, _)| !var.is_empty() && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        return rest.split_once('/').is_some_and(|(var, _)| {
+            !var.is_empty() && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
     }
     if windows {
         let b = token.as_bytes();
-        return b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\');
+        return b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'/' || b[2] == b'\\');
     }
     false
 }
@@ -135,7 +144,11 @@ fn expand(dir: &str, cwd: &Path) -> Option<PathBuf> {
     } else {
         PathBuf::from(dir)
     };
-    Some(if path.is_absolute() { path } else { cwd.join(path) })
+    Some(if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    })
 }
 
 /// Complete the token under `cursor` against the file system, relative
@@ -153,14 +166,28 @@ pub async fn complete(cwd: &Path, input: &str, cursor: usize) -> PathCompletion 
     let token = &input[start..end];
     // The typed head stays verbatim; only `segment` is matched against names.
     let windows = platform == "windows";
-    let sep = if windows && token.contains('\\') && !token.contains('/') { '\\' } else { '/' };
+    let sep = if windows && token.contains('\\') && !token.contains('/') {
+        '\\'
+    } else {
+        '/'
+    };
     let seps: &[char] = if windows { &['/', '\\'] } else { &['/'] };
     let (head, segment) = match token.rfind(seps) {
         Some(i) => token.split_at(i + 1),
         None => (token, ""), // only `~` (no separator) triggers without one
     };
-    let head_insert = if head == "~" { "~/".to_string() } else { head.to_string() };
-    let unescape = |s: &str| if quoted { s.to_string() } else { s.replace("\\ ", " ") };
+    let head_insert = if head == "~" {
+        "~/".to_string()
+    } else {
+        head.to_string()
+    };
+    let unescape = |s: &str| {
+        if quoted {
+            s.to_string()
+        } else {
+            s.replace("\\ ", " ")
+        }
+    };
     let dir = expand(&unescape(head), cwd).unwrap_or_default();
     let segment = unescape(segment);
     let mut out = PathCompletion {
@@ -183,7 +210,9 @@ pub async fn complete(cwd: &Path, input: &str, cursor: usize) -> PathCompletion 
             continue;
         }
         let is_dir = match entry.file_type().await {
-            Ok(t) if t.is_symlink() => tokio::fs::metadata(entry.path()).await.is_ok_and(|m| m.is_dir()),
+            Ok(t) if t.is_symlink() => tokio::fs::metadata(entry.path())
+                .await
+                .is_ok_and(|m| m.is_dir()),
             Ok(t) => t.is_dir(),
             Err(_) => false,
         };
@@ -195,8 +224,16 @@ pub async fn complete(cwd: &Path, input: &str, cursor: usize) -> PathCompletion 
     out.candidates = names
         .into_iter()
         .map(|(is_dir, name)| {
-            let tail = if is_dir { sep.to_string() } else { String::new() };
-            let escaped = if quoted { name.clone() } else { name.replace(' ', "\\ ") };
+            let tail = if is_dir {
+                sep.to_string()
+            } else {
+                String::new()
+            };
+            let escaped = if quoted {
+                name.clone()
+            } else {
+                name.replace(' ', "\\ ")
+            };
             PathCandidate {
                 insert: format!("{head_insert}{escaped}{tail}"),
                 display: format!("{name}{tail}"),
@@ -264,7 +301,10 @@ mod tests {
         assert_eq!(expand("~/", Path::new("/cwd")), Some(home.clone()));
         assert_eq!(expand("~/a/", Path::new("/cwd")), Some(home.join("a/")));
         assert_eq!(expand("$HOME/b/", Path::new("/cwd")), Some(home.join("b/")));
-        assert_eq!(expand("./s/", Path::new("/cwd")), Some(PathBuf::from("/cwd/./s/")));
+        assert_eq!(
+            expand("./s/", Path::new("/cwd")),
+            Some(PathBuf::from("/cwd/./s/"))
+        );
         assert_eq!(expand("$NO_SUCH_VAR_PATHAC/", Path::new("/cwd")), None);
     }
 
@@ -307,7 +347,12 @@ mod tests {
         // `~` and `$HOME` expand for lookup only: inserts keep the prefix.
         let home = std::env::home_dir().unwrap();
         let r = complete(cwd, "~/", 2).await;
-        let mut real: Vec<_> = std::fs::read_dir(&home).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.starts_with('.')).collect();
+        let mut real: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
         real.sort();
         assert_eq!(r.candidates.len(), real.len().min(LIMIT));
         assert!(r.candidates.iter().all(|c| c.insert.starts_with("~/")));
@@ -321,7 +366,12 @@ mod tests {
         // Missing dir, no trigger, unknown var: empty, never an error.
         assert!(complete(cwd, "./nope/x", 8).await.candidates.is_empty());
         assert!(complete(cwd, "plain text", 10).await.candidates.is_empty());
-        assert!(complete(cwd, "$NO_SUCH_VAR_PATHAC/x", 21).await.candidates.is_empty());
+        assert!(
+            complete(cwd, "$NO_SUCH_VAR_PATHAC/x", 21)
+                .await
+                .candidates
+                .is_empty()
+        );
         assert_eq!(complete(cwd, "x", 1).await.platform, std::env::consts::OS);
 
         // Truncation at LIMIT.

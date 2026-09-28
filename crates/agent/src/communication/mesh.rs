@@ -58,12 +58,16 @@ impl Failure {
     /// owner's message as it was.
     pub async fn receipt_error(&self) -> String {
         match self {
-            Self::Unreachable { owner, .. } => serde_json::to_string(&FrontDoorError::OwnerUnreachable {
-                last_seen: last_seen(owner).await,
-                owner: owner.clone(),
-            })
-            .expect("plain struct"),
-            Self::Refused(why) if why.contains(tools::communication::DISABLED) => format!("denied: {why}"),
+            Self::Unreachable { owner, .. } => {
+                serde_json::to_string(&FrontDoorError::OwnerUnreachable {
+                    last_seen: last_seen(owner).await,
+                    owner: owner.clone(),
+                })
+                .expect("plain struct")
+            }
+            Self::Refused(why) if why.contains(tools::communication::DISABLED) => {
+                format!("denied: {why}")
+            }
             Self::Refused(why) => why.clone(),
         }
     }
@@ -74,7 +78,10 @@ impl Failure {
 /// now a `failed` receipt carry for an unreachable owner.
 #[derive(Serialize)]
 enum FrontDoorError {
-    OwnerUnreachable { owner: String, last_seen: Option<u64> },
+    OwnerUnreachable {
+        owner: String,
+        last_seen: Option<u64>,
+    },
 }
 
 /// One forwarded peer message: open `theuth/rpc/1` to `owner`, write the
@@ -93,14 +100,20 @@ pub async fn forward(
         return Err(unreachable("not connected".into()));
     }
     let exchange = async {
-        let stream = transport.open(owner, ALPN_RPC).await.map_err(|e| format!("{e:#}"))?;
+        let stream = transport
+            .open(owner, ALPN_RPC)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let (read, mut write) = tokio::io::split(stream);
         let mut line = serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": METHOD, "params": [session, envelope]
         })
         .to_string();
         line.push('\n');
-        write.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+        write
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         write.flush().await.map_err(|e| e.to_string())?;
         let mut reply = String::new();
         BufReader::with_capacity(16 * 1024, read)
@@ -116,15 +129,22 @@ pub async fn forward(
     let reply = match tokio::time::timeout(TIMEOUT, exchange).await {
         Ok(Ok(r)) => r,
         Ok(Err(why)) => return Err(unreachable(why)),
-        Err(_) => return Err(unreachable(format!("no answer within {}s", TIMEOUT.as_secs()))),
+        Err(_) => {
+            return Err(unreachable(format!(
+                "no answer within {}s",
+                TIMEOUT.as_secs()
+            )));
+        }
     };
-    let rp: Response =
-        serde_json::from_str(reply.trim_end()).map_err(|e| unreachable(format!("malformed reply: {e}")))?;
+    let rp: Response = serde_json::from_str(reply.trim_end())
+        .map_err(|e| unreachable(format!("malformed reply: {e}")))?;
     match (rp.result, rp.error) {
         (Some(receipt), _) => Ok(receipt),
         (None, Some(e)) if e.code == OWNER_UNREACHABLE => Err(unreachable(e.message)),
         (None, Some(e)) => Err(Failure::Refused(e.message)),
-        (None, None) => Err(unreachable("malformed reply: neither result nor error".into())),
+        (None, None) => Err(unreachable(
+            "malformed reply: neither result nor error".into(),
+        )),
     }
 }
 
@@ -147,11 +167,18 @@ struct RpcError {
 /// The mesh's last sighting of `owner` in ms since epoch; `None` when the
 /// mesh is not running or never saw it (as 68 F's `unreachable`).
 pub async fn last_seen(owner: &str) -> Option<u64> {
-    let m = kameo::actor::ActorRef::<mesh::Mesh>::lookup(mesh::MESH_ACTOR).ok().flatten()?;
+    let m = kameo::actor::ActorRef::<mesh::Mesh>::lookup(mesh::MESH_ACTOR)
+        .ok()
+        .flatten()?;
     m.ask(mesh::Status)
         .await
         .ok()
-        .and_then(|s| s.peers.into_iter().find(|p| p.id.0 == owner).map(|p| p.last_seen_ms))
+        .and_then(|s| {
+            s.peers
+                .into_iter()
+                .find(|p| p.id.0 == owner)
+                .map(|p| p.last_seen_ms)
+        })
         .filter(|&ms| ms > 0)
 }
 
@@ -223,7 +250,12 @@ pub(crate) mod loopback {
     #[async_trait::async_trait]
     impl Transport for Loop {
         fn peers(&self) -> Vec<PeerId> {
-            self.inboxes.lock().keys().filter(|p| **p != self.me).cloned().collect()
+            self.inboxes
+                .lock()
+                .keys()
+                .filter(|p| **p != self.me)
+                .cloned()
+                .collect()
         }
 
         async fn open(&self, peer: &PeerId, _alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
@@ -273,7 +305,10 @@ mod tests {
 
     /// One owner answering each stream with `answer` (a JSON-RPC response
     /// line), recording the request line.
-    fn fake_owner(t: std::sync::Arc<super::loopback::Loop>, answer: String) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    fn fake_owner(
+        t: std::sync::Arc<super::loopback::Loop>,
+        answer: String,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok((_, stream)) = t.accept(ALPN_RPC).await {
@@ -281,7 +316,10 @@ mod tests {
                 let mut line = String::new();
                 BufReader::new(read).read_line(&mut line).await.unwrap();
                 let _ = tx.send(line);
-                write.write_all(format!("{answer}\n").as_bytes()).await.unwrap();
+                write
+                    .write_all(format!("{answer}\n").as_bytes())
+                    .await
+                    .unwrap();
                 write.flush().await.unwrap();
             }
         });
@@ -323,7 +361,9 @@ mod tests {
         }})
         .to_string();
         let _seen = fake_owner(b.clone(), denied);
-        let e = forward(a.as_ref(), &b.me, SessionId::new(), &envelope()).await.unwrap_err();
+        let e = forward(a.as_ref(), &b.me, SessionId::new(), &envelope())
+            .await
+            .unwrap_err();
         assert!(matches!(e, Failure::Refused(_)));
         assert!(e.receipt_error().await.starts_with("denied: send_message"));
 
@@ -335,7 +375,9 @@ mod tests {
         }})
         .to_string();
         let _seen = fake_owner(d.clone(), moved);
-        let e = forward(c.as_ref(), &d.me, SessionId::new(), &envelope()).await.unwrap_err();
+        let e = forward(c.as_ref(), &d.me, SessionId::new(), &envelope())
+            .await
+            .unwrap_err();
         assert!(matches!(e, Failure::Unreachable { .. }));
         assert_eq!(
             e.receipt_error().await,
@@ -347,9 +389,14 @@ mod tests {
     #[tokio::test]
     async fn a_peer_that_is_not_connected_is_unreachable_without_a_stream() {
         let n = nodes(&["a"]);
-        let e = forward(n[0].as_ref(), &PeerId("ghost".into()), SessionId::new(), &envelope())
-            .await
-            .unwrap_err();
+        let e = forward(
+            n[0].as_ref(),
+            &PeerId("ghost".into()),
+            SessionId::new(),
+            &envelope(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(
             e,
             Failure::Unreachable {

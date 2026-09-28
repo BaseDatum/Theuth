@@ -109,7 +109,7 @@ fn synthesize(
             return Ok(false);
         }
         buf.extend_from_slice(&chunk.map_err(|e| anyhow::anyhow!("{e}"))?);
-        for frame in buf.chunks_exact(FRAME) {
+        for frame in buf.as_chunks::<FRAME>().0 {
             if !send(frame)? {
                 return Ok(false);
             }

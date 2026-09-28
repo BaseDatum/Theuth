@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::Context as _;
 use sqlx::Row as _;
 
-use crate::engine::{now_ms, quote, Attached, Engine};
+use crate::engine::{Attached, Engine, now_ms, quote};
 use crate::store;
 use crate::types::{Change, ChangeBatch, Hlc};
 use crate::value::Val;
@@ -36,7 +36,12 @@ impl Engine {
         // table → pk → changes, in batch order.
         let mut by_table: BTreeMap<&str, BTreeMap<&str, Vec<&Change>>> = BTreeMap::new();
         for c in &batch.changes {
-            by_table.entry(c.table.as_str()).or_default().entry(c.pk.as_str()).or_default().push(c);
+            by_table
+                .entry(c.table.as_str())
+                .or_default()
+                .entry(c.pk.as_str())
+                .or_default()
+                .push(c);
         }
 
         // Local writes still in the capture log happened before this batch was
@@ -46,7 +51,8 @@ impl Engine {
         for table in by_table.keys() {
             let attached = self.tables.lock().get(*table).cloned();
             if let Some(attached) = attached {
-                self.capture_locked(&attached.pool, &[(*table).to_owned()]).await?;
+                self.capture_locked(&attached.pool, &[(*table).to_owned()])
+                    .await?;
             }
         }
         for c in &batch.changes {
@@ -58,7 +64,11 @@ impl Engine {
         for (table, rows) in by_table {
             let attached = self.tables.lock().get(table).cloned();
             let Some(attached) = attached else {
-                tracing::warn!("replica: batch {}#{} touches unattached table {table}; skipped", batch.origin, batch.seq);
+                tracing::warn!(
+                    "replica: batch {}#{} touches unattached table {table}; skipped",
+                    batch.origin,
+                    batch.seq
+                );
                 continue;
             };
             let mut tx = attached.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -106,8 +116,19 @@ impl Engine {
     }
 
     /// The row as it stands, one change per column with the clock it holds.
-    pub(crate) async fn row_as_changes(&self, attached: &Attached, table: &str, pk: &str) -> anyhow::Result<Vec<Change>> {
-        let cols = attached.info.columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
+    pub(crate) async fn row_as_changes(
+        &self,
+        attached: &Attached,
+        table: &str,
+        pk: &str,
+    ) -> anyhow::Result<Vec<Change>> {
+        let cols = attached
+            .info
+            .columns
+            .iter()
+            .map(|c| quote(c))
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
             "SELECT {cols}, \"hlc\" FROM {} WHERE {} = ?",
             quote(table),
@@ -152,8 +173,12 @@ impl Engine {
     // table outgrows the frame.
     pub(crate) async fn snapshot_batch(&self) -> anyhow::Result<Option<ChangeBatch>> {
         let _guard = self.write_lock.lock().await;
-        let attached: Vec<(String, Attached)> =
-            self.tables.lock().iter().map(|(t, a)| (t.clone(), a.clone())).collect();
+        let attached: Vec<(String, Attached)> = self
+            .tables
+            .lock()
+            .iter()
+            .map(|(t, a)| (t.clone(), a.clone()))
+            .collect();
         let mut changes = Vec::new();
         for (table, a) in &attached {
             let pks: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -168,10 +193,21 @@ impl Engine {
             }
         }
         let tombs: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT table_name, pk, hlc FROM tombstone").fetch_all(self.store.pool()).await?;
+            sqlx::query_as("SELECT table_name, pk, hlc FROM tombstone")
+                .fetch_all(self.store.pool())
+                .await?;
         for (table, pk, hlc) in tombs {
-            let Some(hlc) = Hlc::parse(&hlc) else { continue };
-            changes.push(Change { table, pk, column: None, value: None, hlc, deleted: true });
+            let Some(hlc) = Hlc::parse(&hlc) else {
+                continue;
+            };
+            changes.push(Change {
+                table,
+                pk,
+                column: None,
+                value: None,
+                hlc,
+                deleted: true,
+            });
         }
         if changes.is_empty() {
             return Ok(None);
@@ -208,7 +244,11 @@ async fn apply_row(
 
     for c in changes {
         if c.deleted {
-            let newest = clocks.values().chain(winners.values().map(|w| w.0)).max().cloned();
+            let newest = clocks
+                .values()
+                .chain(winners.values().map(|w| w.0))
+                .max()
+                .cloned();
             let beats_row = newest.is_none_or(|n| c.hlc > n);
             let beats_tomb = tomb.as_ref().is_none_or(|t| c.hlc > *t);
             if beats_row && beats_tomb {
@@ -255,7 +295,12 @@ async fn apply_row(
         return Ok(lost_delete);
     }
 
-    let row_hlc = winners.values().map(|w| w.0).max().expect("non-empty").to_text();
+    let row_hlc = winners
+        .values()
+        .map(|w| w.0)
+        .max()
+        .expect("non-empty")
+        .to_text();
     let cols: Vec<&str> = attached
         .info
         .columns
@@ -277,7 +322,12 @@ async fn apply_row(
     for c in &cols {
         q = winners[c].1.clone().bind(q);
     }
-    let updated = q.bind(&row_hlc).bind(pk).execute(&mut *tx).await?.rows_affected();
+    let updated = q
+        .bind(&row_hlc)
+        .bind(pk)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
     if updated == 0 {
         let insert = format!(
             "INSERT INTO {t} ({pk_col}, {cols}, \"hlc\") VALUES (?, {marks}, ?)",

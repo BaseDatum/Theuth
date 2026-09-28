@@ -99,7 +99,10 @@ fn readme_questions_match_the_reference() {
         m.dtype,
         m.load_time
     );
-    assert!(at_load.starts_with("size:") || at_load.len() == 64, "{at_load}");
+    assert!(
+        at_load.starts_with("size:") || at_load.len() == 64,
+        "{at_load}"
+    );
     assert_eq!((m.laya.max_len, m.laya.head_max_len), (512, 192));
     let rows: Vec<_> = readme().iter().map(|q| m.build(q).unwrap()).collect();
     assert!(rows.iter().all(|r| !r.truncated));
@@ -109,7 +112,12 @@ fn readme_questions_match_the_reference() {
     for (out, want) in outs.iter().zip(&reference) {
         assert_eq!(out.probs.len(), want.len());
         assert!((out.probs.iter().sum::<f32>() - 1.0).abs() < 1e-4);
-        assert_eq!(argmax(&out.probs), argmax(want), "{:?} vs {want:?}", out.probs);
+        assert_eq!(
+            argmax(&out.probs),
+            argmax(want),
+            "{:?} vs {want:?}",
+            out.probs
+        );
         for (p, q) in out.probs.iter().zip(want) {
             worst = worst.max((p - q).abs());
         }
@@ -270,7 +278,11 @@ async fn release_reclaims_the_checkpoint() {
         families: [("meeting.kind".to_owned(), FamilyGate::shadow(0.60, 0.20))].into(),
         ..DecisionConfig::default()
     };
-    let engine = Engine::spawn(Engine::new(cfg, dir, Log::new(tmp.path().join("decisions"))));
+    let engine = Engine::spawn(Engine::new(
+        cfg,
+        dir,
+        Log::new(tmp.path().join("decisions")),
+    ));
     let mut ask = Ask::new(
         "meeting.kind",
         Question::Bool {
@@ -289,7 +301,12 @@ async fn release_reclaims_the_checkpoint() {
         assert_eq!(now.len(), 1, "{now:?}");
         assert_eq!(now[0].checkpoint, "default");
         let loaded = process_memory().footprint;
-        assert!(now[0].rss_mb.abs_diff(mb(loaded)) <= 2, "{} vs {}", now[0].rss_mb, mb(loaded));
+        assert!(
+            now[0].rss_mb.abs_diff(mb(loaded)) <= 2,
+            "{} vs {}",
+            now[0].rss_mb,
+            mb(loaded)
+        );
         engine
             .tell(Release {
                 checkpoint: None,
@@ -314,7 +331,10 @@ async fn release_reclaims_the_checkpoint() {
         rows.push((before, loaded, released));
     }
     let (before, loaded, released) = rows[1];
-    assert!(loaded > before + 300_000_000, "the load did not show: {rows:?}");
+    assert!(
+        loaded > before + 300_000_000,
+        "the load did not show: {rows:?}"
+    );
     assert!(
         released <= before + 50_000_000,
         "released {} MB > before {} MB + 50 MB",

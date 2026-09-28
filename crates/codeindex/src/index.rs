@@ -147,12 +147,19 @@ impl Codeindex {
                     // Re-diff under the lock: the world may have moved on.
                     let _g = ri2.write.lock().await;
                     let r = match me.diff(&ri2).await {
-                        Ok(d) => me.write(&ri2, d.changed, d.delete).await.map(|n| (n, d.gone)),
+                        Ok(d) => me
+                            .write(&ri2, d.changed, d.delete)
+                            .await
+                            .map(|n| (n, d.gone)),
                         Err(e) => Err(e),
                     };
                     match r {
-                        Ok((n, gone)) => tracing::info!(root = %ri2.root.display(), reparsed = n, removed = gone, "codeindex background reconcile done"),
-                        Err(e) => tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex background reconcile failed"),
+                        Ok((n, gone)) => {
+                            tracing::info!(root = %ri2.root.display(), reparsed = n, removed = gone, "codeindex background reconcile done")
+                        }
+                        Err(e) => {
+                            tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex background reconcile failed")
+                        }
                     }
                     if let Err(e) = me.cochange(&ri2).await {
                         tracing::warn!(root = %ri2.root.display(), error = format!("{e:#}"), "codeindex co-change walk failed");
@@ -166,7 +173,9 @@ impl Codeindex {
         if !out.stale {
             match self.cochange(ri).await {
                 Ok(w) => out.cochange_walk = w,
-                Err(e) => tracing::warn!(root = %ri.root.display(), error = format!("{e:#}"), "codeindex co-change walk failed"),
+                Err(e) => {
+                    tracing::warn!(root = %ri.root.display(), error = format!("{e:#}"), "codeindex co-change walk failed")
+                }
             }
         }
         out.indexed_files = store::counts(&ri.pool).await?.files;
@@ -183,16 +192,27 @@ impl Codeindex {
             return Ok(None);
         }
         let root = ri.root.clone();
-        let head = tokio::task::spawn_blocking(move || Ok::<_, anyhow::Error>(Git::open(&root)?.and_then(|g| g.head()))).await??;
-        let Some(head) = head.map(|h| h.to_string()) else { return Ok(None) };
+        let head = tokio::task::spawn_blocking(move || {
+            Ok::<_, anyhow::Error>(Git::open(&root)?.and_then(|g| g.head()))
+        })
+        .await??;
+        let Some(head) = head.map(|h| h.to_string()) else {
+            return Ok(None);
+        };
         if store::meta(&ri.pool, "cochange_head").await?.as_deref() == Some(head.as_str()) {
             return Ok(None);
         }
         let t = Instant::now();
-        let indexed: HashMap<String, i64> = store::known_files(&ri.pool).await?.into_iter().map(|(p, (id, ..))| (p, id)).collect();
+        let indexed: HashMap<String, i64> = store::known_files(&ri.pool)
+            .await?
+            .into_iter()
+            .map(|(p, (id, ..))| (p, id))
+            .collect();
         let root = ri.root.clone();
         let (rows, walked) = tokio::task::spawn_blocking(move || {
-            let Some(g) = Git::open(&root)? else { return Ok::<_, anyhow::Error>((Vec::new(), 0)) };
+            let Some(g) = Git::open(&root)? else {
+                return Ok::<_, anyhow::Error>((Vec::new(), 0));
+            };
             g.cochanges(limit, &indexed)
         })
         .await??;
@@ -235,7 +255,12 @@ impl Codeindex {
     /// owning its parsers, then one transaction, then 60 §6 resolution for
     /// the changed files plus the affected set (§5.4). Returns the number of
     /// files written.
-    async fn write(&self, ri: &RootIndex, changed: Vec<Entry>, delete: Vec<i64>) -> anyhow::Result<usize> {
+    async fn write(
+        &self,
+        ri: &RootIndex,
+        changed: Vec<Entry>,
+        delete: Vec<i64>,
+    ) -> anyhow::Result<usize> {
         let enabled: HashSet<&str> = self.cfg.languages.iter().map(String::as_str).collect();
         let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
         let chunk = changed.len().div_ceil(workers).max(1);
@@ -246,13 +271,14 @@ impl Codeindex {
                 .map(|e| {
                     (
                         e.clone(),
-                        e.language != Language::Other
-                            && enabled.contains(e.language.config_name()),
+                        e.language != Language::Other && enabled.contains(e.language.config_name()),
                     )
                 })
                 .collect();
             let root = ri.root.clone();
-            tasks.push(tokio::task::spawn_blocking(move || parse_chunk(&root, entries)));
+            tasks.push(tokio::task::spawn_blocking(move || {
+                parse_chunk(&root, entries)
+            }));
         }
         let root = ri.root.clone();
         let ws = tokio::task::spawn_blocking(move || Workspace::load(&root));
@@ -279,7 +305,12 @@ impl Codeindex {
         let affected = store::apply(&ri.pool, &delete, &writes).await?;
         let apply_ms = t.elapsed().as_millis();
         let mut targets: HashSet<String> = affected.into_iter().collect();
-        targets.extend(writes.iter().filter(|w| w.parsed.is_some()).map(|w| w.path.to_owned()));
+        targets.extend(
+            writes
+                .iter()
+                .filter(|w| w.parsed.is_some())
+                .map(|w| w.path.to_owned()),
+        );
         let t = Instant::now();
         resolve::resolve(&ri.pool, &ws, &targets).await?;
         let resolve_ms = t.elapsed().as_millis();
@@ -290,7 +321,16 @@ impl Codeindex {
         let rank_ms = t.elapsed().as_millis();
         store::set_meta(&ri.pool, "rank_iterations", &iterations.to_string()).await?;
         store::set_meta(&ri.pool, "rank_ms", &rank_ms.to_string()).await?;
-        tracing::debug!(parse_ms, apply_ms, resolve_ms, rank_ms, rank_nodes = nodes, rank_iterations = iterations, resolved_files = targets.len(), "codeindex write phases");
+        tracing::debug!(
+            parse_ms,
+            apply_ms,
+            resolve_ms,
+            rank_ms,
+            rank_nodes = nodes,
+            rank_iterations = iterations,
+            resolved_files = targets.len(),
+            "codeindex write phases"
+        );
         Ok(writes.len())
     }
 
@@ -353,7 +393,9 @@ fn parse_chunk(root: &Path, entries: Vec<(Entry, bool)>) -> anyhow::Result<Vec<P
             out.push(Parsed { entry, file: None });
             continue;
         };
-        let Ok(src) = std::fs::read(root.join(&entry.path)) else { continue };
+        let Ok(src) = std::fs::read(root.join(&entry.path)) else {
+            continue;
+        };
         match parse(&mut parsers, cfg, entry.language, &src) {
             Some(file) => out.push(Parsed {
                 entry,

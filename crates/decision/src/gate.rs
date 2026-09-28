@@ -153,7 +153,9 @@ impl FamilyGate {
 
     /// The checkpoint name this family runs on (`default` when unset).
     pub fn checkpoint(&self) -> &str {
-        self.checkpoint.as_deref().unwrap_or(crate::DEFAULT_CHECKPOINT)
+        self.checkpoint
+            .as_deref()
+            .unwrap_or(crate::DEFAULT_CHECKPOINT)
     }
 
     /// The threshold verdict, mode-independent: a hard error wins, then `tau_top`, then

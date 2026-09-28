@@ -685,7 +685,12 @@ pub fn laya(folded: &[Folded]) -> serde_json::Value {
 
 /// `t --decision-export <prefix> [--since DATE] [--format fixture|laya]`: the captured rows of
 /// `prefix` from `since` on, folded and shaped.
-pub fn export(store: &Store, prefix: &str, since: Option<NaiveDate>, format: Format) -> std::io::Result<serde_json::Value> {
+pub fn export(
+    store: &Store,
+    prefix: &str,
+    since: Option<NaiveDate>,
+    format: Format,
+) -> std::io::Result<serde_json::Value> {
     let folded = fold(store.read(prefix, since)?);
     Ok(match format {
         Format::Fixture => fixture(&folded),
@@ -911,7 +916,12 @@ mod tests {
         assert!(matches!(&rows[1], Row::Amend(a) if a.id == ex.id));
         let info = store.info("meeting", true, true);
         assert_eq!(
-            (info.enabled, info.share, info.examples_today, info.examples_total),
+            (
+                info.enabled,
+                info.share,
+                info.examples_today,
+                info.examples_total
+            ),
             (true, true, 2, 2)
         );
         assert_eq!(info.bytes, std::fs::metadata(&files[0].1).unwrap().len());
@@ -925,18 +935,29 @@ mod tests {
         );
         assert!(store.read("browser", None).unwrap().is_empty());
         // 57 §7.1 "Delete local data": the prefix's files go, nothing else does.
-        store.append("browser", &Row::Example(Box::new(example("x")))).unwrap();
+        store
+            .append("browser", &Row::Example(Box::new(example("x"))))
+            .unwrap();
         store.delete("meeting").unwrap();
         assert!(!tmp.path().join("training/meeting").exists());
         assert_eq!(store.info("meeting", true, false).examples_total, 0);
         assert_eq!(store.info("browser", true, false).examples_total, 1);
     }
 
-    fn folded(tier2: Option<Tier2>, verdict: Verdict, outcome: Option<Option<Brief>>, user: Option<Reaction>) -> Folded {
+    fn folded(
+        tier2: Option<Tier2>,
+        verdict: Verdict,
+        outcome: Option<Option<Brief>>,
+        user: Option<Reaction>,
+    ) -> Folded {
         let mut example = example("them: some talk");
         example.tier2 = tier2;
         example.verdict = verdict;
-        Folded { example, outcome, user }
+        Folded {
+            example,
+            outcome,
+            user,
+        }
     }
 
     fn answer(subject: Option<&str>, cached: Option<&str>) -> Option<Tier2> {
@@ -963,37 +984,84 @@ mod tests {
         };
         // small_talk: tier 2 said null and the turn published nothing (tier3 source).
         let l = label(&folded(answer(None, None), Verdict::Skip, Some(None), None));
-        assert_eq!((l.kind, l.brief.as_deref(), l.source, l.published), (Kind::SmallTalk, None, Source::Tier3, None));
+        assert_eq!(
+            (l.kind, l.brief.as_deref(), l.source, l.published),
+            (Kind::SmallTalk, None, Source::Tier3, None)
+        );
         // small_talk: a tier-1 skip, nothing else heard (oracle_only).
         let l = label(&folded(None, Verdict::Skip, None, None));
         assert_eq!((l.kind, l.source), (Kind::SmallTalk, Source::OracleOnly));
         // named_subject from tier 2's subject, nothing published; tier2 is the source.
-        let l = label(&folded(answer(Some("Planet Nine"), None), model("subject"), None, None));
-        assert_eq!((l.kind, l.brief.as_deref(), l.source, l.published), (Kind::NamedSubject, None, Source::Tier2, None));
+        let l = label(&folded(
+            answer(Some("Planet Nine"), None),
+            model("subject"),
+            None,
+            None,
+        ));
+        assert_eq!(
+            (l.kind, l.brief.as_deref(), l.source, l.published),
+            (Kind::NamedSubject, None, Source::Tier2, None)
+        );
         // named_subject from a publication: the oracle's own cached publish → brief = its candidate id.
         let l = label(&folded(None, publish(), None, None));
-        assert_eq!((l.kind, l.brief.as_deref(), l.source), (Kind::NamedSubject, Some("b1"), Source::OracleOnly));
+        assert_eq!(
+            (l.kind, l.brief.as_deref(), l.source),
+            (Kind::NamedSubject, Some("b1"), Source::OracleOnly)
+        );
         assert_eq!(l.published, Some(brief(Some("row-1"), "SRE-2386")));
         // … and from the turn's outcome: a new (uncached) brief is a publication but no cached pick.
-        let l = label(&folded(answer(Some("Planet Nine"), None), model("subject"), Some(Some(brief(None, "Planet Nine"))), None));
-        assert_eq!((l.kind, l.brief.as_deref(), l.source), (Kind::NamedSubject, None, Source::Tier3));
+        let l = label(&folded(
+            answer(Some("Planet Nine"), None),
+            model("subject"),
+            Some(Some(brief(None, "Planet Nine"))),
+            None,
+        ));
+        assert_eq!(
+            (l.kind, l.brief.as_deref(), l.source),
+            (Kind::NamedSubject, None, Source::Tier3)
+        );
         // The outcome wins over the verdict: shadow "would publish" but the turn published nothing.
         let l = label(&folded(None, publish(), Some(None), None));
-        assert_eq!((l.kind, l.published, l.source), (Kind::General, None, Source::Tier3));
+        assert_eq!(
+            (l.kind, l.published, l.source),
+            (Kind::General, None, Source::Tier3)
+        );
         // general: tier 2 failed, tier 3 published nothing.
-        let l = label(&folded(Some(Tier2::Error { error: "timed out".into() }), model("tier 2: timed out"), Some(None), None));
+        let l = label(&folded(
+            Some(Tier2::Error {
+                error: "timed out".into(),
+            }),
+            model("tier 2: timed out"),
+            Some(None),
+            None,
+        ));
         assert_eq!((l.kind, l.source), (Kind::General, Source::Tier3));
         // general: tier 2 failed and no turn outcome recorded.
-        let l = label(&folded(Some(Tier2::Error { error: "timed out".into() }), model("x"), None, None));
+        let l = label(&folded(
+            Some(Tier2::Error {
+                error: "timed out".into(),
+            }),
+            model("x"),
+            None,
+            None,
+        ));
         assert_eq!((l.kind, l.source), (Kind::General, Source::OracleOnly));
         // A published cached brief whose title is not among the candidates → brief none.
-        let l = label(&folded(None, model("x"), Some(Some(brief(Some("row-9"), "HR-12"))), None));
+        let l = label(&folded(
+            None,
+            model("x"),
+            Some(Some(brief(Some("row-9"), "HR-12"))),
+            None,
+        ));
         assert_eq!((l.kind, l.brief), (Kind::NamedSubject, None));
         // User override: a tap keeps the brief and marks the source; a dismiss clears the brief.
         let l = label(&folded(None, publish(), None, Some(Reaction::Tapped)));
         assert_eq!((l.brief.as_deref(), l.source), (Some("b1"), Source::User));
         let l = label(&folded(None, publish(), None, Some(Reaction::Dismissed)));
-        assert_eq!((l.kind, l.brief, l.source), (Kind::NamedSubject, None, Source::User));
+        assert_eq!(
+            (l.kind, l.brief, l.source),
+            (Kind::NamedSubject, None, Source::User)
+        );
     }
 
     #[test]
@@ -1003,7 +1071,12 @@ mod tests {
         let stray = ExampleId::new();
         let rows = vec![
             Row::Example(Box::new(a.clone())),
-            Row::Amend(Amend::new(a.id, Amendment::Outcome { published: Some(brief(None, "x")) })),
+            Row::Amend(Amend::new(
+                a.id,
+                Amendment::Outcome {
+                    published: Some(brief(None, "x")),
+                },
+            )),
             Row::Amend(Amend::new(a.id, Amendment::User(Reaction::Tapped))),
             Row::Example(Box::new(b.clone())),
             // User without an outcome; then a duplicate outcome — the last one wins.
@@ -1013,14 +1086,25 @@ mod tests {
         ];
         let f = fold(rows);
         assert_eq!(f.len(), 2);
-        assert_eq!((f[0].example.id, f[0].outcome.clone(), f[0].user), (a.id, Some(None), Some(Reaction::Tapped)));
-        assert_eq!((f[1].example.id, f[1].outcome.clone(), f[1].user), (b.id, None, Some(Reaction::Dismissed)));
+        assert_eq!(
+            (f[0].example.id, f[0].outcome.clone(), f[0].user),
+            (a.id, Some(None), Some(Reaction::Tapped))
+        );
+        assert_eq!(
+            (f[1].example.id, f[1].outcome.clone(), f[1].user),
+            (b.id, None, Some(Reaction::Dismissed))
+        );
     }
 
     #[test]
     fn export_shapes() {
         let f = vec![
-            folded(answer(Some("Planet Nine"), None), Verdict::Model { reason: "s".into() }, Some(Some(brief(None, "Planet Nine"))), None),
+            folded(
+                answer(Some("Planet Nine"), None),
+                Verdict::Model { reason: "s".into() },
+                Some(Some(brief(None, "Planet Nine"))),
+                None,
+            ),
             folded(None, Verdict::Skip, None, None),
         ];
         let v = fixture(&f);
@@ -1030,12 +1114,36 @@ mod tests {
         assert_eq!(b0["kind"], "named_subject");
         assert_eq!(b0["source"], "tier3");
         assert_eq!(b0["state"], "them: some talk");
-        assert_eq!(b0["published"], serde_json::json!([{ "title": "Planet Nine", "cached": null }]));
+        assert_eq!(
+            b0["published"],
+            serde_json::json!([{ "title": "Planet Nine", "cached": null }])
+        );
         assert_eq!(b0["expected_brief"], serde_json::Value::Null);
-        assert_eq!(b0["candidates"][0], serde_json::json!({ "id": "b1", "title": "SRE-2386", "aliases": [] }));
+        assert_eq!(
+            b0["candidates"][0],
+            serde_json::json!({ "id": "b1", "title": "SRE-2386", "aliases": [] })
+        );
         assert_eq!(b0["mentions"], serde_json::json!(["Planet Nine"]));
-        assert_eq!((&b0["subject"], &b0["cached"], &b0["user"]), (&serde_json::json!("Planet Nine"), &serde_json::Value::Null, &serde_json::json!("ignored")));
-        assert_eq!((&batches[1]["kind"], &batches[1]["published"], &batches[1]["source"]), (&serde_json::json!("small_talk"), &serde_json::Value::Null, &serde_json::json!("oracle_only")));
+        assert_eq!(
+            (&b0["subject"], &b0["cached"], &b0["user"]),
+            (
+                &serde_json::json!("Planet Nine"),
+                &serde_json::Value::Null,
+                &serde_json::json!("ignored")
+            )
+        );
+        assert_eq!(
+            (
+                &batches[1]["kind"],
+                &batches[1]["published"],
+                &batches[1]["source"]
+            ),
+            (
+                &serde_json::json!("small_talk"),
+                &serde_json::Value::Null,
+                &serde_json::json!("oracle_only")
+            )
+        );
         // The bench's reader accepts it.
         #[derive(Deserialize)]
         struct Batch {
@@ -1046,20 +1154,45 @@ mod tests {
             candidates: Vec<serde_json::Value>,
         }
         let parsed: Vec<Batch> = serde_json::from_value(v["batches"].clone()).unwrap();
-        assert_eq!((parsed[1].kind.as_str(), parsed[1].published.is_none(), parsed[1].expected_brief.is_none()), ("small_talk", true, true));
-        assert_eq!((parsed[0].state.as_str(), parsed[0].candidates.len()), ("them: some talk", 2));
+        assert_eq!(
+            (
+                parsed[1].kind.as_str(),
+                parsed[1].published.is_none(),
+                parsed[1].expected_brief.is_none()
+            ),
+            ("small_talk", true, true)
+        );
+        assert_eq!(
+            (parsed[0].state.as_str(), parsed[0].candidates.len()),
+            ("them: some talk", 2)
+        );
 
         let v = laya(&f);
         let rows = v.as_array().unwrap();
         assert_eq!(rows[0]["workflow"], "meeting");
         assert_eq!(rows[0]["questions"]["kind"]["type"], "noul");
-        assert_eq!(rows[0]["questions"]["brief"]["criteria"]["b2"], "DR cutover");
-        assert_eq!(rows[0]["questions"]["brief"]["criteria"]["none"], "no listed brief fits");
-        assert_eq!(rows[0]["gold"]["kind"], serde_json::json!({ "label": false, "probability_true": 0.0 }));
+        assert_eq!(
+            rows[0]["questions"]["brief"]["criteria"]["b2"],
+            "DR cutover"
+        );
+        assert_eq!(
+            rows[0]["questions"]["brief"]["criteria"]["none"],
+            "no listed brief fits"
+        );
+        assert_eq!(
+            rows[0]["gold"]["kind"],
+            serde_json::json!({ "label": false, "probability_true": 0.0 })
+        );
         assert_eq!(rows[0]["gold"]["brief"]["label"], "none");
         assert_eq!(rows[0]["gold"]["brief"]["probabilities"]["none"], 1.0);
-        assert_eq!((&rows[0]["kind__label"], &rows[0]["brief__label"]), (&serde_json::json!(false), &serde_json::json!("none")));
-        assert_eq!((&rows[1]["kind__label"], &rows[1]["label_source"]), (&serde_json::json!(true), &serde_json::json!("oracle_only")));
+        assert_eq!(
+            (&rows[0]["kind__label"], &rows[0]["brief__label"]),
+            (&serde_json::json!(false), &serde_json::json!("none"))
+        );
+        assert_eq!(
+            (&rows[1]["kind__label"], &rows[1]["label_source"]),
+            (&serde_json::json!(true), &serde_json::json!("oracle_only"))
+        );
         assert_eq!("laya".parse::<Format>(), Ok(Format::Laya));
         assert!("csv".parse::<Format>().is_err());
     }

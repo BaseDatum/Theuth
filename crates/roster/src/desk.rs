@@ -25,8 +25,7 @@ pub fn mcp_visible(agent: &AgentFile, server: &str, tool: &str) -> bool {
     agent.mcp.as_ref().is_none_or(|l| {
         l.iter().any(|m| {
             m == server
-                || m
-                    .split_once('.')
+                || m.split_once('.')
                     .is_some_and(|(s, t)| s == server && t == tool)
         })
     })
@@ -115,7 +114,12 @@ pub fn roster_block<'a>(me: &str, agents: impl Iterator<Item = &'a AgentFile>) -
                 .map(str::trim)
                 .filter(|c| !c.is_empty())
                 .unwrap_or("(no capabilities stated)");
-            format!("- `{}` ({}): {}", f.name, f.title, caps.lines().collect::<Vec<_>>().join(" "))
+            format!(
+                "- `{}` ({}): {}",
+                f.name,
+                f.title,
+                caps.lines().collect::<Vec<_>>().join(" ")
+            )
         })
         .collect();
     if lines.is_empty() {
@@ -145,10 +149,20 @@ pub fn identity(f: &AgentFile, journal: Option<&str>, max_rounds: u32) -> String
         boss = f.reports_to,
         charter = f.body.trim(),
     );
-    if let Some(c) = f.capabilities.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        s.push_str(&format!("\n\nCapabilities (when you are the one to hand a task to): {c}"));
+    if let Some(c) = f
+        .capabilities
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        s.push_str(&format!(
+            "\n\nCapabilities (when you are the one to hand a task to): {c}"
+        ));
     }
-    s.push_str(&format!("\n\n<journal>\n{journal}\n</journal>\n\n{}", manual(f, max_rounds)));
+    s.push_str(&format!(
+        "\n\n<journal>\n{journal}\n</journal>\n\n{}",
+        manual(f, max_rounds)
+    ));
     s
 }
 
@@ -214,7 +228,12 @@ pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
         }
         s.push_str(">\n");
         s.push_str(t.brief.trim());
-        if let Some(w) = t.done_when.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+        if let Some(w) = t
+            .done_when
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+        {
             s.push_str(&format!("\n\nDone when: {w}"));
         } else {
             s.push_str("\n\nDone when: (no acceptance criteria stated — judge on the user's evident intention; set them with `task_update done_when` once you know them)");
@@ -244,7 +263,12 @@ pub fn read_journal(data_dir: &Path, name: &str) -> Option<String> {
 
 /// Overwrite the agent's journal with the closing turn's reply, cut to
 /// `max_bytes` at a char boundary (67 §6.2: ≤ 8 KiB, private).
-pub fn write_journal(data_dir: &Path, name: &str, text: &str, max_bytes: usize) -> std::io::Result<PathBuf> {
+pub fn write_journal(
+    data_dir: &Path,
+    name: &str,
+    text: &str,
+    max_bytes: usize,
+) -> std::io::Result<PathBuf> {
     let text = text.trim();
     let mut cut = text.len().min(max_bytes);
     while !text.is_char_boundary(cut) {
@@ -343,7 +367,9 @@ continuation\"` and your manager is woken.";
     fn continued(events: &[TaskEvent]) -> bool {
         events.iter().any(|e| {
             e.field == "disposition"
-                && e.after.as_deref().is_some_and(|a| a.starts_with("continuing") || a.starts_with("delegated"))
+                && e.after
+                    .as_deref()
+                    .is_some_and(|a| a.starts_with("continuing") || a.starts_with("delegated"))
         })
     }
 
@@ -430,7 +456,9 @@ is re-placed by task_place.",
 
     /// The turn-end row for a wake reason.
     pub fn for_reason(reason: WakeReason) -> Option<&'static Nudge> {
-        TABLE.iter().find(|n| matches!(n, Nudge::TurnEnd { reasons, .. } if reasons.contains(&reason)))
+        TABLE
+            .iter()
+            .find(|n| matches!(n, Nudge::TurnEnd { reasons, .. } if reasons.contains(&reason)))
     }
 
     /// The turn ended by the model's own hand (`agent::AgentEvent::TurnFinished::stop_reason`
@@ -447,7 +475,9 @@ impl Desk {
     /// Idle > `idle_secs` since the last activity, with something in the
     /// transcript and no turn running (67 §6.2 "idle 6 h").
     pub fn idle_due(&self, now_ms: u64, idle_secs: u64) -> bool {
-        self.primed && !self.working && now_ms.saturating_sub(self.last_active_ms) > idle_secs * 1000
+        self.primed
+            && !self.working
+            && now_ms.saturating_sub(self.last_active_ms) > idle_secs * 1000
     }
 }
 
@@ -610,10 +640,19 @@ mod tests {
         let s = Shared::default();
         let mut files = BTreeMap::new();
         files.insert("cto".into(), parse("cto", "Boss."));
-        files.insert("ops".into(), parse("ops", "---\nreports_to: cto\n---\nOps."));
-        files.insert("sre".into(), parse("sre", "---\nreports_to: ops\n---\nSre."));
+        files.insert(
+            "ops".into(),
+            parse("ops", "---\nreports_to: cto\n---\nOps."),
+        );
+        files.insert(
+            "sre".into(),
+            parse("sre", "---\nreports_to: ops\n---\nSre."),
+        );
         files.insert("mkt".into(), parse("mkt", "Marketing."));
-        s.set_files(files, crate::file::default_agent(std::path::Path::new("/nonexistent")));
+        s.set_files(
+            files,
+            crate::file::default_agent(std::path::Path::new("/nonexistent")),
+        );
         s
     }
 
@@ -623,12 +662,19 @@ mod tests {
         let line: Vec<_> = s.line("ops").into_iter().collect();
         assert_eq!(line, ["cto", "ops", "sre", "theuth", "user"]);
         assert!(!s.line("mkt").contains("ops"));
-        assert!(s.line("theuth").contains("mkt"), "everyone reports up to theuth");
+        assert!(
+            s.line("theuth").contains("mkt"),
+            "everyone reports up to theuth"
+        );
     }
 
     #[test]
     fn mcp_allowlist_forms() {
-        let ops = parse("ops", "---\nmcp: [grafana, argocd_prod.list_applications]\n---\nOps.").unwrap();
+        let ops = parse(
+            "ops",
+            "---\nmcp: [grafana, argocd_prod.list_applications]\n---\nOps.",
+        )
+        .unwrap();
         assert!(mcp_visible(&ops, "grafana", "query"));
         assert!(mcp_visible(&ops, "grafana", "anything"));
         assert!(mcp_visible(&ops, "argocd_prod", "list_applications"));
@@ -639,7 +685,10 @@ mod tests {
         let theuth = crate::file::default_agent(std::path::Path::new("/nonexistent"));
         assert!(mcp_visible(&theuth, "argocd_prod", "sync_application"));
         let none = parse("intern", "---\nmcp: []\n---\nIntern.").unwrap();
-        assert!(!mcp_visible(&none, "grafana", "query"), "`mcp: []` = nothing visible");
+        assert!(
+            !mcp_visible(&none, "grafana", "query"),
+            "`mcp: []` = nothing visible"
+        );
     }
 
     #[test]
@@ -648,7 +697,10 @@ mod tests {
         let s = Shared::default();
         let mut files = BTreeMap::new();
         files.insert("ops".into(), parse("ops", "---\nmcp: [grafana]\n---\nOps."));
-        s.set_files(files, crate::file::default_agent(std::path::Path::new("/nonexistent")));
+        s.set_files(
+            files,
+            crate::file::default_agent(std::path::Path::new("/nonexistent")),
+        );
         let s = std::sync::Arc::new(s);
         let desks = crate::Desks(s.clone());
         let ops_desk = SessionId::new();
@@ -660,9 +712,18 @@ mod tests {
         s.set_desk("theuth", theuth_desk);
         assert!(desks.allows(ops_desk, "grafana", "query"));
         assert!(!desks.allows(ops_desk, "slack", "post"));
-        assert!(!desks.allows(ops_child, "slack", "post"), "a child inherits the allowlist");
-        assert!(desks.allows(theuth_desk, "slack", "post"), "theuth is unaffected");
-        assert!(desks.allows(user, "slack", "post"), "a session of no agent is unaffected");
+        assert!(
+            !desks.allows(ops_child, "slack", "post"),
+            "a child inherits the allowlist"
+        );
+        assert!(
+            desks.allows(theuth_desk, "slack", "post"),
+            "theuth is unaffected"
+        );
+        assert!(
+            desks.allows(user, "slack", "post"),
+            "a session of no agent is unaffected"
+        );
     }
 
     #[test]
@@ -678,7 +739,11 @@ mod tests {
         assert_eq!(s.agent_of(child).as_deref(), Some("ops"));
         assert_eq!(s.agent_of(stranger), None);
         assert_eq!(s.clear_desk("ops"), Some(desk));
-        assert_eq!(s.agent_of(desk).as_deref(), Some("ops"), "the closing turn is still the agent's");
+        assert_eq!(
+            s.agent_of(desk).as_deref(),
+            Some("ops"),
+            "the closing turn is still the agent's"
+        );
         s.forget(desk);
         assert_eq!(s.agent_of(desk), None);
         assert_eq!(s.agent_of(child).as_deref(), Some("ops"));
@@ -765,27 +830,50 @@ Attached (read with the tool for the kind, see Attachments):\n\
         assert!(text.contains("model m1, tools mutating"));
         assert!(text.contains("at most 3 rounds per task"));
         assert!(text.contains("`task_reassign {task, to, why}`"));
-        assert!(text.contains("Assigning yourself plus a please-review comment is not a review path"));
-        assert!(text.contains("`blockers_resolved`") && text.contains("`children_completed`") && text.contains("never poll"));
-        assert!(text.contains("`review | blocked | done(by reviewer) | delegated (child task exists) | continuing`"));
+        assert!(
+            text.contains("Assigning yourself plus a please-review comment is not a review path")
+        );
+        assert!(
+            text.contains("`blockers_resolved`")
+                && text.contains("`children_completed`")
+                && text.contains("never poll")
+        );
+        assert!(text.contains(
+            "`review | blocked | done(by reviewer) | delegated (child task exists) | continuing`"
+        ));
         assert!(text.contains("`blocked: \"no continuation\"` and your manager is woken"));
         assert!(!text.contains("You are theuth"));
         assert!(identity(&f, None, 3).contains("(first episode: no journal yet)"));
         let child = child_identity(&f, None);
-        assert!(child.starts_with("You are working for Infrastructure (`karol`), an agent on this theuth roster. Its desk"));
+        assert!(child.starts_with(
+            "You are working for Infrastructure (`karol`), an agent on this theuth roster. Its desk"
+        ));
     }
 
     /// 70 DESK-PROTOCOL (e): the fit-check roster lists every other active agent with capabilities.
     #[test]
     fn roster_block_lists_active_others_with_capabilities() {
-        let karol = parse("karol", "---\ntitle: Infrastructure\ncapabilities: k8s clusters,\n  networks\n---\nK.").unwrap();
+        let karol = parse(
+            "karol",
+            "---\ntitle: Infrastructure\ncapabilities: k8s clusters,\n  networks\n---\nK.",
+        )
+        .unwrap();
         let paused = parse("mkt", "---\npaused: true\ncapabilities: ads\n---\nM.").unwrap();
         let plain = parse("ops", "Ops.").unwrap();
         let files = [karol.clone(), paused, plain.clone()];
         let block = roster_block("theuth", files.iter());
-        assert!(block.contains("- `karol` (Infrastructure): k8s clusters, networks"), "{block}");
-        assert!(block.contains("- `ops` (ops): (no capabilities stated)"), "{block}");
-        assert!(!block.contains("mkt"), "paused agents are not offered: {block}");
+        assert!(
+            block.contains("- `karol` (Infrastructure): k8s clusters, networks"),
+            "{block}"
+        );
+        assert!(
+            block.contains("- `ops` (ops): (no capabilities stated)"),
+            "{block}"
+        );
+        assert!(
+            !block.contains("mkt"),
+            "paused agents are not offered: {block}"
+        );
         assert!(block.contains("`task_reassign`"));
         assert!(roster_block("karol", [karol].iter()).contains("(no other active agent)"));
     }
@@ -861,16 +949,25 @@ Attached (read with the tool for the kind, see Attachments):\n\
             before: None,
             after: Some(after.into()),
         };
-        let judge = |s: &Serving, t: &tasks::Task, events: &[TaskEvent], live: bool| match nudges::for_reason(s.wake.reason) {
-            Some(nudges::Nudge::TurnEnd { unhandled, text, .. }) => (unhandled(s, t, events, live), text(t)),
-            _ => panic!("no row for {:?}", s.wake.reason),
+        let judge = |s: &Serving, t: &tasks::Task, events: &[TaskEvent], live: bool| {
+            match nudges::for_reason(s.wake.reason) {
+                Some(nudges::Nudge::TurnEnd {
+                    unhandled, text, ..
+                }) => (unhandled(s, t, events, live), text(t)),
+                _ => panic!("no row for {:?}", s.wake.reason),
+            }
         };
 
         // assigned: still todo → nudge names the four options
         let s = serving(R::Assigned, S::Todo, "agent:karol");
         let (u, text) = judge(&s, &t, &[], false);
         assert!(u);
-        for opt in ["disposition: done", "disposition: review {reviewer}", "disposition: blocked {on}", "disposition: continuing {by}"] {
+        for opt in [
+            "disposition: done",
+            "disposition: review {reviewer}",
+            "disposition: blocked {on}",
+            "disposition: continuing {by}",
+        ] {
             assert!(text.contains(opt), "{text}");
         }
         assert!(text.contains(nudges::THEN));
@@ -881,7 +978,10 @@ Attached (read with the tool for the kind, see Attachments):\n\
         // checked out, child running → handled; child gone, nothing filed → unhandled
         t.state = S::Doing;
         assert!(!judge(&s, &t, &[], true).0);
-        assert!(judge(&s, &t, &[], false).0, "child returned, no disposition: the follow-through nudge");
+        assert!(
+            judge(&s, &t, &[], false).0,
+            "child returned, no disposition: the follow-through nudge"
+        );
         assert!(!judge(&s, &t, &[ev("disposition", "delegated:77")], false).0);
         assert!(!judge(&s, &t, &[ev("disposition", "continuing:nightly")], false).0);
         // a disposition moved it → handled
@@ -890,7 +990,10 @@ Attached (read with the tool for the kind, see Attachments):\n\
 
         // review wake: only the transition counts
         let s = serving(R::Review, S::Review, "agent:ops");
-        assert!(judge(&s, &t, &[ev("comment", "looks fine to me")], false).0, "an opinion is not a review");
+        assert!(
+            judge(&s, &t, &[ev("comment", "looks fine to me")], false).0,
+            "an opinion is not a review"
+        );
         t.state = S::Done;
         assert!(!judge(&s, &t, &[], false).0);
 
@@ -901,7 +1004,13 @@ Attached (read with the tool for the kind, see Attachments):\n\
         assert!(!judge(&s, &t, &[ev("comment", "answered")], false).0);
 
         // the time rows exist for the ruling
-        assert!(nudges::TABLE.iter().filter(|n| matches!(n, nudges::Nudge::Time { .. })).count() >= 2);
+        assert!(
+            nudges::TABLE
+                .iter()
+                .filter(|n| matches!(n, nudges::Nudge::Time { .. }))
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -916,25 +1025,44 @@ Attached (read with the tool for the kind, see Attachments):\n\
             serving: None,
         };
         let idle = 21_600;
-        assert!(!d.idle_due(1_000_000 + idle * 1000, idle), "exactly the limit is not over it");
+        assert!(
+            !d.idle_due(1_000_000 + idle * 1000, idle),
+            "exactly the limit is not over it"
+        );
         assert!(d.idle_due(1_000_000 + idle * 1000 + 1, idle));
         d.working = true;
-        assert!(!d.idle_due(u64::MAX / 2, idle), "a running turn is not idle");
+        assert!(
+            !d.idle_due(u64::MAX / 2, idle),
+            "a running turn is not idle"
+        );
         d.working = false;
         d.primed = false;
-        assert!(!d.idle_due(u64::MAX / 2, idle), "an empty desk has nothing to journal");
+        assert!(
+            !d.idle_due(u64::MAX / 2, idle),
+            "an empty desk has nothing to journal"
+        );
         assert!(context_due(61, 100, 60));
         assert!(!context_due(60, 100, 60));
-        assert!(!context_due(1_000_000, 0, 60), "unknown window never rotates");
+        assert!(
+            !context_due(1_000_000, 0, 60),
+            "unknown window never rotates"
+        );
     }
 
     #[test]
     fn journal_is_written_and_capped() {
-        let dir = std::env::temp_dir().join(format!("roster-journal-{}-{}", std::process::id(), uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!(
+            "roster-journal-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
         assert_eq!(read_journal(&dir, "ops"), None);
         let path = write_journal(&dir, "ops", "  ## Done\n- rotated cert\n", 8192).unwrap();
         assert_eq!(path, dir.join("roster/journal/ops.md"));
-        assert_eq!(read_journal(&dir, "ops").unwrap(), "## Done\n- rotated cert\n");
+        assert_eq!(
+            read_journal(&dir, "ops").unwrap(),
+            "## Done\n- rotated cert\n"
+        );
         // Cap at a char boundary: "éé" is 4 bytes; a 3-byte cap keeps one char.
         write_journal(&dir, "ops", "éé", 3).unwrap();
         assert_eq!(read_journal(&dir, "ops").unwrap(), "é\n");

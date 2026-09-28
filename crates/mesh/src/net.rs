@@ -19,7 +19,9 @@ use anyhow::Context as _;
 use data_encoding::BASE32_NOPAD;
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
+};
 use iroh_gossip::net::Gossip;
 use replica::{ByteStream, PeerEvent, PeerId, Transport};
 use serde::{Deserialize, Serialize};
@@ -136,7 +138,8 @@ impl Sampler {
         }
         let since = *self.over_since_ms.get_or_insert(window_start);
         if now_ms.saturating_sub(since) >= STORM_SUSTAIN.as_millis() as u64
-            && (self.last_warn_ms == 0 || now_ms.saturating_sub(self.last_warn_ms) >= STORM_WARN_EVERY.as_millis() as u64)
+            && (self.last_warn_ms == 0
+                || now_ms.saturating_sub(self.last_warn_ms) >= STORM_WARN_EVERY.as_millis() as u64)
         {
             self.last_warn_ms = now_ms;
             return Some(rate);
@@ -147,8 +150,13 @@ impl Sampler {
 
 impl Counters {
     fn frame(&self, alpn: &str, limit: u64) {
-        let total = self.frames_in.load(Ordering::Relaxed) + self.frames_out.load(Ordering::Relaxed);
-        let warn = self.sampler.lock().unwrap_or_else(|p| p.into_inner()).sample(now_ms(), total, limit);
+        let total =
+            self.frames_in.load(Ordering::Relaxed) + self.frames_out.load(Ordering::Relaxed);
+        let warn = self
+            .sampler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sample(now_ms(), total, limit);
         if let Some(rate) = warn {
             tracing::warn!("mesh: {alpn} at {rate} frames/s for 10 s (limit {limit}): storm?");
         }
@@ -164,14 +172,20 @@ struct Counted {
 }
 
 impl tokio::io::AsyncRead for Counted {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         let before = buf.filled().len();
         let r = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = &r {
             let n = buf.filled().len() - before;
             if n > 0 {
                 self.counters.frames_in.fetch_add(1, Ordering::Relaxed);
-                self.counters.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
+                self.counters
+                    .bytes_in
+                    .fetch_add(n as u64, Ordering::Relaxed);
                 self.counters.frame(&self.alpn, self.limit);
             }
         }
@@ -180,11 +194,17 @@ impl tokio::io::AsyncRead for Counted {
 }
 
 impl tokio::io::AsyncWrite for Counted {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         let r = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = &r {
             self.counters.frames_out.fetch_add(1, Ordering::Relaxed);
-            self.counters.bytes_out.fetch_add(*n as u64, Ordering::Relaxed);
+            self.counters
+                .bytes_out
+                .fetch_add(*n as u64, Ordering::Relaxed);
             self.counters.frame(&self.alpn, self.limit);
         }
         r
@@ -235,7 +255,13 @@ pub struct Net {
     events: broadcast::Sender<PeerEvent>,
     /// Bumped on every peer-set change; the connector and the lease loop watch it.
     pub peers_gen: watch::Sender<u64>,
-    inbound: HashMap<&'static str, (mpsc::Sender<InboundItem>, tokio::sync::Mutex<mpsc::Receiver<InboundItem>>)>,
+    inbound: HashMap<
+        &'static str,
+        (
+            mpsc::Sender<InboundItem>,
+            tokio::sync::Mutex<mpsc::Receiver<InboundItem>>,
+        ),
+    >,
     /// Per ALPN, what its streams moved (69 audit).
     traffic: Mutex<HashMap<String, Arc<Counters>>>,
     storm_frames_per_sec: u64,
@@ -243,7 +269,9 @@ pub struct Net {
 
 impl std::fmt::Debug for Net {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Net").field("id", &self.id).finish_non_exhaustive()
+        f.debug_struct("Net")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -260,16 +288,27 @@ const STREAM_ALPNS: [&str; 7] = [
 
 impl Net {
     /// Bind the endpoint, spawn the router and gossip, load the paired set.
-    pub async fn bind(opts: BindOpts, store: Store, name: String, hub_pref: HubPref) -> anyhow::Result<Arc<Self>> {
+    pub async fn bind(
+        opts: BindOpts,
+        store: Store,
+        name: String,
+        hub_pref: HubPref,
+    ) -> anyhow::Result<Arc<Self>> {
         // The relays this engine will use once it has a peer (`join_network`);
         // until then the endpoint binds with an empty relay map so a lone
         // engine dials nothing. `Disabled` would drop the relay transport for good.
         let relays = match opts.relay.trim() {
             "" | "none" | "off" => RelayMap::empty(),
             RELAY_PUBLIC => RelayMode::Default.relay_map(),
-            url => RelayMap::from(RelayUrl::from_str(url).with_context(|| format!("mesh.relay: {url}"))?),
+            url => RelayMap::from(
+                RelayUrl::from_str(url).with_context(|| format!("mesh.relay: {url}"))?,
+            ),
         };
-        let relay_mode = if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(RelayMap::empty()) };
+        let relay_mode = if relays.is_empty() {
+            RelayMode::Disabled
+        } else {
+            RelayMode::Custom(RelayMap::empty())
+        };
         let mut alpns: Vec<Vec<u8>> = STREAM_ALPNS.iter().map(|a| a.as_bytes().to_vec()).collect();
         alpns.push(ALPN_MESH.as_bytes().to_vec());
         alpns.push(replica::ALPN_GOSSIP.as_bytes().to_vec());
@@ -290,7 +329,9 @@ impl Net {
             .filter_map(|p| EndpointId::from_str(&p.id.0).ok())
             .collect();
 
-        let gossip = Gossip::builder().alpn(replica::ALPN_GOSSIP).spawn(endpoint.clone());
+        let gossip = Gossip::builder()
+            .alpn(replica::ALPN_GOSSIP)
+            .spawn(endpoint.clone());
         let (events, _) = broadcast::channel(256);
         let (peers_gen, _) = watch::channel(0);
         let mut inbound = HashMap::new();
@@ -304,9 +345,21 @@ impl Net {
         let net = Arc::new_cyclic(|weak: &std::sync::Weak<Net>| {
             let mut rb = Router::builder(endpoint.clone())
                 .accept(ALPN_MESH, Control(weak.clone()))
-                .accept(replica::ALPN_GOSSIP, Gated { net: weak.clone(), inner: gossip.clone() });
+                .accept(
+                    replica::ALPN_GOSSIP,
+                    Gated {
+                        net: weak.clone(),
+                        inner: gossip.clone(),
+                    },
+                );
             for alpn in STREAM_ALPNS {
-                rb = rb.accept(alpn, Inbound { net: weak.clone(), alpn });
+                rb = rb.accept(
+                    alpn,
+                    Inbound {
+                        net: weak.clone(),
+                        alpn,
+                    },
+                );
             }
             Net {
                 endpoint: endpoint.clone(),
@@ -358,8 +411,12 @@ impl Net {
         for cfg in self.relays.relays::<Vec<_>>() {
             self.endpoint.insert_relay(cfg.url.clone(), cfg).await;
         }
-        if self.discovery && let Ok(services) = self.endpoint.address_lookup() {
-            use iroh::address_lookup::{AddressLookupBuilder, DnsAddressLookup, PkarrPublisher, PkarrResolver};
+        if self.discovery
+            && let Ok(services) = self.endpoint.address_lookup()
+        {
+            use iroh::address_lookup::{
+                AddressLookupBuilder, DnsAddressLookup, PkarrPublisher, PkarrResolver,
+            };
             match PkarrPublisher::n0_dns().into_address_lookup(&self.endpoint) {
                 Ok(s) => services.add(s),
                 Err(e) => tracing::warn!("mesh: pkarr publisher unavailable: {e}"),
@@ -377,7 +434,11 @@ impl Net {
                 Err(e) => tracing::warn!("mesh: mDNS discovery unavailable: {e}"),
             }
         }
-        tracing::info!("mesh: joined the network (relay {}, discovery {})", self.relay, self.discovery);
+        tracing::info!(
+            "mesh: joined the network (relay {}, discovery {})",
+            self.relay,
+            self.discovery
+        );
     }
 
     // --- small state -----------------------------------------------------
@@ -398,17 +459,27 @@ impl Net {
 
     /// Is `id` a live (not removed) peer?
     pub fn is_paired(&self, id: &EndpointId) -> bool {
-        self.paired.read().unwrap_or_else(|p| p.into_inner()).contains(id)
+        self.paired
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(id)
     }
 
     /// Paired ids (for gossip bootstrap).
     pub fn paired_ids(&self) -> Vec<EndpointId> {
-        self.paired.read().unwrap_or_else(|p| p.into_inner()).iter().copied().collect()
+        self.paired
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .copied()
+            .collect()
     }
 
     /// Connected right now?
     pub fn is_connected(&self, id: &EndpointId) -> bool {
-        Self::lock(&self.presence).get(id).is_some_and(|p| !p.conns.is_empty())
+        Self::lock(&self.presence)
+            .get(id)
+            .is_some_and(|p| !p.conns.is_empty())
     }
 
     /// Connected peers with when each connection run started (ms).
@@ -455,7 +526,7 @@ impl Net {
             match pending.as_ref().filter(|p| p.live()) {
                 Some(p) => p.token.clone(),
                 None => {
-                    let p = Pending::new();
+                    let p = Pending::fresh();
                     let token = p.token.clone();
                     *pending = Some(p);
                     token
@@ -465,10 +536,18 @@ impl Net {
         // Join now so the string carries a relay address (a moment for the home relay).
         self.join_network().await;
         let _ = tokio::time::timeout(Duration::from_secs(3), self.endpoint.online()).await;
-        let vault_key = match kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR).ok().flatten() {
-            Some(a) => a.ask(secrets::GetMeshKey).await.ok().map(|k| BASE32_NOPAD.encode(&k)),
-            None => None,
-        };
+        let vault_key =
+            match kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
+                .ok()
+                .flatten()
+            {
+                Some(a) => a
+                    .ask(secrets::GetMeshKey)
+                    .await
+                    .ok()
+                    .map(|k| BASE32_NOPAD.encode(&k)),
+                None => None,
+            };
         pairing::build(&Payload {
             id: self.endpoint.id(),
             name: self.name.clone(),
@@ -487,10 +566,13 @@ impl Net {
             anyhow::bail!("that is this engine's own pairing string");
         }
         self.join_network().await;
-        let conn = tokio::time::timeout(CONNECT_TIMEOUT, self.endpoint.connect(payload.addr(), ALPN_MESH.as_bytes()))
-            .await
-            .context("dial timed out")?
-            .context("dial")?;
+        let conn = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            self.endpoint.connect(payload.addr(), ALPN_MESH.as_bytes()),
+        )
+        .await
+        .context("dial timed out")?
+        .context("dial")?;
         if conn.remote_id() != payload.id {
             anyhow::bail!("dialed engine has a different id");
         }
@@ -518,9 +600,15 @@ impl Net {
         let net = self.clone();
         tokio::spawn(async move { net.drive(conn).await });
         // The inviter's vault key becomes ours before any of its rows arrive (67 §5.4).
-        if let Some(key) = payload.vault_key.as_deref().and_then(|k| BASE32_NOPAD.decode(k.to_ascii_uppercase().as_bytes()).ok())
+        if let Some(key) = payload
+            .vault_key
+            .as_deref()
+            .and_then(|k| BASE32_NOPAD.decode(k.to_ascii_uppercase().as_bytes()).ok())
             && let Ok(key) = <[u8; 32]>::try_from(key.as_slice())
-            && let Some(a) = kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR).ok().flatten()
+            && let Some(a) =
+                kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
+                    .ok()
+                    .flatten()
             && let Err(e) = a.ask(secrets::AdoptMeshKey(key)).await
         {
             tracing::warn!("mesh: adopting the vault key: {e}");
@@ -552,7 +640,9 @@ impl Net {
         let unknown = {
             let paired = self.paired.read().unwrap_or_else(|p| p.into_inner());
             incoming.iter().any(|p| {
-                p.removed_ms.is_none() && p.id != self.id && EndpointId::from_str(&p.id.0).is_ok_and(|e| !paired.contains(&e))
+                p.removed_ms.is_none()
+                    && p.id != self.id
+                    && EndpointId::from_str(&p.id.0).is_ok_and(|e| !paired.contains(&e))
             })
         };
         if changed.is_empty() && !unknown {
@@ -572,11 +662,16 @@ impl Net {
         self.store.put_peer(&row).await?;
         self.refresh_paired().await?;
         if let Ok(eid) = EndpointId::from_str(&id.0) {
-            let conns = Self::lock(&self.presence).remove(&eid).map(|p| p.conns).unwrap_or_default();
+            let conns = Self::lock(&self.presence)
+                .remove(&eid)
+                .map(|p| p.conns)
+                .unwrap_or_default();
             for c in conns {
                 c.close(0u32.into(), b"removed");
             }
-            let _ = self.events.send(PeerEvent::Disconnected(PeerId(id.0.clone())));
+            let _ = self
+                .events
+                .send(PeerEvent::Disconnected(PeerId(id.0.clone())));
         }
         Ok(())
     }
@@ -609,7 +704,13 @@ impl Net {
             .collect();
         for c in conns {
             if let Ok((mut send, _recv)) = c.open_bi().await {
-                let _ = write_msg(&mut send, &Msg::Peers { peers: peers.clone() }).await;
+                let _ = write_msg(
+                    &mut send,
+                    &Msg::Peers {
+                        peers: peers.clone(),
+                    },
+                )
+                .await;
             }
         }
     }
@@ -619,14 +720,19 @@ impl Net {
         let eid = EndpointId::from_str(&p.id.0).ok();
         let (reachable, last_seen_ms) = eid.map_or((false, 0), |e| {
             let pr = Self::lock(&self.presence);
-            pr.get(&e).map_or((false, 0), |x| (!x.conns.is_empty(), x.since_ms))
+            pr.get(&e)
+                .map_or((false, 0), |x| (!x.conns.is_empty(), x.since_ms))
         });
         Peer {
             id: p.id.clone(),
             name: p.name.clone(),
             addrs: p.addrs.iter().map(ToString::to_string).collect(),
             reachable,
-            last_seen_ms: if reachable { now_ms() } else { last_seen_ms.max(p.added_ms) },
+            last_seen_ms: if reachable {
+                now_ms()
+            } else {
+                last_seen_ms.max(p.added_ms)
+            },
             hub_pref: p.hub_pref,
         }
     }
@@ -662,7 +768,13 @@ impl Net {
                     let _ = send.finish();
                 }
                 Ok(Msg::PairHello { .. }) => {
-                    let _ = write_msg(&mut send, &Msg::PairReject { reason: "already paired".into() }).await;
+                    let _ = write_msg(
+                        &mut send,
+                        &Msg::PairReject {
+                            reason: "already paired".into(),
+                        },
+                    )
+                    .await;
                 }
                 Ok(other) => tracing::debug!("mesh: ignoring {other:?} from {}", peer.fmt_short()),
                 Err(e) => tracing::debug!("mesh: control stream from {}: {e:#}", peer.fmt_short()),
@@ -683,7 +795,9 @@ impl Net {
         };
         if first {
             tracing::info!("mesh: connected {}", peer.fmt_short());
-            let _ = self.events.send(PeerEvent::Connected(PeerId(peer.to_string())));
+            let _ = self
+                .events
+                .send(PeerEvent::Connected(PeerId(peer.to_string())));
         }
     }
 
@@ -698,7 +812,9 @@ impl Net {
         };
         if last {
             tracing::info!("mesh: disconnected {}", peer.fmt_short());
-            let _ = self.events.send(PeerEvent::Disconnected(PeerId(peer.to_string())));
+            let _ = self
+                .events
+                .send(PeerEvent::Disconnected(PeerId(peer.to_string())));
         }
     }
 
@@ -713,25 +829,42 @@ impl Net {
         // Stranger: the first stream must be a valid PairHello.
         let (mut send, mut recv) = conn.accept_bi().await?;
         let Ok(Msg::PairHello { token, me, peers }) = read_msg(&mut recv).await else {
-            tracing::debug!("mesh: {} is not in the paired set and sent no PairHello; closed", peer.fmt_short());
+            tracing::debug!(
+                "mesh: {} is not in the paired set and sent no PairHello; closed",
+                peer.fmt_short()
+            );
             conn.close(0u32.into(), b"not paired");
             return Ok(());
         };
         let ok = {
             let mut pending = Self::lock(&self.pending);
-            let live = pending.as_ref().is_some_and(|p| p.live() && p.token == token);
+            let live = pending
+                .as_ref()
+                .is_some_and(|p| p.live() && p.token == token);
             if live {
                 *pending = None;
             }
             live
         };
         if !ok {
-            let _ = write_msg(&mut send, &Msg::PairReject { reason: "invalid or expired token".into() }).await;
+            let _ = write_msg(
+                &mut send,
+                &Msg::PairReject {
+                    reason: "invalid or expired token".into(),
+                },
+            )
+            .await;
             conn.close(0u32.into(), b"bad token");
             return Ok(());
         }
         if me.id.0 != peer.to_string() {
-            let _ = write_msg(&mut send, &Msg::PairReject { reason: "id mismatch".into() }).await;
+            let _ = write_msg(
+                &mut send,
+                &Msg::PairReject {
+                    reason: "id mismatch".into(),
+                },
+            )
+            .await;
             return Ok(());
         }
         let reply = Msg::PairAck {
@@ -764,9 +897,9 @@ impl Net {
                 keep
             });
             for id in want {
-                if !tasks.contains_key(&id) {
+                if let std::collections::hash_map::Entry::Vacant(e) = tasks.entry(id) {
                     let c = cancel.child_token();
-                    tasks.insert(id, c.clone());
+                    e.insert(c.clone());
                     tokio::spawn(self.clone().connect_loop(id, c));
                 }
             }
@@ -810,7 +943,10 @@ impl Net {
                 }
             }
             let addr = self.addr_for(peer).await;
-            let dial = tokio::time::timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, ALPN_MESH.as_bytes()));
+            let dial = tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                self.endpoint.connect(addr, ALPN_MESH.as_bytes()),
+            );
             let conn = tokio::select! {
                 _ = cancel.cancelled() => return,
                 r = dial => r,
@@ -847,10 +983,13 @@ impl Net {
             return Ok(c.clone());
         }
         let addr = self.addr_for(peer).await;
-        let conn = tokio::time::timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, alpn.as_bytes()))
-            .await
-            .context("dial timed out")?
-            .with_context(|| format!("dial {} on {alpn}", peer.fmt_short()))?;
+        let conn = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            self.endpoint.connect(addr, alpn.as_bytes()),
+        )
+        .await
+        .context("dial timed out")?
+        .with_context(|| format!("dial {} on {alpn}", peer.fmt_short()))?;
         cache.insert(key, conn.clone());
         Ok(conn)
     }
@@ -864,7 +1003,10 @@ impl Net {
 
     /// Wrap `stream` so its reads and writes count toward `alpn`.
     fn count(&self, alpn: &str, stream: Box<dyn ByteStream>) -> Box<dyn ByteStream> {
-        let counters = Self::lock(&self.traffic).entry(alpn.to_owned()).or_default().clone();
+        let counters = Self::lock(&self.traffic)
+            .entry(alpn.to_owned())
+            .or_default()
+            .clone();
         Box::new(Counted {
             inner: stream,
             counters,
@@ -893,7 +1035,10 @@ impl Net {
 #[async_trait::async_trait]
 impl Transport for Net {
     fn peers(&self) -> Vec<PeerId> {
-        self.connected().into_iter().map(|(id, _)| PeerId(id.0)).collect()
+        self.connected()
+            .into_iter()
+            .map(|(id, _)| PeerId(id.0))
+            .collect()
     }
 
     async fn open(&self, peer: &PeerId, alpn: &str) -> anyhow::Result<Box<dyn ByteStream>> {
@@ -909,7 +1054,10 @@ impl Transport for Net {
     }
 
     async fn accept(&self, alpn: &str) -> anyhow::Result<(PeerId, Box<dyn ByteStream>)> {
-        let (_, rx) = self.inbound.get(alpn).with_context(|| format!("no inbound queue for {alpn}"))?;
+        let (_, rx) = self
+            .inbound
+            .get(alpn)
+            .with_context(|| format!("no inbound queue for {alpn}"))?;
         rx.lock().await.recv().await.context("mesh endpoint closed")
     }
 }
@@ -1011,7 +1159,12 @@ mod tests {
     async fn node(name: &str) -> (Arc<Net>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let secret = SecretKey::generate();
-        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(secret.public().to_string())).await.unwrap();
+        let store = Store::open(
+            &dir.path().join("mesh.sqlite"),
+            EngineId(secret.public().to_string()),
+        )
+        .await
+        .unwrap();
         let net = Net::bind(
             BindOpts {
                 secret,
@@ -1047,7 +1200,10 @@ mod tests {
         // The token is single use.
         assert!(b.add_peer(&s).await.is_err());
 
-        let ev = tokio::time::timeout(Duration::from_secs(10), a_events.recv()).await.unwrap().unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(10), a_events.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ev, PeerEvent::Connected(PeerId(b.id.0.clone())));
         assert_eq!(a.peers(), vec![PeerId(b.id.0.clone())]);
 
@@ -1063,20 +1219,35 @@ mod tests {
                 (from, buf)
             })
         };
-        let mut s = b.open(&PeerId(a.id.0.clone()), replica::ALPN_RECORDS).await.unwrap();
+        let mut s = b
+            .open(&PeerId(a.id.0.clone()), replica::ALPN_RECORDS)
+            .await
+            .unwrap();
         s.write_all(b"hello").await.unwrap();
         s.flush().await.unwrap();
         let mut back = [0u8; 5];
-        tokio::time::timeout(Duration::from_secs(10), s.read_exact(&mut back)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(10), s.read_exact(&mut back))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&back, b"hello");
         let (from, got) = echo.await.unwrap();
         assert_eq!(from, PeerId(b.id.0.clone()));
         assert_eq!(&got, b"hello");
 
         // 69 audit: the round trip is on the books, per ALPN, both ends.
-        let per = |n: &Net| n.traffic().into_iter().find(|t| t.alpn == replica::ALPN_RECORDS).unwrap();
+        let per = |n: &Net| {
+            n.traffic()
+                .into_iter()
+                .find(|t| t.alpn == replica::ALPN_RECORDS)
+                .unwrap()
+        };
         let (ta, tb) = (per(&a), per(&b));
-        assert_eq!((ta.bytes_in, ta.bytes_out, tb.bytes_in, tb.bytes_out), (5, 5, 5, 5), "{ta:?} {tb:?}");
+        assert_eq!(
+            (ta.bytes_in, ta.bytes_out, tb.bytes_in, tb.bytes_out),
+            (5, 5, 5, 5),
+            "{ta:?} {tb:?}"
+        );
         assert!(ta.frames_in >= 1 && ta.frames_out >= 1 && tb.frames_in >= 1 && tb.frames_out >= 1);
 
         // Removal tombstones on b and closes the connection.
@@ -1101,7 +1272,11 @@ mod tests {
                 warned.push((sec, rate));
             }
         }
-        assert_eq!(warned, vec![(11, 100)], "10 s above the limit, measured from the first hot window");
+        assert_eq!(
+            warned,
+            vec![(11, 100)],
+            "10 s above the limit, measured from the first hot window"
+        );
         // Still hot for the rest of the minute: nothing more until 60 s after the warning.
         for sec in 13..=75u64 {
             total += 100;
@@ -1114,7 +1289,10 @@ mod tests {
         assert!(s.sample(76_000, total + 10, 50).is_none());
         for sec in 77..=81u64 {
             total += 100;
-            assert!(s.sample(sec * 1000, total, 50).is_none(), "sustain restarted at {sec}");
+            assert!(
+                s.sample(sec * 1000, total, 50).is_none(),
+                "sustain restarted at {sec}"
+            );
         }
     }
 
@@ -1123,7 +1301,12 @@ mod tests {
     async fn counted_stream_books_both_directions() {
         let (x, y) = tokio::io::duplex(64);
         let c = Arc::new(Counters::default());
-        let mut cx = Counted { inner: Box::new(x), counters: c.clone(), alpn: "t".into(), limit: 50 };
+        let mut cx = Counted {
+            inner: Box::new(x),
+            counters: c.clone(),
+            alpn: "t".into(),
+            limit: 50,
+        };
         let mut y = y;
         cx.write_all(b"hello").await.unwrap();
         let mut buf = [0u8; 5];

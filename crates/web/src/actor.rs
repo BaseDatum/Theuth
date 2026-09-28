@@ -345,7 +345,10 @@ impl Message<SetDefaults> for WebActor {
                     .map_err(|e| format!("config.yaml: {e}"))?;
             }
         }
-        let mut cfg = self.cfg.write().map_err(|_| "config lock poisoned".to_owned())?;
+        let mut cfg = self
+            .cfg
+            .write()
+            .map_err(|_| "config lock poisoned".to_owned())?;
         m.0.apply(&mut cfg);
         tracing::info!(defaults = ?m.0, "search defaults updated");
         Ok(m.0)

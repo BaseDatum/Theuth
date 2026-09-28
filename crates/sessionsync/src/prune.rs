@@ -50,6 +50,8 @@ pub async fn tick(store: &Store, me: &PeerId, orphan_keep_days: u64) -> anyhow::
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    n += store.prune_orphans_before(now.saturating_sub(keep_ms)).await?;
+    n += store
+        .prune_orphans_before(now.saturating_sub(keep_ms))
+        .await?;
     Ok(n)
 }

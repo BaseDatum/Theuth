@@ -39,7 +39,11 @@ pub struct SearchMeetings {
 impl Message<SearchMeetings> for Meeting {
     type Reply = DelegatedReply<Result<SearchPage<MeetingSearchHit>, String>>;
 
-    async fn handle(&mut self, m: SearchMeetings, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SearchMeetings,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let store = self.store.clone();
@@ -50,12 +54,19 @@ impl Message<SearchMeetings> for Meeting {
 
 /// Human title: `title`, else the process name (§8).
 pub fn title_of(m: &MeetingSummary) -> &str {
-    m.title.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or(&m.process_name)
+    m.title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or(&m.process_name)
 }
 
 /// Title hits (nucleo) and transcript hits (FTS, best rank first, one per
 /// meeting); score desc, started desc; `limit + 1` rows set `has_more`.
-pub async fn search_meetings(store: &Arc<Store>, query: &str, limit: Option<u32>) -> SearchPage<MeetingSearchHit> {
+pub async fn search_meetings(
+    store: &Arc<Store>,
+    query: &str,
+    limit: Option<u32>,
+) -> SearchPage<MeetingSearchHit> {
     let limit = search::limit(limit);
     if let Err(e) = search::validate_query(query) {
         return SearchPage::error(e);
@@ -71,7 +82,8 @@ pub async fn search_meetings(store: &Arc<Store>, query: &str, limit: Option<u32>
     let segments = store.search(&query, None).await.unwrap_or_default();
     let matched = tokio::task::spawn_blocking(move || {
         let mut m = FuzzyMatcher::new(&query);
-        let by_id: HashMap<MeetingId, &MeetingSummary> = meetings.iter().map(|s| (s.id, s)).collect();
+        let by_id: HashMap<MeetingId, &MeetingSummary> =
+            meetings.iter().map(|s| (s.id, s)).collect();
         // (score, meeting, match)
         let mut hits: Vec<(u32, &MeetingSummary, TextMatch)> = Vec::new();
         for s in &meetings {
@@ -84,7 +96,9 @@ pub async fn search_meetings(store: &Arc<Store>, query: &str, limit: Option<u32>
             if hits.iter().any(|(_, s, _)| s.id == seg.meeting) {
                 continue;
             }
-            let Some(summary) = by_id.get(&seg.meeting) else { continue };
+            let Some(summary) = by_id.get(&seg.meeting) else {
+                continue;
+            };
             // The FTS snippet marks matches with `[…]`; nucleo re-finds them for ranges.
             let plain = SearchText::new(seg.snippet.replace(['[', ']'], ""));
             let (score, r#match) = m.matched(&plain, "transcript", SNIPPET_CHARS).unwrap_or((
@@ -97,7 +111,10 @@ pub async fn search_meetings(store: &Arc<Store>, query: &str, limit: Option<u32>
             ));
             hits.push((score, summary, r#match));
         }
-        hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.started_at.cmp(&a.1.started_at)));
+        hits.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.started_at.cmp(&a.1.started_at))
+        });
         hits.truncate(limit as usize + 1);
         let hits = hits
             .into_iter()
@@ -173,7 +190,10 @@ mod tests {
         assert_eq!(page.hits[0].r#match.field, "title");
         assert_eq!(page.hits[1].r#match.field, "transcript");
         assert_eq!(title_of(&page.hits[1].meeting), "Zoom");
-        assert!(page.hits[1].r#match.snippet.contains("planning"), "{page:?}");
+        assert!(
+            page.hits[1].r#match.snippet.contains("planning"),
+            "{page:?}"
+        );
         assert!(!page.has_more);
 
         let page = search_meetings(&store, "planning", Some(1)).await;

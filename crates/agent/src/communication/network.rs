@@ -1223,24 +1223,20 @@ impl Agents {
             self.register_scope(&task, route.clone());
         }
         let mut handed = false;
-        if let Some(q) = question {
-            if let Ok(Some(orig)) = self.store.exchange_receipt(q).await {
-                if orig.state == PeerMessageState::Replied && self.settle_wait(&orig) {
-                    handed = true;
-                    if let Err(e) = self
-                        .store
-                        .consume_exchange_direct(
-                            receipt.id,
-                            task.session,
-                            generation.revision() as i64,
-                        )
-                        .await
-                    {
-                        tracing::warn!(exchange = %receipt.id, "a2a: direct consume: {e:#}");
-                    }
+        if let Some(q) = question
+            && let Ok(Some(orig)) = self.store.exchange_receipt(q).await
+        {
+            if orig.state == PeerMessageState::Replied && self.settle_wait(&orig) {
+                handed = true;
+                if let Err(e) = self
+                    .store
+                    .consume_exchange_direct(receipt.id, task.session, generation.revision() as i64)
+                    .await
+                {
+                    tracing::warn!(exchange = %receipt.id, "a2a: direct consume: {e:#}");
                 }
-                self.peer_changed(&orig).await;
             }
+            self.peer_changed(&orig).await;
         }
         if !handed {
             let record = self
@@ -2160,7 +2156,7 @@ impl Message<CommitPeerConfig> for Agents {
             if !seen.insert(r.alias.as_str()) {
                 return Err(format!("duplicate peer alias `{}`", r.alias));
             }
-            if m.revoke.iter().any(|a| *a == r.alias) {
+            if m.revoke.contains(&r.alias) {
                 return Err(format!("peer `{}` is both bound and revoked", r.alias));
             }
         }
@@ -3002,7 +2998,8 @@ mod tests {
     /// session, the task and its initiating exchange.
     async fn exported_task(a: &mut Agents, principal: &str) -> (SessionId, A2aTask, PeerReceipt) {
         let session = SessionId::new();
-        a.store.create_session(session, "m", None, None, None)
+        a.store
+            .create_session(session, "m", None, None, None)
             .await
             .unwrap();
         a.communication
@@ -3195,7 +3192,8 @@ mod tests {
         let (session, task, _) = exported_task(&mut a, "peer:lab").await;
         let rs = task.request_scope;
         let child = SessionId::new();
-        a.store.create_session(child, "m", Some(session), Some("kid"), None)
+        a.store
+            .create_session(child, "m", Some(session), Some("kid"), None)
             .await
             .unwrap();
         a.network_bind_work(rs, &format!("child:{child}")).await;
@@ -3445,7 +3443,8 @@ mod tests {
         assert!(fresh.contains("inbound-only"), "{fresh}");
 
         let other = SessionId::new();
-        a.store.create_session(other, "m", None, None, None)
+        a.store
+            .create_session(other, "m", None, None, None)
             .await
             .unwrap();
         a.communication

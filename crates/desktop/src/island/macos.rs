@@ -66,7 +66,8 @@ fn conceal(panel: &tauri_nspanel::Panel) {
 #[tauri::command]
 pub fn set_hidden_from_capture(app: AppHandle, hidden: bool) -> Result<(), String> {
     set_hidden(&app, hidden).map_err(|e| format!("{e:#}"))?;
-    app.emit("capture-hidden", hidden).map_err(|e| e.to_string())
+    app.emit("capture-hidden", hidden)
+        .map_err(|e| e.to_string())
 }
 
 /// Order the island front without focusing anything at `width × height` logical px (the webview's measured
@@ -75,7 +76,10 @@ pub fn set_hidden_from_capture(app: AppHandle, hidden: bool) -> Result<(), Strin
 pub fn island_show(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     let win = island(&app)?;
     let top_left = win.outer_position().map_err(|e| e.to_string())?;
-    let size = LogicalSize::new(width.clamp(MIN_WIDTH, MAX_WIDTH), height.clamp(MIN_HEIGHT, MAX_HEIGHT));
+    let size = LogicalSize::new(
+        width.clamp(MIN_WIDTH, MAX_WIDTH),
+        height.clamp(MIN_HEIGHT, MAX_HEIGHT),
+    );
     win.set_size(size).map_err(|e| e.to_string())?;
     win.set_position(top_left).map_err(|e| e.to_string())?;
     let panel = app.get_webview_panel(LABEL).map_err(|e| format!("{e:?}"))?;
@@ -124,12 +128,18 @@ pub fn island_place(
         None => match screens.iter().find(|s| s.safeAreaInsets().top > 0.0) {
             Some(notched) => {
                 let f = notched.frame();
-                (f.origin.x + (f.size.width - WIDTH) / 2.0, primary_h - (f.origin.y + f.size.height))
+                (
+                    f.origin.x + (f.size.width - WIDTH) / 2.0,
+                    primary_h - (f.origin.y + f.size.height),
+                )
             }
             None => {
                 let f = primary.frame();
                 let v = primary.visibleFrame();
-                (f.origin.x + (f.size.width - WIDTH) / 2.0, primary_h - (v.origin.y + v.size.height))
+                (
+                    f.origin.x + (f.size.width - WIDTH) / 2.0,
+                    primary_h - (v.origin.y + v.size.height),
+                )
             }
         },
     };
@@ -140,7 +150,8 @@ pub fn island_place(
 }
 
 fn island(app: &AppHandle) -> Result<WebviewWindow, String> {
-    app.get_webview_window(LABEL).ok_or_else(|| "window `island`".into())
+    app.get_webview_window(LABEL)
+        .ok_or_else(|| "window `island`".into())
 }
 
 /// Every window, so a popout opened later is covered by the next toggle (`open_window`'s webview re-applies on boot).
@@ -153,7 +164,10 @@ fn set_hidden(app: &AppHandle, hidden: bool) -> anyhow::Result<()> {
 }
 
 fn rect_key(r: NSRect) -> String {
-    format!("{},{},{},{}", r.origin.x, r.origin.y, r.size.width, r.size.height)
+    format!(
+        "{},{},{},{}",
+        r.origin.x, r.origin.y, r.size.width, r.size.height
+    )
 }
 
 /// `NSApplicationDidChangeScreenParametersNotification` → `screens-changed`; the island webview

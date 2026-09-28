@@ -93,7 +93,11 @@ mod tests {
         let c = f.observe(&lease(Some("a")));
         assert_eq!(c, Some(true));
         apply(c, &log).await;
-        assert_eq!(f.observe(&lease(Some("a"))), None, "same holder again is no change");
+        assert_eq!(
+            f.observe(&lease(Some("a"))),
+            None,
+            "same holder again is no change"
+        );
 
         // Other holder, then nobody: lost once.
         let c = f.observe(&lease(Some("b")));

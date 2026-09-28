@@ -543,7 +543,11 @@ static IDENT_RE: LazyLock<Regex> =
 /// The stored import statements a cell needs: those whose bound name the
 /// cell uses as an identifier and does not bind itself. One line each,
 /// deduplicated (a `from` line binding two names appears once).
-fn prelude(imports: &BTreeMap<String, String>, code: &str, cell_names: &BTreeSet<String>) -> String {
+fn prelude(
+    imports: &BTreeMap<String, String>,
+    code: &str,
+    cell_names: &BTreeSet<String>,
+) -> String {
     let idents: BTreeSet<&str> = IDENT_RE.find_iter(code).map(|m| m.as_str()).collect();
     let lines: BTreeSet<&str> = imports
         .iter()
@@ -647,7 +651,10 @@ fn rebase_lines(diag: &str, offset: usize) -> String {
         if let Some(arrow) = line.find("--> ") {
             in_main = loc.is_match(&line[arrow..]);
             out.push_str(&loc.replace_all(line, |c: &regex::Captures| {
-                format!("main.py:{}:", c[1].parse::<usize>().unwrap_or(0).saturating_sub(offset))
+                format!(
+                    "main.py:{}:",
+                    c[1].parse::<usize>().unwrap_or(0).saturating_sub(offset)
+                )
             }));
         } else if in_main && let Some(c) = gutter.captures(line) {
             let n: usize = c[2].parse().unwrap_or(0);
@@ -1118,7 +1125,14 @@ impl Repl {
                 }
                 retry.push_str(&src);
                 let outcome2 = self
-                    .drive(&retry, Vec::new(), false, call_id, &mut files, &mut on_print)
+                    .drive(
+                        &retry,
+                        Vec::new(),
+                        false,
+                        call_id,
+                        &mut files,
+                        &mut on_print,
+                    )
                     .await;
                 if !matches!(outcome2, Err(PoolError::Typing(_))) {
                     offset += 1 + targets.len();
@@ -1417,7 +1431,9 @@ impl Repl {
                             }
                             // The whole inventory as the footer would have listed it (08 §3.3).
                             "bindings" => ResumeValue::Return(MontyObject::list(
-                                slot_items(names.iter()).into_iter().map(MontyObject::string),
+                                slot_items(names.iter())
+                                    .into_iter()
+                                    .map(MontyObject::string),
                             )),
                             "help" => match first_arg(&args, "name").and_then(|q| q.as_str()) {
                                 Some(name) => {
@@ -1466,7 +1482,9 @@ impl Repl {
                         };
                         checkout.resume(answer, &mut *on_print).await?
                     }
-                    TurnEvent::ResolveFutures { pending_call_ids, .. } => {
+                    TurnEvent::ResolveFutures {
+                        pending_call_ids, ..
+                    } => {
                         // In invocation order (gather input order), whatever order
                         // the sandbox lists the futures in.
                         let mut calls: Vec<(u32, PendingCall)> = pending_call_ids
@@ -1786,7 +1804,11 @@ mod tests {
             let items = slot_items(names.iter());
             for hint in [true, false] {
                 let line = footer(&items, hint).unwrap();
-                assert!(line.len() <= FOOTER_CHARS, "{n}/{hint}: {} chars: {line}", line.len());
+                assert!(
+                    line.len() <= FOOTER_CHARS,
+                    "{n}/{hint}: {} chars: {line}",
+                    line.len()
+                );
                 assert_eq!(line.starts_with(FOOTER_HINT), hint, "{line}");
                 assert!(line.contains("w_result_0 (str, 30000)"), "{line}");
                 if n >= 600 {
@@ -1800,7 +1822,10 @@ mod tests {
         // one oversize item still yields a bounded line, not an empty prefix
         let huge = vec!["x".repeat(FOOTER_CHARS * 2)];
         let line = footer(&huge, false).unwrap();
-        assert!(line.len() <= FOOTER_CHARS && line.ends_with("… +1 more"), "{line}");
+        assert!(
+            line.len() <= FOOTER_CHARS && line.ends_with("… +1 more"),
+            "{line}"
+        );
     }
 
     /// A tool is defined for the model exactly once: direct tools are absent
@@ -1850,7 +1875,10 @@ mod tests {
             prelude(&imports, code, &candidates(code)),
             "from os import path, sep\nimport collections as col\nimport re"
         );
-        assert_eq!(prelude(&imports, "json.loads(x)", &candidates("json.loads(x)")), "");
+        assert_eq!(
+            prelude(&imports, "json.loads(x)", &candidates("json.loads(x)")),
+            ""
+        );
     }
 
     /// Captured from `import re` (prelude) + `x = 1\nre.compile(x)`: the
@@ -1879,7 +1907,15 @@ mod tests {
     fn typing_retry_classification() {
         let names: BTreeMap<String, Slot> = ["m", "items", "out1"]
             .into_iter()
-            .map(|n| (n.to_owned(), Slot { kind: "int".into(), len: None }))
+            .map(|n| {
+                (
+                    n.to_owned(),
+                    Slot {
+                        kind: "int".into(),
+                        len: None,
+                    },
+                )
+            })
             .collect();
         let src = "import re\nfor m in items:\n    pass\nm = 'x'";
         let assign = "error[invalid-assignment]: Object of type `int` is not assignable to `Match[str] | None`\n \
@@ -1914,7 +1950,10 @@ mod tests {
         assert!(!all_unresolved_held(&diag_errors(&mixed), &names));
         let fresh = "error[invalid-assignment]: Object of type `int` is not assignable to `str`\n \
                      --> main.py:1:1\n  |\n1 | z: str = 1\n  | ^\n";
-        assert_eq!(redeclare_targets(&diag_errors(fresh), "z: str = 1", &names), None);
+        assert_eq!(
+            redeclare_targets(&diag_errors(fresh), "z: str = 1", &names),
+            None
+        );
     }
 
     #[test]
@@ -2011,8 +2050,7 @@ mod tests {
         assert_eq!(out.content, "→ [1, 2, 3]\nbindings: r (list, 3)");
         let out = repl.run("c4a", "bindings()").await;
         assert_eq!(
-            out.content,
-            "→ ['n (int)', 'out1 (str, 30000)', 'r (list, 3)']",
+            out.content, "→ ['n (int)', 'out1 (str, 30000)', 'r (list, 3)']",
             "{}",
             out.content
         );
@@ -2063,7 +2101,8 @@ mod tests {
         // c7's `import asyncio` bound a name on the way to its error, so the
         // reopened Repl's one hint went out there; c8 is bare.
         assert!(
-            out.content.starts_with("→ ('str', 'read_file:')\nbindings: ls (str, "),
+            out.content
+                .starts_with("→ ('str', 'read_file:')\nbindings: ls (str, "),
             "{}",
             out.content
         );
@@ -2413,8 +2452,7 @@ mod tests {
             // the checker follows: later cells see the new type, no `_Any` leaks
             let out = repl.run("c3", "m = 'x'\nm * 2").await;
             assert_eq!(
-                out.content,
-                "→ 'xx'\nbindings: m (str, 1)",
+                out.content, "→ 'xx'\nbindings: m (str, 1)",
                 "{}",
                 out.content
             );

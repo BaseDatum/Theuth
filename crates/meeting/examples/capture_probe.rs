@@ -20,7 +20,10 @@ fn main() {
         .init();
     let mut args = std::env::args().skip(1);
     let secs: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
-    let pid: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(SYSTEM_AUDIO);
+    let pid: u32 = args
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SYSTEM_AUDIO);
 
     println!("os: {} {}", std::env::consts::OS, std::env::consts::ARCH);
     println!("supported: {:?}", capture::system::supported());
@@ -54,7 +57,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    println!("loopback pid {pid}: open in {:?}; capturing {secs}s", t.elapsed());
+    println!(
+        "loopback pid {pid}: open in {:?}; capturing {secs}s",
+        t.elapsed()
+    );
 
     let (mut chunks, mut samples, mut sumsq, mut peak) = (0u64, 0u64, 0f64, 0f32);
     let start = Instant::now();

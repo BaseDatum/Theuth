@@ -77,7 +77,14 @@ const DISPLAY_WORDS: &[&str] = &["browser", "screen", "display", "screenshot"];
 /// Words that ask for a GPU.
 const GPU_WORDS: &[&str] = &["gpu", "cuda"];
 /// Words that mark repo work when no path is named.
-const REPO_WORDS: &[&str] = &["repo", "repository", "git", "codebase", "crate", "pull request"];
+const REPO_WORDS: &[&str] = &[
+    "repo",
+    "repository",
+    "git",
+    "codebase",
+    "crate",
+    "pull request",
+];
 
 /// The policy (rules in the module doc).
 #[must_use]
@@ -116,7 +123,11 @@ pub fn decide(i: &Inputs) -> Verdict {
         let with_repo: Vec<&Engine> = candidates
             .iter()
             .copied()
-            .filter(|e| paths.iter().any(|p| e.stats.repos.iter().any(|r| same_repo(r, p))))
+            .filter(|e| {
+                paths
+                    .iter()
+                    .any(|p| e.stats.repos.iter().any(|r| same_repo(r, p)))
+            })
             .collect();
         if with_repo.is_empty() {
             return Verdict::Missing(format!("repo:{}", paths[0]));
@@ -124,7 +135,11 @@ pub fn decide(i: &Inputs) -> Verdict {
         why.push(format!(
             "repo {} is on {}",
             paths[0],
-            with_repo.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
+            with_repo
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
         candidates = with_repo;
     }
@@ -178,7 +193,11 @@ pub fn decide(i: &Inputs) -> Verdict {
     let chosen = match candidates.len() {
         0 => return Verdict::Missing("none".into()),
         1 => candidates[0],
-        _ => match i.prefer.iter().find_map(|p| candidates.iter().find(|e| e.name == *p)) {
+        _ => match i
+            .prefer
+            .iter()
+            .find_map(|p| candidates.iter().find(|e| e.name == *p))
+        {
             Some(e) => {
                 why.push(format!("{} preferred (tasks.place_prefer)", e.name));
                 e
@@ -194,7 +213,11 @@ pub fn decide(i: &Inputs) -> Verdict {
     };
     let harness = harness_on(chosen);
     if fixed.is_none() {
-        why.push(if harness == "omp" { "repo work → omp".into() } else { "native".into() });
+        why.push(if harness == "omp" {
+            "repo work → omp".into()
+        } else {
+            "native".into()
+        });
     }
     if why.len() == 1 && candidates.len() == 1 && i.engines.len() == 1 {
         why.insert(0, "the only engine".into());
@@ -242,7 +265,11 @@ pub fn desk_prompt(i: &Inputs, candidates: &[String], harness: Option<&str>, why
             e.name,
             st.class,
             st.harnesses.join(","),
-            if st.repos.is_empty() { "-".to_owned() } else { st.repos.join(",") },
+            if st.repos.is_empty() {
+                "-".to_owned()
+            } else {
+                st.repos.join(",")
+            },
             st.display,
             st.gpu
         ));
@@ -252,7 +279,9 @@ pub fn desk_prompt(i: &Inputs, candidates: &[String], harness: Option<&str>, why
     }
     match harness {
         Some(h) => s.push_str(&format!("The harness is fixed: {h}.\n")),
-        None => s.push_str("Harness: native, or one the engine advertises (omp / opencode / claude).\n"),
+        None => {
+            s.push_str("Harness: native, or one the engine advertises (omp / opencode / claude).\n")
+        }
     }
     if let Some(n) = i.needs {
         s.push_str(&format!("Needs: {n}\n"));
@@ -266,7 +295,11 @@ pub fn desk_prompt(i: &Inputs, candidates: &[String], harness: Option<&str>, why
 
 /// The desk's answer: the first `{…}` in `reply` as `{where, harness, reason}`;
 /// `where` must be a candidate, `harness` defaults to `fixed` or `native`.
-pub fn parse_desk_reply(reply: &str, candidates: &[String], fixed: Option<&str>) -> Result<Placement, String> {
+pub fn parse_desk_reply(
+    reply: &str,
+    candidates: &[String],
+    fixed: Option<&str>,
+) -> Result<Placement, String> {
     #[derive(serde::Deserialize)]
     struct Answer {
         #[serde(rename = "where")]
@@ -281,7 +314,8 @@ pub fn parse_desk_reply(reply: &str, candidates: &[String], fixed: Option<&str>)
         (Some(a), Some(b)) if a < b => &reply[a..=b],
         _ => return Err(format!("theuth's desk answered without JSON: {reply}")),
     };
-    let a: Answer = serde_json::from_str(json).map_err(|e| format!("theuth's desk answered malformed JSON ({e}): {json}"))?;
+    let a: Answer = serde_json::from_str(json)
+        .map_err(|e| format!("theuth's desk answered malformed JSON ({e}): {json}"))?;
     let where_ = a.where_.trim();
     let Some(where_) = candidates.iter().find(|c| c.eq_ignore_ascii_case(where_)) else {
         return Err(format!(
@@ -291,12 +325,18 @@ pub fn parse_desk_reply(reply: &str, candidates: &[String], fixed: Option<&str>)
     };
     let harness = match fixed {
         Some(h) => h.to_owned(),
-        None => a.harness.filter(|h| !h.trim().is_empty()).unwrap_or_else(|| "native".into()),
+        None => a
+            .harness
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| "native".into()),
     };
     Ok(Placement {
         where_: where_.clone(),
         harness,
-        reason: format!("theuth's desk: {}", a.reason.unwrap_or_else(|| "no reason given".into())),
+        reason: format!(
+            "theuth's desk: {}",
+            a.reason.unwrap_or_else(|| "no reason given".into())
+        ),
     })
 }
 
@@ -304,9 +344,12 @@ pub fn parse_desk_reply(reply: &str, candidates: &[String], fixed: Option<&str>)
 /// punctuation and quoting stripped, in order of appearance, deduplicated.
 fn mentioned_paths(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for tok in text.split(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '<' | '>' | ',' | ';')) {
+    for tok in text.split(|c: char| {
+        c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '<' | '>' | ',' | ';')
+    }) {
         let t = tok.trim_end_matches(['.', ':', '!', '?']);
-        let is_path = (t.starts_with("~/") || (t.starts_with('/') && t.len() > 1)) && !t.starts_with("//");
+        let is_path =
+            (t.starts_with("~/") || (t.starts_with('/') && t.len() > 1)) && !t.starts_with("//");
         if is_path && !out.iter().any(|p| p == t) {
             out.push(t.to_owned());
         }
@@ -321,11 +364,19 @@ fn same_repo(repo: &str, path: &str) -> bool {
     let repo = repo.trim_end_matches('/');
     let path = path.trim_end_matches('/');
     if let Some(rel) = path.strip_prefix('~') {
-        return repo.ends_with(rel) || rel.match_indices('/').skip(1).any(|(i, _)| repo.ends_with(&rel[..i]));
+        return repo.ends_with(rel)
+            || rel
+                .match_indices('/')
+                .skip(1)
+                .any(|(i, _)| repo.ends_with(&rel[..i]));
     }
     repo == path
-        || path.strip_prefix(repo).is_some_and(|rest| rest.starts_with('/'))
-        || repo.strip_prefix(path).is_some_and(|rest| rest.starts_with('/'))
+        || path
+            .strip_prefix(repo)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || repo
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 #[cfg(test)]
@@ -335,7 +386,14 @@ mod tests {
     use super::*;
     use crate::types::{Owner, TaskId, TaskState};
 
-    fn engine(name: &str, class: EngineClass, harnesses: &[&str], repos: &[&str], display: bool, gpu: bool) -> Engine {
+    fn engine(
+        name: &str,
+        class: EngineClass,
+        harnesses: &[&str],
+        repos: &[&str],
+        display: bool,
+        gpu: bool,
+    ) -> Engine {
         Engine {
             name: name.into(),
             stats: EngineStats {
@@ -353,9 +411,30 @@ mod tests {
 
     fn fleet() -> Vec<Engine> {
         vec![
-            engine("mac", EngineClass::Laptop, &["native", "omp"], &["/Users/sky/dev/theuth"], true, true),
-            engine("build-a", EngineClass::Server, &["native", "omp"], &["/srv/sre-argo", "/srv/theuth"], false, false),
-            engine("box", EngineClass::Container, &["native"], &[], false, false),
+            engine(
+                "mac",
+                EngineClass::Laptop,
+                &["native", "omp"],
+                &["/Users/sky/dev/theuth"],
+                true,
+                true,
+            ),
+            engine(
+                "build-a",
+                EngineClass::Server,
+                &["native", "omp"],
+                &["/srv/sre-argo", "/srv/theuth"],
+                false,
+                false,
+            ),
+            engine(
+                "box",
+                EngineClass::Container,
+                &["native"],
+                &[],
+                false,
+                false,
+            ),
         ]
     }
 
@@ -412,7 +491,10 @@ mod tests {
         t.where_ = Some("nowhere".into());
         t.harness = Some("claude".into());
         let p = placed(decide(&inputs(&t, &fleet(), &[])));
-        assert_eq!((p.where_.as_str(), p.harness.as_str()), ("nowhere", "claude"));
+        assert_eq!(
+            (p.where_.as_str(), p.harness.as_str()),
+            ("nowhere", "claude")
+        );
         assert_eq!(p.reason, "set on the task");
     }
 
@@ -424,13 +506,21 @@ mod tests {
         let p = placed(decide(&inputs(&t, &fleet(), &[])));
         assert_eq!((p.where_.as_str(), p.harness.as_str()), ("build-a", "omp"));
         t.where_ = Some("nope".into());
-        assert_eq!(decide(&inputs(&t, &fleet(), &[])), Verdict::Missing("nope".into()));
+        assert_eq!(
+            decide(&inputs(&t, &fleet(), &[])),
+            Verdict::Missing("nope".into())
+        );
         // (a) `harness` alone keeps only engines that have it.
         let mut t = task("write the runbook");
         t.harness = Some("omp".into());
-        assert!(matches!(&decide(&inputs(&t, &fleet(), &[])), Verdict::Ambiguous { candidates, harness: Some(h), .. } if candidates == &["mac", "build-a"] && h == "omp"));
+        assert!(
+            matches!(&decide(&inputs(&t, &fleet(), &[])), Verdict::Ambiguous { candidates, harness: Some(h), .. } if candidates == &["mac", "build-a"] && h == "omp")
+        );
         t.harness = Some("opencode".into());
-        assert_eq!(decide(&inputs(&t, &fleet(), &[])), Verdict::Missing("harness:opencode".into()));
+        assert_eq!(
+            decide(&inputs(&t, &fleet(), &[])),
+            Verdict::Missing("harness:opencode".into())
+        );
     }
 
     /// (b) a path on exactly one engine → that engine; (e) omp there.
@@ -439,7 +529,12 @@ mod tests {
         let t = task("Fix the flaky deploy in `/srv/sre-argo/apps/web`.");
         let p = placed(decide(&inputs(&t, &fleet(), &[])));
         assert_eq!((p.where_.as_str(), p.harness.as_str()), ("build-a", "omp"));
-        assert!(p.reason.contains("repo /srv/sre-argo/apps/web is on build-a"), "{}", p.reason);
+        assert!(
+            p.reason
+                .contains("repo /srv/sre-argo/apps/web is on build-a"),
+            "{}",
+            p.reason
+        );
         assert!(p.reason.ends_with("repo work → omp"), "{}", p.reason);
         // A `~/` path matches by suffix; on omp-less `box` it would be native.
         let t = task("bump deps in ~/dev/theuth");
@@ -447,7 +542,10 @@ mod tests {
         assert_eq!(p.where_, "mac");
         // A path nobody has is a blocker.
         let t = task("look at /opt/elsewhere");
-        assert_eq!(decide(&inputs(&t, &fleet(), &[])), Verdict::Missing("repo:/opt/elsewhere".into()));
+        assert_eq!(
+            decide(&inputs(&t, &fleet(), &[])),
+            Verdict::Missing("repo:/opt/elsewhere".into())
+        );
     }
 
     /// (b) a project whose sessions' cwd is known counts as a mentioned path;
@@ -468,12 +566,21 @@ mod tests {
             project_cwds: &cwds,
             ..inputs(&t, &f, &[])
         };
-        assert!(matches!(&decide(&i), Verdict::Ambiguous { candidates, .. } if candidates == &["mac", "build-a"]));
+        assert!(
+            matches!(&decide(&i), Verdict::Ambiguous { candidates, .. } if candidates == &["mac", "build-a"])
+        );
         let prefer = ["build-a".to_owned()];
-        let i = Inputs { prefer: &prefer, ..i };
+        let i = Inputs {
+            prefer: &prefer,
+            ..i
+        };
         let p = placed(decide(&i));
         assert_eq!(p.where_, "build-a");
-        assert!(p.reason.contains("preferred (tasks.place_prefer)"), "{}", p.reason);
+        assert!(
+            p.reason.contains("preferred (tasks.place_prefer)"),
+            "{}",
+            p.reason
+        );
     }
 
     /// (c) display and gpu words filter; missing → blocker.
@@ -486,10 +593,19 @@ mod tests {
         let mut t = task("train on the GPU");
         assert_eq!(placed(decide(&inputs(&t, &fleet(), &[]))).where_, "mac");
         t.where_ = Some("box".into());
-        assert_eq!(decide(&inputs(&t, &fleet(), &[])), Verdict::Missing("gpu".into()));
-        let no_display = fleet().into_iter().filter(|e| !e.stats.display).collect::<Vec<_>>();
+        assert_eq!(
+            decide(&inputs(&t, &fleet(), &[])),
+            Verdict::Missing("gpu".into())
+        );
+        let no_display = fleet()
+            .into_iter()
+            .filter(|e| !e.stats.display)
+            .collect::<Vec<_>>();
         let t = task("take a screenshot of the login screen");
-        assert_eq!(decide(&inputs(&t, &no_display, &[])), Verdict::Missing("display".into()));
+        assert_eq!(
+            decide(&inputs(&t, &no_display, &[])),
+            Verdict::Missing("display".into())
+        );
     }
 
     /// (d) a read_only owner is native even for repo work in omp territory.
@@ -502,7 +618,10 @@ mod tests {
             ..inputs(&t, &f, &[])
         };
         let p = placed(decide(&i));
-        assert_eq!((p.where_.as_str(), p.harness.as_str()), ("build-a", "native"));
+        assert_eq!(
+            (p.where_.as_str(), p.harness.as_str()),
+            ("build-a", "native")
+        );
         assert!(p.reason.contains("read_only → native"), "{}", p.reason);
     }
 
@@ -510,16 +629,33 @@ mod tests {
     /// a lone engine is placed without a desk turn.
     #[test]
     fn harness_preference_and_lone_engine() {
-        let only = vec![engine("box", EngineClass::Container, &["native"], &[], false, false)];
+        let only = vec![engine(
+            "box",
+            EngineClass::Container,
+            &["native"],
+            &[],
+            false,
+            false,
+        )];
         let t = task("clean up the repo's CI");
         let p = placed(decide(&inputs(&t, &only, &[])));
         assert_eq!((p.where_.as_str(), p.harness.as_str()), ("box", "native"));
         assert!(p.reason.starts_with("the only engine"), "{}", p.reason);
-        let only = vec![engine("solo", EngineClass::Server, &["native", "omp"], &[], false, false)];
+        let only = vec![engine(
+            "solo",
+            EngineClass::Server,
+            &["native", "omp"],
+            &[],
+            false,
+            false,
+        )];
         assert_eq!(placed(decide(&inputs(&t, &only, &[]))).harness, "omp");
         let t = task("draft the quarterly summary");
         assert_eq!(placed(decide(&inputs(&t, &only, &[]))).harness, "native");
-        assert_eq!(decide(&inputs(&t, &[], &[])), Verdict::Missing("none".into()));
+        assert_eq!(
+            decide(&inputs(&t, &[], &[])),
+            Verdict::Missing("none".into())
+        );
     }
 
     /// The ambiguous case is one desk turn: the prompt names the candidates,
@@ -533,7 +669,12 @@ mod tests {
         let seen = std::sync::Mutex::new(String::new());
         let p = place(&i, |prompt| {
             *seen.lock().unwrap() = prompt;
-            async { Ok(r#"Sure — {"where": "Build-A", "harness": "omp", "reason": "always on"}"#.to_owned()) }
+            async {
+                Ok(
+                    r#"Sure — {"where": "Build-A", "harness": "omp", "reason": "always on"}"#
+                        .to_owned(),
+                )
+            }
         })
         .await
         .unwrap();
@@ -545,25 +686,47 @@ mod tests {
         }
         assert!(prompt.contains("Answer with JSON only"), "{prompt}");
 
-        let e = place(&i, |_| async { Ok("I would say the mac".to_owned()) }).await.unwrap_err();
+        let e = place(&i, |_| async { Ok("I would say the mac".to_owned()) })
+            .await
+            .unwrap_err();
         assert!(e.contains("without JSON"), "{e}");
-        let e = place(&i, |_| async { Ok(r#"{"where": "moon"}"#.to_owned()) }).await.unwrap_err();
+        let e = place(&i, |_| async { Ok(r#"{"where": "moon"}"#.to_owned()) })
+            .await
+            .unwrap_err();
         assert!(e.contains("not one of mac, build-a, box"), "{e}");
-        let e = place(&i, |_| async { Err("no desk".to_owned()) }).await.unwrap_err();
+        let e = place(&i, |_| async { Err("no desk".to_owned()) })
+            .await
+            .unwrap_err();
         assert_eq!(e, "no desk");
 
         // A fixed harness (read_only) is kept whatever the desk says.
-        let i = Inputs { read_only: true, ..inputs(&t, &f, &[]) };
-        let p = place(&i, |_| async { Ok(r#"{"where":"mac","harness":"omp"}"#.to_owned()) }).await.unwrap();
+        let i = Inputs {
+            read_only: true,
+            ..inputs(&t, &f, &[])
+        };
+        let p = place(&i, |_| async {
+            Ok(r#"{"where":"mac","harness":"omp"}"#.to_owned())
+        })
+        .await
+        .unwrap();
         assert_eq!((p.where_.as_str(), p.harness.as_str()), ("mac", "native"));
         assert!(p.reason.ends_with("no reason given"), "{}", p.reason);
 
         // Policy answers need no desk at all.
         let t = task("fix /srv/sre-argo");
-        let p = place(&inputs(&t, &f, &[]), |_| async { unreachable!("policy decided") }).await.unwrap();
+        let p = place(&inputs(&t, &f, &[]), |_| async {
+            unreachable!("policy decided")
+        })
+        .await
+        .unwrap();
         assert_eq!(p.where_, "build-a");
         let t = task("look at /nowhere");
-        assert_eq!(place(&inputs(&t, &f, &[]), |_| async { unreachable!() }).await.unwrap_err(), "engine:repo:/nowhere");
+        assert_eq!(
+            place(&inputs(&t, &f, &[]), |_| async { unreachable!() })
+                .await
+                .unwrap_err(),
+            "engine:repo:/nowhere"
+        );
     }
 
     #[test]

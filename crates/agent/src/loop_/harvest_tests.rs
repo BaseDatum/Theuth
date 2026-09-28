@@ -59,7 +59,10 @@ async fn harvest_scenarios() {
         .await;
     assert_eq!(state.turns_since_harvest, 0, "reset at the trigger");
     assert!(
-        state.harvest_task.as_ref().is_some_and(|t| !t.is_finished()),
+        state
+            .harvest_task
+            .as_ref()
+            .is_some_and(|t| !t.is_finished()),
         "the harvest is still running when the turn hands its state back"
     );
     let events = h.drain().await;
@@ -73,11 +76,19 @@ async fn harvest_scenarios() {
     second.calls = 1;
     second.state.turns_since_harvest = every - 1;
     let state = second
-        .run(tid2, vec![h.input("And the deploy host is deploybox.", false)])
+        .run(
+            tid2,
+            vec![h.input("And the deploy host is deploybox.", false)],
+        )
         .await;
     let events = h.drain().await;
     assert_eq!(harvesting(&events), 0, "skipped while one is in flight");
-    assert!(state.harvest_task.as_ref().is_some_and(|t| !t.is_finished()));
+    assert!(
+        state
+            .harvest_task
+            .as_ref()
+            .is_some_and(|t| !t.is_finished())
+    );
 
     // `/knowledge harvest` meanwhile is refused the same way.
     let mut manual = Turn::new(shared.clone(), None, CancellationToken::new(), state);

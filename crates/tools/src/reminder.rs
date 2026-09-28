@@ -153,8 +153,9 @@ fn now() -> i64 {
 
 /// RFC 3339 in the local offset.
 pub fn local_rfc3339(unix: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(unix, 0)
-        .map_or_else(String::new, |t| t.with_timezone(&chrono::Local).to_rfc3339())
+    chrono::DateTime::<chrono::Utc>::from_timestamp(unix, 0).map_or_else(String::new, |t| {
+        t.with_timezone(&chrono::Local).to_rfc3339()
+    })
 }
 
 impl Jobs {
@@ -170,11 +171,11 @@ impl Jobs {
     ) {
         let sink = self.activity.clone();
         tokio::spawn(async move {
-            let activity =
-                match admit_job(parent, sink.as_ref(), session, Kind::Reminder(id)).await {
-                    Ok(a) => a,
-                    Err(why) => return reply(Err(why.to_string())),
-                };
+            let activity = match admit_job(parent, sink.as_ref(), session, Kind::Reminder(id)).await
+            {
+                Ok(a) => a,
+                Err(why) => return reply(Err(why.to_string())),
+            };
             reply(match me.ask(arm(activity)).await {
                 Ok(v) => Ok(v),
                 Err(e) => Err(e.to_string()),
@@ -200,7 +201,11 @@ impl Jobs {
 impl Message<SetReminder> for Jobs {
     type Reply = DelegatedReply<Result<ReminderView, String>>;
 
-    async fn handle(&mut self, m: SetReminder, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SetReminder,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let sr = self.reminders.entry(m.session).or_default();
@@ -349,7 +354,11 @@ impl Message<Fired> for Jobs {
 impl Message<CancelReminder> for Jobs {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: CancelReminder, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CancelReminder,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let sr = self
             .reminders
             .get_mut(&m.session)
@@ -486,7 +495,11 @@ mod tests {
     use crate::jobs::InstallActivity;
     use crate::jobs::tests::fixture;
 
-    async fn set(fx: &crate::jobs::tests::Fx, seconds: u64, msg: &str) -> Result<ReminderView, String> {
+    async fn set(
+        fx: &crate::jobs::tests::Fx,
+        seconds: u64,
+        msg: &str,
+    ) -> Result<ReminderView, String> {
         fx.jobs
             .ask(SetReminder {
                 session: fx.session,
@@ -520,7 +533,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert_eq!(
             drained(&ledger, &seen).await.last(),
-            Some(&Seen::Reminder(op, "r1".into(), "build should be done".into(), false))
+            Some(&Seen::Reminder(
+                op,
+                "r1".into(),
+                "build should be done".into(),
+                false
+            ))
         );
     }
 
@@ -548,7 +566,10 @@ mod tests {
         assert!(err.to_string().contains("no such reminder r1"), "{err}");
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let seen = drained(&ledger, &seen).await;
-        assert!(matches!(seen.as_slice(), [Seen::Admitted(op), Seen::Finished(f)] if op.id == *f), "{seen:?}");
+        assert!(
+            matches!(seen.as_slice(), [Seen::Admitted(op), Seen::Finished(f)] if op.id == *f),
+            "{seen:?}"
+        );
     }
 
     #[tokio::test]

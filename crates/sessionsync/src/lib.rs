@@ -168,15 +168,24 @@ impl SessionSync {
     /// event subscription (F, `events.rs`); a [`types::Msg::Release`] is a
     /// taker asking us to let go (O, `owner.rs`); anything else is the Hello/
     /// log/snapshot protocol of [`sync`], which takes over with that frame read.
-    async fn serve(shipper: Arc<ship::Shipper>, peer: PeerId, stream: Box<dyn replica::ByteStream>) -> anyhow::Result<()> {
+    async fn serve(
+        shipper: Arc<ship::Shipper>,
+        peer: PeerId,
+        stream: Box<dyn replica::ByteStream>,
+    ) -> anyhow::Result<()> {
         let mut framed = events::framed(stream);
-        let first = futures::StreamExt::next(&mut framed).await.ok_or_else(|| anyhow::anyhow!("closed before the first frame"))??;
+        let first = futures::StreamExt::next(&mut framed)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("closed before the first frame"))??;
         match types::Msg::decode(&first)? {
             types::Msg::Events { session, from_seq } => {
-                let relay = events::actor().ok_or_else(|| anyhow::anyhow!("events relay not running"))?;
+                let relay =
+                    events::actor().ok_or_else(|| anyhow::anyhow!("events relay not running"))?;
                 events::serve(&relay, framed, session, from_seq).await
             }
-            types::Msg::Release { session } => owner::answer_release(&shipper.node().store, session, &mut framed).await,
+            types::Msg::Release { session } => {
+                owner::answer_release(&shipper.node().store, session, &mut framed).await
+            }
             other => shipper.serve_with_first(peer, framed, other).await,
         }
     }
@@ -185,7 +194,11 @@ impl SessionSync {
 impl Message<TransportReady> for SessionSync {
     type Reply = ();
 
-    async fn handle(&mut self, m: TransportReady, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: TransportReady,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let me = ctx.actor_ref().clone();
         self.start_transport(m.0, me);
     }
@@ -194,7 +207,11 @@ impl Message<TransportReady> for SessionSync {
 impl Message<PeerConnected> for SessionSync {
     type Reply = ();
 
-    async fn handle(&mut self, m: PeerConnected, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: PeerConnected,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let Some(ev) = events::actor() {
             let _ = ev.tell(events::Reconnected(m.0.clone())).try_send();
         }
@@ -229,12 +246,20 @@ impl Message<ShipNow> for SessionSync {
 impl Message<TakeSession> for SessionSync {
     type Reply = kameo::reply::DelegatedReply<Result<(String, u32), String>>;
 
-    async fn handle(&mut self, m: TakeSession, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: TakeSession,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         // The mesh's last-seen view, for an unreachable owner (68 §4.2 (c)).
         let peers = match mesh::actor() {
-            Some(mesh) => mesh.ask(mesh::Status).await.map(|s| s.peers).unwrap_or_default(),
+            Some(mesh) => mesh
+                .ask(mesh::Status)
+                .await
+                .map(|s| s.peers)
+                .unwrap_or_default(),
             None => Vec::new(),
         };
         let take = owner::Take {
@@ -254,15 +279,25 @@ impl Message<TakeSession> for SessionSync {
 impl Message<ReleaseSession> for SessionSync {
     type Reply = Result<u64, String>;
 
-    async fn handle(&mut self, m: ReleaseSession, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        owner::release(&self.store, m.id).await.map_err(|e| format!("{e:#}"))
+    async fn handle(
+        &mut self,
+        m: ReleaseSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        owner::release(&self.store, m.id)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
 impl Message<owner::Demote> for SessionSync {
     type Reply = ();
 
-    async fn handle(&mut self, m: owner::Demote, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: owner::Demote,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (session, by) = (m.session, m.by.clone());
         match owner::demote(&self.rt, &self.store, m).await {
             Ok(n) => tracing::info!("sessions: {session} taken by {by}; {n} rows orphaned here"),
@@ -309,7 +344,11 @@ impl runtime::Plugin for SessionSyncPlugin {
             tracing::warn!("sessions: remote events unavailable: {e:#}");
         }
         let shipper = ship::Shipper::new(store.clone(), Some(rt.clone()), &config);
-        tokio::spawn(owner::sweep_orphans(store.clone(), config.orphan_keep_days, rt.shutdown.clone()));
+        tokio::spawn(owner::sweep_orphans(
+            store.clone(),
+            config.orphan_keep_days,
+            rt.shutdown.clone(),
+        ));
         let actor = SessionSync::spawn(SessionSync {
             rt: rt.clone(),
             config,
@@ -332,7 +371,10 @@ impl runtime::Plugin for SessionSyncPlugin {
 
 /// `session_orphans(id)`: this engine's orphaned log rows of `id`, one entry
 /// per superseded epoch, oldest first.
-pub async fn orphans(store: &Store, id: runtime::SessionId) -> anyhow::Result<Vec<types::SessionOrphan>> {
+pub async fn orphans(
+    store: &Store,
+    id: runtime::SessionId,
+) -> anyhow::Result<Vec<types::SessionOrphan>> {
     let mut out: Vec<types::SessionOrphan> = Vec::new();
     for row in store.log_orphans(id).await? {
         let epoch = u32::try_from(row.epoch).unwrap_or_default();
@@ -344,7 +386,9 @@ pub async fn orphans(store: &Store, id: runtime::SessionId) -> anyhow::Result<Ve
                 from_seq: seq,
                 to_seq: seq,
                 at: replica::Hlc::parse(&row.hlc)
-                    .and_then(|h| chrono::DateTime::from_timestamp_millis(i64::try_from(h.wall_ms).ok()?))
+                    .and_then(|h| {
+                        chrono::DateTime::from_timestamp_millis(i64::try_from(h.wall_ms).ok()?)
+                    })
                     .map(|t| t.to_rfc3339())
                     .unwrap_or_default(),
             }),
@@ -354,17 +398,25 @@ pub async fn orphans(store: &Store, id: runtime::SessionId) -> anyhow::Result<Ve
 }
 
 /// `session_owner(id)`: the session row's owner and whether it is this engine.
-pub async fn owner(store: &Store, id: runtime::SessionId) -> anyhow::Result<Option<types::SessionOwner>> {
-    Ok(store.owner(id).await?.map(|(owner, epoch)| types::SessionOwner {
-        here: owner.is_empty() || owner == store.engine(),
-        owner,
-        epoch,
-    }))
+pub async fn owner(
+    store: &Store,
+    id: runtime::SessionId,
+) -> anyhow::Result<Option<types::SessionOwner>> {
+    Ok(store
+        .owner(id)
+        .await?
+        .map(|(owner, epoch)| types::SessionOwner {
+            here: owner.is_empty() || owner == store.engine(),
+            owner,
+            epoch,
+        }))
 }
 
 /// The sessions actor; `None` before the plugin started.
 pub fn actor() -> Option<ActorRef<SessionSync>> {
-    ActorRef::<SessionSync>::lookup(SESSIONS_ACTOR).ok().flatten()
+    ActorRef::<SessionSync>::lookup(SESSIONS_ACTOR)
+        .ok()
+        .flatten()
 }
 
 impl SessionSync {

@@ -403,7 +403,11 @@ impl Tasks {
 impl Message<RegisterDeskRouter> for Tasks {
     type Reply = ();
 
-    async fn handle(&mut self, m: RegisterDeskRouter, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: RegisterDeskRouter,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.ledger.router = Some(m.0);
     }
 }
@@ -420,7 +424,11 @@ impl Message<SetEngine> for Tasks {
 impl Message<SetDispatching> for Tasks {
     type Reply = ();
 
-    async fn handle(&mut self, m: SetDispatching, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: SetDispatching,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.dispatching = m.0;
     }
 }
@@ -454,7 +462,12 @@ impl Message<CreateTask> for Tasks {
 
     async fn handle(&mut self, m: CreateTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger
-            .create(m.input, &m.created_by, m.session.as_deref(), WakeReason::Assigned)
+            .create(
+                m.input,
+                &m.created_by,
+                m.session.as_deref(),
+                WakeReason::Assigned,
+            )
             .await
     }
 }
@@ -463,7 +476,9 @@ impl Message<UpdateTask> for Tasks {
     type Reply = Result<Task, String>;
 
     async fn handle(&mut self, m: UpdateTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger.update(&m.id, m.patch, &m.actor, m.session.as_deref()).await
+        self.ledger
+            .update(&m.id, m.patch, &m.actor, m.session.as_deref())
+            .await
     }
 }
 
@@ -472,7 +487,14 @@ impl Message<MoveTask> for Tasks {
 
     async fn handle(&mut self, m: MoveTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger
-            .move_to(&m.id, m.state, m.note.as_deref(), m.done_because, &m.actor, m.session.as_deref())
+            .move_to(
+                &m.id,
+                m.state,
+                m.note.as_deref(),
+                m.done_because,
+                &m.actor,
+                m.session.as_deref(),
+            )
             .await
     }
 }
@@ -481,7 +503,9 @@ impl Message<ReassignTask> for Tasks {
     type Reply = Result<Task, String>;
 
     async fn handle(&mut self, m: ReassignTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger.reassign(&m.id, m.to, &m.why, &m.actor, m.session.as_deref()).await
+        self.ledger
+            .reassign(&m.id, m.to, &m.why, &m.actor, m.session.as_deref())
+            .await
     }
 }
 
@@ -516,7 +540,14 @@ impl Message<PlaceTask> for Tasks {
 
     async fn handle(&mut self, m: PlaceTask, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ledger
-            .place(&m.id, m.where_, m.harness, &m.reason, &m.actor, m.session.as_deref())
+            .place(
+                &m.id,
+                m.where_,
+                m.harness,
+                &m.reason,
+                &m.actor,
+                m.session.as_deref(),
+            )
             .await
     }
 }
@@ -527,11 +558,27 @@ impl Message<Escalate> for Tasks {
     async fn handle(&mut self, m: Escalate, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (decision, manager) = self
             .ledger
-            .escalate(&m.task, &m.question, &m.options, &m.actor, m.session.as_deref())
+            .escalate(
+                &m.task,
+                &m.question,
+                &m.options,
+                &m.actor,
+                m.session.as_deref(),
+            )
             .await?;
         if manager == Owner::User {
-            let title = self.ledger.get(&m.task).await.map(|t| t.title).unwrap_or_default();
-            tokio::spawn(ask_user(ctx.actor_ref().clone(), decision.clone(), m, title));
+            let title = self
+                .ledger
+                .get(&m.task)
+                .await
+                .map(|t| t.title)
+                .unwrap_or_default();
+            tokio::spawn(ask_user(
+                ctx.actor_ref().clone(),
+                decision.clone(),
+                m,
+                title,
+            ));
         }
         Ok(decision)
     }
@@ -542,36 +589,75 @@ impl Message<Escalate> for Tasks {
 /// — and the answer back through [`AnswerDecision`]. Without a session there
 /// is no card; the task waits parked for a `decide`.
 async fn ask_user(me: ActorRef<Tasks>, decision: String, m: Escalate, title: String) {
-    let Some(session) = m.session.as_deref().and_then(|s| s.parse::<runtime::SessionId>().ok()) else {
+    let Some(session) = m
+        .session
+        .as_deref()
+        .and_then(|s| s.parse::<runtime::SessionId>().ok())
+    else {
         tracing::info!(%decision, "escalated to the user without a session; parked");
         return;
     };
-    let Some(ask) = ActorRef::<::tools::AskUser>::lookup(::tools::ASK_ACTOR).ok().flatten() else {
+    let Some(ask) = ActorRef::<::tools::AskUser>::lookup(::tools::ASK_ACTOR)
+        .ok()
+        .flatten()
+    else {
         tracing::warn!(%decision, "ask actor is not running; parked");
         return;
     };
     let question = ::tools::Question {
         id: decision.clone(),
-        question: format!("{}\n\n(task {} — {title})", m.question, m.task.0.get(..8).unwrap_or(&m.task.0)),
-        options: m.options.iter().map(|o| ::tools::Choice { label: o.clone(), description: None }).collect(),
+        question: format!(
+            "{}\n\n(task {} — {title})",
+            m.question,
+            m.task.0.get(..8).unwrap_or(&m.task.0)
+        ),
+        options: m
+            .options
+            .iter()
+            .map(|o| ::tools::Choice {
+                label: o.clone(),
+                description: None,
+            })
+            .collect(),
         recommended: None,
     };
-    let Ok(out) = ask.ask(::tools::ask::Request { session, questions: vec![question] }).await else { return };
+    let Ok(out) = ask
+        .ask(::tools::ask::Request {
+            session,
+            questions: vec![question],
+        })
+        .await
+    else {
+        return;
+    };
     let answer = match out.answers.and_then(|v| v.into_iter().next()) {
         Some(::tools::Answer::Choice { index }) => m.options.get(index).cloned(),
         Some(::tools::Answer::Text { text }) => Some(text),
         _ => None,
     };
     if let Some(answer) = answer {
-        let _ = me.tell(AnswerDecision { decision, answer, actor: "user".into(), session: None }).await;
+        let _ = me
+            .tell(AnswerDecision {
+                decision,
+                answer,
+                actor: "user".into(),
+                session: None,
+            })
+            .await;
     }
 }
 
 impl Message<AnswerDecision> for Tasks {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: AnswerDecision, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger.answer_decision(&m.decision, &m.answer, &m.actor, m.session.as_deref()).await?;
+    async fn handle(
+        &mut self,
+        m: AnswerDecision,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.ledger
+            .answer_decision(&m.decision, &m.answer, &m.actor, m.session.as_deref())
+            .await?;
         self.escalations.answer(&m.decision, &m.answer);
         Ok(())
     }
@@ -580,7 +666,11 @@ impl Message<AnswerDecision> for Tasks {
 impl Message<AwaitDecision> for Tasks {
     type Reply = DelegatedReply<Option<String>>;
 
-    async fn handle(&mut self, m: AwaitDecision, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: AwaitDecision,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let rx = self.escalations.subscribe(&m.decision);
         tokio::spawn(async move {
@@ -617,7 +707,11 @@ impl Message<MarkAnswered> for Tasks {
 impl Message<NoteDisposition> for Tasks {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: NoteDisposition, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: NoteDisposition,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.ledger
             .note_disposition(&m.id, &m.text, &m.actor, m.session.as_deref())
             .await
@@ -627,11 +721,17 @@ impl Message<NoteDisposition> for Tasks {
 impl Message<EpisodeClosing> for Tasks {
     type Reply = Result<Vec<TaskId>, String>;
 
-    async fn handle(&mut self, m: EpisodeClosing, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: EpisodeClosing,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         // The desk's children (work sessions) go with it.
         let mut sessions = vec![m.session.clone()];
         if let Ok(id) = m.session.parse::<runtime::SessionId>()
-            && let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
+            && let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                .ok()
+                .flatten()
             && let Ok(kids) = agents.ask(agent::ListAgents { session: id }).await
         {
             sessions.extend(kids.into_iter().map(|k| k.id.to_string()));
@@ -653,7 +753,11 @@ impl Message<FinishWake> for Tasks {
 impl Message<ReleaseClaims> for Tasks {
     type Reply = ();
 
-    async fn handle(&mut self, m: ReleaseClaims, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: ReleaseClaims,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let Err(e) = self.ledger.release_claims(&m.0).await {
             tracing::error!(session = %m.0, "wake claims not released: {e}");
         }
@@ -663,15 +767,25 @@ impl Message<ReleaseClaims> for Tasks {
 impl Message<NoContinuation> for Tasks {
     type Reply = Result<Task, String>;
 
-    async fn handle(&mut self, m: NoContinuation, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.ledger.no_continuation_by_id(&m.id, &m.agent, &m.why).await
+    async fn handle(
+        &mut self,
+        m: NoContinuation,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.ledger
+            .no_continuation_by_id(&m.id, &m.agent, &m.why)
+            .await
     }
 }
 
 impl Message<CreateForSchedule> for Tasks {
     type Reply = Result<String, String>;
 
-    async fn handle(&mut self, m: CreateForSchedule, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CreateForSchedule,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.ledger
             .create_for_schedule(&m.schedule, m.fire_ms, &m.agent, &m.prompt, m.project)
             .await
@@ -682,7 +796,11 @@ impl Message<CreateForSchedule> for Tasks {
 impl Message<CloseForSchedule> for Tasks {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, m: CloseForSchedule, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: CloseForSchedule,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.ledger.close_for_schedule(&m.schedule, &m.why).await
     }
 }
@@ -694,7 +812,9 @@ impl Message<Dispatch> for Tasks {
         if !self.dispatching {
             return;
         }
-        let Some(router) = self.ledger.router.clone() else { return };
+        let Some(router) = self.ledger.router.clone() else {
+            return;
+        };
         let deliveries = match self.ledger.dispatch().await {
             Ok(d) => d,
             Err(e) => {
@@ -707,7 +827,10 @@ impl Message<Dispatch> for Tasks {
             let me = ctx.actor_ref().clone();
             let router = router.clone();
             tokio::spawn(async move {
-                let ok = match router.deliver(&d.wake.agent, &d.wake, d.task.as_ref()).await {
+                let ok = match router
+                    .deliver(&d.wake.agent, &d.wake, d.task.as_ref())
+                    .await
+                {
                     Ok(()) => true,
                     Err(e) => {
                         tracing::warn!(agent = %d.wake.agent, "wake not delivered: {e:#}");
@@ -758,7 +881,9 @@ pub struct ScheduleTasks;
 /// newest session whose `cwd` is the schedule's, else none.
 async fn project_of_cwd(cwd: Option<&str>) -> Option<String> {
     let cwd = cwd?;
-    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()?;
+    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()?;
     agents
         .ask(agent::ListSessions)
         .await

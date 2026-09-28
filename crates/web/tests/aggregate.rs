@@ -439,15 +439,31 @@ async fn drift_detector_fires_on_third_empty_call_and_resets() {
     let client = reqwest::Client::new();
     let drift = Drift::default();
     for call in 1..=2 {
-        let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
-            .await
-            .expect("ok");
+        let r = aggregate::search(
+            &empty,
+            &client,
+            &query("q"),
+            None,
+            &c,
+            &drift,
+            &Health::default(),
+        )
+        .await
+        .expect("ok");
         assert_eq!(r.ok, vec!["empty"], "call {call} still ok");
         assert!(r.failed.is_empty());
     }
-    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
-        .await
-        .expect("ok");
+    let r = aggregate::search(
+        &empty,
+        &client,
+        &query("q"),
+        None,
+        &c,
+        &drift,
+        &Health::default(),
+    )
+    .await
+    .expect("ok");
     assert!(r.ok.is_empty());
     assert_eq!(r.failed.len(), 1);
     assert_eq!(r.failed[0].0, "empty");
@@ -459,13 +475,29 @@ async fn drift_detector_fires_on_third_empty_call_and_resets() {
 
     // A yield resets the counter for the same name.
     let yielding = [MockProvider::ok("empty", vec![hit("Y", "https://example.com/y", "s")]).arc()];
-    let r = aggregate::search(&yielding, &client, &query("q"), None, &c, &drift, &Health::default())
-        .await
-        .expect("ok");
+    let r = aggregate::search(
+        &yielding,
+        &client,
+        &query("q"),
+        None,
+        &c,
+        &drift,
+        &Health::default(),
+    )
+    .await
+    .expect("ok");
     assert_eq!(r.ok, vec!["empty"]);
-    let r = aggregate::search(&empty, &client, &query("q"), None, &c, &drift, &Health::default())
-        .await
-        .expect("ok");
+    let r = aggregate::search(
+        &empty,
+        &client,
+        &query("q"),
+        None,
+        &c,
+        &drift,
+        &Health::default(),
+    )
+    .await
+    .expect("ok");
     assert_eq!(
         r.ok,
         vec!["empty"],
@@ -481,30 +513,46 @@ async fn degraded_when_only_wikipedia_or_one_general_engine_answers() {
     let wiki = hit("Tokio", "https://en.wikipedia.org/wiki/Tokio", "");
     let providers = [
         MockProvider::ok("wikipedia", vec![wiki.clone()]).arc(),
-        MockProvider::ok("google", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::ok(
+            "google",
+            vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")],
+        )
+        .arc(),
         MockProvider::fail("brave", "rate limited").arc(),
         MockProvider::fail("duckduckgo", "blocked: HTTP 202 challenge").arc(),
     ];
     let r = run(&providers, &query("tokio JoinSet"), &c).await;
     assert!(r.degraded, "one general engine + wikipedia is degraded");
-    assert_eq!(
-        r.reasons,
-        ["brave: rate_limited", "duckduckgo: challenge"]
-    );
+    assert_eq!(r.reasons, ["brave: rate_limited", "duckduckgo: challenge"]);
 
     let providers = [
-        MockProvider::ok("google", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
-        MockProvider::ok("qwant", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::ok(
+            "google",
+            vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")],
+        )
+        .arc(),
+        MockProvider::ok(
+            "qwant",
+            vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")],
+        )
+        .arc(),
     ];
     let r = run(&providers, &query("tokio JoinSet"), &c).await;
     assert!(!r.degraded, "two general engines answering is fine");
 
     let providers = [
-        MockProvider::ok("searxng", vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")]).arc(),
+        MockProvider::ok(
+            "searxng",
+            vec![hit("tokio JoinSet", "https://docs.rs/tokio", "")],
+        )
+        .arc(),
         MockProvider::fail("google", "HTTP 429").arc(),
     ];
     let r = run(&providers, &query("tokio JoinSet"), &c).await;
-    assert!(!r.degraded, "an external provider answering is never degraded");
+    assert!(
+        !r.degraded,
+        "an external provider answering is never degraded"
+    );
     assert_eq!(r.reasons, ["google: rate_limited"]);
 }
 
@@ -560,5 +608,8 @@ async fn site_applies_to_the_returned_rows() {
     assert_eq!(r.results.len(), 1);
     assert_eq!(r.results[0].url, "https://learn.microsoft.com/x");
     assert_eq!(r.results[0].rank, 1);
-    assert_eq!(r.notes, ["1 off-site rows dropped (site=learn.microsoft.com)"]);
+    assert_eq!(
+        r.notes,
+        ["1 off-site rows dropped (site=learn.microsoft.com)"]
+    );
 }

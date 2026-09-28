@@ -178,9 +178,7 @@ fn cap_of(args: &SpawnSubagentArgs) -> Result<Option<Risk>, String> {
     let Some(tools) = &args.tools else {
         return Ok(None);
     };
-    let risk: Risk = tools
-        .parse()
-        .map_err(|e| format!("`tools`: {e}"))?;
+    let risk: Risk = tools.parse().map_err(|e| format!("`tools`: {e}"))?;
     Ok((risk != Risk::Destructive).then_some(risk))
 }
 
@@ -776,23 +774,58 @@ mod tests {
             w.insert("mac-mini".into(), d(Arc::new(NoDial)));
         }
         assert_eq!(resolve_node(&nodes, "build-A").as_deref(), Some("build-A"));
-        assert_eq!(resolve_node(&nodes, "mac-mini").as_deref(), Some("mac-mini"));
+        assert_eq!(
+            resolve_node(&nodes, "mac-mini").as_deref(),
+            Some("mac-mini")
+        );
         assert_eq!(resolve_node(&nodes, "abcdef01").as_deref(), Some("build-A"));
         assert_eq!(resolve_node(&nodes, "abcdff").as_deref(), Some("build-B"));
-        assert_eq!(resolve_node(&nodes, "abcd"), None, "two matches are no match");
+        assert_eq!(
+            resolve_node(&nodes, "abcd"),
+            None,
+            "two matches are no match"
+        );
         assert_eq!(resolve_node(&nodes, "mac"), None, "a 32 node has no id");
-        assert_eq!(canonical_agent(&nodes, "omp@abcdef01").as_deref(), Some("omp@build-A"));
-        assert_eq!(canonical_agent(&nodes, "abcdff98").as_deref(), Some("build-B"));
-        assert_eq!(canonical_agent(&nodes, "omp").as_deref(), Some("omp"), "a local harness passes through");
-        assert_eq!(canonical_agent(&nodes, "a@b@c").as_deref(), Some("a@b@c"), "bad input is the spawn's error");
+        assert_eq!(
+            canonical_agent(&nodes, "omp@abcdef01").as_deref(),
+            Some("omp@build-A")
+        );
+        assert_eq!(
+            canonical_agent(&nodes, "abcdff98").as_deref(),
+            Some("build-B")
+        );
+        assert_eq!(
+            canonical_agent(&nodes, "omp").as_deref(),
+            Some("omp"),
+            "a local harness passes through"
+        );
+        assert_eq!(
+            canonical_agent(&nodes, "a@b@c").as_deref(),
+            Some("a@b@c"),
+            "bad input is the spawn's error"
+        );
         let me = platform::process::hostname();
-        assert_eq!(canonical_agent(&nodes, me), None, "this engine → a local native child (hostname by default)");
-        assert_eq!(canonical_agent(&nodes, &format!("omp@{me}")).as_deref(), Some("omp"));
+        assert_eq!(
+            canonical_agent(&nodes, me),
+            None,
+            "this engine → a local native child (hostname by default)"
+        );
+        assert_eq!(
+            canonical_agent(&nodes, &format!("omp@{me}")).as_deref(),
+            Some("omp")
+        );
         // 67 2.3: with `mesh.name` set, the local engine goes by that name, not the hostname.
         mesh::set_self_name("build-me");
         assert_eq!(canonical_agent(&nodes, "build-me"), None);
-        assert_eq!(canonical_agent(&nodes, "omp@build-me").as_deref(), Some("omp"));
-        assert_eq!(canonical_agent(&nodes, &format!("omp@{me}")).as_deref(), Some(format!("omp@{me}").as_str()), "the hostname is a stranger now");
+        assert_eq!(
+            canonical_agent(&nodes, "omp@build-me").as_deref(),
+            Some("omp")
+        );
+        assert_eq!(
+            canonical_agent(&nodes, &format!("omp@{me}")).as_deref(),
+            Some(format!("omp@{me}").as_str()),
+            "the hostname is a stranger now"
+        );
         mesh::set_self_name("");
     }
 
@@ -811,11 +844,20 @@ mod tests {
             tools: tools.map(str::to_owned),
         };
         assert_eq!(cap_of(&args(None, None)), Ok(None));
-        assert_eq!(cap_of(&args(Some("read_only"), None)), Ok(Some(Risk::ReadOnly)));
-        assert_eq!(cap_of(&args(Some("mutating"), None)), Ok(Some(Risk::Mutating)));
+        assert_eq!(
+            cap_of(&args(Some("read_only"), None)),
+            Ok(Some(Risk::ReadOnly))
+        );
+        assert_eq!(
+            cap_of(&args(Some("mutating"), None)),
+            Ok(Some(Risk::Mutating))
+        );
         assert_eq!(cap_of(&args(Some("destructive"), None)), Ok(None));
         let e = cap_of(&args(Some("readonly"), None)).unwrap_err();
-        assert!(e.contains("unknown risk `readonly`") && e.contains("read_only"), "{e}");
+        assert!(
+            e.contains("unknown risk `readonly`") && e.contains("read_only"),
+            "{e}"
+        );
         assert_eq!(
             cap_of(&args(Some("read_only"), Some("build-A"))),
             Ok(Some(Risk::ReadOnly))
@@ -886,7 +928,8 @@ mod tests {
             nodes: nodes.clone(),
         }
         .description();
-        let line = "e.g. `omp@build-box`): build-box — linux · theuth 0.4.1; mac-mini — macos · offline";
+        let line =
+            "e.g. `omp@build-box`): build-box — linux · theuth 0.4.1; mac-mini — macos · offline";
         assert!(desc.contains(line), "{desc}");
         assert!(desc.find("External harnesses").unwrap() < desc.find("Nodes (").unwrap());
 
@@ -915,10 +958,9 @@ mod tests {
         let one: SendMessageArgs =
             serde_json::from_value(serde_json::json!({ "to": "parent", "message": "m" })).unwrap();
         assert_eq!(recipients(one.to).unwrap(), vec!["parent"]);
-        let many: SendMessageArgs = serde_json::from_value(
-            serde_json::json!({ "to": ["x", "y", "x"], "message": "m" }),
-        )
-        .unwrap();
+        let many: SendMessageArgs =
+            serde_json::from_value(serde_json::json!({ "to": ["x", "y", "x"], "message": "m" }))
+                .unwrap();
         assert_eq!(recipients(many.to).unwrap(), vec!["x", "y"]);
         assert!(recipients(Recipients::Many(vec![])).is_err());
         let over: Vec<String> = (0..=SEND_MAX_RECIPIENTS).map(|i| format!("p{i}")).collect();
@@ -928,7 +970,11 @@ mod tests {
         assert_eq!(recipients(Recipients::Many(full)).unwrap().len(), 16);
         // The schema the model reads offers both shapes.
         let schema = serde_json::to_value(schemars::schema_for!(Recipients)).unwrap();
-        assert_eq!(schema["anyOf"].as_array().map(Vec::len), Some(2), "{schema}");
+        assert_eq!(
+            schema["anyOf"].as_array().map(Vec::len),
+            Some(2),
+            "{schema}"
+        );
     }
 
     /// 62 §3.5: two recipients yield two receipt lines and a two-element
@@ -957,11 +1003,16 @@ mod tests {
         assert_eq!(s["receipts"].as_array().map(Vec::len), Some(2));
         assert_eq!(s["receipts"][1]["to"], "session:b");
         // A single recipient is still a list.
-        let s = receipts_output(&[a.clone()]).structured.unwrap();
+        let s = receipts_output(std::slice::from_ref(&a))
+            .structured
+            .unwrap();
         assert_eq!(s["receipts"].as_array().map(Vec::len), Some(1));
         // One bad address among two: nothing sent, two error lines, is_error.
         let out = receipts_output(&[
-            failed("session:a".into(), "not sent: another address failed".into()),
+            failed(
+                "session:a".into(),
+                "not sent: another address failed".into(),
+            ),
             failed("bogus".into(), "unknown peer `bogus`".into()),
         ]);
         assert!(out.is_error);

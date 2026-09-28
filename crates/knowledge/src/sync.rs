@@ -127,7 +127,12 @@ pub async fn dial(k: &Arc<Knowledge>, t: &Arc<dyn Transport>, peer: &PeerId) -> 
 
 /// The protocol on one stream: manifests both ways, then the files each side
 /// needs, then apply. `dialer` speaks first at each step.
-pub async fn exchange(k: &Arc<Knowledge>, mut stream: Box<dyn ByteStream>, peer: &PeerId, dialer: bool) -> anyhow::Result<()> {
+pub async fn exchange(
+    k: &Arc<Knowledge>,
+    mut stream: Box<dyn ByteStream>,
+    peer: &PeerId,
+    dialer: bool,
+) -> anyhow::Result<()> {
     let repo = k.repo.clone().context("no repository: sync unavailable")?;
     let mine = {
         let repo = repo.clone();
@@ -215,7 +220,12 @@ fn files_for(repo: &Repo, mine: &Manifest, theirs: &Manifest) -> anyhow::Result<
 /// ponytail: files are written outside the store's write lock; a local put
 /// racing the same path in the same instant ends in whichever commit lands
 /// second, both kept in history.
-async fn apply(k: &Arc<Knowledge>, repo: &Arc<Repo>, files: Vec<File>, peer: &PeerId) -> anyhow::Result<()> {
+async fn apply(
+    k: &Arc<Knowledge>,
+    repo: &Arc<Repo>,
+    files: Vec<File>,
+    peer: &PeerId,
+) -> anyhow::Result<()> {
     let root = k.root().to_path_buf();
     let message = format!("sync from {peer}");
     let n = files.len();
@@ -226,7 +236,8 @@ async fn apply(k: &Arc<Knowledge>, repo: &Arc<Repo>, files: Vec<File>, peer: &Pe
         for f in files {
             let rel = PathBuf::from(&f.path);
             anyhow::ensure!(
-                rel.components().all(|c| matches!(c, std::path::Component::Normal(_))),
+                rel.components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
                 "refusing path {}",
                 f.path
             );
@@ -240,7 +251,9 @@ async fn apply(k: &Arc<Knowledge>, repo: &Arc<Repo>, files: Vec<File>, peer: &Pe
                     match std::fs::remove_file(&full) {
                         Ok(()) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e).with_context(|| format!("remove {}", full.display())),
+                        Err(e) => {
+                            return Err(e).with_context(|| format!("remove {}", full.display()));
+                        }
                     }
                     removed.push(rel);
                 }
@@ -266,8 +279,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 async fn send(stream: &mut Box<dyn ByteStream>, msg: &Msg) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec(msg)?;
-    anyhow::ensure!(bytes.len() <= MAX_FRAME as usize, "frame too large: {} bytes", bytes.len());
-    stream.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_FRAME as usize,
+        "frame too large: {} bytes",
+        bytes.len()
+    );
+    stream
+        .write_all(&(bytes.len() as u32).to_le_bytes())
+        .await?;
     stream.write_all(&bytes).await?;
     stream.flush().await?;
     Ok(())
@@ -335,15 +354,24 @@ mod tests {
     }
 
     async fn ids(k: &Arc<Knowledge>) -> Vec<String> {
-        k.list(None, None, None, 100).await.unwrap().into_iter().map(|m| m.id).collect()
+        k.list(None, None, None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect()
     }
 
     #[tokio::test]
     async fn two_bundles_converge_both_ways_and_deletions_travel() {
         let (a, da) = bundle().await;
         let (b, db) = bundle().await;
-        a.put(put("facts/only-a", "from a"), Source::User).await.unwrap();
-        b.put(put("facts/only-b", "from b"), Source::User).await.unwrap();
+        a.put(put("facts/only-a", "from a"), Source::User)
+            .await
+            .unwrap();
+        b.put(put("facts/only-b", "from b"), Source::User)
+            .await
+            .unwrap();
 
         sync_pair(&a, &b).await;
         assert_eq!(ids(&a).await, ["facts/only-a", "facts/only-b"]);
@@ -375,17 +403,35 @@ mod tests {
     async fn conflicting_edit_newer_wins_and_history_keeps_both() {
         let (a, da) = bundle().await;
         let (b, db) = bundle().await;
-        a.put(put("facts/shared", "v0"), Source::User).await.unwrap();
+        a.put(put("facts/shared", "v0"), Source::User)
+            .await
+            .unwrap();
         sync_pair(&a, &b).await;
 
         // Both edit; B a second later (commit times are whole seconds).
-        a.put(put("facts/shared", "a wins? no"), Source::User).await.unwrap();
+        a.put(put("facts/shared", "a wins? no"), Source::User)
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        b.put(put("facts/shared", "b is newer"), Source::User).await.unwrap();
+        b.put(put("facts/shared", "b is newer"), Source::User)
+            .await
+            .unwrap();
 
         sync_pair(&a, &b).await;
-        assert!(a.get("facts/shared").await.unwrap().text.contains("b is newer"));
-        assert!(b.get("facts/shared").await.unwrap().text.contains("b is newer"));
+        assert!(
+            a.get("facts/shared")
+                .await
+                .unwrap()
+                .text
+                .contains("b is newer")
+        );
+        assert!(
+            b.get("facts/shared")
+                .await
+                .unwrap()
+                .text
+                .contains("b is newer")
+        );
         let hist = a.history(Some("facts/shared"), 10).await.unwrap();
         assert_eq!(hist.changes[0].message, "sync from b");
         let messages: Vec<&str> = hist.changes.iter().map(|c| c.message.as_str()).collect();
@@ -394,12 +440,18 @@ mod tests {
             .revision(&hist.changes[1].commit, Some("facts/shared"))
             .await
             .unwrap();
-        assert!(loser.files[0].diff.contains("a wins? no"), "the loser stays in history");
+        assert!(
+            loser.files[0].diff.contains("a wins? no"),
+            "the loser stays in history"
+        );
 
         // Converged: the manifests agree and another round is a no-op.
         let ma = manifest(a.repo.as_ref().unwrap()).unwrap();
         let mb = manifest(b.repo.as_ref().unwrap()).unwrap();
-        assert_eq!(ma.files["facts/shared.md"].blob, mb.files["facts/shared.md"].blob);
+        assert_eq!(
+            ma.files["facts/shared.md"].blob,
+            mb.files["facts/shared.md"].blob
+        );
         let head_a = a.repo.as_ref().unwrap().head_id().unwrap();
         sync_pair(&b, &a).await;
         assert_eq!(a.repo.as_ref().unwrap().head_id().unwrap(), head_a);

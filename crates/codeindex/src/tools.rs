@@ -188,7 +188,12 @@ impl Tool for CodeFindTool {
         .await?;
         let lines: Vec<String> = rows
             .iter()
-            .map(|s| format!("{}:{} {} {}  {}", s.path, s.line_start, s.kind, s.name, s.signature))
+            .map(|s| {
+                format!(
+                    "{}:{} {} {}  {}",
+                    s.path, s.line_start, s.kind, s.name, s.signature
+                )
+            })
             .collect();
         let (mut text, kept, dropped) = budget_render(&lines, a.budget.unwrap_or(DEFAULT_BUDGET));
         if rows.is_empty() {
@@ -298,7 +303,10 @@ impl Tool for CodeOutlineTool {
         let lines: Vec<String> = rows
             .iter()
             .map(|s| {
-                let d = s.parent_id.and_then(|p| depth.get(&p).copied()).map_or(0, |d: usize| d + 1);
+                let d = s
+                    .parent_id
+                    .and_then(|p| depth.get(&p).copied())
+                    .map_or(0, |d: usize| d + 1);
                 depth.insert(s.id, d);
                 format!(
                     "{}{}-{} {} {}  {}",
@@ -316,11 +324,22 @@ impl Tool for CodeOutlineTool {
             file.path,
             file.language,
             file.lines,
-            if file.parse_errors { ", parse errors" } else { "" },
-            if walk::is_test_path(&file.path) { ", test" } else { "" },
+            if file.parse_errors {
+                ", parse errors"
+            } else {
+                ""
+            },
+            if walk::is_test_path(&file.path) {
+                ", test"
+            } else {
+                ""
+            },
             imports.len(),
         );
-        let budget = a.budget.unwrap_or(DEFAULT_BUDGET).saturating_sub(estimate_tokens(header.len()));
+        let budget = a
+            .budget
+            .unwrap_or(DEFAULT_BUDGET)
+            .saturating_sub(estimate_tokens(header.len()));
         let (body, kept, dropped) = budget_render(&lines, budget);
         let mut text = header;
         if !body.is_empty() {
@@ -379,15 +398,23 @@ enum Picked {
 }
 
 /// Numeric → `symbols.id`; `path:line` → innermost definition there; else exact name.
-async fn pick(pool: &sqlx::SqlitePool, root: &std::path::Path, symbol: &str) -> anyhow::Result<Picked> {
+async fn pick(
+    pool: &sqlx::SqlitePool,
+    root: &std::path::Path,
+    symbol: &str,
+) -> anyhow::Result<Picked> {
     if let Ok(id) = symbol.parse::<i64>() {
-        return Ok(store::definition_by_id(pool, id).await?.map_or(Picked::None, Picked::One));
+        return Ok(store::definition_by_id(pool, id)
+            .await?
+            .map_or(Picked::None, Picked::One));
     }
     if let Some((path, line)) = symbol.rsplit_once(':')
         && let Ok(line) = line.parse::<i64>()
     {
         let rel = root::under_root(root, std::path::Path::new(path)).map(|p| root::rel_str(&p))?;
-        return Ok(store::definition_at(pool, &rel, line).await?.map_or(Picked::None, Picked::One));
+        return Ok(store::definition_at(pool, &rel, line)
+            .await?
+            .map_or(Picked::None, Picked::One));
     }
     let mut defs = store::definitions_named(pool, symbol).await?;
     Ok(match defs.len() {
@@ -422,7 +449,11 @@ impl Tool for CodeRefsTool {
         let outward = match a.direction.as_deref().map(str::trim).unwrap_or("in") {
             "in" | "" => false,
             "out" => true,
-            d => return Ok(ToolOutput::err(format!("direction must be in or out, not {d:?}"))),
+            d => {
+                return Ok(ToolOutput::err(format!(
+                    "direction must be in or out, not {d:?}"
+                )));
+            }
         };
         let kind = a.kind.as_deref().map(str::trim).filter(|k| !k.is_empty());
         let budget = a.budget.unwrap_or(DEFAULT_BUDGET);
@@ -430,14 +461,25 @@ impl Tool for CodeRefsTool {
         let def = match pick(&ri.pool, &ri.root, symbol).await {
             Ok(Picked::One(d)) => d,
             Ok(Picked::None) => {
-                let hint = if r.stale { format!("; {} files still indexing", r.pending) } else { String::new() };
-                return Ok(ToolOutput::err(format!("no definition named {symbol:?}{hint}")));
+                let hint = if r.stale {
+                    format!("; {} files still indexing", r.pending)
+                } else {
+                    String::new()
+                };
+                return Ok(ToolOutput::err(format!(
+                    "no definition named {symbol:?}{hint}"
+                )));
             }
             Ok(Picked::Several(defs)) => {
                 let ambiguous = store::ambiguous_named(&ri.pool, symbol, kind).await?;
                 let lines: Vec<String> = defs
                     .iter()
-                    .map(|d| format!("{}:{} {} {}  {}", d.path, d.line_start, d.kind, d.name, d.signature))
+                    .map(|d| {
+                        format!(
+                            "{}:{} {} {}  {}",
+                            d.path, d.line_start, d.kind, d.name, d.signature
+                        )
+                    })
                     .collect();
                 let (body, kept, dropped) = budget_render(&lines, budget);
                 let text = format!(
@@ -465,7 +507,11 @@ impl Tool for CodeRefsTool {
         } else {
             store::refs_to(&ri.pool, def.symbol_id, kind, FETCH_LIMIT).await?
         };
-        let ambiguous = if outward { 0 } else { store::ambiguous_named(&ri.pool, &def.name, kind).await? };
+        let ambiguous = if outward {
+            0
+        } else {
+            store::ambiguous_named(&ri.pool, &def.name, kind).await?
+        };
         let mut by_file: Vec<(String, usize)> = Vec::new();
         for h in &refs {
             match by_file.iter_mut().find(|(p, _)| *p == h.path) {
@@ -485,17 +531,31 @@ impl Tool for CodeRefsTool {
             refs.len(),
             if outward { "outgoing" } else { "incoming" },
             if refs.len() == 1 { "" } else { "s" },
-            if ambiguous > 0 { format!(", {ambiguous} ambiguous same-name references not attributed") } else { String::new() },
+            if ambiguous > 0 {
+                format!(", {ambiguous} ambiguous same-name references not attributed")
+            } else {
+                String::new()
+            },
         );
         let lines: Vec<String> = refs
             .iter()
             .map(|h| {
-                let scope = h.from_symbol.as_deref().map_or(String::new(), |s| format!(" in {s}"));
-                let target = h.target.as_deref().map_or(String::new(), |t| format!(" → {t}"));
-                format!("{}:{} {} {}{}{} [{} {:.1}]", h.path, h.line, h.kind, h.name, target, scope, h.provenance, h.confidence)
+                let scope = h
+                    .from_symbol
+                    .as_deref()
+                    .map_or(String::new(), |s| format!(" in {s}"));
+                let target = h
+                    .target
+                    .as_deref()
+                    .map_or(String::new(), |t| format!(" → {t}"));
+                format!(
+                    "{}:{} {} {}{}{} [{} {:.1}]",
+                    h.path, h.line, h.kind, h.name, target, scope, h.provenance, h.confidence
+                )
             })
             .collect();
-        let (body, kept, dropped) = budget_render(&lines, budget.saturating_sub(estimate_tokens(header.len())));
+        let (body, kept, dropped) =
+            budget_render(&lines, budget.saturating_sub(estimate_tokens(header.len())));
         let mut text = header;
         if !body.is_empty() {
             text.push('\n');
@@ -560,7 +620,12 @@ impl Tool for CodeMapTool {
             Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
         };
         let budget = a.budget.unwrap_or(DEFAULT_BUDGET);
-        let focus: Vec<String> = a.focus.unwrap_or_default().into_iter().filter(|s| !s.trim().is_empty()).collect();
+        let focus: Vec<String> = a
+            .focus
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect();
         let paths_only = a.paths_only.unwrap_or(false);
         // Without focus the stored ranks are the answer (60 §7); a focus is a fresh personalised run.
         let ranked = if focus.is_empty() && !paths_only {
@@ -568,13 +633,27 @@ impl Tool for CodeMapTool {
         } else {
             let g = Graph::load(&ri.pool).await?;
             let f = g.focus(&focus);
-            let rk = if focus.is_empty() { None } else { Some(g.rank(&f)) };
+            let rk = if focus.is_empty() {
+                None
+            } else {
+                Some(g.rank(&f))
+            };
             Some((g, f, rk))
         };
         let mut extra = serde_json::Map::new();
         if let Some((g, f, rk)) = &ranked {
-            extra.insert("focus_files".into(), f.files.iter().map(|&i| g.files[i].path.clone()).collect::<Vec<_>>().into());
-            extra.insert("focus_idents".into(), f.idents.iter().cloned().collect::<Vec<_>>().into());
+            extra.insert(
+                "focus_files".into(),
+                f.files
+                    .iter()
+                    .map(|&i| g.files[i].path.clone())
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+            extra.insert(
+                "focus_idents".into(),
+                f.idents.iter().cloned().collect::<Vec<_>>().into(),
+            );
             if let Some(rk) = rk {
                 extra.insert("pagerank_iterations".into(), rk.iterations.into());
             }
@@ -586,7 +665,10 @@ impl Tool for CodeMapTool {
                 None => g.files.iter().map(|f| (f, f.rank)).collect(),
             };
             files.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.path.cmp(&b.0.path)));
-            let lines: Vec<String> = files.iter().map(|(f, r)| format!("{}  {r:.5}  {} lines  {}", f.path, f.lines, f.language)).collect();
+            let lines: Vec<String> = files
+                .iter()
+                .map(|(f, r)| format!("{}  {r:.5}  {} lines  {}", f.path, f.lines, f.language))
+                .collect();
             let (text, kept, dropped) = budget_render(&lines, budget);
             let rows: Vec<serde_json::Value> = files[..kept]
                 .iter()
@@ -599,11 +681,15 @@ impl Tool for CodeMapTool {
                 _ => store::ranked_tags(&ri.pool).await?,
             };
             let (text, kept) = rank::render(&tags, budget);
-            let rows = tags[..kept].iter().map(|t| serde_json::to_value(t).unwrap_or_default()).collect();
+            let rows = tags[..kept]
+                .iter()
+                .map(|t| serde_json::to_value(t).unwrap_or_default())
+                .collect();
             (text, rows, tags.len() - kept)
         };
         if text.is_empty() {
-            text = "no ranked definitions: the index has no resolved cross-file references yet".into();
+            text =
+                "no ranked definitions: the index has no resolved cross-file references yet".into();
         }
         if r.stale {
             text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
@@ -656,8 +742,16 @@ const BODY_TAIL: usize = 60;
 fn body_lines(root: &std::path::Path, d: &Definition) -> anyhow::Result<Vec<String>> {
     let src = std::fs::read_to_string(root.join(&d.path))?;
     #[allow(clippy::cast_sign_loss)]
-    let (s, e) = ((d.line_start.max(1) - 1) as usize, d.line_end.max(d.line_start) as usize);
-    let lines: Vec<String> = src.lines().skip(s).take(e.saturating_sub(s)).map(str::to_owned).collect();
+    let (s, e) = (
+        (d.line_start.max(1) - 1) as usize,
+        d.line_end.max(d.line_start) as usize,
+    );
+    let lines: Vec<String> = src
+        .lines()
+        .skip(s)
+        .take(e.saturating_sub(s))
+        .map(str::to_owned)
+        .collect();
     if lines.len() <= BODY_MAX {
         return Ok(lines);
     }
@@ -696,8 +790,13 @@ fn group_by_file(refs: &[RefHit]) -> Vec<serde_json::Value> {
 fn group_by_target(refs: &[RefHit]) -> Vec<(String, String, usize, String, f64)> {
     let mut groups: Vec<(String, String, usize, String, f64)> = Vec::new();
     for h in refs {
-        let Some(t) = h.target.as_deref() else { continue };
-        match groups.iter_mut().find(|(n, tg, ..)| *n == h.name && tg == t) {
+        let Some(t) = h.target.as_deref() else {
+            continue;
+        };
+        match groups
+            .iter_mut()
+            .find(|(n, tg, ..)| *n == h.name && tg == t)
+        {
             Some(g) => {
                 g.2 += 1;
                 if h.confidence > g.4 {
@@ -705,7 +804,13 @@ fn group_by_target(refs: &[RefHit]) -> Vec<(String, String, usize, String, f64)>
                     g.4 = h.confidence;
                 }
             }
-            None => groups.push((h.name.clone(), t.to_owned(), 1, h.provenance.clone(), h.confidence)),
+            None => groups.push((
+                h.name.clone(),
+                t.to_owned(),
+                1,
+                h.provenance.clone(),
+                h.confidence,
+            )),
         }
     }
     groups.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
@@ -741,7 +846,10 @@ impl Tool for CodeSymbolTool {
                 for s in v {
                     let s = s.trim();
                     let Some(&known) = SECTIONS.iter().find(|k| **k == s) else {
-                        return Ok(ToolOutput::err(format!("unknown section {s:?}; one of {}", SECTIONS.join(", "))));
+                        return Ok(ToolOutput::err(format!(
+                            "unknown section {s:?}; one of {}",
+                            SECTIONS.join(", ")
+                        )));
                     };
                     if !w.contains(&known) {
                         w.push(known);
@@ -758,16 +866,30 @@ impl Tool for CodeSymbolTool {
         let def = match pick(&ri.pool, &ri.root, symbol).await {
             Ok(Picked::One(d)) => d,
             Ok(Picked::None) => {
-                let hint = if r.stale { format!("; {} files still indexing", r.pending) } else { String::new() };
-                return Ok(ToolOutput::err(format!("no definition named {symbol:?}{hint}")));
+                let hint = if r.stale {
+                    format!("; {} files still indexing", r.pending)
+                } else {
+                    String::new()
+                };
+                return Ok(ToolOutput::err(format!(
+                    "no definition named {symbol:?}{hint}"
+                )));
             }
             Ok(Picked::Several(defs)) => {
                 let lines: Vec<String> = defs
                     .iter()
-                    .map(|d| format!("{}:{} {} {}  {}", d.path, d.line_start, d.kind, d.name, d.signature))
+                    .map(|d| {
+                        format!(
+                            "{}:{} {} {}  {}",
+                            d.path, d.line_start, d.kind, d.name, d.signature
+                        )
+                    })
                     .collect();
                 let (body, kept, dropped) = budget_render(&lines, budget);
-                let text = format!("{symbol:?} has {} definitions; pass a symbol_id or path:line to pick one\n{body}", defs.len());
+                let text = format!(
+                    "{symbol:?} has {} definitions; pass a symbol_id or path:line to pick one\n{body}",
+                    defs.len()
+                );
                 let e = env(dropped);
                 return Ok(structured(
                     text.clone(),
@@ -792,14 +914,20 @@ impl Tool for CodeSymbolTool {
             let block = match s {
                 "definition" => {
                     out.insert("definition".into(), serde_json::to_value(&def)?);
-                    format!("{} {} {}:{}-{}  {}", def.kind, def.name, def.path, def.line_start, def.line_end, def.signature)
+                    format!(
+                        "{} {} {}:{}-{}  {}",
+                        def.kind, def.name, def.path, def.line_start, def.line_end, def.signature
+                    )
                 }
                 "body" => match body_lines(&ri.root, &def) {
                     Ok(lines) => {
                         let (b, _, d) = budget_render(&lines, per);
                         dropped += d;
                         out.insert("body".into(), b.clone().into());
-                        format!("-- body {}:{}-{} --\n{b}", def.path, def.line_start, def.line_end)
+                        format!(
+                            "-- body {}:{}-{} --\n{b}",
+                            def.path, def.line_start, def.line_end
+                        )
                     }
                     Err(e) => {
                         out.insert("body".into(), serde_json::Value::Null);
@@ -813,8 +941,14 @@ impl Tool for CodeSymbolTool {
                     let lines: Vec<String> = refs
                         .iter()
                         .map(|h| {
-                            let scope = h.from_symbol.as_deref().map_or(String::new(), |s| format!(" in {s}"));
-                            format!("{}:{} {}{} [{} {:.1}]", h.path, h.line, h.kind, scope, h.provenance, h.confidence)
+                            let scope = h
+                                .from_symbol
+                                .as_deref()
+                                .map_or(String::new(), |s| format!(" in {s}"));
+                            format!(
+                                "{}:{} {}{} [{} {:.1}]",
+                                h.path, h.line, h.kind, scope, h.provenance, h.confidence
+                            )
                         })
                         .collect();
                     let (b, kept, d) = budget_render(&lines, per);
@@ -824,16 +958,30 @@ impl Tool for CodeSymbolTool {
                     }
                     out.insert("callers".into(), grouped.into());
                     out.insert("ambiguous".into(), ambiguous.into());
-                    let note = if ambiguous > 0 { format!(", {ambiguous} ambiguous same-name references not attributed") } else { String::new() };
-                    format!("-- callers: {} reference{}{note} --\n{b}", refs.len(), if refs.len() == 1 { "" } else { "s" })
+                    let note = if ambiguous > 0 {
+                        format!(", {ambiguous} ambiguous same-name references not attributed")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "-- callers: {} reference{}{note} --\n{b}",
+                        refs.len(),
+                        if refs.len() == 1 { "" } else { "s" }
+                    )
                 }
                 "callees" => {
-                    let refs = store::refs_in_span(&ri.pool, &def.path, def.line_start, def.line_end).await?;
+                    let refs =
+                        store::refs_in_span(&ri.pool, &def.path, def.line_start, def.line_end)
+                            .await?;
                     let groups = group_by_target(&refs);
                     let lines: Vec<String> = groups
                         .iter()
                         .map(|(n, t, c, p, cf)| {
-                            let times = if *c > 1 { format!(" ×{c}") } else { String::new() };
+                            let times = if *c > 1 {
+                                format!(" ×{c}")
+                            } else {
+                                String::new()
+                            };
                             format!("{n} → {t}{times} [{p} {cf:.1}]")
                         })
                         .collect();
@@ -847,7 +995,11 @@ impl Tool for CodeSymbolTool {
                             .collect::<Vec<_>>()
                             .into(),
                     );
-                    format!("-- callees: {} resolved target{} --\n{b}", groups.len(), if groups.len() == 1 { "" } else { "s" })
+                    format!(
+                        "-- callees: {} resolved target{} --\n{b}",
+                        groups.len(),
+                        if groups.len() == 1 { "" } else { "s" }
+                    )
                 }
                 _ => {
                     let file = store::file(&ri.pool, &def.path).await?;
@@ -855,17 +1007,29 @@ impl Tool for CodeSymbolTool {
                         Some(f) => store::cochange_partners(&ri.pool, f.id, COCHANGE_TOP).await?,
                         None => Vec::new(),
                     };
-                    let lines: Vec<String> = partners.iter().map(|(p, n)| format!("{p} ×{n}")).collect();
+                    let lines: Vec<String> =
+                        partners.iter().map(|(p, n)| format!("{p} ×{n}")).collect();
                     let (b, kept, d) = budget_render(&lines, per);
                     dropped += d;
                     out.insert(
                         "cochange".into(),
-                        partners[..kept].iter().map(|(p, n)| serde_json::json!({"path": p, "count": n})).collect::<Vec<_>>().into(),
+                        partners[..kept]
+                            .iter()
+                            .map(|(p, n)| serde_json::json!({"path": p, "count": n}))
+                            .collect::<Vec<_>>()
+                            .into(),
                     );
                     if partners.is_empty() {
-                        format!("-- cochange: no commits changed {} together with another indexed file --", def.path)
+                        format!(
+                            "-- cochange: no commits changed {} together with another indexed file --",
+                            def.path
+                        )
                     } else {
-                        format!("-- cochange: files committed together with {} (top {}) --\n{b}", def.path, partners.len())
+                        format!(
+                            "-- cochange: files committed together with {} (top {}) --\n{b}",
+                            def.path,
+                            partners.len()
+                        )
                     }
                 }
             };
@@ -937,11 +1101,20 @@ fn touched<'a>(rows: &'a [Sym], spans: &[Span]) -> Vec<&'a Sym> {
     for sp in spans {
         match sp {
             Span::Point(_) => {
-                if let Some(r) = rows.iter().enumerate().filter(|(_, r)| sp.touches(r.line_start, r.line_end)).min_by_key(|(_, r)| r.line_end - r.line_start) {
+                if let Some(r) = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| sp.touches(r.line_start, r.line_end))
+                    .min_by_key(|(_, r)| r.line_end - r.line_start)
+                {
                     out.push(r);
                 }
             }
-            _ => out.extend(rows.iter().enumerate().filter(|(_, r)| sp.touches(r.line_start, r.line_end))),
+            _ => out.extend(
+                rows.iter()
+                    .enumerate()
+                    .filter(|(_, r)| sp.touches(r.line_start, r.line_end)),
+            ),
         }
     }
     out.sort_by_key(|(i, _)| *i);
@@ -962,7 +1135,13 @@ fn parse_new_sides(changes: &[Change]) -> Vec<Option<Vec<Sym>>> {
             Some(
                 p.symbols
                     .iter()
-                    .map(|s| Sym { id: None, name: s.name.clone(), kind: s.kind.to_owned(), line_start: s.line_start, line_end: s.line_end })
+                    .map(|s| Sym {
+                        id: None,
+                        name: s.name.clone(),
+                        kind: s.kind.to_owned(),
+                        line_start: s.line_start,
+                        line_end: s.line_end,
+                    })
                     .collect(),
             )
         })
@@ -979,7 +1158,14 @@ fn widen_go(ids: &HashSet<i64>, files: &[store::FileRef]) -> HashSet<i64> {
         .collect();
     let mut out = ids.clone();
     if !pkgs.is_empty() {
-        out.extend(files.iter().filter(|f| f.language == "go" && f.package.as_deref().is_some_and(|p| pkgs.contains(p))).map(|f| f.id));
+        out.extend(
+            files
+                .iter()
+                .filter(|f| {
+                    f.language == "go" && f.package.as_deref().is_some_and(|p| pkgs.contains(p))
+                })
+                .map(|f| f.id),
+        );
     }
     out
 }
@@ -1002,46 +1188,76 @@ impl Tool for CodeImpactTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
         };
-        let range = a.git_range.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let (mode, changes, range_ids): (&str, Vec<Change>, Option<(Option<String>, String)>) = match (&a.files, range) {
-            (Some(_), Some(_)) => return Ok(ToolOutput::err("pass files or git_range, not both")),
-            (None, None) => return Ok(ToolOutput::err("pass files=[...] or git_range=\"A..B\" | \"HEAD~1\" | \"WORKTREE\"")),
-            (Some(files), None) => {
-                let mut out = Vec::with_capacity(files.len());
-                for p in files {
-                    match root::under_root(&ri.root, p) {
-                        Ok(rel) => out.push(Change { path: root::rel_str(&rel), status: git::Status::Modified, spans: vec![Span::All], new: None }),
+        let range = a
+            .git_range
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let (mode, changes, range_ids): (&str, Vec<Change>, Option<(Option<String>, String)>) =
+            match (&a.files, range) {
+                (Some(_), Some(_)) => {
+                    return Ok(ToolOutput::err("pass files or git_range, not both"));
+                }
+                (None, None) => {
+                    return Ok(ToolOutput::err(
+                        "pass files=[...] or git_range=\"A..B\" | \"HEAD~1\" | \"WORKTREE\"",
+                    ));
+                }
+                (Some(files), None) => {
+                    let mut out = Vec::with_capacity(files.len());
+                    for p in files {
+                        match root::under_root(&ri.root, p) {
+                            Ok(rel) => out.push(Change {
+                                path: root::rel_str(&rel),
+                                status: git::Status::Modified,
+                                spans: vec![Span::All],
+                                new: None,
+                            }),
+                            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+                        }
+                    }
+                    ("files", out, None)
+                }
+                (None, Some(spec)) => {
+                    let (root, spec) = (ri.root.clone(), spec.to_owned());
+                    let indexed: Vec<String> =
+                        store::known_files(&ri.pool).await?.into_keys().collect();
+                    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                        let Some(g) = Git::open(&root)? else {
+                            anyhow::bail!(
+                                "{} is not in a git repository; pass files=[...]",
+                                root.display()
+                            )
+                        };
+                        let range = g.range(&spec)?;
+                        let ids = match &range {
+                            git::Range::Worktree => {
+                                (Some("HEAD".to_owned()), "WORKTREE".to_owned())
+                            }
+                            git::Range::Commits { old, new } => {
+                                (old.map(|o| o.to_string()), new.to_string())
+                            }
+                        };
+                        Ok((
+                            g.changes(&range, &root, indexed.iter().map(String::as_str))?,
+                            ids,
+                        ))
+                    })
+                    .await?;
+                    match res {
+                        Ok((c, ids)) => ("range", c, Some(ids)),
                         Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
                     }
                 }
-                ("files", out, None)
-            }
-            (None, Some(spec)) => {
-                let (root, spec) = (ri.root.clone(), spec.to_owned());
-                let indexed: Vec<String> = store::known_files(&ri.pool).await?.into_keys().collect();
-                let res = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                    let Some(g) = Git::open(&root)? else { anyhow::bail!("{} is not in a git repository; pass files=[...]", root.display()) };
-                    let range = g.range(&spec)?;
-                    let ids = match &range {
-                        git::Range::Worktree => (Some("HEAD".to_owned()), "WORKTREE".to_owned()),
-                        git::Range::Commits { old, new } => (old.map(|o| o.to_string()), new.to_string()),
-                    };
-                    Ok((g.changes(&range, &root, indexed.iter().map(String::as_str))?, ids))
-                })
-                .await?;
-                match res {
-                    Ok((c, ids)) => ("range", c, Some(ids)),
-                    Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
-                }
-            }
-        };
+            };
         let (changes, new_sides) = tokio::task::spawn_blocking(move || {
             let parsed = parse_new_sides(&changes);
             (changes, parsed)
         })
         .await?;
         let files = store::all_files(&ri.pool).await?;
-        let by_path: HashMap<&str, &store::FileRef> = files.iter().map(|f| (f.path.as_str(), f)).collect();
+        let by_path: HashMap<&str, &store::FileRef> =
+            files.iter().map(|f| (f.path.as_str(), f)).collect();
         let by_id: HashMap<i64, &store::FileRef> = files.iter().map(|f| (f.id, f)).collect();
 
         // Changed files → changed definitions.
@@ -1066,7 +1282,13 @@ impl Tool for CodeImpactTool {
             let rows: Vec<Sym> = store::outline(&ri.pool, f.id)
                 .await?
                 .into_iter()
-                .map(|r| Sym { id: Some(r.id), name: r.name, kind: r.kind, line_start: r.line_start, line_end: r.line_end })
+                .map(|r| Sym {
+                    id: Some(r.id),
+                    name: r.name,
+                    kind: r.kind,
+                    line_start: r.line_start,
+                    line_end: r.line_end,
+                })
                 .collect();
             // Spans are lines of the new side; map them on its own parse when we have
             // one, then find the index's rows by (name, kind) in the same file.
@@ -1074,17 +1296,35 @@ impl Tool for CodeImpactTool {
             for h in &hit {
                 match h.id {
                     Some(id) => symbol_ids.push(id),
-                    None => symbol_ids.extend(rows.iter().filter(|r| r.name == h.name && r.kind == h.kind).filter_map(|r| r.id)),
+                    None => symbol_ids.extend(
+                        rows.iter()
+                            .filter(|r| r.name == h.name && r.kind == h.kind)
+                            .filter_map(|r| r.id),
+                    ),
                 }
             }
             sym_names.extend(hit.iter().map(|s| s.name.clone()));
             let status = serde_json::to_value(c.status)?;
             let list = if hit.is_empty() {
-                if rows.is_empty() { " (no symbols)".to_owned() } else { " (no definition in the hunks)".to_owned() }
+                if rows.is_empty() {
+                    " (no symbols)".to_owned()
+                } else {
+                    " (no definition in the hunks)".to_owned()
+                }
             } else {
-                format!(": {}", hit.iter().map(|s| format!("{} ({}:{})", s.name, s.kind, s.line_start)).collect::<Vec<_>>().join(", "))
+                format!(
+                    ": {}",
+                    hit.iter()
+                        .map(|s| format!("{} ({}:{})", s.name, s.kind, s.line_start))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
-            changed_lines.push(format!("{} [{}]{list}", c.path, status.as_str().unwrap_or("?")));
+            changed_lines.push(format!(
+                "{} [{}]{list}",
+                c.path,
+                status.as_str().unwrap_or("?")
+            ));
             changed_rows.push(serde_json::json!({
                 "path": c.path, "status": status,
                 "symbols_changed": hit.iter().map(|s| serde_json::json!({"name": s.name, "kind": s.kind, "line": s.line_start})).collect::<Vec<_>>(),
@@ -1126,7 +1366,11 @@ impl Tool for CodeImpactTool {
             let mut next = HashSet::new();
             for t in widen_go(&frontier, &files) {
                 for &src in importers.get(&t).map_or(&[][..], Vec::as_slice) {
-                    if !changed_files.contains(&src) && !direct.contains_key(&src) && !transitive.contains_key(&src) && by_id.contains_key(&src) {
+                    if !changed_files.contains(&src)
+                        && !direct.contains_key(&src)
+                        && !transitive.contains_key(&src)
+                        && by_id.contains_key(&src)
+                    {
                         transitive.insert(src, depth);
                         next.insert(src);
                     }
@@ -1154,11 +1398,20 @@ impl Tool for CodeImpactTool {
             .map(|(id, mut via)| {
                 via.sort_unstable();
                 via.dedup();
-                (by_id[&id].path.as_str(), via, is_test(&id), changed_files.contains(&id))
+                (
+                    by_id[&id].path.as_str(),
+                    via,
+                    is_test(&id),
+                    changed_files.contains(&id),
+                )
             })
             .collect();
         // Files outside the change first, then by how much of it they use.
-        direct.sort_by(|a, b| a.3.cmp(&b.3).then_with(|| b.1.len().cmp(&a.1.len())).then_with(|| a.0.cmp(b.0)));
+        direct.sort_by(|a, b| {
+            a.3.cmp(&b.3)
+                .then_with(|| b.1.len().cmp(&a.1.len()))
+                .then_with(|| a.0.cmp(b.0))
+        });
         let mut transitive: Vec<(&str, usize)> = transitive
             .into_iter()
             .filter(|(id, _)| include_tests || !is_test(id))
@@ -1173,7 +1426,8 @@ impl Tool for CodeImpactTool {
         let header = format!(
             "{}: {} changed file{}, {} definition{}; direct {}, transitive {}, tests {}; {ambiguous_skipped} ambiguous skipped, {unresolved_imports} unresolved imports{}",
             match &range_ids {
-                Some((Some(o), n)) => format!("{}..{}", &o[..o.len().min(12)], &n[..n.len().min(12)]),
+                Some((Some(o), n)) =>
+                    format!("{}..{}", &o[..o.len().min(12)], &n[..n.len().min(12)]),
                 Some((None, n)) => format!("(root)..{}", &n[..n.len().min(12)]),
                 None => "files".to_owned(),
             },
@@ -1184,7 +1438,11 @@ impl Tool for CodeImpactTool {
             direct.len(),
             transitive.len(),
             tests.len(),
-            if unindexed.is_empty() { String::new() } else { format!(", {} unindexed", unindexed.len()) },
+            if unindexed.is_empty() {
+                String::new()
+            } else {
+                format!(", {} unindexed", unindexed.len())
+            },
         );
         let mut lines: Vec<String> = Vec::new();
         lines.push("-- changed --".into());
@@ -1195,13 +1453,23 @@ impl Tool for CodeImpactTool {
         }
         lines.push(format!("-- direct: {} files --", direct.len()));
         lines.extend(direct.iter().map(|(p, via, t, c)| {
-            format!("{p}{}{} via {}", if *c { " [changed]" } else { "" }, if *t { " [test]" } else { "" }, via.join(", "))
+            format!(
+                "{p}{}{} via {}",
+                if *c { " [changed]" } else { "" },
+                if *t { " [test]" } else { "" },
+                via.join(", ")
+            )
         }));
         lines.push(format!("-- transitive: {} files --", transitive.len()));
         lines.extend(transitive.iter().map(|(p, d)| format!("{p} (depth {d})")));
         lines.push(format!("-- tests: {} files --", tests.len()));
         lines.extend(tests.iter().map(|p| (*p).to_owned()));
-        let (body, _, dropped) = budget_render(&lines, a.budget.unwrap_or(DEFAULT_BUDGET).saturating_sub(estimate_tokens(header.len())));
+        let (body, _, dropped) = budget_render(
+            &lines,
+            a.budget
+                .unwrap_or(DEFAULT_BUDGET)
+                .saturating_sub(estimate_tokens(header.len())),
+        );
         let mut text = format!("{header}\n{body}");
         if r.stale {
             text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
@@ -1246,7 +1514,9 @@ mod tests {
 
     #[test]
     fn budget_cuts_at_row_boundaries_and_counts() {
-        let lines: Vec<String> = (0..10).map(|i| format!("row {i} xxxxxxxxxxxxxxxxxxxx")).collect();
+        let lines: Vec<String> = (0..10)
+            .map(|i| format!("row {i} xxxxxxxxxxxxxxxxxxxx"))
+            .collect();
         let (text, kept, dropped) = budget_render(&lines, 20);
         assert_eq!(kept + dropped, 10);
         assert!(kept >= 1 && dropped > 0, "{kept} {dropped}");

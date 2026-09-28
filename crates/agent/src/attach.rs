@@ -55,7 +55,13 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, marker order.
-    pub const ALL: [Kind; 5] = [Kind::Note, Kind::Knowledge, Kind::Artifact, Kind::Session, Kind::Meeting];
+    pub const ALL: [Kind; 5] = [
+        Kind::Note,
+        Kind::Knowledge,
+        Kind::Artifact,
+        Kind::Session,
+        Kind::Meeting,
+    ];
 
     /// The marker spelling.
     pub fn as_str(self) -> &'static str {
@@ -182,7 +188,12 @@ pub fn parse_line(line: &str) -> Option<AttachRef> {
         }
         m
     };
-    Some(AttachRef { kind, id: id.to_owned(), title, meta: meta.to_owned() })
+    Some(AttachRef {
+        kind,
+        id: id.to_owned(),
+        title,
+        meta: meta.to_owned(),
+    })
 }
 
 /// `"<title>"` with `\x` → `x`; returns the title and what follows the
@@ -212,7 +223,12 @@ pub fn first_line(text: &str) -> Option<String> {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .map(str::to_owned)
-        .or_else(|| p.refs.into_iter().map(|r| r.title).find(|t| !t.trim().is_empty()))
+        .or_else(|| {
+            p.refs
+                .into_iter()
+                .map(|r| r.title)
+                .find(|t| !t.trim().is_empty())
+        })
 }
 
 /// The placeholder a first input seeds as the stored title (07 §15): `line`
@@ -242,7 +258,10 @@ pub fn session_title(
         return seed_title(line);
     }
     match created {
-        Some(t) => format!("Untitled chat · {}", t.with_timezone(&chrono::Local).format("%b %-d")),
+        Some(t) => format!(
+            "Untitled chat · {}",
+            t.with_timezone(&chrono::Local).format("%b %-d")
+        ),
         None => "Untitled chat".to_owned(),
     }
 }
@@ -265,7 +284,9 @@ mod tests {
 
     fn fixture() -> Vec<Case> {
         let json = include_str!("../tests/fixtures/attach_markers.json");
-        serde_json::from_str::<Fixture>(json).expect("fixture parses").cases
+        serde_json::from_str::<Fixture>(json)
+            .expect("fixture parses")
+            .cases
     }
 
     #[test]
@@ -302,13 +323,21 @@ mod tests {
             title: r#"say "hi" \ now · then"#.into(),
             meta: "pdf v2".into(),
         };
-        assert_eq!(marker(&r), r#"[attached artifact toolu_01 "say \"hi\" \\ now · then" · pdf v2]"#);
+        assert_eq!(
+            marker(&r),
+            r#"[attached artifact toolu_01 "say \"hi\" \\ now · then" · pdf v2]"#
+        );
         assert_eq!(parse_line(&marker(&r)), Some(r));
     }
 
     #[test]
     fn empty_meta_omits_separator() {
-        let r = AttachRef { kind: Kind::Note, id: "abc".into(), title: "T".into(), meta: String::new() };
+        let r = AttachRef {
+            kind: Kind::Note,
+            id: "abc".into(),
+            title: "T".into(),
+            meta: String::new(),
+        };
         assert_eq!(marker(&r), r#"[attached note abc "T"]"#);
     }
 
@@ -318,24 +347,50 @@ mod tests {
     #[test]
     fn names_skip_markers_and_fall_back_to_the_attachment_title() {
         let note = "[attached note abc \"Groceries\" · 1 KB]";
-        assert_eq!(first_line(&format!("{note}\n\nwhat's on the list?")).as_deref(), Some("what's on the list?"));
+        assert_eq!(
+            first_line(&format!("{note}\n\nwhat's on the list?")).as_deref(),
+            Some("what's on the list?")
+        );
         assert_eq!(first_line(note).as_deref(), Some("Groceries"));
-        assert_eq!(first_line(&format!("{note}\n")).as_deref(), Some("Groceries"));
-        assert_eq!(first_line("[doc knowledge:facts/x \"Relay timeouts\"]\n  ").as_deref(), Some("Relay timeouts"));
+        assert_eq!(
+            first_line(&format!("{note}\n")).as_deref(),
+            Some("Groceries")
+        );
+        assert_eq!(
+            first_line("[doc knowledge:facts/x \"Relay timeouts\"]\n  ").as_deref(),
+            Some("Relay timeouts")
+        );
         assert_eq!(first_line("\n  \n"), None);
         assert_eq!(first_line("").as_deref(), None);
         // A malformed line is body: it is the name, brackets and all.
-        assert_eq!(first_line("[attached note]\nhi").as_deref(), Some("[attached note]"));
+        assert_eq!(
+            first_line("[attached note]\nhi").as_deref(),
+            Some("[attached note]")
+        );
 
         let long = "x".repeat(70);
         assert_eq!(seed_title(&long), format!("{}…", "x".repeat(60)));
         assert_eq!(seed_title("short"), "short");
 
-        let created = chrono::DateTime::parse_from_rfc3339("2026-09-01T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        assert_eq!(session_title(" Fix relay ", Some("ignored"), Some(created)), "Fix relay");
-        assert_eq!(session_title("", Some(&long), Some(created)), seed_title(&long));
+        let created = chrono::DateTime::parse_from_rfc3339("2026-09-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            session_title(" Fix relay ", Some("ignored"), Some(created)),
+            "Fix relay"
+        );
+        assert_eq!(
+            session_title("", Some(&long), Some(created)),
+            seed_title(&long)
+        );
         assert_eq!(session_title("", Some("  "), None), "Untitled chat");
-        let day = created.with_timezone(&chrono::Local).format("%b %-d").to_string();
-        assert_eq!(session_title("", None, Some(created)), format!("Untitled chat · {day}"));
+        let day = created
+            .with_timezone(&chrono::Local)
+            .format("%b %-d")
+            .to_string();
+        assert_eq!(
+            session_title("", None, Some(created)),
+            format!("Untitled chat · {day}")
+        );
     }
 }

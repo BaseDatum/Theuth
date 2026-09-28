@@ -199,7 +199,9 @@ pub struct Release {
 pub struct LoadedNow;
 
 /// One resident checkpoint, for `decision_loaded` and the Settings line.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LoadedInfo {
     /// Checkpoint name (`default`, `browser`).
@@ -323,14 +325,20 @@ impl Engine {
     /// Apply `f` to every family under `prefix` (live table).
     fn patch_under(&mut self, prefix: &str, f: impl Fn(&mut FamilyGate)) {
         let dot = format!("{prefix}.");
-        for (_, g) in self.cfg.families.iter_mut().filter(|(k, _)| k.starts_with(&dot)) {
+        for (_, g) in self
+            .cfg
+            .families
+            .iter_mut()
+            .filter(|(k, _)| k.starts_with(&dot))
+        {
             f(g);
         }
     }
 
     /// `GetTrain`'s answer for `prefix`.
     fn training_info(&self, prefix: &str) -> TrainingInfo {
-        self.training.info(prefix, self.train(prefix), self.share(prefix))
+        self.training
+            .info(prefix, self.train(prefix), self.share(prefix))
     }
 
     /// `Err` unless some `<prefix>.*` family is configured.
@@ -346,7 +354,13 @@ impl Engine {
     /// Persist the prefix's switch positions as one flow mapping — every field every time, so
     /// `SetMode` does not drop `train` and `SetTrain` does not drop `mode` (the config writer
     /// replaces the whole value).
-    fn write_prefix(&self, prefix: &str, mode: Mode, train: bool, share: bool) -> Result<(), String> {
+    fn write_prefix(
+        &self,
+        prefix: &str,
+        mode: Mode,
+        train: bool,
+        share: bool,
+    ) -> Result<(), String> {
         let Some(path) = &self.config_path else {
             return Ok(());
         };
@@ -381,7 +395,11 @@ impl Engine {
             .checkpoint_dirs(&self.default_dir)
             .keys()
             .filter(|n| *n != crate::DEFAULT_CHECKPOINT)
-            .filter_map(|n| ActorRef::<Engine>::lookup(crate::actor_name(n).as_str()).ok().flatten())
+            .filter_map(|n| {
+                ActorRef::<Engine>::lookup(crate::actor_name(n).as_str())
+                    .ok()
+                    .flatten()
+            })
             .collect()
     }
 
@@ -460,8 +478,11 @@ impl Engine {
                     return Err(Reason::ModelMissing);
                 }
                 self.missing_logged = false;
-                let (loader, dir, cfg) =
-                    (self.loader.clone(), self.model_dir.clone(), self.cfg.clone());
+                let (loader, dir, cfg) = (
+                    self.loader.clone(),
+                    self.model_dir.clone(),
+                    self.cfg.clone(),
+                );
                 tokio::task::spawn_blocking(move || loader(&dir, &cfg))
             }
         };
@@ -590,8 +611,7 @@ fn decide(
         .iter()
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or_else(|| NONE_ID.to_owned(), |(l, _)| l.clone());
-    let hard =
-        (seq.markers_lost || (seq.state_cut && !gate.cut_ok)).then_some(Reason::Truncated);
+    let hard = (seq.markers_lost || (seq.state_cut && !gate.cut_ok)).then_some(Reason::Truncated);
     let d = Decision {
         family: family.clone(),
         choice,
@@ -723,7 +743,10 @@ impl Engine {
                         seqs.len()
                     )));
                 }
-                Ok((seqs.into_iter().zip(outs).collect(), o.model_sha().lock().clone()))
+                Ok((
+                    seqs.into_iter().zip(outs).collect(),
+                    o.model_sha().lock().clone(),
+                ))
             },
         );
         let texts: Vec<Option<Question>> = items
@@ -739,8 +762,7 @@ impl Engine {
                     .zip(rows)
                     .zip(texts)
                     .map(|((i, (seq, row)), text)| {
-                        let d =
-                            decide(&i.gate, &i.ask.family, &i.q, &seq, &row, t.elapsed(), &sha);
+                        let d = decide(&i.gate, &i.ask.family, &i.q, &seq, &row, t.elapsed(), &sha);
                         let mut r = AskRow::new(
                             &d,
                             i.gate.mode,
@@ -774,7 +796,13 @@ impl Engine {
                 let now: Vec<Decision> = items
                     .iter()
                     .map(|i| {
-                        escalated(i.ask.family.clone(), &i.gate, Reason::Timeout, t.elapsed(), &sha)
+                        escalated(
+                            i.ask.family.clone(),
+                            &i.gate,
+                            Reason::Timeout,
+                            t.elapsed(),
+                            &sha,
+                        )
                     })
                     .collect();
                 tokio::spawn(async move {
@@ -952,7 +980,12 @@ impl Message<Release> for Engine {
                 let to = crate::actor_name(to);
                 tokio::spawn(async move {
                     if let Some(s) = sibling(&to) {
-                        let _ = s.tell(Release { checkpoint: None, ..m }).await;
+                        let _ = s
+                            .tell(Release {
+                                checkpoint: None,
+                                ..m
+                            })
+                            .await;
                     }
                 });
             }
@@ -1007,7 +1040,11 @@ impl Engine {
                 ..FamilyStats::default()
             }
         });
-        s.mode = self.cfg.families.get(&family.0).map_or(Mode::Off, |g| g.mode);
+        s.mode = self
+            .cfg
+            .families
+            .get(&family.0)
+            .map_or(Mode::Off, |g| g.mode);
         s
     }
 }
@@ -1045,7 +1082,12 @@ impl Message<SetMode> for Engine {
 
     async fn handle(&mut self, m: SetMode, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.check_prefix(&m.prefix)?;
-        self.write_prefix(&m.prefix, m.mode, self.train(&m.prefix), self.share(&m.prefix))?;
+        self.write_prefix(
+            &m.prefix,
+            m.mode,
+            self.train(&m.prefix),
+            self.share(&m.prefix),
+        )?;
         self.patch_under(&m.prefix, |g| g.mode = m.mode);
         tracing::info!("decision: {}.* mode → {}", m.prefix, m.mode);
         // The siblings have no `config_path`, so the relay is live-only there. `ask`, not `tell`:
@@ -1096,7 +1138,12 @@ impl Message<SetShare> for Engine {
                 m.prefix
             ));
         }
-        self.write_prefix(&m.prefix, self.mode(&m.prefix).mode, self.train(&m.prefix), m.on)?;
+        self.write_prefix(
+            &m.prefix,
+            self.mode(&m.prefix).mode,
+            self.train(&m.prefix),
+            m.on,
+        )?;
         self.patch_under(&m.prefix, |g| g.share = m.on);
         tracing::info!("decision: {}.* share → {}", m.prefix, m.on);
         for s in self.siblings() {
@@ -1109,11 +1156,18 @@ impl Message<SetShare> for Engine {
 impl Message<DeleteTraining> for Engine {
     type Reply = Result<TrainingInfo, String>;
 
-    async fn handle(&mut self, m: DeleteTraining, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: DeleteTraining,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.check_prefix(&m.prefix)?;
-        self.training
-            .delete(&m.prefix)
-            .map_err(|e| format!("delete {}: {e}", self.training.family_dir(&m.prefix).display()))?;
+        self.training.delete(&m.prefix).map_err(|e| {
+            format!(
+                "delete {}: {e}",
+                self.training.family_dir(&m.prefix).display()
+            )
+        })?;
         tracing::info!("decision: {}.* training data deleted", m.prefix);
         Ok(self.training_info(&m.prefix))
     }
@@ -1142,7 +1196,11 @@ impl Message<Record> for Engine {
 
     async fn handle(&mut self, r: Record, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let d = &r.decision;
-        let mode = self.cfg.families.get(&d.family.0).map_or(Mode::Off, |g| g.mode);
+        let mode = self
+            .cfg
+            .families
+            .get(&d.family.0)
+            .map_or(Mode::Off, |g| g.mode);
         let sha = self.model_sha();
         let mut row = AskRow::new(d, mode, &sha, &[], Vec::new(), 0.0, None);
         row.note = r.note;
@@ -1167,7 +1225,8 @@ impl Message<Warm> for Engine {
                 state: "warm-up".into(),
             };
             let seq = o.build(&q)?;
-            o.run(std::slice::from_ref(&seq)).map_err(|e| format!("{e:#}"))?;
+            o.run(std::slice::from_ref(&seq))
+                .map_err(|e| format!("{e:#}"))?;
             Ok(())
         });
         match tokio::time::timeout(w.budget.saturating_sub(t.elapsed()), run).await {
@@ -1275,7 +1334,12 @@ mod tests {
             families: [("meeting.topic".to_owned(), FamilyGate::shadow(0.85, 0.4))].into(),
             ..DecisionConfig::default()
         };
-        let e = Engine::with_loader(cfg, model_dir.clone(), log.clone(), fake_loader(Duration::ZERO));
+        let e = Engine::with_loader(
+            cfg,
+            model_dir.clone(),
+            log.clone(),
+            fake_loader(Duration::ZERO),
+        );
         // The safetensors layout, subdirs included; one present file drops out of the list.
         assert_eq!(
             e.missing_files(),
@@ -1290,7 +1354,11 @@ mod tests {
         std::fs::write(model_dir.join("encoder/config.json"), b"{}").unwrap();
         assert_eq!(
             e.missing_files(),
-            ["model.safetensors", "tokenizer/tokenizer.json", "rl_agent_config.json"]
+            [
+                "model.safetensors",
+                "tokenizer/tokenizer.json",
+                "rl_agent_config.json"
+            ]
         );
         let engine = Engine::spawn(e);
 
@@ -1454,7 +1522,13 @@ mod tests {
             families: [
                 ("browser.operation".to_owned(), jev),
                 ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
-                ("meeting.off".to_owned(), FamilyGate { mode: Mode::Off, ..FamilyGate::shadow(0.5, 0.1) }),
+                (
+                    "meeting.off".to_owned(),
+                    FamilyGate {
+                        mode: Mode::Off,
+                        ..FamilyGate::shadow(0.5, 0.1)
+                    },
+                ),
             ]
             .into(),
             batch_forward: true,
@@ -1472,18 +1546,33 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(*calls.lock(), vec![2], "one forward for the two questions that ran");
+        assert_eq!(
+            *calls.lock(),
+            vec![2],
+            "one forward for the two questions that ran"
+        );
         assert_eq!(ds.len(), 3);
         // Order kept, the off family escalated in place.
         assert_eq!(ds[0].family.0, "browser.operation");
         assert_eq!(ds[1].disposition, Disposition::Escalate(Reason::Disabled));
         assert_eq!(ds[2].family.0, "meeting.brief");
         // No `none` on the closed set; the cut state was not a hard error; argmax accepted.
-        let labels: Vec<&str> = ds[0].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        let labels: Vec<&str> = ds[0]
+            .probabilities
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect();
         assert_eq!(labels, ["1", "2", "3"]);
-        assert_eq!((ds[0].choice.as_str(), &ds[0].disposition), ("3", &Disposition::Accept));
+        assert_eq!(
+            (ds[0].choice.as_str(), &ds[0].disposition),
+            ("3", &Disposition::Accept)
+        );
         // The classic family got `none` and the cut state is its hard error (57 §0.5).
-        let labels: Vec<&str> = ds[2].probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        let labels: Vec<&str> = ds[2]
+            .probabilities
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect();
         assert_eq!(labels, ["1", "2", "none"]);
         assert_eq!(ds[2].disposition.reason(), Some(&Reason::Truncated));
         // Two log rows, one per question that ran, plus the disabled one.
@@ -1498,7 +1587,13 @@ mod tests {
         touch_files(&dir.path().join("decision-browser"));
         let cfg = DecisionConfig {
             families: [
-                ("browser.operation".to_owned(), FamilyGate { mode: Mode::Active, ..FamilyGate::browser(0.5) }),
+                (
+                    "browser.operation".to_owned(),
+                    FamilyGate {
+                        mode: Mode::Active,
+                        ..FamilyGate::browser(0.5)
+                    },
+                ),
                 ("meeting.brief".to_owned(), FamilyGate::shadow(0.5, 0.1)),
             ]
             .into(),
@@ -1513,7 +1608,10 @@ mod tests {
             fake_loader(Duration::ZERO),
         ));
         // No sibling registered yet: fail closed, named.
-        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        let d = main
+            .ask(Ask::new("browser.operation", jev_question(2)))
+            .await
+            .unwrap();
         assert!(
             matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("decision/browser")),
             "{d:?}"
@@ -1524,8 +1622,14 @@ mod tests {
                 .with_checkpoint("browser", dir.path().join("decision-browser")),
         );
         browser.register(crate::actor_name("browser")).unwrap();
-        let d = main.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
-        assert_eq!((d.choice.as_str(), &d.disposition), ("2", &Disposition::Accept));
+        let d = main
+            .ask(Ask::new("browser.operation", jev_question(2)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (d.choice.as_str(), &d.disposition),
+            ("2", &Disposition::Accept)
+        );
         assert_eq!(d.probabilities.len(), 2);
         let ds = main
             .ask(AskMany {
@@ -1537,17 +1641,47 @@ mod tests {
         assert!(ds.iter().all(|d| d.disposition == Disposition::Accept));
         // A default-checkpoint family sent to the sibling is forwarded the other way; with no
         // `decision` actor registered in this test it fails closed, naming it.
-        let d = browser.ask(Ask::new("meeting.brief", jev_question(2))).await.unwrap();
-        assert!(matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("`decision`")), "{d:?}");
+        let d = browser
+            .ask(Ask::new("meeting.brief", jev_question(2)))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&d.disposition, Disposition::Escalate(Reason::HardError(e)) if e.contains("`decision`")),
+            "{d:?}"
+        );
         // `mode_for` at the default engine checks the browser checkpoint's files for `browser`.
         std::fs::remove_file(dir.path().join("decision-browser/model.safetensors")).unwrap();
-        let m = main.ask(GetMode { prefix: "browser".into() }).await.unwrap();
-        assert!(m.reason.as_deref().unwrap().contains("decision-browser"), "{m:?}");
-        assert_eq!(main.ask(GetMode { prefix: "meeting".into() }).await.unwrap().reason, None);
+        let m = main
+            .ask(GetMode {
+                prefix: "browser".into(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            m.reason.as_deref().unwrap().contains("decision-browser"),
+            "{m:?}"
+        );
+        assert_eq!(
+            main.ask(GetMode {
+                prefix: "meeting".into()
+            })
+            .await
+            .unwrap()
+            .reason,
+            None
+        );
         // SetMode on the default relays live to the sibling.
-        main.ask(SetMode { prefix: "browser".into(), mode: Mode::Off }).await.unwrap();
+        main.ask(SetMode {
+            prefix: "browser".into(),
+            mode: Mode::Off,
+        })
+        .await
+        .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let d = browser.ask(Ask::new("browser.operation", jev_question(2))).await.unwrap();
+        let d = browser
+            .ask(Ask::new("browser.operation", jev_question(2)))
+            .await
+            .unwrap();
         assert_eq!(d.disposition, Disposition::Escalate(Reason::Disabled));
     }
 
@@ -1665,7 +1799,12 @@ mod tests {
         ));
         // Other tests register `decision/browser` engines in the same process registry; the
         // default engine's answer includes them, so count only its own entry.
-        let mine = |infos: Vec<LoadedInfo>| infos.into_iter().filter(|i| i.checkpoint == "default").count();
+        let mine = |infos: Vec<LoadedInfo>| {
+            infos
+                .into_iter()
+                .filter(|i| i.checkpoint == "default")
+                .count()
+        };
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(mine(engine.ask(LoadedNow).await.unwrap()), 0);
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -1810,11 +1949,18 @@ mod tests {
             on,
         };
         let refused = engine.ask(share("browser", true)).await.unwrap_err();
-        assert!(refused.to_string().contains("capture is off for `browser.*`"), "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("capture is off for `browser.*`"),
+            "{refused}"
+        );
         let info = engine.ask(share("meeting", true)).await.unwrap();
         assert!(info.share);
         let cfg: DecisionConfig = serde_yaml::from_value(
-            serde_yaml::from_str::<serde_yaml::Value>(&std::fs::read_to_string(&config).unwrap()).unwrap()["decision"].clone(),
+            serde_yaml::from_str::<serde_yaml::Value>(&std::fs::read_to_string(&config).unwrap())
+                .unwrap()["decision"]
+                .clone(),
         )
         .unwrap();
         assert!(cfg.families["meeting.kind"].share && !cfg.families["browser.target"].share);
@@ -1860,7 +2006,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!((info.examples_total, info.bytes, info.enabled), (0, 0, false));
+        assert_eq!(
+            (info.examples_total, info.bytes, info.enabled),
+            (0, 0, false)
+        );
         assert!(!dir.path().join("decisions/training/meeting").exists());
         assert!(
             engine

@@ -116,7 +116,8 @@ pub fn parse(text: &str, ids: &[&str]) -> Result<Answer, EscalateError> {
     let start = text
         .find('{')
         .ok_or_else(|| EscalateError::Invalid(format!("no JSON object in {text:?}")))?;
-    let mut de = serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+    let mut de =
+        serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
     let v = match de.next() {
         Some(Ok(v)) => v,
         Some(Err(e)) => return Err(EscalateError::Invalid(format!("{e}"))),
@@ -131,7 +132,11 @@ pub fn parse(text: &str, ids: &[&str]) -> Result<Answer, EscalateError> {
             let s = s.trim();
             (!s.is_empty()).then(|| s.chars().take(MAX_SUBJECT).collect::<String>())
         }
-        Some(other) => return Err(EscalateError::Invalid(format!("subject {other} is not a string"))),
+        Some(other) => {
+            return Err(EscalateError::Invalid(format!(
+                "subject {other} is not a string"
+            )));
+        }
     };
     let cached = match obj.get("cached") {
         None | Some(serde_json::Value::Null) => None,
@@ -142,15 +147,25 @@ pub fn parse(text: &str, ids: &[&str]) -> Result<Answer, EscalateError> {
             } else if ids.contains(&s) {
                 Some(s.to_owned())
             } else {
-                return Err(EscalateError::Invalid(format!("cached {s:?} is not an offered id")));
+                return Err(EscalateError::Invalid(format!(
+                    "cached {s:?} is not an offered id"
+                )));
             }
         }
-        Some(other) => return Err(EscalateError::Invalid(format!("cached {other} is not an id"))),
+        Some(other) => {
+            return Err(EscalateError::Invalid(format!(
+                "cached {other} is not an id"
+            )));
+        }
     };
     let lookup = match obj.get("lookup") {
         None | Some(serde_json::Value::Null) => subject.is_some(),
         Some(serde_json::Value::Bool(b)) => *b,
-        Some(other) => return Err(EscalateError::Invalid(format!("lookup {other} is not a bool"))),
+        Some(other) => {
+            return Err(EscalateError::Invalid(format!(
+                "lookup {other} is not a bool"
+            )));
+        }
     };
     Ok(Answer {
         subject,
@@ -202,7 +217,8 @@ pub async fn extract(
         tier: 2,
         calibrated: false,
     };
-    if let Ok(Some(engine)) = kameo::actor::ActorRef::<crate::Engine>::lookup(crate::DECISION_ACTOR) {
+    if let Ok(Some(engine)) = kameo::actor::ActorRef::<crate::Engine>::lookup(crate::DECISION_ACTOR)
+    {
         let _ = engine
             .tell(crate::engine::Record {
                 decision: d,
@@ -265,40 +281,112 @@ mod tests {
             candidates: &[],
             numbers: "",
         });
-        assert_eq!(r, "Mentions: none\nCached briefs: none\nTranscript:\nme: hi");
+        assert_eq!(
+            r,
+            "Mentions: none\nCached briefs: none\nTranscript:\nme: hi"
+        );
     }
 
     #[test]
     fn parses_strictly() {
         let ids = ["b1", "b2"];
-        let a = parse(r#"{"subject": "Planet Nine", "cached": null, "lookup": true}"#, &ids).unwrap();
-        assert_eq!(a, Answer { subject: Some("Planet Nine".into()), cached: None, lookup: true });
+        let a = parse(
+            r#"{"subject": "Planet Nine", "cached": null, "lookup": true}"#,
+            &ids,
+        )
+        .unwrap();
+        assert_eq!(
+            a,
+            Answer {
+                subject: Some("Planet Nine".into()),
+                cached: None,
+                lookup: true
+            }
+        );
         assert_eq!(a.choice(), "lookup");
-        let a = parse("```json\n{\"subject\": \"DR cutover\", \"cached\": \"b1\"}\n```", &ids).unwrap();
+        let a = parse(
+            "```json\n{\"subject\": \"DR cutover\", \"cached\": \"b1\"}\n```",
+            &ids,
+        )
+        .unwrap();
         assert_eq!(a.cached.as_deref(), Some("b1"));
         assert_eq!(a.choice(), "b1");
-        let a = parse(r#"Sure: {"subject": null, "cached": null, "lookup": false}"#, &ids).unwrap();
-        assert_eq!(a, Answer { subject: None, cached: None, lookup: false });
+        let a = parse(
+            r#"Sure: {"subject": null, "cached": null, "lookup": false}"#,
+            &ids,
+        )
+        .unwrap();
+        assert_eq!(
+            a,
+            Answer {
+                subject: None,
+                cached: None,
+                lookup: false
+            }
+        );
         assert_eq!(a.choice(), "skip");
         // A subject the model says is not worth a lookup is a skip too.
-        assert_eq!(parse(r#"{"subject": "lunch", "lookup": false}"#, &ids).unwrap().choice(), "skip");
+        assert_eq!(
+            parse(r#"{"subject": "lunch", "lookup": false}"#, &ids)
+                .unwrap()
+                .choice(),
+            "skip"
+        );
         // Missing lookup defaults to "there is a subject"; empty subject is null; long ones are cut.
         assert!(parse(r#"{"subject": "x"}"#, &ids).unwrap().lookup);
         assert!(!parse(r#"{"subject": "  "}"#, &ids).unwrap().lookup);
-        assert_eq!(parse(&format!(r#"{{"subject": "{}"}}"#, "a".repeat(200)), &ids).unwrap().subject.unwrap().len(), MAX_SUBJECT);
+        assert_eq!(
+            parse(&format!(r#"{{"subject": "{}"}}"#, "a".repeat(200)), &ids)
+                .unwrap()
+                .subject
+                .unwrap()
+                .len(),
+            MAX_SUBJECT
+        );
         // `none`/`null` strings mean no cached brief; anything else must be an offered id.
-        assert_eq!(parse(r#"{"subject": "x", "cached": "none"}"#, &ids).unwrap().cached, None);
-        assert!(matches!(parse(r#"{"subject": "x", "cached": "b9"}"#, &ids), Err(EscalateError::Invalid(m)) if m.contains("not an offered id")));
-        assert!(matches!(parse(r#"{"subject": "x", "cached": "Disaster Recovery Revamp"}"#, &ids), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(r#"{"subject": 3}"#, &ids), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(r#"{"subject": "x", "lookup": "yes"}"#, &ids), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse("Planet Nine", &ids), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(r#"["x"]"#, &ids), Err(EscalateError::Invalid(_))));
+        assert_eq!(
+            parse(r#"{"subject": "x", "cached": "none"}"#, &ids)
+                .unwrap()
+                .cached,
+            None
+        );
+        assert!(
+            matches!(parse(r#"{"subject": "x", "cached": "b9"}"#, &ids), Err(EscalateError::Invalid(m)) if m.contains("not an offered id"))
+        );
+        assert!(matches!(
+            parse(
+                r#"{"subject": "x", "cached": "Disaster Recovery Revamp"}"#,
+                &ids
+            ),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(r#"{"subject": 3}"#, &ids),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(r#"{"subject": "x", "lookup": "yes"}"#, &ids),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse("Planet Nine", &ids),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(r#"["x"]"#, &ids),
+            Err(EscalateError::Invalid(_))
+        ));
         // No candidates offered → any `cached` is invalid.
-        assert!(matches!(parse(r#"{"subject": "x", "cached": "b1"}"#, &[]), Err(EscalateError::Invalid(_))));
+        assert!(matches!(
+            parse(r#"{"subject": "x", "cached": "b1"}"#, &[]),
+            Err(EscalateError::Invalid(_))
+        ));
     }
 
-    fn caller(reply: Result<&'static str, &'static str>, seen: Arc<Mutex<Option<SideCall>>>) -> Box<SideCaller> {
+    fn caller(
+        reply: Result<&'static str, &'static str>,
+        seen: Arc<Mutex<Option<SideCall>>>,
+    ) -> Box<SideCaller> {
         Box::new(move |call: SideCall| {
             *seen.lock() = Some(call);
             let reply = reply.map(|text| SideReply {
@@ -324,22 +412,45 @@ mod tests {
             candidates: &c,
             numbers: "kind subject 0.9",
         };
-        let call = caller(Ok(r#"{"subject": "Planet Nine", "cached": null, "lookup": true}"#), seen.clone());
-        let (a, _) = extract(&req, session, Duration::from_secs(3), &*call).await.unwrap();
+        let call = caller(
+            Ok(r#"{"subject": "Planet Nine", "cached": null, "lookup": true}"#),
+            seen.clone(),
+        );
+        let (a, _) = extract(&req, session, Duration::from_secs(3), &*call)
+            .await
+            .unwrap();
         assert_eq!(a.subject.as_deref(), Some("Planet Nine"));
         let sent = seen.lock().take().unwrap();
-        assert_eq!((sent.session, sent.role, sent.kind), (session, ModelRole::Escalate, CallKind::Escalate));
+        assert_eq!(
+            (sent.session, sent.role, sent.kind),
+            (session, ModelRole::Escalate, CallKind::Escalate)
+        );
         assert_eq!(sent.budget, Duration::from_secs(3));
         assert_eq!(sent.system, SYSTEM);
-        assert!(sent.user.starts_with("Mentions: Planet Nine\nCached briefs:\n- b1 — "), "{}", sent.user);
+        assert!(
+            sent.user
+                .starts_with("Mentions: Planet Nine\nCached briefs:\n- b1 — "),
+            "{}",
+            sent.user
+        );
 
         let call = caller(Ok(r#"{"subject": "x", "cached": "b7"}"#), seen.clone());
-        assert!(matches!(extract(&req, session, Duration::from_secs(3), &*call).await, Err(EscalateError::Invalid(_))));
+        assert!(matches!(
+            extract(&req, session, Duration::from_secs(3), &*call).await,
+            Err(EscalateError::Invalid(_))
+        ));
         let call = caller(Err("timed out"), seen.clone());
-        assert_eq!(extract(&req, session, Duration::from_secs(3), &*call).await.unwrap_err(), EscalateError::Timeout);
+        assert_eq!(
+            extract(&req, session, Duration::from_secs(3), &*call)
+                .await
+                .unwrap_err(),
+            EscalateError::Timeout
+        );
         let call = caller(Err("no live session"), seen);
         assert_eq!(
-            extract(&req, session, Duration::from_secs(3), &*call).await.unwrap_err(),
+            extract(&req, session, Duration::from_secs(3), &*call)
+                .await
+                .unwrap_err(),
             EscalateError::Provider("no live session".into())
         );
     }

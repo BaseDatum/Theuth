@@ -37,9 +37,11 @@ pub fn speech(pcm: &[f32]) -> anyhow::Result<Vec<(u64, u64)>> {
     let mut out = Vec::new();
     let mut open: Option<usize> = None;
     // Frame by frame so a `Turn` resets the VAD's hidden state exactly where the live path does.
-    for (i, frame) in pcm.chunks_exact(FRAME).enumerate() {
+    for (i, frame) in pcm.as_chunks::<FRAME>().0.iter().enumerate() {
         let end = (i + 1) * FRAME;
-        let Some(&p) = vad.process(frame).first() else { continue };
+        let Some(&p) = vad.process(frame).first() else {
+            continue;
+        };
         match gate.push(p) {
             Some(Edge::Onset) => {
                 open = Some(end.saturating_sub((Gate::ONSET + Gate::PREROLL) * FRAME));
@@ -107,8 +109,16 @@ mod tests {
 
     #[test]
     fn disjoint_trims_overlapping_prerolls_and_drops_swallowed_spans() {
-        let spans = [(0, 5_000), (4_800, 12_000), (11_000, 11_500), (20_000, 21_000)];
-        assert_eq!(disjoint(&spans), [(0, 5_000), (5_000, 12_000), (20_000, 21_000)]);
+        let spans = [
+            (0, 5_000),
+            (4_800, 12_000),
+            (11_000, 11_500),
+            (20_000, 21_000),
+        ];
+        assert_eq!(
+            disjoint(&spans),
+            [(0, 5_000), (5_000, 12_000), (20_000, 21_000)]
+        );
         assert!(disjoint(&[]).is_empty());
     }
 }

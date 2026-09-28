@@ -434,7 +434,10 @@ mod tests {
         let ok = std::process::Command::new("say")
             .args(["-o"])
             .arg(&path)
-            .args(["--data-format=LEI16@48000", "The deploy is blocked on the image tags."])
+            .args([
+                "--data-format=LEI16@48000",
+                "The deploy is blocked on the image tags.",
+            ])
             .status()
             .is_ok_and(|s| s.success());
         if !ok {

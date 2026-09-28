@@ -124,11 +124,18 @@ mod imp {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn check(ok: windows_sys::core::BOOL) -> io::Result<()> {
-        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     /// The current user's SID as `TOKEN_USER` bytes (the SID points into them).
@@ -163,15 +170,22 @@ mod imp {
         let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
         // SAFETY: `sid` is a valid SID from the token.
         let sid_len = unsafe { GetLengthSid(sid) } as usize;
-        let acl_len = std::mem::size_of::<ACL>()
-            + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        let acl_len = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
             - std::mem::size_of::<u32>()
             + sid_len;
         let mut acl = vec![0u8; acl_len];
-        let flags = if dir { OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE } else { 0 };
+        let flags = if dir {
+            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+        } else {
+            0
+        };
         // SAFETY: `acl` is `acl_len` zeroed bytes, sized for one ACE with this SID.
         unsafe {
-            check(InitializeAcl(acl.as_mut_ptr().cast(), acl_len as u32, ACL_REVISION))?;
+            check(InitializeAcl(
+                acl.as_mut_ptr().cast(),
+                acl_len as u32,
+                ACL_REVISION,
+            ))?;
             check(AddAccessAllowedAceEx(
                 acl.as_mut_ptr().cast(),
                 ACL_REVISION,
@@ -220,7 +234,9 @@ mod imp {
         let mut tries = 0;
         loop {
             match std::fs::rename(from, to) {
-                Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) && tries < 10 => {
+                Err(e)
+                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) && tries < 10 =>
+                {
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -239,7 +255,9 @@ mod imp {
     }
 
     pub fn replace_executable(new: &Path, dest: &Path) -> io::Result<()> {
-        let running = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
+        let running = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.canonicalize().ok());
         if dest.canonicalize().ok() == running && running.is_some() {
             self_replace::self_replace(new)?;
             std::fs::remove_file(new)

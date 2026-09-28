@@ -16,7 +16,9 @@ use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
 use crate::place;
 use crate::thread::Thread;
-use crate::types::{DoneBecause, Disposition, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState};
+use crate::types::{
+    Disposition, DoneBecause, Owner, TaskCreate, TaskFilter, TaskId, TaskPatch, TaskState,
+};
 use crate::{
     AnswerDecision, AwaitDecision, CheckoutTask, CommentTask, CreateTask, Escalate, GetTask,
     ListTasks, MoveTask, NoteDisposition, PlaceTask, ReassignTask, Tasks, UpdateTask, escalate,
@@ -87,7 +89,9 @@ async fn caller(a: &ActorRef<Tasks>, cx: &ToolCx) -> String {
 
 /// The calling session's project label, from the agent's session list.
 async fn session_project(cx: &ToolCx) -> Option<String> {
-    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()?;
+    let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()?;
     agents
         .ask(agent::ListSessions)
         .await
@@ -232,7 +236,9 @@ impl Tool for TaskCreateTool {
                 "created task {} — owner {}, reviewer {}, project {}, state {}",
                 t.id,
                 t.owner,
-                t.reviewer.as_ref().map_or("none".to_owned(), ToString::to_string),
+                t.reviewer
+                    .as_ref()
+                    .map_or("none".to_owned(), ToString::to_string),
                 t.project.as_deref().unwrap_or("none"),
                 t.state.as_str()
             )),
@@ -275,9 +281,10 @@ impl Tool for TaskInboxTool {
         let me = caller(&actor, &cx).await;
         let filter = TaskFilter {
             owner: Some(me),
-            state: Some(a.state.unwrap_or_else(|| {
-                vec![TaskState::Todo, TaskState::Doing, TaskState::Blocked]
-            })),
+            state: Some(
+                a.state
+                    .unwrap_or_else(|| vec![TaskState::Todo, TaskState::Doing, TaskState::Blocked]),
+            ),
             engine: None,
             project: a.project,
         };
@@ -288,14 +295,24 @@ impl Tool for TaskInboxTool {
         let now = now_ms();
         let mut text = String::new();
         let mut group: Option<Option<String>> = None;
-        for t in tasks.iter().filter(|t| t.next_wake_after_ms.is_none_or(|w| w <= now)) {
+        for t in tasks
+            .iter()
+            .filter(|t| t.next_wake_after_ms.is_none_or(|w| w <= now))
+        {
             if group.as_ref() != Some(&t.project) {
                 group = Some(t.project.clone());
-                text.push_str(&format!("## {}\n", t.project.as_deref().unwrap_or("(no project)")));
+                text.push_str(&format!(
+                    "## {}\n",
+                    t.project.as_deref().unwrap_or("(no project)")
+                ));
             }
             let place = match (&t.where_, &t.harness) {
                 (None, None) => "unplaced".to_owned(),
-                (w, h) => format!("{}/{}", w.as_deref().unwrap_or("?"), h.as_deref().unwrap_or("?")),
+                (w, h) => format!(
+                    "{}/{}",
+                    w.as_deref().unwrap_or("?"),
+                    h.as_deref().unwrap_or("?")
+                ),
             };
             text.push_str(&format!(
                 "- {} [{}] {} — {}{}{} — moved {}\n",
@@ -303,14 +320,28 @@ impl Tool for TaskInboxTool {
                 t.state.as_str(),
                 t.title,
                 place,
-                if t.blockers.is_empty() { String::new() } else { format!(" — blocked on {}", t.blockers.join(", ")) },
+                if t.blockers.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — blocked on {}", t.blockers.join(", "))
+                },
                 if t.attachments.is_empty() {
                     String::new()
                 } else {
-                    format!(" — attached: {}", t.attachments.iter().map(crate::ledger::attachment_label).collect::<Vec<_>>().join(", "))
+                    format!(
+                        " — attached: {}",
+                        t.attachments
+                            .iter()
+                            .map(crate::ledger::attachment_label)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 },
                 chrono::DateTime::from_timestamp_millis(t.updated_ms as i64)
-                    .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                    .map(|d| d
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string())
                     .unwrap_or_default()
             ));
         }
@@ -581,7 +612,12 @@ impl Tool for TaskMoveTool {
                 .await,
         );
         Ok(match r {
-            Ok(t) => ToolOutput::ok(format!("task {} is now {} (owner {})", t.id, t.state.as_str(), t.owner)),
+            Ok(t) => ToolOutput::ok(format!(
+                "task {} is now {} (owner {})",
+                t.id,
+                t.state.as_str(),
+                t.owner
+            )),
             Err(e) => ToolOutput::err(e),
         })
     }
@@ -633,7 +669,12 @@ impl Tool for TaskReassignTool {
                 .await,
         );
         Ok(match r {
-            Ok(t) => ToolOutput::ok(format!("task {} reassigned to {} ({})", t.id, t.owner, t.state.as_str())),
+            Ok(t) => ToolOutput::ok(format!(
+                "task {} reassigned to {} ({})",
+                t.id,
+                t.owner,
+                t.state.as_str()
+            )),
             Err(e) => ToolOutput::err(e),
         })
     }
@@ -685,7 +726,11 @@ impl Tool for TaskNoteTool {
                 .await,
         );
         Ok(match r {
-            Ok(()) => ToolOutput::ok(if a.progress { "progress noted" } else { "comment added" }),
+            Ok(()) => ToolOutput::ok(if a.progress {
+                "progress noted"
+            } else {
+                "comment added"
+            }),
             Err(e) => ToolOutput::err(e),
         })
     }
@@ -760,7 +805,13 @@ async fn engines() -> Vec<place::Engine> {
     let stats = mesh.ask(mesh::ListStats).await.unwrap_or_default();
     let me = (status.self_name, status.self_id);
     std::iter::once(me)
-        .chain(status.peers.into_iter().filter(|p| p.reachable).map(|p| (p.name, p.id)))
+        .chain(
+            status
+                .peers
+                .into_iter()
+                .filter(|p| p.reachable)
+                .map(|p| (p.name, p.id)),
+        )
         .filter_map(|(name, id)| {
             let stats = stats.iter().find(|s| s.id == id)?.clone();
             Some(place::Engine { name, stats })
@@ -773,7 +824,10 @@ async fn project_cwds(project: Option<&str>) -> Vec<String> {
     let Some(project) = project else {
         return Vec::new();
     };
-    let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten() else {
+    let Some(agents) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()
+    else {
         return Vec::new();
     };
     let mut cwds: Vec<String> = agents
@@ -792,7 +846,12 @@ async fn project_cwds(project: Option<&str>) -> Vec<String> {
 /// One turn of theuth's desk over the 50 peer-message path: `prompt` as a
 /// `<message>` from the calling session with `await_reply`, the reply text
 /// back. The desk asking about its own task answers itself instead.
-async fn ask_desk(desk: Option<String>, from: runtime::SessionId, task: &TaskId, prompt: String) -> Result<String, String> {
+async fn ask_desk(
+    desk: Option<String>,
+    from: runtime::SessionId,
+    task: &TaskId,
+    prompt: String,
+) -> Result<String, String> {
     let desk = desk.ok_or("theuth's desk is not open")?;
     if desk == from.to_string() {
         return Err(format!(
@@ -803,7 +862,8 @@ async fn ask_desk(desk: Option<String>, from: runtime::SessionId, task: &TaskId,
         .ok()
         .flatten()
         .ok_or("agent supervisor not running")?;
-    let admitted = tools::communication::current().ok_or("peer messaging is off in this session")?;
+    let admitted =
+        tools::communication::current().ok_or("peer messaging is off in this session")?;
     let d = agents
         .ask(agent::supervisor::Deliver {
             from,
@@ -821,11 +881,17 @@ async fn ask_desk(desk: Option<String>, from: runtime::SessionId, task: &TaskId,
         })?;
     let rx = d.reply.ok_or("theuth's desk did not take the question")?;
     match tokio::time::timeout(DESK_WAIT, rx).await {
-        Ok(Ok(r)) => r.reply.ok_or_else(|| r.error.unwrap_or_else(|| "theuth's desk answered nothing".into())),
+        Ok(Ok(r)) => r.reply.ok_or_else(|| {
+            r.error
+                .unwrap_or_else(|| "theuth's desk answered nothing".into())
+        }),
         Ok(Err(_)) => Err("theuth's desk: wait dropped".into()),
         Err(_) => {
             let _ = agents.tell(agent::supervisor::DropWait(d.receipt.id)).await;
-            Err(format!("theuth's desk did not answer within {}s", DESK_WAIT.as_secs()))
+            Err(format!(
+                "theuth's desk did not answer within {}s",
+                DESK_WAIT.as_secs()
+            ))
         }
     }
 }
@@ -881,7 +947,8 @@ impl Tool for TaskPlaceTool {
             prefer: &ctx.prefer,
         };
         let desk = ctx.desk.clone();
-        let placed = place::place(&inputs, |prompt| ask_desk(desk, cx.session, &a.id, prompt)).await;
+        let placed =
+            place::place(&inputs, |prompt| ask_desk(desk, cx.session, &a.id, prompt)).await;
         match placed {
             Ok(p) => {
                 let reason = match a.reason {
@@ -918,8 +985,12 @@ impl Tool for TaskPlaceTool {
                         .await,
                 );
                 Ok(ToolOutput::err(match r {
-                    Ok(_) => format!("no engine satisfies the needs; task set blocked on `{missing}`"),
-                    Err(e) => format!("no engine satisfies the needs (`{missing}`); could not block the task: {e}"),
+                    Ok(_) => {
+                        format!("no engine satisfies the needs; task set blocked on `{missing}`")
+                    }
+                    Err(e) => format!(
+                        "no engine satisfies the needs (`{missing}`); could not block the task: {e}"
+                    ),
                 }))
             }
             Err(e) => Ok(ToolOutput::err(e)),
@@ -977,7 +1048,10 @@ impl Tool for EscalateTool {
             Err(e) => return Ok(ToolOutput::err(e)),
         };
         let answer = actor
-            .ask(AwaitDecision { decision: decision.clone(), wait: escalate::wait_secs() })
+            .ask(AwaitDecision {
+                decision: decision.clone(),
+                wait: escalate::wait_secs(),
+            })
             .await
             .ok()
             .flatten();
@@ -1022,19 +1096,24 @@ impl Tool for DecideTool {
     async fn call(&self, a: DecideArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let actor = actor()?;
         let me = caller(&actor, &cx).await;
-        Ok(match flat(
-            actor
-                .ask(AnswerDecision {
-                    decision: a.decision.clone(),
-                    answer: a.answer,
-                    actor: me,
-                    session: Some(cx.session.to_string()),
-                })
-                .await,
-        ) {
-            Ok(()) => ToolOutput::ok(format!("decided `{}` on task {}; the owner is re-woken.", a.decision, a.task)),
-            Err(e) => ToolOutput::err(e),
-        })
+        Ok(
+            match flat(
+                actor
+                    .ask(AnswerDecision {
+                        decision: a.decision.clone(),
+                        answer: a.answer,
+                        actor: me,
+                        session: Some(cx.session.to_string()),
+                    })
+                    .await,
+            ) {
+                Ok(()) => ToolOutput::ok(format!(
+                    "decided `{}` on task {}; the owner is re-woken.",
+                    a.decision, a.task
+                )),
+                Err(e) => ToolOutput::err(e),
+            },
+        )
     }
 }
 
@@ -1046,8 +1125,16 @@ mod tests {
     fn task_create_defaults_to_backlog_and_refuses_other_states() {
         assert_eq!(create_state(None), Ok(TaskState::Backlog));
         assert_eq!(create_state(Some(TaskState::Todo)), Ok(TaskState::Todo));
-        assert!(create_state(Some(TaskState::Doing)).unwrap_err().contains("backlog or todo"));
-        let a: TaskCreateArgs = serde_json::from_value(serde_json::json!({ "title": "t", "brief": "b" })).unwrap();
-        assert_eq!(a.state, None, "the schema does not force a state; the default is backlog");
+        assert!(
+            create_state(Some(TaskState::Doing))
+                .unwrap_err()
+                .contains("backlog or todo")
+        );
+        let a: TaskCreateArgs =
+            serde_json::from_value(serde_json::json!({ "title": "t", "brief": "b" })).unwrap();
+        assert_eq!(
+            a.state, None,
+            "the schema does not force a state; the default is backlog"
+        );
     }
 }

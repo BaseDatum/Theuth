@@ -445,9 +445,7 @@ pub async fn link_oneshot(
             .ok()
             .flatten()
             .map_or_else(|| "<unknown>".to_owned(), |r| r.number);
-        anyhow::bail!(
-            "already linked as {number}; t --headless to run, /signal unlink to relink"
-        );
+        anyhow::bail!("already linked as {number}; t --headless to run, /signal unlink to relink");
     }
     let mut expired: u32 = 0;
     let mut faults: u32 = 0;

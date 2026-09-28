@@ -158,7 +158,11 @@ impl Message<Stats> for CodeindexActor {
 
     async fn handle(&mut self, m: Stats, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let root = root::discover(m.root.as_deref()).map_err(|e| format!("{e:#}"))?;
-        let ri = self.ix.open_root(&root).await.map_err(|e| format!("{e:#}"))?;
+        let ri = self
+            .ix
+            .open_root(&root)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         self.ix.stats(&ri).await.map_err(|e| format!("{e:#}"))
     }
 }
@@ -168,7 +172,11 @@ impl Message<Reconcile> for CodeindexActor {
 
     async fn handle(&mut self, m: Reconcile, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let root = root::discover(m.root.as_deref()).map_err(|e| format!("{e:#}"))?;
-        let ri = self.ix.open_root(&root).await.map_err(|e| format!("{e:#}"))?;
+        let ri = self
+            .ix
+            .open_root(&root)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         self.ix
             .reconcile(&ri, true)
             .await
@@ -181,7 +189,9 @@ impl Message<Locate> for CodeindexActor {
     type Reply = Result<Vec<Located>, String>;
 
     async fn handle(&mut self, m: Locate, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        locate::locate(&self.ix, m).await.map_err(|e| format!("{e:#}"))
+        locate::locate(&self.ix, m)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 

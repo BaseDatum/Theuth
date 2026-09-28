@@ -256,16 +256,17 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
 unsafe fn sessions() -> anyhow::Result<Vec<ProcessInfo>> {
     use anyhow::Context as _;
     use windows::Win32::Media::Audio::{
-        AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
-        IMMDeviceEnumerator, MMDeviceEnumerator, eMultimedia, eRender,
+        AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+        MMDeviceEnumerator, eMultimedia, eRender,
     };
     use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
     use windows::core::Interface as _;
 
     // SAFETY: every interface pointer comes from a successful COM call on this thread.
     unsafe {
-        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .context("MMDeviceEnumerator")?;
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .context("MMDeviceEnumerator")?;
         let device = enumerator
             .GetDefaultAudioEndpoint(eRender, eMultimedia)
             .context("no default render device")?;
@@ -295,7 +296,9 @@ unsafe fn sessions() -> anyhow::Result<Vec<ProcessInfo>> {
                 pid,
                 name: image_name(pid).unwrap_or_else(|| pid.to_string()),
                 bundle_id: None,
-                active: control.GetState().is_ok_and(|s| s == AudioSessionStateActive),
+                active: control
+                    .GetState()
+                    .is_ok_and(|s| s == AudioSessionStateActive),
             });
         }
         sort(&mut out);
@@ -318,8 +321,13 @@ fn image_name(pid: u32) -> Option<String> {
     // SAFETY: `buf`/`len` are valid locals; the handle is closed after one query.
     let path = unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), PWSTR(buf.as_mut_ptr()), &mut len)
-            .is_ok();
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
         let _ = CloseHandle(handle);
         ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))?
     };

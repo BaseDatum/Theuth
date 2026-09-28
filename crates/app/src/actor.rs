@@ -889,7 +889,11 @@ impl Message<GetApp> for Apps {
 impl Message<PublishFromUi> for Apps {
     type Reply = DelegatedReply<Result<AppDoc, String>>;
 
-    async fn handle(&mut self, m: PublishFromUi, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: PublishFromUi,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let core = self.core.clone();
@@ -909,8 +913,7 @@ pub(crate) async fn publish_from_ui(core: &Core, m: PublishFromUi) -> Result<App
     };
     let call_id = format!("ui-{}", uuid::Uuid::now_v7());
     let (loaded, _) =
-        crate::tool::commit_source(core, args, m.session, call_id, crate::tool::Origin::Ui)
-            .await?;
+        crate::tool::commit_source(core, args, m.session, call_id, crate::tool::Origin::Ui).await?;
     core.doc(&loaded.artifact.call_id).await
 }
 

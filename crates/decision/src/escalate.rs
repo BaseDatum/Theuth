@@ -139,7 +139,8 @@ pub fn parse(q: &Question, text: &str) -> Result<(String, f32), EscalateError> {
     let start = text
         .find('{')
         .ok_or_else(|| EscalateError::Invalid(format!("no JSON object in {text:?}")))?;
-    let mut de = serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+    let mut de =
+        serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
     let v = match de.next() {
         Some(Ok(v)) => v,
         Some(Err(e)) => return Err(EscalateError::Invalid(format!("{e}"))),
@@ -155,7 +156,11 @@ pub fn parse(q: &Question, text: &str) -> Result<(String, f32), EscalateError> {
         serde_json::Value::String(s) => s.trim().to_owned(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
-        other => return Err(EscalateError::Invalid(format!("answer {other} is not a label"))),
+        other => {
+            return Err(EscalateError::Invalid(format!(
+                "answer {other} is not a label"
+            )));
+        }
     };
     let mut allowed = labels(q);
     if matches!(q, Question::Choice { .. }) && !allowed.iter().any(|l| l == NONE_ID) {
@@ -310,14 +315,21 @@ mod tests {
         let c = render(&choice(), None);
         assert!(c.starts_with("Question (pick one id): which cached brief is the subject\nLabels:\n- SRE-2386: DR sync outage\n- HR-12\n- none: no listed option fits\nState:\nthem: the DR sync failed again"), "{c}");
         let b = render(&bool_q(), None);
-        assert!(b.contains("Labels:\n- true\n- false\nState:\nme: ok"), "{b}");
+        assert!(
+            b.contains("Labels:\n- true\n- false\nState:\nme: ok"),
+            "{b}"
+        );
         let s = render(&score(), None);
         assert!(s.contains("- 0: low\n- 1: mid\n- 2: high\n"), "{s}");
         // The oracle's estimate rides along as data, with why it abstained.
         let oracle = Decision {
             family: "meeting.brief".into(),
             choice: "none".into(),
-            probabilities: vec![("SRE-2386".into(), 0.31), ("HR-12".into(), 0.14), ("none".into(), 0.55)],
+            probabilities: vec![
+                ("SRE-2386".into(), 0.31),
+                ("HR-12".into(), 0.14),
+                ("none".into(), 0.55),
+            ],
             confidence: 0.3,
             act_probability: 0.0,
             disposition: Disposition::Escalate(Reason::LowMargin),
@@ -334,30 +346,84 @@ mod tests {
     #[test]
     fn parses_strictly() {
         let q = choice().question;
-        assert_eq!(parse(&q, r#"{"answer": "SRE-2386", "confidence": 0.9}"#).unwrap(), ("SRE-2386".into(), 0.9));
-        assert_eq!(parse(&q, "```json\n{\"answer\":\"none\"}\n```").unwrap(), ("none".into(), 1.0));
-        assert_eq!(parse(&q, "Sure: {\"answer\": \"HR-12\", \"confidence\": 7} trailing").unwrap(), ("HR-12".into(), 1.0));
-        assert!(matches!(parse(&q, r#"{"answer": "SRE-9999"}"#), Err(EscalateError::Invalid(m)) if m.contains("unknown label")));
-        assert!(matches!(parse(&q, r#"{"answer": "DR sync outage"}"#), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&q, "SRE-2386"), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&q, r#"{"confidence": 0.5}"#), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&q, r#"{"answer": "none", "confidence": "high"}"#), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&q, r#"{"answer": ["none"]}"#), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&q, r#"{"answer": "none""#), Err(EscalateError::Invalid(_))));
+        assert_eq!(
+            parse(&q, r#"{"answer": "SRE-2386", "confidence": 0.9}"#).unwrap(),
+            ("SRE-2386".into(), 0.9)
+        );
+        assert_eq!(
+            parse(&q, "```json\n{\"answer\":\"none\"}\n```").unwrap(),
+            ("none".into(), 1.0)
+        );
+        assert_eq!(
+            parse(
+                &q,
+                "Sure: {\"answer\": \"HR-12\", \"confidence\": 7} trailing"
+            )
+            .unwrap(),
+            ("HR-12".into(), 1.0)
+        );
+        assert!(
+            matches!(parse(&q, r#"{"answer": "SRE-9999"}"#), Err(EscalateError::Invalid(m)) if m.contains("unknown label"))
+        );
+        assert!(matches!(
+            parse(&q, r#"{"answer": "DR sync outage"}"#),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&q, "SRE-2386"),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&q, r#"{"confidence": 0.5}"#),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&q, r#"{"answer": "none", "confidence": "high"}"#),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&q, r#"{"answer": ["none"]}"#),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&q, r#"{"answer": "none""#),
+            Err(EscalateError::Invalid(_))
+        ));
 
         let b = bool_q().question;
-        assert_eq!(parse(&b, r#"{"answer": false, "confidence": 0.8}"#).unwrap(), ("false".into(), 0.8));
-        assert_eq!(parse(&b, r#"{"answer": "true"}"#).unwrap(), ("true".into(), 1.0));
-        assert!(matches!(parse(&b, r#"{"answer": "none"}"#), Err(EscalateError::Invalid(_))));
+        assert_eq!(
+            parse(&b, r#"{"answer": false, "confidence": 0.8}"#).unwrap(),
+            ("false".into(), 0.8)
+        );
+        assert_eq!(
+            parse(&b, r#"{"answer": "true"}"#).unwrap(),
+            ("true".into(), 1.0)
+        );
+        assert!(matches!(
+            parse(&b, r#"{"answer": "none"}"#),
+            Err(EscalateError::Invalid(_))
+        ));
 
         let s = score().question;
-        assert_eq!(parse(&s, r#"{"answer": 2, "confidence": 0.6}"#).unwrap(), ("2".into(), 0.6));
+        assert_eq!(
+            parse(&s, r#"{"answer": 2, "confidence": 0.6}"#).unwrap(),
+            ("2".into(), 0.6)
+        );
         assert_eq!(parse(&s, r#"{"answer": "1"}"#).unwrap(), ("1".into(), 1.0));
-        assert!(matches!(parse(&s, r#"{"answer": 3}"#), Err(EscalateError::Invalid(_))));
-        assert!(matches!(parse(&s, r#"{"answer": "high"}"#), Err(EscalateError::Invalid(_))));
+        assert!(matches!(
+            parse(&s, r#"{"answer": 3}"#),
+            Err(EscalateError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&s, r#"{"answer": "high"}"#),
+            Err(EscalateError::Invalid(_))
+        ));
     }
 
-    fn caller(reply: Result<&'static str, &'static str>, seen: Arc<Mutex<Option<SideCall>>>) -> Box<SideCaller> {
+    fn caller(
+        reply: Result<&'static str, &'static str>,
+        seen: Arc<Mutex<Option<SideCall>>>,
+    ) -> Box<SideCaller> {
         Box::new(move |call: SideCall| {
             *seen.lock() = Some(call);
             let reply = reply.map(|text| SideReply {
@@ -375,23 +441,36 @@ mod tests {
     async fn escalate_builds_a_tier2_decision_and_maps_failures() {
         let session = SessionId::new();
         let seen = Arc::new(Mutex::new(None));
-        let call = caller(Ok(r#"{"answer": "SRE-2386", "confidence": 0.8}"#), seen.clone());
-        let d = escalate(&choice(), None, session, Duration::from_secs(3), &*call).await.unwrap();
-        assert_eq!((d.tier, d.calibrated, d.choice.as_str()), (2, false, "SRE-2386"));
+        let call = caller(
+            Ok(r#"{"answer": "SRE-2386", "confidence": 0.8}"#),
+            seen.clone(),
+        );
+        let d = escalate(&choice(), None, session, Duration::from_secs(3), &*call)
+            .await
+            .unwrap();
+        assert_eq!(
+            (d.tier, d.calibrated, d.choice.as_str()),
+            (2, false, "SRE-2386")
+        );
         assert_eq!(d.disposition, Disposition::Accept);
         assert_eq!(d.probabilities.len(), 3);
         assert!((d.probabilities.iter().map(|(_, p)| p).sum::<f32>() - 1.0).abs() < 1e-5);
         assert_eq!(d.probabilities[0], ("SRE-2386".into(), 0.8));
         assert!((d.probabilities[2].1 - 0.1).abs() < 1e-5);
         let sent = seen.lock().take().unwrap();
-        assert_eq!((sent.session, sent.role, sent.kind), (session, ModelRole::Escalate, CallKind::Escalate));
+        assert_eq!(
+            (sent.session, sent.role, sent.kind),
+            (session, ModelRole::Escalate, CallKind::Escalate)
+        );
         assert_eq!(sent.budget, Duration::from_secs(3));
         assert_eq!(sent.system, SYSTEM);
         assert!(sent.user.contains("- SRE-2386: DR sync outage"));
 
         // `none` is a valid answer that still means "no pick".
         let call = caller(Ok(r#"{"answer": "none", "confidence": 0.7}"#), seen.clone());
-        let d = escalate(&choice(), None, session, Duration::from_secs(3), &*call).await.unwrap();
+        let d = escalate(&choice(), None, session, Duration::from_secs(3), &*call)
+            .await
+            .unwrap();
         assert_eq!(d.disposition, Disposition::Escalate(Reason::LowTop1));
         assert_eq!(d.choice, "none");
 
@@ -402,12 +481,16 @@ mod tests {
         ));
         let call = caller(Err("timed out"), seen.clone());
         assert_eq!(
-            escalate(&choice(), None, session, Duration::from_secs(3), &*call).await.unwrap_err(),
+            escalate(&choice(), None, session, Duration::from_secs(3), &*call)
+                .await
+                .unwrap_err(),
             EscalateError::Timeout
         );
         let call = caller(Err("no live session"), seen);
         assert_eq!(
-            escalate(&choice(), None, session, Duration::from_secs(3), &*call).await.unwrap_err(),
+            escalate(&choice(), None, session, Duration::from_secs(3), &*call)
+                .await
+                .unwrap_err(),
             EscalateError::Provider("no live session".into())
         );
     }

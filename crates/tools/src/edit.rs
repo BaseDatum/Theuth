@@ -322,10 +322,8 @@ fn trimmed_delta<'a>(window: &[&'a str], old: &[&'a str]) -> Option<Delta<'a>> {
             } else {
                 Delta::FileExtra(p)
             }
-        } else if let Some(p) = o.strip_suffix(f).filter(|p| p.trim().is_empty()) {
-            Delta::OldExtra(p)
         } else {
-            return None;
+            Delta::OldExtra(o.strip_suffix(f).filter(|p| p.trim().is_empty())?)
         };
         match delta {
             None => delta = Some(d),

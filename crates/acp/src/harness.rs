@@ -25,8 +25,8 @@ use agent_client_protocol::schema::v1::{
     InitializeResponse, LoadSessionRequest, Meta, NewSessionRequest, PermissionOption,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigValueId, SessionId, SessionNotification,
-    SessionUpdate, SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
+    SessionConfigOptionValue, SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
@@ -360,7 +360,11 @@ impl Link {
                     .request(LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd))
                     .await
                     .map(|r| {
-                        (SessionId::new(sid.as_str()), true, r.config_options.unwrap_or_default())
+                        (
+                            SessionId::new(sid.as_str()),
+                            true,
+                            r.config_options.unwrap_or_default(),
+                        )
                     }),
                 None => self
                     .request(NewSessionRequest::new(cwd).meta(meta.clone()))
@@ -444,7 +448,9 @@ impl Harness {
                     .await
                 {
                     Ok(r) => options = r.config_options,
-                    Err(e) => tracing::warn!("acp set_config_option model={want}: {}", error_text(&e)),
+                    Err(e) => {
+                        tracing::warn!("acp set_config_option model={want}: {}", error_text(&e))
+                    }
                 },
                 None => tracing::warn!("acp harness offers no model option; `{want}` not applied"),
             }

@@ -166,7 +166,10 @@ pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Resu
 
 /// One `meta` value.
 pub async fn meta(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
-    Ok(sqlx::query_scalar("SELECT value FROM meta WHERE key = ?").bind(key).fetch_optional(pool).await?)
+    Ok(sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?)
 }
 
 /// `files` as the reconcile diff reads it: path → (id, mtime_ns, size).
@@ -267,19 +270,19 @@ pub async fn apply(
         affected.extend(rows.into_iter().map(|(p,)| p));
     }
     for id in removed {
-        sqlx::query("DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id = ?)")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_id = ?)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM files WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
     }
     for w in writes {
-        let (lines, parse_errors) = w
-            .parsed
-            .map_or((0, false), |p| (p.lines, p.has_errors));
+        let (lines, parse_errors) = w.parsed.map_or((0, false), |p| (p.lines, p.has_errors));
         let file_id = sqlx::query(
             "INSERT INTO files (path, mtime_ns, size, language, package, lines, parse_errors, is_test) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -296,7 +299,9 @@ pub async fn apply(
         .map(|r: SqliteQueryResult| r.last_insert_rowid())?;
         let Some(p) = w.parsed else { continue };
         for batch in p.imports.chunks(ROWS_PER_INSERT) {
-            let mut q = QueryBuilder::new("INSERT INTO imports (file_id, specifier, names, line, provenance) ");
+            let mut q = QueryBuilder::new(
+                "INSERT INTO imports (file_id, specifier, names, line, provenance) ",
+            );
             q.push_values(batch, |mut b, i| {
                 b.push_bind(file_id)
                     .push_bind(&i.specifier)
@@ -478,12 +483,12 @@ pub struct FileInfo {
 
 /// The `files` row for `path`, if indexed.
 pub async fn file(pool: &SqlitePool, path: &str) -> anyhow::Result<Option<FileInfo>> {
-    Ok(sqlx::query_as(
-        "SELECT id, path, language, lines, parse_errors FROM files WHERE path = ?",
+    Ok(
+        sqlx::query_as("SELECT id, path, language, lines, parse_errors FROM files WHERE path = ?")
+            .bind(path)
+            .fetch_optional(pool)
+            .await?,
     )
-    .bind(path)
-    .fetch_optional(pool)
-    .await?)
 }
 
 /// One symbol of a file, for the outline tree.
@@ -562,7 +567,11 @@ pub struct FileRef {
 
 /// Every `files` row.
 pub async fn all_files(pool: &SqlitePool) -> anyhow::Result<Vec<FileRef>> {
-    Ok(sqlx::query_as("SELECT id, path, language, package, is_test FROM files").fetch_all(pool).await?)
+    Ok(
+        sqlx::query_as("SELECT id, path, language, package, is_test FROM files")
+            .fetch_all(pool)
+            .await?,
+    )
 }
 
 /// An `imports` row as the resolver reads and rewrites it.
@@ -584,9 +593,13 @@ pub struct ImportRow {
 
 /// Every `imports` row (the module tree and re-exports need all of them).
 pub async fn all_imports(pool: &SqlitePool) -> anyhow::Result<Vec<ImportRow>> {
-    Ok(sqlx::query_as("SELECT id, file_id, specifier, names, target_file, provenance FROM imports")
+    Ok(
+        sqlx::query_as(
+            "SELECT id, file_id, specifier, names, target_file, provenance FROM imports",
+        )
         .fetch_all(pool)
-        .await?)
+        .await?,
+    )
 }
 
 /// A `symbols` row as a resolution candidate.
@@ -612,9 +625,11 @@ pub struct SymRow {
 // ponytail: loads the whole table each reconcile (13k rows here, ~10 ms);
 // narrow to the names the changed refs use if a root has millions.
 pub async fn all_symbols(pool: &SqlitePool) -> anyhow::Result<Vec<SymRow>> {
-    Ok(sqlx::query_as("SELECT id, file_id, name, kind, line_start, line_end, parent_id FROM symbols")
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as(
+        "SELECT id, file_id, name, kind, line_start, line_end, parent_id FROM symbols",
+    )
+    .fetch_all(pool)
+    .await?)
 }
 
 /// A `refs` row to resolve.
@@ -638,7 +653,9 @@ pub struct RefRow {
 pub async fn refs_of(pool: &SqlitePool, file_ids: &[i64]) -> anyhow::Result<Vec<RefRow>> {
     let mut out = Vec::new();
     for batch in file_ids.chunks(ROWS_PER_INSERT) {
-        let mut q = QueryBuilder::new("SELECT id, file_id, name, kind, line, qualifier FROM refs WHERE file_id IN (");
+        let mut q = QueryBuilder::new(
+            "SELECT id, file_id, name, kind, line, qualifier FROM refs WHERE file_id IN (",
+        );
         let mut sep = q.separated(", ");
         for id in batch {
             sep.push_bind(id);
@@ -673,7 +690,9 @@ pub async fn update_imports(pool: &SqlitePool, updates: &[ImportUpdate]) -> anyh
     for batch in updates.chunks(ROWS_PER_INSERT) {
         let mut q = QueryBuilder::new("INSERT INTO imp_res (id, target_file, provenance) ");
         q.push_values(batch, |mut b, u| {
-            b.push_bind(u.id).push_bind(u.target_file).push_bind(&u.provenance);
+            b.push_bind(u.id)
+                .push_bind(u.target_file)
+                .push_bind(&u.provenance);
         });
         q.build().execute(&mut *tx).await?;
     }
@@ -712,7 +731,9 @@ pub async fn update_refs(pool: &SqlitePool, updates: &[RefUpdate]) -> anyhow::Re
     .await?;
     sqlx::query("DELETE FROM ref_res").execute(&mut *tx).await?;
     for batch in updates.chunks(ROWS_PER_INSERT) {
-        let mut q = QueryBuilder::new("INSERT INTO ref_res (id, to_symbol, candidates, provenance, confidence) ");
+        let mut q = QueryBuilder::new(
+            "INSERT INTO ref_res (id, to_symbol, candidates, provenance, confidence) ",
+        );
         q.push_values(batch, |mut b, u| {
             b.push_bind(u.id)
                 .push_bind(u.to_symbol)
@@ -765,22 +786,32 @@ macro_rules! def_cols {
 
 /// Definitions by exact name, by path then line.
 pub async fn definitions_named(pool: &SqlitePool, name: &str) -> anyhow::Result<Vec<Definition>> {
-    Ok(sqlx::query_as(concat!("SELECT ", def_cols!(), " WHERE s.name = ? ORDER BY f.path, s.line_start"))
-        .bind(name)
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        def_cols!(),
+        " WHERE s.name = ? ORDER BY f.path, s.line_start"
+    ))
+    .bind(name)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// The definition with `symbols.id = id`.
 pub async fn definition_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Definition>> {
-    Ok(sqlx::query_as(concat!("SELECT ", def_cols!(), " WHERE s.id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?)
+    Ok(
+        sqlx::query_as(concat!("SELECT ", def_cols!(), " WHERE s.id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
 }
 
 /// The innermost definition of `path` whose lines contain `line`.
-pub async fn definition_at(pool: &SqlitePool, path: &str, line: i64) -> anyhow::Result<Option<Definition>> {
+pub async fn definition_at(
+    pool: &SqlitePool,
+    path: &str,
+    line: i64,
+) -> anyhow::Result<Option<Definition>> {
     Ok(sqlx::query_as(concat!(
         "SELECT ",
         def_cols!(),
@@ -824,7 +855,12 @@ macro_rules! ref_cols {
 }
 
 /// References resolved to `symbol_id` (`direction=in`), by path and line.
-pub async fn refs_to(pool: &SqlitePool, symbol_id: i64, kind: Option<&str>, limit: i64) -> anyhow::Result<Vec<RefHit>> {
+pub async fn refs_to(
+    pool: &SqlitePool,
+    symbol_id: i64,
+    kind: Option<&str>,
+    limit: i64,
+) -> anyhow::Result<Vec<RefHit>> {
     Ok(sqlx::query_as(concat!(
         "SELECT ",
         ref_cols!(),
@@ -838,7 +874,12 @@ pub async fn refs_to(pool: &SqlitePool, symbol_id: i64, kind: Option<&str>, limi
 }
 
 /// References made from inside `symbol_id` (`direction=out`), in source order.
-pub async fn refs_from(pool: &SqlitePool, symbol_id: i64, kind: Option<&str>, limit: i64) -> anyhow::Result<Vec<RefHit>> {
+pub async fn refs_from(
+    pool: &SqlitePool,
+    symbol_id: i64,
+    kind: Option<&str>,
+    limit: i64,
+) -> anyhow::Result<Vec<RefHit>> {
     Ok(sqlx::query_as(concat!(
         "SELECT ",
         ref_cols!(),
@@ -853,7 +894,11 @@ pub async fn refs_from(pool: &SqlitePool, symbol_id: i64, kind: Option<&str>, li
 
 /// Refs named `name` that stayed ambiguous (60 §6.2 rule 5): the honest
 /// residue `code_refs` reports beside the resolved list.
-pub async fn ambiguous_named(pool: &SqlitePool, name: &str, kind: Option<&str>) -> anyhow::Result<i64> {
+pub async fn ambiguous_named(
+    pool: &SqlitePool,
+    name: &str,
+    kind: Option<&str>,
+) -> anyhow::Result<i64> {
     Ok(sqlx::query_scalar(
         "SELECT count(*) FROM refs WHERE name = ?1 AND provenance = 'ambiguous' AND (?2 IS NULL OR kind = ?2)",
     )
@@ -868,13 +913,21 @@ pub async fn ambiguous_named(pool: &SqlitePool, name: &str, kind: Option<&str>) 
 /// Store the unpersonalised ranks: `files.rank` for every graph node,
 /// `symbols.rank` reset to 0 then set for the ranked definitions. Two
 /// temp-table `UPDATE … FROM`s in one transaction.
-pub async fn update_ranks(pool: &SqlitePool, files: &[(i64, f64)], symbols: &[(i64, f64)]) -> anyhow::Result<()> {
+pub async fn update_ranks(
+    pool: &SqlitePool,
+    files: &[(i64, f64)],
+    symbols: &[(i64, f64)],
+) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("CREATE TEMP TABLE IF NOT EXISTS rank_res (id INTEGER PRIMARY KEY, rank REAL NOT NULL)")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "CREATE TEMP TABLE IF NOT EXISTS rank_res (id INTEGER PRIMARY KEY, rank REAL NOT NULL)",
+    )
+    .execute(&mut *tx)
+    .await?;
     for (table, rows) in [("files", files), ("symbols", symbols)] {
-        sqlx::query("DELETE FROM rank_res").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM rank_res")
+            .execute(&mut *tx)
+            .await?;
         for batch in rows.chunks(ROWS_PER_INSERT) {
             let mut q = QueryBuilder::new("INSERT INTO rank_res (id, rank) ");
             q.push_values(batch, |mut b, (id, rank)| {
@@ -883,13 +936,21 @@ pub async fn update_ranks(pool: &SqlitePool, files: &[(i64, f64)], symbols: &[(i
             q.build().execute(&mut *tx).await?;
         }
         if table == "symbols" {
-            sqlx::query("UPDATE symbols SET rank = 0.0 WHERE rank <> 0.0").execute(&mut *tx).await?;
-            sqlx::query("UPDATE symbols SET rank = r.rank FROM rank_res r WHERE symbols.id = r.id").execute(&mut *tx).await?;
+            sqlx::query("UPDATE symbols SET rank = 0.0 WHERE rank <> 0.0")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE symbols SET rank = r.rank FROM rank_res r WHERE symbols.id = r.id")
+                .execute(&mut *tx)
+                .await?;
         } else {
-            sqlx::query("UPDATE files SET rank = r.rank FROM rank_res r WHERE files.id = r.id").execute(&mut *tx).await?;
+            sqlx::query("UPDATE files SET rank = r.rank FROM rank_res r WHERE files.id = r.id")
+                .execute(&mut *tx)
+                .await?;
         }
     }
-    sqlx::query("DELETE FROM rank_res").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM rank_res")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -927,7 +988,12 @@ pub async fn ranked_tags(pool: &SqlitePool) -> anyhow::Result<Vec<crate::rank::T
 
 /// Refs inside a line span of a file that resolved to something
 /// (`code_symbol` callees), in source order.
-pub async fn refs_in_span(pool: &SqlitePool, path: &str, line_start: i64, line_end: i64) -> anyhow::Result<Vec<RefHit>> {
+pub async fn refs_in_span(
+    pool: &SqlitePool,
+    path: &str,
+    line_start: i64,
+    line_end: i64,
+) -> anyhow::Result<Vec<RefHit>> {
     Ok(sqlx::query_as(concat!(
         "SELECT ",
         ref_cols!(),
@@ -945,9 +1011,15 @@ pub async fn refs_in_span(pool: &SqlitePool, path: &str, line_start: i64, line_e
 
 /// Replace `cochanges` wholesale (`file_a < file_b`) and record the walked
 /// HEAD in `meta.cochange_head` and `meta.git_head`, one transaction.
-pub async fn replace_cochanges(pool: &SqlitePool, rows: &[(i64, i64, i64)], head: &str) -> anyhow::Result<()> {
+pub async fn replace_cochanges(
+    pool: &SqlitePool,
+    rows: &[(i64, i64, i64)],
+    head: &str,
+) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM cochanges").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM cochanges")
+        .execute(&mut *tx)
+        .await?;
     for batch in rows.chunks(ROWS_PER_INSERT) {
         let mut q = QueryBuilder::new("INSERT INTO cochanges (file_a, file_b, count) ");
         q.push_values(batch, |mut b, (a, c, n)| {
@@ -967,7 +1039,11 @@ pub async fn replace_cochanges(pool: &SqlitePool, rows: &[(i64, i64, i64)], head
 }
 
 /// Files that changed together with `file_id` most often: `(path, count)`.
-pub async fn cochange_partners(pool: &SqlitePool, file_id: i64, limit: i64) -> anyhow::Result<Vec<(String, i64)>> {
+pub async fn cochange_partners(
+    pool: &SqlitePool,
+    file_id: i64,
+    limit: i64,
+) -> anyhow::Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
         "SELECT f.path, c.count FROM cochanges c JOIN files f ON f.id = CASE WHEN c.file_a = ?1 THEN c.file_b ELSE c.file_a END \
          WHERE c.file_a = ?1 OR c.file_b = ?1 ORDER BY c.count DESC, f.path LIMIT ?2",
@@ -980,7 +1056,10 @@ pub async fn cochange_partners(pool: &SqlitePool, file_id: i64, limit: i64) -> a
 
 /// Files referencing any of `symbol_ids` with `confidence ≥ 0.5` (the rank
 /// graph's cut): distinct `(file_id, name, target file_id)`.
-pub async fn referencers(pool: &SqlitePool, symbol_ids: &[i64]) -> anyhow::Result<Vec<(i64, String, i64)>> {
+pub async fn referencers(
+    pool: &SqlitePool,
+    symbol_ids: &[i64],
+) -> anyhow::Result<Vec<(i64, String, i64)>> {
     let mut out = Vec::new();
     for batch in symbol_ids.chunks(ROWS_PER_INSERT) {
         let mut q = QueryBuilder::new(
@@ -991,17 +1070,27 @@ pub async fn referencers(pool: &SqlitePool, symbol_ids: &[i64]) -> anyhow::Resul
             sep.push_bind(id);
         }
         q.push(")");
-        out.extend(q.build_query_as::<(i64, String, i64)>().fetch_all(pool).await?);
+        out.extend(
+            q.build_query_as::<(i64, String, i64)>()
+                .fetch_all(pool)
+                .await?,
+        );
     }
     Ok(out)
 }
 
 /// References into the changed symbols that `code_impact` does not count:
 /// resolved below the 0.5 cut, or same-name and `ambiguous`.
-pub async fn impact_skipped(pool: &SqlitePool, symbol_ids: &[i64], names: &[&str]) -> anyhow::Result<i64> {
+pub async fn impact_skipped(
+    pool: &SqlitePool,
+    symbol_ids: &[i64],
+    names: &[&str],
+) -> anyhow::Result<i64> {
     let mut n = 0i64;
     for batch in symbol_ids.chunks(ROWS_PER_INSERT) {
-        let mut q = QueryBuilder::new("SELECT count(*) FROM refs WHERE confidence < 0.5 AND to_symbol IN (");
+        let mut q = QueryBuilder::new(
+            "SELECT count(*) FROM refs WHERE confidence < 0.5 AND to_symbol IN (",
+        );
         let mut sep = q.separated(", ");
         for id in batch {
             sep.push_bind(id);
@@ -1010,7 +1099,9 @@ pub async fn impact_skipped(pool: &SqlitePool, symbol_ids: &[i64], names: &[&str
         n += q.build_query_scalar::<i64>().fetch_one(pool).await?;
     }
     for batch in names.chunks(ROWS_PER_INSERT) {
-        let mut q = QueryBuilder::new("SELECT count(*) FROM refs WHERE provenance = 'ambiguous' AND name IN (");
+        let mut q = QueryBuilder::new(
+            "SELECT count(*) FROM refs WHERE provenance = 'ambiguous' AND name IN (",
+        );
         let mut sep = q.separated(", ");
         for name in batch {
             sep.push_bind(*name);
@@ -1036,7 +1127,9 @@ pub async fn import_edges(pool: &SqlitePool) -> anyhow::Result<Vec<(i64, i64)>> 
 pub async fn unresolved_imports_in(pool: &SqlitePool, file_ids: &[i64]) -> anyhow::Result<i64> {
     let mut n = 0i64;
     for batch in file_ids.chunks(ROWS_PER_INSERT) {
-        let mut q = QueryBuilder::new("SELECT count(*) FROM imports WHERE provenance = 'unresolved' AND file_id IN (");
+        let mut q = QueryBuilder::new(
+            "SELECT count(*) FROM imports WHERE provenance = 'unresolved' AND file_id IN (",
+        );
         let mut sep = q.separated(", ");
         for id in batch {
             sep.push_bind(id);
@@ -1054,7 +1147,10 @@ mod tests {
     #[test]
     fn fts_prefix_quotes_every_token() {
         assert_eq!(fts_prefix("ToolRegistry"), "\"ToolRegistry\"*");
-        assert_eq!(fts_prefix("open db\" OR x"), "\"open\"* \"db\"* \"OR\"* \"x\"*");
+        assert_eq!(
+            fts_prefix("open db\" OR x"),
+            "\"open\"* \"db\"* \"OR\"* \"x\"*"
+        );
         assert_eq!(fts_prefix("  "), "\"\"");
     }
 }

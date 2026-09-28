@@ -62,9 +62,27 @@ pub const ICONS: &[&str] = &[
 /// old clients keep working. The desktop renders them as: red→carnelian, orange→ochre, amber→sand,
 /// green→malachite, teal→faience, blue→lapis, indigo→slate, violet→plum, pink→plum, gray→umber.
 pub const COLORS: &[&str] = &[
-    "ochre", "carnelian", "malachite", "faience", "lapis", "nile", "umber", "slate", "sand", "plum",
+    "ochre",
+    "carnelian",
+    "malachite",
+    "faience",
+    "lapis",
+    "nile",
+    "umber",
+    "slate",
+    "sand",
+    "plum",
     // legacy
-    "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink", "gray",
+    "red",
+    "orange",
+    "amber",
+    "green",
+    "teal",
+    "blue",
+    "indigo",
+    "violet",
+    "pink",
+    "gray",
 ];
 
 /// Check a project style against the allow-lists; `None` is always fine.
@@ -96,22 +114,35 @@ mod tests {
             normalize_project(Some(&"a".repeat(129))).unwrap_err(),
             "project must be at most 128 bytes"
         );
-        assert_eq!(normalize_project(Some(&"a".repeat(128))).unwrap().unwrap().len(), 128);
+        assert_eq!(
+            normalize_project(Some(&"a".repeat(128)))
+                .unwrap()
+                .unwrap()
+                .len(),
+            128
+        );
         // Whitespace beyond the limit is fine: the limit applies after trimming.
         let padded = format!("{}{}", "a".repeat(127), " ".repeat(10));
-        assert_eq!(normalize_project(Some(&padded)).unwrap().unwrap().len(), 127);
+        assert_eq!(
+            normalize_project(Some(&padded)).unwrap().unwrap().len(),
+            127
+        );
     }
 
     #[test]
     fn rejects_controls_empty_and_keeps_case() {
-        for bad in ["a\0b", "a\tb", "a\nb", "a\rb", "a\u{7f}b", "\u{85}x", "x\u{9b}"] {
+        for bad in [
+            "a\0b", "a\tb", "a\nb", "a\rb", "a\u{7f}b", "\u{85}x", "x\u{9b}",
+        ] {
             assert!(normalize_project(Some(bad)).is_err(), "{bad:?}");
         }
         assert!(normalize_project(Some("")).is_err());
         assert!(normalize_project(Some("   \u{a0}\u{2003}")).is_err());
         assert_eq!(normalize_project(None), Ok(None));
         assert_eq!(
-            normalize_project(Some("  My  Big Project ")).unwrap().as_deref(),
+            normalize_project(Some("  My  Big Project "))
+                .unwrap()
+                .as_deref(),
             Some("My  Big Project")
         );
     }

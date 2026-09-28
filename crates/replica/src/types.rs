@@ -11,7 +11,9 @@ use tokio::sync::broadcast;
 
 /// A mesh engine id (`mesh::EngineId`) as the replication layer sees it: an
 /// opaque string, the iroh endpoint id in text form.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
 pub struct PeerId(pub String);
@@ -25,7 +27,9 @@ impl fmt::Display for PeerId {
 /// Hybrid logical clock stamp. Ordered by `wall_ms`, then `counter`, then
 /// `origin` (the derived `Ord` follows field order), so two engines never
 /// tie: the larger stamp wins a per-column LWW merge.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct Hlc {
     /// Physical time in ms since the epoch, as seen by `origin`.
     pub wall_ms: u64,

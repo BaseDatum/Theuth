@@ -48,10 +48,17 @@ impl ShellKind {
 /// `override` is `tools.pty_shell`, taken as the program on either.
 pub fn pty_command(command: &str, override_shell: Option<&Path>) -> (PathBuf, Vec<String>) {
     if cfg!(windows) {
-        let program = override_shell
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(if on_path("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" }));
-        (program, vec!["-NoLogo".into(), "-Command".into(), command.to_owned()])
+        let program = override_shell.map(Path::to_path_buf).unwrap_or_else(|| {
+            PathBuf::from(if on_path("pwsh.exe") {
+                "pwsh.exe"
+            } else {
+                "powershell.exe"
+            })
+        });
+        (
+            program,
+            vec!["-NoLogo".into(), "-Command".into(), command.to_owned()],
+        )
     } else {
         let program = override_shell.map(Path::to_path_buf).unwrap_or_else(|| {
             std::env::var_os("SHELL")
@@ -64,7 +71,8 @@ pub fn pty_command(command: &str, override_shell: Option<&Path>) -> (PathBuf, Ve
 
 /// Whether `exe` resolves through `PATH`.
 fn on_path(exe: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(exe).is_file()))
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(exe).is_file()))
 }
 
 #[cfg(test)]
@@ -82,11 +90,16 @@ mod tests {
     #[test]
     fn unix_runs_the_login_shell_with_lc() {
         let (program, args) = pty_command("ls", None);
-        let login = std::env::var_os("SHELL").filter(|s| !s.is_empty()).map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
+        let login = std::env::var_os("SHELL")
+            .filter(|s| !s.is_empty())
+            .map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
         assert_eq!(program, login);
         assert_eq!(args, ["-lc", "ls"]);
         assert_eq!(shell(), ShellKind::Login(login.clone()));
         let cmd = ShellKind::Login(login).command("echo hi", true).unwrap();
-        assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), ["-lc", "echo hi"]);
+        assert_eq!(
+            cmd.as_std().get_args().collect::<Vec<_>>(),
+            ["-lc", "echo hi"]
+        );
     }
 }

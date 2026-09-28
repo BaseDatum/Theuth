@@ -86,7 +86,10 @@ pub async fn callback(
             let (status, page) = if !target.contains('?') {
                 ("404 Not Found", Cow::Borrowed(""))
             } else if target.contains("error=") {
-                ("400 Bad Request", Cow::Owned(PAGE.replace("{state}", "err")))
+                (
+                    "400 Bad Request",
+                    Cow::Owned(PAGE.replace("{state}", "err")),
+                )
             } else {
                 ("200 OK", Cow::Owned(PAGE.replace("{state}", "ok")))
             };
@@ -439,13 +442,21 @@ impl Store {
     /// No-op without grants.
     pub async fn migrate_files(&self) {
         let Some(g) = &self.grants else { return };
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
         for e in entries.flatten() {
             let path = e.path();
-            let Some(ns) = path.file_name().and_then(|f| f.to_str()).and_then(|f| f.strip_suffix(".json")) else {
+            let Some(ns) = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|f| f.strip_suffix(".json"))
+            else {
                 continue;
             };
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             if serde_json::from_str::<Tokens>(&text).is_err() {
                 continue;
             }
@@ -478,7 +489,10 @@ impl Store {
     }
 
     fn is_hub(&self) -> bool {
-        self.hub.as_ref().map_or_else(|| HUB.load(Ordering::Relaxed), |h| h.load(Ordering::Relaxed))
+        self.hub.as_ref().map_or_else(
+            || HUB.load(Ordering::Relaxed),
+            |h| h.load(Ordering::Relaxed),
+        )
     }
 
     /// Tokens for `ns` with their version (files: version 0); unreadable or
@@ -491,7 +505,11 @@ impl Store {
             }
             None => {
                 let path = self.path(ns);
-                (0, std::fs::read_to_string(&path).ok()?, path.display().to_string())
+                (
+                    0,
+                    std::fs::read_to_string(&path).ok()?,
+                    path.display().to_string(),
+                )
             }
         };
         match serde_json::from_str(&text) {
@@ -511,7 +529,12 @@ impl Store {
     /// Write `t` as the next version of `ns`, conditional on `expected`
     /// (`None` = whatever is current now). `Ok(false)` = the version moved
     /// underneath (67 §4.4): the caller re-reads. Files always succeed.
-    async fn save_if(&self, ns: &str, t: &Tokens, expected: Option<Option<u32>>) -> Result<bool, String> {
+    async fn save_if(
+        &self,
+        ns: &str,
+        t: &Tokens,
+        expected: Option<Option<u32>>,
+    ) -> Result<bool, String> {
         let json = serde_json::to_string_pretty(t).map_err(|e| e.to_string())?;
         match &self.grants {
             Some(g) => {
@@ -520,7 +543,8 @@ impl Store {
             }
             None => {
                 std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-                platform::files::write_private(&self.path(ns), json.as_bytes()).map_err(|e| e.to_string())?;
+                platform::files::write_private(&self.path(ns), json.as_bytes())
+                    .map_err(|e| e.to_string())?;
                 Ok(true)
             }
         }
@@ -765,7 +789,10 @@ impl Store {
             return Err(format!("{}: login expired; run /login {}", p.ns, p.ns));
         };
         if !self.is_hub() {
-            return Err(format!("{}: token expiring; the hub engine refreshes it — retry shortly", p.ns));
+            return Err(format!(
+                "{}: token expiring; the hub engine refreshes it — retry shortly",
+                p.ns
+            ));
         }
         let fresh = match &p.flow {
             Flow::Code { .. } | Flow::Device => {
@@ -812,7 +839,9 @@ impl Store {
         }
         // Someone else refreshed first: theirs is the grant now.
         match self.load_versioned(&p.ns) {
-            Some((v, other)) if v != version && other.expires_at > now() + REFRESH_MARGIN_SECS => Ok(other),
+            Some((v, other)) if v != version && other.expires_at > now() + REFRESH_MARGIN_SECS => {
+                Ok(other)
+            }
             _ => Err(format!("{}: grant refreshed elsewhere; retry", p.ns)),
         }
     }
@@ -1122,7 +1151,10 @@ mod tests {
         store.save("test", &expiring("r1")).await.unwrap();
         let mine = jwt(serde_json::json!({ "exp": now() + 7200 }));
         let p = code_provider(
-            fake_token_endpoint(serde_json::json!({ "access_token": mine, "expires_in": 7200 }).to_string()).await,
+            fake_token_endpoint(
+                serde_json::json!({ "access_token": mine, "expires_in": 7200 }).to_string(),
+            )
+            .await,
         );
         // Another hub wins version 2 between this engine's read and its write.
         let theirs = Tokens {
@@ -1134,17 +1166,32 @@ mod tests {
         *grants.race.lock() = Some(("test".into(), 2, theirs.clone()));
         let got = store.access(&p).await.unwrap();
         assert_eq!(got, theirs, "the loser re-reads the winner's grant");
-        assert_eq!(grants.load("test").unwrap().0, 2, "no version 3 was written");
-        assert_eq!(grants.stores.load(Ordering::Relaxed), 2, "save + one refused write");
+        assert_eq!(
+            grants.load("test").unwrap().0,
+            2,
+            "no version 3 was written"
+        );
+        assert_eq!(
+            grants.stores.load(Ordering::Relaxed),
+            2,
+            "save + one refused write"
+        );
 
         // Still fresh: served as is.
         assert_eq!(store.access(&p).await.unwrap(), theirs);
 
         // Hub, no race: the refresh lands as the next version.
-        grants.rows.lock().insert("test".into(), (2, serde_json::to_string(&expiring("r2")).unwrap()));
+        grants.rows.lock().insert(
+            "test".into(),
+            (2, serde_json::to_string(&expiring("r2")).unwrap()),
+        );
         let got = store.access(&p).await.unwrap();
         assert_eq!(got.access_token, mine);
-        assert_eq!(got.refresh_token.as_deref(), Some("r2"), "refresh token survives an omitting endpoint");
+        assert_eq!(
+            got.refresh_token.as_deref(),
+            Some("r2"),
+            "refresh token survives an omitting endpoint"
+        );
         assert_eq!(grants.load("test").unwrap().0, 3);
     }
 }

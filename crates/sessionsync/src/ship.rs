@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use agent::store::Store;
 use parking_lot::Mutex;
-use replica::{ByteStream, PeerId, Transport, ALPN_SESSIONS};
+use replica::{ALPN_SESSIONS, ByteStream, PeerId, Transport};
 use runtime::Runtime;
 use tokio::task::JoinHandle;
 
-use crate::sync::{run_from, run_stream, Node, Stream};
-use crate::types::Msg;
 use crate::SessionsConfig;
+use crate::sync::{Node, Stream, run_from, run_stream};
+use crate::types::Msg;
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
@@ -94,13 +94,21 @@ impl Shipper {
     /// [`Self::serve_with_first`].
     pub async fn serve(&self, peer: PeerId, stream: Box<dyn ByteStream>) -> anyhow::Result<()> {
         let mut framed = crate::events::framed(stream);
-        let first = futures::StreamExt::next(&mut framed).await.ok_or_else(|| anyhow::anyhow!("closed before hello"))??;
-        self.serve_with_first(peer, framed, Msg::decode(&first)?).await
+        let first = futures::StreamExt::next(&mut framed)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("closed before hello"))??;
+        self.serve_with_first(peer, framed, Msg::decode(&first)?)
+            .await
     }
 
     /// Serve an accepted stream whose first frame the dispatcher already read
     /// (it was not an events subscription).
-    pub async fn serve_with_first(&self, peer: PeerId, framed: Stream, first: Msg) -> anyhow::Result<()> {
+    pub async fn serve_with_first(
+        &self,
+        peer: PeerId,
+        framed: Stream,
+        first: Msg,
+    ) -> anyhow::Result<()> {
         if self.lone() {
             return Ok(());
         }

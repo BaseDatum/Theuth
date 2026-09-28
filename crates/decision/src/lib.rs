@@ -34,10 +34,10 @@ pub use engine::{
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
 pub use log::FamilyStats;
-pub use training::TrainingInfo;
 pub use question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
+pub use training::TrainingInfo;
 
 /// Registry name of the `default` checkpoint's [`Engine`] actor.
 pub const DECISION_ACTOR: &str = "decision";
@@ -467,7 +467,9 @@ fn opt_duration<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duratio
 /// prefix (`meeting` → `meeting.kind` + `meeting.brief` + `meeting.subject`) and what
 /// effectively runs — `off` with a `reason` when the plugin is disabled or the checkpoint is
 /// not on disk.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ModeInfo {
     /// The configured mode (the most permissive one when the families disagree).
@@ -507,13 +509,19 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
         .map(|g| g.mode)
         .max_by_key(|m| rank(*m))
         .unwrap_or(Mode::Off);
-    let (budget, escalate) = gates.first().map_or(
-        (Duration::from_millis(400), Duration::from_secs(3)),
-        |g| (g.budget, g.escalate_budget),
-    );
+    let (budget, escalate) = gates
+        .first()
+        .map_or((Duration::from_millis(400), Duration::from_secs(3)), |g| {
+            (g.budget, g.escalate_budget)
+        });
     let (checkpoint, model_dir) = gates.first().map_or_else(
         || (DEFAULT_CHECKPOINT, model_dir.to_path_buf()),
-        |g| (g.checkpoint(), cfg.checkpoint_dir(model_dir, g.checkpoint())),
+        |g| {
+            (
+                g.checkpoint(),
+                cfg.checkpoint_dir(model_dir, g.checkpoint()),
+            )
+        },
     );
     let missing: Vec<&str> = engine::MODEL_FILES
         .into_iter()
@@ -522,7 +530,10 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
     let (effective, reason) = if mode == Mode::Off {
         (Mode::Off, None)
     } else if !cfg.enabled {
-        (Mode::Off, Some("the decision plugin is disabled (decision.enabled: false)".to_owned()))
+        (
+            Mode::Off,
+            Some("the decision plugin is disabled (decision.enabled: false)".to_owned()),
+        )
     } else if !missing.is_empty() {
         let what = if checkpoint == DEFAULT_CHECKPOINT {
             "model missing:".to_owned()
@@ -531,7 +542,11 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
         };
         (
             Mode::Off,
-            Some(format!("{what} {} not in {}", missing.join(", "), model_dir.display())),
+            Some(format!(
+                "{what} {} not in {}",
+                missing.join(", "),
+                model_dir.display()
+            )),
         )
     } else {
         (mode, None)
@@ -572,8 +587,8 @@ impl runtime::Plugin for DecisionPlugin {
         let model_dir = cfg.model_dir_in(&rt.data_dir);
         let log = log::Log::new(rt.data_dir.join("decisions"));
         for (name, dir) in cfg.checkpoint_dirs(&model_dir) {
-            let mut engine =
-                Engine::new(cfg.clone(), model_dir.clone(), log.clone()).with_checkpoint(&name, dir);
+            let mut engine = Engine::new(cfg.clone(), model_dir.clone(), log.clone())
+                .with_checkpoint(&name, dir);
             if name == DEFAULT_CHECKPOINT {
                 engine = engine.with_config_path(rt.data_dir.join("config.yaml"));
             }
@@ -592,17 +607,44 @@ mod tests {
         let d = DecisionConfig::default();
         assert_eq!(d.families.len(), 7);
         assert!(d.families.values().all(|g| g.mode == Mode::Shadow));
-        assert!(!d.families.contains_key("meeting.topic"), "step 4's topic family is gone (57 §3.5)");
+        assert!(
+            !d.families.contains_key("meeting.topic"),
+            "step 4's topic family is gone (57 §3.5)"
+        );
         // 57 §4.1 item 4/6: the three jev-shaped questions on the `browser` checkpoint.
         let op = &d.families["browser.operation"];
-        assert_eq!((op.tau_top, op.tau_margin, op.checkpoint(), op.none, op.cut_ok), (0.50, 0.0, "browser", false, true));
+        assert_eq!(
+            (
+                op.tau_top,
+                op.tau_margin,
+                op.checkpoint(),
+                op.none,
+                op.cut_ok
+            ),
+            (0.50, 0.0, "browser", false, true)
+        );
         assert_eq!(d.families["browser.target"].tau_top, 0.25);
-        assert_eq!(d.families["browser.type_target"].budget, Duration::from_secs(2));
+        assert_eq!(
+            d.families["browser.type_target"].budget,
+            Duration::from_secs(2)
+        );
         assert_eq!(d.families["meeting.kind"].checkpoint(), DEFAULT_CHECKPOINT);
         assert!(d.families["meeting.kind"].none && !d.families["meeting.kind"].cut_ok);
-        assert_eq!((d.families["meeting.kind"].tau_top, d.families["meeting.brief"].tau_margin), (0.60, 0.30));
-        assert_eq!(d.families["meeting.kind"].budget, Duration::from_millis(400));
-        assert_eq!(d.families["meeting.kind"].escalate_budget, Duration::from_secs(3));
+        assert_eq!(
+            (
+                d.families["meeting.kind"].tau_top,
+                d.families["meeting.brief"].tau_margin
+            ),
+            (0.60, 0.30)
+        );
+        assert_eq!(
+            d.families["meeting.kind"].budget,
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            d.families["meeting.kind"].escalate_budget,
+            Duration::from_secs(3)
+        );
         let cfg: DecisionConfig = serde_yaml::from_str(
             "enabled: false\nidle_unload: 2h\nlog_text: true\ndevice: cpu\nfamilies:\n  meeting.kind: { mode: active, tau_top: 0.7, tau_margin: 0.2, budget: 1s }\n  new.family: { mode: shadow, tau_top: 0.5, tau_margin: 0.1 }\n",
         )
@@ -651,7 +693,13 @@ mod tests {
         assert_eq!(dirs["browser"], std::path::Path::new("/b"));
         assert_eq!(dirs["x"], std::path::Path::new("/x"));
         assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
-        assert_eq!((actor_name("default").as_str(), actor_name("browser").as_str()), ("decision", "decision/browser"));
+        assert_eq!(
+            (
+                actor_name("default").as_str(),
+                actor_name("browser").as_str()
+            ),
+            ("decision", "decision/browser")
+        );
         // 57 §2.1 item 2: `{ dir, idle_unload }` entries; `~` keeps the convention; the
         // browser default is 2m unless overridden, everything else follows `idle_unload`.
         let cfg: DecisionConfig = serde_yaml::from_str(
@@ -665,7 +713,10 @@ mod tests {
         assert_eq!(dirs["browser"], std::path::Path::new("/decision-browser"));
         assert_eq!(dirs["x"], std::path::Path::new("/x"));
         assert_eq!(dirs["y"], std::path::Path::new("/decision-y"));
-        assert_eq!(DecisionConfig::default().idle_unload_for("browser"), BROWSER_IDLE_UNLOAD);
+        assert_eq!(
+            DecisionConfig::default().idle_unload_for("browser"),
+            BROWSER_IDLE_UNLOAD
+        );
         assert_eq!(DecisionConfig::default().idle_unload, IDLE_UNLOAD);
     }
 
@@ -680,8 +731,14 @@ mod tests {
         assert_eq!(cfg.families["meeting.brief"].mode, Mode::Off);
         assert_eq!(cfg.families["meeting.subject"].mode, Mode::Off);
         // Sky's `config.yaml` line from step 4 (`meeting: { mode: shadow }`) still lands on every family.
-        let sky: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { mode: shadow }\n").unwrap();
-        assert!(sky.families.iter().filter(|(k, _)| k.starts_with("meeting.")).all(|(_, g)| g.mode == Mode::Shadow));
+        let sky: DecisionConfig =
+            serde_yaml::from_str("families:\n  meeting: { mode: shadow }\n").unwrap();
+        assert!(
+            sky.families
+                .iter()
+                .filter(|(k, _)| k.starts_with("meeting."))
+                .all(|(_, g)| g.mode == Mode::Shadow)
+        );
         assert_eq!(cfg.families["browser.target"].mode, Mode::Shadow);
         // A partial unknown family is neither inserted nor an error.
         let cfg: DecisionConfig =
@@ -689,15 +746,26 @@ mod tests {
         assert_eq!(cfg.families.len(), 7);
         // 57 §11: `train` patches like `mode`, default false everywhere.
         assert!(cfg.families.values().all(|g| !g.train));
-        let train: DecisionConfig = serde_yaml::from_str("families:\n  meeting: { train: true }\n").unwrap();
-        assert!(train.families.iter().all(|(k, g)| g.train == k.starts_with("meeting.")), "{:?}", train.families);
+        let train: DecisionConfig =
+            serde_yaml::from_str("families:\n  meeting: { train: true }\n").unwrap();
+        assert!(
+            train
+                .families
+                .iter()
+                .all(|(k, g)| g.train == k.starts_with("meeting.")),
+            "{:?}",
+            train.families
+        );
         assert_eq!(train.families["meeting.kind"].mode, Mode::Shadow);
         // 57 §7.1: `share` patches like `train` and needs it — `train: false` (explicit or default) clears it.
         let share: DecisionConfig =
             serde_yaml::from_str("families:\n  meeting: { train: true, share: true }\n  browser: { share: true }\n  agent.readable: { train: false, share: true }\n")
                 .unwrap();
         assert!(share.families["meeting.kind"].share && share.families["meeting.brief"].train);
-        assert!(!share.families["browser.target"].share, "share without train is dropped");
+        assert!(
+            !share.families["browser.target"].share,
+            "share without train is dropped"
+        );
         assert!(!share.families["agent.readable"].share);
     }
 
@@ -708,13 +776,25 @@ mod tests {
         let m = mode_for(&cfg, dir.path(), "meeting");
         assert_eq!(m.mode, Mode::Shadow);
         assert_eq!(m.effective, Mode::Off);
-        assert!(m.reason.as_deref().unwrap().starts_with("model missing: model.safetensors"));
+        assert!(
+            m.reason
+                .as_deref()
+                .unwrap()
+                .starts_with("model missing: model.safetensors")
+        );
         assert!(m.enabled && !m.installed);
         assert_eq!((m.budget_ms, m.escalate_budget_ms), (400, 3000));
         // A non-default checkpoint names itself (Labs shows the fetch script for it).
         let b = mode_for(&cfg, dir.path(), "browser");
         assert_eq!(b.effective, Mode::Off);
-        assert!(b.reason.as_deref().unwrap().starts_with("checkpoint missing: decision-browser — model.safetensors"), "{:?}", b.reason);
+        assert!(
+            b.reason
+                .as_deref()
+                .unwrap()
+                .starts_with("checkpoint missing: decision-browser — model.safetensors"),
+            "{:?}",
+            b.reason
+        );
 
         for f in engine::MODEL_FILES {
             let p = dir.path().join(f);
@@ -722,13 +802,19 @@ mod tests {
             std::fs::write(p, b"x").unwrap();
         }
         let m = mode_for(&cfg, dir.path(), "meeting");
-        assert_eq!((m.mode, m.effective, m.reason), (Mode::Shadow, Mode::Shadow, None));
+        assert_eq!(
+            (m.mode, m.effective, m.reason),
+            (Mode::Shadow, Mode::Shadow, None)
+        );
         assert!(m.installed);
 
         let off: DecisionConfig =
             serde_yaml::from_str("families:\n  meeting: { mode: off }\n").unwrap();
         let m = mode_for(&off, dir.path(), "meeting");
-        assert_eq!((m.mode, m.effective, m.reason), (Mode::Off, Mode::Off, None));
+        assert_eq!(
+            (m.mode, m.effective, m.reason),
+            (Mode::Off, Mode::Off, None)
+        );
 
         let disabled: DecisionConfig = serde_yaml::from_str("enabled: false\n").unwrap();
         let m = mode_for(&disabled, dir.path(), "meeting");

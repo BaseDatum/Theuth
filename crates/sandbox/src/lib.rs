@@ -42,9 +42,12 @@ pub const DIR: &str = "computers";
 /// Per-command ceiling (`sandbox.step_timeout_secs` in 64 §4.7; a constant here).
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// One progress sink: `(step, line)`.
+type Sink = dyn Fn(&str, &str) + Send + Sync;
+
 /// Where progress lines go: `(step, line)`. The CLI prints them; the actor logs them.
 #[derive(Clone)]
-pub struct Progress(Arc<dyn Fn(&str, &str) + Send + Sync>);
+pub struct Progress(Arc<Sink>);
 
 impl Progress {
     /// `[step] line` on stdout.
@@ -54,7 +57,9 @@ impl Progress {
 
     /// `tracing::info!` per line.
     pub fn log() -> Self {
-        Self(Arc::new(|step, line| tracing::info!("sandbox {step}: {line}")))
+        Self(Arc::new(|step, line| {
+            tracing::info!("sandbox {step}: {line}")
+        }))
     }
 
     /// Drops every line (tests).
@@ -200,17 +205,17 @@ pub trait Sandbox: Send + Sync {
 /// there is no `uname` (Windows OpenSSH).
 pub async fn detect(sb: &(impl Sandbox + ?Sized), h: &Handle) -> anyhow::Result<(String, String)> {
     let out = sb.exec(h, Cmd::new("uname -sm")).await?;
-    if out.ok() {
-        if let Some(p) = parse_uname(&out.stdout_str()) {
-            return Ok(p);
-        }
+    if out.ok()
+        && let Some(p) = parse_uname(&out.stdout_str())
+    {
+        return Ok(p);
     }
     let ps = "powershell -NoProfile -Command \"[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture\"";
     let out = sb.exec(h, Cmd::new(ps)).await?;
-    if out.ok() {
-        if let Some(arch) = parse_arch(&out.stdout_str()) {
-            return Ok(("windows".into(), arch));
-        }
+    if out.ok()
+        && let Some(arch) = parse_arch(&out.stdout_str())
+    {
+        return Ok(("windows".into(), arch));
     }
     anyhow::bail!("cannot detect os/arch: {}", out.reason())
 }
@@ -286,14 +291,22 @@ impl Message<MakeEngine> for SandboxActor {
 
     // ponytail: bring-up runs inside the handler (minutes) so one engine is
     // made at a time; spawn + progress events if the UI ever drives this.
-    async fn handle(&mut self, MakeEngine(target): MakeEngine, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        MakeEngine(target): MakeEngine,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let rt = self.rt.clone();
         make_engine(
             &self.rt.data_dir,
             target,
             move |name| async move {
-                let vault = secrets::handle(&rt).await.ok_or("secrets vault unavailable")?;
-                vault.get(&name, 0).ok_or_else(|| format!("no secret named {name}"))
+                let vault = secrets::handle(&rt)
+                    .await
+                    .ok_or("secrets vault unavailable")?;
+                vault
+                    .get(&name, 0)
+                    .ok_or_else(|| format!("no secret named {name}"))
             },
             &ActorJoin,
             &Progress::log(),
@@ -363,12 +376,18 @@ where
                     let pem = secret(key).await.map_err(anyhow::Error::msg)?;
                     ssh::SshSandbox::builtin(t, &pem)?
                 }
-                (false, None) => anyhow::bail!("--ssh needs --key <vault name> (built-in client) or --system-ssh"),
+                (false, None) => anyhow::bail!(
+                    "--ssh needs --key <vault name> (built-in client) or --system-ssh"
+                ),
                 (true, _) => ssh::SshSandbox::system(t),
             };
             (Box::new(sb), Spec::new(name))
         }
-        Target::Docker { name, image, local_t } => {
+        Target::Docker {
+            name,
+            image,
+            local_t,
+        } => {
             let sb = docker::DockerSandbox::connect(&name, image, local_t.clone()).await?;
             let spec = Spec {
                 local_t,
@@ -410,7 +429,9 @@ impl runtime::Plugin for SandboxPlugin {
 
 /// The sandbox actor; `None` before the plugin started.
 pub fn actor() -> Option<ActorRef<SandboxActor>> {
-    ActorRef::<SandboxActor>::lookup(SANDBOX_ACTOR).ok().flatten()
+    ActorRef::<SandboxActor>::lookup(SANDBOX_ACTOR)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -419,9 +440,18 @@ mod tests {
 
     #[test]
     fn uname_and_powershell_spellings() {
-        assert_eq!(parse_uname("Linux x86_64"), Some(("linux".into(), "x86_64".into())));
-        assert_eq!(parse_uname("Darwin arm64\n"), Some(("macos".into(), "aarch64".into())));
-        assert_eq!(parse_uname("Linux aarch64"), Some(("linux".into(), "aarch64".into())));
+        assert_eq!(
+            parse_uname("Linux x86_64"),
+            Some(("linux".into(), "x86_64".into()))
+        );
+        assert_eq!(
+            parse_uname("Darwin arm64\n"),
+            Some(("macos".into(), "aarch64".into()))
+        );
+        assert_eq!(
+            parse_uname("Linux aarch64"),
+            Some(("linux".into(), "aarch64".into()))
+        );
         assert_eq!(parse_uname("FreeBSD amd64"), None);
         assert_eq!(parse_arch("X64"), Some("x86_64".into()));
         assert_eq!(parse_arch("Arm64"), Some("aarch64".into()));

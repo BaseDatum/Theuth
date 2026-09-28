@@ -88,8 +88,14 @@ pub fn approval(choice: &str, desk: Option<&str>) -> Option<Approval> {
         _ => return None,
     };
     Some(match desk {
-        Some(_) => Approval { tool: "agent_propose", paused: true },
-        None => Approval { tool: "agent_put", paused },
+        Some(_) => Approval {
+            tool: "agent_propose",
+            paused: true,
+        },
+        None => Approval {
+            tool: "agent_put",
+            paused,
+        },
     })
 }
 
@@ -139,30 +145,58 @@ impl Tool for AgentDraftTool {
             return Ok(ToolOutput::err("agent_draft: roster is not running"));
         };
         let existing: BTreeSet<String> = match roster.ask(ListAgents).await {
-            Ok(l) => l.into_iter().filter(|s| !s.file.name.is_default()).map(|s| s.file.name.to_string()).collect(),
+            Ok(l) => l
+                .into_iter()
+                .filter(|s| !s.file.name.is_default())
+                .map(|s| s.file.name.to_string())
+                .collect(),
             Err(e) => return Ok(ToolOutput::err(format!("agent_draft: {e}"))),
         };
-        let desk = roster.ask(AgentOf(cx.session)).await.ok().flatten().filter(|d| d != AgentName::DEFAULT);
+        let desk = roster
+            .ask(AgentOf(cx.session))
+            .await
+            .ok()
+            .flatten()
+            .filter(|d| d != AgentName::DEFAULT);
         let mut seen = BTreeSet::new();
         for d in &args.agents {
             if let Err(e) = validate(d, &existing, desk.as_deref()) {
                 return Ok(ToolOutput::err(format!("agent_draft: {}: {e}", d.name)));
             }
             if !seen.insert(d.name.as_str()) {
-                return Ok(ToolOutput::err(format!("agent_draft: {} is drafted twice", d.name)));
+                return Ok(ToolOutput::err(format!(
+                    "agent_draft: {} is drafted twice",
+                    d.name
+                )));
             }
         }
-        let alnum: Vec<char> = cx.call_id.chars().filter(char::is_ascii_alphanumeric).collect();
+        let alnum: Vec<char> = cx
+            .call_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
         let suffix: String = alnum[alnum.len().saturating_sub(4)..].iter().collect();
         let (source, ids) = source(&args.agents, &existing, &suffix, desk.as_deref());
         let app = AppArgs {
             name: APP_NAME.into(),
             source,
-            title: Some(if ids.len() == 1 { "Agent draft".into() } else { format!("{} agent drafts", ids.len()) }),
+            title: Some(if ids.len() == 1 {
+                "Agent draft".into()
+            } else {
+                format!("{} agent drafts", ids.len())
+            }),
             edit: false,
             base_call_id: None,
         };
-        let (loaded, _) = match commit_source(&self.core, app, cx.session, cx.call_id.clone(), Origin::Tool).await {
+        let (loaded, _) = match commit_source(
+            &self.core,
+            app,
+            cx.session,
+            cx.call_id.clone(),
+            Origin::Tool,
+        )
+        .await
+        {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::err(format!("agent_draft: {e}"))),
         };
@@ -170,7 +204,16 @@ impl Tool for AgentDraftTool {
             .iter()
             .zip(&args.agents)
             .map(|(id, d)| {
-                format!("{id} · {} ({}){}", d.name, d.title.trim(), if existing.contains(d.name.as_str()) { " — exists: Replace" } else { "" })
+                format!(
+                    "{id} · {} ({}){}",
+                    d.name,
+                    d.title.trim(),
+                    if existing.contains(d.name.as_str()) {
+                        " — exists: Replace"
+                    } else {
+                        ""
+                    }
+                )
             })
             .collect();
         let content = format!(
@@ -205,18 +248,24 @@ fn validate(d: &AgentDraft, existing: &BTreeSet<String>, desk: Option<&str>) -> 
     }
     let r = d.reports_to.trim();
     if r != AgentName::DEFAULT && !existing.contains(r) {
-        return Err(format!("reports_to {r:?}: no such agent (see agents_list); use `theuth` or an existing name"));
+        return Err(format!(
+            "reports_to {r:?}: no such agent (see agents_list); use `theuth` or an existing name"
+        ));
     }
     if let Some(t) = d.tools.as_deref()
         && !matches!(t, "read_only" | "mutating" | "destructive")
     {
-        return Err(format!("tools {t:?}: expected read_only | mutating | destructive"));
+        return Err(format!(
+            "tools {t:?}: expected read_only | mutating | destructive"
+        ));
     }
     if let Some(b) = d.budget.as_deref() {
         b.parse::<roster::Budget>()?;
     }
     if desk.is_some() && existing.contains(d.name.as_str()) {
-        return Err("exists; a desk cannot replace an agent (agent_propose refuses taken names)".into());
+        return Err(
+            "exists; a desk cannot replace an agent (agent_propose refuses taken names)".into(),
+        );
     }
     Ok(())
 }
@@ -224,8 +273,21 @@ fn validate(d: &AgentDraft, existing: &BTreeSet<String>, desk: Option<&str>) -> 
 /// The card set's OpenUI source and the draft ids, one per agent (`a1-<suffix>`, …).
 /// Every button's `@ToAssistant` message is `agent draft <id>: <choice>`; a name in
 /// `existing` gets *Replace* (`replace`) instead of *Hire* (`hire`), and the card says so.
-pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, desk: Option<&str>) -> (String, Vec<String>) {
-    let ids: Vec<String> = (1..=agents.len()).map(|i| if suffix.is_empty() { format!("a{i}") } else { format!("a{i}-{suffix}") }).collect();
+pub fn source(
+    agents: &[AgentDraft],
+    existing: &BTreeSet<String>,
+    suffix: &str,
+    desk: Option<&str>,
+) -> (String, Vec<String>) {
+    let ids: Vec<String> = (1..=agents.len())
+        .map(|i| {
+            if suffix.is_empty() {
+                format!("a{i}")
+            } else {
+                format!("a{i}-{suffix}")
+            }
+        })
+        .collect();
     let cards: Vec<String> = (1..=agents.len()).map(|i| format!("c{i}")).collect();
     let mut out = format!("root = Stack([intro, {}])\n", cards.join(", "));
     let n = agents.len();
@@ -240,7 +302,10 @@ pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, 
              work until un-paused), or *Discard*. Nothing is written until you press."
         ),
     };
-    out.push_str(&format!("intro = TextContent({}, \"small\")\n", lit(&intro)));
+    out.push_str(&format!(
+        "intro = TextContent({}, \"small\")\n",
+        lit(&intro)
+    ));
     for (i, (d, id)) in agents.iter().zip(&ids).enumerate() {
         let c = &cards[i];
         let exists = existing.contains(d.name.as_str());
@@ -262,7 +327,11 @@ pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, 
             Some(l) if l.is_empty() => meta.push("mcp none".to_owned()),
             Some(l) => meta.push(format!("mcp {}", l.join(", "))),
         }
-        let mut parts = vec![format!("{c}_head"), format!("{c}_charter"), format!("{c}_meta")];
+        let mut parts = vec![
+            format!("{c}_head"),
+            format!("{c}_charter"),
+            format!("{c}_meta"),
+        ];
         if d.capabilities.is_some() {
             parts.push(format!("{c}_caps"));
         }
@@ -277,9 +346,15 @@ pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, 
             lit(&format!("agent draft {id}"))
         ));
         out.push_str(&format!("{c}_charter = TextContent({})\n", lit(&preview)));
-        out.push_str(&format!("{c}_meta = TextContent({}, \"small\")\n", lit(&meta.join(" · "))));
+        out.push_str(&format!(
+            "{c}_meta = TextContent({}, \"small\")\n",
+            lit(&meta.join(" · "))
+        ));
         if let Some(caps) = &d.capabilities {
-            out.push_str(&format!("{c}_caps = TextContent({}, \"small\")\n", lit(&format!("**Hand off to it when:** {}", caps.trim()))));
+            out.push_str(&format!(
+                "{c}_caps = TextContent({}, \"small\")\n",
+                lit(&format!("**Hand off to it when:** {}", caps.trim()))
+            ));
         }
         if exists {
             out.push_str(&format!(
@@ -287,8 +362,14 @@ pub fn source(agents: &[AgentDraft], existing: &BTreeSet<String>, suffix: &str, 
                 lit(&format!("`{0}` is already on the roster — *Replace* overwrites agents/{0}.md with this draft.", d.name))
             ));
         }
-        out.push_str(&format!("{c}_buttons = Buttons([{c}_hire, {c}_paused, {c}_discard])\n"));
-        let (label, choice) = if exists { ("Replace", "replace") } else { ("Hire", "hire") };
+        out.push_str(&format!(
+            "{c}_buttons = Buttons([{c}_hire, {c}_paused, {c}_discard])\n"
+        ));
+        let (label, choice) = if exists {
+            ("Replace", "replace")
+        } else {
+            ("Hire", "hire")
+        };
         out.push_str(&format!(
             "{c}_hire = Button(\"{label}\", Action([@ToAssistant({})]))\n",
             lit(&format!("agent draft {id}: {choice}"))
@@ -328,8 +409,16 @@ mod tests {
     fn card_buttons_carry_the_draft_id_and_choice_and_replace_when_the_name_exists() {
         let existing: BTreeSet<String> = ["cto".to_owned()].into();
         let drafts = vec![
-            AgentDraft { tools: Some("mutating".into()), capabilities: Some("prod incidents".into()), mcp: Some(vec!["gh".into()]), ..draft("ops", "cto") },
-            AgentDraft { mcp: Some(vec![]), ..draft("cto", "theuth") },
+            AgentDraft {
+                tools: Some("mutating".into()),
+                capabilities: Some("prod incidents".into()),
+                mcp: Some(vec!["gh".into()]),
+                ..draft("ops", "cto")
+            },
+            AgentDraft {
+                mcp: Some(vec![]),
+                ..draft("cto", "theuth")
+            },
         ];
         let (src, ids) = source(&drafts, &existing, "ab12", None);
         assert_eq!(ids, ["a1-ab12", "a2-ab12"]);
@@ -337,35 +426,96 @@ mod tests {
         for (id, c) in ids.iter().zip(["c1", "c2"]) {
             assert!(src.contains(&format!("{c}_paused = Button(\"Hire paused\", Action([@ToAssistant(\"agent draft {id}: hire paused\")]), \"secondary\")")), "{src}");
             assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", Action([@ToAssistant(\"agent draft {id}: discard\")]), \"tertiary\", \"destructive\")")), "{src}");
-            assert!(src.contains(&format!("\"agent draft {id}\"")), "the header names the draft");
+            assert!(
+                src.contains(&format!("\"agent draft {id}\"")),
+                "the header names the draft"
+            );
         }
-        assert!(src.contains("c1_hire = Button(\"Hire\", Action([@ToAssistant(\"agent draft a1-ab12: hire\")]))"), "{src}");
+        assert!(
+            src.contains(
+                "c1_hire = Button(\"Hire\", Action([@ToAssistant(\"agent draft a1-ab12: hire\")]))"
+            ),
+            "{src}"
+        );
         assert!(src.contains("c2_hire = Button(\"Replace\", Action([@ToAssistant(\"agent draft a2-ab12: replace\")]))"), "{src}");
         assert!(src.contains("c2 = Card([c2_head, c2_charter, c2_meta, c2_note, c2_buttons])"));
-        assert!(src.contains("`cto` is already on the roster — *Replace* overwrites agents/cto.md"));
+        assert!(
+            src.contains("`cto` is already on the roster — *Replace* overwrites agents/cto.md")
+        );
         assert!(src.contains("c1 = Card([c1_head, c1_charter, c1_meta, c1_caps, c1_buttons])"));
         assert!(src.contains(r#"c1_head = CardHeader("Ops · `ops`", "agent draft a1-ab12")"#));
-        assert!(src.contains(r#"c1_charter = TextContent("You own \"prod\".\nNever deploy on Friday.")"#));
+        assert!(
+            src.contains(
+                r#"c1_charter = TextContent("You own \"prod\".\nNever deploy on Friday.")"#
+            )
+        );
         assert!(src.contains("reports to `cto` · model `default` · effort `default` · tools `mutating` · budget `none` · mcp gh"));
-        assert!(src.contains("budget `none` · mcp none"), "`mcp: []` reads as none: {src}");
+        assert!(
+            src.contains("budget `none` · mcp none"),
+            "`mcp: []` reads as none: {src}"
+        );
         assert!(src.contains("**Hand off to it when:** prod incidents"));
         assert!(src.lines().all(|l| l.contains(" = ")));
         // a desk's set says who proposed and where the approval goes
-        assert!(source(&drafts[..1], &existing, "", Some("cto")).0.contains("proposed by agent `cto`"));
+        assert!(
+            source(&drafts[..1], &existing, "", Some("cto"))
+                .0
+                .contains("proposed by agent `cto`")
+        );
         // a long charter is cut
-        let long = AgentDraft { charter: "x".repeat(PREVIEW + 1), ..draft("ops", "theuth") };
-        assert!(source(&[long], &existing, "", None).0.contains(&format!("{}…", "x".repeat(PREVIEW))));
+        let long = AgentDraft {
+            charter: "x".repeat(PREVIEW + 1),
+            ..draft("ops", "theuth")
+        };
+        assert!(
+            source(&[long], &existing, "", None)
+                .0
+                .contains(&format!("{}…", "x".repeat(PREVIEW)))
+        );
     }
 
     #[test]
     fn approval_maps_choice_and_proposer() {
-        assert_eq!(approval("hire", None), Some(Approval { tool: "agent_put", paused: false }));
-        assert_eq!(approval("replace", None), Some(Approval { tool: "agent_put", paused: false }));
-        assert_eq!(approval("hire paused", None), Some(Approval { tool: "agent_put", paused: true }));
-        assert_eq!(approval("hire", Some("cto")), Some(Approval { tool: "agent_propose", paused: true }));
-        assert_eq!(approval("hire paused", Some("cto")), Some(Approval { tool: "agent_propose", paused: true }));
+        assert_eq!(
+            approval("hire", None),
+            Some(Approval {
+                tool: "agent_put",
+                paused: false
+            })
+        );
+        assert_eq!(
+            approval("replace", None),
+            Some(Approval {
+                tool: "agent_put",
+                paused: false
+            })
+        );
+        assert_eq!(
+            approval("hire paused", None),
+            Some(Approval {
+                tool: "agent_put",
+                paused: true
+            })
+        );
+        assert_eq!(
+            approval("hire", Some("cto")),
+            Some(Approval {
+                tool: "agent_propose",
+                paused: true
+            })
+        );
+        assert_eq!(
+            approval("hire paused", Some("cto")),
+            Some(Approval {
+                tool: "agent_propose",
+                paused: true
+            })
+        );
         assert_eq!(approval("discard", None), None);
-        assert!(then(None).contains("`hire` → `agent_put` with that draft's fields and `paused: false`"));
+        assert!(
+            then(None)
+                .contains("`hire` → `agent_put` with that draft's fields and `paused: false`")
+        );
         assert!(then(None).contains("`hire paused` → `agent_put` with `paused: true`"));
         assert!(then(Some("cto")).contains("→ `agent_propose`"));
     }
@@ -375,14 +525,73 @@ mod tests {
         let existing: BTreeSet<String> = ["cto".to_owned()].into();
         assert!(validate(&draft("ops", "cto"), &existing, None).is_ok());
         assert!(validate(&draft("ops", "theuth"), &existing, None).is_ok());
-        assert!(validate(&draft("theuth", "theuth"), &existing, None).unwrap_err().contains("reserved"));
-        assert!(validate(&draft("ops", "nobody"), &existing, None).unwrap_err().contains("no such agent"));
-        assert!(validate(&AgentDraft { title: " ".into(), ..draft("ops", "cto") }, &existing, None).is_err());
-        assert!(validate(&AgentDraft { charter: String::new(), ..draft("ops", "cto") }, &existing, None).is_err());
-        assert!(validate(&AgentDraft { tools: Some("all".into()), ..draft("ops", "cto") }, &existing, None).is_err());
-        assert!(validate(&AgentDraft { budget: Some("lots".into()), ..draft("ops", "cto") }, &existing, None).is_err());
-        assert!(validate(&draft("cto", "theuth"), &existing, None).is_ok(), "the user may replace");
-        assert!(validate(&draft("cto", "theuth"), &existing, Some("ops")).unwrap_err().contains("cannot replace"));
-        assert!(AgentName::new("Ops").is_err() && AgentName::new("").is_err() && AgentName::new(&"a".repeat(33)).is_err());
+        assert!(
+            validate(&draft("theuth", "theuth"), &existing, None)
+                .unwrap_err()
+                .contains("reserved")
+        );
+        assert!(
+            validate(&draft("ops", "nobody"), &existing, None)
+                .unwrap_err()
+                .contains("no such agent")
+        );
+        assert!(
+            validate(
+                &AgentDraft {
+                    title: " ".into(),
+                    ..draft("ops", "cto")
+                },
+                &existing,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            validate(
+                &AgentDraft {
+                    charter: String::new(),
+                    ..draft("ops", "cto")
+                },
+                &existing,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            validate(
+                &AgentDraft {
+                    tools: Some("all".into()),
+                    ..draft("ops", "cto")
+                },
+                &existing,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            validate(
+                &AgentDraft {
+                    budget: Some("lots".into()),
+                    ..draft("ops", "cto")
+                },
+                &existing,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            validate(&draft("cto", "theuth"), &existing, None).is_ok(),
+            "the user may replace"
+        );
+        assert!(
+            validate(&draft("cto", "theuth"), &existing, Some("ops"))
+                .unwrap_err()
+                .contains("cannot replace")
+        );
+        assert!(
+            AgentName::new("Ops").is_err()
+                && AgentName::new("").is_err()
+                && AgentName::new(&"a".repeat(33)).is_err()
+        );
     }
 }

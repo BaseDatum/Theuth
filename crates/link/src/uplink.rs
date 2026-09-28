@@ -311,6 +311,8 @@ mod liveness_tests {
     /// A relay that completes `NK` and then holds the socket open without ever polling it — a
     /// replaced backend behind a proxy as the harness experiences it: ESTABLISHED, silent, no pongs
     /// (an unpolled tungstenite server never auto-answers a `Ping`).
+    // The header callback's `Err` is tungstenite's `ErrorResponse`, fixed by its `Callback` trait.
+    #[allow(clippy::result_large_err)]
     async fn silent_relay(harness: &Identity) -> (String, tokio::sync::oneshot::Receiver<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -359,10 +361,13 @@ mod liveness_tests {
     /// "connected" forever while every device sees the harness offline.
     #[tokio::test]
     async fn a_silent_relay_ends_the_uplink() {
-        let kp = Builder::new(params("NK").unwrap()).generate_keypair().unwrap();
+        let kp = Builder::new(params("NK").unwrap())
+            .generate_keypair()
+            .unwrap();
         let identity = Identity::from_private(kp.private.as_slice().try_into().unwrap());
         let (relay, registered) = silent_relay(&identity).await;
-        let dir = std::env::temp_dir().join(format!("theuth-link-uplink-{}", rand::random::<u64>()));
+        let dir =
+            std::env::temp_dir().join(format!("theuth-link-uplink-{}", rand::random::<u64>()));
         let ctx = Ctx::new(
             runtime::Runtime::new(Default::default(), dir.clone()),
             State {
@@ -395,12 +400,17 @@ mod liveness_tests {
         // so the ping and pong timers fire without a 30 s wall-clock wait.
         tokio::time::pause();
         let started = tokio::time::Instant::now();
-        let result = tokio::time::timeout(PING_EVERY + PONG_TIMEOUT + Duration::from_secs(5), uplink)
-            .await
-            .expect("run_once returned")
-            .unwrap();
+        let result =
+            tokio::time::timeout(PING_EVERY + PONG_TIMEOUT + Duration::from_secs(5), uplink)
+                .await
+                .expect("run_once returned")
+                .unwrap();
         let err = result.expect_err("a silent relay is an error, not a clean close");
         assert!(err.to_string().contains("silent"), "{err}");
-        assert!(started.elapsed() >= PING_EVERY + PONG_TIMEOUT, "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() >= PING_EVERY + PONG_TIMEOUT,
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

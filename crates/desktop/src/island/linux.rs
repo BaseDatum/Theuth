@@ -11,8 +11,10 @@ use tauri::WebviewWindow;
 /// Re-assert the EWMH states the window config already asks for (`alwaysOnTop`, `skipTaskbar`) —
 /// cheap, and it survives a window manager that only reads them after map.
 pub fn init(win: &WebviewWindow) -> anyhow::Result<()> {
-    win.set_always_on_top(true).context("island set_always_on_top")?;
-    win.set_skip_taskbar(true).context("island set_skip_taskbar")?;
+    win.set_always_on_top(true)
+        .context("island set_always_on_top")?;
+    win.set_skip_taskbar(true)
+        .context("island set_skip_taskbar")?;
     Ok(())
 }
 

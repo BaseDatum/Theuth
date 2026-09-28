@@ -225,7 +225,11 @@ mod imp {
     }
 
     fn check(ok: windows_sys::core::BOOL) -> io::Result<()> {
-        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     #[derive(Clone, Debug)]
@@ -378,7 +382,15 @@ mod tests {
         ]);
         hide_console(&mut ps);
         let out = ps.output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0", "child reports a console window");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "0",
+            "child reports a console window"
+        );
     }
 }

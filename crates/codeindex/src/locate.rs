@@ -82,7 +82,11 @@ pub fn text_sha(text: &str) -> String {
 /// path that does not exist can still be told apart from one that escapes.
 fn lexical_rel(path: &str) -> anyhow::Result<&Path> {
     let p = Path::new(path);
-    if path.is_empty() || p.is_absolute() || path.contains("://") || !p.components().all(|c| matches!(c, Component::Normal(_))) {
+    if path.is_empty()
+        || p.is_absolute()
+        || path.contains("://")
+        || !p.components().all(|c| matches!(c, Component::Normal(_)))
+    {
         bail!("path {path:?} is not root-relative");
     }
     Ok(p)
@@ -95,12 +99,19 @@ fn read_lines(root: &Path, rel: &Path) -> anyhow::Result<Option<Vec<String>>> {
     if !full.is_file() {
         return Ok(None);
     }
-    let canon = full.canonicalize().with_context(|| format!("canonicalize {}", full.display()))?;
+    let canon = full
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", full.display()))?;
     if canon.strip_prefix(root).is_err() {
         bail!("{} is outside {}", rel.display(), root.display());
     }
     let bytes = std::fs::read(&canon).with_context(|| format!("read {}", canon.display()))?;
-    Ok(Some(String::from_utf8_lossy(&bytes).lines().map(str::to_owned).collect()))
+    Ok(Some(
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+    ))
 }
 
 /// `start..=end` of `lines`, or `None` past EOF.
@@ -124,14 +135,23 @@ pub async fn locate(ix: &Arc<Codeindex>, m: Locate) -> anyhow::Result<Vec<Locate
         bail!("root {} is not a git top-level", root.display());
     }
     // Every path is checked before any file is read: one escape fails the batch.
-    let rels: Vec<&Path> = m.anchors.iter().map(|a| lexical_rel(&a.path)).collect::<anyhow::Result<_>>()?;
+    let rels: Vec<&Path> = m
+        .anchors
+        .iter()
+        .map(|a| lexical_rel(&a.path))
+        .collect::<anyhow::Result<_>>()?;
     // The index is only needed to find a moved definition; opened once, lazily.
     let mut ri = None;
     let mut out = Vec::with_capacity(m.anchors.len());
     for (a, rel) in m.anchors.iter().zip(rels) {
         let req_start = a.start.unwrap_or(1);
         let req_end = a.end.unwrap_or(req_start);
-        let missing = || Located { status: LocateStatus::Missing, start: a.start.unwrap_or(0), end: a.end.or(a.start).unwrap_or(0), text: None };
+        let missing = || Located {
+            status: LocateStatus::Missing,
+            start: a.start.unwrap_or(0),
+            end: a.end.or(a.start).unwrap_or(0),
+            text: None,
+        };
         let Some(lines) = read_lines(&root, rel)? else {
             out.push(missing());
             continue;
@@ -147,12 +167,22 @@ pub async fn locate(ix: &Arc<Codeindex>, m: Locate) -> anyhow::Result<Vec<Locate
             (None, _) => false,
         };
         if same {
-            out.push(Located { status: LocateStatus::Same, start, end, text });
+            out.push(Located {
+                status: LocateStatus::Same,
+                start,
+                end,
+                text,
+            });
             continue;
         }
         let Some(symbol) = a.symbol.as_deref().filter(|s| !s.is_empty()) else {
             out.push(match text {
-                Some(t) => Located { status: LocateStatus::Changed, start, end, text: Some(t) },
+                Some(t) => Located {
+                    status: LocateStatus::Changed,
+                    start,
+                    end,
+                    text: Some(t),
+                },
                 None => missing(),
             });
             continue;
@@ -178,11 +208,26 @@ pub async fn locate(ix: &Arc<Codeindex>, m: Locate) -> anyhow::Result<Vec<Locate
             (Some(d), _) if d.line_start != i64::from(start) => {
                 let new_start = d.line_start as u32;
                 let new_end = (new_start + (end - start)).min(lines.len() as u32);
-                Located { status: LocateStatus::Moved, start: new_start, end: new_end, text: slice(&lines, new_start, new_end) }
+                Located {
+                    status: LocateStatus::Moved,
+                    start: new_start,
+                    end: new_end,
+                    text: slice(&lines, new_start, new_end),
+                }
             }
-            (Some(_), Some(t)) => Located { status: LocateStatus::Changed, start, end, text: Some(t) },
+            (Some(_), Some(t)) => Located {
+                status: LocateStatus::Changed,
+                start,
+                end,
+                text: Some(t),
+            },
             // Symbol not indexed yet: the text differs, that much is true.
-            (None, Some(t)) if stale => Located { status: LocateStatus::Changed, start, end, text: Some(t) },
+            (None, Some(t)) if stale => Located {
+                status: LocateStatus::Changed,
+                start,
+                end,
+                text: Some(t),
+            },
             _ => missing(),
         });
     }
@@ -203,7 +248,10 @@ mod tests {
 
     #[test]
     fn sha_is_lowercase_hex_of_joined_lines() {
-        assert_eq!(text_sha("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            text_sha("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         let lines: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         assert_eq!(slice(&lines, 2, 3).as_deref(), Some("b\nc"));
         assert_eq!(slice(&lines, 3, 4), None);

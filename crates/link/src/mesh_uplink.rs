@@ -54,10 +54,18 @@ pub struct MeshUplink {
 impl MeshUplink {
     /// Spawn [`supervise`] for `identity` (the vault's `mesh/device_key`) at
     /// `relay`; `token` is the caller's (a child of the plugin's shutdown).
-    pub fn start(ctx: Arc<Ctx>, identity: Identity, relay: String, token: CancellationToken) -> Self {
+    pub fn start(
+        ctx: Arc<Ctx>,
+        identity: Identity,
+        relay: String,
+        token: CancellationToken,
+    ) -> Self {
         let (serve, rx) = watch::channel(true);
         tokio::spawn(supervise(ctx, identity, relay, token.clone(), rx));
-        Self { cancel: token, serve }
+        Self {
+            cancel: token,
+            serve,
+        }
     }
 
     /// Lease lost or shutdown: stop serving and never redial. The supervisor
@@ -151,9 +159,14 @@ async fn run_once(
     cancel: &CancellationToken,
     serve: &watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let url = format!("{}/h/{}?role=harness", relay.trim_end_matches('/'), identity.id);
+    let url = format!(
+        "{}/h/{}?role=harness",
+        relay.trim_end_matches('/'),
+        identity.id
+    );
     let mut req = url.as_str().into_client_request()?;
-    req.headers_mut().insert("Sec-WebSocket-Protocol", PROTOCOL.parse()?);
+    req.headers_mut()
+        .insert("Sec-WebSocket-Protocol", PROTOCOL.parse()?);
     let (ws, _) = tokio::select! {
         _ = cancel.cancelled() => return Ok(()),
         r = tokio::time::timeout(DIAL_TIMEOUT, tokio_tungstenite::connect_async(req)) => r??,
@@ -268,7 +281,11 @@ async fn run_once(
     set_connected(ctx, false, moved.then_some(&out)).await;
     drop(out);
     let mut writer = writer;
-    if !moved || tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
+    if !moved
+        || tokio::time::timeout(Duration::from_secs(2), &mut writer)
+            .await
+            .is_err()
+    {
         // Nothing to flush — or the CLOSE 5 frames had their chance (the writer
         // ends once every conn task dropped its sender clone).
         writer.abort();
@@ -315,12 +332,17 @@ pub(crate) mod testing {
     /// A `Ctx` over [`state`] with a throwaway runtime.
     pub fn ctx(relay: &str, engine: Option<Identity>, mesh: Option<Identity>) -> Arc<Ctx> {
         let dir = std::env::temp_dir().join(format!("theuth-link-test-{}", rand::random::<u64>()));
-        Ctx::new(runtime::Runtime::new(Default::default(), dir), state(relay, engine, mesh))
+        Ctx::new(
+            runtime::Runtime::new(Default::default(), dir),
+            state(relay, engine, mesh),
+        )
     }
 
     /// A fresh X25519 identity.
     pub fn identity() -> Identity {
-        let kp = Builder::new(params("NK").unwrap()).generate_keypair().unwrap();
+        let kp = Builder::new(params("NK").unwrap())
+            .generate_keypair()
+            .unwrap();
         Identity::from_private(kp.private.as_slice().try_into().unwrap())
     }
 
@@ -363,7 +385,9 @@ pub(crate) mod testing {
             let (tx, events) = mpsc::unbounded_channel();
             tokio::spawn(async move {
                 loop {
-                    let Ok((tcp, _)) = listener.accept().await else { return };
+                    let Ok((tcp, _)) = listener.accept().await else {
+                        return;
+                    };
                     tokio::spawn(serve(tcp, identities.clone(), tx.clone()));
                 }
             });
@@ -401,20 +425,32 @@ pub(crate) mod testing {
         }
     }
 
-    async fn serve(tcp: tokio::net::TcpStream, identities: Vec<Identity>, tx: mpsc::UnboundedSender<Event>) {
+    // The header callback's `Err` is tungstenite's `ErrorResponse`, fixed by its `Callback` trait.
+    #[allow(clippy::result_large_err)]
+    async fn serve(
+        tcp: tokio::net::TcpStream,
+        identities: Vec<Identity>,
+        tx: mpsc::UnboundedSender<Event>,
+    ) {
         let mut path = String::new();
         let mut ws = tokio_tungstenite::accept_hdr_async(
             tcp,
             |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
              mut res: tokio_tungstenite::tungstenite::handshake::server::Response| {
                 path = req.uri().to_string();
-                res.headers_mut().insert("Sec-WebSocket-Protocol", PROTOCOL.parse().unwrap());
+                res.headers_mut()
+                    .insert("Sec-WebSocket-Protocol", PROTOCOL.parse().unwrap());
                 Ok(res)
             },
         )
         .await
         .unwrap();
-        let id = path.trim_start_matches("/h/").split('?').next().unwrap_or_default().to_owned();
+        let id = path
+            .trim_start_matches("/h/")
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         let Some(identity) = identities.iter().find(|i| i.id == id) else {
             panic!("unknown harness id {id} on {path}");
         };
@@ -462,7 +498,10 @@ mod tests {
     async fn stop_ends_the_supervisor_without_redial() {
         let (serve, rx) = watch::channel(true);
         let cancel = CancellationToken::new();
-        let up = MeshUplink { cancel: cancel.clone(), serve };
+        let up = MeshUplink {
+            cancel: cancel.clone(),
+            serve,
+        };
         assert!(up.serving());
         up.stop();
         assert!(!up.serving());
@@ -471,9 +510,12 @@ mod tests {
         // A fresh supervisor with the gate already down returns at once.
         let ctx = ctx("ws://x", None, None);
         let id = Identity::from_private([1u8; 32]);
-        tokio::time::timeout(Duration::from_secs(1), supervise(ctx, id, "ws://x".into(), cancel, rx))
-            .await
-            .expect("no redial once stopped");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            supervise(ctx, id, "ws://x".into(), cancel, rx),
+        )
+        .await
+        .expect("no redial once stopped");
     }
 
     /// A registered mesh uplink with a device conn open: `stop` (the lease
@@ -485,7 +527,12 @@ mod tests {
         let mesh = identity();
         let mut relay = FakeRelay::start(vec![mesh.clone()]).await;
         let ctx = ctx(&relay.url, None, Some(mesh.clone()));
-        let up = MeshUplink::start(ctx.clone(), mesh.clone(), relay.url.clone(), CancellationToken::new());
+        let up = MeshUplink::start(
+            ctx.clone(),
+            mesh.clone(),
+            relay.url.clone(),
+            CancellationToken::new(),
+        );
 
         assert_eq!(relay.next().await, Event::Registered(mesh.id.clone()));
         until(|| ctx.lock().mesh.as_ref().is_some_and(|m| m.connected)).await;
@@ -493,9 +540,14 @@ mod tests {
 
         up.stop();
         let skipped = relay
-            .expect(|e| matches!(e, Event::Frame(_, OP_CLOSE, 1, p) if p.as_ref() == [CLOSE_HUB_MOVED]))
+            .expect(
+                |e| matches!(e, Event::Frame(_, OP_CLOSE, 1, p) if p.as_ref() == [CLOSE_HUB_MOVED]),
+            )
             .await;
-        assert!(skipped.is_empty(), "CLOSE 5 is the only goodbye: {skipped:?}");
+        assert!(
+            skipped.is_empty(),
+            "CLOSE 5 is the only goodbye: {skipped:?}"
+        );
         assert_eq!(relay.next().await, Event::Closed(mesh.id.clone()));
         assert!(ctx.lock().mesh_conns.is_empty());
         assert!(!ctx.lock().mesh.as_ref().unwrap().connected);

@@ -31,7 +31,10 @@ pub fn load_or_create(data_dir: &Path, ks: KeyStore) -> anyhow::Result<([u8; 32]
             Ok(k) => Ok((k, "keychain")),
             Err(e) => match fallback_reason(&e) {
                 Some(reason) => {
-                    tracing::warn!("{reason}; vault key in {} (mode 0600)", data_dir.join(FILE).display());
+                    tracing::warn!(
+                        "{reason}; vault key in {} (mode 0600)",
+                        data_dir.join(FILE).display()
+                    );
                     Ok((file(data_dir)?, "file"))
                 }
                 None => Err(e),
@@ -81,9 +84,9 @@ fn keychain(data_dir: &Path) -> anyhow::Result<[u8; 32]> {
     let account = account(data_dir);
     let target = format!("{account}.{SERVICE}");
     match cred::read(&target) {
-        Ok(b64) => decode(&b64).with_context(|| {
-            format!("credential {target} is not a 32-byte base64 key")
-        }),
+        Ok(b64) => {
+            decode(&b64).with_context(|| format!("credential {target} is not a 32-byte base64 key"))
+        }
         Err(keyring::Error::NoEntry) => {
             let key: [u8; 32] = rand::random();
             cred::write(&target, &account, &B64.encode(key))?;
@@ -164,7 +167,10 @@ mod cred {
             Type: CRED_TYPE_GENERIC,
             TargetName: target.as_mut_ptr(),
             Comment: comment.as_mut_ptr(),
-            LastWritten: FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 },
+            LastWritten: FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            },
             CredentialBlobSize: blob.len() as u32,
             CredentialBlob: blob.as_mut_ptr(),
             Persist: CRED_PERSIST_LOCAL_MACHINE,
@@ -217,10 +223,9 @@ mod tests {
     /// a corrupt item does not — that would silently mint a second key.
     #[test]
     fn fallback_only_for_store_errors() {
-        let store: anyhow::Error = keyring::Error::NoStorageAccess(Box::new(
-            std::io::Error::from_raw_os_error(1312),
-        ))
-        .into();
+        let store: anyhow::Error =
+            keyring::Error::NoStorageAccess(Box::new(std::io::Error::from_raw_os_error(1312)))
+                .into();
         let reason = fallback_reason(&store).expect("store error falls back");
         assert!(reason.contains(BACKEND), "{reason}");
         assert!(reason.contains("1312"), "{reason}");

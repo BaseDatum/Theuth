@@ -34,7 +34,11 @@ mod imp {
     }
 
     pub fn open(target: &OsStr) -> io::Result<()> {
-        let mut cmd = Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" });
+        let mut cmd = Command::new(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        });
         cmd.arg(target);
         detached(cmd)
     }
@@ -75,7 +79,11 @@ mod imp {
             )
         };
         // Documented: a value above 32 is success; below, an error code.
-        if h as usize > 32 { Ok(()) } else { Err(io::Error::last_os_error()) }
+        if h as usize > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
     }
 
     pub fn open_app(name: &str) -> io::Result<()> {

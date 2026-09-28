@@ -9,8 +9,8 @@ use std::sync::Arc;
 use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
-use tools::{Retention, SessionResources};
 pub use tools::{CloseAck, CloseTree, TreeOpened};
+use tools::{Retention, SessionResources};
 
 use crate::private::Scratch;
 use crate::store::Store;

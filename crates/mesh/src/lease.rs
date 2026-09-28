@@ -100,7 +100,15 @@ pub fn class_rank(c: EngineClass) -> u8 {
 }
 
 /// Sort key: larger is better except `id`, which breaks ties ascending.
-fn key(c: &Candidate) -> (bool, u8, u8, std::cmp::Reverse<u64>, std::cmp::Reverse<String>) {
+fn key(
+    c: &Candidate,
+) -> (
+    bool,
+    u8,
+    u8,
+    std::cmp::Reverse<u64>,
+    std::cmp::Reverse<String>,
+) {
     (
         c.hub_pref == HubPref::Prefer,
         bucket(c.availability_30d),
@@ -122,8 +130,11 @@ pub fn elect(
     probation_ms: u64,
     handover_ms: u64,
 ) -> Option<EngineId> {
-    let mut ranked: Vec<&Candidate> = candidates.iter().filter(|c| c.hub_pref != HubPref::Never).collect();
-    ranked.sort_by(|a, b| key(b).cmp(&key(a)));
+    let mut ranked: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| c.hub_pref != HubPref::Never)
+        .collect();
+    ranked.sort_by_key(|c| std::cmp::Reverse(key(c)));
     let incumbent = incumbent.filter(|id| ranked.iter().any(|c| &c.id == *id));
     let Some(inc) = incumbent else {
         return ranked.first().map(|c| c.id.clone());
@@ -178,13 +189,29 @@ mod tests {
     fn follower_tracks_the_lease() {
         let mut f = Follower::default();
         assert!(f.holding, "duties on until the mesh says otherwise");
-        assert_eq!(f.observe(&lease(Some("b"))), None, "unknown self: remembered, nothing moves");
+        assert_eq!(
+            f.observe(&lease(Some("b"))),
+            None,
+            "unknown self: remembered, nothing moves"
+        );
         assert!(f.holding);
-        assert_eq!(f.set_self("a".into()), Some(false), "self known: someone else holds");
+        assert_eq!(
+            f.set_self("a".into()),
+            Some(false),
+            "self known: someone else holds"
+        );
         assert_eq!(f.observe(&lease(Some("a"))), Some(true));
-        assert_eq!(f.observe(&lease(Some("a"))), None, "same holder again is no change");
+        assert_eq!(
+            f.observe(&lease(Some("a"))),
+            None,
+            "same holder again is no change"
+        );
         assert_eq!(f.observe(&lease(Some("b"))), Some(false));
-        assert_eq!(f.observe(&lease(None)), None, "nobody after someone else: still lost");
+        assert_eq!(
+            f.observe(&lease(None)),
+            None,
+            "nobody after someone else: still lost"
+        );
         assert_eq!(f.observe(&lease(Some("a"))), Some(true));
     }
 
@@ -193,22 +220,50 @@ mod tests {
         let mut f = Follower::default();
         assert_eq!(f.set_self("a".into()), None);
         assert!(f.holding);
-        assert_eq!(f.observe(&lease(None)), Some(false), "holder None is a loss");
+        assert_eq!(
+            f.observe(&lease(None)),
+            Some(false),
+            "holder None is a loss"
+        );
         assert_eq!(f.observe(&lease(None)), None);
     }
 
     #[test]
     fn server_beats_laptop_regardless_of_id() {
-        let c = [cand("a-laptop", EngineClass::Laptop), cand("z-server", EngineClass::Server)];
+        let c = [
+            cand("a-laptop", EngineClass::Laptop),
+            cand("z-server", EngineClass::Server),
+        ];
         assert_eq!(elect(&c, None, NOW, PROBATION, HANDOVER), id("z-server"));
-        let c = [cand("z-laptop", EngineClass::Laptop), cand("a-server", EngineClass::Server)];
+        let c = [
+            cand("z-laptop", EngineClass::Laptop),
+            cand("a-server", EngineClass::Server),
+        ];
         assert_eq!(elect(&c, None, NOW, PROBATION, HANDOVER), id("a-server"));
         // Container ranks as server; equal class → older uptime, then id.
         let mut older = cand("b", EngineClass::Container);
         older.uptime_since_ms -= HOUR;
-        assert_eq!(elect(&[cand("a", EngineClass::Server), older], None, NOW, PROBATION, HANDOVER), id("b"));
         assert_eq!(
-            elect(&[cand("b", EngineClass::Server), cand("a", EngineClass::Server)], None, NOW, PROBATION, HANDOVER),
+            elect(
+                &[cand("a", EngineClass::Server), older],
+                None,
+                NOW,
+                PROBATION,
+                HANDOVER
+            ),
+            id("b")
+        );
+        assert_eq!(
+            elect(
+                &[
+                    cand("b", EngineClass::Server),
+                    cand("a", EngineClass::Server)
+                ],
+                None,
+                NOW,
+                PROBATION,
+                HANDOVER
+            ),
             id("a")
         );
     }
@@ -219,7 +274,10 @@ mod tests {
         laptop.hub_pref = HubPref::Prefer;
         laptop.availability_30d = 0.5;
         let c = [cand("server", EngineClass::Server), laptop];
-        assert_eq!(elect(&c, id("server").as_ref(), NOW, PROBATION, HANDOVER), id("laptop"));
+        assert_eq!(
+            elect(&c, id("server").as_ref(), NOW, PROBATION, HANDOVER),
+            id("laptop")
+        );
         // Never is out even when alone.
         let mut never = cand("never", EngineClass::Server);
         never.hub_pref = HubPref::Never;
@@ -232,10 +290,22 @@ mod tests {
         newcomer.first_seen_ms = NOW - HOUR;
         let c = [cand("laptop", EngineClass::Laptop), newcomer.clone()];
         // With an incumbent the newcomer waits; without one it wins outright.
-        assert_eq!(elect(&c, id("laptop").as_ref(), NOW, PROBATION, HANDOVER), id("laptop"));
+        assert_eq!(
+            elect(&c, id("laptop").as_ref(), NOW, PROBATION, HANDOVER),
+            id("laptop")
+        );
         assert_eq!(elect(&c, None, NOW, PROBATION, HANDOVER), id("server"));
         // Probation over → takes it.
-        assert_eq!(elect(&c, id("laptop").as_ref(), NOW + PROBATION, PROBATION, HANDOVER), id("server"));
+        assert_eq!(
+            elect(
+                &c,
+                id("laptop").as_ref(),
+                NOW + PROBATION,
+                PROBATION,
+                HANDOVER
+            ),
+            id("server")
+        );
     }
 
     #[test]
@@ -243,10 +313,25 @@ mod tests {
         let mut better = cand("server", EngineClass::Server);
         better.connected_since_ms = NOW - 60_000;
         let c = [cand("desktop", EngineClass::Desktop), better];
-        assert_eq!(elect(&c, id("desktop").as_ref(), NOW, PROBATION, HANDOVER), id("desktop"));
-        assert_eq!(elect(&c, id("desktop").as_ref(), NOW + HANDOVER, PROBATION, HANDOVER), id("server"));
+        assert_eq!(
+            elect(&c, id("desktop").as_ref(), NOW, PROBATION, HANDOVER),
+            id("desktop")
+        );
+        assert_eq!(
+            elect(
+                &c,
+                id("desktop").as_ref(),
+                NOW + HANDOVER,
+                PROBATION,
+                HANDOVER
+            ),
+            id("server")
+        );
         // An incumbent that is gone (not a candidate) yields at once.
-        assert_eq!(elect(&c[1..], id("desktop").as_ref(), NOW, PROBATION, HANDOVER), id("server"));
+        assert_eq!(
+            elect(&c[1..], id("desktop").as_ref(), NOW, PROBATION, HANDOVER),
+            id("server")
+        );
     }
 
     #[test]

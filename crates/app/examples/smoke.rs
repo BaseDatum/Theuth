@@ -245,7 +245,10 @@ fn press(
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber_init();
     let mut argv = std::env::args().skip(1);
-    let data_dir = match argv.next().or_else(|| std::env::var("THEUTH_DATA_DIR").ok()) {
+    let data_dir = match argv
+        .next()
+        .or_else(|| std::env::var("THEUTH_DATA_DIR").ok())
+    {
         Some(d) => std::path::PathBuf::from(d),
         None => std::env::temp_dir().join(format!("theuth-app-smoke-{}", std::process::id())),
     };

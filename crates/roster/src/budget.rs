@@ -79,7 +79,11 @@ mod tests {
         assert_eq!(crossed(&b, 8.0, 9.9), None, "warned already");
         assert_eq!(crossed(&b, 9.9, 10.0), Some(Threshold::Cap));
         assert_eq!(crossed(&b, 10.0, 12.0), None, "capped already");
-        assert_eq!(crossed(&b, 0.0, 11.0), Some(Threshold::Cap), "one jump past both: cap");
+        assert_eq!(
+            crossed(&b, 0.0, 11.0),
+            Some(Threshold::Cap),
+            "one jump past both: cap"
+        );
         assert_eq!(crossed(&Budget::None, 0.0, 1e9), None);
     }
 

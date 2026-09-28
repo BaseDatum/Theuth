@@ -67,7 +67,8 @@ pub async fn pair(client: &WsClient, wait_for_parent: bool) -> anyhow::Result<()
                     .pointer("/device/name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("device");
-                let is_theuth = ev.pointer("/device/platform").and_then(|p| p.as_str()) == Some("theuth");
+                let is_theuth =
+                    ev.pointer("/device/platform").and_then(|p| p.as_str()) == Some("theuth");
                 if wait_for_parent && is_theuth {
                     println!("paired to {name} as a node");
                     return Ok(());

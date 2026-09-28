@@ -434,7 +434,11 @@ impl Knowledge {
                 let bytes = repo
                     .read_at(&rel, oid)?
                     .with_context(|| format!("{id} is not in commit {oid}"))?;
-                Ok((oid, seconds, String::from_utf8(bytes).context("concept is not UTF-8")?))
+                Ok((
+                    oid,
+                    seconds,
+                    String::from_utf8(bytes).context("concept is not UTF-8")?,
+                ))
             })
             .await??
         };
@@ -1070,7 +1074,7 @@ mod tests {
                 .await
                 .hits
                 .iter()
-                .any(|h| h.commit == merge.to_string()),
+                .any(|h| h.commit == merge),
             "a merge with no first-parent change has no record"
         );
 

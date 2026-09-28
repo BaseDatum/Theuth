@@ -87,10 +87,7 @@ impl SubscriptionClientT for Local {
         Err(Error::Custom("subscribe to the bus in-process".into()))
     }
 
-    async fn subscribe_to_method<'a, Notif>(
-        &self,
-        _method: &'a str,
-    ) -> Result<Subscription<Notif>, Error>
+    async fn subscribe_to_method<Notif>(&self, _method: &str) -> Result<Subscription<Notif>, Error>
     where
         Notif: DeserializeOwned,
     {
@@ -107,92 +104,71 @@ pub enum Engine {
 }
 
 impl ClientT for Engine {
-    fn notification<Params>(
-        &self,
-        method: &str,
-        params: Params,
-    ) -> impl Future<Output = Result<(), Error>> + Send
+    async fn notification<Params>(&self, method: &str, params: Params) -> Result<(), Error>
     where
         Params: ToRpcParams + Send,
     {
-        async move {
-            match self {
-                Engine::Local(l) => l.notification(method, params).await,
-                Engine::Remote(r) => r.notification(method, params).await,
-            }
+        match self {
+            Engine::Local(l) => l.notification(method, params).await,
+            Engine::Remote(r) => r.notification(method, params).await,
         }
     }
 
-    fn request<R, Params>(
-        &self,
-        method: &str,
-        params: Params,
-    ) -> impl Future<Output = Result<R, Error>> + Send
+    async fn request<R, Params>(&self, method: &str, params: Params) -> Result<R, Error>
     where
         R: DeserializeOwned,
         Params: ToRpcParams + Send,
     {
-        async move {
-            match self {
-                Engine::Local(l) => l.request(method, params).await,
-                Engine::Remote(r) => r.request(method, params).await,
-            }
+        match self {
+            Engine::Local(l) => l.request(method, params).await,
+            Engine::Remote(r) => r.request(method, params).await,
         }
     }
 
-    fn batch_request<'a, R>(
+    async fn batch_request<'a, R>(
         &self,
         batch: BatchRequestBuilder<'a>,
-    ) -> impl Future<Output = Result<BatchResponse<'a, R>, Error>> + Send
+    ) -> Result<BatchResponse<'a, R>, Error>
     where
         R: DeserializeOwned + std::fmt::Debug + 'a,
     {
-        async move {
-            match self {
-                Engine::Local(l) => l.batch_request(batch).await,
-                Engine::Remote(r) => r.batch_request(batch).await,
-            }
+        match self {
+            Engine::Local(l) => l.batch_request(batch).await,
+            Engine::Remote(r) => r.batch_request(batch).await,
         }
     }
 }
 
 impl SubscriptionClientT for Engine {
-    fn subscribe<'a, Notif, Params>(
+    async fn subscribe<'a, Notif, Params>(
         &self,
         subscribe_method: &'a str,
         params: Params,
         unsubscribe_method: &'a str,
-    ) -> impl Future<Output = Result<Subscription<Notif>, Error>> + Send
+    ) -> Result<Subscription<Notif>, Error>
     where
         Params: ToRpcParams + Send,
         Notif: DeserializeOwned,
     {
-        async move {
-            match self {
-                Engine::Local(l) => {
-                    l.subscribe(subscribe_method, params, unsubscribe_method)
-                        .await
-                }
-                Engine::Remote(r) => {
-                    r.subscribe(subscribe_method, params, unsubscribe_method)
-                        .await
-                }
+        match self {
+            Engine::Local(l) => {
+                l.subscribe(subscribe_method, params, unsubscribe_method)
+                    .await
+            }
+            Engine::Remote(r) => {
+                r.subscribe(subscribe_method, params, unsubscribe_method)
+                    .await
             }
         }
     }
 
-    fn subscribe_to_method<'a, Notif>(
-        &self,
-        method: &'a str,
-    ) -> impl Future<Output = Result<Subscription<Notif>, Error>> + Send
+    async fn subscribe_to_method<Notif>(&self, method: &str) -> Result<Subscription<Notif>, Error>
     where
         Notif: DeserializeOwned,
     {
-        async move {
-            match self {
-                Engine::Local(l) => l.subscribe_to_method(method).await,
-                Engine::Remote(r) => r.subscribe_to_method(method).await,
-            }
+        match self {
+            Engine::Local(l) => l.subscribe_to_method(method).await,
+            Engine::Remote(r) => r.subscribe_to_method(method).await,
         }
     }
 }

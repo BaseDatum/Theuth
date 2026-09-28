@@ -73,14 +73,21 @@ fn fail(step: &str, out: &ExecOutput) -> anyhow::Error {
 /// The sequence. Idempotent per step: a present `t` is kept (unless
 /// `spec.local_t` is set), an installed service is re-installed in place, an
 /// already-paired engine is paired again (mutual pairing is idempotent).
-pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progress) -> anyhow::Result<Done> {
+pub async fn run(
+    sb: &dyn Sandbox,
+    spec: &Spec,
+    join: &dyn MeshJoin,
+    out: &Progress,
+) -> anyhow::Result<Done> {
     out.say("create", sb.kind());
     let h = sb.create(out).await?;
 
     let caps = sb.capabilities(&h).await?;
     out.say("detect", format!("{} {}", caps.os, caps.arch));
     if caps.os == "windows" {
-        anyhow::bail!("detect: windows targets are not brought up by this version — install t there and run `t mesh pair`");
+        anyhow::bail!(
+            "detect: windows targets are not brought up by this version — install t there and run `t mesh pair`"
+        );
     }
 
     match caps.daemon {
@@ -89,7 +96,8 @@ pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progr
             let files: Vec<(String, Bytes)> = match &spec.local_t {
                 Some(p) => {
                     out.say("binary", format!("local {}", p.display()));
-                    let b = std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
+                    let b =
+                        std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
                     vec![("t".into(), Bytes::from(b))]
                 }
                 None => {
@@ -103,7 +111,8 @@ pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progr
                 }
             };
             for (name, bytes) in files {
-                sb.put(&h, &format!("{BIN_DIR}/{name}"), bytes, 0o755).await?;
+                sb.put(&h, &format!("{BIN_DIR}/{name}"), bytes, 0o755)
+                    .await?;
                 out.say("binary", format!("installed {BIN_DIR}/{name}"));
             }
             // Any one-shot runs `first_run` (main's prologue) and proves the binary loads here.
@@ -119,7 +128,13 @@ pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progr
         DaemonKind::Entrypoint => out.say("daemon", "container entrypoint"),
         DaemonKind::Service => {
             let inst = sb
-                .exec(&h, t(&format!("--install-service --no-pair --name {}", sq(&spec.name))))
+                .exec(
+                    &h,
+                    t(&format!(
+                        "--install-service --no-pair --name {}",
+                        sq(&spec.name)
+                    )),
+                )
                 .await?;
             if !inst.ok() {
                 return Err(fail("daemon", &inst));
@@ -141,11 +156,17 @@ pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progr
         tokio::time::sleep(spec.verify_every).await;
     }
     let pairing = pairing.ok_or_else(|| anyhow::anyhow!("pair: no pairing string"))?;
-    let peer = join.add_peer(pairing).await.map_err(|e| anyhow::anyhow!("pair: {e:#}"))?;
+    let peer = join
+        .add_peer(pairing)
+        .await
+        .map_err(|e| anyhow::anyhow!("pair: {e:#}"))?;
     out.say("pair", format!("{} ({})", peer.name, peer.id));
 
     for i in 0..spec.verify_tries {
-        let status = join.status().await.map_err(|e| anyhow::anyhow!("verify: {e:#}"))?;
+        let status = join
+            .status()
+            .await
+            .map_err(|e| anyhow::anyhow!("verify: {e:#}"))?;
         if status.peers.iter().any(|p| p.id == peer.id && p.reachable) {
             out.say("verify", "connected");
             return Ok(Done { handle: h, peer });
@@ -154,7 +175,10 @@ pub async fn run(sb: &dyn Sandbox, spec: &Spec, join: &dyn MeshJoin, out: &Progr
             tokio::time::sleep(spec.verify_every).await;
         }
     }
-    anyhow::bail!("verify: {} paired but not reachable yet — check `t mesh status`", peer.name)
+    anyhow::bail!(
+        "verify: {} paired but not reachable yet — check `t mesh status`",
+        peer.name
+    )
 }
 
 /// `t mesh pair` prints its JSON-RPC reply pretty-printed: a JSON string. A
@@ -231,7 +255,11 @@ mod tests {
             Ok(if l == "uname -sm" {
                 reply(0, self.os)
             } else if l.ends_with("t --version") {
-                if self.have_t { reply(0, "t 1.16.0") } else { reply(127, "") }
+                if self.have_t {
+                    reply(0, "t 1.16.0")
+                } else {
+                    reply(127, "")
+                }
             } else if l.ends_with("t --secret-list") {
                 reply(0, "key: file\n")
             } else if l.contains("--install-service") {
@@ -343,10 +371,18 @@ mod tests {
 
         assert_eq!(done.peer.id.0, "e1");
         let lines = sb.lines();
-        let tails: Vec<&str> = lines.iter().map(|l| l.rsplit(" t ").next().unwrap()).collect();
+        let tails: Vec<&str> = lines
+            .iter()
+            .map(|l| l.rsplit(" t ").next().unwrap())
+            .collect();
         assert_eq!(
             tails,
-            ["uname -sm", "--secret-list", "--install-service --no-pair --name 'box'", "mesh pair"]
+            [
+                "uname -sm",
+                "--secret-list",
+                "--install-service --no-pair --name 'box'",
+                "mesh pair"
+            ]
         );
         assert_eq!(*sb.puts.lock(), vec![(format!("{BIN_DIR}/t"), 0o755, 3)]);
         assert_eq!(*j.added.lock(), vec!["pair-me"]);
@@ -357,12 +393,16 @@ mod tests {
     async fn present_binary_is_kept_and_container_skips_install() {
         let mut sb = Mock::new(DaemonKind::Service);
         sb.have_t = true;
-        run(&sb, &spec(), &join(1), &Progress::silent()).await.unwrap();
+        run(&sb, &spec(), &join(1), &Progress::silent())
+            .await
+            .unwrap();
         assert!(sb.puts.lock().is_empty());
         assert!(sb.lines().iter().any(|l| l.ends_with("t --version")));
 
         let sb = Mock::new(DaemonKind::Entrypoint);
-        run(&sb, &spec(), &join(1), &Progress::silent()).await.unwrap();
+        run(&sb, &spec(), &join(1), &Progress::silent())
+            .await
+            .unwrap();
         let lines = sb.lines();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], "uname -sm");
@@ -373,19 +413,31 @@ mod tests {
     async fn pair_retries_while_daemon_starts_and_windows_is_refused() {
         let mut sb = Mock::new(DaemonKind::Entrypoint);
         sb.pair_fail_first = true;
-        run(&sb, &spec(), &join(1), &Progress::silent()).await.unwrap();
-        assert_eq!(sb.lines().iter().filter(|l| l.ends_with("t mesh pair")).count(), 2);
+        run(&sb, &spec(), &join(1), &Progress::silent())
+            .await
+            .unwrap();
+        assert_eq!(
+            sb.lines()
+                .iter()
+                .filter(|l| l.ends_with("t mesh pair"))
+                .count(),
+            2
+        );
 
         let mut sb = Mock::new(DaemonKind::Service);
         sb.os = "";
-        let err = run(&sb, &spec(), &join(1), &Progress::silent()).await.unwrap_err();
+        let err = run(&sb, &spec(), &join(1), &Progress::silent())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("detect"), "{err}");
     }
 
     #[tokio::test]
     async fn unreachable_after_polls_is_an_error() {
         let sb = Mock::new(DaemonKind::Entrypoint);
-        let err = run(&sb, &spec(), &join(99), &Progress::silent()).await.unwrap_err();
+        let err = run(&sb, &spec(), &join(99), &Progress::silent())
+            .await
+            .unwrap_err();
         assert!(err.to_string().starts_with("verify:"), "{err}");
     }
 

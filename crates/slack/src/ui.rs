@@ -71,7 +71,14 @@ pub fn help() -> Reply {
         (
             "session",
             &[
-                "sessions", "resume", "cancel", "compact", "model", "agents", "prompt", "broadcast",
+                "sessions",
+                "resume",
+                "cancel",
+                "compact",
+                "model",
+                "agents",
+                "prompt",
+                "broadcast",
             ],
         ),
         (
@@ -112,7 +119,10 @@ pub fn help() -> Reply {
         button("cmd:models", "Models", None),
         button("cmd:status", "Status", None),
     ]));
-    Reply::blocks("theuth: /theuth <sub-command>; /theuth help lists them", blocks)
+    Reply::blocks(
+        "theuth: /theuth <sub-command>; /theuth help lists them",
+        blocks,
+    )
 }
 
 /// `status`: the §13 snapshot as fields, call counts as context, a Refresh button.

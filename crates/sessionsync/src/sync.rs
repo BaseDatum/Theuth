@@ -15,16 +15,16 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent::store::Store;
 use agent::AgentEvent;
+use agent::store::Store;
 use futures::{SinkExt as _, StreamExt as _};
 use parking_lot::Mutex;
 use replica::{ByteStream, PeerId};
 use runtime::{Runtime, SessionId};
-use tokio::sync::{broadcast, Notify, OwnedMutexGuard};
+use tokio::sync::{Notify, OwnedMutexGuard, broadcast};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::apply::{apply_log_row, build_snapshot, Applied};
+use crate::apply::{Applied, apply_log_row, build_snapshot};
 use crate::snapshot::{self, AppliedSession};
 use crate::types::{LogRow, Msg};
 
@@ -61,8 +61,11 @@ pub struct Node {
     /// multi-part snapshot cannot interleave with newer log rows.
     origins: Mutex<HashMap<PeerId, Arc<tokio::sync::Mutex<()>>>>,
     /// Per origin: rows that arrived ahead of the cursor, and since when.
-    pending: Mutex<HashMap<PeerId, (Instant, BTreeMap<u64, LogRow>)>>,
+    pending: Mutex<HashMap<PeerId, Ahead>>,
 }
+
+/// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
+type Ahead = (Instant, BTreeMap<u64, LogRow>);
 
 impl Node {
     /// A node over `store`; `rt` publishes `AgentEvent`s when present.
@@ -119,22 +122,37 @@ impl Node {
 
     /// A `Hello` is authoritative about what `remote` holds: replace.
     fn learn(&self, remote: &PeerId, theirs: &[(PeerId, u64)]) {
-        self.held.lock().insert(remote.clone(), theirs.iter().cloned().collect());
+        self.held
+            .lock()
+            .insert(remote.clone(), theirs.iter().cloned().collect());
     }
 
     /// Record that `remote` holds `origin` up to `seq`.
     fn mark(&self, remote: &PeerId, origin: &PeerId, seq: u64) {
         let mut held = self.held.lock();
-        let slot = held.entry(remote.clone()).or_default().entry(origin.clone()).or_insert(0);
+        let slot = held
+            .entry(remote.clone())
+            .or_default()
+            .entry(origin.clone())
+            .or_insert(0);
         *slot = (*slot).max(seq);
     }
 
     fn holds(&self, remote: &PeerId, origin: &PeerId) -> u64 {
-        self.held.lock().get(remote).and_then(|m| m.get(origin)).copied().unwrap_or(0)
+        self.held
+            .lock()
+            .get(remote)
+            .and_then(|m| m.get(origin))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn origin_lock(&self, origin: &PeerId) -> Arc<tokio::sync::Mutex<()>> {
-        self.origins.lock().entry(origin.clone()).or_default().clone()
+        self.origins
+            .lock()
+            .entry(origin.clone())
+            .or_default()
+            .clone()
     }
 
     /// The pending row right after `cursor`, if any; drops what fell behind.
@@ -177,35 +195,66 @@ struct InFlight {
 }
 
 /// The symmetric protocol on one stream to `remote`, opened or accepted.
-pub async fn run_stream(node: &Arc<Node>, remote: PeerId, stream: Box<dyn ByteStream>) -> anyhow::Result<()> {
+pub async fn run_stream(
+    node: &Arc<Node>,
+    remote: PeerId,
+    stream: Box<dyn ByteStream>,
+) -> anyhow::Result<()> {
     run(node, remote, crate::events::framed(stream), None).await
 }
 
 /// [`run_stream`] on an accepted stream whose first frame (their `Hello`)
 /// the dispatcher already read to tell shipping from an events subscription.
-pub async fn run_from(node: &Arc<Node>, remote: PeerId, framed: Stream, first: Msg) -> anyhow::Result<()> {
+pub async fn run_from(
+    node: &Arc<Node>,
+    remote: PeerId,
+    framed: Stream,
+    first: Msg,
+) -> anyhow::Result<()> {
     run(node, remote, framed, Some(first)).await
 }
 
-async fn run(node: &Arc<Node>, remote: PeerId, mut framed: Stream, first: Option<Msg>) -> anyhow::Result<()> {
-    anyhow::ensure!(!node.me.0.is_empty(), "lone engine (no engine id): nothing ships");
+async fn run(
+    node: &Arc<Node>,
+    remote: PeerId,
+    mut framed: Stream,
+    first: Option<Msg>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !node.me.0.is_empty(),
+        "lone engine (no engine id): nothing ships"
+    );
     // Subscribe before reading the cursors so nothing falls between.
     let mut relay = node.relay.subscribe();
     let mut log = node.store.log_watch();
     log.mark_unchanged();
 
     let ours = node.held_here().await?;
-    framed.send(Msg::Hello { cursors: ours.clone() }.encode()?).await?;
+    framed
+        .send(
+            Msg::Hello {
+                cursors: ours.clone(),
+            }
+            .encode()?,
+        )
+        .await?;
     let first = match first {
         Some(m) => m,
-        None => Msg::decode(&framed.next().await.ok_or_else(|| anyhow::anyhow!("closed before hello"))??)?,
+        None => Msg::decode(
+            &framed
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("closed before hello"))??,
+        )?,
     };
     let Msg::Hello { cursors: theirs } = first else {
         anyhow::bail!("expected hello");
     };
     node.learn(&remote, &theirs);
     if let Some((_, seq)) = theirs.iter().find(|(o, _)| *o == node.me) {
-        node.store.set_cursor(&node.me.0, &remote.0, i64::try_from(*seq)?).await?;
+        node.store
+            .set_cursor(&node.me.0, &remote.0, i64::try_from(*seq)?)
+            .await?;
     }
 
     // Catch-up: every origin we hold above what they hold.
@@ -292,7 +341,12 @@ async fn ship_own(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream) -> any
 /// Send our log rows with `seq > after` in frame-sized batches. `false`
 /// when the log does not start right after `after` (pruned, or an orphaned
 /// run we cannot tell apart): the caller sends a snapshot instead.
-async fn ship_log(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream, after: u64) -> anyhow::Result<bool> {
+async fn ship_log(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    framed: &mut Stream,
+    after: u64,
+) -> anyhow::Result<bool> {
     let rows = node.store.log_after(i64::try_from(after)?).await?;
     let head = u64::try_from(node.store.log_seq()).unwrap_or(0);
     match rows.first() {
@@ -304,7 +358,9 @@ async fn ship_log(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream, after:
     let mut size = 0;
     for row in rows {
         let row = LogRow::from(row);
-        if !batch.is_empty() && (batch.len() >= BATCH_ROWS || size + row.changeset.len() > BATCH_BYTES) {
+        if !batch.is_empty()
+            && (batch.len() >= BATCH_ROWS || size + row.changeset.len() > BATCH_BYTES)
+        {
             send_batch(node, remote, framed, std::mem::take(&mut batch)).await?;
             size = 0;
         }
@@ -317,7 +373,12 @@ async fn ship_log(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream, after:
     Ok(true)
 }
 
-async fn send_batch(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream, rows: Vec<LogRow>) -> anyhow::Result<()> {
+async fn send_batch(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    framed: &mut Stream,
+    rows: Vec<LogRow>,
+) -> anyhow::Result<()> {
     let last = rows.last().map_or(0, |r| r.seq);
     node.mark(remote, &node.me, last);
     framed
@@ -333,7 +394,12 @@ async fn send_batch(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream, rows
 }
 
 /// Build and send the snapshot of `origin` in parts.
-async fn send_snapshot(node: &Arc<Node>, remote: &PeerId, origin: &PeerId, framed: &mut Stream) -> anyhow::Result<()> {
+async fn send_snapshot(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    origin: &PeerId,
+    framed: &mut Stream,
+) -> anyhow::Result<()> {
     let snap = build_snapshot(&node.store, origin).await?;
     let Msg::Snapshot { current_to_seq, .. } = &snap else {
         anyhow::bail!("build_snapshot returned {}", snap.tag());
@@ -354,7 +420,11 @@ async fn send_snapshot(node: &Arc<Node>, remote: &PeerId, origin: &PeerId, frame
 /// may deliver ahead. A gap open for [`GAP_WAIT`] ends the stream: the
 /// `Hello` exchange re-sends from the cursor, or snapshots over an orphaned
 /// run. Returns the cursor when it moved (what to ack).
-async fn receive_log(node: &Arc<Node>, origin: &PeerId, rows: &[LogRow]) -> anyhow::Result<Option<u64>> {
+async fn receive_log(
+    node: &Arc<Node>,
+    origin: &PeerId,
+    rows: &[LogRow],
+) -> anyhow::Result<Option<u64>> {
     let lock = node.origin_lock(origin);
     let _guard = lock.lock().await;
     let start = node.cursor(origin).await?.unwrap_or(0);
@@ -390,8 +460,14 @@ async fn receive_log(node: &Arc<Node>, origin: &PeerId, rows: &[LogRow]) -> anyh
             }
             Applied::StaleEpoch => {
                 // Seen, not applied: the cursor still moves past it.
-                node.store.set_cursor(&origin.0, "", i64::try_from(row.seq)?).await?;
-                if node.stale_logged.lock().insert((row.session_id.clone(), row.epoch)) {
+                node.store
+                    .set_cursor(&origin.0, "", i64::try_from(row.seq)?)
+                    .await?;
+                if node
+                    .stale_logged
+                    .lock()
+                    .insert((row.session_id.clone(), row.epoch))
+                {
                     tracing::warn!(
                         "sessions: dropped stale rows of {} epoch {} from {origin} (fence is higher)",
                         row.session_id,
@@ -415,7 +491,11 @@ async fn receive_log(node: &Arc<Node>, origin: &PeerId, rows: &[LogRow]) -> anyh
         }
         node.publish(AgentEvent::ContextChanged {
             session,
-            revision: node.store.context_revision(session).await.unwrap_or_default(),
+            revision: node
+                .store
+                .context_revision(session)
+                .await
+                .unwrap_or_default(),
             reason: "replicated".into(),
         })
         .await;
@@ -456,7 +536,11 @@ async fn receive_snapshot(
         );
     }
     let state = inflight.get_mut(origin).expect("inserted above");
-    if node.cursor(origin).await?.is_none_or(|c| c < *current_to_seq) {
+    if node
+        .cursor(origin)
+        .await?
+        .is_none_or(|c| c < *current_to_seq)
+    {
         let applied = snapshot::apply(&node.store, &part, &mut state.fenced, last).await?;
         state.sessions.extend(applied);
     }
@@ -474,7 +558,9 @@ async fn receive_snapshot(
             .encode()?,
         )
         .await?;
-    tracing::debug!("sessions: snapshot of {origin} (to seq {current_to_seq}) applied from {remote}");
+    tracing::debug!(
+        "sessions: snapshot of {origin} (to seq {current_to_seq}) applied from {remote}"
+    );
     for (id, owner, epoch) in state.sessions {
         if let Ok(session) = id.parse() {
             node.owner_changed(session, owner, epoch).await;
@@ -495,14 +581,14 @@ mod tests {
     use agent::store::Store;
     use genai::chat::{ChatMessage, MessageContent};
     use parking_lot::Mutex;
-    use replica::{ByteStream, PeerEvent, PeerId, Transport, ALPN_SESSIONS};
+    use replica::{ALPN_SESSIONS, ByteStream, PeerEvent, PeerId, Transport};
     use runtime::SessionId;
     use tokio::sync::{broadcast, mpsc};
 
-    use crate::apply::{apply_log_row, Applied};
+    use crate::SessionsConfig;
+    use crate::apply::{Applied, apply_log_row};
     use crate::ship::Shipper;
     use crate::types::LogRow;
-    use crate::SessionsConfig;
 
     type Inbound = (PeerId, Box<dyn ByteStream>);
 
@@ -514,7 +600,10 @@ mod tests {
 
     impl Switch {
         fn linked(&self, a: &PeerId, b: &PeerId) -> bool {
-            self.links.lock().iter().any(|(x, y)| (x == a && y == b) || (x == b && y == a))
+            self.links
+                .lock()
+                .iter()
+                .any(|(x, y)| (x == a && y == b) || (x == b && y == a))
         }
     }
 
@@ -540,7 +629,9 @@ mod tests {
             anyhow::ensure!(self.switch.linked(&self.me, peer), "{peer} is unreachable");
             let (mine, theirs) = tokio::io::duplex(1 << 20);
             let inboxes = self.switch.inboxes.lock();
-            let to = inboxes.get(peer).ok_or_else(|| anyhow::anyhow!("no such peer"))?;
+            let to = inboxes
+                .get(peer)
+                .ok_or_else(|| anyhow::anyhow!("no such peer"))?;
             to.send((self.me.clone(), Box::new(theirs)))
                 .map_err(|_| anyhow::anyhow!("peer gone"))?;
             Ok(Box::new(mine))
@@ -651,7 +742,13 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|(seq, m)| (seq, format!("{:?}", m.role), m.content.joined_texts().unwrap_or_default()))
+            .map(|(seq, m)| {
+                (
+                    seq,
+                    format!("{:?}", m.role),
+                    m.content.joined_texts().unwrap_or_default(),
+                )
+            })
             .collect()
     }
 
@@ -698,7 +795,10 @@ mod tests {
         link(&switch, &a, &b, true);
 
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &user("hi")).await.unwrap();
         a.store.append(id, &asst("hello")).await.unwrap();
         until("B mirrors A", || same_session(&a.store, &b.store, id)).await;
@@ -706,7 +806,7 @@ mod tests {
         let s = b.store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.epoch, s.here), ("A", 1, false));
         // B acked: A knows what B holds, and B's cursor for A is A's head.
-        let head = i64::try_from(a.store.log_seq()).unwrap();
+        let head = a.store.log_seq();
         until("A records B's ack", || async {
             a.store
                 .cursors()
@@ -716,7 +816,14 @@ mod tests {
                 .any(|c| c.origin == "A" && c.peer == "B" && c.seq == head)
         })
         .await;
-        assert!(b.store.cursors().await.unwrap().iter().any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == head));
+        assert!(
+            b.store
+                .cursors()
+                .await
+                .unwrap()
+                .iter()
+                .any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == head)
+        );
     }
 
     /// A store whose sessions predate 68 (owner backfilled at open, no log
@@ -727,14 +834,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = SessionId::new();
         {
-            let store = Store::open(&dir.path().join("sessions.sqlite"), Some(PeerId("A".into()).into()))
+            let store = Store::open(
+                &dir.path().join("sessions.sqlite"),
+                Some(PeerId("A".into()).into()),
+            )
+            .await
+            .unwrap();
+            store
+                .create_session(id, "m", None, None, None)
                 .await
                 .unwrap();
-            store.create_session(id, "m", None, None, None).await.unwrap();
             store.append(id, &user("before 68")).await.unwrap();
             // What a pre-68 store looks like after migration: rows, no log.
             let mut tx = store.begin_apply().await.unwrap();
-            sqlx::query("DELETE FROM session_log").execute(&mut *tx).await.unwrap();
+            sqlx::query("DELETE FROM session_log")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
             tx.commit().await.unwrap();
             store.close().await;
         }
@@ -744,12 +860,25 @@ mod tests {
         let b = node("B", &switch).await;
         link(&switch, &a, &b, true);
 
-        until("B bootstraps from A's empty-log snapshot", || same_session(&a.store, &b.store, id)).await;
+        until("B bootstraps from A's empty-log snapshot", || {
+            same_session(&a.store, &b.store, id)
+        })
+        .await;
         assert_eq!(texts(&b.store, id).await.len(), 1);
-        assert!(b.store.cursors().await.unwrap().iter().any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == 0));
+        assert!(
+            b.store
+                .cursors()
+                .await
+                .unwrap()
+                .iter()
+                .any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == 0)
+        );
         // Live rows follow from seq 1.
         a.store.append(id, &asst("after")).await.unwrap();
-        until("live row after the snapshot", || same_session(&a.store, &b.store, id)).await;
+        until("live row after the snapshot", || {
+            same_session(&a.store, &b.store, id)
+        })
+        .await;
         assert_eq!(texts(&b.store, id).await.len(), 2);
     }
 
@@ -761,12 +890,18 @@ mod tests {
         link(&switch, &a, &b, true);
 
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &user("one")).await.unwrap();
         a.store.append(id, &asst("1")).await.unwrap();
         let turn = a.store.append(id, &user("two")).await.unwrap();
         a.store.append(id, &asst("2")).await.unwrap();
-        until("B has four rows", || async { texts(&b.store, id).await.len() == 4 }).await;
+        until("B has four rows", || async {
+            texts(&b.store, id).await.len() == 4
+        })
+        .await;
 
         a.store.cut_to(id, turn).await.unwrap();
         a.store.commit_cut(id).await.unwrap();
@@ -781,23 +916,42 @@ mod tests {
         let a = node("A", &switch).await;
         let b = node("B", &switch).await;
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &user("late")).await.unwrap();
-        let rows: Vec<LogRow> = a.store.log_after(0).await.unwrap().into_iter().map(Into::into).collect();
+        let rows: Vec<LogRow> = a
+            .store
+            .log_after(0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(Into::into)
+            .collect();
         assert_eq!(rows.len(), 2);
 
         // B already saw epoch 2 of this session (a take elsewhere).
         assert!(b.store.set_fence(id, 2, "C").await.unwrap());
         for row in &rows {
-            assert_eq!(apply_log_row(&b.store, &a.me(), row).await.unwrap(), Applied::StaleEpoch);
+            assert_eq!(
+                apply_log_row(&b.store, &a.me(), row).await.unwrap(),
+                Applied::StaleEpoch
+            );
         }
         assert!(b.store.session(id).await.unwrap().is_none());
         // The same rows on a fence-free store apply, then repeat as duplicates.
         let c = node("C", &switch).await;
         for row in &rows {
-            assert_eq!(apply_log_row(&c.store, &a.me(), row).await.unwrap(), Applied::Applied);
+            assert_eq!(
+                apply_log_row(&c.store, &a.me(), row).await.unwrap(),
+                Applied::Applied
+            );
         }
-        assert_eq!(apply_log_row(&c.store, &a.me(), &rows[1]).await.unwrap(), Applied::Duplicate);
+        assert_eq!(
+            apply_log_row(&c.store, &a.me(), &rows[1]).await.unwrap(),
+            Applied::Duplicate
+        );
         assert_eq!(texts(&c.store, id).await, texts(&a.store, id).await);
         // Applying set the fence from the session row.
         assert_eq!(c.store.fence(id).await.unwrap(), Some((1, "A".to_owned())));
@@ -813,8 +967,14 @@ mod tests {
         // 1 000 messages over three sessions, replayed live to C.
         let ids: Vec<SessionId> = (0..3).map(|_| SessionId::new()).collect();
         for (i, id) in ids.iter().enumerate() {
-            a.store.create_session(*id, "m", None, None, None).await.unwrap();
-            a.store.set_title(*id, &format!("session {i}")).await.unwrap();
+            a.store
+                .create_session(*id, "m", None, None, None)
+                .await
+                .unwrap();
+            a.store
+                .set_title(*id, &format!("session {i}"))
+                .await
+                .unwrap();
         }
         for n in 0..1000 {
             let id = ids[n % 3];
@@ -837,8 +997,13 @@ mod tests {
 
         // Prune A's log (C acked it all): a newcomer can only be served a snapshot.
         until("C's ack reached A", || async {
-            let head = i64::try_from(a.store.log_seq()).unwrap();
-            a.store.cursors().await.unwrap().iter().any(|c| c.origin == "A" && c.peer == "C" && c.seq == head)
+            let head = a.store.log_seq();
+            a.store
+                .cursors()
+                .await
+                .unwrap()
+                .iter()
+                .any(|c| c.origin == "A" && c.peer == "C" && c.seq == head)
         })
         .await;
         crate::prune::tick(&a.store, &a.me(), 7).await.unwrap();
@@ -856,12 +1021,25 @@ mod tests {
         })
         .await;
         assert_eq!(sessions(&b.store).await, sessions(&c.store).await);
-        let head = i64::try_from(a.store.log_seq()).unwrap();
-        assert!(b.store.cursors().await.unwrap().iter().any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == head));
+        let head = a.store.log_seq();
+        assert!(
+            b.store
+                .cursors()
+                .await
+                .unwrap()
+                .iter()
+                .any(|c| c.origin == "A" && c.peer.is_empty() && c.seq == head)
+        );
 
         // Live rows keep flowing to the snapshot-bootstrapped peer.
-        a.store.append(ids[0], &user("after snapshot")).await.unwrap();
-        until("B follows live", || same_session(&a.store, &b.store, ids[0])).await;
+        a.store
+            .append(ids[0], &user("after snapshot"))
+            .await
+            .unwrap();
+        until("B follows live", || {
+            same_session(&a.store, &b.store, ids[0])
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -869,7 +1047,10 @@ mod tests {
         let switch = Arc::new(Switch::default());
         let a = node("A", &switch).await;
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         for n in 0..50 {
             a.store.append(id, &user(&format!("{n}"))).await.unwrap();
         }
@@ -889,7 +1070,14 @@ mod tests {
         }
         a.store.set_cursor("A", "B", head + 3).await.unwrap();
         crate::prune::tick(&a.store, &a.me(), 7).await.unwrap();
-        let left: Vec<i64> = a.store.log_after(0).await.unwrap().iter().map(|r| r.seq).collect();
+        let left: Vec<i64> = a
+            .store
+            .log_after(0)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect();
         assert_eq!(left, ((head + 4)..=(head + 10)).collect::<Vec<_>>());
     }
 
@@ -901,17 +1089,26 @@ mod tests {
         link(&switch, &a, &b, true);
 
         let id = SessionId::new();
-        a.store.create_session(id, "m", None, None, None).await.unwrap();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         a.store.append(id, &user("hi")).await.unwrap();
         until("B mirrors A", || same_session(&a.store, &b.store, id)).await;
 
         // C only ever talks to B: bootstrap of A's rows comes from B's copy...
         let c = node("C", &switch).await;
         link(&switch, &b, &c, true);
-        until("C bootstrapped via B", || same_session(&a.store, &c.store, id)).await;
+        until("C bootstrapped via B", || {
+            same_session(&a.store, &c.store, id)
+        })
+        .await;
         // ...and live rows are relayed.
         a.store.append(id, &asst("relayed")).await.unwrap();
-        until("C follows A live via B", || same_session(&a.store, &c.store, id)).await;
+        until("C follows A live via B", || {
+            same_session(&a.store, &c.store, id)
+        })
+        .await;
         assert_eq!(texts(&c.store, id).await.len(), 2);
         let s = c.store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("A", false));

@@ -108,7 +108,10 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
                 .unwrap()
         }
     });
-    let ask_id = until(&mut a, "AskRequested").await["id"].as_str().unwrap().to_owned();
+    let ask_id = until(&mut a, "AskRequested").await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let approval_id = until(&mut a, "ApprovalRequested").await["id"]
         .as_str()
         .unwrap()
@@ -133,7 +136,9 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
     assert_eq!(call(answer(&ask_id)).await, true);
     assert_eq!(call(answer(&ask_id)).await, false);
     let decide = |id: &str| {
-        format!(r#"{{"jsonrpc":"2.0","method":"resolve_approval","params":["{id}","allow"],"id":1}}"#)
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"resolve_approval","params":["{id}","allow"],"id":1}}"#
+        )
     };
     assert_eq!(call(decide(&approval_id)).await, true);
     assert_eq!(call(decide(&approval_id)).await, false);

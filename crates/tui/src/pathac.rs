@@ -5,11 +5,11 @@
 //! the list is up re-asks after [`DEBOUNCE_MS`].
 
 use iocraft::KeyCode;
+use rpc::pathac::{PathCandidate, PathCompletion, trigger};
 use runtime::SessionId;
-use rpc::pathac::{trigger, PathCandidate, PathCompletion};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::model::{send, Command};
+use crate::model::{Command, send};
 
 /// Where the caret sits after `old` became `new` by one edit: the end of
 /// the inserted run, or the deletion point (typing, Backspace, Delete, paste).
@@ -98,7 +98,9 @@ impl PathState {
         };
         match code {
             KeyCode::Up => popup.cursor = popup.cursor.saturating_sub(1),
-            KeyCode::Down => popup.cursor = (popup.cursor + 1).min(popup.items.len().saturating_sub(1)),
+            KeyCode::Down => {
+                popup.cursor = (popup.cursor + 1).min(popup.items.len().saturating_sub(1))
+            }
             KeyCode::Esc => self.close(),
             KeyCode::Tab => {
                 let Some(pick) = popup.items.get(popup.cursor).cloned() else {
@@ -171,7 +173,13 @@ impl PathState {
         }
     }
 
-    fn request(&mut self, input: &str, cursor: usize, session: Option<SessionId>, tx: &UnboundedSender<Command>) {
+    fn request(
+        &mut self,
+        input: &str,
+        cursor: usize,
+        session: Option<SessionId>,
+        tx: &UnboundedSender<Command>,
+    ) {
         self.generation += 1;
         self.due = None;
         let popup = self.open.get_or_insert_with(Popup::default);
@@ -234,13 +242,27 @@ mod tests {
         // The slash popup has matches: its Tab.
         assert_eq!(s.key(KeyCode::Tab, "/s", 2, true, None, &tx), Key::Pass);
         // A path token: Tab asks, list opens pending.
-        assert_eq!(s.key(KeyCode::Tab, "see ~/De", 8, false, None, &tx), Key::Consumed);
+        assert_eq!(
+            s.key(KeyCode::Tab, "see ~/De", 8, false, None, &tx),
+            Key::Consumed
+        );
         let g = generation(&mut rx);
-        assert!(s.open.as_ref().is_some_and(|p| p.pending && p.items.is_empty()));
+        assert!(
+            s.open
+                .as_ref()
+                .is_some_and(|p| p.pending && p.items.is_empty())
+        );
         // A stale reply is inert; the right one lands.
         s.reply(g - 1, Some(reply("~/", &[("Old", true)], false)));
         assert!(s.open.as_ref().unwrap().items.is_empty());
-        s.reply(g, Some(reply("~/", &[("Develop", true), ("Desktop", true), ("Dfile", false)], true)));
+        s.reply(
+            g,
+            Some(reply(
+                "~/",
+                &[("Develop", true), ("Desktop", true), ("Dfile", false)],
+                true,
+            )),
+        );
         let p = s.open.as_ref().unwrap();
         assert_eq!(p.items.len(), 3);
         assert!(p.truncated && !p.pending);
@@ -273,7 +295,11 @@ mod tests {
     #[test]
     fn caret_follows_the_edit() {
         assert_eq!(caret_after_edit("~/De", "~/Dev"), 5, "typed at the end");
-        assert_eq!(caret_after_edit("see  x", "see ~/ x"), 6, "inserted mid-line");
+        assert_eq!(
+            caret_after_edit("see  x", "see ~/ x"),
+            6,
+            "inserted mid-line"
+        );
         assert_eq!(caret_after_edit("~/Dev", "~/De"), 4, "backspace");
         assert_eq!(caret_after_edit("~/Dev x", "~/Devx"), 5, "delete mid-line");
         assert_eq!(caret_after_edit("", "~/Develop/"), 10, "paste into empty");
@@ -300,10 +326,16 @@ mod tests {
         assert!(s.open.is_none());
         // Reopen, then Esc closes; Enter passes through and closes.
         s.key(KeyCode::Tab, "./sr", 4, false, None, &tx);
-        assert_eq!(s.key(KeyCode::Esc, "./sr", 4, false, None, &tx), Key::Consumed);
+        assert_eq!(
+            s.key(KeyCode::Esc, "./sr", 4, false, None, &tx),
+            Key::Consumed
+        );
         assert!(s.open.is_none());
         s.key(KeyCode::Tab, "./sr", 4, false, None, &tx);
-        assert_eq!(s.key(KeyCode::Enter, "./sr", 4, false, None, &tx), Key::Pass);
+        assert_eq!(
+            s.key(KeyCode::Enter, "./sr", 4, false, None, &tx),
+            Key::Pass
+        );
         assert!(s.open.is_none());
         // Leaving the token closes without a request.
         s.key(KeyCode::Tab, "./sr", 4, false, None, &tx);

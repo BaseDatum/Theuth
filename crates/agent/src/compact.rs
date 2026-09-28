@@ -89,7 +89,8 @@ pub fn est(m: &ChatMessage) -> u32 {
 /// A tool response counts its text plus `IMAGE_TOKENS` per attached image
 /// (23 §5) rather than the serialised base64.
 pub fn est_content(c: &MessageContent) -> u32 {
-    c.iter().fold(0u32, |acc, part| acc.saturating_add(est_part(part)))
+    c.iter()
+        .fold(0u32, |acc, part| acc.saturating_add(est_part(part)))
 }
 
 /// [`est`] of one content part.
@@ -559,10 +560,18 @@ mod tests {
     #[test]
     fn fold_keeps_head_and_tail_and_est_kept_matches() {
         assert_eq!(fold_text(&"x".repeat(FOLD_CHARS)), None);
-        let big = format!("{}{}{}", "h".repeat(FOLD_HEAD), "m".repeat(10_000), "t".repeat(FOLD_TAIL));
+        let big = format!(
+            "{}{}{}",
+            "h".repeat(FOLD_HEAD),
+            "m".repeat(10_000),
+            "t".repeat(FOLD_TAIL)
+        );
         let f = fold_text(&big).unwrap();
         assert!(f.starts_with(&"h".repeat(FOLD_HEAD)) && f.ends_with(&"t".repeat(FOLD_TAIL)));
-        assert!(f.contains("[… 10000 chars folded — read the archive]"), "{f}");
+        assert!(
+            f.contains("[… 10000 chars folded — read the archive]"),
+            "{f}"
+        );
         assert!(!f.contains('m'));
         let mut m = ChatMessage::from(vec![
             ToolResponse::new("c1", big.clone()),
@@ -572,7 +581,11 @@ mod tests {
         assert_eq!(fold_tool_results(&mut m), 1);
         assert_eq!(fold_tool_results(&mut m), 0, "idempotent");
         assert!(est(&m) < est(&ChatMessage::from(vec![ToolResponse::new("c1", big)])));
-        assert!((est(&m) as i64 - kept as i64).abs() <= 16, "{} vs {kept}", est(&m));
+        assert!(
+            (est(&m) as i64 - kept as i64).abs() <= 16,
+            "{} vs {kept}",
+            est(&m)
+        );
     }
 
     #[test]
@@ -583,7 +596,10 @@ mod tests {
         ]));
         // 1568 wide × 16 tall (one row) → 33 tokens, not the flat 1600.
         assert_eq!(est(&m), 1568 * 16 / 750);
-        assert_eq!(png_dims(&Binary::from_base64("image/png", "AAAA", None)), None);
+        assert_eq!(
+            png_dims(&Binary::from_base64("image/png", "AAAA", None)),
+            None
+        );
     }
 
     #[test]

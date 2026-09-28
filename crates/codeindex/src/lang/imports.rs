@@ -65,7 +65,7 @@ pub fn query(lang: Language) -> Option<&'static Query> {
         ($l:expr, $q:expr) => {{
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
                 Query::new(&$l.into(), $q)
-                    .inspect_err(|e| tracing::warn!(error = %e, "import query failed to compile"))
+            .inspect_err(|e| tracing::warn!(error = %e, "import query failed to compile"))
                     .ok()
             });
             Q.as_ref()
@@ -132,7 +132,11 @@ pub fn imports(lang: Language, query: &Query, root: Node<'_>, src: &[u8]) -> Vec
                             segs.pop();
                         }
                         let Some(last) = segs.pop() else { continue };
-                        let specifier = if segs.is_empty() { last.clone() } else { segs.join("::") };
+                        let specifier = if segs.is_empty() {
+                            last.clone()
+                        } else {
+                            segs.join("::")
+                        };
                         out.push(Import {
                             specifier,
                             names: Some(vec![alias.unwrap_or(last)]),
@@ -184,7 +188,11 @@ pub fn imports(lang: Language, query: &Query, root: Node<'_>, src: &[u8]) -> Vec
                     Some("_") => Some(Vec::new()),
                     Some(a) => Some(vec![a.to_owned()]),
                     None => Some(vec![
-                        specifier.rsplit('/').next().unwrap_or(&specifier).to_owned(),
+                        specifier
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&specifier)
+                            .to_owned(),
                     ]),
                 };
                 out.push(Import {
@@ -218,7 +226,9 @@ fn rust_flatten(
             out.push((with(&prefix, rust_segments(node, src)), None, false));
         }
         "use_as_clause" => {
-            let Some(path) = node.child_by_field_name("path") else { return };
+            let Some(path) = node.child_by_field_name("path") else {
+                return;
+            };
             let alias = node.child_by_field_name("alias").map(text);
             out.push((with(&prefix, rust_segments(path, src)), alias, false));
         }
@@ -240,7 +250,9 @@ fn rust_flatten(
         }
         "use_wildcard" => {
             // The grammar gives `use_wildcard` no `path` field: its one named child is the path.
-            let p = node.named_child(0).map_or_else(Vec::new, |p| rust_segments(p, src));
+            let p = node
+                .named_child(0)
+                .map_or_else(Vec::new, |p| rust_segments(p, src));
             out.push((with(&prefix, p), None, true));
         }
         _ => {}
@@ -287,7 +299,9 @@ fn rust_path_attr(mod_item: Node<'_>, src: &[u8]) -> Option<String> {
             return None;
         }
         let attr = a.named_child(0)?;
-        if attr.named_child(0).is_some_and(|n| &src[n.byte_range()] == b"path")
+        if attr
+            .named_child(0)
+            .is_some_and(|n| &src[n.byte_range()] == b"path")
             && let Some(v) = attr.child_by_field_name("value")
             && v.kind() == "string_literal"
         {
@@ -310,7 +324,8 @@ fn js_names(stmt: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
         "import_statement" => {
             let Some(clause) = stmt.child_by_field_name("import").or_else(|| {
                 let mut c = stmt.walk();
-                stmt.named_children(&mut c).find(|n| n.kind() == "import_clause")
+                stmt.named_children(&mut c)
+                    .find(|n| n.kind() == "import_clause")
             }) else {
                 return Some(names);
             };
@@ -370,7 +385,9 @@ fn js_names(stmt: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
         }
         // `const x = require("./m")` / `const { a, b } = require("./m")`.
         "call_expression" => {
-            let decl = stmt.parent().filter(|p| p.kind() == "variable_declarator")?;
+            let decl = stmt
+                .parent()
+                .filter(|p| p.kind() == "variable_declarator")?;
             let target = decl.child_by_field_name("name")?;
             match target.kind() {
                 "identifier" => Some(vec![text(target)]),
@@ -423,14 +440,18 @@ fn py_imports(stmt: Node<'_>, src: &[u8], line: i64, out: &mut Vec<Import>) {
         }
         return;
     }
-    let Some(module) = stmt.child_by_field_name("module_name").map(text) else { return };
+    let Some(module) = stmt.child_by_field_name("module_name").map(text) else {
+        return;
+    };
     let mut names = Vec::new();
     for n in stmt.children_by_field_name("name", &mut c) {
         let (name, alias) = alias_of(n);
         names.push(alias.unwrap_or(name));
     }
     let mut c = stmt.walk();
-    let glob = stmt.named_children(&mut c).any(|n| n.kind() == "wildcard_import");
+    let glob = stmt
+        .named_children(&mut c)
+        .any(|n| n.kind() == "wildcard_import");
     out.push(Import {
         specifier: module,
         names: (!glob).then_some(names),
@@ -513,10 +534,16 @@ mod tests {
                 ("./dyn".into(), None, Kind::Use),
             ]
         );
-        let got = run(Language::JavaScript, "const fs = require(\"fs\");\nconst { a, b: c } = require('./m');\nfoo(\"not an import\");\n");
+        let got = run(
+            Language::JavaScript,
+            "const fs = require(\"fs\");\nconst { a, b: c } = require('./m');\nfoo(\"not an import\");\n",
+        );
         assert_eq!(
             got,
-            vec![("fs".into(), s(&["fs"]), Kind::Use), ("./m".into(), s(&["a", "c"]), Kind::Use)]
+            vec![
+                ("fs".into(), s(&["fs"]), Kind::Use),
+                ("./m".into(), s(&["a", "c"]), Kind::Use)
+            ]
         );
     }
 

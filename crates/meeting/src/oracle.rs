@@ -194,7 +194,10 @@ pub fn mentions(text: &str) -> Vec<String> {
             }
             if let Some(next_is_unit) = number_with_unit(core, words.get(i + 1).copied()) {
                 if next_is_unit {
-                    push(&format!("{core} {}", words[i + 1].trim_matches(|c: char| !c.is_alphanumeric())));
+                    push(&format!(
+                        "{core} {}",
+                        words[i + 1].trim_matches(|c: char| !c.is_alphanumeric())
+                    ));
                     i += 2;
                 } else {
                     push(core);
@@ -219,7 +222,8 @@ pub fn mentions(text: &str) -> Vec<String> {
                     }
                 }
                 let run_len = j - i + 1;
-                let calendar = run_len == 1 && CALENDAR.contains(&core.to_ascii_lowercase().as_str());
+                let calendar =
+                    run_len == 1 && CALENDAR.contains(&core.to_ascii_lowercase().as_str());
                 if run_len >= 2 || (!sentence_start && core.len() >= 2 && !calendar) {
                     let run: Vec<&str> = words[i..=j]
                         .iter()
@@ -238,28 +242,39 @@ pub fn mentions(text: &str) -> Vec<String> {
 
 /// `SRE-2386`: two or more capitals, a dash, digits.
 fn is_ticket(w: &str) -> bool {
-    let Some((a, b)) = w.split_once('-') else { return false };
-    a.len() >= 2 && a.chars().all(|c| c.is_ascii_uppercase()) && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
+    let Some((a, b)) = w.split_once('-') else {
+        return false;
+    };
+    a.len() >= 2
+        && a.chars().all(|c| c.is_ascii_uppercase())
+        && !b.is_empty()
+        && b.chars().all(|c| c.is_ascii_digit())
 }
 
 /// `DR`, `SSL`, `CNAME`, `2FA`: ≥ 2 capitals, no lowercase, at least two letters.
 fn is_acronym(w: &str) -> bool {
     w.len() >= 2
         && w.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2
-        && w.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && w.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
 /// A word starting with an uppercase letter followed by lowercase (`Kuiper`, `Mike`), not `I`.
 fn capitalised(w: &str) -> bool {
     let mut chars = w.chars();
-    matches!(chars.next(), Some(c) if c.is_uppercase()) && chars.clone().any(|c| c.is_lowercase()) && chars.all(char::is_alphanumeric)
+    matches!(chars.next(), Some(c) if c.is_uppercase())
+        && chars.clone().any(|c| c.is_lowercase())
+        && chars.all(char::is_alphanumeric)
 }
 
 /// A number with a unit: `10min` / `5GB` (suffix on the number) → `Some(false)`; `33 kV` /
 /// `0.1 Hz` / `600 seconds` (the unit is the next word: letters, ≤ 8 chars, not an ordinal
 /// suffix or a function word) → `Some(true)`; a bare number, date or ordinal → `None`.
 fn number_with_unit(w: &str, next: Option<&str>) -> Option<bool> {
-    let digits = w.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',').count();
+    let digits = w
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .count();
     if digits == 0 || !w.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
@@ -283,23 +298,107 @@ fn is_ordinal(s: &str) -> bool {
 
 /// Words after a number that are not units (`the 15th of October`, `two of them`).
 const STOP_AFTER_NUMBER: [&str; 24] = [
-    "of", "and", "or", "to", "in", "on", "at", "for", "the", "a", "an", "is", "are", "was", "were", "so", "but",
-    "if", "it", "that", "this", "with", "from", "by",
+    "of", "and", "or", "to", "in", "on", "at", "for", "the", "a", "an", "is", "are", "was", "were",
+    "so", "but", "if", "it", "that", "this", "with", "from", "by",
 ];
 
 /// Capitalised only because they open a sentence (transcripts: fillers included).
 const SENTENCE_OPENERS: [&str; 72] = [
-    "so", "and", "but", "or", "the", "a", "an", "they", "he", "she", "we", "i", "it", "its", "it's", "that", "this",
-    "these", "those", "then", "there", "well", "also", "now", "no", "yes", "yeah", "yep", "okay", "ok", "oh", "um",
-    "uh", "hey", "hi", "hello", "has", "have", "is", "are", "was", "were", "do", "does", "did", "can", "could", "would",
-    "should", "will", "what", "why", "how", "when", "where", "who", "which", "let", "let's", "just", "right", "sure",
-    "anyway", "anyways", "because", "if", "maybe", "actually", "basically", "honestly", "sorry", "thanks",
+    "so",
+    "and",
+    "but",
+    "or",
+    "the",
+    "a",
+    "an",
+    "they",
+    "he",
+    "she",
+    "we",
+    "i",
+    "it",
+    "its",
+    "it's",
+    "that",
+    "this",
+    "these",
+    "those",
+    "then",
+    "there",
+    "well",
+    "also",
+    "now",
+    "no",
+    "yes",
+    "yeah",
+    "yep",
+    "okay",
+    "ok",
+    "oh",
+    "um",
+    "uh",
+    "hey",
+    "hi",
+    "hello",
+    "has",
+    "have",
+    "is",
+    "are",
+    "was",
+    "were",
+    "do",
+    "does",
+    "did",
+    "can",
+    "could",
+    "would",
+    "should",
+    "will",
+    "what",
+    "why",
+    "how",
+    "when",
+    "where",
+    "who",
+    "which",
+    "let",
+    "let's",
+    "just",
+    "right",
+    "sure",
+    "anyway",
+    "anyways",
+    "because",
+    "if",
+    "maybe",
+    "actually",
+    "basically",
+    "honestly",
+    "sorry",
+    "thanks",
 ];
 
 /// Months and weekdays: capitalised, not subjects.
 const CALENDAR: [&str; 19] = [
-    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
-    "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
 ];
 
 /// The accepted choice of a decision, looking through a shadow wrapper.
@@ -325,7 +424,10 @@ fn reason_text(r: &Reason) -> String {
 
 /// P(true) of the kind decision — P(small talk) — if it ran.
 fn p_small_talk(kind: &Decision) -> Option<f32> {
-    kind.probabilities.iter().find(|(l, _)| l == "true").map(|(_, p)| *p)
+    kind.probabilities
+        .iter()
+        .find(|(l, _)| l == "true")
+        .map(|(_, p)| *p)
 }
 
 /// The asymmetric gate (57 §3.5 item 3), mode-independent (shadow is looked through): a brief
@@ -333,7 +435,10 @@ fn p_small_talk(kind: &Decision) -> Option<f32> {
 /// **and** no mentions is a skip; everything else — small talk with mentions, not small talk,
 /// an abstained or timed-out question — goes to tier 2 with the reason.
 pub fn settle(kind: &Decision, brief: Option<&Decision>, mentions: &[String]) -> Settled {
-    if let Some(id) = brief.and_then(accepted).filter(|id| *id != decision::engine::NONE_ID) {
+    if let Some(id) = brief
+        .and_then(accepted)
+        .filter(|id| *id != decision::engine::NONE_ID)
+    {
         return Settled::Brief(id.to_owned());
     }
     match accepted(kind) {
@@ -342,7 +447,9 @@ pub fn settle(kind: &Decision, brief: Option<&Decision>, mentions: &[String]) ->
         Some(_) => Settled::Tier2("not small talk".into()),
         None => Settled::Tier2(format!(
             "kind {}",
-            kind.disposition.reason().map_or_else(|| "undecided".into(), reason_text)
+            kind.disposition
+                .reason()
+                .map_or_else(|| "undecided".into(), reason_text)
         )),
     }
 }
@@ -359,7 +466,11 @@ fn brief_pick(brief: &Decision, titles: &HashMap<String, String>) -> Option<(Str
 /// The oracle row's stages: `kind: small talk 0.79` / `kind: subject 0.88` (the winning side of the
 /// `Bool`), then `brief: <title|none> 0.57` when 1b ran. A question that never ran (timeout,
 /// model missing) shows as `kind: ? 0`.
-pub fn stages(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>) -> Vec<(String, f32)> {
+pub fn stages(
+    kind: &Decision,
+    brief: Option<&Decision>,
+    titles: &HashMap<String, String>,
+) -> Vec<(String, f32)> {
     let mut v = Vec::with_capacity(2);
     match p_small_talk(kind) {
         Some(p) if p >= 0.5 => v.push(("kind: small talk".to_owned(), p)),
@@ -384,7 +495,11 @@ pub fn top(brief: Option<&Decision>, titles: &HashMap<String, String>) -> Vec<(S
 
 /// Tier 1's numbers as one data line: `kind subject 0.88, brief none 0.55 / SRE-2386 0.31` —
 /// what tier 2 reads and what the evidence line carries.
-pub fn numbers(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>) -> String {
+pub fn numbers(
+    kind: &Decision,
+    brief: Option<&Decision>,
+    titles: &HashMap<String, String>,
+) -> String {
     let mut s = match p_small_talk(kind) {
         Some(p) if p >= 0.5 => format!("kind small talk {p:.2}"),
         Some(p) => format!("kind subject {:.2}", 1.0 - p),
@@ -396,7 +511,12 @@ pub fn numbers(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<Strin
         let two: Vec<String> = ranked
             .iter()
             .take(2)
-            .map(|(id, p)| format!("{} {p:.2}", titles.get(id).map_or(id.as_str(), String::as_str)))
+            .map(|(id, p)| {
+                format!(
+                    "{} {p:.2}",
+                    titles.get(id).map_or(id.as_str(), String::as_str)
+                )
+            })
             .collect();
         s.push_str(&format!(", brief {}", two.join(" / ")));
     }
@@ -406,8 +526,16 @@ pub fn numbers(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<Strin
 /// The tier-3 evidence line when tier 2 did not settle it (57 §3.2): `oracle: kind subject
 /// 0.88, brief none 0.55 / SRE-2386 0.31 (escalated: tier 2: timed out)`. Data for the model,
 /// never an instruction.
-pub fn evidence(kind: &Decision, brief: Option<&Decision>, titles: &HashMap<String, String>, why: &str) -> String {
-    format!("oracle: {} (escalated: {why})", numbers(kind, brief, titles))
+pub fn evidence(
+    kind: &Decision,
+    brief: Option<&Decision>,
+    titles: &HashMap<String, String>,
+    why: &str,
+) -> String {
+    format!(
+        "oracle: {} (escalated: {why})",
+        numbers(kind, brief, titles)
+    )
 }
 
 /// The tier-3 evidence line when tier 2 named a subject with no cached brief (57 §3.5 item 4):
@@ -453,15 +581,29 @@ pub struct Expected {
 /// "small talk" is confirmed by the turn publishing nothing — the same approximation step 4's
 /// topic family made, from the other side; for `meeting.subject` a cached publish is its row
 /// id, an uncached one `lookup`, nothing `skip`.
-pub fn outcome(expected: &Expected, published: &[(Option<BriefId>, String)]) -> (OracleOutcome, Vec<(LogId, decision::Outcome)>) {
+pub fn outcome(
+    expected: &Expected,
+    published: &[(Option<BriefId>, String)],
+) -> (OracleOutcome, Vec<(LogId, decision::Outcome)>) {
     let mut reports = Vec::new();
     let mut agreed = true;
-    let cached = published.iter().find_map(|(row, _)| row.map(|r| r.to_string()));
+    let cached = published
+        .iter()
+        .find_map(|(row, _)| row.map(|r| r.to_string()));
     for (id, family, label) in &expected.rows {
         let actual = match family.as_str() {
             KIND => published.is_empty().to_string(),
-            SUBJECT => cached.clone().unwrap_or_else(|| if published.is_empty() { "skip" } else { "lookup" }.to_owned()),
-            _ => cached.clone().unwrap_or_else(|| decision::engine::NONE_ID.to_owned()),
+            SUBJECT => cached.clone().unwrap_or_else(|| {
+                if published.is_empty() {
+                    "skip"
+                } else {
+                    "lookup"
+                }
+                .to_owned()
+            }),
+            _ => cached
+                .clone()
+                .unwrap_or_else(|| decision::engine::NONE_ID.to_owned()),
         };
         let o = if *label == actual {
             decision::Outcome::Confirmed
@@ -603,7 +745,10 @@ fn candidate_id(i: usize) -> String {
 
 /// The FTS row behind a candidate id; `None` for `none` or anything not in our table.
 fn row_for<'a>(rows: &'a [CachedBrief], cid: &str) -> Option<&'a CachedBrief> {
-    rows.iter().enumerate().find(|(i, _)| candidate_id(*i) == cid).map(|(_, r)| r)
+    rows.iter()
+        .enumerate()
+        .find(|(i, _)| candidate_id(*i) == cid)
+        .map(|(_, r)| r)
 }
 
 /// The publish action for a candidate id, or `None` when the id is not in our table.
@@ -615,7 +760,11 @@ fn publish(rows: &[CachedBrief], cid: &str) -> Option<(OracleDisposition, Action
             title: row.title.clone(),
         },
         Action::Publish {
-            label: row.aliases.first().cloned().unwrap_or_else(|| row.title.clone()),
+            label: row
+                .aliases
+                .first()
+                .cloned()
+                .unwrap_or_else(|| row.title.clone()),
             row: Box::new(row),
         },
     ))
@@ -721,7 +870,9 @@ pub async fn run(
     });
     // The questions as asked, kept for the training example (`Ask` is consumed by the engine).
     let kind_q = train.then(|| kind_ask.question.clone());
-    let brief_q = train.then(|| brief_ask.as_ref().map(|a| a.question.clone())).flatten();
+    let brief_q = train
+        .then(|| brief_ask.as_ref().map(|a| a.question.clone()))
+        .flatten();
     let Some(kind) = ask(&engine, kind_ask).await else {
         return today(batch);
     };
@@ -781,14 +932,19 @@ pub async fn run(
                         lookup: answer.lookup,
                     });
                     let label = match &answer.cached {
-                        Some(cid) => row_for(&rows, cid).map_or_else(|| cid.clone(), |r| r.id.to_string()),
+                        Some(cid) => {
+                            row_for(&rows, cid).map_or_else(|| cid.clone(), |r| r.id.to_string())
+                        }
                         None => answer.choice(),
                     };
                     subject_row = Some((log_id, label));
                     match (&answer.cached, &answer.subject, answer.lookup) {
                         (Some(cid), _, _) => match publish(&rows, cid) {
                             Some((d, a)) => {
-                                tier2 = Some(format!("cached: {}", titles.get(cid).map_or(cid.as_str(), String::as_str)));
+                                tier2 = Some(format!(
+                                    "cached: {}",
+                                    titles.get(cid).map_or(cid.as_str(), String::as_str)
+                                ));
                                 (SUBJECT, d, a)
                             }
                             None => {
@@ -799,7 +955,12 @@ pub async fn run(
                                         reason: format!("{reason}; tier 2: unknown id"),
                                     },
                                     Action::Model {
-                                        evidence: Some(evidence(&kind, brief.as_ref(), &titles, reason)),
+                                        evidence: Some(evidence(
+                                            &kind,
+                                            brief.as_ref(),
+                                            &titles,
+                                            reason,
+                                        )),
                                     },
                                 )
                             }
@@ -828,11 +989,15 @@ pub async fn run(
                 }
                 Err(e) => {
                     tier2 = Some(e.to_string());
-                    tier2_result = Some(training::Tier2::Error { error: e.to_string() });
+                    tier2_result = Some(training::Tier2::Error {
+                        error: e.to_string(),
+                    });
                     let why = format!("{reason}; tier 2: {e}");
                     (
                         KIND,
-                        OracleDisposition::Model { reason: why.clone() },
+                        OracleDisposition::Model {
+                            reason: why.clone(),
+                        },
                         Action::Model {
                             evidence: Some(evidence(&kind, brief.as_ref(), &titles, &why)),
                         },
@@ -845,11 +1010,17 @@ pub async fn run(
     let expected = Expected {
         rows: std::iter::once((kind.log_id, KIND.to_owned(), kind.choice.clone()))
             .chain(brief.iter().map(|b| {
-                let label = row_for(&rows, &b.choice)
-                    .map_or_else(|| decision::engine::NONE_ID.to_owned(), |r| r.id.to_string());
+                let label = row_for(&rows, &b.choice).map_or_else(
+                    || decision::engine::NONE_ID.to_owned(),
+                    |r| r.id.to_string(),
+                );
                 (b.log_id, BRIEF.to_owned(), label)
             }))
-            .chain(subject_row.into_iter().map(|(log_id, label)| (log_id, SUBJECT.to_owned(), label)))
+            .chain(
+                subject_row
+                    .into_iter()
+                    .map(|(log_id, label)| (log_id, SUBJECT.to_owned(), label)),
+            )
             .collect(),
     };
     // 57 §11.4: the example — every question with its titles and numbers, tier 2, the verdict
@@ -866,9 +1037,19 @@ pub async fn run(
                 id: brief.to_string(),
                 title: title.clone(),
             },
-            OracleDisposition::Model { reason } => training::Verdict::Model { reason: reason.clone() },
+            OracleDisposition::Model { reason } => training::Verdict::Model {
+                reason: reason.clone(),
+            },
         };
-        training::Example::new(PREFIX, mode, text, mentions.clone(), questions, tier2_result.take(), verdict)
+        training::Example::new(
+            PREFIX,
+            mode,
+            text,
+            mentions.clone(),
+            questions,
+            tier2_result.take(),
+            verdict,
+        )
     });
     let event = OracleDecision {
         batch_id: id,
@@ -943,7 +1124,12 @@ mod tests {
 
     fn kind(p_small: f32, disp: Disposition) -> Decision {
         let choice = if p_small >= 0.5 { "true" } else { "false" };
-        d(KIND, choice, &[("false", 1.0 - p_small), ("true", p_small)], disp)
+        d(
+            KIND,
+            choice,
+            &[("false", 1.0 - p_small), ("true", p_small)],
+            disp,
+        )
     }
 
     const KUIPER: &str = "them: So Mike was telling me about this at lunch. They were looking at the orbits of a few distant objects in the Kuiper belt, way out past Neptune, and the orbits were all clustered in a weird way.\n\
@@ -960,18 +1146,41 @@ them: No, that's the thing. It's all inferred from the clustering.";
         assert!(m.iter().any(|x| x == "Planet Nine"), "{m:?}");
         assert!(m.iter().any(|x| x == "Earth"), "{m:?}");
         // Sentence-initial single words are not mentions (`So`, `They`, `Has`, `No`, `It's`).
-        assert!(!m.iter().any(|x| x == "So" || x == "They" || x == "Has" || x == "No" || x == "It"), "{m:?}");
+        assert!(
+            !m.iter()
+                .any(|x| x == "So" || x == "They" || x == "Has" || x == "No" || x == "It"),
+            "{m:?}"
+        );
 
-        let m = mentions("them: the deploy is blocked on SRE-2386, the image tag pipeline for DR\nme: check the 33 kV feeder and the \"golden image\" in 10min, it's 600 seconds by default");
-        assert_eq!(m, vec!["SRE-2386", "DR", "golden image", "33 kV", "10min", "600 seconds"], "{m:?}");
+        let m = mentions(
+            "them: the deploy is blocked on SRE-2386, the image tag pipeline for DR\nme: check the 33 kV feeder and the \"golden image\" in 10min, it's 600 seconds by default",
+        );
+        assert_eq!(
+            m,
+            vec![
+                "SRE-2386",
+                "DR",
+                "golden image",
+                "33 kV",
+                "10min",
+                "600 seconds"
+            ],
+            "{m:?}"
+        );
         // Dates and ordinals are not units; `I` is not a name.
         let m = mentions("them: on the 15th of October I think 2 of them left");
         assert!(m.is_empty(), "{m:?}");
         // Capitalised runs count anywhere; a lone sentence-initial capital does not.
-        assert_eq!(mentions("me: Planet Nine is faint. Okay."), vec!["Planet Nine"]);
+        assert_eq!(
+            mentions("me: Planet Nine is faint. Okay."),
+            vec!["Planet Nine"]
+        );
         // Case-insensitive dedupe, cap.
         let many: String = (0..30).map(|i| format!("Name{i}, ")).collect();
-        assert_eq!(mentions(&format!("them: about {many} and dr DR")).len(), MAX_MENTIONS);
+        assert_eq!(
+            mentions(&format!("them: about {many} and dr DR")).len(),
+            MAX_MENTIONS
+        );
         assert_eq!(mentions("them: the DR test, then dr again and DR").len(), 1);
     }
 
@@ -993,52 +1202,107 @@ them: No, that's the thing. It's all inferred from the clustering.";
         let none: Vec<String> = Vec::new();
         let some = vec!["Kuiper belt".to_owned()];
         // Small talk accepted + no mentions → skip; the same with mentions → tier 2.
-        assert_eq!(settle(&kind(0.79, accept.clone()), None, &none), Settled::Skip);
+        assert_eq!(
+            settle(&kind(0.79, accept.clone()), None, &none),
+            Settled::Skip
+        );
         assert_eq!(
             settle(&kind(0.79, accept.clone()), None, &some),
             Settled::Tier2("small talk but mentions: Kuiper belt".into())
         );
         // Not small talk (false accepted) → tier 2, brief `none` or not.
         let b_none = d(BRIEF, "none", &[("b1", 0.1), ("none", 0.9)], accept.clone());
-        assert_eq!(settle(&kind(0.12, accept.clone()), Some(&b_none), &none), Settled::Tier2("not small talk".into()));
-        assert_eq!(settle(&kind(0.12, accept.clone()), None, &none), Settled::Tier2("not small talk".into()));
+        assert_eq!(
+            settle(&kind(0.12, accept.clone()), Some(&b_none), &none),
+            Settled::Tier2("not small talk".into())
+        );
+        assert_eq!(
+            settle(&kind(0.12, accept.clone()), None, &none),
+            Settled::Tier2("not small talk".into())
+        );
         // A brief accepted wins over everything, even small talk with no mentions.
         let b_a = d(BRIEF, "b1", &[("b1", 0.91), ("none", 0.09)], accept.clone());
-        assert_eq!(settle(&kind(0.79, accept.clone()), Some(&b_a), &none), Settled::Brief("b1".into()));
-        assert_eq!(settle(&kind(0.12, low.clone()), Some(&b_a), &some), Settled::Brief("b1".into()));
-        // A brief with P 0.65 but margin 0.2 is escalated by the engine's gate → tier 2.
-        let b_low = d(BRIEF, "b1", &[("b1", 0.65), ("b2", 0.45), ("none", 0.0)], low.clone());
-        assert_eq!(settle(&kind(0.12, accept.clone()), Some(&b_low), &none), Settled::Tier2("not small talk".into()));
-        // The kind question abstaining or timing out → tier 2 with the reason.
-        assert_eq!(settle(&kind(0.55, low), None, &none), Settled::Tier2("kind low margin".into()));
         assert_eq!(
-            settle(&d(KIND, "none", &[], Disposition::Escalate(Reason::Timeout)), None, &none),
+            settle(&kind(0.79, accept.clone()), Some(&b_a), &none),
+            Settled::Brief("b1".into())
+        );
+        assert_eq!(
+            settle(&kind(0.12, low.clone()), Some(&b_a), &some),
+            Settled::Brief("b1".into())
+        );
+        // A brief with P 0.65 but margin 0.2 is escalated by the engine's gate → tier 2.
+        let b_low = d(
+            BRIEF,
+            "b1",
+            &[("b1", 0.65), ("b2", 0.45), ("none", 0.0)],
+            low.clone(),
+        );
+        assert_eq!(
+            settle(&kind(0.12, accept.clone()), Some(&b_low), &none),
+            Settled::Tier2("not small talk".into())
+        );
+        // The kind question abstaining or timing out → tier 2 with the reason.
+        assert_eq!(
+            settle(&kind(0.55, low), None, &none),
+            Settled::Tier2("kind low margin".into())
+        );
+        assert_eq!(
+            settle(
+                &d(KIND, "none", &[], Disposition::Escalate(Reason::Timeout)),
+                None,
+                &none
+            ),
             Settled::Tier2("kind timeout".into())
         );
         // Shadow wrappers are looked through.
-        assert_eq!(settle(&kind(0.8, accept.clone()).shadowed(), None, &none), Settled::Skip);
-        assert_eq!(settle(&kind(0.2, accept).shadowed(), Some(&b_a.shadowed()), &none), Settled::Brief("b1".into()));
+        assert_eq!(
+            settle(&kind(0.8, accept.clone()).shadowed(), None, &none),
+            Settled::Skip
+        );
+        assert_eq!(
+            settle(&kind(0.2, accept).shadowed(), Some(&b_a.shadowed()), &none),
+            Settled::Brief("b1".into())
+        );
     }
 
     #[test]
     fn stages_evidence_and_top() {
         let titles: HashMap<String, String> = [("b1".to_owned(), "SRE-2386".to_owned())].into();
         let k = kind(0.12, Disposition::Accept);
-        let b = d(BRIEF, "none", &[("b1", 0.31), ("none", 0.55)], Disposition::Escalate(Reason::LowMargin));
+        let b = d(
+            BRIEF,
+            "none",
+            &[("b1", 0.31), ("none", 0.55)],
+            Disposition::Escalate(Reason::LowMargin),
+        );
         assert_eq!(
             stages(&k, Some(&b), &titles),
-            vec![("kind: subject".to_owned(), 0.88), ("brief: none".to_owned(), 0.55)]
+            vec![
+                ("kind: subject".to_owned(), 0.88),
+                ("brief: none".to_owned(), 0.55)
+            ]
         );
-        assert_eq!(stages(&kind(0.79, Disposition::Accept), None, &titles), vec![("kind: small talk".to_owned(), 0.79)]);
+        assert_eq!(
+            stages(&kind(0.79, Disposition::Accept), None, &titles),
+            vec![("kind: small talk".to_owned(), 0.79)]
+        );
         assert_eq!(
             evidence(&k, Some(&b), &titles, "not small talk"),
             "oracle: kind subject 0.88, brief none 0.55 / SRE-2386 0.31 (escalated: not small talk)"
         );
         assert_eq!(
-            evidence(&d(KIND, "none", &[], Disposition::Escalate(Reason::Timeout)), None, &titles, "kind timeout"),
+            evidence(
+                &d(KIND, "none", &[], Disposition::Escalate(Reason::Timeout)),
+                None,
+                &titles,
+                "kind timeout"
+            ),
             "oracle: kind ? (escalated: kind timeout)"
         );
-        assert_eq!(top(Some(&b), &titles), vec![("SRE-2386".to_owned(), 0.31), ("none".to_owned(), 0.55)]);
+        assert_eq!(
+            top(Some(&b), &titles),
+            vec![("SRE-2386".to_owned(), 0.31), ("none".to_owned(), 0.55)]
+        );
         assert!(top(None, &titles).is_empty());
     }
 
@@ -1049,23 +1313,68 @@ them: No, that's the thing. It's all inferred from the clustering.";
         let (k_id, b_id) = (LogId::new(), LogId::new());
         // Small talk (`true`) + brief `none`: confirmed by a turn that published nothing.
         let exp = Expected {
-            rows: vec![(k_id, KIND.into(), "true".into()), (b_id, BRIEF.into(), "none".into())],
+            rows: vec![
+                (k_id, KIND.into(), "true".into()),
+                (b_id, BRIEF.into(), "none".into()),
+            ],
         };
         let (o, r) = outcome(&exp, &[]);
-        assert_eq!(o, OracleOutcome { agreed: true, published: None });
-        assert_eq!(r, vec![(k_id, decision::Outcome::Confirmed), (b_id, decision::Outcome::Confirmed)]);
+        assert_eq!(
+            o,
+            OracleOutcome {
+                agreed: true,
+                published: None
+            }
+        );
+        assert_eq!(
+            r,
+            vec![
+                (k_id, decision::Outcome::Confirmed),
+                (b_id, decision::Outcome::Confirmed)
+            ]
+        );
         let (o, r) = outcome(&exp, &[(Some(a), "HR-12".into())]);
-        assert_eq!(o, OracleOutcome { agreed: false, published: Some("HR-12".into()) });
-        assert_eq!(r[0].1, decision::Outcome::Corrected { actual: "false".into() });
-        assert_eq!(r[1].1, decision::Outcome::Corrected { actual: a.to_string() });
+        assert_eq!(
+            o,
+            OracleOutcome {
+                agreed: false,
+                published: Some("HR-12".into())
+            }
+        );
+        assert_eq!(
+            r[0].1,
+            decision::Outcome::Corrected {
+                actual: "false".into()
+            }
+        );
+        assert_eq!(
+            r[1].1,
+            decision::Outcome::Corrected {
+                actual: a.to_string()
+            }
+        );
         // The oracle said brief=a; the model published a → agreed; published b → corrected.
         let exp = Expected {
-            rows: vec![(k_id, KIND.into(), "false".into()), (b_id, BRIEF.into(), a.to_string())],
+            rows: vec![
+                (k_id, KIND.into(), "false".into()),
+                (b_id, BRIEF.into(), a.to_string()),
+            ],
         };
         assert!(outcome(&exp, &[(Some(a), "x".into())]).0.agreed);
         let (o, r) = outcome(&exp, &[(Some(b), "y".into())]);
         assert!(!o.agreed);
-        assert_eq!(r, vec![(k_id, decision::Outcome::Confirmed), (b_id, decision::Outcome::Corrected { actual: b.to_string() })]);
+        assert_eq!(
+            r,
+            vec![
+                (k_id, decision::Outcome::Confirmed),
+                (
+                    b_id,
+                    decision::Outcome::Corrected {
+                        actual: b.to_string()
+                    }
+                )
+            ]
+        );
         // A new (uncached) brief counts as "something" for the kind and as no cached pick.
         let (o, _) = outcome(&exp, &[(None, "new".into())]);
         assert_eq!(o.published.as_deref(), Some("new"));
@@ -1076,9 +1385,28 @@ them: No, that's the thing. It's all inferred from the clustering.";
         let exp = Expected {
             rows: vec![(s_id, SUBJECT.into(), "lookup".into())],
         };
-        assert_eq!(outcome(&exp, &[(None, "new".into())]).1, vec![(s_id, decision::Outcome::Confirmed)]);
-        assert_eq!(outcome(&exp, &[(Some(a), "x".into())]).1, vec![(s_id, decision::Outcome::Corrected { actual: a.to_string() })]);
-        assert_eq!(outcome(&exp, &[]).1, vec![(s_id, decision::Outcome::Corrected { actual: "skip".into() })]);
+        assert_eq!(
+            outcome(&exp, &[(None, "new".into())]).1,
+            vec![(s_id, decision::Outcome::Confirmed)]
+        );
+        assert_eq!(
+            outcome(&exp, &[(Some(a), "x".into())]).1,
+            vec![(
+                s_id,
+                decision::Outcome::Corrected {
+                    actual: a.to_string()
+                }
+            )]
+        );
+        assert_eq!(
+            outcome(&exp, &[]).1,
+            vec![(
+                s_id,
+                decision::Outcome::Corrected {
+                    actual: "skip".into()
+                }
+            )]
+        );
         let exp = Expected {
             rows: vec![(s_id, SUBJECT.into(), a.to_string())],
         };
@@ -1088,8 +1416,22 @@ them: No, that's the thing. It's all inferred from the clustering.";
     #[test]
     fn state_and_batch_id() {
         let batch = vec![
-            Utterance { track: Track::System, t0_ms: 872_000, t1_ms: 873_000, text: " so the DR sync ".into(), request: false, speaker: None },
-            Utterance { track: Track::Mic, t0_ms: 874_000, t1_ms: 875_000, text: "right".into(), request: false, speaker: None },
+            Utterance {
+                track: Track::System,
+                t0_ms: 872_000,
+                t1_ms: 873_000,
+                text: " so the DR sync ".into(),
+                request: false,
+                speaker: None,
+            },
+            Utterance {
+                track: Track::Mic,
+                t0_ms: 874_000,
+                t1_ms: 875_000,
+                text: "right".into(),
+                request: false,
+                speaker: None,
+            },
         ];
         assert_eq!(state(&batch), "them: so the DR sync\nme: right");
         assert_eq!(batch_id(&batch), "00:14:32");

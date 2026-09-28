@@ -164,7 +164,9 @@ impl Threads {
     /// The session bound to `number`.
     #[must_use]
     pub fn get(&self, number: &str) -> Option<SessionId> {
-        self.map.get(&normalize_number(number)).and_then(|t| t.session)
+        self.map
+            .get(&normalize_number(number))
+            .and_then(|t| t.session)
     }
 
     /// Whether some number's thread is `session`.
@@ -1755,7 +1757,11 @@ impl Channel {
             }
             // 67 §10: an agent's thread hears `"<Title> — "` once per turn.
             let prefix = (!turn.prefixed)
-                .then(|| threads.agent_of(&to.number).map(|(_, t, _)| format!("{t} — ")))
+                .then(|| {
+                    threads
+                        .agent_of(&to.number)
+                        .map(|(_, t, _)| format!("{t} — "))
+                })
                 .flatten();
             turn.prefixed = true;
             (std::mem::take(&mut turn.text), turn.voice, prefix)
@@ -2216,7 +2222,13 @@ mod tests {
         let first = SessionId::new();
         t.bind(&Recipient::new(OWNER), first);
         // No desk: the session it had stays; the agent, title and task land.
-        t.bind_agent(&Recipient::new(OWNER), None, "ops".into(), "Ops".into(), None);
+        t.bind_agent(
+            &Recipient::new(OWNER),
+            None,
+            "ops".into(),
+            "Ops".into(),
+            None,
+        );
         assert_eq!(t.get(OWNER), Some(first));
         assert_eq!(t.agent_of(OWNER), Some(("ops", "Ops", None)));
         let desk = SessionId::new();
@@ -2236,11 +2248,23 @@ mod tests {
         assert_eq!(t3.agent_of(OWNER), None);
         assert_eq!(t3.get(OWNER), Some(desk));
         // A theuth bind drops any agent binding.
-        t.bind_agent(&Recipient::new(OWNER), None, "ops".into(), "Ops".into(), None);
+        t.bind_agent(
+            &Recipient::new(OWNER),
+            None,
+            "ops".into(),
+            "Ops".into(),
+            None,
+        );
         t.bind(&Recipient::new(OWNER), first);
         assert_eq!(Threads::load(dir.path()).agent_of(OWNER), None);
         // Agent-only thread with no session yet is not a session binding.
-        t.bind_agent(&Recipient::new(FRIEND), None, "dev".into(), "Dev".into(), None);
+        t.bind_agent(
+            &Recipient::new(FRIEND),
+            None,
+            "dev".into(),
+            "Dev".into(),
+            None,
+        );
         assert_eq!(t.get(FRIEND), None);
         assert_eq!(t.all().len(), 1);
         assert_eq!(first_line("  fix prod\nmore"), "fix prod");
@@ -2300,7 +2324,12 @@ mod tests {
             f.handle.link().await.unwrap(),
             "sgnl://linkdevice?uuid=mock&device=theuth"
         );
-        assert!(f.transport.linked_device_names().iter().all(|n| n == "theuth"));
+        assert!(
+            f.transport
+                .linked_device_names()
+                .iter()
+                .all(|n| n == "theuth")
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -601,7 +601,7 @@ async fn accept_in(
 ) -> anyhow::Result<(PeerReceipt, bool)> {
     bounded("sender", a.sender, EXTERNAL_ID_MAX)?;
     bounded("recipient", a.recipient, EXTERNAL_ID_MAX)?;
-    if a.body.len() > PEER_TEXT_MAX as usize {
+    if a.body.len() > PEER_TEXT_MAX {
         anyhow::bail!(CommError::TooLarge);
     }
     let owner = a
@@ -833,7 +833,7 @@ async fn bind_peer_in(
     alias: &str,
     endpoint: &str,
 ) -> anyhow::Result<PeerBinding> {
-    bounded("alias", alias, ALIAS_MAX as usize)?;
+    bounded("alias", alias, ALIAS_MAX)?;
     bounded("endpoint", endpoint, EXTERNAL_ID_MAX)?;
     let live: Option<(String, String)> = sqlx::query_as(
         "SELECT id, endpoint FROM peer_bindings WHERE alias = ? AND revoked_at IS NULL",
@@ -925,7 +925,7 @@ impl Store {
         alias: Option<&str>,
     ) -> anyhow::Result<()> {
         if let Some(a) = alias {
-            bounded("alias", a, ALIAS_MAX as usize)?;
+            bounded("alias", a, ALIAS_MAX)?;
         }
         let sid = root.to_string();
         let mut tx = self.begin_write().await?;
@@ -1071,7 +1071,11 @@ impl Store {
     /// [`Self::accept_exchange`] under a message id another engine minted
     /// (69 P: the owner's intake of a forwarded peer message). A duplicate
     /// `(sender, request_id)` still returns the existing row.
-    pub async fn accept_exchange_as(&self, id: Uuid, a: &AcceptExchange<'_>) -> anyhow::Result<PeerReceipt> {
+    pub async fn accept_exchange_as(
+        &self,
+        id: Uuid,
+        a: &AcceptExchange<'_>,
+    ) -> anyhow::Result<PeerReceipt> {
         let mut tx = self.begin_write().await?;
         let (receipt, _) = accept_in(&mut tx, a, Some(id)).await?;
         tx.commit().await?;
@@ -1165,7 +1169,7 @@ impl Store {
         by: SessionId,
         text: &str,
     ) -> anyhow::Result<PeerReceipt> {
-        if text.len() > PEER_TEXT_MAX as usize {
+        if text.len() > PEER_TEXT_MAX {
             anyhow::bail!(CommError::TooLarge);
         }
         let ids = original.to_string();
@@ -1962,9 +1966,14 @@ mod tests {
     async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("theuth-comm-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.sqlite"), None).await.unwrap();
+        let store = Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         (store, id, dir)
     }
 
@@ -2030,7 +2039,8 @@ mod tests {
     async fn dedup_returns_existing_and_conflicts_on_change() {
         let (store, a, dir) = fresh().await;
         let b = SessionId::new();
-        store.create_session(b, "m", Some(a), Some("b"), None)
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
             .await
             .unwrap();
         let (sa, sb) = (format!("session:{a}"), format!("session:{b}"));
@@ -2073,7 +2083,8 @@ mod tests {
     async fn consume_links_history_once_and_is_idempotent() {
         let (store, a, dir) = fresh().await;
         let b = SessionId::new();
-        store.create_session(b, "m", Some(a), Some("b"), None)
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
             .await
             .unwrap();
         let (sa, sb) = (format!("session:{a}"), format!("session:{b}"));
@@ -2119,7 +2130,10 @@ mod tests {
         // The sender sees its own record; a stranger does not.
         assert!(store.peer_record(a, r.id).await.unwrap().is_some());
         let c = SessionId::new();
-        store.create_session(c, "m", None, None, None).await.unwrap();
+        store
+            .create_session(c, "m", None, None, None)
+            .await
+            .unwrap();
         assert!(store.peer_record(c, r.id).await.unwrap().is_none());
         // Consumed cannot be suppressed; it can still fail.
         let e = store.suppress_exchange(r.id, "off").await.unwrap_err();
@@ -2132,10 +2146,12 @@ mod tests {
         let (store, a, dir) = fresh().await;
         let b = SessionId::new();
         let c = SessionId::new();
-        store.create_session(b, "m", Some(a), Some("b"), None)
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
             .await
             .unwrap();
-        store.create_session(c, "m", Some(a), Some("c"), None)
+        store
+            .create_session(c, "m", Some(a), Some("c"), None)
             .await
             .unwrap();
         let (sa, sb, sc) = (
@@ -2174,10 +2190,14 @@ mod tests {
         let (store, root, dir) = fresh().await;
         let kid = SessionId::new();
         let other = SessionId::new();
-        store.create_session(kid, "m", Some(root), Some("k"), None)
+        store
+            .create_session(kid, "m", Some(root), Some("k"), None)
             .await
             .unwrap();
-        store.create_session(other, "m", None, None, None).await.unwrap();
+        store
+            .create_session(other, "m", None, None, None)
+            .await
+            .unwrap();
         let (sr, sk, so) = (
             format!("session:{root}"),
             format!("session:{kid}"),
@@ -2195,7 +2215,10 @@ mod tests {
         req.request_id = Some("x");
         let inbound = store.accept_exchange(&req).await.unwrap();
         let far = SessionId::new();
-        store.create_session(far, "m", None, None, None).await.unwrap();
+        store
+            .create_session(far, "m", None, None, None)
+            .await
+            .unwrap();
         let sf = format!("session:{far}");
         let untouched = store
             .accept_exchange(&accept(&so, &sf, Some(other), Some(far), "5"))
@@ -2260,10 +2283,12 @@ mod tests {
         let (store, root, dir) = fresh().await;
         let kid = SessionId::new();
         let grandkid = SessionId::new();
-        store.create_session(kid, "m", Some(root), Some("k"), None)
+        store
+            .create_session(kid, "m", Some(root), Some("k"), None)
             .await
             .unwrap();
-        store.create_session(grandkid, "m", Some(kid), Some("g"), None)
+        store
+            .create_session(grandkid, "m", Some(kid), Some("g"), None)
             .await
             .unwrap();
         let l = store.lineage(grandkid).await.unwrap();
@@ -2352,7 +2377,8 @@ mod tests {
     async fn answers_record_who_answered() {
         let (store, a, dir) = fresh().await;
         let b = SessionId::new();
-        store.create_session(b, "m", Some(a), Some("b"), None)
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
             .await
             .unwrap();
         let (sa, sb) = (format!("session:{a}"), format!("session:{b}"));
@@ -2371,7 +2397,10 @@ mod tests {
         );
         // The human relabels an answer that travelled as `b`; a stranger cannot.
         let c = SessionId::new();
-        store.create_session(c, "m", None, None, None).await.unwrap();
+        store
+            .create_session(c, "m", None, None, None)
+            .await
+            .unwrap();
         let e = store.owner_answer(q1.id, c, "x").await.unwrap_err();
         assert!(err_is(&e, &CommError::NotFound), "{e}");
         let r = store.owner_answer(q1.id, b, "ignored").await.unwrap();
@@ -2410,7 +2439,7 @@ mod tests {
         let old = store.bind_peer("old", "https://old.example").await.unwrap();
         // One bad alias (over ALIAS_MAX) fails the whole commit: `old` stays live,
         // nothing about `new` is minted.
-        let long = "x".repeat(ALIAS_MAX as usize + 1);
+        let long = "x".repeat(ALIAS_MAX + 1);
         let e = store
             .commit_peer_bindings(
                 &[
@@ -2453,7 +2482,8 @@ mod tests {
     async fn direct_consumption_and_history_provenance() {
         let (store, a, dir) = fresh().await;
         let b = SessionId::new();
-        store.create_session(b, "m", Some(a), Some("b"), None)
+        store
+            .create_session(b, "m", Some(a), Some("b"), None)
             .await
             .unwrap();
         let (sa, sb) = (format!("session:{a}"), format!("session:{b}"));
@@ -2514,7 +2544,8 @@ mod tests {
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].receipt.id, first.id);
         let stranger = SessionId::new();
-        store.create_session(stranger, "m", None, None, None)
+        store
+            .create_session(stranger, "m", None, None, None)
             .await
             .unwrap();
         assert!(

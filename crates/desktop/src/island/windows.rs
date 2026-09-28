@@ -6,13 +6,13 @@
 
 use std::ffi::c_void;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tauri::WebviewWindow;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GetWindowLongPtrW, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
 };
 
@@ -38,7 +38,15 @@ pub fn show(win: &WebviewWindow) -> anyhow::Result<()> {
     // SAFETY: as in `init`; the flags leave position and size alone.
     unsafe {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
     Ok(())
 }
@@ -61,7 +69,11 @@ pub fn describe(win: &WebviewWindow) -> String {
 }
 
 fn hwnd(win: &WebviewWindow) -> anyhow::Result<HWND> {
-    match win.window_handle().context("island window handle")?.as_raw() {
+    match win
+        .window_handle()
+        .context("island window handle")?
+        .as_raw()
+    {
         RawWindowHandle::Win32(h) => Ok(h.hwnd.get() as *mut c_void),
         other => Err(anyhow!("island window handle is not Win32: {other:?}")),
     }

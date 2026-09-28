@@ -61,7 +61,8 @@ mod tests {
         assert_eq!(n.params["sessionId"], m.session_id);
         assert_eq!(PeerMessage::parse(&n), Some(m.clone()));
         // Through JSON, as the conn carries it.
-        let back: UntypedMessage = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
+        let back: UntypedMessage =
+            serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
         assert_eq!(PeerMessage::parse(&back), Some(m));
     }
 

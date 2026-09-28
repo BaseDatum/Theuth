@@ -17,9 +17,28 @@ const NUL_CHECK: usize = 8 * 1024;
 /// Go predeclared type names: a `reference.type` to one of these is dropped
 /// (there is no definition to resolve to; `none` rows would be noise).
 const GO_BUILTIN_TYPES: &[&str] = &[
-    "any", "bool", "byte", "comparable", "complex64", "complex128", "error", "float32", "float64",
-    "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16",
-    "uint32", "uint64", "uintptr",
+    "any",
+    "bool",
+    "byte",
+    "comparable",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
 ];
 
 /// The parsers one worker owns: the tags runner (which holds its own
@@ -181,7 +200,10 @@ pub fn parse<'c>(
     for r in &refs {
         let p = r.name_range.start;
         while di < defs.len() && defs[di].range.start <= p {
-            while open.last().is_some_and(|&(_, end)| end <= defs[di].range.start) {
+            while open
+                .last()
+                .is_some_and(|&(_, end)| end <= defs[di].range.start)
+            {
                 open.pop();
             }
             open.push((di, defs[di].range.end));
@@ -223,7 +245,12 @@ pub fn parse<'c>(
 /// Foo {`, the type follows ` for `): a method inside such a block gets the
 /// same-file `class` symbol of that type as its parent, so `code_outline`
 /// groups it and 60 §6.2 rule 2 can pick `Foo::new` among many `new`.
-fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag], cfg: &TagsConfiguration, src: &[u8]) {
+fn attach_impl_methods(
+    symbols: &mut [Symbol<'_>],
+    refs: &[tree_sitter_tags::Tag],
+    cfg: &TagsConfiguration,
+    src: &[u8],
+) {
     let text = |r: std::ops::Range<usize>| String::from_utf8_lossy(&src[r]).into_owned();
     let impls: Vec<(std::ops::Range<usize>, String)> = refs
         .iter()
@@ -232,7 +259,12 @@ fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag
             let line = text(r.line_range.clone());
             let owner = line
                 .split_once(" for ")
-                .map(|(_, t)| t.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>())
+                .map(|(_, t)| {
+                    t.trim_start()
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<String>()
+                })
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| text(r.name_range.clone()));
             (r.range.clone(), owner)
@@ -249,7 +281,11 @@ fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag
         .collect();
     // The type must come first in source order: `store::apply` inserts in
     // 500-row batches and `parent_id` is checked at each statement's end.
-    for (mi, s) in symbols.iter_mut().enumerate().filter(|(_, s)| s.kind == "method" && s.parent.is_none()) {
+    for (mi, s) in symbols
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, s)| s.kind == "method" && s.parent.is_none())
+    {
         let at = s.byte_start as usize;
         let owner = impls
             .iter()
@@ -273,18 +309,21 @@ fn attach_impl_methods(symbols: &mut [Symbol<'_>], refs: &[tree_sitter_tags::Tag
 fn qualifier(prefix: &[u8]) -> Option<String> {
     let (chain, sep): (&[u8], &[u8]) = if let Some(c) = prefix.strip_suffix(b"::") {
         (c, b"::")
-    } else if let Some(c) = prefix.strip_suffix(b".") {
-        (c, b".")
     } else {
-        return None;
+        (prefix.strip_suffix(b".")?, b".")
     };
     let is_ident = |s: &[u8]| {
-        s.first().is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_')
+        s.first()
+            .is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_')
             && s.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
     };
     let chain = std::str::from_utf8(chain).ok()?;
     let sep = std::str::from_utf8(sep).ok()?;
-    let body = if sep == "::" { chain.strip_prefix("::").unwrap_or(chain) } else { chain };
+    let body = if sep == "::" {
+        chain.strip_prefix("::").unwrap_or(chain)
+    } else {
+        chain
+    };
     if !body.is_empty() && body.split(sep).all(|s| is_ident(s.as_bytes())) {
         Some(chain.to_owned())
     } else {

@@ -810,13 +810,10 @@ pub fn extract_images(html: &str, base_url: &str) -> crate::Result<Vec<String>> 
     };
 
     // <img>
-    let img_elements: Vec<_> = match document
+    let img_elements: Vec<_> = document
         .select("img")
-        .map_err(|_| "Failed to select img tags")
-    {
-        Ok(x) => x.collect(),
-        Err(e) => return Err(e.into()),
-    };
+        .map_err(|_| "Failed to select img tags")?
+        .collect();
 
     for img in img_elements {
         let attrs = img.attributes.borrow();

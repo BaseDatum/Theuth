@@ -99,11 +99,7 @@ pub struct ToolRegistry {
     gate: Option<Arc<dyn ExecutionGate>>,
     /// Lifecycle owners from [`RegisterLifecycle`] (51 §4.4), by name; a
     /// second registration under a name replaces the first.
-    participants: Vec<(
-        &'static str,
-        Option<Recipient<TreeOpened>>,
-        ReplyRecipient<CloseTree, CloseAck>,
-    )>,
+    participants: Vec<Participant>,
     /// Owner names [`ExpectParticipants`] said must register before
     /// [`ParticipantsReady`] says so.
     expected: Vec<&'static str>,
@@ -115,6 +111,13 @@ pub struct ToolRegistry {
     /// persistent knob is [`SetPtyIdle`].
     pty_idle: Arc<AtomicU64>,
 }
+
+/// One [`RegisterLifecycle`] entry: owner name, its `TreeOpened` recipient, its `CloseTree` reply recipient.
+type Participant = (
+    &'static str,
+    Option<Recipient<TreeOpened>>,
+    ReplyRecipient<CloseTree, CloseAck>,
+);
 
 /// `ask` → `Vec<ToolSpec>` for every registered tool, sorted by name; with a
 /// session, minus what [`SetHidden`] hid for it or an ancestor.
@@ -1151,9 +1154,7 @@ impl Message<DescribeTools> for ToolRegistry {
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
             .map(|(_, t)| self.inspect(t, session, false))
-            .filter(|i| {
-                !session.is_some_and(|s| self.capped(s, &i.spec.name, i.spec.risk).is_some())
-            })
+            .filter(|i| session.is_none_or(|s| self.capped(s, &i.spec.name, i.spec.risk).is_none()))
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
         out
@@ -1216,9 +1217,7 @@ impl Message<ListTools> for ToolRegistry {
                 session.is_none_or(|s| !self.is_hidden(s, name) && self.communicable(s, name))
             })
             .map(|(_, t)| t.spec())
-            .filter(|spec| {
-                !session.is_some_and(|s| self.capped(s, &spec.name, spec.risk).is_some())
-            })
+            .filter(|spec| session.is_none_or(|s| self.capped(s, &spec.name, spec.risk).is_none()))
             .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
@@ -1497,6 +1496,8 @@ impl Drop for Held {
 /// is the caller's execution bound: an approval wait, and the body of a tool
 /// that is itself a human wait (`ask_user`), run suspended, and nothing of
 /// the body runs before the suspension resumed.
+// Every argument is a distinct per-call input; a bundling struct would only be built at the one call site.
+#[allow(clippy::too_many_arguments)]
 async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
@@ -2048,7 +2049,11 @@ mod tests {
             destructive: PolicyAction::Allow,
         };
         let reg = registry_with(
-            vec![Arc::new(Echo), Arc::new(Touch), Arc::new(Peer(Arc::default()))],
+            vec![
+                Arc::new(Echo),
+                Arc::new(Touch),
+                Arc::new(Peer(Arc::default())),
+            ],
             None,
             allow,
             None,
@@ -2064,7 +2069,12 @@ mod tests {
             names(reg.ask(ListTools(Some(child))).await.unwrap()),
             ["echo", "touch"]
         );
-        assert!(!reg.ask(Invoke(call("touch", child))).await.unwrap().is_error);
+        assert!(
+            !reg.ask(Invoke(call("touch", child)))
+                .await
+                .unwrap()
+                .is_error
+        );
 
         // (a) capped at read_only: `touch` is not offered ...
         reg.tell(SetCap {
@@ -2080,7 +2090,10 @@ mod tests {
         // (b) ... and naming it anyway is the cap's refusal, not the policy's.
         let out = reg.ask(Invoke(call("touch", child))).await.unwrap();
         assert!(out.is_error, "{out:?}");
-        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+        assert_eq!(
+            out.content,
+            "touch: denied: subagent is capped at read_only"
+        );
         // (e) a read-only tool still runs.
         assert!(!reg.ask(Invoke(call("echo", child))).await.unwrap().is_error);
         // `send_message` is exempt: still described, still allowed.
@@ -2110,7 +2123,10 @@ mod tests {
             ["echo"]
         );
         let out = reg.ask(Invoke(call("touch", grandchild))).await.unwrap();
-        assert_eq!(out.content, "touch: denied: subagent is capped at read_only");
+        assert_eq!(
+            out.content,
+            "touch: denied: subagent is capped at read_only"
+        );
 
         // (d) clearing the child's cap restores both.
         reg.tell(SetCap {
@@ -2123,7 +2139,12 @@ mod tests {
             names(reg.ask(ListTools(Some(child))).await.unwrap()),
             ["echo", "touch"]
         );
-        assert!(!reg.ask(Invoke(call("touch", grandchild))).await.unwrap().is_error);
+        assert!(
+            !reg.ask(Invoke(call("touch", grandchild)))
+                .await
+                .unwrap()
+                .is_error
+        );
     }
 
     /// Stands in for the agent's `send_message`: counts body runs.

@@ -16,7 +16,8 @@ use models::accelerator::Accelerator;
 pub const MISSING: i32 = 2;
 
 /// The utterance the third STT run must bring back (about 5 s spoken).
-const SPEECH: &str = "The quick brown fox jumps over the lazy dog while the meeting notes are being transcribed.";
+const SPEECH: &str =
+    "The quick brown fox jumps over the lazy dog while the meeting notes are being transcribed.";
 
 pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelerator) -> i32 {
     models::accelerator::set(accelerator);
@@ -40,7 +41,11 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
             println!(
                 "onnxruntime webgpu plugin: {} ({})",
                 plugin.display(),
-                if plugin.is_file() { "present" } else { "absent" }
+                if plugin.is_file() {
+                    "present"
+                } else {
+                    "absent"
+                }
             );
             for d in models::onnx::devices() {
                 println!("onnxruntime device: {d}");
@@ -57,7 +62,11 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                 match voice::Engine::load(&dir, data_dir) {
                     Err(e) => println!("stt: failed to load {}: {e:#}", dir.display()),
                     Ok(engine) => {
-                        println!("stt load: {} ms ({})", t.elapsed().as_millis(), dir.display());
+                        println!(
+                            "stt load: {} ms ({})",
+                            t.elapsed().as_millis(),
+                            dir.display()
+                        );
                         let silence = vec![0.0f32; 16_000 * 5];
                         let mut first = 0u128;
                         for pass in ["first", "second"] {
@@ -68,9 +77,15 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                                     if pass == "first" {
                                         first = ms;
                                     } else {
-                                        println!("stt first-run overhead (shader/graph compile): {} ms", first.saturating_sub(ms));
+                                        println!(
+                                            "stt first-run overhead (shader/graph compile): {} ms",
+                                            first.saturating_sub(ms)
+                                        );
                                     }
-                                    println!("stt {pass} run, 5 s silence: {ms} ms (text {:?})", p.text);
+                                    println!(
+                                        "stt {pass} run, 5 s silence: {ms} ms (text {:?})",
+                                        p.text
+                                    );
                                 }
                                 Err(e) => println!("stt {pass} run: failed: {e:#}"),
                             }
@@ -79,7 +94,10 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                         let tts = data_dir.join("models/pocket-tts");
                         let t = Instant::now();
                         match voice::speech_sample(&tts, "peter_yearsley", SPEECH) {
-                            Err(e) => println!("stt speech clip: none — {e:#} (pocket-tts at {})", tts.display()),
+                            Err(e) => println!(
+                                "stt speech clip: none — {e:#} (pocket-tts at {})",
+                                tts.display()
+                            ),
                             Ok(pcm) => {
                                 println!(
                                     "stt speech clip: {:.1} s synthesized in {} ms (expect {SPEECH:?})",
@@ -88,7 +106,11 @@ pub fn run(data_dir: &Path, decision_cfg: &DecisionConfig, accelerator: Accelera
                                 );
                                 let t = Instant::now();
                                 match engine.transcribe(&pcm, false) {
-                                    Ok(p) => println!("stt third run, speech: {} ms (text {:?})", t.elapsed().as_millis(), p.text),
+                                    Ok(p) => println!(
+                                        "stt third run, speech: {} ms (text {:?})",
+                                        t.elapsed().as_millis(),
+                                        p.text
+                                    ),
                                     Err(e) => println!("stt third run: failed: {e:#}"),
                                 }
                             }

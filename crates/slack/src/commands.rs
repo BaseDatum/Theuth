@@ -174,7 +174,8 @@ pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
 ];
 
 const OWNER_MSG: &str = "This command is restricted to the owner.";
-const NO_SESSION: &str = "no active thread here; run it in a DM with the bot or /theuth resume <id>";
+const NO_SESSION: &str =
+    "no active thread here; run it in a DM with the bot or /theuth resume <id>";
 /// `prompt` body cap: at most four ≤ 3 000-char sections.
 const PROMPT_MAX: usize = 11_900;
 

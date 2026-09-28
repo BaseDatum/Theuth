@@ -334,10 +334,12 @@ mod tests {
     fn rejects_unsupported_encoders() {
         assert!(EncoderConfig::from_value(&encoder(json!({"model_type": "bert"}))).is_err());
         assert!(EncoderConfig::from_value(&encoder(json!({"hidden_activation": "silu"}))).is_err());
-        assert!(EncoderConfig::from_value(&encoder(json!({
-            "rope_parameters": {"full_attention": {"rope_type": "yarn"}}
-        })))
-        .is_err());
+        assert!(
+            EncoderConfig::from_value(&encoder(json!({
+                "rope_parameters": {"full_attention": {"rope_type": "yarn"}}
+            })))
+            .is_err()
+        );
     }
 
     #[test]
@@ -395,16 +397,31 @@ mod tests {
     fn parses_root_and_v17s_checkpoint_configs() {
         let fixture = |name: &str| -> Value {
             let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/").to_owned() + name;
-            serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"))).unwrap()
+            serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}")))
+                .unwrap()
         };
         let root = EncoderConfig::from_value(&fixture("laya-root/encoder-config.json")).unwrap();
-        assert_eq!((root.vocab_size, root.hidden_size, root.num_hidden_layers), (50368, 1024, 28));
+        assert_eq!(
+            (root.vocab_size, root.hidden_size, root.num_hidden_layers),
+            (50368, 1024, 28)
+        );
         assert_eq!(root.rope_base(SLIDING_ATTENTION), 10_000.0);
-        let agent = AgentConfig::from_value(&fixture("laya-root/rl_agent_config.json"), root.max_position_embeddings).unwrap();
-        assert_eq!((agent.max_len, agent.head_max_len, agent.head_layers), (512, 192, 2));
+        let agent = AgentConfig::from_value(
+            &fixture("laya-root/rl_agent_config.json"),
+            root.max_position_embeddings,
+        )
+        .unwrap();
+        assert_eq!(
+            (agent.max_len, agent.head_max_len, agent.head_layers),
+            (512, 192, 2)
+        );
 
-        let v17s = EncoderConfig::from_value(&fixture("laya-browser-v17s/encoder-config.json")).unwrap();
-        assert_eq!((v17s.vocab_size, v17s.hidden_size, v17s.num_hidden_layers), (256_000, 768, 22));
+        let v17s =
+            EncoderConfig::from_value(&fixture("laya-browser-v17s/encoder-config.json")).unwrap();
+        assert_eq!(
+            (v17s.vocab_size, v17s.hidden_size, v17s.num_hidden_layers),
+            (256_000, 768, 22)
+        );
         assert_eq!(v17s.intermediate_size, 1152);
         assert_eq!(v17s.head_dim(), 64);
         assert_eq!(v17s.layer_types().len(), 22);
@@ -412,7 +429,10 @@ mod tests {
         assert_eq!(v17s.rope_base(SLIDING_ATTENTION), 160_000.0);
         let raw = fixture("laya-browser-v17s/rl_agent_config.json");
         let agent = AgentConfig::from_value(&raw, v17s.max_position_embeddings).unwrap();
-        assert_eq!((agent.max_len, agent.head_max_len, agent.head_layers), (1024, 768, 2));
+        assert_eq!(
+            (agent.max_len, agent.head_max_len, agent.head_layers),
+            (1024, 768, 2)
+        );
         let laya: crate::laya::LayaConfig = serde_json::from_value(raw).unwrap();
         assert_eq!(laya.head_budget(), 768);
         assert!((laya.temperature(crate::laya::QType::Choice, 12) - 5.025_58).abs() < 1e-4);
