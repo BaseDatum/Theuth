@@ -1,0 +1,14 @@
+/* 73 §6.6 rule 5: motion is opacity only — new nodes fade in ≤ 200 ms, positions never animate. */
+.codemap-node {
+  transition: opacity 200ms;
+}
+@starting-style {
+  .codemap-node {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .codemap-node {
+    transition: none;
+  }
+}
