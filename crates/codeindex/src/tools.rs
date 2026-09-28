@@ -937,6 +937,7 @@ impl CodeMapTool {
                     kind: r.kind.clone(),
                     line_start: r.line_start,
                     line_end: r.line_end,
+                    moniker: r.moniker.clone(),
                 })
                 .collect();
             let hit: HashSet<i64> = touched(&syms, &c.spans).iter().filter_map(|s| s.id).collect();

@@ -845,6 +845,7 @@ mod tests {
             kind: "function".into(),
             name: "tiny".into(),
             signature: "pub fn tiny()".into(),
+            moniker: "rust:crates/small/src/lib.rs#tiny(function)".into(),
             rank: 0.0001,
         });
         let mut facts = MapFacts {

@@ -1209,7 +1209,7 @@ async fn find_tiers_and_monikers() {
     );
     // code_map rows carry it.
     let out = CodeMapTool(ix.clone())
-        .call(CodeMapArgs { focus: None, budget: None, paths_only: None, root: root.clone() }, cx(&data))
+        .call(CodeMapArgs { focus: None, budget: None, paths_only: None, mode: None, root: root.clone() }, cx(&data))
         .await
         .unwrap();
     let v = out.structured.unwrap();
