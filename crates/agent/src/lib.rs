@@ -28,6 +28,7 @@ pub mod acp_child;
 pub mod attach;
 mod aws;
 mod backend;
+pub mod clock;
 pub mod communication;
 pub mod compact;
 pub mod context;

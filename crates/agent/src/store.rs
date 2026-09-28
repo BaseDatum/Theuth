@@ -357,6 +357,8 @@ struct Row {
     /// the readers that need it, so a corrupt note cannot hide a transcript
     /// from turn readers).
     vision: Option<String>,
+    /// Raw `messages.at` (RFC 3339 UTC); `None` for rows older than 0026.
+    at: Option<String>,
 }
 
 /// Raw `sessions` row; ids and timestamps are TEXT and parsed on the way out.
@@ -1419,7 +1421,7 @@ impl Store {
     /// Rows hidden by undo (`seq >= cut_at`); empty when `cut_at` is NULL.
     async fn hidden(&self, id: SessionId) -> anyhow::Result<Vec<Row>> {
         let rows = sqlx::query_as(
-            "SELECT seq, body, excluded, vision FROM messages WHERE session_id = ?1 \
+            "SELECT seq, body, excluded, vision, at FROM messages WHERE session_id = ?1 \
              AND seq >= (SELECT cut_at FROM sessions WHERE id = ?1) ORDER BY seq",
         )
         .bind(id.to_string())
@@ -1690,8 +1692,8 @@ impl Store {
         }
         accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded, vision) \
-             SELECT ?1, seq, body, excluded, vision FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision, at) \
+             SELECT ?1, seq, body, excluded, vision, at FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
@@ -2050,6 +2052,7 @@ impl Store {
             if let Some(raw) = &r.vision {
                 e.vision = Some(note_of(id, r.seq, raw)?);
             }
+            e.at = r.at.clone();
             entries.insert(r.seq, e);
         }
         let heads = epochs
@@ -2492,15 +2495,15 @@ fn decode_rows(id: SessionId, rows: Vec<(i64, String)>) -> Vec<(i64, ChatMessage
         .collect()
 }
 
-/// `(seq, body, excluded, vision)` rows to [`Row`]s: undecodable bodies are
-/// skipped (warned); an undecodable mask is an error, because replaying a row
-/// the user removed is the one wrong answer.
-fn decode_masked(
-    id: SessionId,
-    rows: Vec<(i64, String, Option<String>, Option<String>)>,
-) -> anyhow::Result<Vec<Row>> {
+/// One `messages` row as selected: `(seq, body, excluded, vision, at)`.
+type RawRow = (i64, String, Option<String>, Option<String>, Option<String>);
+
+/// [`RawRow`]s to [`Row`]s: undecodable bodies are skipped (warned); an
+/// undecodable mask is an error, because replaying a row the user removed is
+/// the one wrong answer.
+fn decode_masked(id: SessionId, rows: Vec<RawRow>) -> anyhow::Result<Vec<Row>> {
     let mut out = Vec::with_capacity(rows.len());
-    for (seq, body, excluded, vision) in rows {
+    for (seq, body, excluded, vision, at) in rows {
         let mask =
             Mask::decode(excluded.as_deref()).with_context(|| format!("message {seq} of {id}"))?;
         if let Some((seq, message)) = decode_rows(id, vec![(seq, body)]).pop() {
@@ -2509,6 +2512,7 @@ fn decode_masked(
                 message,
                 mask,
                 vision,
+                at,
             });
         }
     }
@@ -2547,20 +2551,22 @@ async fn insert_in(
     vision: Option<&str>,
 ) -> anyhow::Result<i64> {
     let body = serde_json::to_string(message)?;
+    let now = chrono::Utc::now().to_rfc3339();
     let (seq,): (i64,) = sqlx::query_as(
-        "INSERT INTO messages (session_id, seq, body, vision) \
-         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2, ?3 FROM messages WHERE session_id = ?1 \
+        "INSERT INTO messages (session_id, seq, body, vision, at) \
+         SELECT ?1, COALESCE(MAX(seq), -1) + 1, ?2, ?3, ?4 FROM messages WHERE session_id = ?1 \
          RETURNING seq",
     )
     .bind(sid)
     .bind(body)
     .bind(vision)
+    .bind(&now)
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query(
         "UPDATE sessions SET updated_at = ?, context_revision = context_revision + 1 WHERE id = ?",
     )
-    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(&now)
     .bind(sid)
     .execute(conn)
     .await?;
@@ -2612,7 +2618,7 @@ async fn rows_in(
     from: i64,
 ) -> anyhow::Result<Vec<Row>> {
     let rows = sqlx::query_as(
-        "SELECT seq, body, excluded, vision FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+        "SELECT seq, body, excluded, vision, at FROM messages WHERE session_id = ?1 AND seq >= ?2 \
          AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
          ORDER BY seq",
     )
@@ -2771,6 +2777,28 @@ mod tests {
 
     fn asst(t: &str) -> ChatMessage {
         ChatMessage::assistant(MessageContent::from_text(t))
+    }
+
+    /// 73 §5: every appended row records when, readable as `ContextEntry.at`;
+    /// a row from before the column (simulated by clearing it) has none.
+    #[tokio::test]
+    async fn message_time_is_stored_and_exposed() {
+        let (store, id, dir) = fresh().await;
+        let before = chrono::Utc::now();
+        append_all(&store, id, [ChatMessage::user("hi"), asst("hello")]).await;
+        sqlx::query("UPDATE messages SET at = NULL WHERE session_id = ? AND seq = 0")
+            .bind(id.to_string())
+            .execute(&store.read)
+            .await
+            .unwrap();
+        let h = store.context_history(id).await.unwrap();
+        assert_eq!(h.entries[&0].at, None);
+        let at = chrono::DateTime::parse_from_rfc3339(h.entries[&1].at.as_deref().unwrap())
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(at >= before - chrono::Duration::seconds(1) && at <= chrono::Utc::now());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
