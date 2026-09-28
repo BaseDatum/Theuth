@@ -95,7 +95,7 @@ pub fn refine(
     }
 
     let before = rows.len();
-    rows.retain(|(r, h)| !(h.ends_with("wikipedia.org") && !shares_token(&r.title, terms)));
+    rows.retain(|(r, h)| !h.ends_with("wikipedia.org") || shares_token(&r.title, terms));
     let dropped = before - rows.len();
     if dropped > 0 {
         notes.push(format!("{dropped} unrelated Wikipedia rows dropped"));
@@ -166,12 +166,11 @@ pub fn refine(
         if in_list(h, LOW_QUALITY_HOSTS) {
             return 2;
         }
-        if h == "github.com" {
-            if let Some((owner, repo)) = repo_path(&r.url) {
-                if canonical_owner.get(&repo).is_some_and(|c| *c != owner) {
-                    return 1;
-                }
-            }
+        if h == "github.com"
+            && let Some((owner, repo)) = repo_path(&r.url)
+            && canonical_owner.get(&repo).is_some_and(|c| *c != owner)
+        {
+            return 1;
         }
         0
     };

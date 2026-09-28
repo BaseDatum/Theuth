@@ -215,6 +215,8 @@ const MIN_PROSE: usize = 100;
 /// model is told the page needs the browser. `activity` is the invocation's
 /// guard, carried explicitly because this runs in a spawned task: the
 /// actor's detached read holds it past the timeout.
+// Every argument is a distinct per-read input shared by the two call sites; a struct would only be built there.
+#[allow(clippy::too_many_arguments)]
 async fn read_page(
     actor: ActorRef<WebActor>,
     activity: Option<Activity>,
@@ -319,17 +321,17 @@ fn plan_reads(
     results: &[RankedResult],
     terms: &[String],
     read: usize,
-) -> Vec<Result<String, ReadPage>> {
+) -> Vec<Result<String, Box<ReadPage>>> {
     let need_alone = terms.len().div_ceil(2).clamp(1, 2);
     let mut slots = read;
     results
         .iter()
         .map(|r| {
             if !(r.url.starts_with("http://") || r.url.starts_with("https://")) {
-                return Err(skipped(&r.url, "error: not an http(s) URL"));
+                return Err(Box::new(skipped(&r.url, "error: not an http(s) URL")));
             }
             if slots == 0 {
-                return Err(skipped(&r.url, "budget"));
+                return Err(Box::new(skipped(&r.url, "budget")));
             }
             let hay = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
             let squashed: String = hay.chars().filter(|c| !c.is_whitespace()).collect();
@@ -343,7 +345,7 @@ fn plan_reads(
                 need_alone
             };
             if matched < need {
-                return Err(skipped(&r.url, "not-relevant"));
+                return Err(Box::new(skipped(&r.url, "not-relevant")));
             }
             slots -= 1;
             Ok(r.url.clone())
@@ -453,7 +455,7 @@ impl Tool for SearchTool {
             resp.pages = plan
                 .into_iter()
                 .map(|p| match p {
-                    Err(page) => page,
+                    Err(page) => *page,
                     Ok(url) => finished
                         .next()
                         .flatten()
@@ -708,7 +710,7 @@ mod tests {
             )
         };
         assert_eq!(
-            plan(&[agreed.clone()], "bun latest version", 8)[0],
+            plan(std::slice::from_ref(&agreed), "bun latest version", 8)[0],
             "read https://github.com/oven-sh/bun/releases"
         );
         assert_eq!(
