@@ -193,7 +193,7 @@ function ThisMesh() {
             if (pasted.trim()) add.mutate(pasted.trim())
           }}
         >
-          <Input className="h-8 flex-1 font-mono text-xs" placeholder="Paste another node's pairing string" value={pasted} onChange={(e) => setPasted(e.target.value)} />
+          <Input className="h-8 flex-1 font-mono text-base md:text-xs" placeholder="Paste another node's pairing string" value={pasted} onChange={(e) => setPasted(e.target.value)} />
           <Button type="submit" size="sm" variant="outline" disabled={add.isPending || !pasted.trim()}>
             Add
           </Button>

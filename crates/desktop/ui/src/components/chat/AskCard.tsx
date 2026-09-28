@@ -49,7 +49,7 @@ function ReadAloud({ session, entryKey, text }: { session: string; entryKey: str
 
 /** The `Type your own…` box; the `Input` carries the dictation mic (54). */
 function OwnAnswer({ value, active, onChange }: { value: string; active: boolean; onChange: (v: string) => void }) {
-  return <Input placeholder="Type your own…" value={value} onChange={(e) => onChange(e.target.value)} className={cn('h-8 min-w-0 flex-1 text-sm', active && 'border-fg-accent')} />
+  return <Input placeholder="Type your own…" value={value} onChange={(e) => onChange(e.target.value)} className={cn('h-8 min-w-0 flex-1 text-base md:text-sm', active && 'border-fg-accent')} />
 }
 
 /** One question. `locked`: the answer was sent; everything renders but nothing changes. */
@@ -112,7 +112,7 @@ function QuestionBlock({
         })}
         {locked ? (
           (typing || skipped) && (
-            <Input readOnly value={typing ? draft.text : ''} placeholder="Skipped" className={cn('h-8 text-sm', typing && 'border-fg-accent')} />
+            <Input readOnly value={typing ? draft.text : ''} placeholder="Skipped" className={cn('h-8 text-base md:text-sm', typing && 'border-fg-accent')} />
           )
         ) : (
           <div className="flex items-center gap-2">

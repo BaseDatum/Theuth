@@ -234,7 +234,7 @@ function AttentionCard({ item }: { item: AttentionItem }) {
               if (answer.trim() && item.decision) act.decide.mutate({ decision: item.decision, answer: answer.trim() })
             }}
           >
-            <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your decision…" className="h-7 w-44 text-xs" aria-label="Decision" />
+            <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your decision…" className="h-7 w-44 text-base md:text-xs" aria-label="Decision" />
             <Button size="xs" type="submit" disabled={busy || !answer.trim()}>
               Answer
             </Button>

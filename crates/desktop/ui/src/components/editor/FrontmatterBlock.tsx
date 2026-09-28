@@ -166,7 +166,7 @@ function FrontmatterForm({ yaml, onChange, onDone }: Props & { onDone: () => voi
           onKeyDown={(e) => e.key === 'Enter' && commitDraft()}
         >
           <Input
-            className="h-8 font-mono text-xs shadow-none md:text-xs"
+            className="h-8 font-mono text-base shadow-none md:text-xs"
             value={draft.key}
             placeholder="key"
             autoFocus
@@ -233,7 +233,7 @@ function FreeRow({
   return (
     <>
       <Input
-        className="h-8 font-mono text-xs shadow-none md:text-xs"
+        className="h-8 font-mono text-base shadow-none md:text-xs"
         value={key}
         placeholder="key"
         autoFocus={entry.key === ''}
