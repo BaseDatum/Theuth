@@ -845,11 +845,13 @@ fn render(
             text.push('\n');
         }
     }
-    let mut ranges = (max_len > 0)
-        .then(|| spans(&text))
-        .unwrap_or_default()
-        .into_iter()
-        .peekable();
+    let mut ranges = if max_len > 0 {
+        spans(&text)
+    } else {
+        Vec::new()
+    }
+    .into_iter()
+    .peekable();
     let mut prev_masked = false;
     for cell in page.iter_mut().flatten() {
         while ranges.peek().is_some_and(|s| s.end <= cell.at) {
