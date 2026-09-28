@@ -97,6 +97,7 @@ import type { Revision } from '@/rpc/bindings/Revision'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
+import type { Verdict } from '@/rpc/bindings/Verdict'
 import type { ArtifactMatchContext } from '@/rpc/bindings/ArtifactMatchContext'
 import type { ArchiveListing } from '@/rpc/bindings/ArchiveListing'
 import type { HistoricalConcept } from '@/rpc/bindings/HistoricalConcept'
@@ -646,6 +647,8 @@ export interface Api {
   put_schedule(file: ScheduleFile): Promise<ScheduleInfo>
   /** Remove a schedule file; rejects with `no such schedule`. */
   delete_schedule(name: string): Promise<void>
+  /** The 40 §1.12 verdict for a `when:` schedule (dry-run twice, probe); rejects with `no such schedule` / `not a watcher`. */
+  test_schedule(name: string): Promise<Verdict>
   /** `id`: the client input id (70 SEND-NEVER-LOSES); a retry with the same id within the engine's window is acked without a second row. */
   send_input(
     session: SessionId | null,
@@ -998,6 +1001,7 @@ export const METHODS = [
   'task_move',
   'task_update',
   'tasks_list',
+  'test_schedule',
   'title_model',
   'transcribe',
   'undo',

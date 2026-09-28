@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, PanelLeft, Play } from 'lucide-react'
+import { ChevronLeft, FlaskConical, PanelLeft, Play } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Field } from '@/components/agents/RuntimeAccessFields'
@@ -32,7 +32,7 @@ import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import { RoutineChips } from './RoutinesView'
-import { SECTIONS, type Section, cadence, cronWords, relative, resultKind, runCount, took } from './helpers'
+import { SECTIONS, type Section, cadence, cronWords, lastCheckText, relative, resultKind, runCount, took, verdictText } from './helpers'
 import { KEY, useNotHub, useRoutineFile, useRoutineHistory, useRoutines } from './queries'
 
 const NEW: ScheduleFile = {
@@ -50,6 +50,16 @@ const NEW: ScheduleFile = {
   approvals: true,
   agent: null,
   project: null,
+  // 40 §2: watcher keys; the form does not edit them yet, a saved file keeps what it had.
+  when: null,
+  fire: null,
+  for: null,
+  cooldown: null,
+  mode: null,
+  memory: null,
+  expires: null,
+  timeout: null,
+  created: null,
   prompt: '',
 }
 
@@ -69,6 +79,11 @@ export function RoutineDetail({ name, section }: { name: string | null; section:
     onSuccess: (session) => void navigate({ to: '/c/$session', params: { session } }),
   })
   const enable = useAction((v: { name: string; enabled: boolean }) => api.enable_schedule(v.name, v.enabled), { keys: [KEY] })
+  // 40 §6: the §1.12 verdict on demand for a `when:` file; refusals toast as errors.
+  const test = useAction((n: string) => api.test_schedule(n), {
+    keys: [KEY],
+    onSuccess: (v, n) => toast.message(`Test ${n}`, { description: verdictText(v) }),
+  })
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
@@ -94,6 +109,11 @@ export function RoutineDetail({ name, section }: { name: string | null; section:
             <Button variant="outline" size="xs" disabled={fire.isPending || info.error !== null || info.running} onClick={() => fire.mutate(info.name)}>
               <Play /> Run now
             </Button>
+            {info.when_sensor !== null && (
+              <Button variant="outline" size="xs" disabled={test.isPending || info.error !== null} onClick={() => test.mutate(info.name)}>
+                <FlaskConical /> Test
+              </Button>
+            )}
             <Switch
               size="sm"
               checked={info.enabled}
@@ -144,7 +164,7 @@ export function RoutineDetail({ name, section }: { name: string | null; section:
   )
 }
 
-/** Paperclip's overview facts: cadence · next · last · runs, plus the chips. */
+/** Paperclip's overview facts: cadence · next · last · runs, plus the chips; a watcher adds its last sensor check (40 §6). */
 function Facts({ s, notHub }: { s: ScheduleInfo; notHub: boolean }) {
   const loop = s.until !== null || s.max_runs !== null
   return (
@@ -177,6 +197,11 @@ function Facts({ s, notHub }: { s: ScheduleInfo; notHub: boolean }) {
           '—'
         )}
       </Fact>
+      {s.when_sensor !== null && (
+        <Fact label="Last check" title={s.last_check?.hash ?? undefined}>
+          {s.last_check ? lastCheckText(s.last_check) : 'never'}
+        </Fact>
+      )}
       <div className="flex flex-wrap items-center gap-1.5 sm:col-span-4">
         <RoutineChips s={s} notHub={notHub} />
       </div>

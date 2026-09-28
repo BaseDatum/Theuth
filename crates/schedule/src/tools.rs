@@ -12,8 +12,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
-use crate::ScheduleInfo;
 use crate::file::{self, FileArgs, When};
+use crate::{validate, ScheduleInfo};
+use agent::sensor::SensorRunner;
 
 /// The plugin's system-prompt block (34 §6, 33 §5.2). Static, so it never
 /// busts the system cache.
@@ -37,14 +38,16 @@ pub const LOOPS_SKILL: &str = include_str!("../loops.md");
 
 /// Register the three tools and the prompt block on `reg`; `dir` is the
 /// schedules directory the `schedule` tool writes into.
-pub async fn register(reg: &ActorRef<ToolRegistry>, dir: PathBuf) {
+pub async fn register(reg: &ActorRef<ToolRegistry>, dir: PathBuf, sensors: Arc<SensorRunner>) {
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "schedule",
             text: PROMPT.to_owned(),
         })
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(ScheduleTool { dir }))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(ScheduleTool { dir, sensors })))
+        .await;
     let _ = reg.ask(RegisterTool(Arc::new(ScheduleDoneTool))).await;
     let _ = reg.ask(RegisterTool(Arc::new(ScheduleStatusTool))).await;
 }
@@ -62,6 +65,13 @@ fn rel(d: chrono::Duration) -> String {
     let secs = u64::try_from(d.num_seconds()).unwrap_or(0);
     let secs = if secs >= 60 { secs - secs % 60 } else { secs };
     humantime::format_duration(std::time::Duration::from_secs(secs)).to_string()
+}
+
+/// `v` unless `watcher` and it spells the key's default (40 §2: written only
+/// when non-default); a plain file keeps it so `<key>: needs when:` surfaces.
+fn non_default<'a>(v: Option<&'a str>, default: &str, watcher: bool) -> Option<&'a str> {
+    v.map(str::trim)
+        .filter(|v| !(v.is_empty() || watcher && *v == default))
 }
 
 /// Arguments for [`ScheduleTool`] (34 §6, 33 §5.1).
@@ -93,6 +103,23 @@ pub struct ScheduleArgs {
     pub approvals: Option<bool>,
     /// false: draft only; nothing fires until the enabled: line is flipped. Default true.
     pub enabled: Option<bool>,
+    /// Watcher (40 §2): `<file>.py key=value …` — "requires `every`; exclusive with `cron` / `at`; first token a `.py` file in the sensors directory; then `key=value` tokens (`"quoted with spaces"` allowed), keys `[a-z][a-z0-9_]*`; `cwd` is not an accepted key". Needs a stop: until, max_runs or expires.
+    pub when: Option<String>,
+    /// 40 §2: "`on_change` (default) / `while_true` / `once`; requires `when`".
+    pub fire: Option<String>,
+    /// 40 §2: "duration, default `0s`; requires `when`" — consecutive true checks must span this long before the first fire.
+    #[serde(rename = "for")]
+    pub for_: Option<String>,
+    /// 40 §2: "duration, default `0s`; requires `when`" — minimum spacing between fires.
+    pub cooldown: Option<String>,
+    /// 40 §2: "`skip` (default) / `queue` / `restart`; requires `when`" — what a fire does while the run is in flight.
+    pub mode: Option<String>,
+    /// 40 §2: "`continue` (default with `when`) / `clear`; requires `when`" — whether the session keeps its context between fires.
+    pub memory: Option<String>,
+    /// 40 §2: "duration ≥ `every`; from the file's `created:` line" — TTL; on expiry the file is removed and the user told.
+    pub expires: Option<String>,
+    /// 40 §2: "sensor wall clock; default `20s`, ≤ `60s`, `< every / 2`; requires `when`".
+    pub timeout: Option<String>,
 }
 
 /// `schedule`: validate and atomically write `<dir>/<name>.md`, answer with
@@ -100,7 +127,10 @@ pub struct ScheduleArgs {
 pub struct ScheduleTool {
     /// The schedules directory (`<data_dir>/schedules`).
     pub dir: PathBuf,
+    /// The sensor runtime (40 §4): the creation-time dry run goes through it.
+    pub sensors: Arc<SensorRunner>,
 }
+
 
 #[async_trait::async_trait]
 impl Tool for ScheduleTool {
@@ -125,6 +155,12 @@ impl Tool for ScheduleTool {
                 "name: [a-z0-9][a-z0-9-]*, at most 40 chars",
             ));
         }
+        // 40 §2: watcher keys are written only when present and non-default
+        // (a plain file keeps them so `<key>: needs when:` still surfaces);
+        // `created: now` anchors `expires` on every write of a `when:` file.
+        let watcher = a.when.is_some();
+        let created =
+            watcher.then(|| Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
         let text = file::render(&FileArgs {
             cron: a.cron.as_deref(),
             every: a.every.as_deref(),
@@ -136,14 +172,33 @@ impl Tool for ScheduleTool {
             max_runs: a.max_runs,
             cwd: a.cwd.as_deref(),
             approvals: a.approvals.unwrap_or(true),
-            enabled: a.enabled.unwrap_or(true),
+            // 40 §1.12: a watcher is always written `enabled: false`.
+            enabled: a.enabled.unwrap_or(true) && a.when.is_none(),
             missed_run: false,
             agent: None,
             project: None,
+            when: a.when.as_deref(),
+            fire: non_default(a.fire.as_deref(), "on_change", watcher),
+            for_: non_default(a.for_.as_deref(), "0s", watcher),
+            cooldown: non_default(a.cooldown.as_deref(), "0s", watcher),
+            mode: non_default(a.mode.as_deref(), "skip", watcher),
+            memory: non_default(a.memory.as_deref(), "continue", watcher),
+            expires: a.expires.as_deref(),
+            timeout: non_default(a.timeout.as_deref(), "20s", watcher),
+            created: created.as_deref(),
         });
         let spec = match file::parse(&a.name, &text) {
             Ok(s) => s,
             Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        // 40 §1.12: resolve the sensor (and CPython), dry-run twice, probe; refuse
+        // on `Err` — nothing is written. `subject=` from the payload titles the session.
+        let verdict = match &spec.sensor {
+            Some(_) => match validate::dry_run_with_subject(&spec, &self.sensors).await {
+                Ok(v) => Some(v),
+                Err(e) => return Ok(ToolOutput::err(e)),
+            },
+            None => None,
         };
         let path = file::write_atomic(&self.dir, &a.name, &text)?;
 
@@ -159,7 +214,7 @@ impl Tool for ScheduleTool {
             "scheduled {}: {} · {} · {next_line}",
             spec.name,
             spec.when_text,
-            spec.when.describe()
+            spec.describe()
         );
         if let Some(u) = &spec.until {
             content.push_str(&format!(" · until: {u}"));
@@ -176,6 +231,29 @@ impl Tool for ScheduleTool {
                 spec.name
             ));
         }
+        if let Some((v, subject)) = &verdict {
+            // 40 §1.12: bind the session now. The actor learns of the file from
+            // its own reconcile; ask for one so the entry exists before the bind.
+            match actor() {
+                Some(actor) => {
+                    let _ = actor.ask(crate::Reconcile).await;
+                    // A handler `Err` is lifted into `SendError::HandlerError`, which displays as it.
+                    match actor
+                        .ask(crate::BindSession {
+                            name: spec.name.clone(),
+                            subject: subject.clone(),
+                        })
+                        .await
+                    {
+                        Ok(_) => content.push_str(" · session bound"),
+                        Err(e) => tracing::warn!(name = %spec.name, "bind at creation: {e}"),
+                    }
+                }
+                None => tracing::warn!(name = %spec.name, "bind at creation: schedule actor not running"),
+            }
+            content.push('\n');
+            content.push_str(&validate::render(v));
+        }
         Ok(ToolOutput {
             structured: Some(serde_json::json!({
                 "name": spec.name,
@@ -184,6 +262,7 @@ impl Tool for ScheduleTool {
                 "until": spec.until,
                 "max_runs": spec.max_runs,
                 "enabled": spec.enabled,
+                "verdict": verdict.as_ref().map(|(v, _)| v),
             })),
             ..ToolOutput::ok(content)
         })
@@ -297,6 +376,10 @@ impl Tool for ScheduleStatusTool {
                 if let Some(c) = &s.cwd {
                     out.push_str(&format!("\ncwd: {}", c.display()));
                 }
+                // 40 §6: the watcher's last sensor check, on its own line too.
+                if let Some(c) = &s.last_check {
+                    out.push_str(&format!("\nlast check: {}", last_check(c)));
+                }
                 out
             }
             None if history.is_empty() => return Ok(ToolOutput::err("no such schedule")),
@@ -342,6 +425,8 @@ impl Tool for ScheduleStatusTool {
 
 /// One `schedule_status` line (33 §5.1): `name · when · next … · runs 14/200 ·
 /// running 3m · last: end_turn`, then ` · error: …` or ` · disabled` as applicable.
+/// A watcher's `last:` is its last sensor check (40 §6): the run rows it
+/// shares with `last_result` are gate rows, so `last_check` is authoritative.
 fn status_line(s: &ScheduleInfo, now: DateTime<Local>) -> String {
     let next = s
         .next
@@ -356,11 +441,13 @@ fn status_line(s: &ScheduleInfo, now: DateTime<Local>) -> String {
         (true, None) => "running".to_owned(),
         (false, _) => "idle".to_owned(),
     };
+    let last = match &s.last_check {
+        Some(c) => format!("last check: {}", last_check(c)),
+        None => format!("last: {}", s.last_result.as_deref().unwrap_or("—")),
+    };
     let mut line = format!(
-        "{} · {} · next {next} · runs {runs} · {state} · last: {}",
-        s.name,
-        s.when,
-        s.last_result.as_deref().unwrap_or("—")
+        "{} · {} · next {next} · runs {runs} · {state} · {last}",
+        s.name, s.when,
     );
     if let Some(e) = &s.error {
         line.push_str(&format!(" · error: {e}"));
@@ -369,4 +456,50 @@ fn status_line(s: &ScheduleInfo, now: DateTime<Local>) -> String {
         line.push_str(" · disabled");
     }
     line
+}
+
+/// `<at> · <outcome> · <elapsed> ms` (40 §6) from [`crate::LastCheck`].
+fn last_check(c: &crate::LastCheck) -> String {
+    format!("{} · {} · {} ms", c.at.format("%H:%M:%S"), c.outcome, c.elapsed_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 40 §1.12: a `when:` file whose sensor does not resolve is refused
+    /// before anything reaches the schedules directory.
+    #[tokio::test]
+    async fn failing_dry_run_writes_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sensors = Arc::new(SensorRunner::new(
+            tmp.path().to_path_buf(),
+            None,
+            None,
+            Default::default(),
+        ));
+        let dir = tmp.path().join("schedules");
+        let tool = ScheduleTool {
+            dir: dir.clone(),
+            sensors,
+        };
+        let cx = ToolCx {
+            session: runtime::SessionId::new(),
+            call_id: String::new(),
+            quiet: false,
+            resources: Arc::new(tools::SessionResources {
+                root: tmp.path().to_path_buf(),
+                retention: tools::Retention::Durable,
+                generation: 1,
+            }),
+        };
+        let args: ScheduleArgs = serde_json::from_value(serde_json::json!({
+            "name": "w", "prompt": "say hi", "every": "60s", "when": "missing.py", "max_runs": 3
+        }))
+        .unwrap();
+        let out = tool.call(args, cx).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert_eq!(out.content, "when: no such sensor: missing.py");
+        assert!(!dir.join("w.md").exists());
+    }
 }

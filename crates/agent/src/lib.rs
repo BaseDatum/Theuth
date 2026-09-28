@@ -40,6 +40,7 @@ pub mod project;
 pub mod providers;
 pub mod repl;
 pub mod search;
+pub mod sensor;
 pub mod session_read;
 pub mod skills;
 pub mod snap;

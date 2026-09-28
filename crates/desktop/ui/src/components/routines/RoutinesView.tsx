@@ -1,5 +1,6 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { PanelLeft, Play, Plus } from 'lucide-react'
+import { FlaskConical, PanelLeft, Play, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
 import { Empty, useAction } from '@/components/settings/shared'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -12,7 +13,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
-import { type Result, cadence, relative, resultKind, runCount, sortRoutines } from './helpers'
+import { type Result, cadence, lastCheckText, relative, resultKind, runCount, sortRoutines, verdictText } from './helpers'
 import { KEY, useNotHub, useRoutines } from './queries'
 
 const RESULT_CLASS: Record<Result, string> = {
@@ -127,6 +128,11 @@ function RoutineRow({ s }: { s: ScheduleInfo }) {
     onSuccess: (session) => void navigate({ to: '/c/$session', params: { session } }),
   })
   const enable = useAction((enabled: boolean) => api.enable_schedule(s.name, enabled), { keys: [KEY] })
+  // 40 §6: the §1.12 verdict on demand; refusals (`not a watcher`, a broken dry run) toast as errors.
+  const test = useAction((name: string) => api.test_schedule(name), {
+    keys: [KEY],
+    onSuccess: (v) => toast.message(`Test ${s.name}`, { description: verdictText(v) }),
+  })
   const loop = s.until !== null || s.max_runs !== null
   return (
     <li className={cn('flex items-center gap-3 px-3 py-2.5 hover:bg-layer-1', !s.enabled && 'text-fg-tertiary')}>
@@ -156,12 +162,22 @@ function RoutineRow({ s }: { s: ScheduleInfo }) {
               last {relative(s.last)}
             </span>
           )}
+          {s.last_check && (
+            <span className="tabular-nums" title={s.last_check.hash ?? undefined}>
+              check {lastCheckText(s.last_check)}
+            </span>
+          )}
           <RoutineChips s={s} notHub={notHub} />
         </div>
       </Link>
       <Button variant="outline" size="xs" disabled={fire.isPending || s.error !== null || s.running} onClick={() => fire.mutate(s.name)}>
         <Play /> Run now
       </Button>
+      {s.when_sensor !== null && (
+        <Button variant="outline" size="xs" disabled={test.isPending || s.error !== null} onClick={() => test.mutate(s.name)}>
+          <FlaskConical /> Test
+        </Button>
+      )}
       <Switch
         size="sm"
         checked={s.enabled}

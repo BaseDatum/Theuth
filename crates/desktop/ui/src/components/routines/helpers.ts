@@ -1,4 +1,6 @@
+import type { LastCheck } from '@/rpc/bindings/LastCheck'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
+import type { Verdict } from '@/rpc/bindings/Verdict'
 
 export const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
 
@@ -66,6 +68,23 @@ export function cadence(s: Pick<ScheduleInfo, 'when' | 'describe'>): string {
   if (kind === 'at') return onceAt(clause)
   if (kind === 'cron') return cronWords(clause) ?? s.describe
   return s.describe
+}
+
+/** The 40 §1.12 verdict as one line, the shape `/schedules test` prints (mirrors `schedule::validate::render`). */
+export function verdictText(v: Verdict): string {
+  if (v.error !== null) return `sensor ${v.sensor} · check broken: ${v.error}`
+  const hash = v.hash ? `${v.hash.slice(0, 8)}…` : '—'
+  let s = `sensor ${v.sensor} · ${(v.elapsed_ms / 1000).toFixed(1)} s · fire: ${v.fire} · would ${v.would_fire ? '' : 'NOT '}fire now · hash ${hash}`
+  if (v.probe !== null) s += ` · probe ${v.probe}`
+  if (v.needs_approvals_off) s += ' · needs approvals: false (body mutates)'
+  if (v.flaps) s += ' · payload flaps — include only stable fields'
+  return s
+}
+
+/** `10:15:03 · quiet · 1.2 s` for a watcher's last sensor check (40 §6). */
+export function lastCheckText(c: LastCheck): string {
+  const at = new Date(c.at).toLocaleTimeString(undefined, { hour12: false })
+  return `${at} · ${c.outcome} · ${(c.elapsed_ms / 1000).toFixed(1)} s`
 }
 
 export type Result = 'ok' | 'failed' | 'skipped'

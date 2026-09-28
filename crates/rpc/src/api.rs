@@ -1409,6 +1409,11 @@ pub trait Api {
     /// Remove a schedule file; its history gets a `removed` row. `Err` when unknown.
     #[method(name = "delete_schedule")]
     async fn delete_schedule(&self, name: String) -> RpcResult<()>;
+    /// The 40 §1.12 verdict for a `when:` schedule: dry-run its sensor twice,
+    /// probe, report `fire?`, hash, flaps, "would fire now". `Err` when unknown
+    /// or not a watcher.
+    #[method(name = "test_schedule")]
+    async fn test_schedule(&self, name: String) -> RpcResult<schedule::Verdict>;
     /// This engine, its peers and the hub lease (67 §4, §12).
     #[method(name = "mesh_status")]
     async fn mesh_status(&self) -> RpcResult<mesh::MeshStatus>;
@@ -4640,6 +4645,10 @@ impl ApiServer for Server {
 
     async fn delete_schedule(&self, name: String) -> RpcResult<()> {
         send(&schedule()?, schedule::Delete { name }).await
+    }
+
+    async fn test_schedule(&self, name: String) -> RpcResult<schedule::Verdict> {
+        send(&schedule()?, schedule::TestSchedule { name }).await
     }
 
     // 67: every method is one `ask`; the actors answer `not built` until

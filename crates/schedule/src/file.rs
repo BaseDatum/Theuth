@@ -2,6 +2,7 @@
 //! Parsing, `next`/`missed` arithmetic, directory listing, and the rendering
 //! plus atomic write the `schedule` tool uses. No actor, no store.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -11,6 +12,218 @@ use serde::{Deserialize, Serialize};
 
 /// Smallest accepted `every:` interval.
 const MIN_EVERY: Duration = Duration::from_secs(10);
+/// Smallest accepted `every:` with `when:` (40 §2).
+pub const MIN_EVERY_WHEN: Duration = Duration::from_secs(30);
+/// `timeout:` default: the sensor's wall clock (40 §5).
+pub const DEFAULT_SENSOR_TIMEOUT: Duration = Duration::from_secs(20);
+/// `timeout:` ceiling (40 §5); an explicit value is also checked `< every / 2`.
+pub const MAX_SENSOR_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `when: <file>.py key=value …` (40 §1.2, §2): the sensor and its arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sensor {
+    /// File name in `<data_dir>/sensors/`, ends in `.py`.
+    pub file: String,
+    /// `key=value` tokens after the file, in order.
+    pub args: BTreeMap<String, String>,
+}
+
+impl Sensor {
+    /// Parse the `when:` value (40 §2): first token a `.py` file name (no path
+    /// separators, no `..`), then `key=value` tokens — keys `[a-z][a-z0-9_]*`,
+    /// values may be `"quoted with spaces"`, no duplicate keys, `cwd` refused
+    /// (the file's `cwd:` arrives as `args["cwd"]`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut toks = tokenize(s)?.into_iter();
+        let file = toks.next().ok_or("when: empty")?;
+        if !file.ends_with(".py")
+            || file.len() == 3
+            || file.contains(['/', '\\'])
+            || file.contains("..")
+        {
+            return Err("when: first token must be a .py file name".into());
+        }
+        let mut args = BTreeMap::new();
+        for t in toks {
+            let (k, v) = t
+                .split_once('=')
+                .ok_or_else(|| format!("when: expected key=value, got {t:?}"))?;
+            if !valid_key(k) {
+                return Err(format!("when: key {k:?} must match [a-z][a-z0-9_]*"));
+            }
+            if k == "cwd" {
+                return Err(
+                    "when: cwd is not an accepted key (the file's cwd: arrives as args[\"cwd\"])"
+                        .into(),
+                );
+            }
+            if args.insert(k.to_string(), v.to_string()).is_some() {
+                return Err(format!("when: duplicate key {k:?}"));
+            }
+        }
+        Ok(Self { file, args })
+    }
+
+    /// The `when:` value as written: `file key=value …`; a value with spaces
+    /// (or none) is `"quoted"` so [`Sensor::parse`] reads it back.
+    pub fn render(&self) -> String {
+        let mut s = self.file.clone();
+        for (k, v) in &self.args {
+            s.push(' ');
+            s.push_str(k);
+            s.push('=');
+            if v.is_empty() || v.contains(char::is_whitespace) {
+                s.push('"');
+                s.push_str(v);
+                s.push('"');
+            } else {
+                s.push_str(v);
+            }
+        }
+        s
+    }
+}
+
+/// `[a-z][a-z0-9_]*`.
+fn valid_key(k: &str) -> bool {
+    let mut b = k.bytes();
+    b.next().is_some_and(|c| c.is_ascii_lowercase())
+        && b.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+}
+
+/// Whitespace-separated tokens; `"…"` groups spaces into one token and the
+/// quotes are dropped (`k="a b"` → `k=a b`). `Err` on an unterminated quote.
+fn tokenize(s: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut tok = String::new();
+    let mut quoted = false;
+    let mut in_tok = false;
+    for c in s.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                in_tok = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if in_tok {
+                    out.push(std::mem::take(&mut tok));
+                    in_tok = false;
+                }
+            }
+            c => {
+                tok.push(c);
+                in_tok = true;
+            }
+        }
+    }
+    if quoted {
+        return Err("when: unterminated quote".into());
+    }
+    if in_tok {
+        out.push(tok);
+    }
+    Ok(out)
+}
+
+/// `fire:` — when a true check becomes a turn (40 §1.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fire {
+    /// Fire when `fire` is true and the payload hash differs from the last fired one.
+    #[default]
+    OnChange,
+    /// Fire on every true check, spaced by `cooldown`.
+    WhileTrue,
+    /// Disable after the first fired run.
+    Once,
+}
+
+/// `mode:` — a fire while the watcher's run is in flight (40 §1.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Row `skipped: busy`.
+    #[default]
+    Skip,
+    /// One pending payload, newest wins, delivered when the run closes.
+    Queue,
+    /// Cancel the in-flight run and fire.
+    Restart,
+}
+
+/// `memory:` — what happens to the schedule's session between fires (40 §1.11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Memory {
+    /// The frame is kept; 07's compaction shortens it.
+    #[default]
+    Continue,
+    /// 34's behaviour: `Compact { Clear }` before each fire.
+    Clear,
+}
+
+impl std::fmt::Display for Fire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Fire::OnChange => "on_change",
+            Fire::WhileTrue => "while_true",
+            Fire::Once => "once",
+        })
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Mode::Skip => "skip",
+            Mode::Queue => "queue",
+            Mode::Restart => "restart",
+        })
+    }
+}
+
+impl std::fmt::Display for Memory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Memory::Continue => "continue",
+            Memory::Clear => "clear",
+        })
+    }
+}
+
+/// `on_change` / `while_true` / `once`, else `Err("fire: expected on_change|while_true|once")`.
+fn parse_fire(s: &str) -> Result<Fire, String> {
+    match s.trim() {
+        "on_change" => Ok(Fire::OnChange),
+        "while_true" => Ok(Fire::WhileTrue),
+        "once" => Ok(Fire::Once),
+        _ => Err("fire: expected on_change|while_true|once".into()),
+    }
+}
+
+/// `skip` / `queue` / `restart`, else `Err("mode: expected skip|queue|restart")`.
+fn parse_mode(s: &str) -> Result<Mode, String> {
+    match s.trim() {
+        "skip" => Ok(Mode::Skip),
+        "queue" => Ok(Mode::Queue),
+        "restart" => Ok(Mode::Restart),
+        _ => Err("mode: expected skip|queue|restart".into()),
+    }
+}
+
+/// `continue` / `clear`, else `Err("memory: expected continue|clear")`.
+fn parse_memory(s: &str) -> Result<Memory, String> {
+    match s.trim() {
+        "continue" => Ok(Memory::Continue),
+        "clear" => Ok(Memory::Clear),
+        _ => Err("memory: expected continue|clear".into()),
+    }
+}
+
+/// `<key>: <humantime>` → `Err("<key>: <reason>")`.
+fn parse_dur(key: &str, s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s.trim()).map_err(|e| format!("{key}: {e}"))
+}
 
 /// When a schedule fires (34 §3).
 #[derive(Clone, Debug)]
@@ -56,6 +269,16 @@ impl When {
     }
 }
 
+impl Spec {
+    /// [`When::describe`], plus ` when <file> key=value …` for a watcher (40 §2).
+    pub fn describe(&self) -> String {
+        match &self.sensor {
+            Some(s) => format!("{} when {}", self.when.describe(), s.render()),
+            None => self.when.describe(),
+        }
+    }
+}
+
 /// A parsed schedule file.
 #[derive(Clone, Debug)]
 pub struct Spec {
@@ -90,6 +313,25 @@ pub struct Spec {
     /// `project:` — the project label of the task an `agent:` fire creates
     /// (67 §7.1); absent = inferred from `cwd`, else none.
     pub project: Option<String>,
+    /// `when:` — the sensor whose check says *go* (40 §1.1); `None` for a plain
+    /// 34 file. Named `sensor` because `when` is the clock clause above.
+    pub sensor: Option<Sensor>,
+    /// `fire:` — default `on_change` (40 §1.6). Meaningful only with `when`.
+    pub fire: Fire,
+    /// `for:` — consecutive true checks spanning ≥ this before the first fire (40 §1.8); default `0s`.
+    pub for_: Duration,
+    /// `cooldown:` — minimum spacing between fires (40 §1.8); default `0s`.
+    pub cooldown: Duration,
+    /// `mode:` — default `skip` (40 §1.9).
+    pub mode: Mode,
+    /// `memory:` — default `continue` with `when` (40 §1.11).
+    pub memory: Memory,
+    /// `expires:` — TTL from `created` (40 §1.10).
+    pub expires: Option<Duration>,
+    /// `timeout:` — the sensor's wall clock; default [`DEFAULT_SENSOR_TIMEOUT`] (40 §5).
+    pub timeout: Duration,
+    /// `created:` — written by `schedule` / `set_created` (40 §2); what `expires` counts from.
+    pub created: Option<DateTime<Local>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -108,13 +350,28 @@ struct FrontMatter {
     approvals: Option<bool>,
     agent: Option<String>,
     project: Option<String>,
+    when: Option<String>,
+    fire: Option<String>,
+    #[serde(rename = "for")]
+    for_: Option<String>,
+    cooldown: Option<String>,
+    mode: Option<String>,
+    memory: Option<String>,
+    expires: Option<String>,
+    timeout: Option<String>,
+    created: Option<String>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
 /// `exactly one of cron / every / at`, `every: below 10s`, `at: in the past`,
 /// `missed: expected run|skip`, `empty prompt`; loops (33 §2): `every: 0s needs
 /// until or max_runs`, `until: empty`, `max_runs: at least 1`, `cwd: not a
-/// directory: …`, `at: a one-shot has no loop to stop`).
+/// directory: …`, `at: a one-shot has no loop to stop`; watchers (40 §2):
+/// `when: requires every`, `when: exclusive with cron`, `at: with when: a
+/// one-shot has no cadence to poll on`, `every: below 30s with when:`,
+/// `<key>: needs when:`, `when: needs a stop (until, max_runs or expires)`,
+/// `missed: not allowed with when:`, `expires: below every`, `timeout: above
+/// 60s`, `timeout: must be below every / 2`, `created: expected RFC 3339`).
 pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
     let parsed = matter
@@ -147,6 +404,25 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         }
     };
 
+    // 40 §2: `when` requires `every`, is exclusive with `cron` / `at`. The floor,
+    // the stop, `missed` and the bounds follow once `every` is known. Whether the
+    // file exists in `<data_dir>/sensors/` is the tool's / loader's check.
+    let sensor = match fm.when.as_deref().map(str::trim) {
+        None => None,
+        Some(w) => {
+            if fm.cron.is_some() {
+                return Err("when: exclusive with cron".into());
+            }
+            if fm.at.is_some() {
+                return Err("at: with when: a one-shot has no cadence to poll on".into());
+            }
+            if fm.every.is_none() {
+                return Err("when: requires every".into());
+            }
+            Some(Sensor::parse(w)?)
+        }
+    };
+
     let (when, when_text) = match (&fm.cron, &fm.every, &fm.at) {
         (Some(c), None, None) => {
             let c = c.trim();
@@ -156,14 +432,22 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         (None, Some(e), None) => {
             let e = e.trim();
             let d = humantime::parse_duration(e).map_err(|err| format!("every: {err}"))?;
-            if d < MIN_EVERY && !has_stop {
-                return Err(if d.is_zero() {
-                    "every: 0s needs until or max_runs".into()
-                } else {
-                    "every: below 10s".into()
-                });
+            // 40 §2: floor MIN_EVERY_WHEN with `when`; 34's 10s / 33's 0s rules otherwise.
+            if let Some(s) = &sensor {
+                if d < MIN_EVERY_WHEN {
+                    return Err("every: below 30s with when:".into());
+                }
+                (When::Every(d), format!("every {e} when {}", s.file))
+            } else {
+                if d < MIN_EVERY && !has_stop {
+                    return Err(if d.is_zero() {
+                        "every: 0s needs until or max_runs".into()
+                    } else {
+                        "every: below 10s".into()
+                    });
+                }
+                (When::Every(d), format!("every {e}"))
             }
-            (When::Every(d), format!("every {e}"))
         }
         (None, None, Some(a)) => {
             if has_stop {
@@ -187,6 +471,102 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     if prompt.is_empty() {
         return Err("empty prompt".into());
     }
+
+    for (key, present) in [
+        ("fire", fm.fire.is_some()),
+        ("for", fm.for_.is_some()),
+        ("cooldown", fm.cooldown.is_some()),
+        ("mode", fm.mode.is_some()),
+        ("memory", fm.memory.is_some()),
+        ("timeout", fm.timeout.is_some()),
+    ] {
+        if present && sensor.is_none() {
+            return Err(format!("{key}: needs when:"));
+        }
+    }
+    // 40 §2: with `when`, the sensor decides — nothing to catch up; and a loop needs a stop.
+    if sensor.is_some() {
+        if fm.missed.is_some() {
+            return Err("missed: not allowed with when:".into());
+        }
+        if !has_stop && fm.expires.is_none() {
+            return Err("when: needs a stop (until, max_runs or expires)".into());
+        }
+    }
+    let fire = fm
+        .fire
+        .as_deref()
+        .map(parse_fire)
+        .transpose()?
+        .unwrap_or_default();
+    let for_ = fm
+        .for_
+        .as_deref()
+        .map(|s| parse_dur("for", s))
+        .transpose()?
+        .unwrap_or_default();
+    let cooldown = fm
+        .cooldown
+        .as_deref()
+        .map(|s| parse_dur("cooldown", s))
+        .transpose()?
+        .unwrap_or_default();
+    let mode = fm
+        .mode
+        .as_deref()
+        .map(parse_mode)
+        .transpose()?
+        .unwrap_or_default();
+    let memory = fm
+        .memory
+        .as_deref()
+        .map(parse_memory)
+        .transpose()?
+        .unwrap_or_default();
+    // 40 §2: `expires` ≥ `every`; `timeout` ≤ MAX_SENSOR_TIMEOUT and < every / 2.
+    let every = match when {
+        When::Every(d) => Some(d),
+        _ => None,
+    };
+    let expires = fm
+        .expires
+        .as_deref()
+        .map(|s| parse_dur("expires", s))
+        .transpose()?;
+    if let (Some(x), Some(e)) = (expires, every)
+        && x < e
+    {
+        return Err("expires: below every".into());
+    }
+    // An explicit `timeout` must be < every / 2; the default is clamped to
+    // every / 2 instead (20s would refuse every 40s and below, floor included).
+    let timeout = match fm.timeout.as_deref() {
+        Some(t) => {
+            let t = parse_dur("timeout", t)?;
+            if sensor.is_some() {
+                if t > MAX_SENSOR_TIMEOUT {
+                    return Err("timeout: above 60s".into());
+                }
+                if every.is_some_and(|e| t * 2 >= e) {
+                    return Err("timeout: must be below every / 2".into());
+                }
+            }
+            t
+        }
+        None => every.map_or(DEFAULT_SENSOR_TIMEOUT, |e| {
+            DEFAULT_SENSOR_TIMEOUT.min(e / 2)
+        }),
+    };
+    let created = fm
+        .created
+        .as_deref()
+        .map(str::trim)
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|t| t.with_timezone(&Local))
+                .map_err(|_| "created: expected RFC 3339".to_string())
+        })
+        .transpose()?;
 
     Ok(Spec {
         name: name.to_string(),
@@ -212,6 +592,15 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
             .project
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty()),
+        sensor,
+        fire,
+        for_,
+        cooldown,
+        mode,
+        memory,
+        expires,
+        timeout,
+        created,
     })
 }
 
@@ -297,6 +686,24 @@ pub struct FileArgs<'a> {
     pub agent: Option<&'a str>,
     /// `project:` — written only when present (67 §7.1).
     pub project: Option<&'a str>,
+    /// `when:` — the sensor line (40 §2); written only when present.
+    pub when: Option<&'a str>,
+    /// `fire:` — written only when present (non-default).
+    pub fire: Option<&'a str>,
+    /// `for:` — written only when present.
+    pub for_: Option<&'a str>,
+    /// `cooldown:` — written only when present.
+    pub cooldown: Option<&'a str>,
+    /// `mode:` — written only when present.
+    pub mode: Option<&'a str>,
+    /// `memory:` — written only when present.
+    pub memory: Option<&'a str>,
+    /// `expires:` — written only when present.
+    pub expires: Option<&'a str>,
+    /// `timeout:` — written only when present.
+    pub timeout: Option<&'a str>,
+    /// `created:` — RFC 3339; written only when present (`set_created` adds it on load).
+    pub created: Option<&'a str>,
     /// Body.
     pub prompt: &'a str,
 }
@@ -335,6 +742,25 @@ pub struct ScheduleFile {
     pub agent: Option<String>,
     /// `project:`.
     pub project: Option<String>,
+    /// `when:` as written (40 §2): `<file>.py key=value …`.
+    pub when: Option<String>,
+    /// `fire:` as written.
+    pub fire: Option<String>,
+    /// `for:` as written.
+    #[serde(rename = "for")]
+    pub for_: Option<String>,
+    /// `cooldown:` as written.
+    pub cooldown: Option<String>,
+    /// `mode:` as written.
+    pub mode: Option<String>,
+    /// `memory:` as written.
+    pub memory: Option<String>,
+    /// `expires:` as written.
+    pub expires: Option<String>,
+    /// `timeout:` as written.
+    pub timeout: Option<String>,
+    /// `created:` as written (RFC 3339).
+    pub created: Option<String>,
     /// Body, trimmed.
     pub prompt: String,
 }
@@ -362,6 +788,15 @@ impl ScheduleFile {
             approvals: fm.approvals.unwrap_or(true),
             agent: fm.agent,
             project: fm.project,
+            when: fm.when,
+            fire: fm.fire,
+            for_: fm.for_,
+            cooldown: fm.cooldown,
+            mode: fm.mode,
+            memory: fm.memory,
+            expires: fm.expires,
+            timeout: fm.timeout,
+            created: fm.created,
             prompt: parsed.content.trim().to_string(),
         })
     }
@@ -385,6 +820,15 @@ impl ScheduleFile {
             missed_run: self.missed_run,
             agent: some(&self.agent),
             project: some(&self.project),
+            when: some(&self.when),
+            fire: some(&self.fire),
+            for_: some(&self.for_),
+            cooldown: some(&self.cooldown),
+            mode: some(&self.mode),
+            memory: some(&self.memory),
+            expires: some(&self.expires),
+            timeout: some(&self.timeout),
+            created: some(&self.created),
             prompt: &self.prompt,
         }
     }
@@ -408,6 +852,34 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(t) = a.at {
         s.push_str(&format!("at: {}\n", t.trim()));
+    }
+    // 40 §2: written only when present (the tool passes non-defaults only).
+    if let Some(v) = a.when {
+        s.push_str(&format!("when: {}\n", yaml_str(v.trim())));
+    }
+    if let Some(v) = a.fire {
+        s.push_str(&format!("fire: {}\n", v.trim()));
+    }
+    if let Some(v) = a.for_ {
+        s.push_str(&format!("for: {}\n", v.trim()));
+    }
+    if let Some(v) = a.cooldown {
+        s.push_str(&format!("cooldown: {}\n", v.trim()));
+    }
+    if let Some(v) = a.mode {
+        s.push_str(&format!("mode: {}\n", v.trim()));
+    }
+    if let Some(v) = a.memory {
+        s.push_str(&format!("memory: {}\n", v.trim()));
+    }
+    if let Some(v) = a.expires {
+        s.push_str(&format!("expires: {}\n", v.trim()));
+    }
+    if let Some(v) = a.timeout {
+        s.push_str(&format!("timeout: {}\n", v.trim()));
+    }
+    if let Some(v) = a.created {
+        s.push_str(&format!("created: {}\n", yaml_str(v.trim())));
     }
     if a.quiet {
         s.push_str("quiet: true\n");
@@ -449,7 +921,24 @@ pub fn render(a: &FileArgs<'_>) -> String {
 /// when present, else insert `enabled: <v>` right after the opening `---`.
 /// Text without front matter gets one. Everything else is byte-for-byte.
 pub fn set_enabled(text: &str, enabled: bool) -> String {
-    let line = format!("enabled: {enabled}\n");
+    set_line(text, "enabled:", &format!("enabled: {enabled}\n"))
+}
+
+/// Rewrite the `created:` line (40 §2) the way [`set_enabled`] does: `at` as
+/// RFC 3339 with the local offset, whole seconds. The actor calls it on first
+/// load of a hand-edited `when:` file that lacks the line; `expires` counts from it.
+pub fn set_created(text: &str, at: DateTime<Local>) -> String {
+    let stamp = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    set_line(
+        text,
+        "created:",
+        &format!("created: {}\n", yaml_str(&stamp)),
+    )
+}
+
+/// Replace the front-matter line starting with `key`, else insert `line` right
+/// after the opening `---`. Text without front matter gets one.
+fn set_line(text: &str, key: &str, line: &str) -> String {
     if !text.starts_with("---\n") {
         return format!("---\n{line}---\n{text}");
     }
@@ -463,15 +952,15 @@ pub fn set_enabled(text: &str, enabled: bool) -> String {
             out.push_str(l);
             break;
         }
-        if l.starts_with("enabled:") {
-            out.push_str(&line);
+        if l.starts_with(key) {
+            out.push_str(line);
             replaced = true;
         } else {
             out.push_str(l);
         }
     }
     if !replaced {
-        out.insert_str(open.len(), &line);
+        out.insert_str(open.len(), line);
     }
     out.extend(lines);
     out
@@ -613,6 +1102,15 @@ mod tests {
         missed_run: false,
         agent: None,
         project: None,
+        when: None,
+        fire: None,
+        for_: None,
+        cooldown: None,
+        mode: None,
+        memory: None,
+        expires: None,
+        timeout: None,
+        created: None,
         prompt: "p",
     };
 
@@ -643,6 +1141,350 @@ mod tests {
         // Broken semantics (no clause) still read: the editor can repair it.
         let broken = ScheduleFile::read("y", "---\nquiet: true\n---\n").unwrap();
         assert!(broken.cron.is_none() && broken.quiet && broken.prompt.is_empty());
+    }
+
+    #[test]
+    fn watcher_keys_round_trip_and_structural_rules() {
+        // `parse` owns the full rule table; this pins only the contract: keys parse,
+        // defaults apply, the file round-trips, the structural refusals hold.
+        let text = render(&FileArgs {
+            every: Some("60s"),
+            when: Some("pr_watch.py repo=o/r pr=482 token=gh_token"),
+            mode: Some("queue"),
+            cooldown: Some("5m"),
+            expires: Some("14d"),
+            max_runs: Some(40),
+            created: Some("2026-09-28T10:00:00+01:00"),
+            ..BASE
+        });
+        let s = parse("argo", &text).unwrap();
+        let sensor = s.sensor.as_ref().unwrap();
+        assert_eq!(sensor.file, "pr_watch.py");
+        assert_eq!(sensor.args["pr"], "482");
+        assert_eq!(
+            sensor.render(),
+            "pr_watch.py pr=482 repo=o/r token=gh_token"
+        );
+        assert_eq!(
+            (s.fire, s.mode, s.memory),
+            (Fire::OnChange, Mode::Queue, Memory::Continue)
+        );
+        assert_eq!(s.cooldown, Duration::from_secs(300));
+        assert!(s.for_.is_zero());
+        assert_eq!(s.expires, Some(Duration::from_secs(14 * 86400)));
+        assert_eq!(s.timeout, DEFAULT_SENSOR_TIMEOUT);
+        assert!(s.created.is_some());
+        let back = ScheduleFile::read("argo", &text).unwrap();
+        assert_eq!(
+            back.when.as_deref(),
+            Some("pr_watch.py repo=o/r pr=482 token=gh_token")
+        );
+        assert_eq!(back.mode.as_deref(), Some("queue"));
+        assert_eq!(render(&back.args()), text);
+
+        let plain = parse("x", &md("every: 1h", "p")).unwrap();
+        assert!(plain.sensor.is_none() && plain.fire == Fire::OnChange);
+        for (fm, err) in [
+            ("when: a.py", "when: requires every"),
+            (
+                "cron: \"0 9 * * *\"\nwhen: a.py",
+                "when: exclusive with cron",
+            ),
+            (
+                "every: 60s\nwhen: a",
+                "when: first token must be a .py file name",
+            ),
+            (
+                "every: 60s\nwhen: a.py x",
+                "when: expected key=value, got \"x\"",
+            ),
+            ("every: 60s\nmode: queue", "mode: needs when:"),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nfire: maybe",
+                "fire: expected on_change|while_true|once",
+            ),
+        ] {
+            assert_eq!(parse("x", &md(fm, "p")).unwrap_err(), err, "{fm}");
+        }
+    }
+
+    /// 40 §2's babysitter, verbatim except `cwd` (a temp dir so `is_dir` holds).
+    fn babysitter(cwd: &str) -> String {
+        md(
+            &format!(
+                "every: 60s\nwhen: pr_watch.py repo=owner/sre-argo pr=482 token=gh_token\n\
+                 fire: on_change\nfor: 0s\ncooldown: 5m\nmode: queue\nmemory: continue\n\
+                 max_runs: 40\nexpires: 14d\ncwd: {cwd}\nquiet: true\napprovals: false\nenabled: false"
+            ),
+            "You babysit PR #482.",
+        )
+    }
+
+    #[test]
+    fn when_tokenizer() {
+        assert_eq!(tokenize("a.py").unwrap(), ["a.py"]);
+        assert_eq!(
+            tokenize("  a.py   k=v\tx=y ").unwrap(),
+            ["a.py", "k=v", "x=y"]
+        );
+        assert_eq!(
+            tokenize(r#"a.py msg="two words" k="" q="a=b c""#).unwrap(),
+            ["a.py", "msg=two words", "k=", "q=a=b c"]
+        );
+        assert_eq!(
+            tokenize(r#"a.py k="open"#).unwrap_err(),
+            "when: unterminated quote"
+        );
+        assert!(tokenize("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn when_sensor_rules() {
+        let s = Sensor::parse(r#"pr_watch.py repo=o/r title="a b" empty="""#).unwrap();
+        assert_eq!(s.file, "pr_watch.py");
+        assert_eq!(s.args["title"], "a b");
+        assert_eq!(s.args["empty"], "");
+        // render quotes what needs it and parses back equal.
+        assert_eq!(s.render(), r#"pr_watch.py empty="" repo=o/r title="a b""#);
+        assert_eq!(Sensor::parse(&s.render()).unwrap(), s);
+        assert!(Sensor::parse("under_score1.py k_1=v").is_ok());
+        for (line, err) in [
+            ("", "when: empty"),
+            ("../x.py", "when: first token must be a .py file name"),
+            ("a/b.py", "when: first token must be a .py file name"),
+            ("a\\b.py", "when: first token must be a .py file name"),
+            (".py", "when: first token must be a .py file name"),
+            ("a.py K=v", "when: key \"K\" must match [a-z][a-z0-9_]*"),
+            ("a.py 1k=v", "when: key \"1k\" must match [a-z][a-z0-9_]*"),
+            ("a.py k-1=v", "when: key \"k-1\" must match [a-z][a-z0-9_]*"),
+            ("a.py =v", "when: key \"\" must match [a-z][a-z0-9_]*"),
+            ("a.py k=1 k=2", "when: duplicate key \"k\""),
+            (
+                "a.py cwd=/tmp",
+                "when: cwd is not an accepted key (the file's cwd: arrives as args[\"cwd\"])",
+            ),
+        ] {
+            assert_eq!(Sensor::parse(line).unwrap_err(), err, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn when_rules_table() {
+        // Positive: the minimum watcher.
+        let s = parse("x", &md("every: 60s\nwhen: a.py\nmax_runs: 1", "p")).unwrap();
+        assert_eq!(s.when_text, "every 60s when a.py");
+        assert_eq!(s.timeout, DEFAULT_SENSOR_TIMEOUT);
+        // every floor: 30s passes with when (default timeout clamps to every/2), 29s fails; 10s still fine without.
+        let floor = parse("x", &md("every: 30s\nwhen: a.py\nmax_runs: 1", "p")).unwrap();
+        assert_eq!(floor.timeout, Duration::from_secs(15));
+        assert!(parse("x", &md("every: 10s", "p")).is_ok());
+        // Each stop alone satisfies the rule.
+        for stop in ["until: \"true\"", "max_runs: 3", "expires: 1h"] {
+            assert!(
+                parse("x", &md(&format!("every: 60s\nwhen: a.py\n{stop}"), "p")).is_ok(),
+                "{stop}"
+            );
+        }
+        // expires == every is fine; timeout just below every/2 is fine; 60s ceiling ok with a long every.
+        assert!(parse("x", &md("every: 60s\nwhen: a.py\nexpires: 60s", "p")).is_ok());
+        assert!(
+            parse(
+                "x",
+                &md("every: 60s\nwhen: a.py\nmax_runs: 1\ntimeout: 29s", "p")
+            )
+            .is_ok()
+        );
+        assert!(
+            parse(
+                "x",
+                &md("every: 5m\nwhen: a.py\nmax_runs: 1\ntimeout: 60s", "p")
+            )
+            .is_ok()
+        );
+        // expires without when is allowed on a plain file (the table does not tie it to when).
+        assert!(parse("x", &md("every: 1h\nexpires: 2h", "p")).is_ok());
+        assert!(parse("x", &md("cron: \"0 9 * * *\"\nexpires: 1h", "p")).is_ok());
+
+        for (fm, err) in [
+            (
+                "every: 29s\nwhen: a.py\nmax_runs: 1",
+                "every: below 30s with when:",
+            ),
+            (
+                "every: 0s\nwhen: a.py\nmax_runs: 1",
+                "every: below 30s with when:",
+            ),
+            (
+                "at: 2099-01-01T10:00\nwhen: a.py",
+                "at: with when: a one-shot has no cadence to poll on",
+            ),
+            (
+                "every: 60s\nwhen: a.py",
+                "when: needs a stop (until, max_runs or expires)",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nmissed: run",
+                "missed: not allowed with when:",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nmissed: skip",
+                "missed: not allowed with when:",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nexpires: 59s",
+                "expires: below every",
+            ),
+            ("every: 1h\nexpires: 30m", "expires: below every"),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\ntimeout: 30s",
+                "timeout: must be below every / 2",
+            ),
+            (
+                "every: 5m\nwhen: a.py\nmax_runs: 1\ntimeout: 61s",
+                "timeout: above 60s",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\ntimeout: soon",
+                "timeout: expected number at 0",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nfor: x",
+                "for: expected number at 0",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nmode: sometimes",
+                "mode: expected skip|queue|restart",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\nmemory: forget",
+                "memory: expected continue|clear",
+            ),
+            (
+                "every: 60s\nwhen: a.py\nmax_runs: 1\ncreated: yesterday",
+                "created: expected RFC 3339",
+            ),
+            ("every: 60s\nfire: once", "fire: needs when:"),
+            ("every: 60s\nfor: 1m", "for: needs when:"),
+            ("every: 60s\ncooldown: 1m", "cooldown: needs when:"),
+            ("every: 60s\nmemory: clear", "memory: needs when:"),
+            ("every: 60s\ntimeout: 5s", "timeout: needs when:"),
+        ] {
+            assert_eq!(parse("x", &md(fm, "p")).unwrap_err(), err, "{fm}");
+        }
+    }
+
+    #[test]
+    fn describe_and_when_text_for_watchers() {
+        let s = parse(
+            "x",
+            &md(
+                "every: 60s\nwhen: pr_watch.py pr=482 repo=o/r\nmax_runs: 1",
+                "p",
+            ),
+        )
+        .unwrap();
+        assert_eq!(s.when_text, "every 60s when pr_watch.py");
+        assert_eq!(s.describe(), "every 1m when pr_watch.py pr=482 repo=o/r");
+        let plain = parse("x", &md("every: 30m", "p")).unwrap();
+        assert_eq!(
+            (plain.when_text.as_str(), plain.describe().as_str()),
+            ("every 30m", "every 30m")
+        );
+    }
+
+    #[test]
+    fn babysitter_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let a = parse("argo", &babysitter(cwd)).unwrap();
+        let sensor = a.sensor.as_ref().unwrap();
+        assert_eq!(sensor.file, "pr_watch.py");
+        assert_eq!(sensor.args["repo"], "owner/sre-argo");
+        assert_eq!(
+            (a.fire, a.mode, a.memory),
+            (Fire::OnChange, Mode::Queue, Memory::Continue)
+        );
+        assert_eq!(
+            (a.for_, a.cooldown),
+            (Duration::ZERO, Duration::from_secs(300))
+        );
+        assert_eq!(
+            (a.max_runs, a.expires),
+            (Some(40), Some(Duration::from_secs(14 * 86400)))
+        );
+        assert!(a.quiet && !a.approvals && !a.enabled && a.created.is_none());
+
+        // Spec → file (as the tool writes it: defaults dropped) → Spec, equal.
+        let when = sensor.render();
+        let (cooldown, expires) = (
+            humantime::format_duration(a.cooldown).to_string(),
+            humantime::format_duration(a.expires.unwrap()).to_string(),
+        );
+        let text = render(&FileArgs {
+            every: Some("60s"),
+            when: Some(&when),
+            cooldown: Some(&cooldown),
+            mode: Some("queue"),
+            max_runs: a.max_runs,
+            expires: Some(&expires),
+            cwd: Some(cwd),
+            quiet: true,
+            approvals: false,
+            enabled: false,
+            prompt: &a.prompt,
+            ..BASE
+        });
+        let b = parse("argo", &text).unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        // Key order follows §2's example: clock, when, watcher keys, then the rest.
+        let keys: Vec<_> = text
+            .lines()
+            .skip(1)
+            .take_while(|l| *l != "---")
+            .map(|l| l.split(':').next().unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "every",
+                "when",
+                "cooldown",
+                "mode",
+                "expires",
+                "quiet",
+                "max_runs",
+                "cwd",
+                "approvals",
+                "enabled"
+            ]
+        );
+    }
+
+    #[test]
+    fn set_created_inserts_or_replaces() {
+        let at = Local.with_ymd_and_hms(2026, 9, 28, 10, 15, 3).unwrap();
+        let stamp = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        let text = md("every: 60s\nwhen: a.py\nmax_runs: 1", "p");
+        let with = set_created(&text, at);
+        assert_eq!(
+            with,
+            md(
+                &format!("created: \"{stamp}\"\nevery: 60s\nwhen: a.py\nmax_runs: 1"),
+                "p"
+            )
+        );
+        assert_eq!(parse("x", &with).unwrap().created, Some(at));
+
+        let later = at + chrono::Duration::hours(1);
+        let replaced = set_created(&with, later);
+        assert_eq!(parse("x", &replaced).unwrap().created, Some(later));
+        assert_eq!(replaced.matches("created:").count(), 1);
+        assert_eq!(set_created(&replaced, at), with);
+        // Same write path as set_enabled: byte-for-byte elsewhere, front matter added when absent.
+        assert_eq!(
+            set_created("p\n", at),
+            format!("---\ncreated: \"{stamp}\"\n---\np\n")
+        );
     }
 
     #[test]

@@ -536,6 +536,10 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
                 if enabled { "resumed" } else { "paused" }
             ))
         }
+        Command::TestSchedule(name) => {
+            let v = msg(api.test_schedule(name).await)?;
+            UiEvent::Info(schedule::validate::render(&v))
+        }
         Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;

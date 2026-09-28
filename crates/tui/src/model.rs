@@ -391,6 +391,8 @@ pub enum Command {
     ScheduleHistory(String),
     /// `enable_schedule`: `/schedules pause|resume <name>` (33 §3.5).
     EnableSchedule(String, bool),
+    /// `test_schedule`: `/schedules test <name>` — the 40 §1.12 verdict.
+    TestSchedule(String),
     /// `tasks_list` for one project (`None` = every project) (67 §12).
     ListTasks(Option<String>),
     /// `agents_list`: the roster (67 §12).
@@ -1341,7 +1343,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "/schedules",
-        "[run <name>|history <name>|pause <name>|resume <name>]",
+        "[run <name>|test <name>|history <name>|pause <name>|resume <name>]",
         "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
     ),
     (
@@ -6018,6 +6020,9 @@ impl Model {
                 Some(("resume", name)) if !name.trim().is_empty() => {
                     send(tx, Command::EnableSchedule(name.trim().to_owned(), true))
                 }
+                Some(("test", name)) if !name.trim().is_empty() => {
+                    send(tx, Command::TestSchedule(name.trim().to_owned()))
+                }
                 _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
             },
             "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
@@ -9950,7 +9955,7 @@ pub fn aws_profile_line(p: &AwsProfiles) -> String {
 
 /// The `/schedules` usage line, shown on a bad argument.
 pub const SCHEDULES_USAGE: &str =
-    "usage: /schedules [run <name>|history <name>|pause <name>|resume <name>]";
+    "usage: /schedules [run <name>|test <name>|history <name>|pause <name>|resume <name>]";
 
 /// The `/shake` usage line, shown on an unknown argument (48 §2.1).
 pub const SHAKE_USAGE: &str = "usage: /shake [images|documents|messages|tools|summary]";
@@ -9979,7 +9984,8 @@ pub fn removal_line(r: &ContextRemoval) -> String {
     )
 }
 
-/// `/schedules`: one row per file — `name · when · next · runs · last · result · state`.
+/// `/schedules`: one row per file — `name · when · next · runs · last · result · state`,
+/// plus `last check` (`10:15:03 quiet 1200 ms`, 40 §6) when any row is a watcher that was checked.
 /// `runs` is `—` for a plain schedule, `N` or `N/max` for a loop (33 §3.2);
 /// `state` is `running`, `off`, `error: …` (then `next` is `—`), or empty.
 pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
@@ -9989,7 +9995,12 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
     let stamp = |t: Option<chrono::DateTime<chrono::Local>>| {
         t.map_or("—".to_owned(), |t| t.format("%a %d %b %H:%M").to_string())
     };
-    let mut out = vec!["name · when · next · runs · last · result · state".to_owned()];
+    let checks = rows.iter().any(|s| s.last_check.is_some());
+    let mut header = "name · when · next · runs · last · result · state".to_owned();
+    if checks {
+        header.push_str(" · last check");
+    }
+    let mut out = vec![header];
     out.extend(rows.iter().map(|s| {
         let state = match (&s.error, s.running, s.enabled) {
             (Some(e), ..) => format!("error: {e}"),
@@ -10003,14 +10014,21 @@ pub fn schedules_table(rows: &[schedule::ScheduleInfo]) -> String {
             None if s.until.is_some() => s.runs.to_string(),
             None => "—".to_owned(),
         };
-        format!(
+        let mut row = format!(
             "{} · {} · {} · {runs} · {} · {} · {state}",
             s.name,
             s.when,
             stamp(next),
             stamp(s.last),
             s.last_result.as_deref().unwrap_or("—"),
-        )
+        );
+        if checks {
+            row.push_str(&s.last_check.as_ref().map_or_else(
+                || " · —".to_owned(),
+                |c| format!(" · {} {} {} ms", c.at.format("%H:%M:%S"), c.outcome, c.elapsed_ms),
+            ));
+        }
+        row
     }));
     out.join("\n")
 }
@@ -13038,6 +13056,11 @@ mod tests {
             rx.try_recv(),
             Ok(Command::EnableSchedule(name, true)) if name == "port"
         ));
+        m.submit("/schedules test port", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TestSchedule(name)) if name == "port"
+        ));
         for bad in ["/schedules pause", "/schedules stop x"] {
             m.submit(bad, &tx);
             assert!(rx.try_recv().is_err(), "{bad}");
@@ -13067,6 +13090,12 @@ mod tests {
                 cwd: None,
                 agent: None,
                 project: None,
+                when_sensor: None,
+                fire: None,
+                mode: None,
+                memory: None,
+                expires: None,
+                last_check: None,
             };
         let rows = [
             info("plain", None, None, 0, true),
@@ -13083,6 +13112,23 @@ mod tests {
         assert!(lines.next().unwrap().contains(" · 3/20 · "));
         assert!(lines.next().unwrap().contains(" · 7 · "));
 
+        // 40 §6: a checked watcher adds the `last check` column; other rows get `—`.
+        let mut watcher = info("watch", None, Some(3), 0, true);
+        watcher.when = "every 60s when fs_exists.py".into();
+        watcher.last_check = Some(schedule::LastCheck {
+            at: chrono::TimeZone::with_ymd_and_hms(&chrono::Local, 2026, 9, 28, 10, 15, 3).unwrap(),
+            outcome: "quiet".into(),
+            elapsed_ms: 1200,
+            hash: None,
+        });
+        let table = schedules_table(&[rows[0].clone(), watcher]);
+        let mut lines = table.lines();
+        assert!(lines.next().unwrap().ends_with(" · state · last check"));
+        assert!(lines.next().unwrap().ends_with(" · —"));
+        let w = lines.next().unwrap();
+        assert!(w.contains(" · every 60s when fs_exists.py · "), "{w}");
+        assert!(w.ends_with(" · 10:15:03 quiet 1200 ms"), "{w}");
+
         let fired = chrono::Local::now();
         let run = schedule::RunInfo {
             session: None,
@@ -13090,6 +13136,7 @@ mod tests {
             finished_at: Some(fired),
             result: Some("end_turn".into()),
             report: Some(format!("\n  {}\nsecond line", "x".repeat(70))),
+            envelope: None,
         };
         let table = schedule_history_table("checked", Some(&rows[2]), &[run]);
         let mut lines = table.lines();

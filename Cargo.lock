@@ -320,7 +320,9 @@ dependencies = [
  "tools",
  "tracing",
  "ts-rs",
+ "url",
  "uuid",
+ "web",
  "wiremock",
 ]
 

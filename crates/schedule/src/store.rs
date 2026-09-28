@@ -32,10 +32,11 @@ pub struct Store {
 
 /// `(name, session, fired_at, result)` as `latest()` selects it.
 type LatestRow = (String, Option<String>, Option<String>, Option<String>);
-/// `(session, fired_at, finished_at, result, report)` as `history()` selects it.
+/// `(session, fired_at, finished_at, result, report, envelope)` as `history()` selects it.
 type RunRow = (
     Option<String>,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -76,15 +77,30 @@ impl Store {
         fired_at: DateTime<Local>,
         result: Option<&str>,
     ) -> anyhow::Result<i64> {
+        self.insert_run_with(name, session, fired_at, result, None)
+            .await
+    }
+
+    /// [`Store::insert_run`] with the payload's first line as `envelope`
+    /// (40 §1.5, §3.4): what a `when:` fire records for history grouping.
+    pub async fn insert_run_with(
+        &self,
+        name: &str,
+        session: Option<SessionId>,
+        fired_at: DateTime<Local>,
+        result: Option<&str>,
+        envelope: Option<&str>,
+    ) -> anyhow::Result<i64> {
         // A skip is finished the moment it is recorded; a fire is closed by `finish_run`.
         let done = sqlx::query(
-            "INSERT INTO runs (name, session, fired_at, finished_at, result) \
-             VALUES (?1, ?2, ?3, CASE WHEN ?4 IS NULL THEN NULL ELSE ?3 END, ?4)",
+            "INSERT INTO runs (name, session, fired_at, finished_at, result, envelope) \
+             VALUES (?1, ?2, ?3, CASE WHEN ?4 IS NULL THEN NULL ELSE ?3 END, ?4, ?5)",
         )
         .bind(name)
         .bind(session.map(|s| s.to_string()))
         .bind(fired_at.to_rfc3339())
         .bind(result)
+        .bind(envelope)
         .execute(&self.pool)
         .await?;
         Ok(done.last_insert_rowid())
@@ -160,7 +176,7 @@ impl Store {
     /// The last `limit` fires and skips of `name`, newest first.
     pub async fn history(&self, name: &str, limit: u32) -> anyhow::Result<Vec<RunInfo>> {
         let rows: Vec<RunRow> = sqlx::query_as(
-            "SELECT session, fired_at, finished_at, result, report FROM runs \
+            "SELECT session, fired_at, finished_at, result, report, envelope FROM runs \
              WHERE name = ? ORDER BY fired_at DESC, id DESC LIMIT ?",
         )
         .bind(name)
@@ -168,16 +184,253 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(session, fired_at, finished_at, result, report)| {
+            .map(|(session, fired_at, finished_at, result, report, envelope)| {
                 Ok(RunInfo {
                     session: session.as_deref().map(session_of).transpose()?,
                     fired_at: time_of(&fired_at)?,
                     finished_at: finished_at.as_deref().map(time_of).transpose()?,
                     result,
                     report,
+                    envelope,
                 })
             })
             .collect()
+    }
+
+    // --- watch (40 §3.4) ----------------------------------------------------
+
+    /// The `watch` row of `name`; `None` before its first committed check.
+    pub async fn watch_get(&self, name: &str) -> anyhow::Result<Option<WatchRow>> {
+        let row: Option<WatchRaw> = sqlx::query_as(
+            "SELECT name, state, last_hash, last_fired_at, last_check_at, last_outcome, \
+             last_elapsed_ms, holding_since, strikes, fired_count, session_id \
+             FROM watch WHERE name = ?",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(WatchRow::try_from).transpose()
+    }
+
+    /// Insert or replace the whole row.
+    pub async fn watch_put(&self, w: &WatchRow) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO watch (name, state, last_hash, last_fired_at, last_check_at, \
+             last_outcome, last_elapsed_ms, holding_since, strikes, fired_count, session_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&w.name)
+        .bind(&w.state)
+        .bind(&w.last_hash)
+        .bind(w.last_fired_at.map(|t| t.to_rfc3339()))
+        .bind(w.last_check_at.map(|t| t.to_rfc3339()))
+        .bind(&w.last_outcome)
+        .bind(w.last_elapsed_ms.map(|m| m as i64))
+        .bind(w.holding_since.map(|t| t.to_rfc3339()))
+        .bind(w.strikes as i64)
+        .bind(w.fired_count as i64)
+        .bind(w.session_id.map(|s| s.to_string()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Commit a successful fire (40 §1.7, §3.3): `state`, `last_hash`,
+    /// `last_fired_at`; `fired_count` +1; `holding_since` and `strikes` cleared.
+    /// Creates the row when missing.
+    pub async fn watch_commit(
+        &self,
+        name: &str,
+        state: &str,
+        hash: &str,
+        fired_at: DateTime<Local>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO watch (name, state, last_hash, last_fired_at, fired_count) \
+             VALUES (?1, ?2, ?3, ?4, 1) \
+             ON CONFLICT(name) DO UPDATE SET state = ?2, last_hash = ?3, last_fired_at = ?4, \
+             fired_count = fired_count + 1, holding_since = NULL, strikes = 0",
+        )
+        .bind(name)
+        .bind(state)
+        .bind(hash)
+        .bind(fired_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// `strikes` +1 (40 §5); returns the new count. Creates the row when missing.
+    pub async fn watch_strike(&self, name: &str) -> anyhow::Result<u32> {
+        let (n,): (i64,) = sqlx::query_as(
+            "INSERT INTO watch (name, strikes) VALUES (?1, 1) \
+             ON CONFLICT(name) DO UPDATE SET strikes = strikes + 1 RETURNING strikes",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n.max(0) as u32)
+    }
+
+    /// `strikes` = 0 (a successful check, or `resume`). No row → no-op.
+    pub async fn watch_reset_strikes(&self, name: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE watch SET strikes = 0 WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Record the last check (`last_check` in `ScheduleInfo`, 40 §3.1). Creates
+    /// the row when missing.
+    pub async fn watch_last_check(
+        &self,
+        name: &str,
+        at: DateTime<Local>,
+        outcome: &str,
+        elapsed_ms: u64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO watch (name, last_check_at, last_outcome, last_elapsed_ms) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(name) DO UPDATE SET last_check_at = ?2, last_outcome = ?3, \
+             last_elapsed_ms = ?4",
+        )
+        .bind(name)
+        .bind(at.to_rfc3339())
+        .bind(outcome)
+        .bind(elapsed_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record a successful check (40 §3.2): `last_check_*`, `holding_since`
+    /// (`first_true_at`), `strikes` = 0, and `state` when the gate commits it
+    /// (quiet / unchanged — a true check that did not fire keeps the old state
+    /// until its run succeeds, §1.7). Creates the row when missing.
+    pub async fn watch_check_ok(
+        &self,
+        name: &str,
+        at: DateTime<Local>,
+        outcome: &str,
+        elapsed_ms: u64,
+        holding_since: Option<DateTime<Local>>,
+        state: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO watch (name, state, last_check_at, last_outcome, last_elapsed_ms, holding_since) \
+             VALUES (?1, COALESCE(?6, '{}'), ?2, ?3, ?4, ?5) \
+             ON CONFLICT(name) DO UPDATE SET last_check_at = ?2, last_outcome = ?3, \
+             last_elapsed_ms = ?4, holding_since = ?5, strikes = 0, state = COALESCE(?6, state)",
+        )
+        .bind(name)
+        .bind(at.to_rfc3339())
+        .bind(outcome)
+        .bind(elapsed_ms as i64)
+        .bind(holding_since.map(|t| t.to_rfc3339()))
+        .bind(state)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Bind the watcher's session before its first fire (40 §1.12,
+    /// `BindSession`). Creates the row when missing.
+    pub async fn watch_bind(&self, name: &str, session: SessionId) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO watch (name, session_id) VALUES (?1, ?2) \
+             ON CONFLICT(name) DO UPDATE SET session_id = ?2",
+        )
+        .bind(name)
+        .bind(session.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Forget `name`'s sensor state (the file was removed or re-created).
+    pub async fn watch_delete(&self, name: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM watch WHERE name = ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+/// One `watch` row (40 §3.4): a watcher's sensor state and check bookkeeping.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchRow {
+    /// Schedule name (PK).
+    pub name: String,
+    /// Sensor state JSON (≤ 16 KiB), committed after a successful run; `{}` at first.
+    pub state: String,
+    /// `sha256(payload)` of the last fired payload.
+    pub last_hash: Option<String>,
+    /// When the last committed fire happened.
+    pub last_fired_at: Option<DateTime<Local>>,
+    /// When the sensor last ran.
+    pub last_check_at: Option<DateTime<Local>>,
+    /// The last check's `CheckOutcome` string.
+    pub last_outcome: Option<String>,
+    /// The last check's sensor wall clock.
+    pub last_elapsed_ms: Option<u64>,
+    /// First true tick of the current `for:` window (`first_true_at` in 40 §3.2).
+    pub holding_since: Option<DateTime<Local>>,
+    /// Consecutive broken checks / failed runs (40 §5).
+    pub strikes: u32,
+    /// Committed fires, all time.
+    pub fired_count: u32,
+    /// Session bound at creation (`BindSession`, 40 §1.12).
+    pub session_id: Option<SessionId>,
+}
+
+/// `watch` columns as sqlite hands them back.
+type WatchRaw = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+);
+
+impl TryFrom<WatchRaw> for WatchRow {
+    type Error = anyhow::Error;
+
+    fn try_from(r: WatchRaw) -> anyhow::Result<Self> {
+        let (
+            name,
+            state,
+            last_hash,
+            last_fired_at,
+            last_check_at,
+            last_outcome,
+            last_elapsed_ms,
+            holding_since,
+            strikes,
+            fired_count,
+            session_id,
+        ) = r;
+        Ok(Self {
+            name,
+            state,
+            last_hash,
+            last_fired_at: last_fired_at.as_deref().map(time_of).transpose()?,
+            last_check_at: last_check_at.as_deref().map(time_of).transpose()?,
+            last_outcome,
+            last_elapsed_ms: last_elapsed_ms.map(|m| m.max(0) as u64),
+            holding_since: holding_since.as_deref().map(time_of).transpose()?,
+            strikes: strikes.max(0) as u32,
+            fired_count: fired_count.max(0) as u32,
+            session_id: session_id.as_deref().map(session_of).transpose()?,
+        })
     }
 }
 
@@ -331,5 +584,54 @@ mod tests {
             store.latest().await.unwrap()["a"].last_result.as_deref(),
             Some("lost")
         );
+    }
+
+    #[tokio::test]
+    async fn watch_rows_and_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("schedule.sqlite"))
+            .await
+            .unwrap();
+        assert!(store.watch_get("w").await.unwrap().is_none());
+        assert_eq!(store.watch_strike("w").await.unwrap(), 1);
+        assert_eq!(store.watch_strike("w").await.unwrap(), 2);
+        let t = Local::now();
+        store.watch_last_check("w", t, "quiet", 1200).await.unwrap();
+        let w = store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(
+            (w.strikes, w.state.as_str(), w.last_outcome.as_deref()),
+            (2, "{}", Some("quiet"))
+        );
+        assert_eq!((w.last_elapsed_ms, w.last_check_at), (Some(1200), Some(t)));
+        store
+            .watch_commit("w", r#"{"k":1}"#, "abc", t)
+            .await
+            .unwrap();
+        store
+            .watch_commit("w", r#"{"k":2}"#, "def", t)
+            .await
+            .unwrap();
+        let w = store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(
+            (w.strikes, w.fired_count, w.last_hash.as_deref()),
+            (0, 2, Some("def"))
+        );
+        assert_eq!((w.state.as_str(), w.last_fired_at), (r#"{"k":2}"#, Some(t)));
+        let put = WatchRow {
+            holding_since: Some(t),
+            session_id: Some(SessionId::new()),
+            ..w.clone()
+        };
+        store.watch_put(&put).await.unwrap();
+        assert_eq!(store.watch_get("w").await.unwrap().unwrap(), put);
+        store.watch_delete("w").await.unwrap();
+        assert!(store.watch_get("w").await.unwrap().is_none());
+
+        store
+            .insert_run_with("w", None, t, Some("fired"), Some("subject=pr/1 stage=x"))
+            .await
+            .unwrap();
+        let h = store.history("w", 1).await.unwrap();
+        assert_eq!(h[0].envelope.as_deref(), Some("subject=pr/1 stage=x"));
     }
 }

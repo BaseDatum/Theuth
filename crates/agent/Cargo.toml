@@ -55,6 +55,10 @@ sha2 = { workspace = true }
 # Design doc 50 §4: the SDK's core protocol types back durable A2A task
 # records in `communication::network`; HTTP client/server stay in `crates/a2a`.
 a2a-types = { workspace = true }
+# 40 §4.3: the sensor bridge calls `http_request`'s tool struct directly (no
+# registry, no approval); `url` parses the POST host rule.
+web = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }
