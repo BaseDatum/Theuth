@@ -38,6 +38,7 @@ import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
+import { Route as CodemapSessionRootRouteImport } from './routes/codemap.$session.$root'
 import { Route as PtySessionJobRouteImport } from './routes/pty.$session.$job'
 import { Route as RoutinesNameIndexRouteImport } from './routes/routines.$name.index'
 import { Route as RoutinesNameSectionRouteImport } from './routes/routines.$name.$section'
@@ -187,6 +188,11 @@ const AgentsNameTabRoute = AgentsNameTabRouteImport.update({
   path: '/agents/$name/$tab',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CodemapSessionRootRoute = CodemapSessionRootRouteImport.update({
+  id: '/codemap/$session/$root',
+  path: '/codemap/$session/$root',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PtySessionJobRoute = PtySessionJobRouteImport.update({
   id: '/pty/$session/$job',
   path: '/pty/$session/$job',
@@ -232,6 +238,7 @@ export interface FileRoutesByFullPath {
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
@@ -266,6 +273,7 @@ export interface FileRoutesByTo {
   '/skills': typeof SkillsIndexRoute
   '/tasks': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name': typeof AgentsNameIndexRoute
@@ -301,6 +309,7 @@ export interface FileRoutesById {
   '/skills/': typeof SkillsIndexRoute
   '/tasks/': typeof TasksIndexRoute
   '/agents/$name/$tab': typeof AgentsNameTabRoute
+  '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
@@ -337,6 +346,7 @@ export interface FileRouteTypes {
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name/'
@@ -371,6 +381,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/tasks'
     | '/agents/$name/$tab'
+    | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name'
@@ -405,6 +416,7 @@ export interface FileRouteTypes {
     | '/skills/'
     | '/tasks/'
     | '/agents/$name/$tab'
+    | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
     | '/agents/$name/'
@@ -438,6 +450,7 @@ export interface RootRouteChildren {
   SkillsIndexRoute: typeof SkillsIndexRoute
   TasksIndexRoute: typeof TasksIndexRoute
   AgentsNameTabRoute: typeof AgentsNameTabRoute
+  CodemapSessionRootRoute: typeof CodemapSessionRootRoute
   PtySessionJobRoute: typeof PtySessionJobRoute
   RoutinesNameSectionRoute: typeof RoutinesNameSectionRoute
   AgentsNameIndexRoute: typeof AgentsNameIndexRoute
@@ -649,6 +662,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentsNameTabRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/codemap/$session/$root': {
+      id: '/codemap/$session/$root'
+      path: '/codemap/$session/$root'
+      fullPath: '/codemap/$session/$root'
+      preLoaderRoute: typeof CodemapSessionRootRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pty/$session/$job': {
       id: '/pty/$session/$job'
       path: '/pty/$session/$job'
@@ -724,6 +744,7 @@ const rootRouteChildren: RootRouteChildren = {
   SkillsIndexRoute: SkillsIndexRoute,
   TasksIndexRoute: TasksIndexRoute,
   AgentsNameTabRoute: AgentsNameTabRoute,
+  CodemapSessionRootRoute: CodemapSessionRootRoute,
   PtySessionJobRoute: PtySessionJobRoute,
   RoutinesNameSectionRoute: RoutinesNameSectionRoute,
   AgentsNameIndexRoute: AgentsNameIndexRoute,

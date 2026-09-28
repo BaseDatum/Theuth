@@ -53,6 +53,16 @@ test('a PTY pops out at /pty/$session/$job; its label names both ids and its ses
   expect(popoutSession(null)).toBeNull()
 })
 
+test('a CodeMap pops out at /codemap/$session/$root; the root (a path, spaces allowed) survives the url and the label is Tauri-safe', () => {
+  const t = { kind: 'codemap', session: '01J8ZK-abc', root: '/Users/sky/My Code/theuth' } as const
+  expect(popoutLabel(t)).toBe('popout-codemap-01J8ZK-abc-_Users_sky_My_Code_theuth')
+  expect(popoutUrl(t)).toBe('/codemap/01J8ZK-abc/%2FUsers%2Fsky%2FMy%20Code%2Ftheuth?window=popout-codemap-01J8ZK-abc-_Users_sky_My_Code_theuth')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  // A session without a root is not a map window; `SessionDeleted` closes it like a PTY's.
+  expect(popoutTarget('/codemap/s1?window=x')).toBeNull()
+  expect(popoutSession(t)).toBe('01J8ZK-abc')
+})
+
 test('the label names the target with only the characters a Tauri window label allows, and the url carries it back', () => {
   expect(popoutLabel({ kind: 'chat', session: '01J8ZK-abc' })).toBe('popout-chat-01J8ZK-abc')
   expect(popoutLabel({ kind: 'artifact', callId: 'call.1/2 x' })).toBe('popout-artifact-call_1_2_x')
