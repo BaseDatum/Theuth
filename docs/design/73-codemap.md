@@ -400,7 +400,7 @@ Labels: the identifier, always whole — never a middle ellipsis (S §2.2 "text 
 ### 6.7 The panel host and the header
 
 - `HeaderId` gains `'codemap'` (`header.ts:28`); `headerOrder` adds `{ id: 'codemap', slot: panel === 'codemap' ? 'bar' : 'menu', shed: true }` beside `terminals`/`browser`/`artifacts`; `Header.tsx:194` priority becomes `artifacts → codemap → browser → terminals` (the agent's structural work outranks a screenshot; §12 Q3). The button (lucide `Map`) shows a dot while `codemap.last.seq` is newer than what the mounted panel has shown.
-- The panel is a right `Sheet` with `ArtifactPanel`'s drag strip and clamps (`ArtifactPanel.tsx:238-261`), width persisted; `Sheet side="bottom"` full height under 768 px. **Status header** (one line, refreshed in place, S §1.17): root name (basename of `root`; a `▾` menu when `codemap.roots.length > 1`) · `indexed_files · symbols` from `codeindex_stats(root)` (one query, `staleTime: Infinity`, invalidated by `CodeReconciled`) · freshness chip · `N calls` · lens tabs · **Snapshot** ⊡ · **Open in new window** ⤢ (`canPopout()`) · ✕. **Activity trail**: one collapsible row under the lens body listing `codemap.trail` newest-first as `hh:mm tool target` (≤ 20, text only, no animation — Empryo's tool-call list and Cursor's tool list, S §1.1, §1.15); a row click replays that call's lens as `pinned`; the row whose call produced the current lens is underlined. On phones the trail is the first section of the sheet, collapsed.
+- The panel is a **real side pane docked in `Panes` beside the chat** (Sky's ruling 2026-09-28, overturning §12 Q1 — like Empryo's map, S §1.1; the transcript stays visible while the agent works), resizable with `ArtifactPanel`'s drag strip and clamps (`ArtifactPanel.tsx:238-261`), width persisted as `codemap-panel-width` (360–920, default 480); under 768 px it is a full-height bottom `Sheet` of the list forms (§6.9). **Status header** (one line, refreshed in place, S §1.17): root name (basename of `root`; a `▾` menu when `codemap.roots.length > 1`) · `indexed_files · symbols` from `codeindex_stats(root)` (one query, `staleTime: Infinity`, invalidated by `CodeReconciled`) · freshness chip · `N calls` · lens tabs · **Snapshot** ⊡ · **Open in new window** ⤢ (`canPopout()`) · ✕. **Activity trail**: one collapsible row under the lens body listing `codemap.trail` newest-first as `hh:mm tool target` (≤ 20, text only, no animation — Empryo's tool-call list and Cursor's tool list, S §1.1, §1.15); a row click replays that call's lens as `pinned`; the row whose call produced the current lens is underlined. On phones the trail is the first section of the sheet, collapsed.
 - Two sessions, one root: each session's slice is independent; two panels may show the same root (fine — read-only).
 
 ### 6.8 Interaction that feeds back
@@ -486,7 +486,7 @@ Editing from the map; a repository-wide graph; force layouts and any notion of "
 - **Codeindex subscribing to `AgentEvent::ToolCallFinished`** for live edits — `files` are produced files, not edited paths; and a `codeindex → agent` dependency for one field. The UI already knows the edited path from `args`.
 - **A `DocKind::CodeMap`** — see 0.1.
 - **Empryo / SoulForge's desktop map** — private, BSL 1.1; ideas only (recon §1).
-- **A Panes-tree side pane instead of a Sheet** — the chat's `Panes` splits sessions, not tools; `ArtifactPanel` set the precedent; pop-out is the side-by-side answer (§12 Q1).
+- **A right `Sheet` overlay instead of a Panes-tree side pane** — the doc's v1/v2 default (`ArtifactPanel` precedent); **overturned by Sky 2026-09-28**: a Sheet covers the transcript, and the map's value is watching it beside the chat while the agent works (Empryo, S §1.1). Pop-out (§0.8) stays as the second window.
 
 ## 11. Build steps (one commit each, `cargo check --workspace` and the UI trio green; E and U in parallel from §5)
 
@@ -503,7 +503,7 @@ E1/E2 and U1/U2 are independent given §5; U3 depends on U1–U2; E2 needs the s
 
 ## 12. Open (decided by default; overturn in the as-built)
 
-1. **Panel host: `Sheet` overlay (default) vs a real side pane in `Panes`.** A Sheet covers the transcript at panel widths > 50 %; pop-out is the side-by-side answer. Revisit if users keep the panel open while chatting.
+1. **Panel host: real side pane in `Panes` — decided (Sky, 2026-09-28).** The CodeMap docks beside the chat like Empryo's map; the Sheet overlay was rejected because it covers the transcript at panel widths > 50 %. Pop-out (§0.8) remains; < 768 px keeps the bottom Sheet of lists (§6.9).
 2. **Header priority** `artifacts → codemap → browser → terminals` (default) — the shed slot shows one button; the others live in the chevron menu.
 3. **`CodeReconciled` is global** (no `session`): a window with two sessions on the same root gets it once; the UI filters by root. Alternative: publish per session that touched the root (more events, no benefit seen).
 4. **History-load availability with an unknown root** (`"?"` → `codeindex_stats(null)` default root). Alternative: parse the `root:` line from the tool's `content` text — fragile; not done.
