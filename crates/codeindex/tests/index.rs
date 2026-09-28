@@ -888,6 +888,177 @@ async fn find_tiers_and_monikers() {
                 symbol: m.into(),
                 sections: Some(vec!["definition".into()]),
                 root: root.clone(),
+/// Reconcile guard: a walk that loses more than 80 % of the indexed files
+/// (here: every file but one removed from a temp copy) deletes nothing and
+/// answers `stale` + `suspect_root` with a hint; a smaller loss reconciles
+/// normally; `force` overrides the guard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconcile_refuses_to_empty_the_index() {
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    for i in 0..10 {
+        std::fs::write(
+            d.join(format!("src/m{i}.rs")),
+            format!("pub fn f{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ri = ix.open_root(&d).await.unwrap();
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert_eq!(
+        (r.reparsed, r.indexed_files, r.suspect_root),
+        (10, 10, false),
+        "{r:?}"
+    );
+
+    // 2 of 10 gone: normal delete.
+    std::fs::remove_file(d.join("src/m8.rs")).unwrap();
+    std::fs::remove_file(d.join("src/m9.rs")).unwrap();
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert_eq!(
+        (r.removed, r.indexed_files, r.suspect_root),
+        (2, 8, false),
+        "{r:?}"
+    );
+
+    // 7 of 8 gone (87 %): refused, rows kept, envelope says why.
+    for i in 1..8 {
+        std::fs::remove_file(d.join(format!("src/m{i}.rs"))).unwrap();
+    }
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert!(r.stale && r.suspect_root && r.hint.is_some(), "{r:?}");
+    assert_eq!((r.removed, r.reparsed, r.indexed_files), (0, 0, 8), "{r:?}");
+    assert_eq!(store::counts(&ri.pool).await.unwrap().files, 8);
+    // Still refused on the next call (nothing changed on disk).
+    let r = ix.reconcile(&ri, false).await.unwrap();
+    assert!(r.suspect_root, "{r:?}");
+
+    // The tool envelope carries it and `content` ends with the hint.
+    {
+        use codeindex::tools::{CodeFindArgs, CodeFindTool};
+        use tools::Tool;
+        let out = CodeFindTool(ix.clone())
+            .call(
+                CodeFindArgs {
+                    name: "f0".into(),
+                    kind: None,
+                    exact: None,
+                    root: Some(d.clone()),
+                    budget: None,
+                },
+                cx(&data),
+            )
+            .await
+            .unwrap();
+        let v = out.structured.unwrap();
+        assert_eq!(v["suspect_root"], true, "{v}");
+        assert!(
+            v["hint"].as_str().unwrap().contains("kept the old index"),
+            "{v}"
+        );
+        assert!(
+            v["content"]
+                .as_str()
+                .unwrap()
+                .contains("[stale: most indexed"),
+            "{v}"
+        );
+    }
+
+    // force: the explicit rebuild wins.
+    let r = ix.reconcile(&ri, true).await.unwrap();
+    assert_eq!(
+        (r.removed, r.indexed_files, r.suspect_root),
+        (7, 1, false),
+        "{r:?}"
+    );
+}
+
+/// 60 §8 `test_subject`: a Rust API test under `tests/` that never names the
+/// changed definition is linked to `src/lib.rs` by convention, `tests/util.rs`
+/// to `src/util.rs`, `store.test.ts` to `store.ts`, and a test with no
+/// conventional match to the file it imports most. `code_impact` lists them
+/// as `tests_by_subject` and marks each test once; `code_symbol` lists the
+/// tests of its file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_subjects_link_api_tests() {
+    use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
+    use tools::Tool;
+    let repo = tempdir();
+    let d = repo.0.canonicalize().unwrap();
+    for dir in ["src", "tests", "web/__tests__"] {
+        std::fs::create_dir_all(d.join(dir)).unwrap();
+    }
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture-subj\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/util.rs", "pub fn helper() -> u32 {\n    1\n}\n"),
+        (
+            "src/lib.rs",
+            "pub mod util;\n\npub fn run() -> u32 {\n    util::helper()\n}\n",
+        ),
+        (
+            "tests/api.rs",
+            "use fixture_subj::run;\n\n#[test]\nfn t() {\n    assert_eq!(run(), 1);\n}\n",
+        ),
+        (
+            "tests/util.rs",
+            "use fixture_subj::util::helper;\n\n#[test]\nfn t() {\n    assert_eq!(helper(), 1);\n}\n",
+        ),
+        // Drives the crate from outside: no import or reference the index can follow.
+        (
+            "tests/cli.rs",
+            "use assert_cmd::Command;\n\n#[test]\nfn t() {\n    Command::cargo_bin(\"fixture-subj\").unwrap().assert().success();\n}\n",
+        ),
+        (
+            "web/store.ts",
+            "export function open(): number {\n  return 1;\n}\n",
+        ),
+        (
+            "web/store.test.ts",
+            "import { open } from './store';\ntest('x', () => open());\n",
+        ),
+        (
+            "web/__tests__/misc.test.ts",
+            "import { open } from '../store';\ntest('y', () => open());\n",
+        ),
+    ];
+    for (p, s) in files {
+        std::fs::write(d.join(p), s).unwrap();
+    }
+    let data = tempdir();
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ri = ix.open_root(&d).await.unwrap();
+    ix.reconcile(&ri, false).await.unwrap();
+    let subjects = store::test_subjects(&ri.pool).await.unwrap();
+    let want: Vec<(&str, &str)> = vec![
+        ("tests/api.rs", "src/lib.rs"),
+        ("tests/cli.rs", "src/lib.rs"),
+        ("tests/util.rs", "src/util.rs"),
+        ("web/__tests__/misc.test.ts", "web/store.ts"),
+        ("web/store.test.ts", "web/store.ts"),
+    ];
+    assert_eq!(
+        subjects
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect::<Vec<_>>(),
+        want,
+        "{subjects:?}"
+    );
+
+    let out = CodeImpactTool(ix.clone())
+        .call(
+            CodeImpactArgs {
+                files: Some(vec![PathBuf::from("src/lib.rs")]),
+                git_range: None,
+                include_tests: None,
+                root: Some(d.clone()),
                 budget: None,
             },
             cx(&data),
@@ -900,6 +1071,43 @@ async fn find_tiers_and_monikers() {
     let out = CodeRefsTool(ix.clone())
         .call(
             CodeRefsArgs { symbol: "new".into(), direction: None, kind: None, root: root.clone(), budget: None },
+    let v = out.structured.unwrap();
+    eprintln!(
+        "code_impact(files=[src/lib.rs]) with subjects:\n{}",
+        out.content
+    );
+    let list = |k: &str| -> Vec<String> {
+        v[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    // `tests/api.rs` references `run`; `tests/cli.rs` only runs the binary —
+    // reference-based `tests` misses it, the subject link does not.
+    let refs = list("tests");
+    assert!(
+        refs.contains(&"tests/api.rs".to_owned()) && !refs.contains(&"tests/cli.rs".to_owned()),
+        "{v}"
+    );
+    assert_eq!(
+        list("tests_by_subject"),
+        ["tests/api.rs", "tests/cli.rs"],
+        "{v}"
+    );
+    let content = v["content"].as_str().unwrap();
+    assert!(content.contains("tests/api.rs (ref, subject)"), "{content}");
+    assert!(content.contains("tests/cli.rs (subject)"), "{content}");
+    assert_eq!(content.matches("tests/api.rs").count(), 1, "{content}");
+
+    let out = CodeSymbolTool(ix.clone())
+        .call(
+            CodeSymbolArgs {
+                symbol: "run".into(),
+                sections: Some(vec!["definition".into()]),
+                root: Some(d.clone()),
+                budget: None,
+            },
             cx(&data),
         )
         .await
@@ -973,6 +1181,73 @@ async fn monikers_are_stable_across_line_moves() {
     for ((m0, l0), (m1, l1)) in before.iter().zip(&after) {
         assert_eq!(m0, m1);
         assert_eq!(l0 + 3, *l1, "{m0} moved by 3 lines");
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    assert_eq!(
+        v["tests"],
+        serde_json::json!(["tests/api.rs", "tests/cli.rs"]),
+        "{v}"
+    );
+    assert!(
+        v["content"]
+            .as_str()
+            .unwrap()
+            .contains("-- tests: 2 files (subject src/lib.rs) --\ntests/api.rs\ntests/cli.rs"),
+        "{v}"
+    );
+}
+
+/// `project_profile` through `Tool::call` on this repository (cargo workspace
+/// with a justfile: recipes win the slots they name) and, when present, on
+/// /tmp/empryo-recon (Bun/TS). Warm timing printed and bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_profile_on_this_repository() {
+    use codeindex::tools::{ProjectProfileArgs, ProjectProfileTool};
+    use tools::Tool;
+    let data = tempdir();
+    let root = repo_root();
+    let call =
+        |r: PathBuf| ProjectProfileTool.call(ProjectProfileArgs { root: Some(r) }, cx(&data));
+    let _warm = call(root.clone()).await.unwrap();
+    let t = std::time::Instant::now();
+    let out = call(root.clone()).await.unwrap();
+    let ms = t.elapsed().as_millis();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("project_profile(theuth) in {ms} ms:\n{}", out.content);
+    assert_eq!(v["kind"], "cargo", "{v}");
+    assert_eq!(v["package_manager"], "cargo");
+    assert_eq!(v["commands"]["test"], "just test", "{v}");
+    assert_eq!(v["commands"]["lint"], "just clippy");
+    assert_eq!(v["commands"]["format"], "just fmt");
+    assert_eq!(v["commands"]["check"], "just check");
+    assert_eq!(v["test_runner"], "cargo test");
+    assert!(
+        v["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "Cargo.toml"),
+        "{v}"
+    );
+    assert!(v["scripts"]["desktop-check"].is_string(), "{v}");
+    assert!(ms <= 20, "project_profile took {ms} ms");
+
+    let empryo = PathBuf::from("/tmp/empryo-recon");
+    if empryo.is_dir() {
+        let t = std::time::Instant::now();
+        let out = call(empryo).await.unwrap();
+        let ms = t.elapsed().as_millis();
+        let v = out.structured.unwrap();
+        eprintln!("project_profile(empryo-recon) in {ms} ms:\n{}", out.content);
+        assert_eq!(
+            (v["kind"].as_str(), v["package_manager"].as_str()),
+            (Some("node"), Some("bun")),
+            "{v}"
+        );
+        assert_eq!(v["commands"]["test"], "bun run test");
+        assert_eq!(v["commands"]["typecheck"], "bun run typecheck");
+        assert_eq!(v["test_runner"], "bun test");
     }
 }
 

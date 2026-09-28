@@ -1,7 +1,7 @@
 //! The shared engine behind the actor and the tools: open roots (LRU of 8
 //! pools), per-root writer lock, reconcile-on-call (60 §5.4, §0.8).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,6 +21,12 @@ use crate::{CodeindexConfig, IndexStats};
 
 /// Open pools kept at once (60 §3).
 const POOL_LRU: usize = 8;
+/// Reconcile guard: a diff that would delete more than this share of the
+/// indexed files keeps the old rows instead (moved root, unmounted volume,
+/// half-checked-out worktree).
+const SUSPECT_GONE_PERCENT: usize = 80;
+/// Envelope `hint` when the guard fires.
+pub const SUSPECT_ROOT_HINT: &str = "most indexed files are missing from the walk; kept the old index — check the root is fully checked out and mounted, or force a reconcile";
 
 /// Everything the plugin shares: config, the index directory, open roots.
 pub struct Codeindex {
@@ -47,6 +53,7 @@ pub struct RootIndex {
     write: tokio::sync::Mutex<()>,
     background: AtomicBool,
     pending: AtomicUsize,
+    suspect_logged: AtomicBool,
 }
 
 /// What one reconcile did (the envelope's freshness fields, 60 §8).
@@ -66,6 +73,11 @@ pub struct Reconciled {
     pub indexed_files: i64,
     /// The co-change walk ran this call (HEAD moved): `(commits walked, ms)`.
     pub cochange_walk: Option<(usize, u128)>,
+    /// The walk lost more than [`SUSPECT_GONE_PERCENT`] of the indexed files;
+    /// nothing was deleted, the answer comes from the old rows.
+    pub suspect_root: bool,
+    /// Why the answer may be off, when `suspect_root`.
+    pub hint: Option<&'static str>,
 }
 
 impl Codeindex {
@@ -97,6 +109,7 @@ impl Codeindex {
             write: tokio::sync::Mutex::new(()),
             background: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
+            suspect_logged: AtomicBool::new(false),
         });
         lru.map.insert(root.to_path_buf(), ri.clone());
         lru.order.push_back(root.to_path_buf());
@@ -127,6 +140,15 @@ impl Codeindex {
         if d.changed.is_empty() && d.delete.is_empty() {
             out.stale = ri.background.load(Ordering::Acquire);
             out.pending = ri.pending.load(Ordering::Acquire);
+        } else if !force && d.suspect() {
+            out.stale = true;
+            out.suspect_root = true;
+            out.hint = Some(SUSPECT_ROOT_HINT);
+            out.indexed_files = store::counts(&ri.pool).await?.files;
+            if !ri.suspect_logged.swap(true, Ordering::AcqRel) {
+                tracing::warn!(root = %ri.root.display(), known = d.known, gone = d.gone, "codeindex reconcile refused: most indexed files missing from the walk");
+            }
+            return Ok(out);
         } else if force || d.known == 0 || d.changed.len() + d.gone <= self.cfg.sync_limit {
             let t = Instant::now();
             out.removed = d.gone;
@@ -147,6 +169,12 @@ impl Codeindex {
                     // Re-diff under the lock: the world may have moved on.
                     let _g = ri2.write.lock().await;
                     let r = match me.diff(&ri2).await {
+                        Ok(d) if d.suspect() => {
+                            if !ri2.suspect_logged.swap(true, Ordering::AcqRel) {
+                                tracing::warn!(root = %ri2.root.display(), known = d.known, gone = d.gone, "codeindex reconcile refused: most indexed files missing from the walk");
+                            }
+                            Ok((0, 0))
+                        }
                         Ok(d) => me
                             .write(&ri2, d.changed, d.delete)
                             .await
@@ -314,6 +342,9 @@ impl Codeindex {
         let t = Instant::now();
         resolve::resolve(&ri.pool, &ws, &targets).await?;
         let resolve_ms = t.elapsed().as_millis();
+        let t = Instant::now();
+        let subjects = test_subjects(&ri.pool).await?;
+        let subjects_ms = t.elapsed().as_millis();
         // 60 §7: unpersonalised ranks stored after every write, so `code_map`
         // without `focus` and `code_find`'s ordering are lookups.
         let t = Instant::now();
@@ -325,6 +356,8 @@ impl Codeindex {
             parse_ms,
             apply_ms,
             resolve_ms,
+            subjects_ms,
+            test_subjects = subjects,
             rank_ms,
             rank_nodes = nodes,
             rank_iterations = iterations,
@@ -359,6 +392,45 @@ impl Codeindex {
     }
 }
 
+/// 60 §8 `test_subject`: for every test file the file it most plausibly
+/// exercises — the first [`walk::subject_candidates`] that is an indexed
+/// non-test file, else the non-test file it imports most (ties: first path).
+/// Recomputed whole after every write (test files are a small share; a
+/// new non-test file can become the subject of an old test) and stored as
+/// `meta.test_subjects` JSON. Returns the number of tests with a subject.
+async fn test_subjects(pool: &SqlitePool) -> anyhow::Result<usize> {
+    let files = store::all_files(pool).await?;
+    let by_id: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let sources: HashSet<&str> = files
+        .iter()
+        .filter(|f| !f.is_test)
+        .map(|f| f.path.as_str())
+        .collect();
+    let mut most: HashMap<i64, (i64, &str)> = HashMap::new();
+    for (test, target, n) in store::test_import_counts(pool).await? {
+        let Some(&path) = by_id.get(&target) else {
+            continue;
+        };
+        let e = most.entry(test).or_insert((n, path));
+        if n > e.0 || n == e.0 && path < e.1 {
+            *e = (n, path);
+        }
+    }
+    let map: BTreeMap<String, String> = files
+        .iter()
+        .filter(|f| f.is_test && f.language != "other" && !walk::is_test_data(&f.path))
+        .filter_map(|f| {
+            walk::subject_candidates(&f.path)
+                .into_iter()
+                .find(|c| sources.contains(c.as_str()))
+                .or_else(|| most.get(&f.id).map(|(_, p)| (*p).to_owned()))
+                .map(|s| (f.path.clone(), s))
+        })
+        .collect();
+    store::set_test_subjects(pool, &map).await?;
+    Ok(map.len())
+}
+
 /// Walk vs `files`.
 #[derive(Default)]
 struct Diff {
@@ -372,6 +444,13 @@ struct Diff {
     known: usize,
     /// The walk hit [`walk::MAX_FILES`].
     truncated: bool,
+}
+
+impl Diff {
+    /// More than [`SUSPECT_GONE_PERCENT`] of the indexed files vanished.
+    fn suspect(&self) -> bool {
+        self.gone * 100 > self.known * SUSPECT_GONE_PERCENT
+    }
 }
 
 struct Parsed {

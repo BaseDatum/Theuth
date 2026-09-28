@@ -1,5 +1,5 @@
 //! `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol`,
-//! `code_impact` (60 §8). Risk `ReadOnly`, `DIRECT = false`,
+//! `code_impact`, `project_profile` (60 §8). Risk `ReadOnly`, `DIRECT = false`,
 //! `CONSUMES_SECRETS = false`: arguments are names, paths, ranges and budgets.
 
 use std::collections::{HashMap, HashSet};
@@ -20,8 +20,8 @@ use crate::rank::{self, Graph, Tag};
 use crate::store::{self, Definition, OutlineRow, RefHit};
 use crate::{root, walk};
 
-/// Plugin prompt block (60 §8): the six tools.
-pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol and code_impact are runtime functions over a \
+/// Plugin prompt block (60 §8): the six `code_*` tools and `project_profile`.
+pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol, code_impact and project_profile are runtime functions over a \
 tree-sitter index of a source tree (default root: the git repo of the cwd; first call indexes). Use them before \
 grep/read_file when the question is structural: where something is defined (code_find(name=\"X\") → rows of {path, \
 line_start, kind, signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who \
@@ -31,7 +31,10 @@ path:line), a ranked map of the tree to brief a subagent (code_map(focus=[\"X\",
 most-referenced definitions grouped by file, personalised toward focus identifiers and paths), everything about one \
 definition in one call (code_symbol(symbol=\"X\") → definition, body, callers, callees, co-changed files), or what a \
 diff touches (code_impact(git_range=\"main..HEAD\") or files=[...] → changed definitions, the files that reference or \
-import them, transitive importers, tests). Results are values with a `content` text render; put m[\"content\"] into a \
+import them, transitive importers, tests — by reference and by test→subject convention). project_profile() reads the \
+manifests, lockfiles, justfile/Makefile and CI files and returns how the project is checked ({kind, package_manager, \
+commands: {check, test, lint, format, build, typecheck}, test_runner}) without running anything: brief a child with \
+those commands, do not guess them. Results are values with a `content` text render; put m[\"content\"] into a \
 brief instead of re-reading files.";
 
 /// Default output budget in estimated tokens (60 §0.9).
@@ -63,6 +66,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, ix: Arc<Codeindex>) {
         .ask(RegisterTool(Arc::new(CodeSymbolTool(Arc::clone(&ix)))))
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(CodeImpactTool(ix)))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(ProjectProfileTool))).await;
 }
 
 fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
@@ -81,6 +85,8 @@ struct Envelope {
     pending: usize,
     dropped: usize,
     truncated_walk: bool,
+    suspect_root: bool,
+    hint: Option<&'static str>,
 }
 
 impl Envelope {
@@ -92,7 +98,19 @@ impl Envelope {
             pending: r.pending,
             dropped,
             truncated_walk: r.truncated_walk,
+            suspect_root: r.suspect_root,
+            hint: r.hint,
         }
+    }
+}
+
+/// Trailer of `content` when the answer is not fresh: the background count,
+/// or the reconcile guard's hint.
+fn stale_note(r: &Reconciled) -> String {
+    match (r.stale, r.hint) {
+        (true, Some(h)) => format!("\n[stale: {h}]"),
+        (true, None) => format!("\n[stale: {} files still indexing]", r.pending),
+        _ => String::new(),
     }
 }
 
@@ -199,15 +217,14 @@ impl Tool for CodeFindTool {
         if rows.is_empty() {
             text = format!("no definition named {name:?}");
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let env = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": env.root, "indexed_files": env.indexed_files, "stale": env.stale,
                 "pending": env.pending, "dropped": env.dropped, "truncated_walk": env.truncated_walk,
+                "suspect_root": env.suspect_root, "hint": env.hint,
                 "rows": &rows[..kept],
                 "content": text,
             }),
@@ -348,15 +365,14 @@ impl Tool for CodeOutlineTool {
             text.push('\n');
             text.push_str(&body);
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let env = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": env.root, "indexed_files": env.indexed_files, "stale": env.stale,
                 "pending": env.pending, "dropped": env.dropped, "truncated_walk": env.truncated_walk,
+                "suspect_root": env.suspect_root, "hint": env.hint,
                 "path": file.path, "language": file.language, "lines": file.lines,
                 "parse_errors": file.parse_errors,
                 "imports": imports.iter().map(|i| serde_json::json!({
@@ -500,6 +516,7 @@ impl Tool for CodeRefsTool {
                     serde_json::json!({
                         "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                         "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                        "suspect_root": e.suspect_root, "hint": e.hint,
                         "candidates": defs[..kept].iter().map(|d| serde_json::json!({
                             "symbol_id": d.symbol_id, "path": d.path, "line": d.line_start, "kind": d.kind, "signature": d.signature,
                         })).collect::<Vec<_>>(),
@@ -569,15 +586,14 @@ impl Tool for CodeRefsTool {
             text.push('\n');
             text.push_str(&body);
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = env(dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                 "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                "suspect_root": e.suspect_root, "hint": e.hint,
                 "definition": def,
                 "direction": if outward { "out" } else { "in" },
                 "refs": &refs[..kept],
@@ -835,7 +851,7 @@ impl Tool for CodeSymbolTool {
     type Args = CodeSymbolArgs;
 
     fn description(&self) -> String {
-        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature, moniker}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
+        "Everything about one definition in one call: {definition: {symbol_id, name, kind, path, line_start, line_end, signature, moniker}, body: str (source, ≤ 200 lines else head/tail with a cut marker), callers: [{path, count, refs: [{line, from_symbol, kind, provenance, confidence}]}], ambiguous: n, callees: [{name, target, count, provenance, confidence}], cochange: [{path, count}] (files committed together with the definition's file, last 300 first-parent commits), tests: [path] (tests whose subject file is the definition's file), root, indexed_files, stale, pending, dropped, content}. sections=[definition|body|callers|callees|cochange] selects (default all); the budget is split equally over them. A bare name with several definitions returns candidates and no sections: call again with the symbol_id or path:line.".into()
     }
 
     async fn call(&self, a: CodeSymbolArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -904,6 +920,7 @@ impl Tool for CodeSymbolTool {
                     serde_json::json!({
                         "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                         "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                        "suspect_root": e.suspect_root, "hint": e.hint,
                         "candidates": defs[..kept].iter().map(|d| serde_json::json!({
                             "symbol_id": d.symbol_id, "path": d.path, "line": d.line_start, "kind": d.kind, "signature": d.signature,
                         })).collect::<Vec<_>>(),
@@ -1046,14 +1063,30 @@ impl Tool for CodeSymbolTool {
             }
             text.push_str(block.trim_end());
         }
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
+        // 60 §8 `test_subject`: the tests whose subject is the definition's file.
+        let tests: Vec<String> = store::test_subjects(&ri.pool)
+            .await?
+            .into_iter()
+            .filter(|(_, s)| *s == def.path)
+            .map(|(t, _)| t)
+            .collect();
+        if !tests.is_empty() {
+            text.push_str(&format!(
+                "\n-- tests: {} file{} (subject {}) --\n{}",
+                tests.len(),
+                if tests.len() == 1 { "" } else { "s" },
+                def.path,
+                tests.join("\n")
+            ));
         }
+        text.push_str(&stale_note(&r));
         let e = env(dropped);
         let mut v = serde_json::json!({
             "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
             "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+            "suspect_root": e.suspect_root, "hint": e.hint,
             "sections": wanted,
+            "tests": tests,
             "content": text,
         });
         if let Some(m) = v.as_object_mut() {
@@ -1191,7 +1224,7 @@ impl Tool for CodeImpactTool {
     type Args = CodeImpactArgs;
 
     fn description(&self) -> String {
-        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}], monikers: [str]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
+        "What a change touches, from the tree-sitter index and gix: give files=[paths] (every definition in them counts as changed) or git_range (\"main..HEAD\", \"HEAD~1\", \"WORKTREE\" = uncommitted changes; hunks are mapped to definitions by line). Returns {changed: [{path, status, symbols_changed: [{name, kind, line}], monikers: [str]}], unindexed: [path], direct: [{path, via: [name], is_test}] (files whose resolved references or imports point into the changed definitions/files), transitive: [{path, depth}] (importers of direct files, depth ≤ 3), tests: [path] (test files among changed ∪ direct ∪ transitive that reference the change), tests_by_subject: [path] (tests whose subject file — by naming convention or most-imported file — is changed or direct; content lists each test once, marked (ref)/(subject)), ambiguous_skipped: n (same-name references not counted), unresolved_imports: n, root, indexed_files, stale, pending, dropped, content}. include_tests=true keeps test files in direct/transitive.".into()
     }
 
     async fn call(&self, a: CodeImpactArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -1407,6 +1440,30 @@ impl Tool for CodeImpactTool {
             .collect();
         tests.sort_unstable();
         tests.dedup();
+        // 60 §8 `test_subject`: tests whose subject is a changed or direct file —
+        // API-level tests that never name the changed definition.
+        let subjects = store::test_subjects(&ri.pool).await?;
+        let impacted: HashSet<&str> = changed_files
+            .iter()
+            .chain(direct.keys())
+            .map(|id| by_id[id].path.as_str())
+            .collect();
+        let tests_by_subject: Vec<&str> = subjects
+            .iter()
+            .filter(|(_, s)| impacted.contains(s.as_str()))
+            .map(|(t, _)| t.as_str())
+            .collect();
+        let mut all_tests: Vec<(&str, bool, bool)> = tests
+            .iter()
+            .map(|t| (*t, true, tests_by_subject.binary_search(t).is_ok()))
+            .collect();
+        all_tests.extend(
+            tests_by_subject
+                .iter()
+                .filter(|t| tests.binary_search(t).is_err())
+                .map(|t| (*t, false, true)),
+        );
+        all_tests.sort_unstable();
         let mut direct: Vec<(&str, Vec<String>, bool, bool)> = direct
             .into_iter()
             .filter(|(id, _)| include_tests || !is_test(id))
@@ -1452,7 +1509,7 @@ impl Tool for CodeImpactTool {
             if symbol_ids.len() == 1 { "" } else { "s" },
             direct.len(),
             transitive.len(),
-            tests.len(),
+            all_tests.len(),
             if unindexed.is_empty() {
                 String::new()
             } else {
@@ -1477,8 +1534,17 @@ impl Tool for CodeImpactTool {
         }));
         lines.push(format!("-- transitive: {} files --", transitive.len()));
         lines.extend(transitive.iter().map(|(p, d)| format!("{p} (depth {d})")));
-        lines.push(format!("-- tests: {} files --", tests.len()));
-        lines.extend(tests.iter().map(|p| (*p).to_owned()));
+        lines.push(format!("-- tests: {} files --", all_tests.len()));
+        lines.extend(all_tests.iter().map(|(p, r, s)| {
+            format!(
+                "{p} ({})",
+                match (r, s) {
+                    (true, true) => "ref, subject",
+                    (true, false) => "ref",
+                    _ => "subject",
+                }
+            )
+        }));
         let (body, _, dropped) = budget_render(
             &lines,
             a.budget
@@ -1486,15 +1552,14 @@ impl Tool for CodeImpactTool {
                 .saturating_sub(estimate_tokens(header.len())),
         );
         let mut text = format!("{header}\n{body}");
-        if r.stale {
-            text.push_str(&format!("\n[stale: {} files still indexing]", r.pending));
-        }
+        text.push_str(&stale_note(&r));
         let e = Envelope::new(&ri, &r, dropped);
         Ok(structured(
             text.clone(),
             serde_json::json!({
                 "root": e.root, "indexed_files": e.indexed_files, "stale": e.stale,
                 "pending": e.pending, "dropped": e.dropped, "truncated_walk": e.truncated_walk,
+                "suspect_root": e.suspect_root, "hint": e.hint,
                 "mode": mode,
                 "range": range_ids.map(|(o, n)| serde_json::json!({"old": o, "new": n})),
                 "include_tests": include_tests,
@@ -1503,6 +1568,7 @@ impl Tool for CodeImpactTool {
                 "direct": direct.iter().map(|(p, via, t, c)| serde_json::json!({"path": p, "via": via, "is_test": t, "changed": c})).collect::<Vec<_>>(),
                 "transitive": transitive.iter().map(|(p, d)| serde_json::json!({"path": p, "depth": d})).collect::<Vec<_>>(),
                 "tests": tests,
+                "tests_by_subject": tests_by_subject,
                 "ambiguous_skipped": ambiguous_skipped,
                 "unresolved_imports": unresolved_imports,
                 "content": text,
@@ -1514,6 +1580,46 @@ impl Tool for CodeImpactTool {
 /// `via` entry of a direct file that imports a changed file.
 const IMPORT_VIA: &str = "<import>";
 
+/// Arguments for [`ProjectProfileTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectProfileArgs {
+    /// Project root; default: the git top-level of the process cwd, else the cwd.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
+}
+
+/// `project_profile`: how the project is checked, from manifests and
+/// lockfiles (60 §8). No index, no reconcile: nothing is executed or written.
+pub struct ProjectProfileTool;
+
+#[async_trait::async_trait]
+impl Tool for ProjectProfileTool {
+    const NAME: &'static str = "project_profile";
+    const RETURNS: &'static str = "dict";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = false;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = ProjectProfileArgs;
+
+    fn description(&self) -> String {
+        "How a project is checked, detected from its manifests and lockfiles without running anything: {root, kind: cargo|node|python|go|mixed|unknown, package_manager, commands: {check, test, lint, format, build, typecheck} (null where nothing declares one; a justfile recipe or Makefile target of that name wins over the manifest default), test_runner, ci: [paths], manifests: [paths], scripts: {name: command} (package.json scripts, `just <recipe>`, `make <target>`), content}. Use it to brief a child with the project's own check commands instead of guessing.".into()
+    }
+
+    async fn call(&self, a: ProjectProfileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let root = match root::discover(a.root.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        let p = tokio::task::spawn_blocking(move || crate::profile::detect(&root)).await?;
+        let text = crate::profile::render(&p);
+        let mut v = serde_json::to_value(&p)?;
+        if let Some(m) = v.as_object_mut() {
+            m.insert("content".into(), text.clone().into());
+        }
+        Ok(structured(text, v))
+    }
+}
+
 const _: () = {
     assert!(!<CodeFindTool as Tool>::DIRECT);
     assert!(!<CodeOutlineTool as Tool>::DIRECT);
@@ -1521,6 +1627,7 @@ const _: () = {
     assert!(!<CodeMapTool as Tool>::DIRECT);
     assert!(!<CodeSymbolTool as Tool>::DIRECT);
     assert!(!<CodeImpactTool as Tool>::DIRECT);
+    assert!(!<ProjectProfileTool as Tool>::DIRECT);
 };
 
 #[cfg(test)]
