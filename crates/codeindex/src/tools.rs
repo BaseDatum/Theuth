@@ -1,5 +1,5 @@
 //! `code_find`, `code_outline`, `code_refs`, `code_map`, `code_symbol`,
-//! `code_impact` (60 §8). Risk `ReadOnly`, `DIRECT = false`,
+//! `code_impact`, `project_profile` (60 §8). Risk `ReadOnly`, `DIRECT = false`,
 //! `CONSUMES_SECRETS = false`: arguments are names, paths, ranges and budgets.
 
 use std::collections::{HashMap, HashSet};
@@ -20,8 +20,8 @@ use crate::rank::{self, Graph, Tag};
 use crate::store::{self, Definition, OutlineRow, RefHit};
 use crate::{root, walk};
 
-/// Plugin prompt block (60 §8): the six tools.
-pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol and code_impact are runtime functions over a \
+/// Plugin prompt block (60 §8): the six `code_*` tools and `project_profile`.
+pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol, code_impact and project_profile are runtime functions over a \
 tree-sitter index of a source tree (default root: the git repo of the cwd; first call indexes). Use them before \
 grep/read_file when the question is structural: where something is defined (code_find(name=\"X\") → rows of {path, \
 line_start, kind, signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who \
@@ -31,7 +31,10 @@ path:line), a ranked map of the tree to brief a subagent (code_map(focus=[\"X\",
 most-referenced definitions grouped by file, personalised toward focus identifiers and paths), everything about one \
 definition in one call (code_symbol(symbol=\"X\") → definition, body, callers, callees, co-changed files), or what a \
 diff touches (code_impact(git_range=\"main..HEAD\") or files=[...] → changed definitions, the files that reference or \
-import them, transitive importers, tests). Results are values with a `content` text render; put m[\"content\"] into a \
+import them, transitive importers, tests — by reference and by test→subject convention). project_profile() reads the \
+manifests, lockfiles, justfile/Makefile and CI files and returns how the project is checked ({kind, package_manager, \
+commands: {check, test, lint, format, build, typecheck}, test_runner}) without running anything: brief a child with \
+those commands, do not guess them. Results are values with a `content` text render; put m[\"content\"] into a \
 brief instead of re-reading files.";
 
 /// Default output budget in estimated tokens (60 §0.9).
@@ -63,6 +66,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, ix: Arc<Codeindex>) {
         .ask(RegisterTool(Arc::new(CodeSymbolTool(Arc::clone(&ix)))))
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(CodeImpactTool(ix)))).await;
+    let _ = reg.ask(RegisterTool(Arc::new(ProjectProfileTool))).await;
 }
 
 fn structured<T: Serialize>(text: String, data: T) -> ToolOutput {
@@ -1561,6 +1565,46 @@ impl Tool for CodeImpactTool {
 /// `via` entry of a direct file that imports a changed file.
 const IMPORT_VIA: &str = "<import>";
 
+/// Arguments for [`ProjectProfileTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectProfileArgs {
+    /// Project root; default: the git top-level of the process cwd, else the cwd.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
+}
+
+/// `project_profile`: how the project is checked, from manifests and
+/// lockfiles (60 §8). No index, no reconcile: nothing is executed or written.
+pub struct ProjectProfileTool;
+
+#[async_trait::async_trait]
+impl Tool for ProjectProfileTool {
+    const NAME: &'static str = "project_profile";
+    const RETURNS: &'static str = "dict";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = false;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = ProjectProfileArgs;
+
+    fn description(&self) -> String {
+        "How a project is checked, detected from its manifests and lockfiles without running anything: {root, kind: cargo|node|python|go|mixed|unknown, package_manager, commands: {check, test, lint, format, build, typecheck} (null where nothing declares one; a justfile recipe or Makefile target of that name wins over the manifest default), test_runner, ci: [paths], manifests: [paths], scripts: {name: command} (package.json scripts, `just <recipe>`, `make <target>`), content}. Use it to brief a child with the project's own check commands instead of guessing.".into()
+    }
+
+    async fn call(&self, a: ProjectProfileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+        let root = match root::discover(a.root.as_deref()) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+        };
+        let p = tokio::task::spawn_blocking(move || crate::profile::detect(&root)).await?;
+        let text = crate::profile::render(&p);
+        let mut v = serde_json::to_value(&p)?;
+        if let Some(m) = v.as_object_mut() {
+            m.insert("content".into(), text.clone().into());
+        }
+        Ok(structured(text, v))
+    }
+}
+
 const _: () = {
     assert!(!<CodeFindTool as Tool>::DIRECT);
     assert!(!<CodeOutlineTool as Tool>::DIRECT);
@@ -1568,6 +1612,7 @@ const _: () = {
     assert!(!<CodeMapTool as Tool>::DIRECT);
     assert!(!<CodeSymbolTool as Tool>::DIRECT);
     assert!(!<CodeImpactTool as Tool>::DIRECT);
+    assert!(!<ProjectProfileTool as Tool>::DIRECT);
 };
 
 #[cfg(test)]

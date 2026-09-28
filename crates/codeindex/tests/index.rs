@@ -1036,6 +1036,60 @@ async fn test_subjects_link_api_tests() {
     );
 }
 
+/// `project_profile` through `Tool::call` on this repository (cargo workspace
+/// with a justfile: recipes win the slots they name) and, when present, on
+/// /tmp/empryo-recon (Bun/TS). Warm timing printed and bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_profile_on_this_repository() {
+    use codeindex::tools::{ProjectProfileArgs, ProjectProfileTool};
+    use tools::Tool;
+    let data = tempdir();
+    let root = repo_root();
+    let call =
+        |r: PathBuf| ProjectProfileTool.call(ProjectProfileArgs { root: Some(r) }, cx(&data));
+    let _warm = call(root.clone()).await.unwrap();
+    let t = std::time::Instant::now();
+    let out = call(root.clone()).await.unwrap();
+    let ms = t.elapsed().as_millis();
+    assert!(!out.is_error, "{}", out.content);
+    let v = out.structured.unwrap();
+    eprintln!("project_profile(theuth) in {ms} ms:\n{}", out.content);
+    assert_eq!(v["kind"], "cargo", "{v}");
+    assert_eq!(v["package_manager"], "cargo");
+    assert_eq!(v["commands"]["test"], "just test", "{v}");
+    assert_eq!(v["commands"]["lint"], "just clippy");
+    assert_eq!(v["commands"]["format"], "just fmt");
+    assert_eq!(v["commands"]["check"], "just check");
+    assert_eq!(v["test_runner"], "cargo test");
+    assert!(
+        v["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "Cargo.toml"),
+        "{v}"
+    );
+    assert!(v["scripts"]["desktop-check"].is_string(), "{v}");
+    assert!(ms <= 20, "project_profile took {ms} ms");
+
+    let empryo = PathBuf::from("/tmp/empryo-recon");
+    if empryo.is_dir() {
+        let t = std::time::Instant::now();
+        let out = call(empryo).await.unwrap();
+        let ms = t.elapsed().as_millis();
+        let v = out.structured.unwrap();
+        eprintln!("project_profile(empryo-recon) in {ms} ms:\n{}", out.content);
+        assert_eq!(
+            (v["kind"].as_str(), v["package_manager"].as_str()),
+            (Some("node"), Some("bun")),
+            "{v}"
+        );
+        assert_eq!(v["commands"]["test"], "bun run test");
+        assert_eq!(v["commands"]["typecheck"], "bun run typecheck");
+        assert_eq!(v["test_runner"], "bun test");
+    }
+}
+
 /// 60 §16 rows 1–2 on this repository: ≥ 290 `.rs` files, `ToolRegistry` in
 /// `registry.rs` as `class`, `fs.rs` outline, one touched file → one reparse;
 /// imports `cargo` > 500 and `unresolved` < 5 % of non-external; refs by

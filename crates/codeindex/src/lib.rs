@@ -27,6 +27,7 @@ pub mod lang;
 pub mod locate;
 pub mod outline_hook;
 pub mod parse;
+pub mod profile;
 pub mod rank;
 pub mod resolve;
 pub mod root;
