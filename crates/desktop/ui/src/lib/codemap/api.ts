@@ -1,24 +1,25 @@
 /**
- * 73 §5.2 — the four lens methods behind one interface. `rpc` calls the engine by flat name through `RpcClient.call`
- * (not `Api`/`METHODS`: those mirror `bindings/methods.json`, which the engine worker extends when E2 lands);
- * `mock` serves the §5 fixtures so the panel builds and smokes before the engine does.
- * Dev flag: `VITE_CODEMAP_MOCK=1` (or `localStorage.codemap-mock = "1"`) picks the mock.
+ * 73 §5.2 — the four lens methods behind one interface. The engine's `Api` implements `CodemapApi`
+ * structurally (`codemap_here/fit/change/touch`, flat names, positional params); `mock` serves the §5
+ * fixtures so the panel can be developed without an engine.
+ * Dev flag: `VITE_CODEMAP_MOCK=1` (or `localStorage.codemap-mock = "1"`) picks the mock (pair it with
+ * `dev/codemap-fixture.ts`, which replays the fixture events).
  */
 import changeFixture from '@/components/codemap/__fixtures__/change.json'
 import fitFixture from '@/components/codemap/__fixtures__/fit.json'
 import hereFixture from '@/components/codemap/__fixtures__/here.json'
-import type { RpcClient } from '@/rpc/client'
 import type { ChangeLens, CodemapApi, FitLens, FitNode, HereLens, LensMeta } from './types'
 
 export const codemapMock = (): boolean =>
   import.meta.env.DEV && (import.meta.env.VITE_CODEMAP_MOCK === '1' || globalThis.localStorage?.getItem('codemap-mock') === '1')
 
-export const rpcCodemap = (client: RpcClient): CodemapApi => ({
-  codemap_here: (root, focus, edited, limit) => client.call('codemap_here', [root, focus, edited, limit]),
-  codemap_fit: (root, symbol, limit) => client.call('codemap_fit', [root, symbol, limit]),
-  codemap_change: (root, git_range, files, include_tests) => client.call('codemap_change', [root, git_range, files, include_tests]),
-  codemap_touch: (root, paths) => client.call('codemap_touch', [root, paths]),
-})
+/** No engine connection: every lens rejects; the panel shows the error line and retries on reconnect. */
+export const disconnectedCodemap: CodemapApi = {
+  codemap_here: () => Promise.reject(new Error('not connected')),
+  codemap_fit: () => Promise.reject(new Error('not connected')),
+  codemap_change: () => Promise.reject(new Error('not connected')),
+  codemap_touch: () => Promise.reject(new Error('not connected')),
+}
 
 const clone = <T,>(v: T): T => structuredClone(v)
 const FIT = fitFixture as FitLens

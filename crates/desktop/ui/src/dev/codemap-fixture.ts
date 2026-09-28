@@ -1,6 +1,6 @@
-// 73 §11 U1: the §5 fixture events replayed through `dispatch` for `session`, so the CodeMap pane can be built and
-// smoked before the engine publishes `CodeToolRan`. Dev only (`VITE_CODEMAP_MOCK=1`, which also selects the mock
-// lens adapter in `lib/codemap/api.ts`); deleted when E1/E2 land — a scaffold, not a test.
+// 73 §11 U1: the §5 fixture events replayed through `dispatch` for `session`, so the CodeMap pane can be
+// developed without an engine. Dev only, behind `VITE_CODEMAP_MOCK=1` (which also selects the mock lens
+// adapter in `lib/codemap/api.ts`); the default path is the engine's `CodeToolRan` on `subscribe_events`.
 
 import events from '@/components/codemap/__fixtures__/events.json'
 import type { CodeReconciled, CodeToolRan } from '@/lib/codemap/types'

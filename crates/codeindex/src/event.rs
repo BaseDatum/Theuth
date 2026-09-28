@@ -30,8 +30,15 @@ pub enum CodeindexEvent {
         /// `ToolCx.call_id`.
         call_id: String,
         /// `code_map | code_find | code_outline | code_refs | code_symbol | code_impact`.
+        #[cfg_attr(
+            feature = "ts",
+            ts(
+                type = "\"code_map\" | \"code_find\" | \"code_outline\" | \"code_refs\" | \"code_symbol\" | \"code_impact\""
+            )
+        )]
         tool: String,
         /// The tool's arguments as received, minus `budget` and `root`.
+        #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown>"))]
         args: serde_json::Value,
         /// Compact envelope of the result.
         summary: CodeToolSummary,

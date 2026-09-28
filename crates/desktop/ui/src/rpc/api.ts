@@ -42,6 +42,10 @@ import type { JobId } from '@/rpc/bindings/JobId'
 import type { IndexStats } from '@/rpc/bindings/IndexStats'
 import type { LocateAnchor } from '@/rpc/bindings/LocateAnchor'
 import type { Located } from '@/rpc/bindings/Located'
+import type { HereLens } from '@/rpc/bindings/HereLens'
+import type { FitLens } from '@/rpc/bindings/FitLens'
+import type { ChangeLens } from '@/rpc/bindings/ChangeLens'
+import type { LensMeta } from '@/rpc/bindings/LensMeta'
 import type { JobView } from '@/rpc/bindings/JobView'
 import type { McpProgress } from '@/rpc/bindings/McpProgress'
 import type { McpServer } from '@/rpc/bindings/McpServer'
@@ -230,6 +234,14 @@ export interface Api {
   codeindex_stats(root: string | null): Promise<IndexStats>
   /** Verify board anchors against the working tree under `root` (71 §2.5): one `Located` per anchor, in order; errors when `root` is not a git top-level or a path escapes it. */
   code_locate(root: string, anchors: LocateAnchor[]): Promise<Located[]>
+  /** CodeMap Here lens (73 §5.2): the stored ranked map of an indexed `root`, ≤ `limit` rows (default 2 000) with badges; `focus`/`edited` personalise. Never walks; errors when the root was never indexed. */
+  codemap_here(root: string, focus: string[] | null, edited: string[] | null, limit: number | null): Promise<HereLens>
+  /** CodeMap Fit lens (73 §5.2): the butterfly around `symbol` (moniker, name, `path:line` or id), ≤ `limit` nodes (default 20) with counted remainders. */
+  codemap_fit(root: string, symbol: string, limit: number | null): Promise<FitLens>
+  /** CodeMap Change lens (73 §5.2): `code_impact` in four bands; neither `git_range` nor `files` = `WORKTREE`. */
+  codemap_change(root: string, git_range: string | null, files: string[] | null, include_tests: boolean | null): Promise<ChangeLens>
+  /** CodeMap touch (73 §5.2): re-parse only `paths` (root-relative), or force a full reconcile when `null`; publishes `CodeReconciled`. */
+  codemap_touch(root: string, paths: string[] | null): Promise<LensMeta>
   compact_style(): Promise<CompactStyle>
   /** Computer-control permissions and attached displays (27 §6); rejects when the plugin is disabled. */
   computer_permissions(): Promise<PermissionStatus>
@@ -743,6 +755,10 @@ export const METHODS = [
   'cancel_job',
   'code_locate',
   'codeindex_stats',
+  'codemap_change',
+  'codemap_fit',
+  'codemap_here',
+  'codemap_touch',
   'compact',
   'compact_style',
   'computer_permissions',

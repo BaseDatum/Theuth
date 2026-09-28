@@ -11,7 +11,7 @@ import { appendDraft, prefillDraft } from '@/components/chat/Composer'
 import { DiagramFrame } from '@/components/chat/DiagramFrame'
 import { Button } from '@/components/ui/button'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { codemapMock, mockCodemap, rpcCodemap } from '@/lib/codemap/api'
+import { codemapMock, disconnectedCodemap, mockCodemap } from '@/lib/codemap/api'
 import { toGraphFence } from '@/lib/codemap/fence'
 import { anchorOf, basename } from '@/lib/codemap/labels'
 import { type Lens, type LensState, follow, initialLens, onCodeToolRan, pin, replay } from '@/lib/codemap/lens'
@@ -46,8 +46,8 @@ const lensKey = (s: LensState) =>
       : `change:${s.params.change.git_range ?? ''}:${(s.params.change.files ?? []).join(',')}:${s.params.change.include_tests}`
 
 function useCodemapApi(): CodemapApi {
-  const client = useConnection((s) => s.client)
-  return useMemo(() => (codemapMock() || !client ? mockCodemap() : rpcCodemap(client)), [client])
+  const api = useConnection((s) => s.api)
+  return useMemo(() => (codemapMock() ? mockCodemap() : (api ?? disconnectedCodemap)), [api])
 }
 
 function useWidth(ref: React.RefObject<HTMLElement | null>): number {
