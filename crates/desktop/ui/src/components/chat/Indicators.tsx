@@ -1,6 +1,8 @@
-import { Atom, Flip, Orbit, Ripple } from 'loading-dev'
+import { Atom, Eclipse, Flip, Orbit, Ripple } from 'loading-dev'
 import type { ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
+import type { Activity } from '@/store/sessions'
+import { Pulse } from './Pulse'
 
 /*
  * Animated glyphs (loading-dev: CSS-only, colour from `currentColor`); component files import these, never the
@@ -16,6 +18,32 @@ export function ThinkingIndicator({ className, ...props }: ComponentProps<'span'
   return (
     <span className={cn('inline-flex size-3.5 shrink-0 items-center justify-center', className)} {...props}>
       <Ripple size={14} />
+    </span>
+  )
+}
+
+/** A knowledge harvest is in flight: an eclipse, same box as `ThinkingIndicator` for the sidebar's activity glyph. */
+export function HarvestIndicator({ className, ...props }: ComponentProps<'span'>) {
+  return (
+    <span className={cn('inline-flex size-3.5 shrink-0 items-center justify-center text-fg-tertiary', className)} {...props}>
+      <Eclipse size={14} />
+    </span>
+  )
+}
+
+/** The transcript footer's glyph for `activity`, in a fixed 14 px box so the row holds still as it changes; the Pulse dot for the rest. */
+export function ActivityIndicator({ activity }: { activity: Activity }) {
+  return (
+    <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
+      {activity === 'harvesting' ? (
+        <Eclipse size={14} className="text-fg-tertiary" />
+      ) : activity === 'thinking' || activity === 'reasoning' ? (
+        <Ripple size={14} />
+      ) : activity === 'tool' ? (
+        <Orbit size={14} className="text-fg-tertiary" />
+      ) : (
+        <Pulse />
+      )}
     </span>
   )
 }

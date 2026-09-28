@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Wrench } from 'lucide-react'
+import { Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Wrench } from 'lucide-react'
 import { type ComponentType, memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -23,7 +23,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { PtyIcon, ThinkingIndicator } from '@/components/chat/Indicators'
+import { HarvestIndicator, PtyIcon, ThinkingIndicator } from '@/components/chat/Indicators'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { type AttachRef, chatName, toRef } from '@/lib/attach'
@@ -48,7 +48,7 @@ const ACTIVITY: Record<Exclude<Activity, 'idle'>, [LucideIcon | ComponentType<{ 
   streaming: [PencilLine, 'Replying'],
   tool: [Wrench, 'Running a tool'],
   compacting: [Shrink, 'Compacting context'],
-  harvesting: [Archive, 'Harvesting'],
+  harvesting: [HarvestIndicator, 'Harvesting'],
   vision: [Eye, 'Inspecting images'],
 }
 
@@ -57,9 +57,10 @@ function SessionActivity({ id }: { id: string }) {
   const activity = shownActivity(useSessionField(id, 'activity'), useSessionField(id, 'harvesting'))
   if (activity === 'idle') return null
   const [Icon, label] = ACTIVITY[activity]
+  // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
   return (
     <Icon
-      className={cn('size-3.5 shrink-0 text-info', activity !== 'thinking' && 'animate-pulse')}
+      className={cn('size-3.5 shrink-0 text-info', activity !== 'thinking' && activity !== 'harvesting' && 'animate-pulse')}
       aria-label={label}
       role="img"
     />

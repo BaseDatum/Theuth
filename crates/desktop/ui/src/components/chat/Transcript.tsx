@@ -19,7 +19,7 @@ import {
   useSessionField,
 } from '@/store/sessions'
 import { Message, PromptCard } from './Message'
-import { Pulse } from './Pulse'
+import { ActivityIndicator } from './Indicators'
 import { foldRuns, type Run, ToolRunCard } from './ToolRunCard'
 
 const PAGE = 60
@@ -262,7 +262,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
         </div>
         {(running || activity !== 'idle') && (
           <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
-            <Pulse />
+            <ActivityIndicator activity={activity} />
             {(activity === 'vision' && visionStatus) || WORD[activity]}
           </div>
         )}
