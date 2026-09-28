@@ -61,11 +61,7 @@ impl DockerSandbox {
         let docker = if std::env::var_os("DOCKER_HOST").is_some() {
             Docker::connect_with_defaults()?
         } else {
-            let desktop = dirs::home_dir().map(|h| h.join(".docker/run/docker.sock"));
-            match desktop.filter(|p| p.exists()) {
-                Some(p) => Docker::connect_with_unix(&p.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION)?,
-                None => Docker::connect_with_local_defaults()?,
-            }
+            Self::connect_local()?
         };
         docker.ping().await.map_err(|e| anyhow::anyhow!("docker daemon: {e}"))?;
         let image = match (image, local_t) {
@@ -78,6 +74,23 @@ impl DockerSandbox {
             name: name.to_owned(),
             image,
         })
+    }
+
+    /// No `DOCKER_HOST`: Docker Desktop's per-user socket when it exists, else the platform default
+    /// (`/var/run/docker.sock`; the `//./pipe/docker_engine` named pipe on Windows, where bollard has
+    /// no `connect_with_unix`).
+    #[cfg(unix)]
+    fn connect_local() -> Result<Docker, bollard::errors::Error> {
+        let desktop = dirs::home_dir().map(|h| h.join(".docker/run/docker.sock"));
+        match desktop.filter(|p| p.exists()) {
+            Some(p) => Docker::connect_with_unix(&p.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION),
+            None => Docker::connect_with_local_defaults(),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn connect_local() -> Result<Docker, bollard::errors::Error> {
+        Docker::connect_with_local_defaults()
     }
 
     /// `theuth-engine-<name>`.

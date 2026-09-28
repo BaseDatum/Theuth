@@ -8,4 +8,8 @@ CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 # ("instruction requires: fullfp16"). Every aarch64 Linux we ship to (Graviton2+, Ampere, Pi 5, Apple VMs)
 # has it. Drop when gemm-common carries the attribute.
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+fp16"]
+rustflags = ["-C", "target-feature=+fp16", "-C", "split-debuginfo=unpacked"]
+# GNU ld needs >11 GB for the debug test binaries on arm64 and gets OOM-killed on a 15 GiB box; link with
+# the LLD rustc ships instead (scripts/aarch64-linux-lld-cc.sh explains; path relative to the repo root) and keep
+# DWARF out of the rlibs (split-debuginfo=unpacked): with both, two concurrent debug links fit in ~1 GB each.
+linker = "scripts/aarch64-linux-lld-cc.sh"
