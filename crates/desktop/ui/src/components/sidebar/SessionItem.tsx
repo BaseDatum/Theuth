@@ -274,7 +274,7 @@ export const SessionItem = memo(function SessionItem({
               title={tip}
               {...drag}
               onContextMenu={(e) => {
-                if (touch()) return
+                // A long press that became a drag is eaten by `drag.onContextMenuCapture` before this runs.
                 e.preventDefault()
                 setMenuOpen(true)
               }}

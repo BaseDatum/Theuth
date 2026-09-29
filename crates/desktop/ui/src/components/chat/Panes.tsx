@@ -1,62 +1,102 @@
 import { useNavigate } from '@tanstack/react-router'
 import type { PointerEvent, ReactNode, SyntheticEvent } from 'react'
-import { useRef } from 'react'
-import { touch } from '@/lib/hotkeys'
+import { useEffect, useRef } from 'react'
+import { useSidebar } from '@/components/ui/sidebar'
 import { isDraft, type Node, newDraft, type Path, usePanes, zone } from '@/lib/panes'
+import { type Act, type Drag, HOLD_MS, IDLE, step } from '@/lib/session-drag'
 import { cn } from '@/lib/utils'
-
-/** Pointer travel (px) before a press on a sidebar row becomes a drag. */
-const SLOP = 6
 
 /**
  * Drag a sidebar row onto a chat pane. Pointer events, not HTML5 DnD: the macOS webview keeps the native
  * drag handler for file drops (Composer), which swallows `dragstart`. Spread the result on the row's `Link`;
- * a press that became a drag never navigates or selects. `id === null` is the New chat rail item: each drag
- * carries a fresh draft id, and a drop opens a draft pane (`NewChatPane`) without moving the URL.
+ * a press that became a drag never navigates, selects or opens the row's context menu. `id === null` is the
+ * New chat rail item: each drag carries a fresh draft id, and a drop opens a draft pane (`NewChatPane`)
+ * without moving the URL. The gesture itself is `lib/session-drag` (mouse: move; finger: hold, then move).
  */
 export function useSessionDrag(id: string | null, title: string) {
   const navigate = useNavigate()
-  const press = useRef<{ x: number; y: number } | null>(null)
-  const dragging = useRef(false)
+  const { isMobile } = useSidebar()
+  const state = useRef<Drag>(IDLE)
+  const timer = useRef<number | undefined>(undefined)
+  const press = useRef<{ el: HTMLElement; pointerId: number } | null>(null)
   const swallow = useRef(false)
-  const finish = (e: PointerEvent<HTMLElement>, drop: boolean) => {
-    press.current = null
-    if (!dragging.current) return
-    dragging.current = false
-    e.currentTarget.releasePointerCapture(e.pointerId)
-    // The click that follows this pointerup belongs to the drag.
-    swallow.current = true
-    setTimeout(() => (swallow.current = false), 0)
-    const dropped = usePanes.getState().endDrag(drop)
-    if (dropped && !isDraft(dropped)) void navigate({ to: '/c/$session', params: { session: dropped } })
+  // While a finger drags, the touch sequence must not become a scroll (iOS would fire `pointercancel`), so
+  // `touchmove` is cancelled from a non-passive listener; the row's `data-drag-row` CSS mutes callout/selection.
+  const block = useRef((e: TouchEvent) => {
+    if (state.current.phase === 'dragging') e.preventDefault()
+  }).current
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current)
+      document.removeEventListener('touchmove', block)
+    },
+    [block],
+  )
+
+  const dispatch = (a: Act, x: number, y: number) => {
+    const prev = state.current
+    const [next, verb] = step(prev, a)
+    state.current = next
+    if (next.phase !== 'pressed') clearTimeout(timer.current)
+    if (next.phase === 'idle') document.removeEventListener('touchmove', block)
+    switch (verb) {
+      case 'hold':
+        document.addEventListener('touchmove', block, { passive: false })
+        timer.current = window.setTimeout(() => dispatch({ type: 'timer' }, x, y), HOLD_MS)
+        break
+      case 'start': {
+        const p = press.current
+        p?.el.setPointerCapture(p.pointerId)
+        if (prev.phase === 'pressed' && prev.touch) navigator.vibrate?.(15)
+        usePanes.getState().startDrag(id ?? newDraft(), title, x, y)
+        break
+      }
+      case 'move':
+        usePanes.getState().moveDrag(x, y)
+        break
+      case 'drop':
+      case 'cancel': {
+        // The click that follows this pointerup belongs to the drag (a finger's click may come a little later).
+        swallow.current = true
+        setTimeout(() => (swallow.current = false), 500)
+        const dropped = usePanes.getState().endDrag(verb === 'drop')
+        if (dropped && !isDraft(dropped)) void navigate({ to: '/c/$session', params: { session: dropped } })
+      }
+    }
+  }
+  const eat = (e: SyntheticEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
   }
   return {
     // An `<a>` starts a native drag of its href on press-and-move, which fires `pointercancel` on this sequence.
     draggable: false,
+    'data-drag-row': true,
     onPointerDown(e: PointerEvent<HTMLElement>) {
-      if (e.button !== 0 || touch() || e.metaKey || e.shiftKey) return
-      press.current = { x: e.clientX, y: e.clientY }
+      press.current = { el: e.currentTarget, pointerId: e.pointerId }
+      dispatch(
+        { type: 'down', x: e.clientX, y: e.clientY, pointerType: e.pointerType, button: e.button, modifier: e.metaKey || e.shiftKey, sheet: isMobile },
+        e.clientX,
+        e.clientY,
+      )
     },
     onPointerMove(e: PointerEvent<HTMLElement>) {
-      const p = press.current
-      if (!p) return
-      if (dragging.current) usePanes.getState().moveDrag(e.clientX, e.clientY)
-      else if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SLOP) {
-        dragging.current = true
-        e.currentTarget.setPointerCapture(e.pointerId)
-        usePanes.getState().startDrag(id ?? newDraft(), title, e.clientX, e.clientY)
-      }
+      dispatch({ type: 'move', x: e.clientX, y: e.clientY }, e.clientX, e.clientY)
     },
     onPointerUp(e: PointerEvent<HTMLElement>) {
-      finish(e, true)
+      dispatch({ type: 'up' }, e.clientX, e.clientY)
     },
     onPointerCancel(e: PointerEvent<HTMLElement>) {
-      finish(e, false)
+      dispatch({ type: 'cancel' }, e.clientX, e.clientY)
     },
     onClickCapture(e: SyntheticEvent) {
       if (!swallow.current) return
-      e.preventDefault()
-      e.stopPropagation()
+      swallow.current = false
+      eat(e)
+    },
+    // iOS WebKit may fire `contextmenu` from the long press that started the drag: the `⋯` is the touch path to the menu.
+    onContextMenuCapture(e: SyntheticEvent) {
+      if (state.current.phase !== 'idle') eat(e)
     },
   }
 }
