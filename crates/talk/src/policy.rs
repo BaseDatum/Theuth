@@ -292,8 +292,10 @@ pub struct Policy {
     pub ledger: Ledger,
     /// Streamed markdown of the current block run; `None` between blocks.
     md: Option<markdown::Text>,
-    /// Bytes of `md` already spoken.
+    /// Bytes of `md` already spoken as committed blocks.
     spoken_to: usize,
+    /// Sentences of the open prose block already spoken (76 §4.8).
+    streamed: usize,
     /// Utterances of the turn being built, space-joined at submit.
     pending: Vec<String>,
     /// First onset of the turn being built.
@@ -326,6 +328,7 @@ impl Policy {
             ledger: Ledger::default(),
             md: None,
             spoken_to: 0,
+            streamed: 0,
             pending: Vec::new(),
             turn_start: None,
             turn_end: None,
@@ -375,17 +378,19 @@ impl Policy {
             Input::Timer(Timer::EndOfTurn) => self.submit(now, &mut out),
             Input::Timer(Timer::Hold) => self.hold(now, &mut out),
             Input::Timer(Timer::Decide) => self.decide(now, &mut out),
-            Input::Delta(text) => {
+            // A turn we cancelled may still stream a few deltas: not ours to speak.
+            Input::Delta(text) if !self.cancelled => {
                 self.md.get_or_insert_with(markdown::Text::new).push(&text);
                 self.speak_committed(&mut out);
+                self.speak_open(&mut out);
             }
+            Input::Delta(_) => {}
             Input::BlockEnd => self.block_end(&mut out),
             // A turn typed elsewhere during the talk is spoken like ours.
             Input::TurnStarted(turn) => {
                 if self.state == State::Listening {
                     self.ledger = Ledger::default();
-                    self.md = None;
-                    self.spoken_to = 0;
+                    self.reset_md();
                     self.speech_start = None;
                     self.set(State::Thinking, &mut out);
                 }
@@ -580,8 +585,7 @@ impl Policy {
             format!("[spoken, {secs} s] ")
         };
         self.ledger = Ledger::default();
-        self.md = None;
-        self.spoken_to = 0;
+        self.reset_md();
         self.speech_start = None;
         self.played = None;
         self.cancelled = false;
@@ -723,7 +727,7 @@ impl Policy {
             }
         }
         self.ledger.turn_done = true;
-        self.md = None;
+        self.reset_md();
         self.interrupted = true;
         out.push(Action::Interrupted {
             heard: heard as u32,
@@ -747,7 +751,7 @@ impl Policy {
         out.push(Action::Cancel(None));
         self.cancelled = true;
         self.ledger = Ledger::default();
-        self.md = None;
+        self.reset_md();
         self.turn_start = Some(c.onset);
         if let Some(t) = c.text.filter(|t| !t.is_empty() && c.closed) {
             self.turn_end = Some(now);
@@ -802,28 +806,71 @@ impl Policy {
 
     // ---- the agent's side --------------------------------------------------
 
-    /// Speak the blocks `md` committed since the last call (76 §4.8).
+    /// Speak the blocks `md` committed since the last call (76 §4.8), minus
+    /// the sentences [`Self::speak_open`] already streamed from the first of them.
     fn speak_committed(&mut self, out: &mut Vec<Action>) {
         let Some(md) = self.md.as_ref() else { return };
         let end = md.committed();
         if end <= self.spoken_to {
             return;
         }
-        let block = &md.raw()[self.spoken_to..end];
+        let spoken = markdown::spoken(&md.raw()[self.spoken_to..end]);
         self.spoken_to = end;
-        let spoken = markdown::spoken(block);
-        for line in spoken.lines().flat_map(sentences) {
-            self.ledger.sentences.push(Sentence {
-                text: line.clone(),
-                speech: None,
-                status: Status::Queued,
-                last_seq: None,
-            });
-            out.push(Action::Speak {
-                index: self.ledger.sentences.len() - 1,
-                text: line,
-            });
+        let streamed = std::mem::take(&mut self.streamed);
+        for line in spoken.lines().flat_map(sentences).skip(streamed) {
+            self.say(line, out);
         }
+    }
+
+    /// 76 §4.8: the open block, while it is plain prose, is spoken sentence by
+    /// sentence as it streams; its last fragment waits for the close. Any other
+    /// kind (list, heading, fence, quote, table) waits for the close whole.
+    /// ponytail: re-splits the whole open block per delta — O(n²) in a
+    /// paragraph's length, fine for spoken-sized paragraphs.
+    fn speak_open(&mut self, out: &mut Vec<Action>) {
+        let Some(md) = self.md.as_ref() else { return };
+        let tail = &md.raw()[md.committed()..];
+        if !is_prose(tail) {
+            return;
+        }
+        let spoken = markdown::spoken(tail);
+        // `spoken` trims the tail and ends it with punctuation: its last
+        // sentence is complete only once the raw text has whitespace after
+        // terminal punctuation — then the splitter sees that whitespace too.
+        let ended = tail.ends_with(char::is_whitespace) && tail.trim_end().ends_with(['.', '?', '!']);
+        let text = if ended { spoken + " " } else { spoken };
+        let (done, _) = split(&text);
+        for line in done.into_iter().skip(self.streamed) {
+            // Unbalanced inline markup (`**Bold. text**` half-arrived) reads as
+            // literal; the close renders it clean, so hold from here on. `|`:
+            // a later line may still turn the paragraph into a table.
+            if line.contains(['*', '_', '`', '[', '<', '~', '|']) {
+                break;
+            }
+            self.streamed += 1;
+            self.say(line, out);
+        }
+    }
+
+    /// Hand one sentence to the speaker: ledger entry, then `Speak`.
+    fn say(&mut self, text: String, out: &mut Vec<Action>) {
+        self.ledger.sentences.push(Sentence {
+            text: text.clone(),
+            speech: None,
+            status: Status::Queued,
+            last_seq: None,
+        });
+        out.push(Action::Speak {
+            index: self.ledger.sentences.len() - 1,
+            text,
+        });
+    }
+
+    /// Forget the block run.
+    fn reset_md(&mut self) {
+        self.md = None;
+        self.spoken_to = 0;
+        self.streamed = 0;
     }
 
     /// Close the block run: the tail is a block too.
@@ -832,8 +879,7 @@ impl Policy {
             md.finish();
         }
         self.speak_committed(out);
-        self.md = None;
-        self.spoken_to = 0;
+        self.reset_md();
     }
 
     fn turn_finished(&mut self, reason: &str, out: &mut Vec<Action>) {
@@ -843,8 +889,7 @@ impl Policy {
         match reason {
             // Someone else cut the turn (Esc in the TUI): nothing more to say.
             "cancelled" | "interrupted" | "error" => {
-                self.md = None;
-                self.spoken_to = 0;
+                self.reset_md();
                 if self.ledger.busy() {
                     out.push(Action::StopSpeech);
                 }
@@ -883,24 +928,72 @@ impl Policy {
     }
 }
 
+/// Abbreviations whose `.` does not end a sentence, lowercased.
+const ABBREVIATIONS: &[&str] = &[
+    "e.g.", "i.e.", "vs.", "cf.", "approx.", "dr.", "mr.", "mrs.", "ms.", "prof.", "st.",
+];
+
 /// One `spoken` line (a block) → its sentences: split after `.`, `?`, `!`
-/// followed by whitespace. ponytail: no abbreviation list — the prompt asks
-/// for plain spoken prose; add one if "e.g." starts splitting replies.
+/// followed by whitespace, except after one of [`ABBREVIATIONS`]; a decimal
+/// (`3.5 s`) has no whitespace after its dot and stays whole. Known misses:
+/// an unlisted abbreviation or initial ("Jan. 5", "J. Smith", "etc. and")
+/// splits; a listed one that really ends a sentence ("… Main St. Next")
+/// joins it to the next. Both only move a sentence boundary, never a word.
 pub fn sentences(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut chars = line.trim().chars().peekable();
-    while let Some(c) = chars.next() {
-        cur.push(c);
-        if matches!(c, '.' | '?' | '!') && chars.peek().is_some_and(|n| n.is_whitespace()) {
-            out.push(std::mem::take(&mut cur).trim().to_owned());
-        }
-    }
-    let tail = cur.trim();
-    if !tail.is_empty() {
-        out.push(tail.to_owned());
+    let (mut out, rest) = split(line.trim());
+    if !rest.is_empty() {
+        out.push(rest.to_owned());
     }
     out
+}
+
+/// `text` → its complete sentences (terminal punctuation, then whitespace)
+/// and the unfinished rest, each trimmed. The one splitter: [`sentences`]
+/// and the open-block stream (76 §4.8) both cut here.
+fn split(text: &str) -> (Vec<String>, &str) {
+    let mut out = Vec::new();
+    let mut from = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if matches!(c, '.' | '?' | '!') && chars.peek().is_some_and(|(_, n)| n.is_whitespace()) {
+            let s = text[from..=i].trim();
+            if c == '.' && is_abbreviation(s) {
+                continue;
+            }
+            out.push(s.to_owned());
+            from = i + 1;
+        }
+    }
+    (out, text[from..].trim())
+}
+
+/// The sentence so far ends in a listed abbreviation ("(e.g.", "Dr.").
+fn is_abbreviation(s: &str) -> bool {
+    let word = s.rsplit(char::is_whitespace).next().unwrap_or_default();
+    let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    ABBREVIATIONS.iter().any(|a| word.eq_ignore_ascii_case(a))
+}
+
+/// The open block is one paragraph that can no longer become another kind
+/// (76 §4.8). A list marker, heading, fence or quote already parses as such;
+/// a table is a paragraph until its delimiter row arrives, so a first line
+/// holding `|` waits; a second block in the tail means mdstream is about to
+/// commit the first — wait for that.
+fn is_prose(tail: &str) -> bool {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    if tail.trim_start().lines().next().is_none_or(|l| l.contains('|')) {
+        return false;
+    }
+    let opts = Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
+    let mut ev = Parser::new_ext(tail, opts);
+    matches!(ev.next(), Some(Event::Start(Tag::Paragraph)))
+        && ev
+            .skip_while(|e| *e != Event::End(TagEnd::Paragraph))
+            .nth(1)
+            .is_none()
 }
 
 /// Lowercase words without punctuation.
@@ -994,8 +1087,9 @@ mod tests {
         assert_eq!(p.state, State::Thinking);
         p.step(Input::TurnStarted(7), ms(t0, 800));
         let md = sentences.join(" ");
-        p.step(Input::Delta(md), ms(t0, 1000));
-        let acts = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        // Complete sentences stream at the delta (76 §4.8), the last one at the close.
+        let mut acts = p.step(Input::Delta(md), ms(t0, 1000));
+        acts.extend(p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100)));
         let ids: Vec<SpeechId> = acts
             .iter()
             .filter_map(|a| match a {
@@ -1399,8 +1493,9 @@ mod tests {
         let a = p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 750));
         assert!(!a.iter().any(|a| matches!(a, Action::VadThreshold(_))));
         p.step(Input::TurnStarted(7), ms(t0, 800));
-        p.step(Input::Delta("One. Two.".into()), ms(t0, 1000));
-        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        // "One." streams at the delta (76 §4.8), "Two." at the close.
+        let mut a = p.step(Input::Delta("One. Two.".into()), ms(t0, 1000));
+        a.extend(p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100)));
         assert!(
             a.iter()
                 .any(|a| matches!(a, Action::Speak { index: 0, .. })),
@@ -1566,29 +1661,157 @@ mod tests {
         assert_eq!(a, vec![Action::State(State::Listening)]);
     }
 
-    #[test]
-    fn a_paragraph_is_spoken_when_it_closes_not_at_turn_end() {
+    /// Speak texts in `actions`, in order.
+    fn said(actions: &[Action]) -> Vec<String> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Speak { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A policy in `Thinking` for turn 7, ready for deltas.
+    fn thinking() -> (Policy, Instant) {
         let (mut p, t0) = policy(Sink::Device);
         p.step(Input::Onset, t0);
         final_text(&mut p, 0, "Go.", ms(t0, 500));
         p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 750));
-        let a = p.step(
-            Input::Delta("First one. Still first.\n\nSecond".into()),
-            ms(t0, 1000),
-        );
-        let spoken: Vec<&str> = a
+        p.step(Input::TurnStarted(7), ms(t0, 800));
+        (p, t0)
+    }
+
+    /// `md` in `n`-char deltas: the Speak texts after each delta.
+    fn stream(p: &mut Policy, t0: Instant, md: &str, n: usize) -> Vec<Vec<String>> {
+        let chars: Vec<char> = md.chars().collect();
+        chars
+            .chunks(n)
+            .enumerate()
+            .map(|(i, c)| said(&p.step(Input::Delta(c.iter().collect()), ms(t0, 1000 + i as u64))))
+            .collect()
+    }
+
+    /// 76 §4.8: an open paragraph is spoken sentence by sentence as it streams;
+    /// its last fragment at the close; a committed paragraph as before.
+    #[test]
+    fn a_paragraph_is_spoken_sentence_by_sentence_as_it_streams() {
+        let (mut p, t0) = thinking();
+        let a = p.step(Input::Delta("First one. Sti".into()), ms(t0, 1000));
+        assert_eq!(a, vec![Action::Speak { index: 0, text: "First one.".into() }]);
+        let a = p.step(Input::Delta("ll first. La".into()), ms(t0, 1100));
+        assert_eq!(a, vec![Action::Speak { index: 1, text: "Still first.".into() }]);
+        assert!(p.step(Input::Delta("st".into()), ms(t0, 1200)).is_empty());
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1500));
+        assert!(a.contains(&Action::Speak { index: 2, text: "Last.".into() }));
+        // The ledger holds each sentence once, in order: echo rejection knows them all.
+        let texts: Vec<&str> = p.ledger.sentences.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["First one.", "Still first.", "Last."]);
+
+        // A paragraph that closes inside one delta: its rest at the commit, no repeat.
+        let (mut p, t0) = thinking();
+        assert_eq!(said(&p.step(Input::Delta("One. Tw".into()), ms(t0, 1000))), vec!["One."]);
+        let a = p.step(Input::Delta("o.\n\nSecond".into()), ms(t0, 1100));
+        assert_eq!(a, vec![Action::Speak { index: 1, text: "Two.".into() }]);
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1500));
+        assert!(a.contains(&Action::Speak { index: 2, text: "Second.".into() }));
+    }
+
+    /// (a) 3-char deltas: each sentence at the delta that brings the
+    /// whitespace after its terminal punctuation, not one delta before.
+    #[test]
+    fn three_char_deltas_release_each_sentence_at_its_boundary() {
+        let md = "The build is green. Two tests were skipped! Is that fine? Done";
+        let (mut p, t0) = thinking();
+        let steps = stream(&mut p, t0, md, 3);
+        let mut expected = vec![Vec::<String>::new(); steps.len()];
+        for s in ["The build is green.", "Two tests were skipped!", "Is that fine?"] {
+            // The whitespace after the sentence is char `end`; it arrives in delta `end / 3`.
+            let end = md.find(s).expect("in md") + s.len();
+            expected[end / 3].push(s.into());
+        }
+        assert_eq!(steps, expected);
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+        assert_eq!(said(&a), vec!["Done."]);
+    }
+
+    /// (b) the shared splitter keeps abbreviations and decimals whole; its
+    /// known misses (unlisted abbreviations, initials) only move a boundary.
+    #[test]
+    fn abbreviations_and_decimals_do_not_split() {
+        let md = "Dr. Smith measured 3.5 s, e.g. on the second run. Then it stopped.";
+        let (mut p, t0) = thinking();
+        let steps: Vec<String> = stream(&mut p, t0, md, 3).into_iter().flatten().collect();
+        assert_eq!(steps, vec!["Dr. Smith measured 3.5 s, e.g. on the second run."]);
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+        assert_eq!(said(&a), vec!["Then it stopped."]);
+        assert_eq!(sentences("See (i.e. here) vs. there. Ok."), vec!["See (i.e. here) vs. there.", "Ok."]);
+        // Known misses, pinned so a change is deliberate.
+        assert_eq!(sentences("Ask J. Smith."), vec!["Ask J.", "Smith."]);
+        assert_eq!(sentences("Main St. Next."), vec!["Main St. Next."]);
+    }
+
+    /// (c) only prose streams: a list, a heading, a table or a quote waits for its close.
+    #[test]
+    fn blocks_that_are_not_prose_are_not_streamed() {
+        for md in [
+            "1. First. Second.\n2. Third. ",
+            "- First. Second.\n- Third. ",
+            "# A heading. More words ",
+            "> Quoted. Still quoted. ",
+            "| a. b | c. d |\n|---|---|\n",
+        ] {
+            let (mut p, t0) = thinking();
+            let steps: Vec<String> = stream(&mut p, t0, md, 3).into_iter().flatten().collect();
+            assert!(steps.is_empty(), "{md:?} streamed {steps:?}");
+            let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+            assert!(!said(&a).is_empty(), "{md:?} not spoken at the close");
+        }
+        // A paragraph that a list then interrupts: its sentences stream, the list waits.
+        let (mut p, t0) = thinking();
+        let steps: Vec<String> = stream(&mut p, t0, "Here. Two:\n- a. b. ", 3)
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(steps, vec!["Here.", "Two:"]);
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 2000));
+        assert_eq!(said(&a), vec!["a.", "b."]);
+        // Half-arrived emphasis holds until it balances.
+        let (mut p, t0) = thinking();
+        assert!(p.step(Input::Delta("**Bold. still".into()), ms(t0, 1000)).is_empty());
+        let a = p.step(Input::Delta(" bold.** Plain. ".into()), ms(t0, 1100));
+        assert_eq!(said(&a), vec!["Bold.", "still bold.", "Plain."]);
+    }
+
+    /// (d) barge-in while the paragraph still streams: `keep` is the heard
+    /// prefix, the queued sentence is dropped, the unspoken rest never speaks.
+    #[test]
+    fn barge_in_mid_stream_keeps_heard_sentences_and_drops_the_rest() {
+        let (mut p, t0) = thinking();
+        let a = p.step(Input::Delta("One. Two. Thr".into()), ms(t0, 1000));
+        let ids: Vec<SpeechId> = a
             .iter()
             .filter_map(|a| match a {
-                Action::Speak { text, .. } => Some(text.as_str()),
+                Action::Speak { index, .. } => {
+                    let id = SpeechId::new();
+                    p.spoken(*index, id);
+                    Some(id)
+                }
                 _ => None,
             })
             .collect();
-        assert_eq!(spoken, vec!["First one.", "Still first."]);
-        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1500));
-        assert!(a.contains(&Action::Speak {
-            index: 2,
-            text: "Second.".into()
-        }));
+        assert_eq!(ids.len(), 2);
+        p.step(Input::SpeechStarted(ids[0]), ms(t0, 1100));
+        p.step(Input::SpeechFinished { speech: ids[0], done: true }, ms(t0, 1600));
+        p.step(Input::SpeechStarted(ids[1]), ms(t0, 1601));
+        let a = p.commit(Some(Played { id: Some(ids[1]), seq: 2, samples: 0 }));
+        assert_eq!(a[1], Action::Cancel(Some("One.".into())));
+        assert!(a.contains(&Action::Interrupted { heard: 1, dropped: 1, text: None }));
+        assert_eq!(p.ledger.sentences[1].status, Status::Dropped);
+        // The cancelled turn's last deltas and its `TurnFinished` say nothing.
+        assert!(said(&p.step(Input::Delta("ee. Four. ".into()), ms(t0, 1700))).is_empty());
+        assert_eq!(p.step(Input::TurnFinished("interrupted".into()), ms(t0, 1800)), vec![]);
+        assert_eq!(p.ledger.sentences.len(), 2);
     }
 
     /// 76 §7 post-turn case: the commit chooses `Trim` for a finished turn

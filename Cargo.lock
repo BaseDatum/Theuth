@@ -19405,6 +19405,7 @@ dependencies = [
  "async-trait",
  "kameo",
  "markdown",
+ "pulldown-cmark",
  "runtime",
  "schemars 1.2.2",
  "serde",
