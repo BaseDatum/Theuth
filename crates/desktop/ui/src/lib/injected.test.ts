@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { classify, parseBroadcast } from './injected'
+import { classify, parseBroadcast, parseSpoken } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
@@ -16,6 +16,14 @@ test('broadcast marker: the human speaking to many sessions, not a wrapper', () 
   expect(parseBroadcast('see [broadcast 01a0 · 3 sessions]\nx')).toBeNull()
   expect(parseBroadcast('[broadcast … · 2 sessions]\nx')).toBeNull()
   expect(parseBroadcast('[broadcast 01a0 · 3 sessions] x')).toBeNull()
+})
+
+test('spoken marker: one talk utterance, still the user row', () => {
+  expect(classify('[spoken, 5 s] hello there')).toBeNull()
+  expect(parseSpoken('[spoken, 5 s] hello there')).toEqual({ secs: 5, interrupted: false, text: 'hello there' })
+  expect(parseSpoken('[spoken, 12 s, interrupted] no stop')).toEqual({ secs: 12, interrupted: true, text: 'no stop' })
+  expect(parseSpoken('[voice note, 3 s] x')).toBeNull()
+  expect(parseSpoken('hello there')).toBeNull()
 })
 
 test('skill injection: chip plus the words after it', () => {

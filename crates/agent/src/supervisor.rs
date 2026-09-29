@@ -534,6 +534,10 @@ const NOUNS: [&str; 8] = [
     "otter", "heron", "fox", "lynx", "finch", "hare", "wren", "elk",
 ];
 
+/// `Agents::session`'s `acp` argument: `(harness, cwd, cap, skills)` of a new
+/// child on an external harness (06 §3.2, 75 §4).
+type AcpSpawn = (String, Option<PathBuf>, Option<Risk>, Vec<String>);
+
 impl Agents {
     /// Resolve a config/row id; on failure keep it raw and carry the message
     /// for the session's next round to surface.
@@ -561,7 +565,7 @@ impl Agents {
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
-        acp: Option<(String, Option<PathBuf>, Option<Risk>, Vec<String>)>,
+        acp: Option<AcpSpawn>,
         pick: (Option<&str>, Option<&str>),
     ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();

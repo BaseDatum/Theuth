@@ -189,6 +189,29 @@ pub fn display(text: &str) -> String {
     out
 }
 
+/// 76 talk: `[spoken, N s] text` / `[spoken, N s, interrupted] text` is one
+/// utterance from the live talk → `(seconds, interrupted, transcript)`.
+pub fn spoken(text: &str) -> Option<(u32, bool, &str)> {
+    let rest = text.strip_prefix("[spoken, ")?;
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let secs: u32 = rest[..digits].parse().ok()?;
+    let rest = rest[digits..].strip_prefix(" s")?;
+    let (rest, interrupted) = match rest.strip_prefix(", interrupted") {
+        Some(r) => (r, true),
+        None => (rest, false),
+    };
+    Some((secs, interrupted, rest.strip_prefix("] ")?))
+}
+
+/// The transcript tag for a spoken turn: `spoken 5 s` / `spoken 5 s · cut in`.
+pub fn spoken_tag(secs: u32, interrupted: bool) -> String {
+    if interrupted {
+        format!("spoken {secs} s · cut in")
+    } else {
+        format!("spoken {secs} s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +235,19 @@ mod tests {
             display("plain\n[attached note a \"b\"]"),
             "plain\n[attached note a \"b\"]"
         );
+    }
+
+    #[test]
+    fn spoken_marker() {
+        assert_eq!(spoken("[spoken, 5 s] hello"), Some((5, false, "hello")));
+        assert_eq!(
+            spoken("[spoken, 12 s, interrupted] no wait\nmore"),
+            Some((12, true, "no wait\nmore"))
+        );
+        assert_eq!(spoken("[spoken, x s] hello"), None);
+        assert_eq!(spoken("hello [spoken, 5 s]"), None);
+        assert_eq!(spoken_tag(5, false), "spoken 5 s");
+        assert_eq!(spoken_tag(5, true), "spoken 5 s · cut in");
     }
 
     #[test]

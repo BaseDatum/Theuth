@@ -118,8 +118,13 @@ pub enum Action {
     StopSpeech,
     /// `Voice::Pause` (device sink); report the reply with [`Policy::paused`].
     Pause,
-    /// `Voice::Resume`; publish `Resumed`.
-    Resume(ResumeReason),
+    /// `Voice::Resume`; publish `Resumed`. `text`: the dismissed candidate's, if any.
+    Resume {
+        /// Why.
+        reason: ResumeReason,
+        /// What it said.
+        text: Option<String>,
+    },
     /// Publish `Holding`.
     Holding {
         /// Into the agent's speech.
@@ -134,9 +139,14 @@ pub enum Action {
         heard: u32,
         /// Dropped.
         dropped: u32,
+        /// The cut-in's first words.
+        text: Option<String>,
     },
     /// Start (`Some(after)`) or cancel (`None`) a timer.
     Timer(Timer, Option<Duration>),
+    /// The gate's speech threshold for the state just entered (76 §4.4:
+    /// `talk.barge_in_vad` while `Speaking`/`Holding`, the gate's default otherwise).
+    VadThreshold(f32),
 }
 
 /// Where a sentence of the agent's turn is (76 §4.6).
@@ -302,6 +312,8 @@ pub struct Policy {
     speech_start: Option<Instant>,
     /// We cancelled the turn ourselves; its `TurnFinished` is not news.
     cancelled: bool,
+    /// The committed candidate's first words, for `Interrupted.text`.
+    cut_text: Option<String>,
 }
 
 impl Policy {
@@ -323,6 +335,7 @@ impl Policy {
             played: None,
             speech_start: None,
             cancelled: false,
+            cut_text: None,
         }
     }
 
@@ -418,8 +431,21 @@ impl Policy {
 
     fn set(&mut self, state: State, out: &mut Vec<Action>) {
         if self.state != state {
+            let before = self.threshold();
             self.state = state;
             out.push(Action::State(state));
+            let after = self.threshold();
+            if before != after {
+                out.push(Action::VadThreshold(after));
+            }
+        }
+    }
+
+    /// The gate's speech threshold in the current state (76 §4.4 hysteresis).
+    fn threshold(&self) -> f32 {
+        match self.state {
+            State::Speaking | State::Holding => self.cfg.barge_in_vad,
+            _ => voice::vad::Gate::THRESHOLD,
         }
     }
 
@@ -485,10 +511,16 @@ impl Policy {
                 is_final,
             });
         }
+        // A partial without a word yet ("I", "a") is not text for the
+        // candidate: wait for the next one or the deadline.
+        let wordless = self.candidate.is_some()
+            && !is_final
+            && !text.is_empty()
+            && self.classify(&text) == Some(ResumeReason::Noise);
         if let Some(c) = self.candidate.as_mut().filter(|_| !discarded) {
             c.utterance.get_or_insert(utterance);
             if c.utterance == Some(utterance) && c.text.is_none() {
-                if !text.is_empty() {
+                if !text.is_empty() && !wordless {
                     c.text = Some(text.clone());
                     if c.holding {
                         self.settle(now, out);
@@ -604,7 +636,8 @@ impl Policy {
         if has_text {
             self.decide(now, out);
         } else {
-            let left = Duration::from_millis(self.cfg.decide_ms).saturating_sub(now.duration_since(onset));
+            let left =
+                Duration::from_millis(self.cfg.decide_ms).saturating_sub(now.duration_since(onset));
             out.push(Action::Timer(Timer::Decide, Some(left)));
         }
     }
@@ -621,7 +654,7 @@ impl Policy {
         }
     }
 
-    /// Stage 2: backchannel, echo, or a real cut-in.
+    /// Stage 2: noise, backchannel, echo, or a real cut-in.
     fn decide(&mut self, now: Instant, out: &mut Vec<Action>) {
         if self.state != State::Holding {
             return;
@@ -631,18 +664,21 @@ impl Policy {
         };
         out.push(Action::Timer(Timer::Decide, None));
         let resume = match c.text.as_deref() {
-            // Closed with nothing said: a noise, not a cut-in. Open and silent
-            // at the deadline: real (76 §4.4).
-            None if c.closed => Some(ResumeReason::Backchannel),
-            None => None,
-            Some(t) if self.is_backchannel(t) => Some(ResumeReason::Backchannel),
-            Some(t) if self.is_echo(t) => Some(ResumeReason::Echo),
-            Some(_) => None,
+            // Nothing said — closed, or still open at the deadline (steady
+            // noise holds the gate and never yields a word): never a cut-in.
+            None => Some(ResumeReason::Noise),
+            Some(t) => self.classify(t),
         };
         match resume {
             Some(reason) => {
-                out.push(Action::Resume(reason));
+                out.push(Action::Resume {
+                    reason,
+                    text: c.text,
+                });
                 self.played = None;
+                // The dismissed utterance's later text is not a turn. The gate
+                // must close and reopen before another candidate is held —
+                // `onset` is the only place one is created.
                 self.discard = c.utterance.filter(|_| !c.closed);
                 self.set(State::Speaking, out);
             }
@@ -652,6 +688,7 @@ impl Policy {
                 if c.closed {
                     self.turn_end = Some(now);
                 }
+                self.cut_text = c.text.clone();
                 if let Some(t) = c.text.filter(|t| !t.is_empty() && c.closed) {
                     self.pending.push(t);
                 }
@@ -691,6 +728,7 @@ impl Policy {
         out.push(Action::Interrupted {
             heard: heard as u32,
             dropped: dropped as u32,
+            text: self.cut_text.take(),
         });
         self.set(State::Listening, &mut out);
         // A final that already arrived starts the end-of-turn clock now.
@@ -719,16 +757,15 @@ impl Policy {
         self.arm_end_of_turn(out);
     }
 
-    fn is_backchannel(&self, text: &str) -> bool {
+    /// Why the candidate's text is not a cut-in; `None` = real (76 §4.4 steps 2–4).
+    /// Real needs a word: a token outside `talk.backchannels` of two or more
+    /// characters once punctuation is stripped — "I", "a" and a lone "." are noise.
+    fn classify(&self, text: &str) -> Option<ResumeReason> {
         let words: Vec<String> = normalize(text);
-        if words.is_empty() {
-            return false;
-        }
         let list: Vec<Vec<String>> = self.cfg.backchannels.iter().map(|b| normalize(b)).collect();
-        // Every token (or listed multi-word phrase) is in the list; two or more
-        // strangers make it real (76 §4.4 step 2).
+        // Tokens outside the list (a listed multi-word phrase counts as one hit).
         let mut i = 0;
-        let mut strangers = 0;
+        let mut strangers: Vec<&str> = Vec::new();
         while i < words.len() {
             let hit = list
                 .iter()
@@ -738,12 +775,20 @@ impl Policy {
             match hit {
                 Some(n) => i += n,
                 None => {
-                    strangers += 1;
+                    strangers.push(&words[i]);
                     i += 1;
                 }
             }
         }
-        strangers == 0
+        if !words.is_empty() && strangers.is_empty() {
+            Some(ResumeReason::Backchannel)
+        } else if self.is_echo(text) {
+            Some(ResumeReason::Echo)
+        } else if strangers.iter().any(|w| w.chars().count() >= 2) {
+            None
+        } else {
+            Some(ResumeReason::Noise)
+        }
     }
 
     fn is_echo(&self, text: &str) -> bool {
@@ -1035,11 +1080,19 @@ mod tests {
             status: Status::Playing,
             last_seq: None,
         });
-        assert!(p.is_backchannel("Yeah."));
-        assert!(p.is_backchannel("mm-hmm, okay"));
-        assert!(p.is_backchannel("I see"));
-        assert!(!p.is_backchannel("yeah but wait"));
-        assert!(!p.is_backchannel(""));
+        use ResumeReason::*;
+        assert_eq!(p.classify("Yeah."), Some(Backchannel));
+        assert_eq!(p.classify("mm-hmm, okay"), Some(Backchannel));
+        assert_eq!(p.classify("I see"), Some(Backchannel));
+        assert_eq!(p.classify("yeah but wait"), None);
+        // No word: nothing, punctuation, single letters, a backchannel plus a letter.
+        assert_eq!(p.classify(""), Some(Noise));
+        assert_eq!(p.classify("."), Some(Noise));
+        assert_eq!(p.classify("I"), Some(Noise));
+        assert_eq!(p.classify("a"), Some(Noise));
+        assert_eq!(p.classify("yeah a"), Some(Noise));
+        assert_eq!(p.classify("no"), None);
+        assert_eq!(p.classify("two tests were skipped"), Some(Echo));
         assert!(p.is_echo("two tests were skipped"));
         assert!(p.is_echo("the build is green"));
         assert!(p.is_echo("tests were skip"));
@@ -1166,9 +1219,11 @@ mod tests {
                 },
                 Action::Interrupted {
                     heard: 1,
-                    dropped: 2
+                    dropped: 2,
+                    text: Some("no wait".into()),
                 },
                 Action::State(State::Listening),
+                Action::VadThreshold(voice::vad::Gate::THRESHOLD),
             ]
         );
         assert_eq!(p.ledger.sentences[1].status, Status::Dropped);
@@ -1202,7 +1257,10 @@ mod tests {
             },
             ms(t0, 3500),
         );
-        assert!(a.contains(&Action::Resume(ResumeReason::Backchannel)));
+        assert!(a.contains(&Action::Resume {
+            reason: ResumeReason::Backchannel,
+            text: Some("Mhm.".into()),
+        }));
         assert_eq!(p.state, State::Speaking);
         // Its final neither reaches the frontend as text nor the pending turn.
         p.step(Input::Close, ms(t0, 3600));
@@ -1230,15 +1288,158 @@ mod tests {
         p.step(Input::Close, ms(t0, 4950));
         let a = final_text(&mut p, 3, "", ms(t0, 4960));
         assert!(
-            a.contains(&Action::Resume(ResumeReason::Backchannel)),
+            a.contains(&Action::Resume {
+                reason: ResumeReason::Noise,
+                text: None,
+            }),
             "{a:?}"
         );
         assert_eq!(p.state, State::Speaking);
-        // No partial by the deadline: real.
-        p.step(Input::Onset, ms(t0, 5000));
-        p.step(Input::Timer(Timer::Hold), ms(t0, 5400));
-        let a = p.step(Input::Timer(Timer::Decide), ms(t0, 5900));
+    }
+
+    /// FIX-1: steady noise (an aquarium) holds the gate open past the hold and
+    /// never yields a word. At the deadline it resumes as noise — no commit,
+    /// no cancel, no trim — and cannot hold again until the gate closes and
+    /// reopens.
+    #[test]
+    fn open_and_wordless_at_the_deadline_is_noise_and_needs_a_new_onset() {
+        let (mut p, t0) = policy(Sink::Device);
+        let ids = speaking(&mut p, t0, &["One.", "Two."]);
+        p.step(Input::Onset, ms(t0, 3000));
+        let a = p.step(Input::Timer(Timer::Hold), ms(t0, 3400));
+        assert!(a.contains(&Action::Pause));
+        assert_eq!(p.state, State::Holding);
+        // A wordless partial does not settle the hold.
+        let a = p.step(
+            Input::Text {
+                utterance: 1,
+                text: "I".into(),
+                is_final: false,
+            },
+            ms(t0, 3600),
+        );
+        assert_eq!(
+            a,
+            vec![Action::Heard {
+                utterance: 1,
+                text: "I".into(),
+                is_final: false,
+            }]
+        );
+        assert_eq!(p.state, State::Holding);
+        let a = p.step(Input::Timer(Timer::Decide), ms(t0, 3900));
+        assert_eq!(
+            a,
+            vec![
+                Action::Timer(Timer::Decide, None),
+                Action::Resume {
+                    reason: ResumeReason::Noise,
+                    text: None,
+                },
+                Action::State(State::Speaking),
+            ]
+        );
+        assert!(!a.iter().any(|a| matches!(
+            a,
+            Action::Commit | Action::Cancel(_) | Action::Trim { .. } | Action::StopSpeech
+        )));
+        // The gate is still open: neither more of the utterance's text nor
+        // the old timers hold again; the speech goes on.
+        for (i, text) in ["I", "I I"].into_iter().enumerate() {
+            let a = p.step(
+                Input::Text {
+                    utterance: 1,
+                    text: text.into(),
+                    is_final: false,
+                },
+                ms(t0, 4500 + i as u64 * 500),
+            );
+            assert!(a.iter().all(|a| matches!(a, Action::Heard { .. })), "{a:?}");
+        }
+        assert_eq!(p.step(Input::Timer(Timer::Hold), ms(t0, 5400)), vec![]);
+        assert_eq!(p.step(Input::Timer(Timer::Decide), ms(t0, 5900)), vec![]);
+        assert_eq!(p.state, State::Speaking);
+        assert_eq!(p.ledger.sentences[0].status, Status::Playing);
+        // Close, reopen: a new candidate is held; a real word commits.
+        p.step(Input::Close, ms(t0, 6000));
+        let a = p.step(Input::Onset, ms(t0, 6500));
+        assert_eq!(
+            timer(&a, Timer::Hold),
+            Some(Some(Duration::from_millis(400)))
+        );
+        p.step(Input::Timer(Timer::Hold), ms(t0, 6900));
+        assert_eq!(p.state, State::Holding);
+        let a = p.step(
+            Input::Text {
+                utterance: 2,
+                text: "no".into(),
+                is_final: false,
+            },
+            ms(t0, 7000),
+        );
         assert!(a.contains(&Action::Commit));
+        let a = p.commit(None);
+        assert!(a.contains(&Action::Interrupted {
+            heard: 0,
+            dropped: 2,
+            text: Some("no".into()),
+        }));
+        let _ = ids;
+    }
+
+    /// FIX-1: the gate's threshold is `barge_in_vad` while the agent speaks
+    /// (and holds) and the gate's own default otherwise.
+    #[test]
+    fn vad_threshold_follows_the_state() {
+        let (mut p, t0) = policy(Sink::Device);
+        p.cfg.barge_in_vad = 0.7;
+        p.step(Input::Onset, t0);
+        final_text(&mut p, 0, "Hello.", ms(t0, 500));
+        // Listening → Thinking: still the default, no action.
+        let a = p.step(Input::Timer(Timer::EndOfTurn), ms(t0, 750));
+        assert!(!a.iter().any(|a| matches!(a, Action::VadThreshold(_))));
+        p.step(Input::TurnStarted(7), ms(t0, 800));
+        p.step(Input::Delta("One. Two.".into()), ms(t0, 1000));
+        let a = p.step(Input::TurnFinished("end_turn".into()), ms(t0, 1100));
+        assert!(
+            a.iter()
+                .any(|a| matches!(a, Action::Speak { index: 0, .. })),
+            "{a:?}"
+        );
+        let id = SpeechId::new();
+        p.spoken(0, id);
+        // Thinking → Speaking: raised.
+        let a = p.step(Input::SpeechStarted(id), ms(t0, 1300));
+        assert!(a.contains(&Action::VadThreshold(0.7)), "{a:?}");
+        // Speaking → Holding → Speaking: unchanged.
+        p.step(Input::Onset, ms(t0, 3000));
+        let a = p.step(Input::Timer(Timer::Hold), ms(t0, 3400));
+        assert!(
+            !a.iter().any(|a| matches!(a, Action::VadThreshold(_))),
+            "{a:?}"
+        );
+        let a = p.step(Input::Timer(Timer::Decide), ms(t0, 3900));
+        assert!(
+            !a.iter().any(|a| matches!(a, Action::VadThreshold(_))),
+            "{a:?}"
+        );
+        // Holding → Listening on a cut-in: back to the default.
+        p.step(Input::Close, ms(t0, 4000));
+        p.step(Input::Onset, ms(t0, 4500));
+        p.step(Input::Timer(Timer::Hold), ms(t0, 4900));
+        p.step(
+            Input::Text {
+                utterance: 2,
+                text: "stop".into(),
+                is_final: false,
+            },
+            ms(t0, 5000),
+        );
+        let a = p.commit(None);
+        assert!(
+            a.contains(&Action::VadThreshold(voice::vad::Gate::THRESHOLD)),
+            "{a:?}"
+        );
     }
 
     #[test]
@@ -1331,7 +1532,13 @@ mod tests {
             },
             ms(t0, 3000),
         );
-        assert_eq!(a, vec![Action::State(State::Listening)]);
+        assert_eq!(
+            a,
+            vec![
+                Action::State(State::Listening),
+                Action::VadThreshold(voice::vad::Gate::THRESHOLD),
+            ]
+        );
 
         // A tool round: prose before the batch is spoken, the state stays.
         let (mut p, t0) = policy(Sink::Device);

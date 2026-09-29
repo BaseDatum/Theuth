@@ -1,10 +1,11 @@
-import { GitFork, Mic, Pencil, X } from 'lucide-react'
+import { AudioLines, GitFork, Mic, Pencil, X } from 'lucide-react'
 import { memo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { type AttachRef, compose, parse } from '@/lib/attach'
 import { parseAsk } from '@/lib/board-ask'
 import { type Edit, useDrafts } from '@/lib/drafts'
+import { parseSpoken } from '@/lib/injected'
 import { useApi } from '@/lib/rpc'
 import { parseNote } from '@/lib/voice-note'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
@@ -119,8 +120,10 @@ export const MessageUser = memo(function MessageUser({
   // 45 §7.4 / 66 §7.9: the markers are the text, so own sends and history render alike.
   const { refs, body } = parse(text)
   const note = parseNote(body)
+  // 76 talk: `[spoken, N s(, interrupted)]` is the user's utterance from the live talk — the same bubble under a caption.
+  const spoken = note ? null : parseSpoken(body)
   // 71 §2.9: a `[board …]` header behind the markers is a place on a board — the quote card, not a bubble.
-  const ask = note ? null : parseAsk(body)
+  const ask = note || spoken ? null : parseAsk(body)
   const stamp = useStampToggle()
   const actions = !readOnly && !editing && !context?.removed && (context || (turn != null && !running))
   return (
@@ -131,6 +134,11 @@ export const MessageUser = memo(function MessageUser({
       {note && (
         <span className="flex items-center gap-1 text-xs text-fg-secondary">
           <Mic className="size-3" /> {note.secs} s
+        </span>
+      )}
+      {spoken && (
+        <span className="flex items-center gap-1 text-xs text-fg-secondary">
+          <AudioLines className="size-3" /> spoken · {spoken.secs} s{spoken.interrupted && ' · cut in'}
         </span>
       )}
       {editing ? (
@@ -149,7 +157,7 @@ export const MessageUser = memo(function MessageUser({
           <BoardQuoteCard ask={ask} />
         ) : (
           <div className="max-w-[85%] rounded-[22px] bg-layer-3 px-4 py-2.5 whitespace-pre-wrap break-words md:max-w-[70%]">
-            {note ? note.body : body}
+            {note?.body ?? spoken?.text ?? body}
           </div>
         ))
       )}
