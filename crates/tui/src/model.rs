@@ -10874,6 +10874,12 @@ impl Model {
                 "remote", c.remote_meter_gaps
             ));
         }
+        if c.delta_suspected {
+            rows.push(format!(
+                "{:<12}harness may report per-turn cost — totals may be low",
+                "remote"
+            ));
+        }
         rows.push(format!(
             "{:<12}{}",
             "scope",

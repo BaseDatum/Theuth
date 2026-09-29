@@ -1838,6 +1838,7 @@ impl Channel {
             turn: None,
             started: Instant::now(),
             model: String::new(),
+            context_size: None,
             marks: Vec::new(),
             status_supported: true,
             title_sent: None,
@@ -1916,6 +1917,9 @@ struct Worker {
     turn: Option<Turn>,
     started: Instant,
     model: String,
+    /// The session's context window from `ContextUsed.size` (75 §5), for
+    /// the footer's ` · ctx used/size`; `None` until a harness reports one.
+    context_size: Option<u32>,
     /// User message ts awaiting ✅ / 🛑 / ❌.
     marks: Vec<String>,
     /// Cleared once `agents.sessions.setStatus` says the app is not an agent.
@@ -2291,7 +2295,10 @@ impl Worker {
                 }
             }
             AgentEvent::TurnFinished {
-                stop_reason, usage, ..
+                stop_reason,
+                usage,
+                context,
+                ..
             } => {
                 self.speak();
                 if let Some(mut t) = self.turn.take() {
@@ -2301,6 +2308,7 @@ impl Worker {
                         usage,
                         elapsed: self.started.elapsed(),
                         tools: t.tool_count(),
+                        context: self.context_size.map(|size| (context, size)),
                     };
                     t.finish(footer).await;
                     self.sync_stream();
@@ -2342,6 +2350,8 @@ impl Worker {
             // is a projection revision notice, 48 §3.2 — not a reply;
             // `TodoChanged` is plan state for persistent UIs, 47 §5.1 — a
             // thread is not one).
+            // 75 §5: an external harness's window size, for the footer.
+            AgentEvent::ContextUsed { size: Some(size), .. } => self.context_size = Some(size),
             AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }
             | AgentEvent::InputInjected { .. }

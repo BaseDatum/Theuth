@@ -172,6 +172,7 @@ struct MeterRow {
     currency: String,
     attributed_nanos: Option<i64>,
     coverage: String,
+    source_metadata: Option<String>,
 }
 
 /// Latest epoch of one meter identity.
@@ -683,7 +684,7 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
         let meters: Vec<MeterRow> = sqlx::query_as(subtree!(
-            "SELECT owner_id, currency, attributed_nanos, coverage FROM remote_meters \
+            "SELECT owner_id, currency, attributed_nanos, coverage, source_metadata FROM remote_meters \
              WHERE owner_id IN (SELECT id FROM sub)"
         ))
         .bind(&sid)
@@ -725,10 +726,12 @@ impl Store {
         }
         let remote_tokens = super::turn_usage::by_model(&turns);
         let mut remote_meter_gaps: u32 = 0;
+        let mut delta_suspected = false;
         for m in &meters {
             if m.coverage != Coverage::Complete.as_str() {
                 remote_meter_gaps = remote_meter_gaps.saturating_add(1);
             }
+            delta_suspected |= MeterMetadata::parse(m.source_metadata.as_deref()).delta_suspected;
             let Some(n) = nodes.get_mut(&m.owner_id) else {
                 continue;
             };
@@ -780,6 +783,7 @@ impl Store {
             total,
             children: child_costs,
             remote_meter_gaps,
+            delta_suspected,
             remote_tokens,
         }))
     }
@@ -1152,6 +1156,7 @@ mod tests {
         store.apply_meter(child, guard_upd(0.1, "USD")).await.unwrap();
         let m = meta(&meters(&store).await);
         assert_eq!((m.lower_totals, m.delta_suspected), (1, false));
+        assert!(!store.session_cost(child).await.unwrap().unwrap().delta_suspected);
         store.apply_meter(child, guard_upd(0.2, "USD")).await.unwrap();
         let rows = meters(&store).await;
         let m = meta(&rows);
@@ -1167,5 +1172,6 @@ mod tests {
         // High water is still the rule: 0.6 > 0.5 attributed the delta, nothing summed.
         let cost = store.session_cost(child).await.unwrap().unwrap();
         assert_eq!(cost.direct.returned, vec![Money::from_f64(0.6, "USD").unwrap()]);
+        assert!(cost.delta_suspected, "surfaced on the summary for the cost dialog");
     }
 }

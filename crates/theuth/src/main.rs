@@ -772,7 +772,7 @@ const DEFAULT_AGENTS: &str =
 #   description: OpenCode, local install
 #   skills: true               # default; false: no theuth skills written into the child's cwd (design doc 75 §4)
 #   skills_dir: .agents/skills # default, relative to the child's cwd; .claude/skills for Claude Code
-#   mcp: true                  # opt-in (default false): theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
+#   mcp: true                  # default; false opts out of the theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
 # codex-acp:
 #   command: npx
 #   args: [-y, \"@agentclientprotocol/codex-acp\"]

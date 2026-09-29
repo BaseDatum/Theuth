@@ -1,8 +1,10 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
+import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
-import { HarnessTokens, k } from './CostPill'
+import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import { Breakdown, HarnessTokens, k } from './CostPill'
 
 const row = (harness: string, model: string | null, turns: number, input: number, output: number): RemoteTokens => ({
   harness,
@@ -35,4 +37,34 @@ test('Harness tokens: five rows then "Show more (N)"', () => {
   const html = renderToStaticMarkup(createElement(HarnessTokens, { rows: rows('omp', 7) }))
   expect(html.match(/<tr>/g)).toHaveLength(6) // header + 5
   expect(html).toContain('>Show more (2)</button>')
+})
+
+const bucket: CostBucket = {
+  returned: [],
+  estimated_for_unavailable: [],
+  calls: 0,
+  dispatched: 0,
+  unavailable: 0,
+  unresolved: 0,
+  tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0, unknown_calls: 0 },
+}
+
+const cost = (delta_suspected: boolean): SessionCost => ({
+  session: 's',
+  revision: 1,
+  history_coverage: 'complete',
+  scope: 'opaque_remote_inclusive',
+  direct: bucket,
+  descendants: bucket,
+  total: bucket,
+  children: [],
+  remote_meter_gaps: 1,
+  delta_suspected,
+  remote_tokens: [],
+})
+
+test('Breakdown: the per-turn cost line only when delta_suspected (75 §6)', () => {
+  const line = 'harness may report per-turn cost — totals may be low'
+  expect(renderToStaticMarkup(createElement(Breakdown, { cost: cost(true) }))).toContain(line)
+  expect(renderToStaticMarkup(createElement(Breakdown, { cost: cost(false) }))).not.toContain(line)
 })
