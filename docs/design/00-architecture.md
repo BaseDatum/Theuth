@@ -336,7 +336,12 @@ flowchart LR
 
 - `UserInput { session, text }` starts a turn. `Steer { session, text }`
   queues a user message that is injected after the current tool batch — the
-  oh-my-pi steering semantic, not a cancel.
+  oh-my-pi steering semantic, not a cancel. `Cancel { session, keep }` aborts
+  the turn and its running descendants; `keep: Some(text)` (76 §7, added
+  2026-09-28) names the prefix of the in-flight reply the user already
+  received, which the loop persists as the round's assistant message before
+  stopping with `stop_reason: "interrupted"` — no recovery note, nothing else
+  added. `keep: None` drops the streamed text as before; descendants always drop.
 - `genai::exec_chat_stream` events map 1:1 to published events
   (`TextDelta`, `ReasoningDelta`, `ToolCallPending`, `ToolCallStarted`, `ToolCallFinished`,
   `TurnFinished { stop_reason, usage }`). No buffering in the agent except
@@ -789,6 +794,7 @@ crates/
   packages/apps/      TS: curated OpenUI library + compatibility hash, `check`, helper (`bun build --compile`), patched renderer adapter shared with desktop (46 §4, §6.2, §7)
   update/             plugin: silent self-update of the `theuth` binary — manifest GET, minisign verify, atomic rename; `--update` (added in 39)
   voice/              plugin: read replies aloud — Pocket TTS via `ptts`, `markdown::spoken`, Opus packets as `SpeechAudio` events (43); live dictation (Nemotron streaming) into the composer (54)
+  talk/               plugin: a live, interruptible spoken conversation with one session — turn policy, barge-in classifier, heard-prefix ledger over `voice`'s devices and models; `talk_*` RPC, `TalkEvent` (76; contract 2026-09-28, `voice ← talk ← rpc`)
   decision/           plugin: local typed-probability oracle (laya via ONNX Runtime) with selective gate; consumers `meeting`, `browser`, `agent` (readability) (57; step 1 skeleton 2026-09-21)
   relay/              bin: theuth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)

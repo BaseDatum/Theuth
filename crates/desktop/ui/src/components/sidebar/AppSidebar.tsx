@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
+import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, Orbit, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -30,6 +30,7 @@ import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { subtrees } from '@/lib/session-tree'
 import { useShortcuts } from '@/lib/shortcuts'
+import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -158,6 +159,11 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
+  const api = useApi()
+  const queryClient = useQueryClient()
+  // 76 §0.12: the live dot while a talk runs (anywhere); the entry opens the running talk rather than starting a second.
+  const talking = talk.useTalk()
+  const live = talking.phase !== 'off'
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
@@ -214,6 +220,27 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               >
                 <SquarePen /> New chat
                 <span className="ml-auto text-xs text-fg-tertiary">{label(newChat)}</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <Link
+                to="/"
+                aria-label={live ? 'Talk (running)' : 'Talk'}
+                onClick={(e) => {
+                  e.preventDefault()
+                  void talk.open(api, null).then(
+                    (session) => {
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                      return navigate({ to: '/talk/$session', params: { session } })
+                    },
+                    (err: unknown) => toast.error(errorText(err)),
+                  )
+                }}
+              >
+                <Orbit /> Talk
+                {live && <span className="ml-auto size-2 shrink-0 rounded-full bg-success" aria-label="talk running" />}
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

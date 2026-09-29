@@ -279,6 +279,48 @@ number-flow-react {
   }
 }
 
+/* 76 §0.12 talk orb without WebGPU (or under reduced motion): a lit sphere; thinking pulses, speaking swells. */
+.talk-orb {
+  background:
+    radial-gradient(circle at 38% 32%, color-mix(in oklab, var(--fg-accent) 25%, white) 0%, transparent 42%),
+    radial-gradient(circle at 50% 55%, var(--fg-accent) 0%, color-mix(in oklab, var(--fg-accent) 70%, var(--bg-page)) 55%, color-mix(in oklab, var(--fg-accent) 35%, var(--bg-page)) 100%);
+  box-shadow:
+    0 0 60px color-mix(in oklab, var(--fg-accent) 35%, transparent),
+    inset 0 -20px 50px color-mix(in oklab, var(--fg-accent-hover) 60%, transparent);
+  transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+.talk-orb-thinking {
+  animation: talk-orb-pulse 1.6s ease-in-out infinite;
+}
+.talk-orb-speaking {
+  animation: talk-orb-swell 0.9s ease-in-out infinite;
+  box-shadow:
+    0 0 90px color-mix(in oklab, var(--fg-accent) 55%, transparent),
+    inset 0 -20px 50px color-mix(in oklab, var(--fg-accent-hover) 60%, transparent);
+}
+@keyframes talk-orb-pulse {
+  50% {
+    opacity: 0.75;
+  }
+}
+@keyframes talk-orb-swell {
+  50% {
+    transform: scale(1.04);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .talk-orb-thinking,
+  .talk-orb-speaking {
+    animation: none;
+  }
+  .talk-orb-thinking {
+    opacity: 0.8;
+  }
+  .talk-orb-speaking {
+    transform: scale(1.04);
+  }
+}
+
 /* Full-height shell: the layout viewport, or the band above the iOS keyboard (lib/viewport.ts). */
 @utility h-band {
   height: var(--visible-band, 100dvh);

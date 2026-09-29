@@ -64,7 +64,7 @@ use crate::loop_::{
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState,
     SetCompactionOverride, SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel,
-    UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -93,7 +93,8 @@ use crate::{
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
     SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
     SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
-    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TrimAssistant, Undo, UseSkill,
+    Withdraw,
     effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
@@ -283,13 +284,13 @@ impl LiveActor {
         }
     }
 
-    async fn tell_cancel(&self) {
+    async fn tell_cancel(&self, keep: Option<String>) {
         match self {
             Self::Native(a) => {
-                let _ = a.tell(CancelTurn).await;
+                let _ = a.tell(CancelTurn { keep }).await;
             }
             Self::Acp(a) => {
-                let _ = a.tell(CancelTurn).await;
+                let _ = a.tell(CancelTurn { keep }).await;
             }
         }
     }
@@ -1424,7 +1425,7 @@ impl Agents {
                 Some(LiveActor::Native(a)) => {
                     let _ = a.tell(CancelPeerScope { scope }).await;
                 }
-                Some(acp @ LiveActor::Acp(_)) => acp.tell_cancel().await,
+                Some(acp @ LiveActor::Acp(_)) => acp.tell_cancel(None).await,
                 None => {}
             }
         }
@@ -2520,6 +2521,25 @@ impl Message<EditTurn> for Agents {
     }
 }
 
+impl Message<TrimAssistant> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: TrimAssistant, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.search.invalidate();
+        // A context edit: candidates admitted against the full reply are stale.
+        self.ledger.bump(m.session);
+        self.actor(m.session)
+            .await?
+            .native()?
+            .ask(TrimTurn {
+                turn: m.turn,
+                keep: m.keep,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl Message<ForkSession> for Agents {
     type Reply = Result<SessionId, String>;
 
@@ -2577,7 +2597,7 @@ impl Message<ForkSession> for Agents {
 impl Message<Cancel> for Agents {
     type Reply = ();
 
-    async fn handle(&mut self, m: Cancel, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, mut m: Cancel, _: &mut Context<Self, Self::Reply>) {
         // Every running descendant, not one level (design doc 19 §2.3).
         let tree = self
             .store_for(m.session)
@@ -2595,7 +2615,9 @@ impl Message<Cancel> for Agents {
                 .get(&id)
                 .filter(|_| id == m.session || self.running.contains(&id))
             {
-                live.actor.tell_cancel().await;
+                // 76 §7: only the target keeps its heard prefix; descendants drop theirs.
+                let keep = if id == m.session { m.keep.take() } else { None };
+                live.actor.tell_cancel(keep).await;
             }
         }
         // The cancelled turns' awaiting tool calls are gone: their waits
@@ -3295,7 +3317,7 @@ impl Message<ChildTimedOut> for Agents {
         {
             self.timed_out.insert(child);
             self.ledger.bump(child);
-            live.actor.tell_cancel().await;
+            live.actor.tell_cancel(None).await;
         }
     }
 }
@@ -5145,7 +5167,7 @@ impl Message<UnloadSession> for Agents {
         let Some(live) = self.sessions.remove(&m.session) else {
             return false;
         };
-        live.actor.tell_cancel().await;
+        live.actor.tell_cancel(None).await;
         live.actor.kill().await;
         self.running.remove(&m.session);
         true
@@ -7750,7 +7772,7 @@ impl Agents {
                 timer.abort();
             }
             if let Some(live) = self.sessions.remove(&id) {
-                live.actor.tell_cancel().await;
+                live.actor.tell_cancel(None).await;
                 live.actor.kill().await;
             }
         }

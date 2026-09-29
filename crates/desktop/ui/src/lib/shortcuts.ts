@@ -23,6 +23,8 @@ export type ShortcutId =
   | 'stop'
   | 'toggle-window'
   | 'cancel-all'
+  | 'talk'
+  | 'talk-transcript'
 
 /** `window`: one keydown listener (`useHotkeys`); `composer`: the chat box's own keydown; `global`: a Tauri global shortcut (macOS). */
 export type Scope = 'window' | 'composer' | 'global'
@@ -45,6 +47,8 @@ export const DEFS: Record<ShortcutId, Def> = {
   'copy-last-code': { label: 'Copy last code block', chord: 'Mod+Shift+Semicolon', scope: 'window' },
   shortcuts: { label: 'Show shortcuts', chord: 'Mod+Slash', scope: 'window' },
   dictate: { label: 'Dictate', chord: 'Control+D', scope: 'window', inEditable: true },
+  talk: { label: 'Stop the talk', chord: 'Mod+T', scope: 'window', inEditable: true },
+  'talk-transcript': { label: 'Show or hide the talk transcript', chord: 'Mod+Shift+T', scope: 'window', inEditable: true },
   send: { label: 'Send', chord: 'Enter', scope: 'composer' },
   interject: { label: 'Send and interrupt the running turn', chord: 'Mod+Enter', scope: 'composer' },
   newline: { label: 'New line', chord: 'Shift+Enter', scope: 'composer' },

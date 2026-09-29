@@ -41,6 +41,7 @@ use crate::clip::Image;
 use crate::dictation::{Dictating, Phase};
 use crate::pathac::PathState;
 use crate::search;
+use crate::talk::Talking;
 
 /// Everything the UI can receive: bus events plus replies to its own commands.
 #[derive(Debug)]
@@ -307,12 +308,18 @@ pub enum UiEvent {
     SessionOpened(SessionOpen),
     /// Reply to [`Command::LeaveSession`]: the root left and how far its cleanup got.
     SessionLeft(SessionId, CloseResult),
-    /// Voice plugin bus event; only the `Dictation*` variants matter here (54 §6).
+    /// Voice plugin bus event; the `Dictation*` variants (54 §6) and `SpeechFinished` for the talk subtitle (76 §5.2).
     Voice(voice::VoiceEvent),
+    /// Talk plugin bus event (76 §5.2): the `/talk` view.
+    Talk(talk::TalkEvent),
     /// Reply to [`Command::DictationStart`]: the daemon opened a dictation for us.
     DictationStarting(voice::DictationId),
     /// [`Command::DictationStart`] was refused (already dictating, voice disabled, model missing).
     DictationFailed(String),
+    /// Reply to [`Command::TalkStart`]: the daemon opened a talk for us.
+    TalkStarting(talk::TalkId),
+    /// [`Command::TalkStart`] was refused (already talking, talk disabled, model missing).
+    TalkFailed(String),
 }
 
 /// Everything the UI can ask of the rest of the process. One task turns
@@ -812,6 +819,12 @@ pub enum Command {
     DictationStart,
     /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
     DictationStop(voice::DictationId),
+    /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
+    /// `None` = no session yet: one is created first (`SessionOpened`), as the desktop's
+    /// Talk entry does. The reply is [`UiEvent::TalkStarting`] or [`UiEvent::TalkFailed`].
+    TalkStart(Option<SessionId>),
+    /// `talk_stop(id)`; `TalkFinished` follows on the bus.
+    TalkStop(talk::TalkId),
 }
 
 /// One row of the `/login` picker.
@@ -1339,6 +1352,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/todos", "", "show or hide the plan card (F2)"),
     ("/dictate", "", "toggle dictation (Ctrl+D)"),
+    (
+        "/talk",
+        "",
+        "talk with the session aloud; Esc cancels the reply or leaves the view, Ctrl+T stops",
+    ),
     (
         "/jobs",
         "[kill <id>]",
@@ -3302,6 +3320,12 @@ pub struct Model {
     pub dictation_model: voice::ModelState,
     /// `(value, caret)` the editor must take this frame: a dictation stopped or was discarded.
     pub pending_input: Option<(String, usize)>,
+    /// The talk this view started (76 §0.12); `Some` whether or not the view is open.
+    pub talk: Option<Talking>,
+    /// The `/talk` pane covers the transcript; Esc closes it, the talk keeps running.
+    pub talk_view: bool,
+    /// `/talk` sent, waiting for `talk_start`'s reply.
+    talk_pending: bool,
     /// A `/attach` pick this frame: the token the editor prepends to its text.
     pub attach_token: Option<String>,
 }
@@ -3511,7 +3535,7 @@ impl Model {
     /// slash popup rides on the box) and the todo card not focused (F2). A
     /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
-        if self.approval().is_some() || self.dictation.is_some() {
+        if self.approval().is_some() || self.dictation.is_some() || self.talk_view {
             return false;
         }
         if self.secret_request().is_some() {
@@ -4098,6 +4122,7 @@ impl Model {
             || self.pairing.is_some()
             || self.invite.is_some()
             || self.dictation.is_some()
+            || self.talk_view
     }
 
     /// The board (design doc 19 §3.3): the subtree's live rows plus errors
@@ -5063,6 +5088,7 @@ impl Model {
                 ));
             }
             UiEvent::Voice(ev) => self.apply_voice(ev),
+            UiEvent::Talk(ev) => self.apply_talk(ev),
             UiEvent::DictationStarting(id) => {
                 // `/new` or a menu may have run between the key and the reply; an
                 // empty anchor still tracks the dictation the daemon opened for us.
@@ -5073,6 +5099,17 @@ impl Model {
                 self.dictation_pending = None;
                 self.dictation = None;
                 self.entries.push(Entry::Error(format!("dictation: {m}")));
+            }
+            UiEvent::TalkStarting(id) => {
+                self.talk_pending = false;
+                // `SessionOpened` came first when `/talk` had to create the session.
+                let Some(session) = self.session else { return };
+                self.talk = Some(Talking::new(id, session));
+                self.talk_view = true;
+            }
+            UiEvent::TalkFailed(m) => {
+                self.talk_pending = false;
+                self.entries.push(Entry::Error(format!("talk: {m}")));
             }
         }
     }
@@ -5119,10 +5156,67 @@ impl Model {
                         .push(Entry::Error(format!("dictation: {message}")));
                 }
             }
-            VoiceModel { .. }
-            | SpeechStarted { .. }
-            | SpeechAudio { .. }
-            | SpeechFinished { .. } => {}
+            SpeechFinished { id, .. } => {
+                if let Some(t) = &mut self.talk {
+                    t.speech_finished(id);
+                }
+            }
+            VoiceModel { .. } | SpeechStarted { .. } | SpeechAudio { .. } => {}
+        }
+    }
+
+    /// Fold a talk bus event in (76 §5.2) for the talk this view started;
+    /// `TalkFinished` closes the view and reports an error reason.
+    fn apply_talk(&mut self, ev: talk::TalkEvent) {
+        let Some(t) = &mut self.talk else { return };
+        let Some(reason) = t.apply(ev, self.frame) else {
+            return;
+        };
+        self.talk = None;
+        self.talk_view = false;
+        if let talk::EndReason::Error { message } = reason {
+            self.entries.push(Entry::Error(format!("talk: {message}")));
+        }
+    }
+
+    /// `/talk`: no talk → start one on the current session (created first
+    /// when there is none) and open the view; one running with the view
+    /// closed → re-enter; view open → stop and leave. Ctrl+T (`stop: true`)
+    /// stops a running talk from anywhere. Waiting for the start reply: no-op.
+    pub fn toggle_talk(&mut self, stop: bool) -> Option<Command> {
+        if let Some(t) = &self.talk {
+            if self.talk_view || stop {
+                self.talk_view = false;
+                return Some(Command::TalkStop(t.id));
+            }
+            self.talk_view = true;
+            return None;
+        }
+        // Waiting for the start reply, or for the session a `Send` is creating
+        // (`TalkStart(None)` would create a second one): no-op.
+        if self.talk_pending || (self.session.is_none() && self.awaiting_session) {
+            return None;
+        }
+        self.talk_pending = true;
+        Some(Command::TalkStart(self.session))
+    }
+
+    /// Esc in the talk view (76 §5.2): while the agent is thinking, speaking
+    /// or held, it is the agent's cancel — the talk stays on and returns to
+    /// `Listening`; otherwise it leaves the view, the talk keeps running.
+    pub fn talk_escape(&mut self) -> Option<Command> {
+        match &self.talk {
+            Some(t) if matches!(
+                t.state,
+                talk::State::Thinking | talk::State::Speaking | talk::State::Holding
+            ) =>
+            {
+                Some(Command::Cancel(t.session))
+            }
+            _ => {
+                self.talk_view = false;
+                None
+            }
         }
     }
 
@@ -6023,6 +6117,11 @@ impl Model {
                     send(tx, cmd);
                 }
             }
+            "/talk" => {
+                if let Some(cmd) = self.toggle_talk(false) {
+                    send(tx, cmd);
+                }
+            }
             "/broadcast" => self.broadcast_cmd(arg, tx),
             "/agents" => match self.session {
                 Some(session) => {
@@ -6531,12 +6630,19 @@ impl Model {
         } else {
             ""
         };
+        let talk = match &self.talk {
+            Some(t) if !self.talk_view => {
+                let state = format!("{:?}", t.state).to_lowercase();
+                format!("  ·  ● talk: {state} (/talk)")
+            }
+            _ => String::new(),
+        };
         let attached = self
             .attached
             .as_deref()
             .map_or_else(String::new, |a| format!("  ·  {a}"));
         format!(
-            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{attached}"
+            "{session}  {state}{usage}{agents}{queued}{jobs}{skills}{editing}{scrolled}{todos}{talk}{attached}"
         )
     }
 
@@ -11112,6 +11218,68 @@ mod tests {
         assert!(m.dictation_pending.is_none());
         m.submit("/dictate", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::DictationStart)));
+    }
+
+    /// 76 §0.12: `/talk` with no session asks for one (`TalkStart(None)`),
+    /// a second press waits, `TalkStarting` opens the view and unfocuses the
+    /// editor, Esc leaves the view with the talk on (status shows it), `/talk`
+    /// re-enters, Ctrl+T stops; a stranger's `TalkFinished` is ignored, ours
+    /// closes the view and an error reason is reported.
+    #[test]
+    fn talk_lifecycle() {
+        use talk::{EndReason, State, TalkEvent, TalkId};
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/talk", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::TalkStart(None))));
+        assert!(m.toggle_talk(false).is_none());
+        let root = SessionId::new();
+        m.apply(UiEvent::SessionOpened(SessionOpen {
+            session: root,
+            root,
+            retention: Retention::Durable,
+            lease_secret: None,
+        }));
+        let id = TalkId::new();
+        m.apply(UiEvent::TalkStarting(id));
+        assert!(m.talk_view && !m.input_focused() && m.animating());
+        assert_eq!(m.talk.as_ref().map(|t| t.session), Some(root));
+        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+            id,
+            state: State::Speaking,
+        }));
+        assert!(!m.status().contains("talk:"));
+        // Esc while speaking cancels the turn and keeps the pane; in Listening it leaves.
+        assert!(matches!(m.talk_escape(), Some(Command::Cancel(s)) if s == root) && m.talk_view);
+        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+            id,
+            state: State::Listening,
+        }));
+        assert!(m.talk_escape().is_none() && !m.talk_view);
+        m.apply(UiEvent::Talk(TalkEvent::TalkState {
+            id,
+            state: State::Speaking,
+        }));
+        assert!(m.status().contains("● talk: speaking (/talk)"));
+        assert!(m.toggle_talk(false).is_none() && m.talk_view);
+        assert!(matches!(m.toggle_talk(true), Some(Command::TalkStop(i)) if i == id));
+        assert!(!m.talk_view && m.talk.is_some());
+        m.apply(UiEvent::Talk(TalkEvent::TalkFinished {
+            id: TalkId::new(),
+            reason: EndReason::Stopped,
+        }));
+        assert!(m.talk.is_some());
+        m.apply(UiEvent::Talk(TalkEvent::TalkFinished {
+            id,
+            reason: EndReason::Error {
+                message: "mic".into(),
+            },
+        }));
+        assert!(m.talk.is_none() && !m.talk_view);
+        assert!(matches!(m.entries.last(), Some(Entry::Error(s)) if s == "talk: mic"));
+        m.apply(UiEvent::TalkFailed("talk is disabled".into()));
+        assert!(!m.talk_pending);
+        assert!(matches!(m.toggle_talk(false), Some(Command::TalkStart(Some(s))) if s == root));
     }
 
     /// An inventory: a user message with two images, an assistant call

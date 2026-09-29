@@ -301,8 +301,23 @@ pub struct RestartTurn {
     pub ticket: Option<InputTicket>,
 }
 
-/// `tell`: abort the in-flight turn, if any.
-pub struct CancelTurn;
+/// `tell`: abort the in-flight turn, if any. `keep` (76 §7): the heard prefix
+/// of the reply to persist in place of the dropped stream; `None` drops it.
+pub struct CancelTurn {
+    /// See [`crate::Cancel::keep`].
+    pub keep: Option<String>,
+}
+
+/// `ask` → `Result<(), String>`: replace the last assistant row of the
+/// finished turn opened at `turn` with the heard prefix `keep` (76 §7, the
+/// post-turn cut); empty `keep` deletes it. `Err("turn in flight" | <store
+/// error text, e.g. "no assistant row">)`.
+pub struct TrimTurn {
+    /// Seq of the user row that opens the turn.
+    pub turn: i64,
+    /// What the user heard of the reply.
+    pub keep: String,
+}
 
 /// `ask` → whether a turn is in flight.
 pub struct IsRunning;
@@ -627,6 +642,11 @@ struct Shared {
     permits: Arc<Semaphore>,
     /// The permit of the running peer-opened turn (50 §8).
     permit: Arc<parking_lot::Mutex<PermitSlot>>,
+    /// [`CancelTurn::keep`] of the cancel in flight (76 §7): set by the actor
+    /// before the token fires, taken by the stream arm that observes it,
+    /// cleared when a turn is entered so a cancel that landed outside a stream
+    /// never leaks into the next turn.
+    keep: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 /// The model, what streams it (12 §6) and the resolution error of the
@@ -713,6 +733,7 @@ impl Session {
                 rt,
                 steer: Arc::default(),
                 permit: Arc::default(),
+                keep: Arc::default(),
                 catalog,
                 pool,
                 knowledge: None,
@@ -733,6 +754,7 @@ impl Session {
     /// compaction/harvest mini-turn.
     async fn enter(&mut self, cancel: CancellationToken, turn: Option<TurnId>) {
         self.inflight = Some(cancel);
+        self.shared.keep.lock().take();
         self.entered = Some(turn);
         continuation::notify(TurnEntered {
             session: self.shared.id,
@@ -1499,6 +1521,34 @@ impl Message<RedoTurn> for Session {
     }
 }
 
+impl Message<TrimTurn> for Session {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: TrimTurn, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !self.idle() {
+            return Err("turn in flight".into());
+        }
+        let id = self.shared.id;
+        let (revision, assistants, epoch, head, history) = self
+            .shared
+            .store
+            .trim_assistant(id, m.turn, &m.keep)
+            .await
+            .map_err(|e| e.to_string())?;
+        if assistants > 1 {
+            tracing::debug!(
+                session = %id,
+                turn = m.turn,
+                assistants,
+                "trim: tool calls ran after the spoken prefix; only the last assistant row is trimmed"
+            );
+        }
+        self.install(epoch, head, history).await;
+        self.context_changed(revision, "trim").await;
+        Ok(())
+    }
+}
+
 impl Message<RestartTurn> for Session {
     type Reply = Result<(), String>;
 
@@ -1556,8 +1606,9 @@ impl Message<RestartTurn> for Session {
 impl Message<CancelTurn> for Session {
     type Reply = ();
 
-    async fn handle(&mut self, _: CancelTurn, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, m: CancelTurn, _: &mut Context<Self, Self::Reply>) {
         if let Some(c) = &self.inflight {
+            *self.shared.keep.lock() = m.keep;
             c.cancel();
         }
     }
@@ -1987,6 +2038,11 @@ impl PermitSlot {
 /// Why a model call did not return a [`StreamEnd`].
 enum Abort {
     Cancelled,
+    /// Cancelled with a heard prefix (76 §7): `text` is what the caller says
+    /// the user received of the dropped stream; persisted, then the turn stops.
+    Interrupted {
+        text: String,
+    },
     Model(String),
     /// The stream died after `text` was streamed (36 §2.4); `err` is the transport error.
     Partial {
@@ -2805,7 +2861,7 @@ impl Turn {
                 .await;
             let (status, usage) = match &r {
                 Ok(end) => (CallStatus::Settled, end.captured_usage.as_ref()),
-                Err(Abort::Cancelled) => (CallStatus::Cancelled, None),
+                Err(Abort::Cancelled | Abort::Interrupted { .. }) => (CallStatus::Cancelled, None),
                 Err(_) => (CallStatus::Failed, None),
             };
             reserved.settle(status, usage, &current.model).await;
@@ -2834,9 +2890,24 @@ impl Turn {
             self.retries.fetch_add(1, Ordering::Relaxed);
             attempt += 1;
             tokio::select! {
-                _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
+                // Nothing of this call streamed: a `keep` here is not this
+                // call's text (76 §7 names the stream arms only); drop it.
+                _ = self.cancel.cancelled() => {
+                    self.shared.keep.lock().take();
+                    return Err(Abort::Cancelled);
+                }
                 _ = tokio::time::sleep(wait) => {}
             }
+        }
+    }
+
+    /// The cancel that just fired, as `stream_once` reports it (76 §7):
+    /// `Interrupted` with the stored heard prefix — taken, so a later plain
+    /// cancel is plain — or `Cancelled`.
+    fn aborted(&self) -> Abort {
+        match self.shared.keep.lock().take() {
+            Some(text) => Abort::Interrupted { text },
+            None => Abort::Cancelled,
         }
     }
 
@@ -2864,7 +2935,7 @@ impl Turn {
             .backend
             .stream(&current.model, req, &opts, conversation);
         let mut stream = tokio::select! {
-            _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
+            _ = self.cancel.cancelled() => return Err(self.aborted()),
             r = open => r.map_err(Abort::Model)?,
         };
         let session = self.shared.id;
@@ -2873,7 +2944,7 @@ impl Turn {
         let idle = Duration::from_secs(self.shared.cfg.stream_idle_secs);
         loop {
             let ev = tokio::select! {
-                _ = self.cancel.cancelled() => return Err(Abort::Cancelled),
+                _ = self.cancel.cancelled() => return Err(self.aborted()),
                 ev = tokio::time::timeout(idle, stream.next()) => match ev {
                     Ok(ev) => ev,
                     Err(_) => {
@@ -3256,7 +3327,10 @@ impl Turn {
                 *slot = PermitSlot::default();
             }
         }
-        let interrupted = stop_reason == "cancelled" || stop_reason == "timed_out";
+        let interrupted = matches!(
+            stop_reason.as_str(),
+            "cancelled" | "timed_out" | "interrupted"
+        );
         if let Some(repl) = self.repl.take() {
             if interrupted {
                 // 08 §5: a cancelled cell's worker is discarded; the next turn restores the last dump.
@@ -3610,6 +3684,14 @@ impl Turn {
         {
             Ok(end) => end,
             Err(Abort::Cancelled) => return Round::Stop("cancelled".into()),
+            // 76 §7: the user heard `text`; it is the round's reply. No recovery
+            // note, no salvage — the turn stops here.
+            Err(Abort::Interrupted { text }) => {
+                if !text.trim().is_empty() {
+                    self.persist(ChatMessage::assistant(text)).await;
+                }
+                return Round::Stop("interrupted".into());
+            }
             // 36 §2.4: keep what streamed, ask the model to carry on.
             Err(Abort::Partial { text, err }) => {
                 if self.salvaged >= self.shared.cfg.max_salvages {
@@ -4690,7 +4772,9 @@ impl Turn {
                         *last = ChatMessage::user(format!("{prefix}{instruction}"));
                     }
                 }
-                Ok(Err(Abort::Cancelled)) => return Err("cancelled".into()),
+                Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => {
+                    return Err("cancelled".into());
+                }
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
             }
         }
@@ -5106,7 +5190,7 @@ impl Turn {
             Err(_) => {
                 return Err(format!("timed out after {}s", SUMMARISE_TIMEOUT.as_secs()));
             }
-            Ok(Err(Abort::Cancelled)) => return Err("cancelled".into()),
+            Ok(Err(Abort::Cancelled | Abort::Interrupted { .. })) => return Err("cancelled".into()),
             Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
             Ok(Ok(end)) => end,
         };
@@ -5368,6 +5452,10 @@ mod compact_queue_tests;
 /// 70 THINKING-TRACES: the `thinking` field per effort and the signed round trip, at a fake Anthropic.
 #[cfg(test)]
 mod thinking_tests;
+
+/// 76 §7: `CancelTurn { keep }` persists the heard prefix and stops with `interrupted`.
+#[cfg(test)]
+mod interrupt_tests;
 
 #[cfg(test)]
 mod tests {

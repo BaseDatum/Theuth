@@ -251,7 +251,7 @@ async fn interrupted_compaction_rolls_back_and_keeps_the_queue() {
     let (mut h, actor) = seeded(Fake::compact_held(HOLD)).await;
     let task = compacting(&mut h, &actor).await;
     let human = two_inputs(&actor).await;
-    actor.tell(CancelTurn).await.unwrap();
+    actor.tell(CancelTurn { keep: None }).await.unwrap();
 
     let events = h
         .drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))

@@ -1684,6 +1684,8 @@ impl Message<PromptDone> for AcpChild {
 impl Message<CancelTurn> for AcpChild {
     type Reply = ();
 
+    // `keep` (76 §7) is ignored: the harness owns the stream and its history;
+    // theuth cannot persist a prefix into a transcript it does not write.
     async fn handle(&mut self, _: CancelTurn, ctx: &mut Context<Self, Self::Reply>) {
         let Some(turn) = &mut self.turn else { return };
         let Some(h) = &self.harness else { return };
@@ -2681,7 +2683,7 @@ mod tests {
         let mut rig = Rig::new(Duration::from_secs(60)).await;
         rig.input("task").await;
         let (id, _) = rig.fake.prompt().await;
-        rig.actor.tell(CancelTurn).await.unwrap();
+        rig.actor.tell(CancelTurn { keep: None }).await.unwrap();
         let m = rig.fake.next().await;
         assert_eq!(m["method"], "session/cancel", "{m}");
         rig.fake

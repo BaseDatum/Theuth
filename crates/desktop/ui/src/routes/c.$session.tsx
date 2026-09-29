@@ -93,7 +93,62 @@ export function LiveSession({ session, first }: { session: string; first: boolea
   useEffect(() => {
     if (import.meta.env.DEV && import.meta.env.VITE_CODEMAP_MOCK === '1') void import('@/dev/codemap-fixture').then((m) => m.play(session))
   }, [session])
+  useSessionLoad(session)
 
+  // ⇧⌘C / ⇧⌘; address the focused pane only.
+  useEffect(() => {
+    if (!focused) return
+    const last = () => store.getState().sessions[session]?.entries.findLast((e) => e.kind === 'assistant')
+    const response = () => {
+      const e = last()
+      if (e) void navigator.clipboard.writeText(e.text)
+    }
+    const code = () => {
+      const e = last()
+      const block = e && lastCode(e.text)
+      if (block) void navigator.clipboard.writeText(block)
+    }
+    window.addEventListener('theuth:copy-last-response', response)
+    window.addEventListener('theuth:copy-last-code', code)
+    return () => {
+      window.removeEventListener('theuth:copy-last-response', response)
+      window.removeEventListener('theuth:copy-last-code', code)
+    }
+  }, [session, store, focused])
+
+  const close = () => {
+    const to = usePanes.getState().close(session)
+    if (to) void navigate({ to: '/c/$session', params: { session: to } })
+  }
+
+  // Keyed so refs/drafts reset per session; the keys must differ between siblings.
+  return (
+    <>
+      <Header session={session} first={first} onClose={split ? close : undefined} />
+      <LinkBanner />
+      <PrivateStrip session={session} />
+      <OrphansBanner session={session} />
+      {fromSearch && (
+        <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
+          <SearchReturn />
+        </div>
+      )}
+      <Transcript key={`t:${session}`} session={session} />
+      <TodoCard key={`d:${session}`} session={session} />
+      <Composer key={`c:${session}`} session={session} />
+    </>
+  )
+}
+
+/**
+ * Keep `session`'s slice loaded while a view of it is mounted: the newest page, agents and artifacts on first
+ * visit, the settled path (48 §5) on `ContextChanged`, a full reload on reconnect. Shared by the chat and the
+ * talk view (76 §0.12); either may be the first to open the session.
+ */
+export function useSessionLoad(session: string): void {
+  const api = useApi()
+  // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
+  const { sessions: store } = useScope()
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
   // list labelled stale (the card says so) rather than silently reading as empty. Bound to this route's engine
@@ -193,50 +248,6 @@ export function LiveSession({ session, first }: { session: string; first: boolea
       off()
     }
   }, [load, settle, session])
-
-  // ⇧⌘C / ⇧⌘; address the focused pane only.
-  useEffect(() => {
-    if (!focused) return
-    const last = () => store.getState().sessions[session]?.entries.findLast((e) => e.kind === 'assistant')
-    const response = () => {
-      const e = last()
-      if (e) void navigator.clipboard.writeText(e.text)
-    }
-    const code = () => {
-      const e = last()
-      const block = e && lastCode(e.text)
-      if (block) void navigator.clipboard.writeText(block)
-    }
-    window.addEventListener('theuth:copy-last-response', response)
-    window.addEventListener('theuth:copy-last-code', code)
-    return () => {
-      window.removeEventListener('theuth:copy-last-response', response)
-      window.removeEventListener('theuth:copy-last-code', code)
-    }
-  }, [session, store, focused])
-
-  const close = () => {
-    const to = usePanes.getState().close(session)
-    if (to) void navigate({ to: '/c/$session', params: { session: to } })
-  }
-
-  // Keyed so refs/drafts reset per session; the keys must differ between siblings.
-  return (
-    <>
-      <Header session={session} first={first} onClose={split ? close : undefined} />
-      <LinkBanner />
-      <PrivateStrip session={session} />
-      <OrphansBanner session={session} />
-      {fromSearch && (
-        <div className="mx-auto flex w-full shrink-0 justify-end md:max-w-[768px] px-4">
-          <SearchReturn />
-        </div>
-      )}
-      <Transcript key={`t:${session}`} session={session} />
-      <TodoCard key={`d:${session}`} session={session} />
-      <Composer key={`c:${session}`} session={session} />
-    </>
-  )
 }
 
 /** `Private` badge for a chat in the owned tree, plus the bounded reconnect countdown while its transport is down (51 §4.3). */

@@ -1681,7 +1681,7 @@ impl Agents {
             let text = self.redact(&m.text).into_owned();
             let sc = self.network.scopes.get_mut(&scope).expect("checked above");
             match m.stop_reason.as_str() {
-                "cancelled" | "timed_out" => sc.interrupted = true,
+                "cancelled" | "timed_out" | "interrupted" => sc.interrupted = true,
                 "error" => sc.result = Some(Err("turn stopped by error".into())),
                 _ => sc.result = Some(Ok(text)),
             }

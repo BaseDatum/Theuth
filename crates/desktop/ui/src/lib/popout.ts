@@ -20,9 +20,11 @@ export type PopoutTarget =
   | { kind: 'pty'; session: string; job: string }
   /** `/codemap/$session/$root`: one session's CodeMap on one root alone (73 §6.9). */
   | { kind: 'codemap'; session: string; root: string }
+  /** `/talk/$session`: the session's talk view alone (76 §0.12); it attaches to the running talk, never starts one. */
+  | { kind: 'talk'; session: string }
 
 const idOf = (t: PopoutTarget): string =>
-  t.kind === 'chat'
+  t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'
       ? t.callId
@@ -35,8 +37,8 @@ const idOf = (t: PopoutTarget): string =>
             : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
-  t.kind === 'chat'
-    ? `/c/${encodeURIComponent(t.session)}`
+  t.kind === 'chat' || t.kind === 'talk'
+    ? `/${t.kind === 'chat' ? 'c' : 'talk'}/${encodeURIComponent(t.session)}`
     : t.kind === 'artifact'
       ? `/artifacts/${encodeURIComponent(t.callId)}`
       : t.kind === 'note'
@@ -63,6 +65,7 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
+  if (head === 'talk') return { kind: 'talk', session: decodeURIComponent(id) }
   if (head === 'artifacts') return { kind: 'artifact', callId: decodeURIComponent(id) }
   if (head === 'notes') return { kind: 'note', doc: decodeURIComponent(id) }
   if (head === 'meetings') {
@@ -83,7 +86,7 @@ export const popoutMeeting = (t: PopoutTarget | null): string | null =>
 
 /** The session a popped window belongs to (`chat`, or the PTY's owning session), else `null`: `SessionDeleted` for it closes the window. */
 export const popoutSession = (t: PopoutTarget | null): string | null =>
-  t !== null && (t.kind === 'chat' || t.kind === 'pty' || t.kind === 'codemap') ? t.session : null
+  t !== null && (t.kind === 'chat' || t.kind === 'talk' || t.kind === 'pty' || t.kind === 'codemap') ? t.session : null
 
 /**
  * Whether this container can open a second window at all: a desktop shell (`open_window`) or a plain browser

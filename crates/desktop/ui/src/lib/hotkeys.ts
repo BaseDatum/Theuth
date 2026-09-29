@@ -13,6 +13,8 @@ export type Hotkey =
   | 'theuth:copy-last-code'
   | 'theuth:shortcuts'
   | 'theuth:dictate'
+  | 'theuth:talk'
+  | 'theuth:talk-transcript'
 
 /** Window-scope shortcuts and the event each dispatches (Settings › Shortcuts owns the chords). */
 const EVENTS = {
@@ -24,6 +26,8 @@ const EVENTS = {
   'copy-last-code': 'theuth:copy-last-code',
   shortcuts: 'theuth:shortcuts',
   dictate: 'theuth:dictate',
+  talk: 'theuth:talk',
+  'talk-transcript': 'theuth:talk-transcript',
 } satisfies Partial<Record<ShortcutId, Hotkey>>
 
 const WINDOW_IDS = IDS.filter((id): id is keyof typeof EVENTS => id in EVENTS)

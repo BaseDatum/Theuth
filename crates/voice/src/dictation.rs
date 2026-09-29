@@ -35,6 +35,24 @@ const POLL: Duration = Duration::from_millis(50);
 #[derive(Clone, Copy, Debug)]
 pub struct Prewarm;
 
+/// Take the resident [`Utterer`] (76 §0.10): a talk drives it instead of a
+/// dictation. Loads it first if it is not loaded (the [`Prewarm`] path).
+/// Errors: "already dictating" while a dictation runs, "talking" while
+/// already leased, a model load failure. Give it back with [`Return`].
+#[derive(Clone, Copy, Debug)]
+pub struct Lease;
+
+/// Hand the leased [`Utterer`] back; dictation works again. `None`: the
+/// model died under the lease — the slot is freed and the model reloads on
+/// the next `Lease`/`StartDictation`, as after a dictation's own failure.
+pub struct Return(pub Option<Box<Utterer>>);
+
+/// An asker parked until the load finishes.
+enum Waiter {
+    Start(AudioSource, ReplySender<Result<DictationId, String>>),
+    Lease(ReplySender<Result<Box<Utterer>, String>>),
+}
+
 /// Where a dictation's audio comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -148,10 +166,12 @@ pub struct Dictation {
     /// A dictation stops itself after this long.
     max: Duration,
     model: ModelState,
-    /// `None` while loading or while a dictation task owns it.
+    /// `None` while loading, while a dictation task owns it, or while leased.
     engine: Option<Engine>,
-    /// `StartDictation` askers parked until the load finishes, each with its source.
-    waiters: Vec<(AudioSource, ReplySender<Result<DictationId, String>>)>,
+    /// A talk holds the engine ([`Lease`]); `StartDictation` answers "talking".
+    leased: bool,
+    /// Askers parked until the load finishes.
+    waiters: Vec<Waiter>,
     active: Option<Running>,
 }
 
@@ -163,6 +183,7 @@ impl Dictation {
             max,
             model: ModelState::Missing,
             engine: None,
+            leased: false,
             waiters: Vec::new(),
             active: None,
         }
@@ -199,6 +220,9 @@ impl Dictation {
     fn begin(&mut self, me: ActorRef<Self>, source: AudioSource) -> Result<DictationId, String> {
         if self.active.is_some() {
             return Err("already dictating".into());
+        }
+        if self.leased {
+            return Err("talking".into());
         }
         let Some(mut engine) = self.engine.take() else {
             return Err("dictation model not loaded".into());
@@ -272,6 +296,22 @@ impl Dictation {
         });
         Ok(id)
     }
+
+    /// Hand the engine to a talk, if nothing else holds it.
+    fn lease(&mut self) -> Result<Box<Utterer>, String> {
+        if self.active.is_some() {
+            return Err("already dictating".into());
+        }
+        if self.leased {
+            return Err("talking".into());
+        }
+        let engine = self
+            .engine
+            .take()
+            .ok_or_else(|| String::from("dictation model not loaded"))?;
+        self.leased = true;
+        Ok(Box::new(engine))
+    }
 }
 
 impl Message<Prewarm> for Dictation {
@@ -298,13 +338,41 @@ impl Message<StartDictation> for Dictation {
             tx.send(Err(e));
         } else if self.active.is_some() {
             tx.send(Err("already dictating".into()));
+        } else if self.leased {
+            tx.send(Err("talking".into()));
         } else if self.model == ModelState::Ready {
             tx.send(self.begin(me, m.source));
         } else {
             self.load(me).await;
-            self.waiters.push((m.source, tx));
+            self.waiters.push(Waiter::Start(m.source, tx));
         }
         reply
+    }
+}
+
+impl Message<Lease> for Dictation {
+    type Reply = DelegatedReply<Result<Box<Utterer>, String>>;
+    async fn handle(&mut self, _: Lease, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if self.active.is_some() || self.leased || self.model == ModelState::Ready {
+            tx.send(self.lease());
+        } else {
+            self.load(ctx.actor_ref().clone()).await;
+            self.waiters.push(Waiter::Lease(tx));
+        }
+        reply
+    }
+}
+
+impl Message<Return> for Dictation {
+    type Reply = ();
+    async fn handle(&mut self, m: Return, _: &mut Context<Self, Self::Reply>) {
+        self.leased = false;
+        match m.0 {
+            Some(e) => self.engine = Some(*e),
+            None => self.set_model(ModelState::Missing).await,
+        }
     }
 }
 
@@ -379,15 +447,21 @@ impl Message<Loaded> for Dictation {
                 self.engine = Some(engine);
                 self.set_model(ModelState::Ready).await;
                 let me = ctx.actor_ref().clone();
-                // The first waiter gets the slot; the rest hear "already dictating".
-                for (source, tx) in std::mem::take(&mut self.waiters) {
-                    tx.send(self.begin(me.clone(), source));
+                // The first waiter gets the slot; the rest hear "already dictating" / "talking".
+                for w in std::mem::take(&mut self.waiters) {
+                    match w {
+                        Waiter::Start(source, tx) => tx.send(self.begin(me.clone(), source)),
+                        Waiter::Lease(tx) => tx.send(self.lease()),
+                    }
                 }
             }
             Err(message) => {
                 tracing::warn!("voice: dictation model: {message}");
-                for (_, tx) in self.waiters.drain(..) {
-                    tx.send(Err(message.clone()));
+                for w in self.waiters.drain(..) {
+                    match w {
+                        Waiter::Start(_, tx) => tx.send(Err(message.clone())),
+                        Waiter::Lease(tx) => tx.send(Err(message.clone())),
+                    }
                 }
                 let state = if self.dir.is_dir() {
                     ModelState::Failed { message }
@@ -603,6 +677,50 @@ mod tests {
             other => panic!("expected a handler error, got {other:?}"),
         };
         assert!(err.contains("multiple of 50"), "{err}");
+        assert_eq!(
+            actor.ask(DictationStatus).await.expect("ask").model,
+            ModelState::Missing
+        );
+    }
+
+    fn handler_err<T, M>(r: Result<T, kameo::error::SendError<M, String>>) -> String {
+        match r {
+            Err(kameo::error::SendError::HandlerError(e)) => e,
+            Err(_) => panic!("expected a handler error, got a send error"),
+            Ok(_) => panic!("expected a handler error, got Ok"),
+        }
+    }
+
+    /// 76 §10 step 4: while the engine is leased, `StartDictation` and a
+    /// second `Lease` answer "talking", `Prewarm` is a no-op `Ready`, and a
+    /// `Return` makes dictation reachable again (the mic is what fails then).
+    #[tokio::test]
+    async fn leased_engine_refuses_dictation() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let mut d = Dictation::new(
+            rt,
+            std::env::temp_dir().join("theuth-no-such-dictation-model"),
+            Duration::from_secs(1),
+        );
+        d.model = ModelState::Ready;
+        d.leased = true;
+        let actor = Dictation::spawn(d);
+        let start = StartDictation {
+            source: AudioSource::Mic,
+        };
+        assert_eq!(handler_err(actor.ask(start).await), "talking");
+        assert_eq!(handler_err(actor.ask(Lease).await), "talking");
+        assert_eq!(actor.ask(Prewarm).await.expect("ask"), ModelState::Ready);
+    }
+
+    /// No model on disk: `Lease` parks behind the load and fails with its error.
+    #[tokio::test]
+    async fn lease_needs_the_model() {
+        let dir = std::env::temp_dir().join("theuth-no-such-dictation-model");
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let actor = Dictation::spawn(Dictation::new(rt, dir.clone(), Duration::from_secs(1)));
+        let err = handler_err(actor.ask(Lease).await);
+        assert!(err.contains(&dir.display().to_string()), "{err}");
         assert_eq!(
             actor.ask(DictationStatus).await.expect("ask").model,
             ModelState::Missing

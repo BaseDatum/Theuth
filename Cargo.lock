@@ -11124,7 +11124,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "coreaudio-rs",
  "decision",
  "document",
  "figment",
@@ -16031,6 +16030,7 @@ dependencies = [
  "signal",
  "slack",
  "surface",
+ "talk",
  "tasks",
  "tempfile",
  "tokio",
@@ -19396,6 +19396,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "talk"
+version = "2.1.2"
+dependencies = [
+ "agent",
+ "anyhow",
+ "async-trait",
+ "kameo",
+ "markdown",
+ "runtime",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tools",
+ "tracing",
+ "ts-rs",
+ "uuid",
+ "voice",
+]
+
+[[package]]
 name = "tao"
 version = "0.35.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20112,6 +20133,7 @@ dependencies = [
  "signal",
  "slack",
  "surface",
+ "talk",
  "tasks",
  "tokio",
  "tools",
@@ -21131,6 +21153,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "surface",
+ "talk",
  "tasks",
  "tokio",
  "tools",
@@ -22585,6 +22608,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "coreaudio-rs",
+ "cpal",
  "figment",
  "flexaudio",
  "kameo",

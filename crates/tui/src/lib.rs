@@ -41,6 +41,7 @@ pub mod dictation;
 pub mod model;
 pub mod pathac;
 pub mod search;
+pub mod talk;
 mod ui;
 
 use model::{Command, LoginRow, Model, UiEvent};
@@ -117,6 +118,7 @@ impl runtime::Plugin for TuiPlugin {
         rt.subscribe::<Bridge, agent::PeerDelivered>(&bridge).await;
         rt.subscribe::<Bridge, a2a::A2aChanged>(&bridge).await;
         rt.subscribe::<Bridge, voice::VoiceEvent>(&bridge).await;
+        rt.subscribe::<Bridge, ::talk::TalkEvent>(&bridge).await;
         let api: Api = Arc::new(RwLock::new(Arc::new(match &self.attached {
             Some(a) => Engine::Remote(a.client.clone()),
             None => Engine::Local(Local::new(rt.clone())),
@@ -222,6 +224,7 @@ forward!(
     agent::PeerDelivered => PeerDelivered,
     a2a::A2aChanged => A2aChanged,
     voice::VoiceEvent => Voice,
+    ::talk::TalkEvent => Talk,
 );
 
 /// Attached mode's supervisor (63 §2.3 Disconnect): when the socket closes,
@@ -958,9 +961,67 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.dictation_stop(id).await)?;
             return Ok(());
         }
+        Command::TalkStart(session) => start_talk(api, session, tx).await,
+        Command::TalkStop(id) if talk_sim() => UiEvent::Talk(::talk::TalkEvent::TalkFinished {
+            id,
+            reason: ::talk::EndReason::Stopped,
+        }),
+        Command::TalkStop(id) => {
+            msg(api.talk_stop(id).await)?;
+            return Ok(());
+        }
     };
     let _ = tx.send(reply);
     Ok(())
+}
+
+/// `/talk` (76 §5.1): with no session, create one first — the model adopts it
+/// through `SessionOpened` before the talk id arrives — then `talk_start` with
+/// `sink: device`. `THEUTH_TALK_SIM` set: the scripted [`talk::sim`] stands in
+/// for the engine (the brief's development source).
+async fn start_talk(
+    api: &Engine,
+    session: Option<SessionId>,
+    tx: &UnboundedSender<UiEvent>,
+) -> UiEvent {
+    let session = match session {
+        Some(s) => s,
+        None => match api
+            .create_session(agent::CreateSessionOptions::default())
+            .await
+        {
+            Ok(open) => {
+                let s = open.session;
+                let _ = tx.send(UiEvent::SessionOpened(open));
+                s
+            }
+            Err(e) => return UiEvent::TalkFailed(reason(e)),
+        },
+    };
+    if talk_sim() {
+        let id = ::talk::TalkId::new();
+        tokio::spawn(run_talk_sim(id, session, tx.clone()));
+        return UiEvent::TalkStarting(id);
+    }
+    match api.talk_start(session, ::talk::Sink::Device, None).await {
+        Ok(id) => UiEvent::TalkStarting(id),
+        Err(e) => UiEvent::TalkFailed(reason(e)),
+    }
+}
+
+/// `THEUTH_TALK_SIM` set: `/talk` plays [`talk::sim`] instead of calling the engine.
+fn talk_sim() -> bool {
+    std::env::var_os("THEUTH_TALK_SIM").is_some()
+}
+
+/// Feed the scripted talk into the UI at its own pace; stops when the UI is gone.
+async fn run_talk_sim(id: ::talk::TalkId, session: SessionId, tx: UnboundedSender<UiEvent>) {
+    for (ms, ev) in talk::sim(id, session) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        if tx.send(ev).is_err() {
+            return;
+        }
+    }
 }
 
 /// One `/search` request against the API (49 §6–7). Failures are the reply's
@@ -1774,8 +1835,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             }
         ),
         // No editor in print mode: nothing to dictate into.
-        UiEvent::Voice(_) | UiEvent::DictationStarting(_) => Ok(()),
+        UiEvent::Voice(_)
+        | UiEvent::Talk(_)
+        | UiEvent::DictationStarting(_)
+        | UiEvent::TalkStarting(_) => Ok(()),
         UiEvent::DictationFailed(m) => writeln!(out, "dictation: {m}"),
+        UiEvent::TalkFailed(m) => writeln!(out, "talk: {m}"),
         // Stderr: `-p` output stays the reply alone.
         UiEvent::Engine(Some(label)) => {
             eprintln!("{label}");

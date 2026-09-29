@@ -37,8 +37,8 @@ const active = new Set<AudioBufferSourceNode>()
 /** Utterance whose every packet is published (`SpeechFinished { done }`); it ends when `active` drains. */
 let done: string | null = null
 
-/** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2). */
-export type Use = 'speak' | 'dictate' | 'record'
+/** Who holds the audio session: read-aloud, a dictation's mic tap (54 §4.5), a voice-note recording (45 §7.2), a talk's mic tap (76 §5.3). */
+export type Use = 'speak' | 'dictate' | 'record' | 'talk'
 const uses = new Set<Use>()
 
 /**
@@ -51,7 +51,7 @@ function session(): void {
   const nav = navigator as Navigator & { audioSession?: { type: string } }
   if (!nav.audioSession) return
   nav.audioSession.type =
-    uses.has('dictate') || uses.has('record') ? 'play-and-record' : uses.has('speak') ? 'playback' : 'auto'
+    uses.has('dictate') || uses.has('record') || uses.has('talk') ? 'play-and-record' : uses.has('speak') ? 'playback' : 'auto'
 }
 
 /**
@@ -105,14 +105,34 @@ export function prime(sampleRate = SAMPLE_RATE): void {
 export function start(speech: string, sampleRate: number): void {
   unlock('speak')
   cut()
+  begin(speech, sampleRate)
+}
+
+/**
+ * Begin utterance `speech` behind whatever is still scheduled (76 §0.4: a talk's sentences are queued, each its
+ * own id, published back-to-back): no cut, `next` carries over, so the join is gapless.
+ */
+function startQueued(speech: string, sampleRate: number): void {
+  unlock('speak')
+  begin(speech, sampleRate)
+}
+
+function begin(speech: string, sampleRate: number): void {
   id = speech
   rate = sampleRate
+  played = -1
   dec?.free()
   dec = new OpusDecoder({ channels: 1, sampleRate: sampleRate as OpusDecoderSampleRate })
 }
 
-/** Decode one base64 Opus packet of `speech` and schedule it after the previous one; ignored for a retired id. */
-export function push(speech: string, b64: string): void {
+/** Highest `seq` of the current utterance whose packet has finished playing; `-1` before the first. */
+let played = -1
+
+/** `talk_audio`'s `played_seq`: the heard prefix of the current utterance on this client (76 §4.6), `null` when none. */
+export const playedSeq = (): number | null => (played < 0 ? null : played)
+
+/** Decode one base64 Opus packet (`seq` within `speech`) and schedule it after the previous one; ignored for a retired id. */
+export function push(speech: string, b64: string, seq = -1): void {
   const d = dec
   if (!d || speech !== id) return
   // `ready` is the wasm instantiation (ms; cached after the first utterance). `.then` on a settled
@@ -134,6 +154,7 @@ export function push(speech: string, b64: string): void {
     active.add(src)
     src.onended = () => {
       active.delete(src)
+      if (id === speech && seq > played) played = seq
       drain()
     }
   })
@@ -197,6 +218,18 @@ const mine = new Set<string>()
 let inflight = 0
 /** A `SpeechStarted` that arrived while a `speak` reply was in flight: held until the id is claimed. */
 let held: { id: string; sampleRate: number; packets: string[] } | null = null
+/**
+ * Session whose speech this client plays for a talk it started with `sink: client` (76 §5.3); `null` otherwise.
+ * Its `client`-sink utterances are claimed on `SpeechStarted` by session, ahead of any `Saying`, and queued gaplessly;
+ * a `device` one on the same session (a talk on the daemon's speaker) is not this client's to play.
+ */
+let talkSession: string | null = null
+
+/** Enter (`session`) or leave (`null`) talk playback; leaving cuts and frees the decoder. `Flush` mid-talk is `stop()`. */
+export function setTalk(session: string | null): void {
+  talkSession = session
+  if (session === null) stop()
+}
 
 /** `speak` over RPC, claiming the returned id for playback here; `entry` is the assistant entry it reads. */
 export async function speak(api: Api, session: string, entry: string, text: string): Promise<void> {
@@ -304,10 +337,13 @@ export function installSpeechListeners(): () => void {
     on('VoiceModel', (e) => onModel(e.state)),
     on('SpeechStarted', (e) => {
       if (mine.has(e.id)) start(e.id, e.sample_rate)
-      else if (inflight > 0) held = { id: e.id, sampleRate: e.sample_rate, packets: [] }
+      else if (talkSession !== null && e.session === talkSession && e.sink === 'client') {
+        mine.add(e.id)
+        startQueued(e.id, e.sample_rate)
+      } else if (inflight > 0) held = { id: e.id, sampleRate: e.sample_rate, packets: [] }
     }),
     on('SpeechAudio', (e) => {
-      if (mine.has(e.id)) push(e.id, e.opus)
+      if (mine.has(e.id)) push(e.id, e.opus, e.seq)
       else if (held?.id === e.id) held.packets.push(e.opus)
     }),
     on('SpeechFinished', (e) => {

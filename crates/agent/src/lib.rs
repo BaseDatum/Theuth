@@ -3,7 +3,7 @@
 //! message to sqlite; publishes [`AgentEvent`] for any UI.
 //!
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
-//!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`Compact`],
+//!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`TrimAssistant`], [`Compact`],
 //!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`SetVisionModel`], [`GetVisionModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
 //!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
@@ -243,6 +243,22 @@ pub struct EditTurn {
     pub files: Vec<PathBuf>,
 }
 
+/// `ask` → `Result<(), String>`: the reply of the turn opened at `turn` had
+/// already finished when the user cut in (design doc 76 §7, the post-turn
+/// case): replace the text of that turn's last assistant message with
+/// `keep`, the plain text the user heard; empty `keep` deletes the message.
+/// Tool messages stay. A `ContextChanged { reason: "trim" }` follows.
+/// `Err("turn in flight" | "not a user row" | "no assistant row")`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrimAssistant {
+    /// Target session.
+    pub session: SessionId,
+    /// Seq of the user row that opens the turn (`TurnStarted.turn_seq`).
+    pub turn: i64,
+    /// What the user heard of the reply.
+    pub keep: String,
+}
+
 /// `ask` → `Result<SessionId, String>`: new session with a copy of the
 /// conversation through the turn opened at `through` (all visible turns when
 /// `None`); the source is only read (design doc 29 §4.3).
@@ -260,10 +276,18 @@ pub struct ForkSession {
 
 /// `ask` → `()`. Abort the in-flight turn of `session` and of every running
 /// descendant (design doc 19 §2.3); each emits `TurnFinished { stop_reason: "cancelled" }`.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+///
+/// `keep` (design doc 76 §7): plain text of the reply the user has already
+/// received (a spoken prefix). When the target session's cancel lands inside a
+/// model stream, the loop persists it as the round's assistant message and
+/// that turn finishes with `stop_reason: "interrupted"`; nothing else is
+/// added. `None` drops the streamed text as ever. Descendants never keep.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cancel {
     /// Target session.
     pub session: SessionId,
+    /// What the user already received of the in-flight reply; `None` = drop it.
+    pub keep: Option<String>,
 }
 
 /// Answer a pending `ask_user`: one answer per question, or
@@ -281,7 +305,10 @@ pub async fn answer_ask(
     if let Some(session) = session.filter(|_| dismissed) {
         ActorRef::<Agents>::lookup(AGENT_ACTOR)?
             .ok_or_else(|| anyhow::anyhow!("agent actor is not running"))?
-            .ask(Cancel { session })
+            .ask(Cancel {
+                session,
+                keep: None,
+            })
             .await?;
     }
     Ok(session.is_some())
@@ -1869,7 +1896,7 @@ pub enum AgentEvent {
         session: SessionId,
         /// Committed session revision (decimal string).
         revision: String,
-        /// `"context_edit"`, `"settled"` or `"rewind"`.
+        /// `"context_edit"`, `"settled"`, `"rewind"` or `"trim"`.
         reason: String,
     },
     /// The session's canonical plan changed (47 §5.1): a native `todo`

@@ -40,6 +40,7 @@ update = { workspace = true }
 artifact = { workspace = true }
 app = { workspace = true }
 voice = { workspace = true }
+talk = { workspace = true }
 decision = { workspace = true }
 models = { workspace = true }  # `models.accelerator` + `--bench-models` (58 step 12)
 chrono = { workspace = true }  # --decision-export --since

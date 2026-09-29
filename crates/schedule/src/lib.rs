@@ -1426,12 +1426,12 @@ async fn cancel_tree(
     name: &str,
 ) -> Result<(), String> {
     for child in live_children(agents, session).await {
-        if let Err(e) = agents.ask(agent::Cancel { session: child }).await {
+        if let Err(e) = agents.ask(agent::Cancel { session: child, keep: None }).await {
             tracing::warn!(%name, %child, "cancel of subagent failed: {e}");
         }
     }
     agents
-        .ask(agent::Cancel { session })
+        .ask(agent::Cancel { session, keep: None })
         .await
         .map_err(|e| e.to_string())
 }

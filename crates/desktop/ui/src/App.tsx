@@ -20,6 +20,7 @@ import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import { installSpeechListeners } from '@/lib/speech'
+import * as talk from '@/lib/talk'
 import {
   connection,
   isIsland,
@@ -85,6 +86,8 @@ function loadInfo(st: Stores, api: Api): Promise<void> {
     if (useEngines.getState().engines.find((h) => h.id === st.id)?.kind === 'mesh') void api.mesh_status().then((s) => applyMeshStatus(st.id, s)).catch(() => undefined)
     void api.dictation_prewarm().then(setModel, (e: unknown) => setModel({ state: 'failed', message: e instanceof Error ? e.message : String(e) }))
     void refreshStatus(api).catch(() => undefined)
+    // 76 §5.2: a talk another window (or this one before a reload) runs shows its live dot and orb here too.
+    void talk.refreshStatus(api).catch(() => undefined)
     // 03 §0.4: the meeting's state, topics and brief stack; disabled meetings leave it empty.
     void hydrateMeeting(api).catch(() => undefined)
   })
@@ -381,6 +384,7 @@ export function App() {
   useEffect(watchNodes, [])
   useEffect(installSpeechListeners, [])
   useEffect(() => (ISLAND ? undefined : installDictationListeners()), [])
+  useEffect(() => (ISLAND ? undefined : talk.installTalkListeners()), [])
   useEffect(installMeetingListeners, [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {

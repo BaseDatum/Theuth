@@ -87,7 +87,8 @@ async function utter(id: string, n: number): Promise<void> {
 }
 
 beforeEach(async () => {
-  for (const u of ['speak', 'dictate', 'record'] as const) await speech.release(u)
+  for (const u of ['speak', 'dictate', 'record', 'talk'] as const) await speech.release(u)
+  speech.setTalk(null)
   speech.setSpeaking(null)
   calls.length = 0
   sources.length = 0
@@ -198,4 +199,45 @@ test('the last holder out stops leftover sources before suspending', async () =>
   await speech.release('dictate')
   expect(sources[0]!.stopped).toBe(true)
   expect(calls.slice(-2)).toEqual(['stop', 'suspend'])
+})
+
+test("a client-sink talk claims its session's utterances and queues them gaplessly; played_seq follows what ended", async () => {
+  speech.unlock('talk')
+  speech.setTalk('sess')
+  expect(audioSession.type).toBe('play-and-record')
+  emit('SpeechStarted', { id: 'a', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'a', session: 'sess', seq: 0, opus: 'AA==' })
+  emit('SpeechAudio', { id: 'a', session: 'sess', seq: 1, opus: 'AA==' })
+  await settle()
+  expect(sources).toHaveLength(2)
+  expect(speech.playedSeq()).toBeNull()
+  sources[0]!.onended?.()
+  expect(speech.playedSeq()).toBe(0)
+  // The next sentence starts while the first's tail is still scheduled: nothing is cut.
+  emit('SpeechFinished', { id: 'a', session: 'sess', reason: { reason: 'done' } })
+  emit('SpeechStarted', { id: 'b', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'b', session: 'sess', seq: 0, opus: 'AA==' })
+  await settle()
+  expect(sources[1]!.stopped).toBe(false)
+  expect(sources).toHaveLength(3)
+  // A late `onended` of the previous utterance does not count towards the current one.
+  sources[1]!.onended?.()
+  expect(speech.playedSeq()).toBeNull()
+  // Another session's speech is not ours; nor is a device-sink utterance on our session.
+  emit('SpeechStarted', { id: 'z', session: 'other', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'z', session: 'other', seq: 0, opus: 'AA==' })
+  emit('SpeechStarted', { id: 'd', session: 'sess', sink: 'device', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'd', session: 'sess', seq: 0, opus: 'AA==' })
+  await settle()
+  expect(sources).toHaveLength(3)
+  // `Flush` = stop: everything scheduled is cut, the decoder freed; the talk leg stays claimed.
+  speech.stop()
+  expect(sources[2]!.stopped).toBe(true)
+  emit('SpeechStarted', { id: 'c', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'c', session: 'sess', seq: 0, opus: 'AA==' })
+  await settle()
+  expect(sources).toHaveLength(4)
+  speech.setTalk(null)
+  await speech.release('talk')
+  expect(audioSession.type).toBe('auto')
 })

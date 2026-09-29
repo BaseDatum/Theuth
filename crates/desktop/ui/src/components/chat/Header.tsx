@@ -12,7 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
 import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -153,12 +153,15 @@ export function Header({
   onDraftEffort,
   first = true,
   onClose,
+  popout,
 }: {
   session: string | null
   draftEffort?: string | null
   onDraftEffort?(effort: string | null): void
   first?: boolean
   onClose?(): void
+  /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`). */
+  popout?: PopoutTarget
 }) {
   const api = useApi()
   const { open, isMobile } = useSidebar()
@@ -277,19 +280,17 @@ export function Header({
           ))}
         </HeaderMenu>
       ),
-    popout: (mode) =>
-      !session ? null : mode === 'row' ? (
-        <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout({ kind: 'chat', session })} />
+    popout: (mode) => {
+      if (!session) return null
+      const target = popout ?? { kind: 'chat', session }
+      return mode === 'row' ? (
+        <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout(target)} />
       ) : (
-        <Button
-          variant="ghost"
-          className="size-9 rounded-lg text-fg-secondary"
-          aria-label="Open in new window"
-          onClick={() => void openPopout({ kind: 'chat', session })}
-        >
+        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={() => void openPopout(target)}>
           <AppWindow className="size-5" />
         </Button>
-      ),
+      )
+    },
     menu: () => (session ? <SessionMenu session={session} /> : null),
     close: () =>
       onClose ? (

@@ -23,6 +23,7 @@ import type { SecretsEvent } from '@/rpc/bindings/SecretsEvent'
 import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
+import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
 import type {
   AppCallChanged,
   ArtifactShown,
@@ -76,6 +77,8 @@ export type WireEvent =
   | ArtifactShown
   | ScrapeProgress
   | VoiceEvent
+  /** 76 §4.9: the live talk — state, subtitles, the remote sink's `Flush`. */
+  | TalkEvent
   /** 53: one stream for the island and the control center; every variant carries `meeting`. */
   | MeetingEvent
   /** 05 §0.8: the brief cache changed; the one meeting stream without a `meeting`. */

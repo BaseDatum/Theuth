@@ -644,6 +644,20 @@ agent:
 #   stt_idle_secs: 600       # unload the speech-to-text model after this long unused; 0 keeps it resident
 #   dictation_model_dir: ~   # nemotron-speech-streaming-en ONNX dir (encoder.onnx, decoder_joint.onnx, tokenizer.model); default <data_dir>/models/nemotron-streaming-en
 #   dictation_max_secs: 300  # a running dictation stops itself here (design doc 54)
+#   player_buffer_ms: 200    # the daemon speaker's ring: how far ahead of playback synthesis may run (design doc 76)
+#   player_device: ~         # output device by name for the daemon speaker; default the system output
+
+# talk:                      # a live, interruptible spoken conversation with one session (design doc 76): STT and TTS local
+#   enabled: true            # false: no actor, `talk_*` answers \"talk is disabled\"
+#   barge_in_min_ms: 400     # stage 1: the gate stays open this long before playback pauses (Holding)
+#   decide_ms: 900           # stage 2 fallback: a barge-in with no transcript yet commits this long after onset (raise if the STT lands later)
+#   end_of_turn_ms: 700      # the turn commits this long after an utterance closes without terminal punctuation
+#   end_of_turn_punct_ms: 250  # the same, when the utterance ends in . ? !
+#   hold: pause              # pause | none — whether stage 1 pauses the player while the barge-in classifier decides
+#   backchannels: [yeah, yep, yes, mhm, mm, mm-hmm, uh-huh, ok, okay, right, sure, hm, hmm, i see, got it]  # said alone: an acknowledgement, not a cut-in
+#   echo_ratio: 0.8          # a candidate that fuzzy-prefixes (Levenshtein ratio ≥ this) the agent's last 2 s of speech is echo
+#   aec: prefer              # prefer | off — VoiceProcessingIO on macOS when prefer; off = plain mic, for measurements
+#   turn_model: none         # none | smart-turn — end-of-turn model (refused until <data_dir>/models/smart-turn exists)
 
 # meeting:                   # record a meeting: the meeting app's audio + the mic as Opus tracks, live briefs from the notch (design doc 53); macOS 15
 #   enabled: true            # false: no actor, `meeting_*` answers \"meetings are disabled\"
@@ -1188,6 +1202,7 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(a2a::A2aPlugin),
         Box::new(update::UpdatePlugin),
         Box::new(voice::VoicePlugin),
+        Box::new(talk::TalkPlugin),
         Box::new(decision::DecisionPlugin),
     ];
     // 58 §6.1: capture backends per OS; `MeetingStatus.supported` says what this host can do.
@@ -1201,7 +1216,9 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
 /// participant whose plugin runs here (each plugin honours its own
 /// `<section>.enabled`, default on). Jobs is registry-internal.
 async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::Result<()> {
-    let owners: Vec<&'static str> = ["artifact", "app", "browser", "computer", "voice", "routes"]
+    let owners: Vec<&'static str> = [
+        "artifact", "app", "browser", "computer", "voice", "talk", "routes",
+    ]
         .into_iter()
         .filter(|name| {
             rt.config

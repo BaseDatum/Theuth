@@ -131,6 +131,9 @@ import type { JsonValue } from '@/rpc/bindings/serde_json/JsonValue'
 import type { AwsProfiles } from '@/rpc/bindings/AwsProfiles'
 import type { CloseResult } from '@/rpc/bindings/CloseResult'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { Sink } from '@/rpc/bindings/Sink'
+import type { TalkId } from '@/rpc/bindings/TalkId'
+import type { TalkState } from '@/rpc/bindings/TalkState'
 import type { PtyScreenReply } from '@/rpc/bindings/PtyScreenReply'
 import type { PtyViewport } from '@/rpc/bindings/PtyViewport'
 import type { Key } from '@/rpc/bindings/Key'
@@ -715,6 +718,14 @@ export interface Api {
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
+  /** Start a talk on `session` (76 §5.1). Local peers pass `device`/`null`; a relay peer must pass `client` and its mic rate and streams PCM via `talk_audio`. One per daemon: rejects with `already talking`. */
+  talk_start(session: SessionId, sink: Sink, sample_rate: number | null): Promise<TalkId>
+  /** Stop talk `id`; `TalkFinished` follows. Idempotent. */
+  talk_stop(id: TalkId): Promise<null>
+  /** Push mono LE i16 PCM (base64) at the rate given to `talk_start`; `played_seq` = highest `seq` of the current utterance this client has finished playing (76 §4.6). */
+  talk_audio(id: TalkId, pcm: string, played_seq: number | null): Promise<null>
+  /** The running talk (if any) and the STT model state. */
+  talk_status(): Promise<TalkState>
   /** Transcribe an audio file stored by `put_attachment` (45 §7.1); `-32001` when the voice plugin is disabled, a message when the STT model is missing. */
   transcribe(path: string): Promise<Transcript>
   undo(session: SessionId): Promise<string>
@@ -1006,6 +1017,10 @@ export const METHODS = [
   'subagent_model',
   'sync_mcp',
   'sync_skills',
+  'talk_audio',
+  'talk_start',
+  'talk_status',
+  'talk_stop',
   'task_blocks',
   'task_comment',
   'task_create',

@@ -242,6 +242,13 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         }
         return;
     }
+    // A tagged struct with no fields accepts *any* object: serde does not check
+    // the tag on structs, so `A2aChanged {}` would swallow every event listed
+    // after it (voice, talk, meeting, …). Match it by tag alone.
+    if v["type"] == "A2aChanged" {
+        rt.publish(a2a::A2aChanged {}).await;
+        return;
+    }
     macro_rules! republish {
         ($($t:ty),* $(,)?) => {$(
             if let Ok(ev) = <$t as serde::Deserialize>::deserialize(v) {
@@ -263,7 +270,6 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         agent::CommunicationChanged,
         agent::PeerMessageChanged,
         agent::PeerDelivered,
-        a2a::A2aChanged,
         signal::SignalEvent,
         slack::SlackEvent,
         knowledge::KnowledgeChanged,
@@ -276,6 +282,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         secrets::SecretsEvent,
         update::UpdateReady,
         voice::VoiceEvent,
+        talk::TalkEvent,
         meeting::MeetingEvent,
         meeting::BriefEvent,
         app::AppCallChanged,

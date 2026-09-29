@@ -3,7 +3,7 @@ name = "voice"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Read replies aloud: Pocket TTS in-process, Opus packets streamed to the frontend (design doc 43); voice notes in, MP3 clips out (design doc 45)"
+description = "Read replies aloud: Pocket TTS in-process, Opus packets streamed to the frontend (design doc 43); voice notes in, MP3 clips out (design doc 45); the daemon's mic, speaker and echo-cancelled capture (design docs 54, 76)"
 
 [dependencies]
 runtime = { workspace = true }
@@ -30,8 +30,13 @@ rubato = { workspace = true }
 mp3lame-encoder = { workspace = true }
 parking_lot = { workspace = true }
 flexaudio = { workspace = true }
+cpal = { workspace = true }
 wavekat-vad = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+
+# 76 §0.5: Apple's VoiceProcessingIO mic unit (AEC + AGC + NS), moved here from the meeting crate.
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]

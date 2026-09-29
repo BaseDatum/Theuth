@@ -226,7 +226,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         }
         "/cancel" if arg.is_empty() => {
             let session = cx.session.context(NO_SESSION)?;
-            agent()?.ask(agent::Cancel { session }).await.map_err(err)?;
+            agent()?.ask(agent::Cancel { session, keep: None }).await.map_err(err)?;
             text("cancelled".into())
         }
         "/cancel" => {
@@ -242,7 +242,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             match hits.as_slice() {
                 [a] => {
                     agent()?
-                        .ask(agent::Cancel { session: a.id })
+                        .ask(agent::Cancel { session: a.id, keep: None })
                         .await
                         .map_err(err)?;
                     text(format!("cancelled {arg}"))

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react from '@vitejs/plugin-react'
+import typegpu from 'unplugin-typegpu/vite'
 import { type Plugin, normalizePath, searchForWorkspaceRoot } from 'vite'
 import { defineConfig } from 'vitest/config'
 
@@ -61,7 +62,16 @@ const documentsDeps = (): Plugin => ({
 
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version) },
-  plugins: [openui(), documentsDeps(), tanstackRouter({ target: 'react', autoCodeSplitting: true }), react(), tailwindcss()],
+  plugins: [
+    openui(),
+    documentsDeps(),
+    tanstackRouter({ target: 'react', autoCodeSplitting: true }),
+    react(),
+    tailwindcss(),
+    // The talk orb's shaders (76 §0.12, `@shadercn/orb-20`): every `'use gpu'` body needs the TypeGPU transform or
+    // it fails at resolve time with "Missing metadata for tgpu.fn function body". Shader code lives in `.ts` only.
+    typegpu({ include: [/\/components\/orbs\/.*\.ts$/, /\/lib\/shader\.ts$/] }),
+  ],
   resolve: {
     alias: [
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },

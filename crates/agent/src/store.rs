@@ -1660,6 +1660,74 @@ impl Store {
         Ok(())
     }
 
+    /// 76 §7, the post-turn cut: the reply of the visible turn whose first
+    /// row is `turn` (`TurnStarted.turn_seq`; a user row — after a cancelled
+    /// turn that left no reply it is not a turn *start* in the store's sense,
+    /// so any user row counts) had finished streaming when the user cut in:
+    /// its last assistant row before the next turn start is replaced by the
+    /// heard prefix `keep` (empty: the row is deleted). Tool rows stay; a
+    /// removal mask on the rewritten row goes with the body it masked. One
+    /// transaction with the revision bump. Returns the new revision, how many
+    /// assistant rows the turn had (more than one: tool calls ran after the
+    /// spoken narration and only the last row was trimmed) and the effective
+    /// frame, as [`Store::frame`] would. `Err("not a user row" | "no assistant row")`.
+    pub async fn trim_assistant(
+        &self,
+        id: SessionId,
+        turn: i64,
+        keep: &str,
+    ) -> anyhow::Result<(String, usize, u32, Option<ChatMessage>, Vec<(i64, ChatMessage)>)> {
+        let sid = id.to_string();
+        let mut tx = self.begin_write().await?;
+        let visible = rows_in(&mut tx, id, 0).await?;
+        let Some(at) = visible
+            .iter()
+            .position(|r| r.seq == turn && r.message.role == ChatRole::User)
+        else {
+            anyhow::bail!("not a user row");
+        };
+        let end = turn_starts(&visible)
+            .into_iter()
+            .find(|&i| i > at)
+            .unwrap_or(visible.len());
+        let assistants: Vec<i64> = visible[at..end]
+            .iter()
+            .filter(|r| r.message.role == ChatRole::Assistant && r.vision.is_none())
+            .map(|r| r.seq)
+            .collect();
+        let Some(&seq) = assistants.last() else {
+            anyhow::bail!("no assistant row");
+        };
+        if keep.trim().is_empty() {
+            sqlx::query("DELETE FROM messages WHERE session_id = ? AND seq = ?")
+                .bind(&sid)
+                .bind(seq)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let body = serde_json::to_string(&ChatMessage::assistant(keep))?;
+            sqlx::query(
+                "UPDATE messages SET body = ?, excluded = NULL WHERE session_id = ? AND seq = ?",
+            )
+            .bind(body)
+            .bind(&sid)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let (revision,): (i64,) = sqlx::query_as(
+            "UPDATE sessions SET context_revision = context_revision + 1 WHERE id = ? \
+             RETURNING context_revision",
+        )
+        .bind(&sid)
+        .fetch_one(&mut *tx)
+        .await?;
+        let active = active_in(&mut tx, id).await?;
+        tx.commit().await?;
+        let (head, tail) = active.effective();
+        Ok((revision.to_string(), assistants.len(), active.epoch, head, tail))
+    }
+
     /// New session with the source's title/model/effort/cwd and copies of the
     /// visible rows and epochs before the turn after `through` (all visible
     /// rows when `None`). With `reply`, the copy ends at the `reply`-th

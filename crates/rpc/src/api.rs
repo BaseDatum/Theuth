@@ -1194,6 +1194,38 @@ pub trait Api {
     /// relay peers.
     #[method(name = "dictation_status", with_extensions)]
     async fn dictation_status(&self) -> RpcResult<voice::DictationState>;
+    /// Start a live spoken conversation with `session` (76 §5.1); events arrive
+    /// as `TalkEvent` on `subscribe_events`. Local peers pass `sink: "device"`
+    /// and `sample_rate: null` (the daemon's speaker and mic); a relay peer must
+    /// pass `sink: "client"` and the rate of the mono i16 PCM it will push with
+    /// `talk_audio` — refused otherwise. One talk per daemon: a second start
+    /// answers `already talking`; `talk is disabled` when the plugin is off.
+    #[method(name = "talk_start", with_extensions)]
+    async fn talk_start(
+        &self,
+        session: SessionId,
+        sink: talk::Sink,
+        sample_rate: Option<u32>,
+    ) -> RpcResult<talk::TalkId>;
+    /// Stop talk `id`; `TalkFinished` follows as an event. Idempotent. Any
+    /// authenticated peer may stop, including a relay peer.
+    #[method(name = "talk_stop", with_extensions)]
+    async fn talk_stop(&self, id: talk::TalkId) -> RpcResult<()>;
+    /// Feed a `sink: "client"` talk (76 §5.3): `pcm` is base64 of little-endian
+    /// mono i16 samples at the rate given to `talk_start`, ~100 ms per call;
+    /// `played_seq` is the highest `SpeechAudio.seq` whose playback ended on
+    /// the client since the last call — the heard-prefix position.
+    #[method(name = "talk_audio", with_extensions)]
+    async fn talk_audio(
+        &self,
+        id: talk::TalkId,
+        pcm: String,
+        played_seq: Option<u32>,
+    ) -> RpcResult<()>;
+    /// The running talk, if any, and the streaming model's state (76 §5.1).
+    /// Open to relay peers.
+    #[method(name = "talk_status", with_extensions)]
+    async fn talk_status(&self) -> RpcResult<talk::TalkState>;
     /// Processes Core Audio knows about, the ones playing audio first (53, 01 §4.1):
     /// the picker for `meeting_start`. "meetings are disabled" when the plugin is off.
     #[method(name = "meeting_processes")]
@@ -1869,6 +1901,14 @@ fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
     })
 }
 
+/// The talk actor; absent when `talk.enabled: false` or the plugin is not loaded.
+fn talk() -> RpcResult<ActorRef<talk::Talk>> {
+    lookup::<talk::Talk>(talk::TALK_ACTOR).map_err(|e| match e.code() {
+        NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "talk is disabled", None::<()>),
+        _ => e,
+    })
+}
+
 /// The meeting actor; absent when `meeting.enabled: false`, off macOS, or the plugin is not loaded.
 fn meeting() -> RpcResult<ActorRef<meeting::Meeting>> {
     lookup::<meeting::Meeting>(meeting::MEETING_ACTOR).map_err(|e| match e.code() {
@@ -2376,7 +2416,7 @@ impl ApiServer for Server {
         if let Some(r) = forward::route(ext, session, "cancel", (session,)).await? {
             return Ok(r);
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session }).await
+        ask::<Agents, _>(agent::AGENT_ACTOR, Cancel { session, keep: None }).await
     }
 
     async fn list_jobs(&self, ext: &Extensions, session: SessionId) -> RpcResult<Vec<JobView>> {
@@ -4332,7 +4372,17 @@ impl ApiServer for Server {
         text: String,
     ) -> RpcResult<SpeechId> {
         self.authorize(ext, session).await?;
-        send(&voice()?, voice::Speak { session, text }).await
+        // 43's button: a replacing utterance the client plays (76 §0.3 keeps this exactly).
+        send(
+            &voice()?,
+            voice::Speak {
+                session,
+                text,
+                queue: false,
+                sink: voice::Sink::Client,
+            },
+        )
+        .await
     }
 
     async fn stop_speaking(&self, id: Option<SpeechId>) -> RpcResult<()> {
@@ -4415,6 +4465,85 @@ impl ApiServer for Server {
     async fn dictation_status(&self, ext: &Extensions) -> RpcResult<voice::DictationState> {
         peer(ext)?;
         send(&dictation()?, voice::DictationStatus).await
+    }
+
+    async fn talk_start(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        sink: talk::Sink,
+        sample_rate: Option<u32>,
+    ) -> RpcResult<talk::TalkId> {
+        let peer = peer(ext)?;
+        match (sink, sample_rate) {
+            (talk::Sink::Device, _) if peer.remote() => {
+                return Err(failed(
+                    "speaker and microphone are on the harness host; pass sink: client and sample_rate to stream audio",
+                ));
+            }
+            (talk::Sink::Client, None) => {
+                return Err(failed("sink: client needs sample_rate"));
+            }
+            _ => {}
+        }
+        let actor = talk()?;
+        let id = send(
+            &actor,
+            talk::StartTalk {
+                session,
+                sink,
+                sample_rate,
+            },
+        )
+        .await?;
+        // The talk is bound to the connection that started it (76 §0.10): a
+        // dropped connection must not hold the mic, the speaker or the slot.
+        tokio::spawn(async move {
+            peer.closed().await;
+            let _ = send(&actor, talk::StopTalk { id }).await;
+        });
+        Ok(id)
+    }
+
+    async fn talk_stop(&self, ext: &Extensions, id: talk::TalkId) -> RpcResult<()> {
+        peer(ext)?;
+        send(&talk()?, talk::StopTalk { id }).await
+    }
+
+    async fn talk_audio(
+        &self,
+        ext: &Extensions,
+        id: talk::TalkId,
+        pcm: String,
+        played_seq: Option<u32>,
+    ) -> RpcResult<()> {
+        peer(ext)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(pcm)
+            .map_err(|e| failed(format!("bad base64: {e}")))?;
+        if bytes.len() % 2 != 0 {
+            return Err(failed("pcm must be little-endian i16"));
+        }
+        let pcm = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        send(
+            &talk()?,
+            talk::PushAudio {
+                id,
+                pcm,
+                played_seq,
+            },
+        )
+        .await
+    }
+
+    async fn talk_status(&self, ext: &Extensions) -> RpcResult<talk::TalkState> {
+        peer(ext)?;
+        send(&talk()?, talk::TalkStatus).await
     }
 
     async fn meeting_processes(&self) -> RpcResult<Vec<meeting::ProcessInfo>> {
@@ -5485,6 +5614,42 @@ mod tests {
     #[tokio::test]
     async fn dictation_status_reaches_relay_peers() {
         let v = remote_dictation_call("dictation_status", "[]").await;
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+    }
+
+    /// The daemon's devices are out of a relay peer's reach: `talk_start` with
+    /// `sink: device` is refused before any actor lookup (76 §5.1).
+    #[tokio::test]
+    async fn talk_device_sink_refuses_relay_peers() {
+        let v = remote_dictation_call(
+            "talk_start",
+            &format!(r#"["{}","device",null]"#, SessionId::new()),
+        )
+        .await;
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(ASK_FAILED)));
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("speaker and microphone are on the harness host"))
+        );
+        // A client sink without a rate is refused for anyone.
+        let v = remote_dictation_call(
+            "talk_start",
+            &format!(r#"["{}","client",null]"#, SessionId::new()),
+        )
+        .await;
+        assert_eq!(
+            v["error"]["message"].as_str(),
+            Some("sink: client needs sample_rate")
+        );
+        // Well-formed: reaches the actor lookup (no talk actor here).
+        let v = remote_dictation_call(
+            "talk_start",
+            &format!(r#"["{}","client",48000]"#, SessionId::new()),
+        )
+        .await;
+        assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
+        let v = remote_dictation_call("talk_status", "[]").await;
         assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(NOT_RUNNING)));
     }
 }

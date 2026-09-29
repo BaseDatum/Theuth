@@ -3,11 +3,10 @@ import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
   ArrowUp,
-  AudioLines,
   CircleAlert,
   FileUp,
   Megaphone,
-  Mic,
+  Orbit,
   Paperclip,
   Plus,
   Sparkles,
@@ -45,6 +44,7 @@ import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, 
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
 import * as speech from '@/lib/speech'
+import * as talk from '@/lib/talk'
 import { label as chordLabel, matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
@@ -58,6 +58,7 @@ import { AttachPicker } from './AttachPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
+import { MicButton } from './MicButton'
 import { HeldStrip } from './HeldStrip'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { LevelMeter } from './LevelMeter'
@@ -215,6 +216,7 @@ export function Composer({
   sessionTitle,
   onCreated,
   compact = false,
+  readOnly = false,
 }: {
   session: string | null
   /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
@@ -229,6 +231,8 @@ export function Composer({
   onCreated?: (session: string) => void
   /** Tighter box for a panel. */
   compact?: boolean
+  /** 76 §0.12: the talk view's transcript — the box shows but takes nothing; speech is the input. */
+  readOnly?: boolean
 }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
@@ -275,8 +279,14 @@ export function Composer({
   const [offline, setOffline] = useState<OwnerUnreachable | null>(null)
   const voice = speech.useVoice()
   const recorder = useRef<{ rec: MediaRecorder; discard: boolean } | null>(null)
+  /** A release (send / cancel) that beat `getUserMedia`: applied the moment the recorder exists. */
+  const pendingStop = useRef<boolean | null>(null)
   const [recording, setRecording] = useState(false)
   const [secs, setSecs] = useState(0)
+  // 76 §0.12: one talk per daemon; the Talk button names (and opens) the session that holds it.
+  const talking = talk.useTalk()
+  const talkElsewhere = talking.phase !== 'off' && talking.session !== null && talking.session !== session
+  const talkTitle = useSessionField(talking.session ?? '', 'title')
   /** Uploading + transcribing a finished note. */
   const [transcribing, setTranscribing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -325,7 +335,7 @@ export function Composer({
   // Dictation (54 §7): Ctrl+D / the Mic button toggles; we own the caret. The local daemon owns the mic; on a
   // relay-linked engine this browser's mic streams to it instead (§4.5). Both voice buttons stay while a turn
   // runs — a note or dictated text queues as a steer through `submit()`, exactly like a typed one.
-  const canDictate = voice && !priv
+  const canDictate = voice && !priv && !readOnly
   const dictate = () => {
     if (!canDictate) return
     if (dictating) {
@@ -754,7 +764,10 @@ export function Composer({
   // Mic (45 §7.2): click to record, click again to upload → `transcribe` → send as `[voice note, N s] …`; Escape discards.
   const stopRecording = (discard: boolean) => {
     const r = recorder.current
-    if (!r) return
+    if (!r) {
+      if (pendingStop.current === null || discard) pendingStop.current = discard
+      return
+    }
     r.discard = discard
     r.rec.stop()
   }
@@ -779,6 +792,7 @@ export function Composer({
     // A user gesture: the one moment iOS lets the reply's `AudioContext` start (45 §7.3). Released on `onstop`
     // or a failed start, so an idle session does not keep iOS's Now Playing up.
     speech.unlock('record')
+    pendingStop.current = null
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const rec = new MediaRecorder(stream, {
@@ -798,7 +812,14 @@ export function Composer({
       recorder.current = { rec, discard: false }
       rec.start()
       setRecording(true)
+      // The finger already lifted (a hold released before the mic opened): stop with what was said, or discard.
+      const early = pendingStop.current
+      if (early !== null) {
+        pendingStop.current = null
+        stopRecording(early)
+      }
     } catch (e) {
+      pendingStop.current = null
       void speech.release('record')
       toast.error(e instanceof Error ? e.message : String(e))
     }
@@ -1034,6 +1055,7 @@ export function Composer({
               />
             ) : (
               <Textarea
+                readOnly={readOnly}
                 dictate={false}
                 ref={ref}
                 value={text}
@@ -1048,32 +1070,33 @@ export function Composer({
                 onPaste={onPaste}
                 rows={1}
                 // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
-                placeholder={running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
+                placeholder={readOnly ? 'Talking — speak, or stop the talk to type' : running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
                 // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
                 className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
               />
             )}
           </div>
-          {canDictate && !dictating && (recording || !text.trim()) && (
+          {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. */}
+          {canDictate && !dictating && !recording && !text.trim() && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant={recording ? 'destructive' : 'ghost'}
-                  className={cn('size-9 shrink-0 rounded-full', recording && 'w-auto gap-1 px-3 tabular-nums')}
-                  aria-label={recording ? 'Stop recording' : 'Record voice note'}
+                  variant="ghost"
+                  className={cn('size-9 shrink-0 rounded-full', talkElsewhere && 'opacity-50')}
+                  aria-label="Talk"
+                  aria-disabled={talkElsewhere}
                   disabled={busy || transcribing}
-                  onClick={() => (recording ? stopRecording(false) : void record())}
+                  onClick={() =>
+                    void talk.open(api, session).then(
+                      (target) => navigate({ to: '/talk/$session', params: { session: target } }),
+                      (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
+                    )
+                  }
                 >
-                  {recording ? (
-                    <>
-                      <Square className="size-4 fill-current" /> {secs} s
-                    </>
-                  ) : (
-                    <AudioLines className="size-5" />
-                  )}
+                  <Orbit className="size-5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{running ? 'Voice note (steers the running turn)' : 'Voice note'}</TooltipContent>
+              <TooltipContent>{talkElsewhere ? `Talking in ${talkTitle || 'another chat'} — open` : 'Talk'}</TooltipContent>
             </Tooltip>
           )}
           {canDictate &&
@@ -1092,22 +1115,16 @@ export function Composer({
                 <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
               </Tooltip>
             ) : (
-              // `aria-disabled`, not `disabled`: a disabled button takes no pointer events and the tooltip could not say why.
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    className={cn('size-9 shrink-0 rounded-full', dictReason !== null && 'opacity-50')}
-                    aria-label="Dictation"
-                    aria-disabled={dictReason !== null}
-                    disabled={busy || recording}
-                    onClick={dictate}
-                  >
-                    <Mic className="size-5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{dictReason ?? 'Dictation (Ctrl+D)'}</TooltipContent>
-              </Tooltip>
+              // Tap → dictation (`dictReason` says why not, via the tooltip); hold → voice note (45 §7.2) while held, swipe up locks.
+              <MicButton
+                recording={recording}
+                secs={secs}
+                disabled={busy || transcribing}
+                reason={dictReason}
+                onTap={dictate}
+                onRecord={() => void record()}
+                onStop={stopRecording}
+              />
             ))}
           {at !== 'idle' && session ? (
             <>
@@ -1119,10 +1136,10 @@ export function Composer({
                     <Button
                       className={cn(
                         'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
-                        (!filled || busy || dictating) && 'opacity-50',
+                        (!filled || busy || dictating || readOnly) && 'opacity-50',
                       )}
                       aria-label="Steer"
-                      aria-disabled={!filled || busy || dictating}
+                      aria-disabled={!filled || busy || dictating || readOnly}
                       {...steerPress}
                     >
                       <ArrowUp className="size-5" />
@@ -1145,7 +1162,7 @@ export function Composer({
             <Button
               className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
               aria-label="Send"
-              disabled={!filled || busy || dictating}
+              disabled={!filled || busy || dictating || readOnly}
               onClick={() => gesture('press')}
             >
               <ArrowUp className="size-5" />

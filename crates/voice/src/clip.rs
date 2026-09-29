@@ -2,20 +2,17 @@
 //! format Signal (Android, iOS, Desktop) and Slack's inline player all play.
 
 use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, MonoPcm, Quality, max_required_buffer_size};
-use ptts::synth::{SpeechOptions, Synth};
 
 use crate::Clip;
-use crate::speak::SAMPLE_RATE;
+use crate::speak::{SAMPLE_RATE, Synthesizer};
 
 /// Synthesize `spoken` (already sentences) to one [`Clip`]. Blocking; no
 /// cancellation — a block is short and nobody is listening yet.
-pub(crate) fn render(synth: &Synth, voice: &str, spoken: &str) -> anyhow::Result<Clip> {
-    let stream = synth
-        .stream_with(spoken, &SpeechOptions::default().voice(voice))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+pub(crate) fn render(synth: &dyn Synthesizer, voice: &str, spoken: &str) -> anyhow::Result<Clip> {
+    let stream = synth.stream(spoken, voice)?;
     let mut pcm: Vec<f32> = Vec::new();
     for chunk in stream {
-        pcm.extend_from_slice(&chunk.map_err(|e| anyhow::anyhow!("{e}"))?);
+        pcm.extend_from_slice(&chunk?);
     }
     Ok(Clip {
         bytes: mp3(&pcm, SAMPLE_RATE)?,

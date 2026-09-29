@@ -25,6 +25,7 @@ use secrets::SecretsEvent;
 use serde::Serialize;
 use signal::SignalEvent;
 use slack::SlackEvent;
+use talk::TalkEvent;
 use tasks::activity::ActivityAppended;
 use tokio::sync::broadcast;
 use tools::{
@@ -114,6 +115,7 @@ forward!(
     ScrapeProgress,
     UpdateReady,
     VoiceEvent,
+    TalkEvent,
     MeetingEvent,
     BriefEvent,
     AppCallChanged,
@@ -161,6 +163,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, ScrapeProgress>(&actor).await;
     rt.subscribe::<Bridge, UpdateReady>(&actor).await;
     rt.subscribe::<Bridge, VoiceEvent>(&actor).await;
+    rt.subscribe::<Bridge, TalkEvent>(&actor).await;
     rt.subscribe::<Bridge, MeetingEvent>(&actor).await;
     rt.subscribe::<Bridge, BriefEvent>(&actor).await;
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;

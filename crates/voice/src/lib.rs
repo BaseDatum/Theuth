@@ -5,15 +5,20 @@
 //! [`Synthesize`] renders one prose block into an MP3 [`Clip`] they can send back.
 //! Dictation (design doc 54): [`Dictation`] owns a streaming Nemotron session fed
 //! by the microphone or by PCM a remote client pushes ([`PushAudio`]); text lands
-//! at the frontend's caret as [`VoiceEvent::DictationText`].
+//! at the frontend's caret as [`VoiceEvent::DictationText`]. Talk (design doc 76,
+//! steps 1–4): the [`Voice`] actor gains a FIFO behind the current utterance
+//! ([`Speak::queue`]) and a device sink ([`Sink::Device`] → [`out::Player`], the
+//! daemon's own speaker); the echo-cancelled mic lives in [`mic`]; the resident
+//! `Utterer` can be leased from [`Dictation`] ([`Lease`]/[`Return`]).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use kameo::actor::{ActorRef, Spawn as _};
 use kameo::message::{Context, Message};
-use ptts::synth::Synth;
+use out::{Played, Player};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -24,16 +29,17 @@ mod dictation;
 pub mod live;
 pub mod mic;
 pub mod model;
+pub mod out;
 mod speak;
 mod stt;
 pub mod vad;
 
 pub use dictation::{
-    AudioSource, Dictation, DictationState, DictationStatus, Prewarm, PushAudio, StartDictation,
-    StopDictation,
+    AudioSource, Dictation, DictationState, DictationStatus, Lease, Prewarm, PushAudio, Return,
+    StartDictation, StopDictation,
 };
 use kameo::reply::ReplySender;
-use speak::{Progress, Report};
+use speak::{Out, Progress, Report, Synthesizer};
 pub use stt::{Engine, PIECE, Piece, Transcriber, Word, decode, resample, speech_sample};
 
 /// Actor name the RPC layer looks up for live dictation (54 §4.3).
@@ -181,8 +187,24 @@ impl std::str::FromStr for SpeechId {
     }
 }
 
-/// Speak `text` (markdown) in `session`'s name. Stops the current utterance
-/// first. Replies at once with the id; audio follows as events.
+/// Where an utterance's audio goes (76 §0.3).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Sink {
+    /// Opus packets over the bus as [`VoiceEvent::SpeechAudio`]; the frontend plays (43).
+    #[default]
+    Client,
+    /// The daemon's speaker ([`out::Player`]); no `SpeechAudio` is published.
+    Device,
+}
+
+/// Speak `text` (markdown) in `session`'s name. `queue: false` stops the
+/// current utterance and drops the queue first (43); `queue: true` waits its
+/// turn behind them (76 §0.4). Replies at once with the id; audio follows as
+/// events, or goes to the speaker for [`Sink::Device`].
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Speak {
@@ -190,15 +212,37 @@ pub struct Speak {
     pub session: SessionId,
     /// Markdown to read; `markdown::spoken` turns it into sentences.
     pub text: String,
+    /// Append behind what is speaking instead of replacing it.
+    #[serde(default)]
+    pub queue: bool,
+    /// Where the audio goes.
+    #[serde(default)]
+    pub sink: Sink,
 }
 
-/// Stop `id`, or whatever is speaking when `None`. Idempotent.
+/// Stop `id`, or — with `None` — whatever is speaking *and* everything
+/// queued (76 §0.4). Each dropped utterance gets `SpeechFinished { Stopped }`.
+/// Idempotent.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Stop {
-    /// Utterance to stop; `None` stops the current one.
+    /// Utterance to stop; `None` stops the current one and clears the queue.
     pub id: Option<SpeechId>,
 }
+
+/// Silence the speaker from the next callback, keeping the queue and the
+/// ring (76 §0.6 stage 1). Device sink only: `Err` when none is open.
+/// Replies with where playback was.
+#[derive(Clone, Copy, Debug)]
+pub struct Pause;
+
+/// Continue from the paused sample. Device sink only.
+#[derive(Clone, Copy, Debug)]
+pub struct Resume;
+
+/// Where the speaker is now: [`Played`]. Device sink only.
+#[derive(Clone, Copy, Debug)]
+pub struct Position;
 
 /// Model state, voices, what is speaking.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -221,6 +265,9 @@ pub struct VoiceStatus {
     pub voices: Vec<String>,
     /// The utterance in progress, if any.
     pub speaking: Option<SpeechId>,
+    /// Utterances waiting behind it, in order (76 §0.4).
+    #[serde(default)]
+    pub queued: Vec<SpeechId>,
 }
 
 /// Model lifecycle.
@@ -280,6 +327,9 @@ pub enum VoiceEvent {
         sample_rate: u32,
         /// Length of the spoken text, for a progress estimate.
         chars: u32,
+        /// Where the audio goes; `SpeechAudio` follows only for `client`.
+        #[serde(default)]
+        sink: Sink,
     },
     /// One Opus packet (RFC 6716), mono, 80 ms = 1920 samples at `sample_rate`, base64.
     SpeechAudio {
@@ -300,6 +350,9 @@ pub enum VoiceEvent {
         session: SessionId,
         /// How it ended.
         reason: FinishReason,
+        /// Where the audio went.
+        #[serde(default)]
+        sink: Sink,
     },
     /// Streaming (dictation) model lifecycle; distinct from `VoiceModel`, which is TTS.
     DictationModel {
@@ -362,6 +415,10 @@ pub struct VoiceConfig {
     pub dictation_model_dir: Option<PathBuf>,
     /// A running dictation stops itself after this long (54 §0.10).
     pub dictation_max_secs: u64,
+    /// Speaker ring: how far ahead of playback synthesis may run (76 §4.3).
+    pub player_buffer_ms: u32,
+    /// Output device by name; `None` → the default output.
+    pub player_device: Option<String>,
 }
 
 impl Default for VoiceConfig {
@@ -374,6 +431,8 @@ impl Default for VoiceConfig {
             stt_idle_secs: 600,
             dictation_model_dir: None,
             dictation_max_secs: 300,
+            player_buffer_ms: 200,
+            player_device: None,
         }
     }
 }
@@ -382,25 +441,39 @@ impl Default for VoiceConfig {
 struct Current {
     id: SpeechId,
     session: SessionId,
+    sink: Sink,
     /// `Some` once synthesis started; cancelling it drops the ptts stream.
     cancel: Option<CancellationToken>,
     /// Markdown still to speak, while the model is loading.
     text: Option<String>,
 }
 
-/// `tell` from the load task: what `model::load` produced.
-struct Loaded(anyhow::Result<Synth>);
+/// An utterance waiting behind [`Current`] (76 §0.4).
+struct Queued {
+    id: SpeechId,
+    session: SessionId,
+    text: String,
+    sink: Sink,
+}
 
-/// The [`VOICE_ACTOR`] actor: owns the model and the one utterance at a time (43 §0.6).
+/// `tell` from the load task: what `model::load` produced.
+struct Loaded(anyhow::Result<ptts::synth::Synth>);
+
+/// The [`VOICE_ACTOR`] actor: owns the model, the one utterance at a time
+/// (43 §0.6), the FIFO behind it and the speaker (76 §0.3, §0.4).
 #[derive(kameo::Actor)]
 pub struct Voice {
     rt: Runtime,
     cfg: VoiceConfig,
     /// Resident once loaded; never unloaded (43 §4.3).
-    model: Option<Arc<Synth>>,
+    model: Option<Arc<dyn Synthesizer>>,
     model_state: ModelState,
     voices: Vec<String>,
     current: Option<Current>,
+    queue: VecDeque<Queued>,
+    /// The speaker; opened on the first `Sink::Device` utterance, closed by
+    /// `Stop { id: None }` (a talk's last word) so the device is held only while one runs.
+    player: Option<Arc<Player>>,
     /// [`Synthesize`] requests that arrived before the model loaded (45 §4.3).
     pending_clips: Vec<(String, ClipReply)>,
     /// One clip renders at a time; two channels talking at once share the CPU in turn, not in halves.
@@ -410,7 +483,38 @@ pub struct Voice {
 type ClipReply = ReplySender<Result<Option<Clip>, String>>;
 
 impl Voice {
-    /// Publish `Stopped` for the current utterance (running or pending) and forget it.
+    fn new(rt: Runtime, cfg: VoiceConfig, model: Option<Arc<dyn Synthesizer>>) -> Self {
+        Self {
+            rt,
+            cfg,
+            model_state: if model.is_some() {
+                ModelState::Ready
+            } else {
+                ModelState::Missing
+            },
+            model,
+            voices: Vec::new(),
+            current: None,
+            queue: VecDeque::new(),
+            player: None,
+            pending_clips: Vec::new(),
+            clip_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        }
+    }
+
+    async fn finished(&self, id: SpeechId, session: SessionId, sink: Sink, reason: FinishReason) {
+        self.rt
+            .publish(VoiceEvent::SpeechFinished {
+                id,
+                session,
+                reason,
+                sink,
+            })
+            .await;
+    }
+
+    /// Publish `Stopped` for the current utterance (running or pending) and
+    /// forget it; a device-sink utterance is also cut from the speaker ring.
     async fn stop_current(&mut self) {
         let Some(cur) = self.current.take() else {
             return;
@@ -418,24 +522,60 @@ impl Voice {
         if let Some(cancel) = cur.cancel {
             cancel.cancel();
         }
-        self.rt
-            .publish(VoiceEvent::SpeechFinished {
-                id: cur.id,
-                session: cur.session,
-                reason: FinishReason::Stopped,
-            })
+        if cur.sink == Sink::Device
+            && let Some(p) = &self.player
+        {
+            p.flush();
+        }
+        self.finished(cur.id, cur.session, cur.sink, FinishReason::Stopped)
             .await;
     }
 
+    /// Publish `Stopped` for every queued utterance and forget them.
+    async fn clear_queue(&mut self) {
+        for q in std::mem::take(&mut self.queue) {
+            self.finished(q.id, q.session, q.sink, FinishReason::Stopped)
+                .await;
+        }
+    }
+
+    /// `current` is empty: start the next queued utterance, if any. Without
+    /// the model it parks as `current` and the load begins.
+    async fn advance(&mut self, me: ActorRef<Voice>) {
+        while self.current.is_none() {
+            let Some(q) = self.queue.pop_front() else {
+                return;
+            };
+            match self.model.clone() {
+                Some(synth) => {
+                    self.start(synth, q.id, q.session, q.text, q.sink, me.clone())
+                        .await;
+                }
+                None => {
+                    self.current = Some(Current {
+                        id: q.id,
+                        session: q.session,
+                        sink: q.sink,
+                        cancel: None,
+                        text: Some(q.text),
+                    });
+                    if self.model_state != ModelState::Loading {
+                        self.load(me.clone()).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Render `spoken` into a clip on the loaded model, off the actor, one at a time.
-    fn clip(&self, synth: Arc<Synth>, spoken: String, tx: ClipReply) {
+    fn clip(&self, synth: Arc<dyn Synthesizer>, spoken: String, tx: ClipReply) {
         let voice = self.cfg.voice.clone();
         let gate = self.clip_gate.clone();
         tokio::spawn(async move {
             let Ok(_permit) = gate.acquire_owned().await else {
                 return;
             };
-            let r = tokio::task::spawn_blocking(move || clip::render(&synth, &voice, &spoken))
+            let r = tokio::task::spawn_blocking(move || clip::render(&*synth, &voice, &spoken))
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("clip task panicked: {e}")));
             tx.send(r.map(Some).map_err(|e| format!("{e:#}")));
@@ -443,23 +583,51 @@ impl Voice {
     }
 
     /// Start synthesizing `text` for the utterance `id` on the loaded model.
-    fn start(
+    /// A speaker that will not open ends the utterance with `Error` at once.
+    async fn start(
         &mut self,
-        synth: Arc<Synth>,
+        synth: Arc<dyn Synthesizer>,
         id: SpeechId,
         session: SessionId,
         text: String,
+        sink: Sink,
         me: ActorRef<Voice>,
     ) {
+        let out = match sink {
+            Sink::Client => Out::Client,
+            Sink::Device => match self.player() {
+                Ok(p) => Out::Device(p),
+                Err(message) => {
+                    tracing::warn!("voice: {message}");
+                    self.finished(id, session, sink, FinishReason::Error { message })
+                        .await;
+                    return;
+                }
+            },
+        };
         let cancel = CancellationToken::new();
         self.current = Some(Current {
             id,
             session,
+            sink,
             cancel: Some(cancel.clone()),
             text: None,
         });
         let voice = self.cfg.voice.clone();
-        tokio::task::spawn_blocking(move || speak::run(synth, voice, id, text, cancel, me));
+        tokio::task::spawn_blocking(move || speak::run(synth, voice, id, text, out, cancel, me));
+    }
+
+    /// The open speaker, opening it on first use.
+    fn player(&mut self) -> Result<Arc<Player>, String> {
+        if let Some(p) = &self.player {
+            return Ok(p.clone());
+        }
+        let p = Player::open(self.cfg.player_device.as_deref(), self.cfg.player_buffer_ms)
+            .map_err(|e| format!("{e:#}"))?;
+        tracing::info!(device = %p.device, rate = p.rate, channels = p.channels, "voice: speaker open");
+        let p = Arc::new(p);
+        self.player = Some(p.clone());
+        Ok(p)
     }
 
     /// Locate and load the checkpoint off the runtime; the result comes back as [`Loaded`].
@@ -511,49 +679,100 @@ impl Message<Speak> for Voice {
     type Reply = Result<SpeechId, String>;
     async fn handle(&mut self, m: Speak, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let id = SpeechId::new();
-        self.stop_current().await;
-        match self.model.clone() {
-            Some(synth) => self.start(synth, id, m.session, m.text, ctx.actor_ref().clone()),
-            None => {
-                self.current = Some(Current {
-                    id,
-                    session: m.session,
-                    cancel: None,
-                    text: Some(m.text),
-                });
-                if self.model_state != ModelState::Loading {
-                    self.load(ctx.actor_ref().clone()).await;
-                }
-            }
+        if !m.queue {
+            self.clear_queue().await;
+            self.stop_current().await;
         }
+        self.queue.push_back(Queued {
+            id,
+            session: m.session,
+            text: m.text,
+            sink: m.sink,
+        });
+        self.advance(ctx.actor_ref().clone()).await;
         Ok(id)
     }
 }
 
 impl Message<Stop> for Voice {
     type Reply = Result<(), String>;
-    async fn handle(&mut self, m: Stop, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let speaking = self.current.as_ref().map(|c| c.id);
-        if speaking.is_some() && m.id.is_none_or(|id| Some(id) == speaking) {
-            self.stop_current().await;
+    async fn handle(&mut self, m: Stop, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        match m.id {
+            None => {
+                self.clear_queue().await;
+                self.stop_current().await;
+                // A talk's last word: release the speaker.
+                self.player = None;
+            }
+            Some(id) if self.current.as_ref().is_some_and(|c| c.id == id) => {
+                self.stop_current().await;
+                self.advance(ctx.actor_ref().clone()).await;
+            }
+            Some(id) => {
+                if let Some(at) = self.queue.iter().position(|q| q.id == id)
+                    && let Some(q) = self.queue.remove(at)
+                {
+                    self.finished(q.id, q.session, q.sink, FinishReason::Stopped)
+                        .await;
+                }
+            }
         }
         Ok(())
+    }
+}
+
+impl Message<Pause> for Voice {
+    type Reply = Result<Played, String>;
+    async fn handle(&mut self, _: Pause, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.player
+            .as_ref()
+            .map(|p| p.pause())
+            .ok_or_else(|| "no device sink open".to_owned())
+    }
+}
+
+impl Message<Resume> for Voice {
+    type Reply = Result<(), String>;
+    async fn handle(&mut self, _: Resume, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.player
+            .as_ref()
+            .map(|p| p.resume())
+            .ok_or_else(|| "no device sink open".to_owned())
+    }
+}
+
+impl Message<Position> for Voice {
+    type Reply = Result<Played, String>;
+    async fn handle(&mut self, _: Position, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.player
+            .as_ref()
+            .map(|p| p.position())
+            .ok_or_else(|| "no device sink open".to_owned())
     }
 }
 
 impl Message<CloseTree> for Voice {
     type Reply = CloseAck;
 
-    /// A closing tree (51 §4.5): stop the utterance if it belongs to a
+    /// A closing tree (51 §4.5): stop the utterances that belong to a
     /// closing session (same path as [`Stop`]). Voice keeps nothing else per
     /// session and writes no session files; clips are returned as bytes.
-    async fn handle(&mut self, m: CloseTree, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, m: CloseTree, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (mine, others): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut self.queue)
+            .into_iter()
+            .partition(|q| m.subtree.contains(&q.session));
+        self.queue = others;
+        for q in mine {
+            self.finished(q.id, q.session, q.sink, FinishReason::Stopped)
+                .await;
+        }
         if self
             .current
             .as_ref()
             .is_some_and(|c| m.subtree.contains(&c.session))
         {
             self.stop_current().await;
+            self.advance(ctx.actor_ref().clone()).await;
         }
         CloseAck::ok("voice")
     }
@@ -568,6 +787,7 @@ impl Message<Status> for Voice {
             voice: self.cfg.voice.clone(),
             voices: self.voices.clone(),
             speaking: self.current.as_ref().map(|c| c.id),
+            queued: self.queue.iter().map(|q| q.id).collect(),
         }
     }
 }
@@ -578,7 +798,7 @@ impl Message<Loaded> for Voice {
         match m.0 {
             Ok(synth) => {
                 self.voices = synth.voices();
-                let synth = Arc::new(synth);
+                let synth: Arc<dyn Synthesizer> = Arc::new(synth);
                 self.model = Some(synth.clone());
                 self.model_state = ModelState::Ready;
                 self.rt
@@ -594,9 +814,13 @@ impl Message<Loaded> for Voice {
                         cur.id,
                         cur.session,
                         text,
+                        cur.sink,
                         ctx.actor_ref().clone(),
-                    );
+                    )
+                    .await;
                 }
+                // A speaker that failed to open left `current` empty: move on.
+                self.advance(ctx.actor_ref().clone()).await;
                 for (spoken, tx) in std::mem::take(&mut self.pending_clips) {
                     self.clip(synth.clone(), spoken, tx);
                 }
@@ -615,14 +839,13 @@ impl Message<Loaded> for Voice {
                         state: self.model_state.clone(),
                     })
                     .await;
+                let failed = FinishReason::Error { message };
                 if let Some(cur) = self.current.take() {
-                    self.rt
-                        .publish(VoiceEvent::SpeechFinished {
-                            id: cur.id,
-                            session: cur.session,
-                            reason: FinishReason::Error { message },
-                        })
+                    self.finished(cur.id, cur.session, cur.sink, failed.clone())
                         .await;
+                }
+                for q in std::mem::take(&mut self.queue) {
+                    self.finished(q.id, q.session, q.sink, failed.clone()).await;
                 }
             }
         }
@@ -631,18 +854,19 @@ impl Message<Loaded> for Voice {
 
 impl Message<Report> for Voice {
     type Reply = ();
-    async fn handle(&mut self, m: Report, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, m: Report, ctx: &mut Context<Self, Self::Reply>) {
         // Late frames after `Stop` or a replacing `Speak`.
         let Some(cur) = self.current.as_ref().filter(|c| c.id == m.id) else {
             return;
         };
-        let (id, session) = (cur.id, cur.session);
+        let (id, session, sink) = (cur.id, cur.session, cur.sink);
         let event = match m.progress {
             Progress::Started { chars } => VoiceEvent::SpeechStarted {
                 id,
                 session,
                 sample_rate: speak::SAMPLE_RATE,
                 chars,
+                sink,
             },
             Progress::Audio { seq, opus } => VoiceEvent::SpeechAudio {
                 id,
@@ -656,10 +880,14 @@ impl Message<Report> for Voice {
                     id,
                     session,
                     reason,
+                    sink,
                 }
             }
         };
         self.rt.publish(event).await;
+        if self.current.is_none() {
+            self.advance(ctx.actor_ref().clone()).await;
+        }
     }
 }
 
@@ -702,16 +930,7 @@ impl runtime::Plugin for VoicePlugin {
             Duration::from_secs(cfg.dictation_max_secs),
         ));
         dictation.register(DICTATION_ACTOR)?;
-        let actor = Voice::spawn(Voice {
-            rt: rt.clone(),
-            cfg,
-            model: None,
-            model_state: ModelState::Missing,
-            voices: Vec::new(),
-            current: None,
-            pending_clips: Vec::new(),
-            clip_gate: Arc::new(tokio::sync::Semaphore::new(1)),
-        });
+        let actor = Voice::spawn(Voice::new(rt.clone(), cfg, None));
         actor.register(VOICE_ACTOR)?;
         // What `[voice note, N s]` means (45 §4.4); static, so cache-safe.
         let rt = rt.clone();
@@ -741,6 +960,8 @@ impl runtime::Plugin for VoicePlugin {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     #[test]
@@ -751,26 +972,231 @@ mod tests {
         assert!(!is_note("[attachment: a.m4a]"));
     }
 
+    /// A model that says nothing audible: `frames` Mimi frames of silence, one every `pace`.
+    struct FakeSynth {
+        frames: usize,
+        pace: Duration,
+    }
+
+    impl Synthesizer for FakeSynth {
+        fn stream(&self, _: &str, _: &str) -> anyhow::Result<speak::Pcm> {
+            let pace = self.pace;
+            Ok(Box::new((0..self.frames).map(move |_| {
+                std::thread::sleep(pace);
+                Ok(vec![0.0; 1920])
+            })))
+        }
+    }
+
+    /// Every `VoiceEvent` published on the runtime, in order.
+    #[derive(kameo::Actor)]
+    struct Events(tokio::sync::mpsc::UnboundedSender<VoiceEvent>);
+
+    impl Message<VoiceEvent> for Events {
+        type Reply = ();
+        async fn handle(&mut self, e: VoiceEvent, _: &mut Context<Self, Self::Reply>) {
+            let _ = self.0.send(e);
+        }
+    }
+
+    /// An actor on the fake model (each utterance ≈ 100 ms) and the events it publishes.
+    async fn fake_voice() -> (
+        ActorRef<Voice>,
+        tokio::sync::mpsc::UnboundedReceiver<VoiceEvent>,
+    ) {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = Events::spawn_with_mailbox(Events(tx), runtime::subscriber_mailbox());
+        rt.subscribe::<Events, VoiceEvent>(&sink).await;
+        let synth: Arc<dyn Synthesizer> = Arc::new(FakeSynth {
+            frames: 5,
+            pace: Duration::from_millis(20),
+        });
+        let actor = Voice::spawn(Voice::new(rt, VoiceConfig::default(), Some(synth)));
+        (actor, rx)
+    }
+
+    /// Next `SpeechStarted`/`SpeechFinished` (audio packets skipped), within a second.
+    async fn next_edge(rx: &mut tokio::sync::mpsc::UnboundedReceiver<VoiceEvent>) -> VoiceEvent {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let e = tokio::time::timeout_at(deadline.into(), rx.recv())
+                .await
+                .expect("an event within a second")
+                .expect("bus open");
+            if !matches!(e, VoiceEvent::SpeechAudio { .. }) {
+                return e;
+            }
+        }
+    }
+
+    fn speak(session: SessionId, queue: bool) -> Speak {
+        Speak {
+            session,
+            text: "Hello there.".into(),
+            queue,
+            sink: Sink::Client,
+        }
+    }
+
+    /// 76 §10 step 2: three queued speaks start in order, each finishing `Done`.
+    #[tokio::test]
+    async fn queued_speaks_play_in_order() {
+        let (actor, mut rx) = fake_voice().await;
+        let s = SessionId::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(actor.ask(speak(s, true)).await.expect("speak"));
+        }
+        let status = actor.ask(Status).await.expect("ask");
+        assert_eq!(status.speaking, Some(ids[0]));
+        assert_eq!(status.queued, ids[1..].to_vec());
+        for &id in &ids {
+            let started = next_edge(&mut rx).await;
+            assert!(
+                matches!(started, VoiceEvent::SpeechStarted { id: got, sink: Sink::Client, .. } if got == id),
+                "{started:?}"
+            );
+            let finished = next_edge(&mut rx).await;
+            assert!(
+                matches!(finished, VoiceEvent::SpeechFinished { id: got, reason: FinishReason::Done, .. } if got == id),
+                "{finished:?}"
+            );
+        }
+        assert_eq!(actor.ask(Status).await.expect("ask").speaking, None);
+    }
+
+    /// `Stop { id: None }` mid-second: `Stopped` for the second and third, nothing more for the first.
+    #[tokio::test]
+    async fn stop_all_clears_the_queue() {
+        let (actor, mut rx) = fake_voice().await;
+        let s = SessionId::new();
+        let ids: Vec<SpeechId> = {
+            let mut v = Vec::new();
+            for _ in 0..3 {
+                v.push(actor.ask(speak(s, true)).await.expect("speak"));
+            }
+            v
+        };
+        // Wait for the second to start.
+        loop {
+            if matches!(next_edge(&mut rx).await, VoiceEvent::SpeechStarted { id, .. } if id == ids[1])
+            {
+                break;
+            }
+        }
+        actor.ask(Stop { id: None }).await.expect("stop");
+        let mut stopped = Vec::new();
+        for _ in 0..2 {
+            match next_edge(&mut rx).await {
+                VoiceEvent::SpeechFinished {
+                    id,
+                    reason: FinishReason::Stopped,
+                    ..
+                } => stopped.push(id),
+                other => panic!("expected Stopped, got {other:?}"),
+            }
+        }
+        stopped.sort_by_key(|id| id.0);
+        let mut expect = ids[1..].to_vec();
+        expect.sort_by_key(|id| id.0);
+        assert_eq!(stopped, expect);
+        let status = actor.ask(Status).await.expect("ask");
+        assert_eq!((status.speaking, status.queued.len()), (None, 0));
+        // Nothing else follows: no late frame of the cancelled utterance, nothing for the first.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(rx.try_recv().is_err(), "unexpected event after Stop");
+    }
+
+    /// A replacing `Speak { queue: false }` drops the queue (today's semantics) and speaks itself.
+    #[tokio::test]
+    async fn replacing_speak_clears_the_queue() {
+        let (actor, mut rx) = fake_voice().await;
+        let s = SessionId::new();
+        let a = actor.ask(speak(s, true)).await.expect("speak");
+        let b = actor.ask(speak(s, true)).await.expect("speak");
+        let c = actor.ask(speak(s, true)).await.expect("speak");
+        let d = actor.ask(speak(s, false)).await.expect("speak");
+        let mut seen = Vec::new();
+        loop {
+            match next_edge(&mut rx).await {
+                VoiceEvent::SpeechFinished { id, reason, .. } => seen.push((id, reason)),
+                VoiceEvent::SpeechStarted { id, .. } if id == d => break,
+                VoiceEvent::SpeechStarted { id, .. } => {
+                    assert_eq!(id, a, "only the first ever started")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let stopped: Vec<SpeechId> = seen
+            .iter()
+            .filter(|(_, r)| *r == FinishReason::Stopped)
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(stopped.contains(&b) && stopped.contains(&c), "{seen:?}");
+        assert!(
+            stopped.contains(&a)
+                || seen
+                    .iter()
+                    .any(|(id, r)| *id == a && *r == FinishReason::Done)
+        );
+        assert_eq!(actor.ask(Status).await.expect("ask").speaking, Some(d));
+    }
+
+    /// `Stop { id }` of a queued utterance removes just it; of the current one, the next starts.
+    #[tokio::test]
+    async fn stop_one() {
+        let (actor, mut rx) = fake_voice().await;
+        let s = SessionId::new();
+        let a = actor.ask(speak(s, true)).await.expect("speak");
+        let b = actor.ask(speak(s, true)).await.expect("speak");
+        let c = actor.ask(speak(s, true)).await.expect("speak");
+        assert!(
+            matches!(next_edge(&mut rx).await, VoiceEvent::SpeechStarted { id, .. } if id == a)
+        );
+        actor.ask(Stop { id: Some(b) }).await.expect("stop");
+        assert_eq!(actor.ask(Status).await.expect("ask").queued, vec![c]);
+        actor.ask(Stop { id: Some(a) }).await.expect("stop");
+        assert_eq!(actor.ask(Status).await.expect("ask").speaking, Some(c));
+        let mut order = Vec::new();
+        for _ in 0..3 {
+            order.push(match next_edge(&mut rx).await {
+                VoiceEvent::SpeechStarted { id, .. } => (id, None),
+                VoiceEvent::SpeechFinished { id, reason, .. } => (id, Some(reason)),
+                other => panic!("{other:?}"),
+            });
+        }
+        assert_eq!(order[0], (b, Some(FinishReason::Stopped)));
+        assert_eq!(order[1], (a, Some(FinishReason::Stopped)));
+        assert_eq!(order[2], (c, None));
+    }
+
+    /// Pause/Resume/Position without a speaker open answer `Err`, not a panic.
+    #[tokio::test]
+    async fn device_controls_need_a_player() {
+        let (actor, _rx) = fake_voice().await;
+        assert!(actor.ask(Pause).await.is_err());
+        assert!(actor.ask(Resume).await.is_err());
+        assert!(actor.ask(Position).await.is_err());
+    }
+
     /// An actor with `current` set to an utterance of `session` waiting for
     /// the model (no synthesis task to cancel, no model to load).
     fn speaking(session: SessionId) -> (ActorRef<Voice>, SpeechId) {
         let id = SpeechId::new();
-        let actor = Voice::spawn(Voice {
-            rt: Runtime::new(figment::Figment::new(), std::env::temp_dir()),
-            cfg: VoiceConfig::default(),
-            model: None,
-            model_state: ModelState::Missing,
-            voices: Vec::new(),
-            current: Some(Current {
-                id,
-                session,
-                cancel: None,
-                text: Some("hello".to_owned()),
-            }),
-            pending_clips: Vec::new(),
-            clip_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        let mut voice = Voice::new(
+            Runtime::new(figment::Figment::new(), std::env::temp_dir()),
+            VoiceConfig::default(),
+            None,
+        );
+        voice.current = Some(Current {
+            id,
+            session,
+            sink: Sink::Client,
+            cancel: None,
+            text: Some("hello".to_owned()),
         });
-        (actor, id)
+        (Voice::spawn(voice), id)
     }
 
     #[tokio::test]

@@ -184,7 +184,7 @@ impl Port for Actors {
 
     async fn cancel(&self, session: SessionId) -> Result<(), String> {
         agents()?
-            .ask(Cancel { session })
+            .ask(Cancel { session, keep: None })
             .await
             .map_err(|e| e.to_string())
     }

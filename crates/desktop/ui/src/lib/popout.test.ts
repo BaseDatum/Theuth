@@ -53,6 +53,14 @@ test('a PTY pops out at /pty/$session/$job; its label names both ids and its ses
   expect(popoutSession(null)).toBeNull()
 })
 
+test('a talk view pops out at /talk/$session, a separate label from the chat of the same session, and closes with it', () => {
+  const t = { kind: 'talk', session: '01J8ZK-abc' } as const
+  expect(popoutLabel(t)).toBe('popout-talk-01J8ZK-abc')
+  expect(popoutUrl(t)).toBe('/talk/01J8ZK-abc?window=popout-talk-01J8ZK-abc')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutSession(t)).toBe('01J8ZK-abc')
+})
+
 test('a CodeMap pops out at /codemap/$session/$root; the root (a path, spaces allowed) survives the url and the label is Tauri-safe', () => {
   const t = { kind: 'codemap', session: '01J8ZK-abc', root: '/Users/sky/My Code/theuth' } as const
   expect(popoutLabel(t)).toBe('popout-codemap-01J8ZK-abc-_Users_sky_My_Code_theuth')

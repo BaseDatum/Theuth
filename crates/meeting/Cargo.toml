@@ -39,7 +39,6 @@ ts-rs = { workspace = true, optional = true }
 search = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-coreaudio-rs = { workspace = true }
 objc2-core-audio = { workspace = true }
 objc2-core-foundation = { workspace = true }
 objc2-av-foundation = { workspace = true }

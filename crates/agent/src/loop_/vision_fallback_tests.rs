@@ -266,8 +266,9 @@ fn all_text(b: &Value) -> String {
 
 // region:    --- Harness
 
+/// A bus subscriber that forwards every `AgentEvent` to a channel.
 #[derive(kameo::Actor)]
-struct Sink(tokio::sync::mpsc::UnboundedSender<AgentEvent>);
+pub(super) struct Sink(pub(super) tokio::sync::mpsc::UnboundedSender<AgentEvent>);
 
 impl Message<AgentEvent> for Sink {
     type Reply = ();

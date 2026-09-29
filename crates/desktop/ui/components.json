@@ -17,5 +17,8 @@
     "ui": "@/components/ui",
     "lib": "@/lib",
     "hooks": "@/hooks"
+  },
+  "registries": {
+    "@shadercn": "https://raw.githubusercontent.com/shadcn-labs/shadercn/main/public/r/{name}.json"
   }
 }
