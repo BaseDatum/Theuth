@@ -28,6 +28,8 @@ export type Mode = 'full' | 'bar' | 'row'
 export type HeaderId =
   | 'search'
   | 'sidebar'
+  /** The talk view's "Back to chat" (TALK-UI-B B3): the same session's `/c/$session`. */
+  | 'chat'
   | 'model'
   | 'title'
   | 'parent'
@@ -61,12 +63,14 @@ export type HeaderItem = {
  * the chevron, opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
  * session's output surface, over the live browser over terminals); the other two move behind the chevron. `popout`
  * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
- * second window exists (`canPopout()` false, or this is already the popped window).
+ * second window exists (`canPopout()` false, or this is already the popped window). `chat` (the talk view only) sits
+ * top-left after the sidebar toggle and stays inline at every tier: it is the way back.
  */
-export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean): HeaderItem[] {
+export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean, chat = false): HeaderItem[] {
   return [
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
+    ...(chat ? [{ id: 'chat', slot: 'bar' } as const] : []),
     { id: 'model', slot: 'menu' },
     { id: 'title', slot: 'bar' },
     { id: 'parent', slot: 'menu' },

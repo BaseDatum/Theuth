@@ -164,6 +164,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // 76 §0.12: the live dot while a talk runs (anywhere); the entry opens the running talk rather than starting a second.
   const talking = talk.useTalk()
   const live = talking.phase !== 'off'
+  // B3: talk is a mode of the session — from a chat (or its talk view) the entry talks there; only elsewhere does it open a new session.
+  const current = /^\/(?:c|talk)\/([^/?#]+)/.exec(href)?.[1] ?? null
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
@@ -230,7 +232,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 aria-label={live ? 'Talk (running)' : 'Talk'}
                 onClick={(e) => {
                   e.preventDefault()
-                  void talk.open(api, null).then(
+                  void talk.open(api, current).then(
                     (session) => {
                       void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
                       return navigate({ to: '/talk/$session', params: { session } })

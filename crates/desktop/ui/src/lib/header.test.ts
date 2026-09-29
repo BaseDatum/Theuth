@@ -93,6 +93,16 @@ test('where no second window exists (iOS, or the popped window itself) the popou
   }
 })
 
+test('the talk view keeps Back to chat inline top-left at every tier; the chat view has no such item', () => {
+  const order = headerOrder('artifacts', true, true)
+  for (let t = 0; t < TIERS; t++) {
+    const bar = ids(layout(order, t).bar)
+    expect(bar.indexOf('chat')).toBe(bar.indexOf('sidebar') + 1)
+    expect(bar.indexOf('chat')).toBeLessThan(bar.indexOf('title'))
+  }
+  expect(ids(headerOrder('artifacts', true))).not.toContain('chat')
+})
+
 test('the panel is centred on a wide pane and never wider than PANEL_MAX', () => {
   expect(panelGeometry(222, 1122, 1122)).toEqual({ left: 222 + 450 - PANEL_MAX / 2, width: PANEL_MAX })
 })

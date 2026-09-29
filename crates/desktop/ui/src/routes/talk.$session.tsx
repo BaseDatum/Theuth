@@ -2,7 +2,7 @@
 // transcript, collapsed by default, remembered per session. Right: every panel a session has, from `Header`
 // exactly as in `/c/$session`. Phones: the transcript is a sheet. Leaving the view does not stop the talk.
 
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, MessageSquareText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
@@ -44,6 +44,7 @@ function saveTranscriptPref(session: string, open: boolean): void {
 function TalkRoute() {
   const { session } = Route.useParams()
   const api = useApi()
+  const navigate = useNavigate()
   const mobile = useIsMobile()
   const t = talk.useTalk()
   const title = useSessionField(session, 'title')
@@ -84,11 +85,20 @@ function TalkRoute() {
     }
     const onTranscript = () => setOpen((o) => !o)
     // §5.2: Esc while the agent thinks or speaks is the agent's cancel, as in the chat; the talk goes on listening.
+    // TALK-UI-B B3: any other Esc leaves the view for the same session's chat (the talk keeps running there) — never a
+    // blank view. Decided after the other Esc owners (a sheet, a dialog, a recording, dictation) had their turn.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !here || state === 'listening' || state === 'idle') return
+      if (e.key !== 'Escape' || e.defaultPrevented) return
       const el = e.target
       if (el instanceof HTMLElement && (el.isContentEditable || el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return
-      void api.cancel(session)
+      if (here && state !== 'listening' && state !== 'idle') {
+        void api.cancel(session)
+        return
+      }
+      window.setTimeout(() => {
+        if (e.defaultPrevented || (mobile && open) || document.querySelector(':is([role="dialog"], [role="alertdialog"], [role="menu"])[data-state="open"]')) return
+        void navigate({ to: '/c/$session', params: { session } })
+      }, 0)
     }
     window.addEventListener('theuth:talk', onStop)
     window.addEventListener('theuth:talk-transcript', onTranscript)
@@ -98,7 +108,7 @@ function TalkRoute() {
       window.removeEventListener('theuth:talk-transcript', onTranscript)
       window.removeEventListener('keydown', onKey)
     }
-  }, [api, here, session, state])
+  }, [api, here, session, state, navigate, open, mobile])
 
   // The orb is the centre at every width: 60 % of the narrower side of its pane, 160–440 px.
   const centre = useRef<HTMLDivElement>(null)

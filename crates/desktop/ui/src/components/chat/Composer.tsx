@@ -286,6 +286,8 @@ export function Composer({
   // 76 §0.12: one talk per daemon; the Talk button names (and opens) the session that holds it.
   const talking = talk.useTalk()
   const talkElsewhere = talking.phase !== 'off' && talking.session !== null && talking.session !== session
+  /** B3: the talk runs on this very session and this is the chat view of it (the talk view's own composer is read-only). */
+  const talkHere = talking.phase !== 'off' && session !== null && talking.session === session && !readOnly
   const talkTitle = useSessionField(talking.session ?? '', 'title')
   /** Uploading + transcribing a finished note. */
   const [transcribing, setTranscribing] = useState(false)
@@ -365,7 +367,9 @@ export function Composer({
   useEffect(() => {
     if (!live) return
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') void dictation.discard(api)
+      if (e.key !== 'Escape') return
+      e.preventDefault() // this Esc is spent (the talk view's Esc-to-leave checks it)
+      void dictation.discard(api)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -830,7 +834,9 @@ export function Composer({
     setSecs(0)
     const tick = setInterval(() => setSecs((s) => s + 1), 1000)
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') stopRecording(true)
+      if (e.key !== 'Escape') return
+      e.preventDefault() // this Esc is spent (the talk view's Esc-to-leave checks it)
+      stopRecording(true)
     }
     window.addEventListener('keydown', onKey)
     return () => {
@@ -1076,8 +1082,33 @@ export function Composer({
               />
             )}
           </div>
-          {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. */}
-          {canDictate && !dictating && !recording && !text.trim() && (
+          {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
+              runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
+          {talkHere ? (
+            <div className="flex shrink-0 items-center rounded-full bg-fg-accent/10">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    className="size-9 shrink-0 rounded-full text-fg-accent"
+                    aria-label="Talk running — open"
+                    onClick={() => void navigate({ to: '/talk/$session', params: { session } })}
+                  >
+                    <AudioLines className="size-5 motion-safe:animate-pulse" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Talking here — open</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" className="size-9 shrink-0 rounded-full text-fg-secondary" aria-label="End talk" onClick={() => void talk.stop(api)}>
+                    <X className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>End talk</TooltipContent>
+              </Tooltip>
+            </div>
+          ) : canDictate && !dictating && !recording && !text.trim() && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
