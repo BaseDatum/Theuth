@@ -42,8 +42,8 @@ export const UNGROUPED = 'Ungrouped'
 export const newChatLabel = (project: string | null) => (project === null ? 'New chat (no project)' : `New chat in “${project}”`)
 
 /**
- * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown on
- * phones, like `SessionItem`'s) opens a menu whose "New chat in <project>" opens a new chat with the picker preset
+ * A collapsible project header (51 §3): the row toggles collapse; right-click or the hover `…` (always shown where
+ * the pointer is a finger — phones and iPads — like `SessionItem`'s) opens a menu whose "New chat in <project>" opens a new chat with the picker preset
  * (`openNewChat`: the focused pane when split, else `/?project=`) and whose "Icon & colour…" opens the style dialog
  * (not for Ungrouped). The project's glyph sits left of the name.
  */
@@ -55,7 +55,7 @@ function ProjectHeader({ project, collapsed, toggle }: { project: string | null;
     <div className="group/menu-item relative">
       <button
         type="button"
-        className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary"
+        className="flex w-full items-center gap-1 px-2.5 pt-4 pb-1.5 text-xs font-semibold text-fg-secondary pointer-coarse:pr-8"
         aria-expanded={!collapsed}
         onClick={toggle}
         onContextMenu={(e) => {
