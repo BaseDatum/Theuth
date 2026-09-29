@@ -3,10 +3,10 @@ import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
   ArrowUp,
+  AudioLines,
   CircleAlert,
   FileUp,
   Megaphone,
-  Orbit,
   Paperclip,
   Plus,
   Sparkles,
@@ -1093,7 +1093,7 @@ export function Composer({
                     )
                   }
                 >
-                  <Orbit className="size-5" />
+                  <AudioLines className="size-5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{talkElsewhere ? `Talking in ${talkTitle || 'another chat'} — open` : 'Talk'}</TooltipContent>

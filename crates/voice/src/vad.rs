@@ -72,19 +72,35 @@ pub enum Edge {
     Turn,
 }
 
-/// Utterance state machine over per-frame speech probabilities (threshold 0.5).
+/// Utterance state machine over per-frame speech probabilities (threshold
+/// [`Gate::THRESHOLD`] unless [`Gate::set_threshold`] raised it).
 /// Pure: no audio, no clock — one frame per `push`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Gate {
-    /// Consecutive frames > 0.5.
+    /// Consecutive frames above `threshold`.
     loud: usize,
-    /// Consecutive frames ≤ 0.5.
+    /// Consecutive frames at or below `threshold`.
     quiet: usize,
     /// Frames since the utterance opened (counts the onset run).
     open_for: usize,
     open: bool,
     /// A `Close` happened and its `Turn` has not fired yet.
     closed: bool,
+    /// A frame is speech when its probability exceeds this.
+    threshold: f32,
+}
+
+impl Default for Gate {
+    fn default() -> Gate {
+        Gate {
+            loud: 0,
+            quiet: 0,
+            open_for: 0,
+            open: false,
+            closed: false,
+            threshold: Gate::THRESHOLD,
+        }
+    }
 }
 
 impl Gate {
@@ -98,6 +114,8 @@ impl Gate {
     pub const MAX_OPEN: usize = 15_000 / 16;
     /// Silent frames since speech ended that make a turn boundary (2 s).
     pub const TURN: usize = 2_000 / 16;
+    /// The default speech threshold (dictation, meetings).
+    pub const THRESHOLD: f32 = 0.5;
 
     /// A closed gate.
     pub fn new() -> Gate {
@@ -109,14 +127,24 @@ impl Gate {
         self.open
     }
 
-    /// Back to the initial state.
+    /// Speech threshold for onset and continuation; the counters are untouched,
+    /// so it may move while an utterance is open (76 §4.4: talk raises it while
+    /// the agent speaks).
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold;
+    }
+
+    /// Back to the initial state; the threshold stays.
     pub fn reset(&mut self) {
-        *self = Gate::default();
+        *self = Gate {
+            threshold: self.threshold,
+            ..Gate::default()
+        };
     }
 
     /// One frame's speech probability in; the edge it caused, if any.
     pub fn push(&mut self, prob: f32) -> Option<Edge> {
-        if prob > 0.5 {
+        if prob > self.threshold {
             self.loud += 1;
             self.quiet = 0;
         } else {
@@ -183,6 +211,26 @@ mod tests {
                 (silence + Gate::CLOSE - 1, Edge::Close),
                 (silence + Gate::TURN - 1, Edge::Turn),
             ]
+        );
+    }
+
+    /// A raised threshold ignores frames the default would take as speech,
+    /// closes an open utterance on them, and survives `reset`.
+    #[test]
+    fn threshold_moves_onset_and_close_and_survives_reset() {
+        let mut g = Gate::new();
+        g.set_threshold(0.7);
+        let mut edges = Vec::new();
+        for p in run(20, 0.6).chain(run(10, 0.9)).chain(run(19, 0.6)) {
+            edges.extend(g.push(p));
+        }
+        assert_eq!(edges, vec![Edge::Onset, Edge::Close]);
+        g.reset();
+        assert!(run(20, 0.6).all(|p| g.push(p).is_none()));
+        g.set_threshold(Gate::THRESHOLD);
+        assert_eq!(
+            run(10, 0.6).filter_map(|p| g.push(p)).next(),
+            Some(Edge::Onset)
         );
     }
 

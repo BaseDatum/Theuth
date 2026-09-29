@@ -195,9 +195,11 @@ when the interruption committed.
     a voice note while held (45), *swipe up while holding* locks the
     recording hands-free (tap to stop and send), *slide down / release
     outside* cancels — the Telegram/WhatsApp gesture, with the same haptic
-    and visual cues on the phone. The former voice-note button (`AudioLines`)
-    becomes **Talk**: it starts talk mode on this session and opens
-    `/talk/$session`. The view: the session transcript on the **left**,
+    and visual cues on the phone. The former voice-note button becomes
+    **Talk** and keeps its icon — lucide `AudioLines` is the Talk icon
+    everywhere (rail entry, composer button, the spoken-turn card; FIX-1);
+    the gesture button keeps `Mic`. Talk starts talk mode on this session
+    and opens `/talk/$session`. The view: the session transcript on the **left**,
     collapsed by default and expandable (the ordinary chat pane, read-only
     composer); the normal right-hand panels available as in any session;
     the whole window pops out exactly like a session (`lib/popout.ts`).
@@ -489,19 +491,38 @@ actor is the only place state changes.
 ### 4.4 Barge-in classifier
 
 Inputs at the decision point (the first `Text` partial of the candidate
-utterance, or 900 ms after onset if none came — then it is treated as real):
+utterance, or `talk.decide_ms` (900 ms) after onset if none came — then it is
+**noise**, never a cut-in; FIX-1, 2026-09-29: an aquarium held the gate open
+past `barge_in_min_ms`, never yielded a word, and the old "silent at the
+deadline = real" fallback cut the agent off):
 
 1. `Gate` open for ≥ `barge_in_min_ms` (400) — filters coughs, chair
-   scrapes, the 160 ms onset of a word the user swallowed.
+   scrapes, the 160 ms onset of a word the user swallowed. While the agent
+   speaks (`Speaking`/`Holding`) the gate's speech threshold is
+   `talk.barge_in_vad` (0.7) instead of the 0.5 dictation and meetings use;
+   the policy emits `Action::VadThreshold` on every state change and the audio
+   task applies it to the leased `Utterer` (`Gate::set_threshold`), restoring
+   0.5 when the lease goes back.
 2. Backchannel: lowercase, strip punctuation, split on whitespace; every
    token in `talk.backchannels` → backchannel. Default list: `yeah yep yes
-   mhm mm mm-hmm uh-huh ok okay right sure hm hmm i see got it`. Two or
-   more non-list tokens → real.
+   mhm mm mm-hmm uh-huh ok okay right sure hm hmm i see got it`.
 3. Echo: normalise the partial and the last ~2 s of sentences the ledger
    marks as playing; if the partial is a prefix (Levenshtein ratio ≥ 0.8) of
    that text → echo. Logged at `debug` with the two strings so `MicNoAec`
    hosts can be tuned.
-4. Otherwise real.
+4. No word: no partial at all, or none with a non-backchannel token of two or
+   more characters once punctuation is stripped ("I", "a", ".") → noise. A
+   wordless partial does not settle the hold; the next partial or the
+   deadline does.
+5. Otherwise real.
+
+Noise, backchannel and echo resume playback (`Resumed{reason}`) and dismiss
+the candidate utterance; a new candidate needs the gate to close and open
+again (a candidate is only created on `Onset`), so steady noise cannot
+hold-resume-hold every 900 ms — if the gate never closes, the speech
+continues unpaused. The decisions a user reads from the default engine log
+are `info` under target `talk`: `holding`, `resumed{reason, text}`,
+`interrupted{heard, dropped, text}`.
 
 `talk.hold: pause | none` decides whether stage 1 pauses the player (default
 `pause`); `none` keeps speaking until the decision — the knob exists so the
@@ -584,7 +605,7 @@ the cheap half of the latency budget (§8).
 | `Saying` | `id, speech: SpeechId, text` | a sentence starts playing (device: first frame leaves the ring; client: `SpeechStarted`) — the agent subtitle |
 | `Submitted` | `id, text, interrupted: bool` | the input the session received |
 | `Holding` | `id, since_speech_ms` | stage 1 |
-| `Resumed` | `id, reason: Backchannel \| Echo` | stage 2 (a)/(b) |
+| `Resumed` | `id, reason: Backchannel \| Echo \| Noise` | stage 2 (a)/(b), or no word by the deadline |
 | `Interrupted` | `id, heard_sentences: u32, dropped_sentences: u32` | stage 2 (c) |
 | `Flush` | `id` | remote sink: cut everything now |
 | `Degraded` | `id, degradation: MicNoAec` | at start on hosts without VPIO |
@@ -600,6 +621,8 @@ the cheap half of the latency budget (§8).
 talk:
   enabled: true              # false: no actor, `talk_*` RPC → "talk is disabled"
   barge_in_min_ms: 400       # stage 1
+  decide_ms: 900             # stage 2 fallback: no word this long after onset → noise, resume
+  barge_in_vad: 0.7          # gate speech threshold while Speaking/Holding (Listening/Thinking: the gate's 0.5)
   end_of_turn_ms: 700        # after Close without terminal punctuation
   end_of_turn_punct_ms: 250  # after Close with . ? !
   hold: pause                # pause | none
@@ -638,9 +661,13 @@ Route `/talk/$session` (desktop) and the `/talk` pane (TUI). Orb state from
 `TalkState`; agent subtitle from `Saying` (cleared on `SpeechFinished` for
 that id, or on `Interrupted`); user subtitle from `Heard{final: false}`,
 replaced by the final and then cleared on `Submitted`. The left transcript
-is the ordinary session view, collapsed; it shows `[spoken …]` user turns
-and the assistant's text — including a kept prefix after an interruption —
-as any chat does. Esc during `Speaking` is the agent's cancel as today; the
+is the ordinary session view, collapsed; a `[spoken, N s] …` user turn
+renders as a card, not raw text (FIX-1): the transcript as the body in the
+user-message styling, a quiet `AudioLines` caption `spoken · N s` (plus
+`cut in` for `[spoken, N s, interrupted]`); the TUI collapses the marker to
+a muted `spoken N s` tag before the text. The assistant's text — including
+a kept prefix after an interruption — renders as any chat does. Esc during
+`Speaking` is the agent's cancel as today; the
 talk stays on and goes to `Listening` (§4.8). Leaving the view does not stop
 the talk; the sidebar entry shows a live dot while one runs; `talk_stop`
 is the orb's own control (click / Ctrl+T).

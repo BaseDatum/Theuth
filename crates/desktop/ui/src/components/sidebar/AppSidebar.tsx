@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, Orbit, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
+import { AudioLines, Bell, BookOpen, Bot, CalendarClock, FolderOpen, ListChecks, Lock, Megaphone, Mic, PanelLeft, Settings, Sparkles, SquarePen, StickyNote, Wrench } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -239,7 +239,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                   )
                 }}
               >
-                <Orbit /> Talk
+                <AudioLines /> Talk
                 {live && <span className="ml-auto size-2 shrink-0 rounded-full bg-success" aria-label="talk running" />}
               </Link>
             </SidebarMenuButton>

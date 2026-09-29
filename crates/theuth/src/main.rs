@@ -650,7 +650,8 @@ agent:
 # talk:                      # a live, interruptible spoken conversation with one session (design doc 76): STT and TTS local
 #   enabled: true            # false: no actor, `talk_*` answers \"talk is disabled\"
 #   barge_in_min_ms: 400     # stage 1: the gate stays open this long before playback pauses (Holding)
-#   decide_ms: 900           # stage 2 fallback: a barge-in with no transcript yet commits this long after onset (raise if the STT lands later)
+#   decide_ms: 900           # stage 2 fallback: a hold with no transcript yet resumes as noise this long after onset (raise if the STT lands later)
+#   barge_in_vad: 0.7        # VAD probability a frame must exceed to count as speech while the agent speaks (Listening/Thinking keep 0.5)
 #   end_of_turn_ms: 700      # the turn commits this long after an utterance closes without terminal punctuation
 #   end_of_turn_punct_ms: 250  # the same, when the utterance ends in . ? !
 #   hold: pause              # pause | none — whether stage 1 pauses the player while the barge-in classifier decides
