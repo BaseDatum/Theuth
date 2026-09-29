@@ -31,13 +31,13 @@ import { useKeyboardInset } from '@/lib/mobile'
 import { isPrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LIMITS } from '@/lib/search'
+import { SearchQueue } from '@/lib/search-queue'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
 import { useEntries } from '@/store/sessions'
 
-const DEBOUNCE_MS = 150
 const INDEXING_POLL_MS = 500
 const LONG_PRESS_MS = 450
 /** Show more steps 10 → 30 → 50; the cap stays put. */
@@ -123,10 +123,13 @@ export function AttachPicker({
   const inputRef = useRef<HTMLInputElement>(null)
   const pressTimer = useRef<number | null>(null)
   const now = useMemo(() => new Date(), [open]) // eslint-disable-line react-hooks/exhaustive-deps -- one clock per open
+  /** This surface's request discipline (lib/search-queue): resetting debounce, one `search` in flight, latest settled query pending. */
+  const queue = useRef(new SearchQueue()).current
 
   const query = (quiet ? at : typed).trim()
   useEffect(() => {
     if (!open) {
+      queue.clear()
       setTab('all')
       setTyped('')
       setDebounced('')
@@ -136,15 +139,22 @@ export function AttachPicker({
       setPressed(null)
       return
     }
-  }, [open])
+  }, [open, queue])
   useEffect(() => {
     if (query === debounced) return
-    const t = setTimeout(() => {
-      setDebounced(query)
+    const settle = (q: string) => {
+      setDebounced(q)
       setLimits({})
-    }, DEBOUNCE_MS)
-    return () => clearTimeout(t)
-  }, [query, debounced])
+    }
+    // An emptied box settles at once: the pending query is dropped and browsing returns without a debounce.
+    if (query === '') {
+      queue.clear()
+      settle('')
+      return
+    }
+    queue.type(query, settle)
+    return () => queue.cancel()
+  }, [query, debounced, queue])
 
   // ---- Browse sources (§7.4), fetched in parallel, shown as they arrive.
   const browsing = open && debounced === ''
@@ -178,7 +188,7 @@ export function AttachPicker({
   const searching = open && debounced !== '' && cats.length > 0
   const base = useQuery({
     queryKey: queryKeys.search(debounced, cats, LIMITS[0], -1),
-    queryFn: () => api.search(debounced, cats, LIMITS[0]),
+    queryFn: () => queue.run(debounced, () => api.search(debounced, cats, LIMITS[0])),
     enabled: searching,
     refetchInterval: (q) => (q.state.data?.groups.some((g) => g.page.state === 'indexing') ? INDEXING_POLL_MS : false),
   })
@@ -186,7 +196,7 @@ export function AttachPicker({
   const more = useQueries({
     queries: moreCats.map((c) => ({
       queryKey: queryKeys.search(debounced, [c], limits[c] ?? LIMITS[0], -1),
-      queryFn: () => api.search(debounced, [c], limits[c] ?? LIMITS[0]),
+      queryFn: () => queue.run(debounced, () => api.search(debounced, [c], limits[c] ?? LIMITS[0])),
       enabled: searching,
     })),
   })

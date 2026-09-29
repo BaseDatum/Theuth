@@ -3113,6 +3113,7 @@ impl ApiServer for Server {
         categories: Option<Vec<SearchCategory>>,
         limit: Option<u32>,
     ) -> RpcResult<SearchResponse> {
+        tracing::debug!(%query, ?categories, ?limit, "rpc search");
         crate::search::run(&self.rt, query, categories, limit)
             .await
             .map_err(|e| {

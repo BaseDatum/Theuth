@@ -34,6 +34,7 @@ import {
   patch,
   useSearchState,
 } from '@/lib/search'
+import { SearchQueue } from '@/lib/search-queue'
 import { LOCAL, useEngines } from '@/link/engines'
 import { cn } from '@/lib/utils'
 import type { ArtifactSearchHit } from '@/rpc/bindings/ArtifactSearchHit'
@@ -49,7 +50,6 @@ import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
 import { Archived, Notice, Notices, Section, Snippet, status } from '@/components/search/parts'
 import { ago } from './AgentTree'
 
-const DEBOUNCE_MS = 150
 const INDEXING_POLL_MS = 500
 const RECENT = 10
 
@@ -171,6 +171,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   /** Dialog-open generation (49 §5.3): every request of this open is keyed by it, so a late success or error from a previous open lands under a key nothing observes. */
   const opens = useRef(0)
   const [gen, setGen] = useState(0)
+  /** This surface's request discipline (lib/search-queue): resetting debounce, one `search` in flight, latest settled query pending. */
+  const queue = useRef(new SearchQueue()).current
 
   const cats = override ?? remembered
   const query = typed.trim()
@@ -182,12 +184,22 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
 
   useEffect(() => {
     if (composing || query === debounced) return
-    const t = setTimeout(() => {
-      setDebounced(query)
+    const settle = (q: string) => {
+      setDebounced(q)
       setLimits(DEFAULT_LIMITS)
-    }, DEBOUNCE_MS)
-    return () => clearTimeout(t)
-  }, [query, debounced, composing])
+    }
+    // An emptied box settles at once: the pending query is dropped and the list clears without a debounce.
+    if (query === '') {
+      queue.clear()
+      settle('')
+      return
+    }
+    queue.type(query, settle)
+    return () => queue.cancel()
+  }, [query, debounced, composing, queue])
+  useEffect(() => {
+    if (!open) queue.clear()
+  }, [open, queue])
 
   const refresh = async (which: SearchCategory[]) => {
     const gen = ++refreshGen.current
@@ -259,14 +271,14 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const baseKey = queryKeys.search(debounced, cats, LIMITS[0], gen)
   const base = useQuery({
     queryKey: baseKey,
-    queryFn: () => api.search(debounced, cats, LIMITS[0]),
+    queryFn: () => queue.run(debounced, () => api.search(debounced, cats, LIMITS[0])),
     enabled: searching,
   })
   const moreCats = cats.filter((c) => limits[c] > LIMITS[0])
   const more = useQueries({
     queries: moreCats.map((c) => ({
       queryKey: queryKeys.search(debounced, [c], limits[c], gen),
-      queryFn: () => api.search(debounced, [c], limits[c]),
+      queryFn: () => queue.run(debounced, () => api.search(debounced, [c], limits[c])),
       enabled: searching,
       // A one-category page re-asks only itself while it indexes.
       refetchInterval: (q: { state: { data?: { groups: SearchGroup[] } } }) =>
@@ -281,7 +293,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   useQuery({
     queryKey: queryKeys.search(debounced, building, LIMITS[0], gen),
     queryFn: async () => {
-      const fresh = await api.search(debounced, building, LIMITS[0])
+      const fresh = await queue.run(debounced, () => api.search(debounced, building, LIMITS[0]))
       qc.setQueryData<SearchResponse>(baseKey, (old) => old && { groups: patch(old.groups, fresh.groups) })
       return fresh
     },
