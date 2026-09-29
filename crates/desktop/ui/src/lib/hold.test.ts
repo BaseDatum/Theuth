@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type Act, CANCEL_PX, type Hold, IDLE, LOCK_PX, step, type Verb } from './hold'
+import { type Act, CANCEL_PX, type Hold, IDLE, LOCK_PX, ring, step, type Verb } from './hold'
 
 const run = (acts: Act[]): [Hold, Verb[]] => {
   let h = IDLE
@@ -44,4 +44,27 @@ test('sliding up past the threshold locks; the finger lifting then changes nothi
 
 test('the timer after release does not record', () => {
   expect(run([{ type: 'down', x: 0, y: 0 }, { type: 'up', x: 0, y: 0, inside: true }, { type: 'timer' }])).toEqual([IDLE, ['tap']])
+})
+
+test('the ring fills from the press, snaps full when the hold records, stays full through lock, and empties on release or reset', () => {
+  const trace = (acts: Act[]) => {
+    let h = IDLE
+    return acts.map((a) => {
+      h = step(h, a)[0]
+      return ring(h)
+    })
+  }
+  expect(ring(IDLE)).toBe('empty')
+  // Released before the threshold: filling, then the ring collapses (a tap).
+  expect(trace([{ type: 'down', x: 0, y: 0 }, { type: 'up', x: 0, y: 0, inside: true }])).toEqual(['filling', 'empty'])
+  // Held past it: full while recording, full still once locked, empty only on reset.
+  expect(trace([{ type: 'down', x: 0, y: 100 }, { type: 'timer' }, { type: 'move', x: 0, y: 100 - LOCK_PX }, { type: 'up', x: 0, y: 40, inside: false }, { type: 'reset' }])).toEqual([
+    'filling',
+    'full',
+    'full',
+    'full',
+    'empty',
+  ])
+  // Released (send or cancel) while held: empty.
+  expect(trace([{ type: 'down', x: 0, y: 0 }, { type: 'timer' }, { type: 'up', x: 0, y: 0, inside: true }])).toEqual(['filling', 'full', 'empty'])
 })

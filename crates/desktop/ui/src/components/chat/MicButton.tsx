@@ -1,17 +1,20 @@
 // The composer's microphone as one gesture control (76 §0.12; reducer in `lib/hold.ts`). Tap → dictation.
-// Hold → a voice note records while the finger is down: a timer, "slide down to cancel", a lock glyph that
-// fills as the finger travels up; past the threshold it locks hands-free and the button becomes stop-and-send.
+// Hold → a ring fills around the button over `HOLD_MS`; at the threshold a voice note records while the finger is
+// down (filled button, pulsing ring, a buzz): a timer, "slide down to cancel", a lock glyph that fills as the finger
+// travels up; past the threshold it locks hands-free and the button becomes stop-and-send.
 // Pointer events with capture, so the release lands here wherever the finger went.
 
 import { Lock, LockOpen, Mic, Square, X } from 'lucide-react'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { type Act, CANCEL_PX, HOLD_MS, type Hold, IDLE, LOCK_PX, step, type Verb } from '@/lib/hold'
+import { type Act, CANCEL_PX, HOLD_MS, type Hold, IDLE, LOCK_PX, ring, step, type Verb } from '@/lib/hold'
 import { cn } from '@/lib/utils'
 
 /** A short buzz where the platform has one (Android WebView/Chrome); iOS WebKit has no vibration API — silently none. */
 const buzz = () => navigator.vibrate?.(15)
+/** Circumference of the progress ring (r = 18 in a 40 px box, 2 px outside the 36 px button). */
+const RING = 2 * Math.PI * 18
 
 export function MicButton({
   recording,
@@ -84,6 +87,9 @@ export function MicButton({
   const towardsLock = held ? Math.max(0, Math.min(1, hold.dy / LOCK_PX)) : 0
   const towardsCancel = held ? Math.max(0, Math.min(1, -hold.dy / CANCEL_PX)) : 0
   const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+  // B5: the ring fills over `HOLD_MS` from the press (a transition, so a release collapses it), snaps full at the
+  // threshold and pulses while the note records. ponytail: steady pulse — the recorder exposes no level.
+  const fill = ring(hold)
 
   return (
     <div className="flex shrink-0 items-center gap-1">
@@ -115,7 +121,7 @@ export function MicButton({
             ref={ref}
             variant={live ? 'destructive' : 'ghost'}
             className={cn(
-              'size-9 shrink-0 rounded-full select-none touch-none transition-transform',
+              'relative size-9 shrink-0 rounded-full select-none touch-none transition-transform',
               held && 'scale-110',
               !live && reason !== null && 'opacity-50',
             )}
@@ -136,6 +142,24 @@ export function MicButton({
             }
             onContextMenu={(e) => e.preventDefault()}
           >
+            <svg
+              className={cn('pointer-events-none absolute -inset-0.5', fill === 'full' ? 'text-danger' : 'text-fg-accent', fill === 'full' && recording && 'motion-safe:animate-pulse')}
+              viewBox="0 0 40 40"
+              aria-hidden
+            >
+              <circle
+                cx="20"
+                cy="20"
+                r="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeDasharray={RING}
+                strokeDashoffset={fill === 'empty' ? RING : 0}
+                transform="rotate(-90 20 20)"
+                style={{ transition: fill === 'filling' ? `stroke-dashoffset ${HOLD_MS}ms linear` : fill === 'empty' ? 'stroke-dashoffset 150ms ease-out' : 'none' }}
+              />
+            </svg>
             {locked ? <Square className="size-4 fill-current" /> : <Mic className="size-5" />}
           </Button>
         </TooltipTrigger>
