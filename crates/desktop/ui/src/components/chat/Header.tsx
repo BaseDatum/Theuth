@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, MessageSquare, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -195,12 +195,14 @@ export function Header({
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()
   const nav = first && (!open || isMobile) && !popped
+  /** The talk view (B3): the header carries the way back to the same session's chat; the talk keeps running. */
+  const chat = popout?.kind === 'talk'
   /**
    * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
   const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
-  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped), tier)
+  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -210,6 +212,15 @@ export function Header({
         <SearchTrigger className="shrink-0" />
       ),
     sidebar: () => (nav ? <SidebarToggle /> : null),
+    chat: () =>
+      chat && session ? (
+        <Button asChild variant="ghost" size={isMobile || compact ? 'icon' : 'sm'} className="shrink-0 rounded-lg text-fg-secondary">
+          <Link to="/c/$session" params={{ session }} aria-label="Back to chat">
+            <MessageSquare className="size-5" />
+            {!isMobile && !compact && 'Back to chat'}
+          </Link>
+        </Button>
+      ) : null,
     model: (mode) =>
       mode === 'row' ? (
         <ModelRow session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} onOpen={() => setPicker(true)} />

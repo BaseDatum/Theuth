@@ -30,7 +30,12 @@ export type Act =
 
 export type Verb = 'tap' | 'record' | 'lock' | 'send' | 'cancel' | null
 
+/** The mic button's progress ring (TALK-UI-B B5): fills over `HOLD_MS` while pressed, full while held or locked, empty otherwise. */
+export type Ring = 'empty' | 'filling' | 'full'
+
 export const IDLE: Hold = { phase: 'idle' }
+
+export const ring = (h: Hold): Ring => (h.phase === 'pressed' ? 'filling' : h.phase === 'idle' ? 'empty' : 'full')
 
 export function step(h: Hold, a: Act): [Hold, Verb] {
   if (a.type === 'reset') return [IDLE, null]
