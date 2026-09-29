@@ -46,9 +46,12 @@ pub const WEBGPU_LIB: &str = if cfg!(windows) {
 /// The oldest runtime the WebGPU plugin (0.4.0) accepts; older ones fail at registration.
 pub const WEBGPU_MIN_ORT: [u32; 3] = [1, 24, 4];
 
-/// The loaded runtime, once `ort::init_from(..).commit()` has run. A failed search is not
-/// cached: the downloader may land the file while the daemon runs.
-static ORT: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// The runtime `ort::init_from(..).commit()` loaded, or why the one attempt to load it failed.
+/// A failed *search* is not cached (the downloader may land the file while the daemon runs);
+/// a failed *load* is final: `ort`'s loader cell completes even when its dlopen fails, so a
+/// second `init_from` reports success over a null library handle and the first session then
+/// panics in `dlsym(0x0, OrtGetApiBase)` and poisons `ort`'s environment mutex for good.
+static ORT: Mutex<Option<Result<PathBuf, String>>> = Mutex::new(None);
 
 /// [`webgpu_plugin_path`] of the `data_dir` [`ort_lib`] loaded from, when the file exists.
 static WEBGPU_PLUGIN: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -91,33 +94,73 @@ pub fn webgpu_device() -> Option<String> {
 }
 
 /// `ort::init_from` runs once per process, on the first call that finds the runtime; every
-/// later call returns the path it used. The error text names `libonnxruntime` so callers
-/// can tell "no runtime" from "no model", and names where to put it.
+/// later call returns the path it used — or the error the one load attempt made, since after
+/// it nothing in this process can load a runtime ([`ORT`]). The error text names
+/// `libonnxruntime` so callers can tell "no runtime" from "no model", and where to put it.
 pub fn ort_lib(data_dir: &Path) -> Result<PathBuf, String> {
     let mut slot = ORT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(p) = slot.as_ref() {
-        return Ok(p.clone());
+    if let Some(r) = slot.as_ref() {
+        return r.clone();
     }
     let lib = find_ort_lib(data_dir)?;
-    ort::init_from(&lib)
-        .map_err(|e| format!("load {}: {e}", lib.display()))?
-        .commit();
-    tracing::debug!("onnxruntime: loaded {}", lib.display());
-    *slot = Some(lib.clone());
-    let plugin = webgpu_plugin_path(data_dir);
-    *WEBGPU_PLUGIN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = plugin.is_file().then_some(plugin);
-    Ok(lib)
+    let loaded = ort::init_from(&lib).map_err(|e| {
+        format!(
+            "load {}: {} (ONNX Runtime stays unavailable until restart)",
+            lib.display(),
+            load_error_text(&e)
+        )
+    });
+    let r = match loaded {
+        Ok(builder) => {
+            builder.commit();
+            tracing::debug!("onnxruntime: loaded {}", lib.display());
+            let plugin = webgpu_plugin_path(data_dir);
+            *WEBGPU_PLUGIN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                plugin.is_file().then_some(plugin);
+            Ok(lib)
+        }
+        Err(e) => {
+            tracing::error!("onnxruntime: {e}");
+            Err(e)
+        }
+    };
+    *slot = Some(r.clone());
+    r
 }
 
-/// Whether [`ort_lib`] has already succeeded in this process.
+/// `ort`'s load error with the loader's reason appended: `libloading` 0.9 prints a bare
+/// "dlopen failed" and keeps dyld's/ld.so's text (`slice is not valid mach-o file`, `code
+/// signature invalid`, …) in `source()`, which is the one line that says why a file that exists
+/// did not load.
+fn load_error_text(e: &ort::LoadDynamicError) -> String {
+    let mut text = e.to_string();
+    let mut source = match e {
+        ort::LoadDynamicError::Dlopen { error, .. } => std::error::Error::source(error),
+        _ => None,
+    };
+    while let Some(s) = source {
+        text.push_str(": ");
+        text.push_str(&s.to_string());
+        source = s.source();
+    }
+    text
+}
+
+/// Whether [`ort_lib`] has already succeeded in this process. Every entry point that reaches
+/// `ort::api()` ([`ep`], [`devices`], [`configure`], plugin registration) checks this first:
+/// before it, `ort` would dlopen its default `libonnxruntime` name, fail, and leave the process
+/// in the state [`ORT`] describes.
 pub fn ort_ready() -> bool {
-    ORT.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_some()
+    matches!(
+        ORT.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref(),
+        Some(Ok(_))
+    )
 }
 
 /// ORT's name for the CPU provider, what [`ep`] reports when nothing else is registered.
@@ -150,18 +193,21 @@ fn directml_wanted() -> bool {
 /// call that wants it: the configured accelerator is `webgpu`, or `auto` and the plugin
 /// library sits under `<data_dir>/models/onnxruntime/plugins/` **and** a discrete GPU answers
 /// ([`choose_adapter`]). Needs [`ort_lib`] first (before it there is no environment to register
-/// with); a failure is final for the process.
+/// with, and asking `ort` for one would load the wrong library); a failure is final for the process.
 fn webgpu_ready() -> bool {
     match WEBGPU_STATE.load(Ordering::Relaxed) {
         1 => return true,
         2 => return false,
         _ => {}
     }
+    if !ort_ready() {
+        return false;
+    }
     let plugin = WEBGPU_PLUGIN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    if !webgpu_wanted(accelerator::get(), plugin.is_some()) || !ort_ready() {
+    if !webgpu_wanted(accelerator::get(), plugin.is_some()) {
         return false;
     }
     match register_webgpu(plugin.as_deref()) {
@@ -458,7 +504,8 @@ fn runtime_version() -> Option<String> {
     let lib = ORT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()?;
+        .clone()?
+        .ok()?;
     std::fs::read_to_string(lib.parent()?.join("VERSION"))
         .ok()
         .map(|s| s.trim().to_string())
@@ -479,8 +526,9 @@ pub fn webgpu_accepts(version: &str) -> bool {
 }
 
 /// The execution provider sessions built by [`configure`] run on, for status replies:
-/// [`WEBGPU_EP`], [`DML_EP`] or [`CPU_EP`]. Call after [`ort_lib`] (before it, `auto` cannot
-/// see the plugin and nothing can be registered).
+/// [`WEBGPU_EP`], [`DML_EP`] or [`CPU_EP`]. Before [`ort_lib`] it is [`CPU_EP`] (or [`DML_EP`]
+/// when configured) without touching `ort`: `auto` cannot see the plugin and nothing can be
+/// registered yet.
 pub fn ep() -> &'static str {
     if webgpu_ready() {
         WEBGPU_EP
@@ -492,9 +540,12 @@ pub fn ep() -> &'static str {
 }
 
 /// Every execution-provider device the environment knows, one line each ([`describe`]), for
-/// `t --bench-models`. Empty before [`ort_lib`]. WebGPU shows up only after registration
-/// ([`ep`] or [`configure`] triggers it).
+/// `t --bench-models`. Empty before [`ort_lib`] (without touching `ort`). WebGPU shows up only
+/// after registration ([`ep`] or [`configure`] triggers it).
 pub fn devices() -> Vec<String> {
+    if !ort_ready() {
+        return Vec::new();
+    }
     let Ok(env) = ort::environment::Environment::current() else {
         return Vec::new();
     };
@@ -506,6 +557,11 @@ pub fn devices() -> Vec<String> {
 /// and leaves this and every later session on the CPU. Never fails: the builder comes back
 /// untouched in the worst case.
 pub fn configure(builder: SessionBuilder) -> SessionBuilder {
+    if !ort_ready() {
+        // A builder exists, so `ort` found a runtime by itself (`$ORT_DYLIB_PATH`, a library on
+        // the loader path) — never the one `ort_lib` would have chosen. Name that.
+        tracing::warn!("onnxruntime: configure() before ort_lib(): the runtime was not loaded by ort_lib");
+    }
     if webgpu_ready() {
         let index = WEBGPU_CHOICE
             .lock()
@@ -606,6 +662,20 @@ fn find_ort_lib(data_dir: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Status paths run before any model loads ([`ep`] for `voice_status`/`meeting_status`,
+    /// [`devices`] for the bench). Before [`ort_lib`] they must answer without reaching
+    /// `ort::api()`, which would dlopen `ort`'s default library name, fail (a panic here), and
+    /// leave the process unable to load a runtime. `ort`'s state is process-wide: no test in this
+    /// binary calls `ort_lib`, so `ort_ready()` stays false throughout.
+    #[test]
+    fn status_before_ort_lib_answers_without_loading_ort() {
+        assert!(!ort_ready());
+        assert!(matches!(ep(), CPU_EP | DML_EP));
+        assert!(devices().is_empty());
+        assert!(webgpu_device().is_none());
+        assert!(!ort_ready());
+    }
 
     #[test]
     fn version_gate_is_the_plugins_minimum() {
