@@ -47,12 +47,15 @@ pub struct SpawnSubagentArgs {
     /// Model as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. On a node it is resolved there; an external harness switches to it when it offers a model option.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. Not for an external harness.
+    /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. On an external harness it must be one of the harness's own effort values (e.g. omp: low|medium|high|xhigh|max), else the spawn fails naming them.
     #[serde(default)]
     pub effort: Option<String>,
     /// Risk ceiling: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk — enforced for theuth children here and on a node; an external harness only reads it as a first line of its brief.
     #[serde(default)]
     pub tools: Option<String>,
+    /// Skills from ~/.theuth/skills (by name) written into an external harness's cwd for it to load, on top of the `always` ones; removed when it stops. Only for an external harness — a theuth subagent has load_skill.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// Registered nodes (32 §6.5): name → (`describe` line, dialer). Written by
@@ -236,6 +239,11 @@ impl Tool for SpawnSubagentTool {
                 return Ok(ToolOutput::err(unknown(engine, &known, &nodes)));
             }
         }
+        if agent.is_none() && !args.skills.is_empty() {
+            return Ok(ToolOutput::err(
+                "`skills` is for an external harness; a theuth subagent loads skills itself with load_skill",
+            ));
+        }
         Ok(
             match agents
                 .ask(SpawnChild {
@@ -247,6 +255,7 @@ impl Tool for SpawnSubagentTool {
                     model: args.model,
                     effort: args.effort,
                     cap,
+                    skills: args.skills,
                 })
                 .await
             {
@@ -842,6 +851,7 @@ mod tests {
             model: None,
             effort: None,
             tools: tools.map(str::to_owned),
+            skills: Vec::new(),
         };
         assert_eq!(cap_of(&args(None, None)), Ok(None));
         assert_eq!(
@@ -886,6 +896,9 @@ mod tests {
                 env: Default::default(),
                 description: Some("ChatGPT's coding agent".into()),
                 model: None,
+                skills: None,
+                skills_dir: None,
+                mcp: None,
             },
         );
         acp::save(&dir, &entries).unwrap();

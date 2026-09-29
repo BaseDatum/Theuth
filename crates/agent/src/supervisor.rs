@@ -357,6 +357,9 @@ pub struct SpawnChild {
     /// Risk ceiling for the child and its descendants (12 §5); `None` = no
     /// cap. Installed on the registry with [`SetCap`] and shown on the board.
     pub cap: Option<Risk>,
+    /// theuth skills (by name) materialised into an external harness's cwd
+    /// on top of the `always` ones (design doc 75 §4); empty for the rest.
+    pub skills: Vec<String>,
 }
 
 /// `ask` → `Result<Delivered, String>`: route a peer message (50 §5.2). The
@@ -549,15 +552,15 @@ impl Agents {
     }
 
     /// Live actor for `id`, resuming from the store (or creating the row) when
-    /// needed. `acp` = `(harness, cwd)` runs a new child on an external harness
-    /// (design doc 06 §3.2); a row whose `agent` column is set resumes on one.
+    /// needed. `acp` = `(harness, cwd, cap, skills)` runs a new child on an external
+    /// harness (design doc 06 §3.2, 75 §4); a row whose `agent` column is set resumes on one.
     /// `pick` = `(model, effort)` chosen by the spawning parent for a new child
     /// (01 §2.4); `None` entries fall back to the subagent config.
     async fn session(
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
-        acp: Option<(String, Option<PathBuf>, Option<Risk>)>,
+        acp: Option<(String, Option<PathBuf>, Option<Risk>, Vec<String>)>,
         pick: (Option<&str>, Option<&str>),
     ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();
@@ -589,9 +592,9 @@ impl Agents {
             if private_root.is_some() {
                 anyhow::bail!("remote agents are unavailable in a private session");
             }
-            let (cwd, cap) = acp.map_or((None, None), |a| (a.1, a.2));
+            let (cwd, cap, skills) = acp.map_or((None, None, Vec::new()), |a| (a.1, a.2, a.3));
             let actor = self
-                .acp_session(id, row, parent, name, cwd, pick, cap)
+                .acp_session(id, row, parent, name, cwd, pick, cap, skills)
                 .await?;
             return Ok((id, actor));
         }
@@ -752,7 +755,9 @@ impl Agents {
     /// harness name) or a resume of `row` with its stored ACP session id
     /// (design doc 06 §3.2, §3.6). For a node, `pick` (model, effort) and
     /// `cap` travel in `session/new` `_meta` with the parent's identity (67
-    /// §8); a local harness picks its own.
+    /// §8); a local harness picks its own. A new child on a local harness
+    /// gets the `always` skills plus `skills` written into its cwd first
+    /// (75 §4); the actor removes them when it stops.
     #[allow(clippy::too_many_arguments)]
     async fn acp_session(
         &mut self,
@@ -763,6 +768,7 @@ impl Agents {
         cwd: Option<PathBuf>,
         pick: (Option<&str>, Option<&str>),
         cap: Option<Risk>,
+        skills: Vec<String>,
     ) -> anyhow::Result<LiveActor> {
         let entries = acp::load(&self.rt.data_dir)?;
         let (harness, engine) = crate::peers::parse_agent(&name).map_err(anyhow::Error::msg)?;
@@ -772,49 +778,106 @@ impl Agents {
             .unwrap_or_else(|p| p.into_inner())
             .get(engine)
             .map(|(_, d)| d.clone());
-        let (transport, fallback_model, meta, model) = match (harness, entries.get(engine), node) {
-            // A local harness: `model` through its model option after `session/new`.
-            (None, Some(entry), _) => (
-                acp::Transport::Process(entry.config()),
-                entry.model.clone(),
-                None,
-                pick.0.map(str::to_owned),
-            ),
-            // A node: native there, or its own `harness`; either way the
-            // instructions ride in `session/new` `_meta`.
-            (_, _, Some(dialer)) => {
-                let meta = acp::SessionMeta {
-                    model: pick.0.map(str::to_owned),
-                    effort: pick.1.map(str::to_owned),
-                    tools: cap,
-                    parent: parent.map(|p| p.0.to_string()),
-                    parent_engine: dialer.caller_id(),
-                    harness: harness.map(str::to_owned),
-                };
-                (acp::Transport::Dial(dialer), None, Some(meta), None)
+        let (transport, fallback_model, meta, model, effort, harness_skills, mcp) =
+            match (harness, entries.get(engine), node) {
+                // A local harness: `model` and `effort` through its options
+                // after `session/new` (67 §8, 75 §8).
+                (None, Some(entry), _) => (
+                    acp::Transport::Process(entry.config()),
+                    entry.model.clone(),
+                    None,
+                    pick.0.map(str::to_owned),
+                    pick.1.map(str::to_owned),
+                    Some((
+                        entry.skills.unwrap_or(true),
+                        entry
+                            .skills_dir
+                            .clone()
+                            .unwrap_or_else(|| acp::DEFAULT_SKILLS_DIR.into()),
+                    )),
+                    entry.mcp.unwrap_or(false),
+                ),
+                // A node: native there, or its own `harness`; either way the
+                // instructions ride in `session/new` `_meta`.
+                (_, _, Some(dialer)) => {
+                    let meta = acp::SessionMeta {
+                        model: pick.0.map(str::to_owned),
+                        effort: pick.1.map(str::to_owned),
+                        tools: cap,
+                        parent: parent.map(|p| p.0.to_string()),
+                        parent_engine: dialer.caller_id(),
+                        harness: harness.map(str::to_owned),
+                    };
+                    (
+                        acp::Transport::Dial(dialer),
+                        None,
+                        Some(meta),
+                        None,
+                        None,
+                        None,
+                        false,
+                    )
+                }
+                _ => anyhow::bail!(
+                    "{}",
+                    crate::peers::unknown(engine, &entries, &node_lines(&self.nodes))
+                ),
+            };
+        let cwd_path = cwd
+            .clone()
+            .or_else(|| {
+                row.as_ref()
+                    .and_then(|r| r.cwd.as_deref().map(PathBuf::from))
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        // 75 §4: skills into the cwd before the row exists, so a bad cwd or
+        // name is a clean spawn error. A resume (75 §10) writes the row's
+        // stored names back — the stopped actor removed them; a directory
+        // still there is left alone.
+        let stored_names;
+        let names: &[String] = match &row {
+            Some(_) => {
+                stored_names = self.store.acp_skills(id).await?;
+                &stored_names
             }
-            _ => anyhow::bail!(
-                "{}",
-                crate::peers::unknown(engine, &entries, &node_lines(&self.nodes))
-            ),
+            None => &skills,
+        };
+        let materialised = match (&row, harness_skills) {
+            (_, Some((true, dir))) => crate::skills::materialise(
+                &crate::skills::dir(&self.rt.data_dir),
+                &cwd_path,
+                &dir,
+                names,
+                &id.to_string(),
+            )
+            .map_err(anyhow::Error::msg)?,
+            (None, Some((false, _))) if !skills.is_empty() => {
+                anyhow::bail!("`{engine}` has `skills: false` in agents.yaml")
+            }
+            (None, None) if !skills.is_empty() => {
+                anyhow::bail!("`skills` cannot be written into a node's cwd")
+            }
+            _ => Default::default(),
+        };
+        let mcp_servers = if mcp {
+            vec![mcp_shim(&self.rt.data_dir, id)?]
+        } else {
+            Vec::new()
         };
         // An existing row belonged to an earlier process (see `Agents::ledger`).
         let resumed = row.is_some();
-        let (parent, cwd, resume) = match row {
-            Some(row) => (
-                row.parent.zip(row.name),
-                row.cwd.map(PathBuf::from),
-                self.store.acp_session(id).await?,
-            ),
+        let (parent, resume) = match row {
+            Some(row) => (row.parent.zip(row.name), self.store.acp_session(id).await?),
             None => {
                 self.store
                     .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
-                self.store.set_acp(id, &name, cwd.as_deref()).await?;
-                (parent.map(|(p, n)| (p, n.to_string())), cwd, None)
+                self.store
+                    .set_acp(id, &name, cwd.as_deref(), &skills)
+                    .await?;
+                (parent.map(|(p, n)| (p, n.to_string())), None)
             }
         };
-        let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         self.inherit_approvals(id, parent.as_ref().map(|p| p.0))
             .await;
         self.mirror(id).await;
@@ -822,14 +885,17 @@ impl Agents {
             id,
             name,
             transport,
-            cwd,
+            cwd_path,
             resume,
             fallback_model,
             meta,
             model,
+            effort,
             self.request_deadline(),
             self.store.clone(),
             self.rt.clone(),
+            materialised,
+            mcp_servers,
         )));
         self.ledger
             .register(id, parent.as_ref().map(|p| p.0), resumed);
@@ -1669,6 +1735,25 @@ impl Agents {
         }
         Some(requester)
     }
+}
+
+/// The theuth MCP shim for an ACP child's `session/new.mcpServers` (75 §9):
+/// this binary as `--data-dir <dir> mcp --session <id>`, a stdio MCP server
+/// proxying `load_skill` / `list_skills` / `send_message` to this engine.
+fn mcp_shim(
+    data_dir: &Path,
+    session: SessionId,
+) -> anyhow::Result<agent_client_protocol::schema::v1::McpServer> {
+    use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("cannot locate own executable: {e}"))?;
+    Ok(McpServer::Stdio(McpServerStdio::new("theuth", exe).args(vec![
+        "--data-dir".to_owned(),
+        data_dir.to_string_lossy().into_owned(),
+        "mcp".to_owned(),
+        "--session".to_owned(),
+        session.to_string(),
+    ])))
 }
 
 /// Where a peer address points after [`Agents::resolve`].
@@ -3042,9 +3127,10 @@ impl Message<SpawnChild> for Agents {
         // 67 §8: `agent` is `[<harness>@]<engine>`; a mesh engine may be
         // named by its id prefix and is stored under its node name. A node
         // resolves `model` against its own catalog and enforces `tools`
-        // itself; an external harness (here or on a node) takes `model`
-        // through its model option, picks its own effort, and reads the
-        // ceiling only as the first line of its brief.
+        // itself; an external harness (here or on a node) takes `model` and
+        // `effort` through its config options (75 §8: an effort it does not
+        // list fails the spawn naming the list) and reads the ceiling only
+        // as the first line of its brief.
         let m = SpawnChild {
             agent: m
                 .agent
@@ -3057,9 +3143,6 @@ impl Message<SpawnChild> for Agents {
         };
         let node = m.agent.is_some() && self.nodes.read().is_ok_and(|n| n.contains_key(engine));
         let external = harness.is_some() || (m.agent.is_some() && !node);
-        if external && m.effort.is_some() {
-            return Err("`effort` does not apply to an external harness; it picks its own".into());
-        }
         if let Some(model) = &m.model
             && m.agent.is_none()
         {
@@ -3072,7 +3155,9 @@ impl Message<SpawnChild> for Agents {
                 ));
             }
         }
+        // The harness's own value list is the truth for an external harness.
         if let Some(e) = &m.effort
+            && !external
             && e != "default"
             && effort_of(e).is_none()
         {
@@ -3104,7 +3189,7 @@ impl Message<SpawnChild> for Agents {
         self.session(
             Some(id),
             Some((m.parent, &name)),
-            m.agent.map(|a| (a, m.cwd, m.cap)),
+            m.agent.map(|a| (a, m.cwd, m.cap, m.skills)),
             (m.model.as_deref(), m.effort.as_deref()),
         )
         .await
@@ -5341,19 +5426,29 @@ impl Message<LoadSession> for Agents {
             tracing::error!(session = %m.session, "hidden_turns: {e:#}");
             0
         });
-        let (model, effort, agent, harness_model, name, parent, project) = row
+        let (model, effort, agent, harness_model, context_size, name, parent, project) = row
             .map(|r| {
                 (
                     r.model,
                     r.effort,
                     r.agent,
                     r.harness_model,
+                    r.context_size,
                     r.name,
                     r.parent,
                     r.project,
                 )
             })
             .unwrap_or_default();
+        // 75 §3: the harness's manifest, only where a harness exists.
+        let harness_commands = if external {
+            store.harness_commands(m.session).await.unwrap_or_else(|e| {
+                tracing::error!(session = %m.session, "harness_commands: {e:#}");
+                Vec::new()
+            })
+        } else {
+            Vec::new()
+        };
         let (context_revision, context_editable, context_reason, context_estimate, settled) =
             context;
         // 47 §5.1: the committed plan, independent of paging and of a running
@@ -5374,6 +5469,8 @@ impl Message<LoadSession> for Agents {
             undone,
             agent,
             harness_model,
+            harness_commands,
+            context_size,
             name,
             parent,
             skills,
@@ -5960,6 +6057,9 @@ impl Message<SetModel> for Agents {
             else {
                 return Err(format!("unknown session {id}"));
             };
+            if row.agent.is_some() {
+                return Err(NOT_NATIVE_OPTION.into());
+            }
             let actor = self.actor(id).await?.native()?.clone();
             let _ = actor.tell(SwitchModel(resolved.clone())).await;
             if let Err(e) = self.store_for(id).set_model(id, &resolved.id).await {
@@ -6019,12 +6119,16 @@ impl Message<SetEffort> for Agents {
     ) -> Result<(), String> {
         let target = match m.session {
             Some(id) => {
-                self.store_for(id)
+                let row = self
+                    .store_for(id)
                     .session(id)
                     .await
                     .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("unknown session {id}"))?
-                    .model
+                    .ok_or_else(|| format!("unknown session {id}"))?;
+                if row.agent.is_some() {
+                    return Err(NOT_NATIVE_OPTION.into());
+                }
+                row.model
             }
             None => self.default_model.clone(),
         };
@@ -6051,6 +6155,140 @@ impl Message<SetEffort> for Agents {
             tracing::warn!("config.yaml: {e}");
         }
         Ok(())
+    }
+}
+
+/// `set_model` / `set_effort` on an ACP child (75 §8): the harness's own
+/// option list, not the catalog, is what it can switch to.
+const NOT_NATIVE_OPTION: &str =
+    "an external harness picks from its own options; use harness_options / set_harness_option";
+
+/// `ask` → `Result<Vec<acp::ConfigOption>, String>` (75 §8): the config
+/// options of `session`'s live harness process; `Err` when the session is
+/// not an ACP child or its process is gone.
+#[derive(Clone, Copy, Debug)]
+pub struct HarnessOptions {
+    /// An ACP child.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<acp::SetOptionResult, String>` (75 §8): set one config
+/// option on `session`'s live harness — `config_id` is the option's id or the
+/// alias `model` / `effort`, `value` one of its listed values. Mid-turn the
+/// change is queued for the turn's end (`pending: true`). A missing option
+/// or an unlisted value is refused with the list.
+#[derive(Clone, Debug)]
+pub struct SetHarnessOption {
+    /// An ACP child.
+    pub session: SessionId,
+    /// Option id or alias.
+    pub config_id: String,
+    /// One of `ConfigOption.options[].value`.
+    pub value: String,
+}
+
+impl Agents {
+    /// The live ACP actor of `session`; the refusal otherwise. Never resumes
+    /// a stopped child: a gone process has no options to show or set.
+    async fn harness_actor(&self, session: SessionId) -> Result<ActorRef<AcpChild>, String> {
+        let row = self.stored(session).await?;
+        if row.agent.is_none() {
+            return Err("not an external harness; use set_model / set_effort".into());
+        }
+        match self.live(session) {
+            Some(LiveActor::Acp(a)) => Ok(a.clone()),
+            _ => Err(format!(
+                "{}: harness process not running",
+                row.agent.unwrap_or_default()
+            )),
+        }
+    }
+}
+
+impl Message<HarnessOptions> for Agents {
+    type Reply = Result<Vec<acp::ConfigOption>, String>;
+
+    async fn handle(
+        &mut self,
+        m: HarnessOptions,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.harness_actor(m.session)
+            .await?
+            .ask(crate::acp_child::HarnessOptions)
+            .await
+            // `SendError::HandlerError` displays as the inner `String`.
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<SetHarnessOption> for Agents {
+    type Reply = Result<acp::SetOptionResult, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetHarnessOption,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.harness_actor(m.session)
+            .await?
+            .ask(crate::acp_child::SetOption {
+                config_id: m.config_id,
+                value: m.value,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `ask` → `Result<(), String>` (75 §10): put a stopped ACP child back in
+/// its harness context — a new harness process opened with `session/load`
+/// on the row's stored ACP session id, its skills written back into the cwd,
+/// no prompt. A live actor for the session is stopped first (its process
+/// group dies with the connection: the 06 §8.3 orphan), so the next
+/// `send_message` goes to the new process. Refused for a native session, a
+/// remote node's session (its ACP session belongs to another engine) and a
+/// row without a stored harness session id.
+#[derive(Clone, Copy, Debug)]
+pub struct ResumeChild {
+    /// An ACP child.
+    pub session: SessionId,
+}
+
+impl Message<ResumeChild> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: ResumeChild, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let row = self.stored(m.session).await?;
+        let Some(agent) = row.agent.as_deref() else {
+            return Err("not an external harness; only an ACP child can be resumed".into());
+        };
+        let (_, engine) = crate::peers::parse_agent(agent)?;
+        if !acp::load(&self.rt.data_dir)
+            .map_err(|e| e.to_string())?
+            .contains_key(engine)
+        {
+            return Err(format!(
+                "`{agent}` is not a local harness in agents.yaml; a node's session cannot be resumed here"
+            ));
+        }
+        if self.store.acp_session(m.session).await.map_err(|e| e.to_string())?.is_none() {
+            return Err(format!("{agent}: no harness session id stored; nothing to resume"));
+        }
+        if let Some(Live {
+            actor: LiveActor::Acp(a),
+            ..
+        }) = self.sessions.remove(&m.session)
+            && a.is_alive()
+        {
+            let _ = a.tell(crate::acp_child::Shutdown).await;
+            a.wait_for_shutdown().await;
+        }
+        self.running.remove(&m.session);
+        self.session(Some(m.session), None, None, (None, None))
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -7612,7 +7850,7 @@ impl Message<CreateSession> for Agents {
                 .session(
                     None,
                     None,
-                    Some((harness.clone(), cwd, None)),
+                    Some((harness.clone(), cwd, None, Vec::new())),
                     (m.options.model.as_deref(), None),
                 )
                 .await
@@ -10537,6 +10775,134 @@ pub(crate) mod tests {
         assert_eq!(
             rows[0].engine.as_deref(),
             Some(platform::process::hostname())
+        );
+    }
+
+    /// A dialer that never connects: the actor it backs stays alive with
+    /// `dead` set, the shape of a child whose harness is gone.
+    #[derive(Debug)]
+    struct Offline;
+
+    #[async_trait::async_trait]
+    impl acp::Dialer for Offline {
+        async fn dial(&self) -> Result<acp::LineDuplex, String> {
+            Err("offline".to_owned())
+        }
+    }
+
+    /// 75 §10: `resume_child` is refused with a clear error for a native
+    /// session, for an ACP row whose harness is not in `agents.yaml` (a
+    /// node's session) and for one with no stored harness session id.
+    #[tokio::test]
+    async fn resume_child_refuses_native_node_and_unstored() {
+        let a = agents().await;
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let native = SessionId::new();
+        store
+            .create_session(native, "m", None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(agents.ask(ResumeChild { session: native }).await),
+            "not an external harness; only an ACP child can be resumed"
+        );
+        let remote = SessionId::new();
+        store
+            .create_session(remote, "omp@box", None, None, None)
+            .await
+            .unwrap();
+        store.set_acp(remote, "omp@box", None, &[]).await.unwrap();
+        assert!(
+            refused(agents.ask(ResumeChild { session: remote }).await)
+                .contains("cannot be resumed here")
+        );
+        let local = SessionId::new();
+        store
+            .create_session(local, "omp", None, None, None)
+            .await
+            .unwrap();
+        store.set_acp(local, "omp", None, &[]).await.unwrap();
+        assert!(
+            refused(agents.ask(ResumeChild { session: local }).await)
+                .contains("cannot be resumed here"),
+            "no agents.yaml entry"
+        );
+    }
+
+    /// 75 §10: a resumed child gets exactly one actor — the live one (a
+    /// harness that stayed up after its cancel, 06 §8.3) is stopped before
+    /// the respawn from the row, and a row without a stored ACP session id
+    /// is refused before anything is stopped.
+    #[tokio::test]
+    async fn resume_child_replaces_the_live_actor() {
+        let mut a = agents().await;
+        let store = a.store.clone();
+        let dir = a.rt.data_dir.clone();
+        acp::save(
+            &dir,
+            &serde_yaml::from_str("omp:\n  command: /nonexistent/theuth-test-harness\n").unwrap(),
+        )
+        .unwrap();
+        let child = SessionId::new();
+        store
+            .create_session(child, "omp", None, None, None)
+            .await
+            .unwrap();
+        store
+            .set_acp(child, "omp", Some(&dir), &["nope".into()])
+            .await
+            .unwrap();
+        let old = AcpChild::spawn(AcpChild::new(
+            child,
+            "omp".into(),
+            acp::Transport::Dial(Arc::new(Offline)),
+            dir.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            store.clone(),
+            a.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        ));
+        a.sessions.insert(
+            child,
+            Live {
+                actor: LiveActor::Acp(old.clone()),
+                parent: None,
+            },
+        );
+        let agents = Agents::spawn(a);
+
+        assert_eq!(
+            refused(agents.ask(ResumeChild { session: child }).await),
+            "omp: no harness session id stored; nothing to resume"
+        );
+        assert!(old.is_alive(), "refused before the live actor is touched");
+
+        store.set_acp_session(child, "s1").await.unwrap();
+        let r = agents.ask(ResumeChild { session: child }).await;
+        assert!(!old.is_alive(), "the previous actor is stopped");
+        // The stored skill name is unknown here: the respawn refuses it
+        // before a second actor exists, and the session has no live entry.
+        assert!(
+            refused(r).contains("nope"),
+            "unknown stored skill named in the refusal"
+        );
+        assert!(
+            !agents.ask(UnloadSession { session: child }).await.unwrap(),
+            "no live entry left behind"
+        );
+
+        store.set_acp(child, "omp", Some(&dir), &[]).await.unwrap();
+        agents.ask(ResumeChild { session: child }).await.unwrap();
+        assert!(
+            agents.ask(UnloadSession { session: child }).await.unwrap(),
+            "exactly one new live entry for the session"
         );
     }
 }

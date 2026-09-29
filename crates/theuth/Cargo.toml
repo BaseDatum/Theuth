@@ -63,6 +63,10 @@ monty-types = { workspace = true }
 tracing-appender = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 meeting = { workspace = true }  # 58 §6.1: capture backends per OS
+# `t mcp`: the stdio MCP shim an ACP child gets (75 §9).
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+schemars = { workspace = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true

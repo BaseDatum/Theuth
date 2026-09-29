@@ -243,7 +243,8 @@ qrcode = { version = "0.14", default-features = false }
 png = "0.17"
 # Agent Client Protocol (design doc 06): external harnesses as subagents, `t --acp`.
 # 2.x is a rewrite; pinned exactly, only the v1 schema module is used (06 §7).
-agent-client-protocol = "=2.1.0"
+# 2.2.0 for `PromptResponse.usage` behind `unstable_end_turn_token_usage` (75 §7).
+agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
 # Image input (design doc 17): OS clipboard image read — bracketed paste is text-only.
 # `image-data` pulls `image` with minimal features; we encode with `png` ourselves.
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }

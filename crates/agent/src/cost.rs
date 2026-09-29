@@ -274,6 +274,22 @@ pub struct TokenTotals {
     pub unknown_calls: u32,
 }
 
+/// Tokens of the ACP turns in an owner's subtree for one harness and model
+/// (75 §7): `remote_turns` grouped by `(harness, model)`. Raw as the harness
+/// sent them — omp per turn, opencode the last request only (a lower bound).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct RemoteTokens {
+    /// Harness name (the `agents.yaml` entry), same as `MeterUpdate.origin`.
+    pub harness: String,
+    /// `sessions.harness_model` at turn end; `None` when the harness reported none.
+    pub model: Option<String>,
+    /// Turns summed.
+    pub turns: u32,
+    /// Token sums.
+    pub tokens: TokenTotals,
+}
+
 /// Aggregated spend (§6.2). Monetary partition per call: returned bucket when
 /// a returned value exists, else the estimate bucket, else `unavailable`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -361,6 +377,9 @@ pub struct SessionCost {
     pub children: Vec<ChildCost>,
     /// Remote meters in the subtree whose coverage is not complete.
     pub remote_meter_gaps: u32,
+    /// ACP turn tokens in the subtree per harness and model (75 §7); empty
+    /// for a native-only subtree.
+    pub remote_tokens: Vec<RemoteTokens>,
 }
 
 /// One cumulative remote meter observation (§6.3).

@@ -755,6 +755,9 @@ mod tests {
                 env: BTreeMap::new(),
                 description: None,
                 model: None,
+                skills: None,
+                skills_dir: None,
+                mcp: None,
             },
         );
         let e = precheck(&our(), &[], &agents, &key, None).unwrap_err();

@@ -24,6 +24,7 @@ const loaded = (rev = '1'): Omit<LoadedPage, 'history' | 'first_seq' | 'more'> =
   name: null,
   parent: null,
   skills: [],
+  harness_commands: [],
   context_revision: rev,
   context_editable: true,
   context_reason: null,
@@ -586,6 +587,37 @@ test('harness model (06 §8.2): the event sets it beside the harness name withou
   st.applyEvents([{ type: 'HarnessModelChanged', session: H, model: 'openai/gpt-5.4' }])
   st.loadHistory(H, { ...loaded(), agent: 'omp', history: [], first_seq: null, more: false }, 'replace')
   expect(useSessions.getState().sessions[H]?.harnessModel).toBe('openai/gpt-5.4')
+})
+
+test('harness commands (75 §3): the manifest lands beside the harness model without touching the transcript; a load carries it and the window size', () => {
+  const H = 'harness'
+  const cmds = [
+    { name: 'skill:ponytail', description: 'lazy code' },
+    { name: '/ponytail', description: 'switch level', hint: 'lite|full|ultra' },
+  ]
+  let s = run([
+    { type: 'TurnStarted', session: H, turn: T, text: 'go', model: 'omp', turn_seq: 1 },
+    { type: 'TextDelta', session: H, turn: T, text: 'Hel' },
+  ])
+  const live = s.live
+  s = apply(s, { type: 'HarnessCommandsChanged', session: H, commands: cmds }, ctx())
+  expect(s.harnessCommands).toEqual(cmds)
+  expect(s.live).toBe(live)
+  s = apply(s, { type: 'TextDelta', session: H, turn: T, text: 'lo' }, ctx())
+  expect(s.entries.map((e) => (e.kind === 'assistant' ? e.text : e.kind))).toEqual(['user', 'Hello'])
+
+  // `size` is the harness's window; a native round (no size) keeps the last one.
+  s = apply(s, { type: 'ContextUsed', session: H, turn: T, context: 1200, size: 200_000 }, ctx())
+  expect(s).toMatchObject({ context: 1200, contextSize: 200_000 })
+  s = apply(s, { type: 'ContextUsed', session: H, turn: T, context: 1300 }, ctx())
+  expect(s).toMatchObject({ context: 1300, contextSize: 200_000 })
+
+  const st = useSessions.getState()
+  st.loadHistory(H, { ...loaded(), agent: 'omp', harness_commands: cmds, context_size: 128_000, history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[H]).toMatchObject({ harnessCommands: cmds, contextSize: 128_000 })
+  // A reload without the size (older server) keeps what the event said.
+  st.loadHistory(H, { ...loaded(), agent: 'omp', harness_commands: [], history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[H]).toMatchObject({ harnessCommands: [], contextSize: 128_000 })
 })
 
 test('ContextChanged marks the slice stale and moves the generation; the installed revision is a no-op unless stale', () => {

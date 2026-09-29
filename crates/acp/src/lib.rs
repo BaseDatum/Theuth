@@ -13,10 +13,12 @@ pub mod peer;
 pub mod registry;
 pub mod render;
 
-pub use agents::{AGENTS_FILE, DIR, Entry, EntryInfo, describe, load, path, save, unknown};
+pub use agents::{
+    AGENTS_FILE, DEFAULT_SKILLS_DIR, DIR, Entry, EntryInfo, describe, load, path, save, unknown,
+};
 pub use harness::{
-    Connect, Dialer, Harness, LineDuplex, Permission, ProbeResult, Transport, Turn, Update,
-    current_model, probe,
+    ConfigOption, ConfigValue, Connect, Dialer, Harness, LineDuplex, Permission, ProbeResult,
+    SetOptionResult, Transport, Turn, Update, current_model, probe,
 };
 pub use mesh::{MeshDialer, line_duplex};
 pub use meta::{META_KEY, SessionMeta};

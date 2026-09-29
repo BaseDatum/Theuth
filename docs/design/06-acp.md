@@ -198,6 +198,16 @@ child starts fresh with the message (the parent is told so in the tool
 output). The ACP session id is stored at spawn (§3.6) because it costs one
 column now and makes this a one-call upgrade.
 
+`resume_child(session)` (75 §10, RPC `resume_child`, TUI `/resume` on an
+ACP child, desktop Resume button) is the explicit trigger for the same
+respawn without a message: a still-live actor is stopped first
+(`AcpChild::Shutdown` — its connection closes, which kills the process
+group; theuth never keeps the pid, §8.3's orphan is reachable only while
+its actor lives), then a new process opens `session/load` on the stored id
+and the row's skills (`acp_skills`, migration 0030) are written back into
+the cwd. Refused for a native session, a node's session and a row without
+a stored ACP session id.
+
 ### 3.3 Event translation
 
 `AcpChild` turns `session/update` into `AgentEvent`s on its theuth `SessionId`,

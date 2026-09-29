@@ -239,6 +239,7 @@ export const FRESH: LoadedPage = {
   name: null,
   parent: null,
   skills: [],
+  harness_commands: [],
   first_seq: null,
   more: false,
   context_revision: '0',

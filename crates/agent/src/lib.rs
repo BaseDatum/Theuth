@@ -673,6 +673,23 @@ pub struct GetTodos {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SessionCostQuery(pub SessionId);
 
+/// One entry of an external harness's command manifest
+/// (`available_commands_update`, design doc 75 §3). omp announces loaded
+/// skills as `skill:<name>` and extension commands as `/ponytail…`;
+/// opencode strips the source, so skills and commands are indistinguishable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct HarnessCommand {
+    /// Name as announced (`skill:ponytail`, `/ponytail-review`, `init`).
+    pub name: String,
+    /// Harness-provided description.
+    pub description: String,
+    /// `input.hint`: what the command takes after its name, when it takes input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub hint: Option<String>,
+}
+
 /// Reply to [`LoadSession`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -696,6 +713,16 @@ pub struct Loaded {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub harness_model: Option<String>,
+    /// Commands the external harness announced (`available_commands_update`,
+    /// design doc 75 §3): its loaded skills and slash commands. Whether the
+    /// model used one is not knowable. Empty for native sessions.
+    #[serde(default)]
+    pub harness_commands: Vec<HarnessCommand>,
+    /// Context window size the external harness reported (`usage_update.size`,
+    /// 75 §5); `None` for native sessions and before the first report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub context_size: Option<u32>,
     /// Peer name when this is a subagent; `None` for a top-level session.
     pub name: Option<String>,
     /// Parent session when this is a subagent (where `/parent` goes).
@@ -1318,6 +1345,10 @@ pub struct SessionSummary {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub harness_model: Option<String>,
+    /// Context window size the external harness reported (75 §5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub context_size: Option<u32>,
     /// The roster agent whose desk this session is (67 §6.2); chat lists drop
     /// these rows, the Desks group shows them.
     #[serde(default)]
@@ -1732,6 +1763,15 @@ pub enum AgentEvent {
         /// The harness's model id (`anthropic/claude-opus-4-8`).
         model: String,
     },
+    /// An external harness announced its command manifest
+    /// (`available_commands_update`, design doc 75 §3): loaded skills
+    /// (`skill:<name>` on omp) and slash commands. Published only on change.
+    HarnessCommandsChanged {
+        /// Session.
+        session: SessionId,
+        /// The full manifest, replacing the previous one.
+        commands: Vec<HarnessCommand>,
+    },
     /// The session's reasoning effort was set or cleared (takes effect on its next turn).
     EffortChanged {
         /// Session.
@@ -1891,6 +1931,12 @@ pub enum AgentEvent {
         turn: TurnId,
         /// Prompt + completion tokens of the round that just settled.
         context: u32,
+        /// Context window size when the source knows it: an external
+        /// harness's `usage_update.size` (75 §5). Native rounds pass `None`
+        /// and clients fall back to the model catalog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        size: Option<u32>,
     },
     /// A private root tree is closing (51 §4.4): every member's data is
     /// being torn down under `generation`; owners fence late writes on it.
@@ -1922,6 +1968,7 @@ impl AgentEvent {
             | Self::InputWithdrawn { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
+            | Self::HarnessCommandsChanged { session, .. }
             | Self::HarnessModelChanged { session, .. }
             | Self::EffortChanged { session, .. }
             | Self::Compacting { session, .. }

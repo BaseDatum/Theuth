@@ -349,6 +349,7 @@ mod tests {
             agent: None,
             cwd: None,
             harness_model: None,
+            context_size: None,
             desk: None,
             pinned: false,
             archived: false,

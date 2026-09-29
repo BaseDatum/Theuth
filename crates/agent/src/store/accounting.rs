@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use runtime::{SessionId, TurnId};
+use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqliteConnection};
 use uuid::Uuid;
 
@@ -18,7 +19,7 @@ use crate::cost::{
 };
 
 /// Ancestry/subtree walks stop here: deeper is a cycle in persisted topology.
-const LINEAGE_MAX: i64 = 64;
+pub(super) const LINEAGE_MAX: i64 = 64;
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -32,7 +33,7 @@ fn parse_id(s: &str) -> anyhow::Result<SessionId> {
 /// Bump `owner` and every live ancestor; returns `(owner, new revision)` for
 /// each row touched (tombstoned rows are skipped, so a settlement landing on
 /// a deleted child still invalidates its surviving ancestors).
-async fn bump_in(
+pub(super) async fn bump_in(
     conn: &mut SqliteConnection,
     owner: &str,
 ) -> anyhow::Result<Vec<(SessionId, u64)>> {
@@ -183,6 +184,58 @@ struct MeterState {
     baseline_nanos: Option<i64>,
     high_water_nanos: Option<i64>,
     last_report_id: Option<String>,
+    source_metadata: Option<String>,
+    baseline_kind: String,
+}
+
+/// Raw reports kept per epoch in `remote_meters.source_metadata` (75 §6).
+const RAW_REPORTS: usize = 8;
+
+/// `remote_meters.source_metadata` (75 §6): the last [`RAW_REPORTS`] raw
+/// reports of the epoch and whether a per-turn (delta) harness is suspected.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct MeterMetadata {
+    /// `{amount, currency, at}` as reported, oldest first.
+    #[serde(default)]
+    reports: std::collections::VecDeque<RawReport>,
+    /// A second lower total within this epoch (75 §6): the harness may
+    /// report per-turn cost, not a cumulative total. Never summed (a
+    /// harness-side reset looks the same); the row's `ambiguous` coverage
+    /// already counts in `remote_meter_gaps`.
+    #[serde(default)]
+    delta_suspected: bool,
+    /// Lower totals seen in this epoch.
+    #[serde(default)]
+    lower_totals: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RawReport {
+    amount: i64,
+    currency: String,
+    at: String,
+}
+
+impl MeterMetadata {
+    fn parse(json: Option<&str>) -> Self {
+        json.and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default()
+    }
+
+    fn push(&mut self, nanos: i64, currency: &str) {
+        if self.reports.len() == RAW_REPORTS {
+            self.reports.pop_front();
+        }
+        self.reports.push_back(RawReport {
+            amount: nanos,
+            currency: currency.to_owned(),
+            at: now(),
+        });
+    }
+
+    fn json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
 }
 
 fn money(nanos: Option<i64>, currency: Option<&str>) -> Option<Money> {
@@ -451,7 +504,8 @@ impl Store {
         let oid = owner.to_string();
         let mut tx = self.begin_write().await?;
         let state: Option<MeterState> = sqlx::query_as(
-            "SELECT id, owner_id, epoch, currency, baseline_nanos, high_water_nanos, last_report_id \
+            "SELECT id, owner_id, epoch, currency, baseline_nanos, high_water_nanos, last_report_id, \
+             source_metadata, baseline_kind \
              FROM remote_meters WHERE origin = ? AND external_session = ? ORDER BY epoch DESC LIMIT 1",
         )
         .bind(&update.origin)
@@ -461,32 +515,55 @@ impl Store {
 
         let (epoch, known_zero) = match state {
             None => (0, update.confirmed_new_session),
-            Some(s) => {
+            Some(mut s) => {
                 anyhow::ensure!(s.owner_id == oid, "meter belongs to another owner");
                 if update.report_id.is_some() && update.report_id == s.last_report_id {
                     return Ok(Vec::new());
                 }
+                // 75 §6: a known-zero baseline with nothing observed is
+                // currency-agnostic — the wrapper's connect-time row names a
+                // placeholder. Take the first report's currency in place; only
+                // a currency change after attribution opens an epoch.
+                if s.currency != total.currency
+                    && s.baseline_kind == "known_zero"
+                    && s.high_water_nanos.unwrap_or(0) == 0
+                {
+                    sqlx::query("UPDATE remote_meters SET currency = ?, updated_at = ? WHERE id = ?")
+                        .bind(&total.currency)
+                        .bind(now())
+                        .bind(&s.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    s.currency = total.currency.clone();
+                }
                 if s.currency == total.currency {
                     let high = s.high_water_nanos.unwrap_or(0);
                     let base = s.baseline_nanos.unwrap_or(0);
+                    let mut meta = MeterMetadata::parse(s.source_metadata.as_deref());
+                    meta.push(total_nanos, &total.currency);
                     let changed = match total_nanos.cmp(&high) {
                         std::cmp::Ordering::Equal => {
-                            sqlx::query("UPDATE remote_meters SET last_report_id = ?, updated_at = ? WHERE id = ?")
-                                .bind(&update.report_id)
-                                .bind(now())
-                                .bind(&s.id)
-                                .execute(&mut *tx)
-                                .await?;
+                            sqlx::query(
+                                "UPDATE remote_meters SET last_report_id = ?, source_metadata = ?, \
+                                 updated_at = ? WHERE id = ?",
+                            )
+                            .bind(&update.report_id)
+                            .bind(meta.json()?)
+                            .bind(now())
+                            .bind(&s.id)
+                            .execute(&mut *tx)
+                            .await?;
                             false
                         }
                         std::cmp::Ordering::Greater => {
                             sqlx::query(
                                 "UPDATE remote_meters SET high_water_nanos = ?, attributed_nanos = ?, \
-                                 last_report_id = ?, updated_at = ? WHERE id = ?",
+                                 last_report_id = ?, source_metadata = ?, updated_at = ? WHERE id = ?",
                             )
                             .bind(total_nanos)
                             .bind(total_nanos - base)
                             .bind(&update.report_id)
+                            .bind(meta.json()?)
                             .bind(now())
                             .bind(&s.id)
                             .execute(&mut *tx)
@@ -494,13 +571,16 @@ impl Store {
                             true
                         }
                         std::cmp::Ordering::Less => {
+                            meta.lower_totals = meta.lower_totals.saturating_add(1);
+                            meta.delta_suspected = meta.lower_totals >= 2;
                             sqlx::query(
                                 "UPDATE remote_meters SET coverage = ?, coverage_boundary = ?, \
-                                 last_report_id = ?, updated_at = ? WHERE id = ?",
+                                 last_report_id = ?, source_metadata = ?, updated_at = ? WHERE id = ?",
                             )
                             .bind(Coverage::Ambiguous.as_str())
                             .bind("lower_total")
                             .bind(&update.report_id)
+                            .bind(meta.json()?)
                             .bind(now())
                             .bind(&s.id)
                             .execute(&mut *tx)
@@ -529,10 +609,13 @@ impl Store {
             }
         };
         let baseline = if known_zero { 0 } else { total_nanos };
+        let mut meta = MeterMetadata::default();
+        meta.push(total_nanos, &total.currency);
         sqlx::query(
             "INSERT INTO remote_meters (id, owner_id, origin, external_session, epoch, source, currency, \
              baseline_nanos, high_water_nanos, attributed_nanos, baseline_kind, scope, coverage, \
-             coverage_boundary, last_report_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             coverage_boundary, last_report_id, source_metadata, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::now_v7().to_string())
         .bind(&oid)
@@ -549,6 +632,7 @@ impl Store {
         .bind(if known_zero { Coverage::Complete } else { Coverage::Unknown }.as_str())
         .bind(if known_zero { None } else { Some("imported_baseline") })
         .bind(&update.report_id)
+        .bind(meta.json()?)
         .bind(now())
         .execute(&mut *tx)
         .await?;
@@ -606,6 +690,7 @@ impl Store {
         .bind(LINEAGE_MAX)
         .fetch_all(&mut *tx)
         .await?;
+        let turns = super::turn_usage::sums(&mut tx, &sid).await?;
         let names: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT c.id, s.name FROM cost_owners c LEFT JOIN sessions s ON s.id = c.id WHERE c.parent_id = ?",
         )
@@ -633,6 +718,12 @@ impl Store {
                 fold_call(&mut n.direct, r);
             }
         }
+        for r in &turns {
+            if let Some(n) = nodes.get_mut(r.owner()) {
+                r.add_to(&mut n.direct.tokens);
+            }
+        }
+        let remote_tokens = super::turn_usage::by_model(&turns);
         let mut remote_meter_gaps: u32 = 0;
         for m in &meters {
             if m.coverage != Coverage::Complete.as_str() {
@@ -689,6 +780,7 @@ impl Store {
             total,
             children: child_costs,
             remote_meter_gaps,
+            remote_tokens,
         }))
     }
 
@@ -998,5 +1090,82 @@ mod tests {
         let oc = store.session_cost(other).await.unwrap().unwrap();
         assert_eq!(returned(&oc.direct), vec![("USD", 200_000_000)]);
         assert!(store.apply_meter(r, imported(0.80, "c")).await.is_err());
+    }
+    fn guard_upd(amount: f64, cur: &str) -> MeterUpdate {
+        MeterUpdate {
+            origin: "omp".into(),
+            external_session: "ext-1".into(),
+            cumulative: Money::from_f64(amount, cur).unwrap(),
+            confirmed_new_session: true,
+            report_id: None,
+        }
+    }
+
+    async fn meters(store: &Store) -> Vec<(i64, String, String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT epoch, currency, coverage, source_metadata FROM remote_meters ORDER BY epoch",
+        )
+        .fetch_all(&store.read)
+        .await
+        .unwrap()
+    }
+
+    /// 75 §6: the connect-time zero row is currency-agnostic; a first report
+    /// in EUR takes over the row instead of opening an imported epoch.
+    #[tokio::test]
+    async fn zero_baseline_takes_first_currency() {
+        let store = fresh().await;
+        let child = SessionId::new();
+        store.ensure_owner(child, None).await.unwrap();
+        store.apply_meter(child, guard_upd(0.0, "USD")).await.unwrap();
+        store.apply_meter(child, guard_upd(1.0, "EUR")).await.unwrap();
+        let rows = meters(&store).await;
+        assert_eq!(rows.len(), 1, "no new epoch");
+        assert_eq!((rows[0].0, rows[0].1.as_str(), rows[0].2.as_str()), (0, "EUR", "complete"));
+        let cost = store.session_cost(child).await.unwrap().unwrap();
+        assert_eq!(cost.direct.returned, vec![Money::from_f64(1.0, "EUR").unwrap()]);
+        assert_eq!(cost.remote_meter_gaps, 0);
+        // After attribution a currency change still opens an epoch.
+        store.apply_meter(child, guard_upd(0.5, "USD")).await.unwrap();
+        assert_eq!(meters(&store).await.len(), 2);
+    }
+
+    /// 75 §6: a monotone (omp-like) series keeps the epoch complete with its
+    /// raw reports kept; two lower totals flag a suspected per-turn reporter.
+    #[tokio::test]
+    async fn lower_totals_flag_delta_suspected() {
+        let store = fresh().await;
+        let child = SessionId::new();
+        store.ensure_owner(child, None).await.unwrap();
+        for amount in [0.0, 0.2, 0.2, 0.35, 0.5] {
+            store.apply_meter(child, guard_upd(amount, "USD")).await.unwrap();
+        }
+        let cost = store.session_cost(child).await.unwrap().unwrap();
+        assert_eq!(cost.remote_meter_gaps, 0);
+        let meta = |rows: &[(i64, String, String, Option<String>)]| {
+            MeterMetadata::parse(rows[0].3.as_deref())
+        };
+        let m = meta(&meters(&store).await);
+        assert_eq!(m.reports.len(), 5);
+        assert!(!m.delta_suspected);
+
+        store.apply_meter(child, guard_upd(0.1, "USD")).await.unwrap();
+        let m = meta(&meters(&store).await);
+        assert_eq!((m.lower_totals, m.delta_suspected), (1, false));
+        store.apply_meter(child, guard_upd(0.2, "USD")).await.unwrap();
+        let rows = meters(&store).await;
+        let m = meta(&rows);
+        assert_eq!((m.lower_totals, m.delta_suspected), (2, true));
+        assert_eq!(rows[0].2, "ambiguous");
+        // The ring keeps the last eight reports only.
+        for amount in [0.3, 0.4, 0.6] {
+            store.apply_meter(child, guard_upd(amount, "USD")).await.unwrap();
+        }
+        let m = meta(&meters(&store).await);
+        assert_eq!(m.reports.len(), RAW_REPORTS);
+        assert_eq!(m.reports.back().unwrap().amount, 600_000_000);
+        // High water is still the rule: 0.6 > 0.5 attributed the delta, nothing summed.
+        let cost = store.session_cost(child).await.unwrap().unwrap();
+        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.6, "USD").unwrap()]);
     }
 }

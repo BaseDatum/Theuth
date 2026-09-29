@@ -54,6 +54,7 @@ use crate::{ProjectStyle, SessionSummary};
 pub mod accounting;
 mod capture;
 pub mod communication;
+pub mod turn_usage;
 pub use capture::ATTACHED;
 
 /// Handle to `<data_dir>/sessions.sqlite`. Cheap to clone.
@@ -376,6 +377,7 @@ struct SessionRow {
     agent: Option<String>,
     cwd: Option<String>,
     harness_model: Option<String>,
+    context_size: Option<i64>,
     desk: Option<String>,
     pinned: bool,
     archived: bool,
@@ -410,7 +412,7 @@ macro_rules! session_cols {
         concat!(
             "sessions.id, sessions.created_at, sessions.updated_at, sessions.title, sessions.tags, sessions.model, \
              sessions.parent, sessions.name, sessions.effort, sessions.agent, sessions.cwd, sessions.harness_model, \
-             sessions.desk, sessions.pinned, ",
+             sessions.context_size, sessions.desk, sessions.pinned, ",
             root_col!("archived"),
             " AS archived, ",
             root_col!("project"),
@@ -447,6 +449,7 @@ impl SessionRow {
             agent: r.agent,
             cwd: r.cwd,
             harness_model: r.harness_model,
+            context_size: r.context_size.and_then(|n| u32::try_from(n).ok()),
             desk: r.desk,
             pinned: r.pinned,
             archived: r.archived,
@@ -1055,22 +1058,41 @@ impl Store {
     }
 
     /// Mark `id` as an external harness session: `agent` is the `agents.yaml`
-    /// key, `cwd` the harness's working directory (design doc 06 §3.6).
+    /// key, `cwd` the harness's working directory (design doc 06 §3.6),
+    /// `skills` the theuth skills named for it (75 §10: replayed by a resume).
     pub async fn set_acp(
         &self,
         id: SessionId,
         agent: &str,
         cwd: Option<&Path>,
+        skills: &[String],
     ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("UPDATE sessions SET agent = ?, cwd = COALESCE(?, cwd) WHERE id = ?")
-            .bind(agent)
-            .bind(cwd.map(|p| p.to_string_lossy().into_owned()))
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE sessions SET agent = ?, cwd = COALESCE(?, cwd), acp_skills = ? WHERE id = ?",
+        )
+        .bind(agent)
+        .bind(cwd.map(|p| p.to_string_lossy().into_owned()))
+        .bind(serde_json::to_string(skills)?)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// The skill names recorded by [`Store::set_acp`]; empty when none or unset.
+    pub async fn acp_skills(&self, id: SessionId) -> anyhow::Result<Vec<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT acp_skills FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row
+            .and_then(|(s,)| s)
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or_default())
     }
 
     /// Record the harness's own session id, for `session/load` on resume.
@@ -1101,6 +1123,48 @@ impl Store {
         let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET harness_model = ? WHERE id = ?")
             .bind(model)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Record the command manifest an external harness announced (design doc
+    /// 75 §3); published as [`crate::AgentEvent::HarnessCommandsChanged`].
+    pub async fn set_harness_commands(
+        &self,
+        id: SessionId,
+        commands: &[crate::HarnessCommand],
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET harness_commands = ? WHERE id = ?")
+            .bind(serde_json::to_string(commands)?)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The manifest [`Self::set_harness_commands`] stored; empty when none.
+    pub async fn harness_commands(&self, id: SessionId) -> anyhow::Result<Vec<crate::HarnessCommand>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT harness_commands FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        match row.and_then(|(s,)| s) {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Record the context window size an external harness reported (design doc 75 §5).
+    pub async fn set_context_size(&self, id: SessionId, size: u32) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET context_size = ? WHERE id = ?")
+            .bind(i64::from(size))
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -2966,7 +3030,7 @@ mod tests {
         assert_eq!(store.acp_session(id).await.unwrap(), None);
 
         store
-            .set_acp(id, "codex", Some(Path::new("/tmp/w")))
+            .set_acp(id, "codex", Some(Path::new("/tmp/w")), &[])
             .await
             .unwrap();
         store.set_acp_session(id, "s-1").await.unwrap();
@@ -2988,7 +3052,7 @@ mod tests {
         );
 
         // `set_acp` without a cwd keeps the recorded one; `set_cwd` replaces it.
-        store.set_acp(id, "codex", None).await.unwrap();
+        store.set_acp(id, "codex", None, &[]).await.unwrap();
         assert_eq!(
             store.session(id).await.unwrap().unwrap().cwd.as_deref(),
             Some("/tmp/w")
@@ -5096,7 +5160,7 @@ mod tests {
                 .len(),
         );
         store
-            .set_acp(id, "codex", Some(Path::new("/tmp")))
+            .set_acp(id, "codex", Some(Path::new("/tmp")), &[])
             .await
             .unwrap();
         rows.push(store.assert_write_pool("set_acp", &mut since).await.len());
@@ -5544,7 +5608,7 @@ mod tests {
         let got: Vec<(String, Option<String>, bool, bool, String)> =
             sqlx::query_as("SELECT id, desk, pinned, archived, title FROM sessions WHERE id IN ('old-t','new-t','old-s','new-s','only') ORDER BY id")
                 .fetch_all(&store.read).await.unwrap();
-        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string(); // sqlite date('now') is UTC
         let sup = |a: &str| format!("{a} · desk (superseded {date})");
         assert_eq!(
             got,
@@ -5775,7 +5839,7 @@ mod tests {
         refused!("set_effort", store.set_effort(id, Some("high")));
         refused!(
             "set_acp",
-            store.set_acp(id, "codex", Some(Path::new("/tmp")))
+            store.set_acp(id, "codex", Some(Path::new("/tmp")), &[])
         );
         refused!("set_acp_session", store.set_acp_session(id, "x"));
         refused!("set_harness_model", store.set_harness_model(id, "hm"));

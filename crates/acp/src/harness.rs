@@ -22,17 +22,19 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentRequest, AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
     ClientCapabilities, ContentBlock, Error, ErrorCode, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, Meta, NewSessionRequest, PermissionOption,
+    InitializeResponse, LoadSessionRequest, McpServer, Meta, NewSessionRequest, PermissionOption,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
+    SessionConfigOptionValue, SessionConfigSelectOptions, SessionConfigValueId, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
+    Usage,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
     Responder, UntypedMessage, is_incoming_transport_closed,
 };
 use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -161,12 +163,119 @@ pub struct Connect {
     /// one). Not applied on `session/load`; a harness without the option
     /// keeps its own and the pick is logged.
     pub model: Option<String>,
+    /// Switch the harness to this effort after the model through its
+    /// `category: "thought_level"` option (75 §8): the value must be one the
+    /// option lists, else the connect fails naming the list. Not applied on
+    /// `session/load`.
+    pub effort: Option<String>,
+    /// MCP servers for `session/new` / `session/load` `mcpServers` (75 §9):
+    /// the theuth shim, or nothing.
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// One selectable value of a [`ConfigOption`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ConfigValue {
+    /// What `set_config_option` sends.
+    pub value: String,
+    /// Display name.
+    pub name: String,
+    /// Optional description.
+    pub description: Option<String>,
+}
+
+/// A harness's session config option (75 §8): theuth's flat, wire-ready view
+/// of the SDK's `SessionConfigOption`. `category` is the SDK's serde name
+/// (`model`, `thought_level`, `mode`, …); grouped selects are flattened; a
+/// boolean option lists `true`/`false`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ConfigOption {
+    /// The `configId` to set it with.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// `model`, `thought_level`, `mode`, `model_config`, or the harness's own word.
+    pub category: Option<String>,
+    /// Current value (`options[].value`).
+    pub current: String,
+    /// Selectable values, in the harness's order.
+    pub options: Vec<ConfigValue>,
+}
+
+/// Reply of `set_harness_option` (75 §8): the option list after the change,
+/// or the list as it stands when the change is queued behind the turn in flight.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SetOptionResult {
+    /// The harness's options now.
+    pub options: Vec<ConfigOption>,
+    /// The change is queued and lands when the current turn ends.
+    pub pending: bool,
+}
+
+impl From<&SessionConfigOption> for ConfigOption {
+    fn from(o: &SessionConfigOption) -> Self {
+        let (current, options) = match &o.kind {
+            SessionConfigKind::Select(s) => {
+                let flat: Vec<&agent_client_protocol::schema::v1::SessionConfigSelectOption> =
+                    match &s.options {
+                        SessionConfigSelectOptions::Ungrouped(v) => v.iter().collect(),
+                        SessionConfigSelectOptions::Grouped(g) => {
+                            g.iter().flat_map(|g| g.options.iter()).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                (
+                    s.current_value.0.to_string(),
+                    flat.into_iter()
+                        .map(|v| ConfigValue {
+                            value: v.value.0.to_string(),
+                            name: v.name.clone(),
+                            description: v.description.clone(),
+                        })
+                        .collect(),
+                )
+            }
+            SessionConfigKind::Boolean(b) => (
+                b.current_value.to_string(),
+                ["true", "false"]
+                    .into_iter()
+                    .map(|v| ConfigValue {
+                        value: v.into(),
+                        name: v.into(),
+                        description: None,
+                    })
+                    .collect(),
+            ),
+            _ => (String::new(), Vec::new()),
+        };
+        Self {
+            id: o.id.0.to_string(),
+            name: o.name.clone(),
+            category: o.category.as_ref().and_then(|c| {
+                serde_json::to_value(c)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+            }),
+            current,
+            options,
+        }
+    }
 }
 
 /// One in-flight `session/prompt`: resolves with the stop reason (serde name,
-/// `end_turn` …) or `Err(text)` on transport failure. `'static`, so it can be
-/// awaited from a spawned task while the [`Harness`] stays with its owner.
-pub type Turn = BoxFuture<'static, Result<String, String>>;
+/// `end_turn` …) and the response's `usage` when the harness sent one
+/// (`unstable_end_turn_token_usage`, 75 §7 — raw as sent: omp a per-turn
+/// delta, opencode the last request's tokens), or `Err(text)` on transport
+/// failure. `'static`, so it can be awaited from a spawned task while the
+/// [`Harness`] stays with its owner.
+pub type Turn = BoxFuture<'static, Result<(String, Option<Usage>), String>>;
+
+/// The session's `configOptions`, shared by every [`Harness`] clone and the
+/// connection's notification handler.
+type Options = Arc<Mutex<Vec<SessionConfigOption>>>;
 
 /// A live connection to one harness process with one ACP session. Cheap to
 /// clone; every clone shares the connection, and [`Harness::close`] on any of
@@ -176,8 +285,9 @@ pub struct Harness {
     cx: ConnectionTo<Agent>,
     session: SessionId,
     resumed: bool,
-    /// [`current_model`] of the `session/new` | `session/load` response.
-    model: Option<String>,
+    /// The harness's `configOptions` (75 §8): from `session/new` | `session/load`,
+    /// every `config_option_update`, every `set_config_option` response.
+    options: Options,
     shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
@@ -210,6 +320,8 @@ struct Link {
     /// What a clean end of the connection task is called: `process exited`
     /// for a subprocess, `connection closed` for a dial.
     closed: &'static str,
+    /// See [`Harness::options`]; the notification handler writes it.
+    options: Options,
 }
 
 /// Why the handshake could not open a session.
@@ -233,10 +345,19 @@ impl Link {
         let notify_tx = tx.clone();
         let peer_tx = tx.clone();
         let permission_tx = tx;
+        let shared: Options = Arc::default();
+        let options = shared.clone();
         let builder = Client
             .builder()
             .on_receive_notification(
                 async move |n: SessionNotification, _cx| {
+                    // 75 §8: the option list is a session fact; keep it
+                    // current before the actor sees the update.
+                    if let SessionUpdate::ConfigOptionUpdate(u) = &n.update
+                        && let Ok(mut o) = options.lock()
+                    {
+                        o.clone_from(&u.config_options);
+                    }
                     let _ = notify_tx.send(Update::Session(n.update));
                     Ok(())
                 },
@@ -316,6 +437,7 @@ impl Link {
                 shutdown,
                 done: Some(done),
                 closed,
+                options: shared,
             }),
             Err(_) => Err(format!("spawn failed: {}", exit_text(done.await, closed))),
         }
@@ -346,6 +468,7 @@ impl Link {
         cwd: &Path,
         resume: Option<String>,
         meta: Option<Meta>,
+        mcp: &[McpServer],
         authenticate: bool,
     ) -> Result<(SessionId, bool, Vec<SessionConfigOption>), Fail> {
         let init: InitializeResponse = match self.request(initialize_request()).await {
@@ -357,7 +480,10 @@ impl Link {
         loop {
             let opened = match &load {
                 Some(sid) => self
-                    .request(LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd))
+                    .request(
+                        LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd)
+                            .mcp_servers(mcp.to_vec()),
+                    )
                     .await
                     .map(|r| {
                         (
@@ -367,7 +493,11 @@ impl Link {
                         )
                     }),
                 None => self
-                    .request(NewSessionRequest::new(cwd).meta(meta.clone()))
+                    .request(
+                        NewSessionRequest::new(cwd)
+                            .meta(meta.clone())
+                            .mcp_servers(mcp.to_vec()),
+                    )
                     .await
                     .map(|r| (r.session_id, false, r.config_options.unwrap_or_default())),
             };
@@ -421,12 +551,17 @@ impl Harness {
             stderr_log,
             meta,
             model: want,
+            effort,
+            mcp_servers,
         } = c;
         let config = transport.config().cloned();
         let meta = meta.as_ref().and_then(crate::SessionMeta::to_meta);
         let mut link = Link::spawn(transport, &stderr_log, tx.clone()).await?;
         let (session, resumed, mut options) =
-            match link.open(config.as_ref(), &cwd, resume, meta, true).await {
+            match link
+                .open(config.as_ref(), &cwd, resume, meta, &mcp_servers, true)
+                .await
+            {
                 Ok(s) => s,
                 Err(Fail::Login(cmd)) => {
                     return Err(format!(
@@ -438,30 +573,26 @@ impl Harness {
         if let Some(want) = want.filter(|_| !resumed)
             && current_model(&options).as_deref() != Some(want.as_str())
         {
-            match model_option(&options) {
-                Some(id) => match link
-                    .request(SetSessionConfigOptionRequest::new(
-                        session.clone(),
-                        id,
-                        SessionConfigOptionValue::value_id(SessionConfigValueId::new(want.clone())),
-                    ))
-                    .await
-                {
-                    Ok(r) => options = r.config_options,
-                    Err(e) => {
-                        tracing::warn!("acp set_config_option model={want}: {}", error_text(&e))
-                    }
-                },
-                None => tracing::warn!("acp harness offers no model option; `{want}` not applied"),
+            match set_option(&link.cx, &session, &options, "model", &want).await {
+                Ok(o) => options = o,
+                Err(e) => tracing::warn!("acp model `{want}` not applied: {e}"),
             }
         }
-        let model = current_model(&options);
+        // 75 §8: effort is the caller's explicit ask; a harness that cannot
+        // take it fails the spawn naming what it offers.
+        if let Some(effort) = effort.filter(|_| !resumed) {
+            options = set_option(&link.cx, &session, &options, "effort", &effort)
+                .await
+                .map_err(|e| format!("effort `{effort}`: {e}"))?;
+        }
         let Link {
             cx,
             shutdown,
             done,
             closed,
+            options: shared,
         } = link;
+        *shared.lock().unwrap_or_else(|p| p.into_inner()) = options;
         if let Some(done) = done {
             tokio::spawn(async move {
                 let _ = tx.send(Update::Closed(exit_text(done.await, closed)));
@@ -471,16 +602,58 @@ impl Harness {
             cx,
             session,
             resumed,
-            model,
+            options: shared,
             shutdown: Arc::new(Mutex::new(Some(shutdown))),
         })
     }
 
-    /// The model the harness reported when the session opened
-    /// ([`current_model`]); `None` when it reported none.
+    /// The model the harness runs on now ([`current_model`] of its live
+    /// option list); `None` when it reports none.
     #[must_use]
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref()
+    pub fn model(&self) -> Option<String> {
+        current_model(&self.options.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// The harness's session config options as they stand (75 §8).
+    #[must_use]
+    pub fn options(&self) -> Vec<ConfigOption> {
+        self.options
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(ConfigOption::from)
+            .collect()
+    }
+
+    /// Would [`Self::set_config_option`]`(key, value)` pass the local checks
+    /// now (the option exists, the value is listed)? The refusal text otherwise.
+    pub fn check_option(&self, key: &str, value: &str) -> Result<(), String> {
+        resolve(
+            &self.options.lock().unwrap_or_else(|p| p.into_inner()),
+            key,
+            value,
+        )
+        .map(drop)
+    }
+
+    /// `session/set_config_option` (75 §8): `key` is an option id or the
+    /// alias `model` / `effort` (see [`resolve`]). A missing option or an
+    /// unlisted value is refused with the list before anything reaches the
+    /// harness; a harness error carries the option's values. The response
+    /// refreshes [`Self::options`], which is returned.
+    pub async fn set_config_option(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<Vec<ConfigOption>, String> {
+        let current = self
+            .options
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let fresh = set_option(&self.cx, &self.session, &current, key, value).await?;
+        *self.options.lock().unwrap_or_else(|p| p.into_inner()) = fresh;
+        Ok(self.options())
     }
 
     /// The harness's session id.
@@ -496,8 +669,9 @@ impl Harness {
     }
 
     /// One `session/prompt`; the returned future resolves with the stop reason
-    /// string (`end_turn` …) or `Err(text)` on transport failure. Await it from
-    /// a task, never from inside an SDK handler. Dropping it cancels the request.
+    /// string (`end_turn` …) and the response's token usage, or `Err(text)` on
+    /// transport failure. Await it from a task, never from inside an SDK
+    /// handler. Dropping it cancels the request.
     pub fn prompt(&self, text: String) -> Turn {
         let cx = self.cx.clone();
         let session = self.session.clone();
@@ -507,7 +681,7 @@ impl Harness {
                 .block_task()
                 .await
                 .map_err(|e| error_text(&e))?;
-            Ok(stop_reason(r.stop_reason))
+            Ok((stop_reason(r.stop_reason), r.usage))
         })
     }
 
@@ -553,11 +727,90 @@ fn model_select(options: &[SessionConfigOption]) -> Option<&SessionConfigOption>
         })
 }
 
-/// The config id to `session/set_config_option` a model with (67 §8), when
-/// the harness announces a model select.
-#[must_use]
-pub fn model_option(options: &[SessionConfigOption]) -> Option<SessionConfigId> {
-    model_select(options).map(|o| o.id.clone())
+/// 75 §8: the option `key` names in `options`, by exact id, else by alias —
+/// `model` → the model select ([`model_select`]), `effort` | `thought_level` |
+/// `thinking` → the `thought_level`-category option (omp `thinking`,
+/// opencode `effort`). `Err` names the ids on offer.
+fn find_option<'a>(
+    options: &'a [SessionConfigOption],
+    key: &str,
+) -> Result<&'a SessionConfigOption, String> {
+    let by_id = options.iter().find(|o| &*o.id.0 == key);
+    let (label, found) = match key {
+        "model" => ("model", by_id.or_else(|| model_select(options))),
+        "effort" | "thought_level" | "thinking" => (
+            "effort",
+            by_id.or_else(|| {
+                options
+                    .iter()
+                    .find(|o| o.category == Some(SessionConfigOptionCategory::ThoughtLevel))
+            }),
+        ),
+        _ => (key, by_id),
+    };
+    found.ok_or_else(|| {
+        let ids: Vec<&str> = options.iter().map(|o| &*o.id.0).collect();
+        format!(
+            "this harness offers no {label} option (has: {})",
+            ids.join(", ")
+        )
+    })
+}
+
+/// The request setting `key` to `value` (75 §8), or the refusal: a missing
+/// option or a value the option does not list, each naming the list. A
+/// boolean option takes `true`/`false`; a select with no listed values takes
+/// anything (the harness decides).
+fn resolve(
+    options: &[SessionConfigOption],
+    key: &str,
+    value: &str,
+) -> Result<(SessionConfigId, SessionConfigOptionValue, String), String> {
+    let o = find_option(options, key)?;
+    let view = ConfigOption::from(o);
+    let values: Vec<&str> = view.options.iter().map(|v| v.value.as_str()).collect();
+    let values = values.join(", ");
+    let v = match &o.kind {
+        SessionConfigKind::Boolean(_) => match value {
+            "true" | "false" => SessionConfigOptionValue::Boolean {
+                value: value == "true",
+            },
+            _ => {
+                return Err(format!(
+                    "unknown value `{value}` for {} (has: {values})",
+                    view.id
+                ));
+            }
+        },
+        _ => {
+            if !view.options.is_empty() && !view.options.iter().any(|v| v.value == value) {
+                return Err(format!(
+                    "unknown value `{value}` for {} (has: {values})",
+                    view.id
+                ));
+            }
+            SessionConfigOptionValue::value_id(SessionConfigValueId::new(value))
+        }
+    };
+    Ok((o.id.clone(), v, values))
+}
+
+/// One `session/set_config_option` for `key = value` against `options` (see
+/// [`resolve`]); the harness's error text gains the option's values. The
+/// response's full option list.
+async fn set_option(
+    cx: &ConnectionTo<Agent>,
+    session: &SessionId,
+    options: &[SessionConfigOption],
+    key: &str,
+    value: &str,
+) -> Result<Vec<SessionConfigOption>, String> {
+    let (id, v, values) = resolve(options, key, value)?;
+    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id, v))
+        .block_task()
+        .await
+        .map(|r| r.config_options)
+        .map_err(|e| format!("{} (has: {values})", error_text(&e)))
 }
 
 /// Open, `initialize`, `session/new`, report, close. Never authenticates.
@@ -568,7 +821,7 @@ pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
     let attempt = async {
         let config = transport.config().cloned();
         let mut link = Link::spawn(transport, &stderr_log, tx).await?;
-        link.open(config.as_ref(), &cwd, None, None, false)
+        link.open(config.as_ref(), &cwd, None, None, &[], false)
             .await
             .map_err(|f| match f {
                 Fail::Login(cmd) => format!("login required: {cmd}"),
@@ -710,6 +963,61 @@ mod tests {
         assert_eq!(current_model(&[]), None);
     }
 
+    /// 75 §8: `effort` reaches omp's `thinking` by category; a boolean takes
+    /// `true`/`false` only; grouped selects flatten into the view; missing
+    /// options and unlisted values are refused naming the list.
+    #[test]
+    fn resolve_finds_options_by_id_or_alias_and_checks_values() {
+        let opts: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"model","name":"Model","category":"model","type":"select","currentValue":"a/x",
+             "options":[{"group":"a","name":"A","options":[{"value":"a/x","name":"X"}]},
+                        {"group":"b","name":"B","options":[{"value":"b/y","name":"Y","description":"why"}]}]},
+            {"id":"thinking","name":"Thinking","category":"thought_level","type":"select","currentValue":"medium",
+             "options":[{"value":"low","name":"Low"},{"value":"medium","name":"Medium"}]},
+            {"id":"fast","name":"Fast","type":"boolean","currentValue":false}
+        ]))
+        .unwrap();
+        let view: Vec<ConfigOption> = opts.iter().map(ConfigOption::from).collect();
+        assert_eq!(view[0].category.as_deref(), Some("model"));
+        assert_eq!(
+            view[0]
+                .options
+                .iter()
+                .map(|v| v.value.as_str())
+                .collect::<Vec<_>>(),
+            ["a/x", "b/y"]
+        );
+        assert_eq!(view[1].category.as_deref(), Some("thought_level"));
+        assert_eq!(
+            (view[2].current.as_str(), view[2].category.as_deref()),
+            ("false", None)
+        );
+
+        let (id, v, values) = resolve(&opts, "effort", "low").unwrap();
+        assert_eq!((&*id.0, values.as_str()), ("thinking", "low, medium"));
+        assert!(matches!(v, SessionConfigOptionValue::ValueId { value } if &*value.0 == "low"));
+        assert!(matches!(
+            resolve(&opts, "fast", "true").unwrap().1,
+            SessionConfigOptionValue::Boolean { value: true }
+        ));
+        assert_eq!(
+            resolve(&opts, "fast", "yes").unwrap_err(),
+            "unknown value `yes` for fast (has: true, false)"
+        );
+        assert_eq!(
+            resolve(&opts, "model", "c/z").unwrap_err(),
+            "unknown value `c/z` for model (has: a/x, b/y)"
+        );
+        assert_eq!(
+            resolve(&opts[..1], "effort", "low").unwrap_err(),
+            "this harness offers no effort option (has: model)"
+        );
+        assert_eq!(
+            resolve(&opts, "mode", "x").unwrap_err(),
+            "this harness offers no mode option (has: model, thinking, fast)"
+        );
+    }
+
     #[test]
     fn login_command_appends_terminal_method() {
         let config = AcpAgentConfig::new("codex-acp").arg("--acp");
@@ -752,6 +1060,8 @@ mod tests {
                 stderr_log: dir.join("acp-offline.log"),
                 meta: None,
                 model: None,
+                effort: None,
+                mcp_servers: Vec::new(),
             },
             tx,
         )

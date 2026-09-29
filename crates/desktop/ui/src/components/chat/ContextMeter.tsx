@@ -9,8 +9,23 @@ const K = { maximumFractionDigits: 0, useGrouping: false }
 /** `${Math.round(n / 1000)}k`, digits rolling; the group makes every number in the pill roll together. */
 const k = (n: number) => <NumberFlow value={n / 1000} suffix="k" format={K} />
 
+/** 75 §5 bands: < 75 % normal, 75–90 warning, 90–95 danger, > 95 critical (danger, pulsing). */
+export function band(pct: number | null): 'normal' | 'warning' | 'danger' | 'critical' {
+  if (pct === null || pct < 75) return 'normal'
+  if (pct < 90) return 'warning'
+  return pct > 95 ? 'critical' : 'danger'
+}
+
+const BAND = {
+  normal: ['border-border-subtle text-fg-secondary', ''],
+  warning: ['border-warning-border bg-warning-bg text-warning', ' · context filling up'],
+  danger: ['border-danger-border bg-danger-bg text-danger', ' · start a new session or summarise'],
+  critical: ['border-danger-border bg-danger-bg text-danger animate-pulse', ' · next prompt may fail'],
+} as const
+
 /**
- * `used/limit k · pct% · cache` pill (colour steps at 70 / 90 %). `compact`: the percent alone, for the narrow header;
+ * `used/limit k · pct% · cache` pill (bands at 75 / 90 / 95 %, 75 §5). `limit` is the harness's window when it
+ * reported one, the catalog's otherwise. `compact`: the percent alone, for the narrow header;
  * the pane's own width decides that, not the viewport, so no `md:` gating here.
  */
 export function ContextMeter({ session, compact }: { session: string; compact?: boolean }) {
@@ -19,23 +34,18 @@ export function ContextMeter({ session, compact }: { session: string; compact?: 
   const estimated = useSessionField(session, 'contextEstimated')
   const usage = useSessionField(session, 'usage')
   const model = useSessionField(session, 'model')
+  const size = useSessionField(session, 'contextSize')
   const { data: models } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   if (used === undefined) return null
-  const limit = models?.find((m) => m.id === model)?.context ?? 0
+  const limit = size ?? models?.find((m) => m.id === model)?.context ?? 0
   const pct = limit > 0 ? Math.round((used / limit) * 100) : null
   const cache = usage && usage.prompt > 0 ? Math.round((usage.cached / usage.prompt) * 100) : null
+  const [tone, warn] = BAND[band(pct)]
   return (
     <NumberFlowGroup>
       <span
-        className={cn(
-          'rounded-full border px-2.5 py-0.5 text-xs whitespace-nowrap tabular-nums',
-          pct === null || pct < 70
-            ? 'border-border-subtle text-fg-secondary'
-            : pct < 90
-              ? 'border-warning-border bg-warning-bg text-warning'
-              : 'border-danger-border bg-danger-bg text-danger',
-        )}
-        title={`${estimated ? 'Estimated context (≈) until the provider reports' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}`}
+        className={cn('rounded-full border px-2.5 py-0.5 text-xs whitespace-nowrap tabular-nums', tone)}
+        title={`${estimated ? 'Estimated context (≈) until the provider reports' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}${warn}`}
       >
         {estimated && '≈'}
         {pct === null ? (

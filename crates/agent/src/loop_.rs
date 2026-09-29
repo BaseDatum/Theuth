@@ -3714,6 +3714,7 @@ impl Turn {
             session: self.shared.id,
             turn,
             context: self.state.used,
+            size: None,
         })
         .await;
 

@@ -99,7 +99,7 @@ omp:
 
 **Interaction with S1.** A materialised skill appears in the child's manifest as `skill:<name>` (omp) / `<name>` (opencode). That is the verification, and why L1 follows S1.
 
-Not in scope: per-turn prompt-text injection (costs child context each turn, invisible as a skill; the brief already carries the task); re-materialising for `session/load` (both harnesses load skills at session start).
+Not in scope: per-turn prompt-text injection (costs child context each turn, invisible as a skill; the brief already carries the task). Re-materialising on `session/load`: done by §10's resume from the row's stored names, since the stopped actor removed the files and a new harness process reads skills at start.
 
 ## 5. Live context (C1)
 
@@ -195,12 +195,12 @@ desktop ModelMenu · TUI `/model [v]`, `/effort <v>`
 - `theuth mcp --session <id>`: a stdio MCP server (rmcp `server` feature) proxying to the daemon over jsonrpsee with the session's token. Passed as `mcpServers: [{name: "theuth", command: <theuth binary>, args: ["mcp", "--session", id]}]` in `session/new` (`harness.rs:370-372`; `Connect` `:144-164`; `Agents::acp_session` `supervisor.rs:775-800`).
 - Tools: `load_skill(name)` / `list_skills` (`skills::load_text`, `skills.rs:188`); `send_message(text)` → parent `Deliver` in the `_theuth/peer_message` uplink shape (`acp_child.rs:386-415`, `rpc/acp.rs:842-844`); mutating tools pass `ToolRegistry::ExternalApproval` (06 §8.8) so one modal covers harness and back-channel calls.
 - Why local stdio: opencode crashed on an unreachable *remote* MCP (synthesis §1b); a subprocess the harness spawns cannot be unreachable. omp: client MCP servers are its only MCP source in ACP mode (`main.ts:485-490`) and `type: "acp"` is rejected (`acp-agent.ts:2717-2743`) — stdio is the one shape both accept today.
-- Off by default; `agents.yaml` `mcp: theuth` enables it. L1 covers skills without this; L3 is for the child's voice and on-demand skill bodies. 06 §3.8's trigger ("one transcript showing a stuck child that should have asked") has arrived with this request.
+- Off by default; `agents.yaml` `mcp: true` enables it. L1 covers skills without this; L3 is for the child's voice and on-demand skill bodies. 06 §3.8's trigger ("one transcript showing a stuck child that should have asked") has arrived with this request.
 
 ## 10. `load_session` resume
 
 - Both harnesses advertise `loadSession` and replay history (`acp-agent.ts:705-715`, `service.ts:235`); `Link::open` already loads with a fallback to new (`harness.rs:355-368, 398-400`); replay is dropped (06 §8.11). Today the only trigger is `send_message` to a child whose actor is gone (06 §3.2; `supervisor.rs:803-808`).
-- Add `resume_child(session)` — TUI `/resume`, a button on a stopped ACP child in the desktop: kill the harness process if still alive (the 06 §8.3 orphan), respawn with `resume: Some(acp_session)`, no prompt. The omp session continues under theuth's session, transcript and ledger intact.
+- Add `resume_child(session)` — TUI `/resume` (no argument, on an ACP child), a Resume button beside the harness picker of an idle ACP child in the desktop: stop the live actor if any (`AcpChild::Shutdown`: the connection closes and the SDK kills the process group — theuth holds no pid, so an orphan from an earlier engine process is out of reach), respawn with `resume: Some(acp_session)`, no prompt. The omp session continues under theuth's session, transcript and ledger intact. The row's `acp_skills` (migration 0030, the `spawn_subagent.skills` names) are materialised again — the stopped actor removed them (§4). Refused: native session, a node's session, no stored ACP session id.
 - Replaces `procedures/omp-acp-timeout-recovery` (`omp -r <id>` in a PTY, commit its work by hand) for children cut by `max_runtime_secs`. Not for remote nodes (their `acp_session` belongs to another engine). claude-agent-acp's replay bug (#998) does not apply to the pinned harnesses.
 
 ## 11. Amendments to 06
@@ -212,7 +212,7 @@ desktop ModelMenu · TUI `/model [v]`, `/effort <v>`
 | §3.3 row `usage_update` | `ContextUsed {used, size}` per update; `size` stored (§5); handled in the mailbox, not `translate()` |
 | §3.3 row `available_commands_update, …` | `available_commands_update` → `HarnessCommandsChanged` (§3); `config_option_update` refreshes the option list (§8); `current_mode_update`, `session_info_update` still ignored |
 | §3.3 row `session/prompt` response | `usage` from `PromptResponse.usage` when present (§7) |
-| §3.6 store, RPC | `harness_commands` (0027), `context_size` (0028), `remote_turns` (0029); `Loaded.harness_commands/context_size`, `SessionSummary.context_size`; RPC `harness_options`, `set_harness_option`, `resume_child` |
+| §3.6 store, RPC | `harness_commands` (0027), `context_size` (0028), `remote_turns` (0029), `acp_skills` (0030); `Loaded.harness_commands/context_size`, `SessionSummary.context_size`; RPC `harness_options`, `set_harness_option`, `resume_child` |
 | §3.8 | MCP back-channel in scope as §9; `~/.theuth/mcp/*.json` forwarding stays out |
 | §7 cost visibility | retired: both pinned harnesses send `usage_update`; tokens via §7 |
 | §8.2 rendering | "no picker, no effort menu; `set_model` on a harness is not possible" superseded by §8 |

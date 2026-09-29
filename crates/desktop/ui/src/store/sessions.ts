@@ -5,6 +5,7 @@ import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
+import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
 import type { JobExit } from "@/rpc/bindings/JobExit";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { QueuedInput } from "@/rpc/bindings/QueuedInput";
@@ -191,6 +192,10 @@ export type SessionSlice = {
   agent?: string | null;
   /** Model the external engine reports for its session (06 §8.2); the header shows `agent · harnessModel`. */
   harnessModel?: string | null;
+  /** The ACP child's command manifest (75 §3): `skill:<name>` entries are loaded skills, the rest commands. */
+  harnessCommands: HarnessCommand[];
+  /** The harness's context window when it reports one (75 §5); the catalog limit otherwise. */
+  contextSize?: number | null;
   undone: number;
   /** `load_session` has run at least once. */
   loaded: boolean;
@@ -391,6 +396,8 @@ export const createSessions = (): SessionsApi =>
             undone: loaded.undone,
             agent: loaded.agent,
             harnessModel: loaded.harness_model ?? cur.harnessModel,
+            harnessCommands: loaded.harness_commands ?? cur.harnessCommands,
+            contextSize: loaded.context_size ?? cur.contextSize,
             name: loaded.name,
             parent: loaded.parent,
             skills: loaded.skills,

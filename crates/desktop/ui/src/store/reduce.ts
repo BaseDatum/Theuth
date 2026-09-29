@@ -32,6 +32,7 @@ export function empty(id: string): SessionSlice {
     harvesting: false,
     queued: [],
     skills: [],
+    harnessCommands: [],
     undone: 0,
     loaded: false,
     more: false,
@@ -650,7 +651,7 @@ export function apply(
     // One round settled (51 §6.4): the gauge moves with the cost pill. Same figure `TurnFinished`
     // would carry, so it is not an estimate; a settled snapshot is unaffected, so `live` holds.
     case "ContextUsed":
-      return { ...slice, context: e.context, contextEstimated: false };
+      return { ...slice, context: e.context, contextEstimated: false, contextSize: e.size ?? slice.contextSize };
     // The store moved past what is on screen (48 §5): controls disable, in-flight pages and snapshots
     // are discarded, and the route reloads through the settled path. The revision we already installed
     // (our own edit's echo) changes nothing unless a refused reload left us stale.
@@ -670,6 +671,9 @@ export function apply(
     // An ACP child's harness reported its LLM (06 §8.2): header text, not transcript state — no tail close, no `live` bump.
     case "HarnessModelChanged":
       return slice.harnessModel === e.model ? slice : { ...slice, harnessModel: e.model };
+    // The child's command manifest (75 §3): the skills page reads it — same shape of change as the harness model.
+    case "HarnessCommandsChanged":
+      return { ...slice, harnessCommands: e.commands };
   }
   // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
   const next = turn(closeTail(slice, e), e, ctx);

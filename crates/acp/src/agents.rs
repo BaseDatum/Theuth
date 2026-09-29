@@ -35,6 +35,18 @@ pub struct Entry {
     /// harness: it is a display fallback the user sets by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Write theuth skills into the child's cwd for it to load (design doc
+    /// 75 §4); default true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<bool>,
+    /// Where, relative to the child's cwd; default [`DEFAULT_SKILLS_DIR`]
+    /// (`.claude/skills` for Claude Code).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_dir: Option<PathBuf>,
+    /// Give the child the theuth MCP shim (`load_skill`, `list_skills`,
+    /// `send_message`; 75 §9) in `session/new.mcpServers`; default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<bool>,
 }
 
 impl Entry {
@@ -46,6 +58,9 @@ impl Entry {
             .envs(self.env.iter().map(|(k, v)| (k.clone(), v.clone())))
     }
 }
+
+/// [`Entry::skills_dir`] when unset: what omp, opencode, Codex and Gemini read.
+pub const DEFAULT_SKILLS_DIR: &str = ".agents/skills";
 
 /// Wire/UI shape for `/acp` and RPC.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -163,6 +178,9 @@ mod tests {
                 env: BTreeMap::new(),
                 description: None,
                 model: None,
+                skills: None,
+                skills_dir: None,
+                mcp: None,
             },
         );
         entries.insert(
@@ -173,6 +191,9 @@ mod tests {
                 env: [("OPENCODE_CONFIG".to_owned(), "/x.json".to_owned())].into(),
                 description: Some("local build".into()),
                 model: Some("gpt-5.4".into()),
+                skills: Some(false),
+                skills_dir: Some(".claude/skills".into()),
+                mcp: None,
             },
         );
         save(&dir, &entries).unwrap();

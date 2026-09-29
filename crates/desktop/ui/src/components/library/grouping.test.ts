@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
+import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
-import { groupSkills, isEditable, repoDir } from './grouping'
+import { groupSkills, isEditable, repoDir, splitHarnessCommands } from './grouping'
 
 const skill = (name: string, repo: string | null, description = '', path = `/data/skills/${repo ? `${repo}/` : ''}${name}.md`): SkillMeta => ({
   name,
@@ -43,4 +44,20 @@ test('only a local <name>.md can be rewritten; SKILL.md directories and repo ski
 test('repoDir is the clone directory of a repo skill', () => {
   expect(repoDir(skill('a', 'r', '', '/data/skills/r/deep/a.md'))).toBe('/data/skills/r')
   expect(repoDir(skill('a', null))).toBe(null)
+})
+
+test('harness manifest (75 §3): omp `skill:` entries are skills by bare name, the rest commands; opencode bare names are all commands', () => {
+  const cmd = (name: string, description: string, hint?: string): HarnessCommand => (hint === undefined ? { name, description } : { name, description, hint })
+  const omp = [cmd('skill:ponytail', 'lazy code'), cmd('/ponytail', 'switch level', 'lite|full|ultra'), cmd('skill:caveman', 'terse prose'), cmd('/ponytail-review', 'review for bloat')]
+  expect(splitHarnessCommands(omp)).toEqual({
+    skills: [
+      { name: 'ponytail', description: 'lazy code' },
+      { name: 'caveman', description: 'terse prose' },
+    ],
+    commands: [omp[1], omp[3]],
+  })
+  expect(splitHarnessCommands(omp, ' REVIEW ')).toEqual({ skills: [], commands: [omp[3]] })
+  expect(splitHarnessCommands(omp, 'prose')).toEqual({ skills: [{ name: 'caveman', description: 'terse prose' }], commands: [] })
+  const opencode = [cmd('ponytail', 'lazy code'), cmd('init', 'create AGENTS.md')]
+  expect(splitHarnessCommands(opencode)).toEqual({ skills: [], commands: opencode })
 })

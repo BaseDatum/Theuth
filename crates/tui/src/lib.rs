@@ -625,6 +625,23 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             msg(api.set_effort(session, effort.clone()).await)?;
             UiEvent::EffortSet(effort)
         }
+        Command::HarnessOptions(session) => {
+            UiEvent::HarnessOptions(msg(api.harness_options(session).await)?)
+        }
+        Command::SetHarnessOption {
+            session,
+            config_id,
+            value,
+        } => {
+            let r = msg(api
+                .set_harness_option(session, config_id.clone(), value.clone())
+                .await)?;
+            UiEvent::HarnessOptionSet(config_id, value, r)
+        }
+        Command::ResumeChild(session) => {
+            msg(api.resume_child(session).await)?;
+            UiEvent::Info("harness resumed in its previous context; send a message to continue".into())
+        }
         Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),
         Command::SetGate {
@@ -1268,6 +1285,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::HarnessModelChanged { model, .. }) => {
             writeln!(out, "harness model → {model}")
         }
+        UiEvent::Agent(AgentEvent::HarnessCommandsChanged { commands, .. }) => {
+            writeln!(out, "harness commands → {}", commands.len())
+        }
         UiEvent::Agent(AgentEvent::Compacted { epoch, style, .. }) => {
             writeln!(out, "context compacted (epoch {epoch} · {style})")
         }
@@ -1317,6 +1337,12 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::ModelSet(info) => writeln!(out, "model → {}", info.id),
         UiEvent::EffortSet(Some(e)) => writeln!(out, "effort: {e}"),
         UiEvent::EffortSet(None) => writeln!(out, "effort cleared"),
+        UiEvent::HarnessOptions(options) => model::harness_options_lines(options)
+            .iter()
+            .try_for_each(|l| writeln!(out, "{l}")),
+        UiEvent::HarnessOptionSet(key, value, r) => {
+            writeln!(out, "{}", model::harness_option_set_line(key, value, r))
+        }
         UiEvent::Models(_) | UiEvent::Mcp(_) | UiEvent::PathComplete(..) => {
             writeln!(out, "menus need a TTY")
         }

@@ -1,3 +1,4 @@
+import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
 import type { SkillMeta } from '@/rpc/bindings/SkillMeta'
 
 export const LOCAL = 'Local'
@@ -17,6 +18,23 @@ export function groupSkills(skills: readonly SkillMeta[], query: string): { sour
   return [...groups]
     .sort(([a], [b]) => (a === LOCAL ? -1 : b === LOCAL ? 1 : a.localeCompare(b)))
     .map(([source, list]) => ({ source, skills: list.sort((a, b) => a.name.localeCompare(b.name)) }))
+}
+
+/**
+ * An ACP child's manifest (75 §3): `skill:<name>` entries are the skills the harness loaded (omp), shown by the bare
+ * name; everything else is a command — opencode strips the source, so there all entries are commands. Whether the
+ * model used a skill is not knowable. `query` filters both by name or description, case-insensitive.
+ */
+export function splitHarnessCommands(cmds: readonly HarnessCommand[], query = ''): { skills: { name: string; description: string }[]; commands: HarnessCommand[] } {
+  const q = query.trim().toLowerCase()
+  const skills: { name: string; description: string }[] = []
+  const commands: HarnessCommand[] = []
+  for (const c of cmds) {
+    if (q && !c.name.toLowerCase().includes(q) && !c.description.toLowerCase().includes(q)) continue
+    if (c.name.startsWith('skill:')) skills.push({ name: c.name.slice('skill:'.length), description: c.description })
+    else commands.push(c)
+  }
+  return { skills, commands }
 }
 
 /** A local `<name>.md` skill: the only kind `add_skill` may rewrite (repo skills and `SKILL.md` directories are not). */

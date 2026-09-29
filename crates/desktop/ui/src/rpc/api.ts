@@ -1,3 +1,5 @@
+import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
+import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
@@ -327,6 +329,8 @@ export interface Api {
   /** Commit `source` as a new `app` artifact named `name` without a model turn (30 §8, the transcript's Open as app); the result is what `get_app` returns for its `record_call_id`. Located helper errors arrive as the RPC error message. */
   publish_app(session: SessionId, name: string, source: string): Promise<AppDoc>
   get_prompt(session: SessionId | null): Promise<string>
+  /** An ACP child's harness config options (75 §8): model, effort/thinking, mode … as the harness lists them. Rejects when the session is not an external harness or its process is gone. */
+  harness_options(session: SessionId): Promise<ConfigOption[]>
   /** Effective communication state of `session`, or the global switch alone when `null` (50 §2.1); authoritative — render `effective`/`inherited_from`, never guess. */
   get_communication(session: SessionId | null): Promise<CommunicationState>
   /** Base64 of a file under `<data_dir>/{attachments,browser,computer,artifacts}` (31 §6.4), or under `session`'s private scratch root (51 §4.2); `-32000` elsewhere. */
@@ -657,6 +661,8 @@ export interface Api {
     delivery?: Delivery | null,
     id?: string | null,
   ): Promise<SessionId>
+  /** A peer message from `session` to `to` (`parent`, `session:<uuid>`, `peer:<name>`, a child's name), routed like the model's `send_message` tool without a wait (75 §9). Rejects a refused admission; nothing sent. */
+  send_message(session: SessionId, to: string, text: string): Promise<PeerReceipt>
   /** Sign every Bedrock call on the engine as `profile` from the next request on; `null` restores the default credential chain. */
   set_aws_profile(profile: string | null): Promise<AwsProfiles>
   set_approvals(session: SessionId | null, enabled: boolean): Promise<ApprovalsState>
@@ -664,6 +670,10 @@ export interface Api {
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
   set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
+  set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
+  /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */
+  resume_child(session: SessionId): Promise<null>
   /** Persist `agent.escalate_model` (57 §0.9): `null` = inherit the title model; an id that is not a catalog entry rejects and leaves the selection unchanged. */
   set_escalate_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
@@ -822,6 +832,7 @@ export const METHODS = [
   'get_prompt',
   'get_schedule',
   'get_todos',
+  'harness_options',
   'info',
   'invite_node',
   'knowledge_delete',
@@ -933,6 +944,7 @@ export const METHODS = [
   'rename_session',
   'resolve_approval',
   'restore_secret',
+  'resume_child',
   'resume_private',
   'schedule_history',
   'search',
@@ -943,6 +955,7 @@ export const METHODS = [
   'search_status',
   'search_test',
   'send_input',
+  'send_message',
   'session_context_breakdown',
   'session_cost',
   'session_orphans',
@@ -958,6 +971,7 @@ export const METHODS = [
   'set_decision_training',
   'set_effort',
   'set_escalate_model',
+  'set_harness_option',
   'set_max_salvages',
   'set_max_tool_rounds',
   'set_mcp_gate',

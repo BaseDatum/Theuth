@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { draftSkill } from '@/components/chat/slash'
 import { Page } from '@/components/library/Page'
-import { LOCAL, groupSkills, isEditable, repoDir } from '@/components/library/grouping'
+import { LOCAL, groupSkills, isEditable, repoDir, splitHarnessCommands } from '@/components/library/grouping'
 import { errorText, toastSync, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -34,16 +34,21 @@ const WHAT = 'A skill is markdown the model pulls into context on demand: the sy
 /**
  * `/skills` and `/skills/$name`: every skill under `<data_dir>/skills/` (local files and cloned repos) with
  * search, the selected one rendered on the right (below the list on phones). `session` (`?session=`) is the
- * chat the page was opened from: its loaded skills are marked and `Use` drafts into it.
+ * chat the page was opened from: its loaded skills are marked and `Use` drafts into it. For an ACP child (`agent`
+ * set) the harness's own manifest (75 §3) is listed first: loaded skills, then its commands — plain rows, nothing to open.
  */
 export function SkillsPage({ name, session }: { name: string | null; session: string | null }) {
   const api = useApi()
   const skills = useQuery({ queryKey: queryKeys.skills, queryFn: () => api.list_skills() })
   const loaded = useSessionField(session ?? '', 'skills')
+  const agent = useSessionField(session ?? '', 'agent')
+  const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<'new' | 'repos' | null>(null)
   const all = skills.data ?? []
   const groups = groupSkills(all, query)
+  const harness = agent && harnessCommands?.length ? splitHarnessCommands(harnessCommands, query) : null
+  const harnessRows = harness ? harness.skills.length + harness.commands.length : 0
   const shown = name ? all.find((s) => s.name === name) ?? null : null
 
   return (
@@ -89,7 +94,38 @@ export function SkillsPage({ name, session }: { name: string | null; session: st
               <p>Write one with New skill, or add a git repo of skills under Repos.</p>
             </div>
           )}
-          {all.length > 0 && groups.length === 0 && <p className="p-3 text-sm text-fg-tertiary">No skill matches “{query.trim()}”.</p>}
+          {all.length > 0 && groups.length === 0 && harnessRows === 0 && <p className="p-3 text-sm text-fg-tertiary">No skill matches “{query.trim()}”.</p>}
+          {harness && harnessRows > 0 && (
+            <section className="px-2 pb-2">
+              <h3 className="px-2.5 pt-2 pb-1 text-xs font-medium text-fg-tertiary">
+                Harness skills <span className="font-normal">· loaded by {agent}</span>
+              </h3>
+              <ul>
+                {harness.skills.map((s) => (
+                  <li key={s.name} className="flex flex-col gap-0.5 px-2.5 py-2 text-sm">
+                    <span className="truncate font-medium">{s.name}</span>
+                    <span className="truncate text-[13px] text-fg-secondary">{s.description}</span>
+                  </li>
+                ))}
+              </ul>
+              {harness.commands.length > 0 && (
+                <>
+                  <h3 className="px-2.5 pt-2 pb-1 text-xs font-medium text-fg-tertiary">Commands</h3>
+                  <ul>
+                    {harness.commands.map((c) => (
+                      <li key={c.name} className="flex flex-col gap-0.5 px-2.5 py-2 text-sm">
+                        <span className="flex items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
+                          {c.hint && <span className="truncate text-xs text-fg-tertiary">{c.hint}</span>}
+                        </span>
+                        <span className="truncate text-[13px] text-fg-secondary">{c.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
+          )}
           {groups.map((g) => (
             <section key={g.source} className="px-2 pb-2">
               <h3 className="px-2.5 pt-2 pb-1 text-xs font-medium text-fg-tertiary">

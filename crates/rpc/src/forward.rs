@@ -670,7 +670,7 @@ mod tests {
             .create_session(desk, "m", None, None, None)
             .await
             .unwrap();
-        theirs.set_acp(desk, "omp", None).await.unwrap();
+        theirs.set_acp(desk, "omp", None, &[]).await.unwrap();
         // ... a roster desk: the row's `desk` mark (roster::open_desk) ...
         theirs
             .create_session(roster, "m", None, None, None)

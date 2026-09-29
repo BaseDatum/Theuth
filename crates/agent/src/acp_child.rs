@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use acp::{Connect, Harness, Permission, Transport, Update};
 use agent_client_protocol::schema::v1::{
-    PermissionOptionKind, Plan, PlanEntryStatus, RequestPermissionOutcome,
-    SelectedPermissionOutcome, SessionUpdate, ToolCallStatus,
+    AvailableCommand, AvailableCommandInput, PermissionOptionKind, Plan, PlanEntryStatus,
+    RequestPermissionOutcome, SelectedPermissionOutcome, SessionUpdate, ToolCallStatus,
+    Usage as AcpUsage, UsageUpdate,
 };
 use genai::chat::{ChatMessage, MessageContent, ToolCall, ToolResponse};
 use kameo::Actor;
@@ -36,7 +37,7 @@ use crate::communication::{PeerConsumed, PeerTurnFinished};
 use crate::continuation::{
     self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
 };
-use crate::cost::{MeterUpdate, Money};
+use crate::cost::{MeterUpdate, Money, TokenTotals};
 use crate::loop_::{
     CancelPeerScope, CancelTurn, DISPLAY_OUTPUT_CHARS, IsRunning, PEER_INTAKE, PeerInput, PeerMeta,
     SuppressPeerInputs, UserInput, peer_wrapper, refuse_peer,
@@ -45,7 +46,7 @@ use crate::store::Store;
 use crate::store::communication::CommError;
 use crate::supervisor::Deliver;
 use crate::todo::{Status, Todo, TodoSource};
-use crate::{AGENT_ACTOR, AgentEvent, Agents, Usage, attach};
+use crate::{AGENT_ACTOR, AgentEvent, Agents, HarnessCommand, Usage, attach};
 
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
@@ -112,6 +113,21 @@ pub struct AcpChild {
     /// The model last persisted and published for this session (06 §8.2):
     /// the harness's `configOptions` model select, else [`Self::fallback_model`].
     harness_model: Option<String>,
+    /// The manifest last persisted and published (75 §3).
+    harness_commands: Vec<HarnessCommand>,
+    /// Last `usage_update.used` (75 §5): a session fact, arriving with or
+    /// without a turn open; `TurnFinished.context`.
+    context: u32,
+    /// Last `usage_update.size` persisted and published; `None` until reported.
+    context_size: Option<u32>,
+    /// The last turn opened: what a turnless `ContextUsed` is attributed to.
+    last_turn: Option<TurnId>,
+    /// Skills written into the cwd for this child (75 §4); removed with the
+    /// connection, whatever stopped it.
+    skills: Option<crate::skills::Materialised>,
+    /// `(key, value)` option changes asked for mid-turn (75 §8): sent at
+    /// `PromptDone`, before the next queued input's prompt.
+    pending_options: Vec<(String, String)>,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -150,11 +166,10 @@ pub(crate) struct Turn {
     /// Last `tool_call_update` output: what the parent gets when the harness
     /// ends the turn without text (opencode after a rejected permission).
     last_tool: Option<String>,
-    /// Last `usage_update.used`; `TurnFinished.context`.
-    context: u32,
-    /// `usage_update.cost` of the last update (51 §6.3): the harness's
-    /// cumulative total, taken by the actor after translation.
-    pub(crate) meter: Option<(f64, String)>,
+    /// `PromptResponse.usage` of this turn's prompt (75 §7), mapped by
+    /// [`tokens_of`]; `None` when the harness sent none or the turn never
+    /// prompted (continuation, error).
+    tokens: Option<TokenTotals>,
     /// Cancelled with the turn: pending permission asks answer `cancelled`.
     cancel: CancellationToken,
     /// Kill timer armed by [`CancelTurn`].
@@ -188,8 +203,7 @@ impl Turn {
             open: Vec::new(),
             tool_last: false,
             last_tool: None,
-            context: 0,
-            meter: None,
+            tokens: None,
             cancel: CancellationToken::new(),
             kill: None,
             scope,
@@ -296,8 +310,9 @@ impl Turn {
 /// `tell` (internal): `Harness::connect` returned.
 struct Connected(Result<Harness, String>);
 
-/// `tell` (internal): `session/prompt` returned with its stop reason, or failed.
-struct PromptDone(Result<String, String>);
+/// `tell` (internal): `session/prompt` returned with its stop reason and the
+/// response's token usage, or failed.
+struct PromptDone(Result<(String, Option<AcpUsage>), String>);
 
 /// `tell` (internal): the cancel grace for turn `.0` elapsed.
 struct KillTimer(TurnId);
@@ -308,13 +323,46 @@ struct Retry(TurnId);
 /// `tell` (internal): continuation turn `.0` saw no update for [`CONTINUATION_QUIET`].
 struct Quiet(TurnId);
 
+/// `ask` → `Result<acp::SetOptionResult, String>` (75 §8): set the harness's
+/// config option `config_id` (an id, or the alias `model` / `effort`) to
+/// `value`. Idle → sent now; a turn in flight → queued and sent at its end
+/// (`pending: true`). A missing option or an unlisted value is refused with
+/// the list; nothing is applied silently.
+#[derive(Clone, Debug)]
+pub struct SetOption {
+    /// Option id or alias.
+    pub config_id: String,
+    /// One of the option's `options[].value`.
+    pub value: String,
+}
+
+/// `ask` → `Vec<acp::ConfigOption>`: the harness's config options as they stand.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HarnessOptions;
+
+/// `tell` (75 §10): end the connection — killing a local harness process,
+/// whether idle or still working on its own after a cancel (06 §8.3) — finish
+/// an open turn `cancelled`, fail queued inputs and stop the actor. The
+/// supervisor then respawns from the row with `session/load`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Shutdown;
+
+/// A `session/set_config_option` round trip is bounded so a hung harness
+/// cannot hold the actor's mailbox.
+// ponytail: the option request is awaited on the mailbox (one short round
+// trip on an idle harness); move to a delegated reply if a harness is seen
+// stalling it.
+const OPTION_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl AcpChild {
     /// Bind session `id` to harness `name` reached over `transport`, prompting
     /// in `cwd`; `resume` is the stored ACP session id to `session/load`;
     /// `fallback_model` is the entry's `model:` label (06 §8.2); `meta` is
-    /// what a remote theuth reads from `session/new` `_meta` and `model` the
-    /// pick a local harness switches to through its model option (67 §8);
-    /// `deadline` is how long a prompt the harness refuses as busy is retried.
+    /// what a remote theuth reads from `session/new` `_meta` and `model` /
+    /// `effort` the picks a local harness switches to through its options
+    /// (67 §8, 75 §8); `mcp_servers` goes into `session/new.mcpServers`
+    /// (75 §9); `deadline` is how long a prompt the harness refuses as busy
+    /// is retried.
     #[allow(clippy::too_many_arguments)] // one call site (the supervisor); a builder would only rename the fields
     pub fn new(
         id: SessionId,
@@ -325,9 +373,12 @@ impl AcpChild {
         fallback_model: Option<String>,
         meta: Option<acp::SessionMeta>,
         model: Option<String>,
+        effort: Option<String>,
         deadline: Duration,
         store: Store,
         rt: Runtime,
+        skills: crate::skills::Materialised,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Self {
         let remote = matches!(transport, Transport::Dial(_));
         let connect = Connect {
@@ -337,6 +388,8 @@ impl AcpChild {
             stderr_log: rt.data_dir.join("logs").join(format!("acp-{name}.log")),
             meta,
             model,
+            effort,
+            mcp_servers,
         };
         Self {
             id,
@@ -358,6 +411,12 @@ impl AcpChild {
             meter_warned: false,
             fallback_model,
             harness_model: None,
+            harness_commands: Vec::new(),
+            context: 0,
+            context_size: None,
+            last_turn: None,
+            skills: Some(skills),
+            pending_options: Vec::new(),
         }
     }
 
@@ -381,6 +440,101 @@ impl AcpChild {
         })
         .await;
         self.harness_model = Some(model);
+    }
+
+    /// 75 §3: the harness's `available_commands_update`, the whole manifest
+    /// each time. Persist and publish once per distinct value (omp re-sends
+    /// on every metadata change, opencode once per prompt).
+    async fn set_harness_commands(&mut self, commands: Vec<AvailableCommand>) {
+        let commands: Vec<HarnessCommand> = commands
+            .into_iter()
+            .map(|c| HarnessCommand {
+                name: c.name,
+                description: c.description,
+                hint: c.input.map(|i| match i {
+                    AvailableCommandInput::Unstructured(u) => u.hint,
+                    _ => String::new(),
+                }),
+            })
+            .collect();
+        if self.harness_commands == commands {
+            return;
+        }
+        if let Err(e) = self.store.set_harness_commands(self.id, &commands).await {
+            tracing::warn!(session = %self.id, "set_harness_commands: {e:#}");
+            return;
+        }
+        self.publish(AgentEvent::HarnessCommandsChanged {
+            session: self.id,
+            commands: commands.clone(),
+        })
+        .await;
+        self.harness_commands = commands;
+    }
+
+    /// 75 §5: one `usage_update` — session facts, so handled with or without
+    /// a turn open (opencode's may land after the prompt response). `size`
+    /// is persisted once per distinct value; the gauge event is attributed
+    /// to the open turn or the last one; `cost` goes to the ledger (51 §6.3).
+    async fn usage(&mut self, u: UsageUpdate) {
+        self.context = u32::try_from(u.used).unwrap_or(u32::MAX);
+        let size = u32::try_from(u.size).ok().filter(|s| *s > 0);
+        if size.is_some() && size != self.context_size {
+            match self.store.set_context_size(self.id, size.unwrap_or(0)).await {
+                Ok(()) => self.context_size = size,
+                Err(e) => tracing::warn!(session = %self.id, "set_context_size: {e:#}"),
+            }
+        }
+        if let Some(turn) = self.turn.as_ref().map(|t| t.id).or(self.last_turn) {
+            self.publish(AgentEvent::ContextUsed {
+                session: self.id,
+                turn,
+                context: self.context,
+                size: self.context_size,
+            })
+            .await;
+        }
+        if let Some(c) = u.cost {
+            self.meter(c.amount, &c.currency).await;
+        }
+    }
+
+    /// 75 §8: one `set_config_option` on the live harness, with its model
+    /// select re-read into [`Self::set_harness_model`]. `Err` is prefixed
+    /// with the harness name, as the user and the model see it.
+    async fn apply_option(
+        &mut self,
+        key: &str,
+        value: &str,
+    ) -> Result<Vec<acp::ConfigOption>, String> {
+        let h = self
+            .harness
+            .clone()
+            .ok_or_else(|| format!("{}: harness process not running", self.name))?;
+        let options = tokio::time::timeout(OPTION_TIMEOUT, h.set_config_option(key, value))
+            .await
+            .map_err(|_| "set_config_option timed out".to_owned())
+            .and_then(|r| r)
+            .map_err(|e| format!("{}: {e}", self.name))?;
+        if let Some(model) = h.model() {
+            self.set_harness_model(model).await;
+        }
+        Ok(options)
+    }
+
+    /// Send every option change queued during the turn (75 §8), in order; a
+    /// failure is published as this session's error, not swallowed.
+    async fn apply_pending_options(&mut self) {
+        for (key, value) in std::mem::take(&mut self.pending_options) {
+            if let Err(message) = self.apply_option(&key, &value).await {
+                self.publish(AgentEvent::Error {
+                    session: self.id,
+                    turn: None,
+                    message,
+                })
+                .await;
+            }
+        }
     }
 
     /// 67 §8: the remote child's `send_message{to: "parent"}` arrives as a
@@ -789,14 +943,47 @@ impl AcpChild {
             })
             .await;
         }
+        // 75 §7: the prompt response's tokens go on the ledger under the
+        // harness model of this turn, then out with `TurnFinished`. No
+        // usage → no row (nothing to correct later, nothing to sum).
+        let usage = match &turn.tokens {
+            Some(t) => {
+                match self
+                    .store
+                    .record_remote_turn(
+                        self.id,
+                        turn.id,
+                        &self.name,
+                        self.harness_model.as_deref(),
+                        t,
+                    )
+                    .await
+                {
+                    Ok(bumped) => {
+                        for (session, revision) in bumped {
+                            self.publish(AgentEvent::ModelUsageChanged { session, revision })
+                                .await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(session = %self.id, "record_remote_turn: {e:#}"),
+                }
+                Usage {
+                    prompt: u32::try_from(t.input).unwrap_or(u32::MAX),
+                    completion: u32::try_from(t.output).unwrap_or(u32::MAX),
+                    cached: u32::try_from(t.cache_read).unwrap_or(u32::MAX),
+                }
+            }
+            None => Usage::default(),
+        };
         self.publish(AgentEvent::TurnFinished {
             session: self.id,
             turn: turn.id,
             stop_reason: stop_reason.to_owned(),
-            usage: Usage::default(),
-            context: turn.context,
+            usage,
+            context: self.context,
         })
         .await;
+        self.last_turn = Some(turn.id);
         continuation::notify(TurnReturned {
             session: self.id,
             turn: Some(turn.id),
@@ -848,13 +1035,14 @@ impl AcpChild {
         }
     }
 
-    /// Start the next queued input, if idle.
+    /// Start the next queued input, if idle — after any option change queued
+    /// during the turn just ended (75 §8), so it precedes the prompt on the wire.
     async fn next(&mut self, me: &ActorRef<Self>) {
-        if self.turn.is_none()
-            && self.harness.is_some()
-            && let Some(q) = self.queue.pop_front()
-        {
-            self.start(q, me).await;
+        if self.turn.is_none() && self.harness.is_some() {
+            self.apply_pending_options().await;
+            if let Some(q) = self.queue.pop_front() {
+                self.start(q, me).await;
+            }
         }
     }
 
@@ -875,13 +1063,17 @@ impl AcpChild {
         ctx.stop();
     }
 
-    /// End the connection (kills a child process) and release every
-    /// permission ask waiting outside a live turn.
+    /// End the connection (kills a child process), release every permission
+    /// ask waiting outside a live turn and take the materialised skills
+    /// back out of the cwd (75 §4).
     fn close_harness(&mut self) {
         if let Some(h) = self.harness.take() {
             h.close();
         }
         self.alive.cancel();
+        if let Some(m) = self.skills.take() {
+            m.remove();
+        }
     }
 
     /// Record the remote's unverifiable work as unknown under this session,
@@ -1039,6 +1231,28 @@ pub(crate) fn meter_update(
     })
 }
 
+/// 75 §7: `PromptResponse.usage` as ledger tokens, in `model_calls` /
+/// [`Usage`] terms: `input` = fresh + cache read + cache write (ACP's
+/// `inputTokens` is the uncached remainder — omp 18.3.1 live: `input 4,
+/// cachedRead 12833, cachedWrite 172, total 13013`; genai's `prompt_tokens`
+/// includes the cache), `output` = `outputTokens + thoughtTokens`, the cache
+/// split kept. Otherwise raw as the harness sent it (omp: this turn's delta;
+/// opencode: its last request).
+pub(crate) fn tokens_of(u: &AcpUsage) -> TokenTotals {
+    let cache_read = u.cached_read_tokens.unwrap_or(0);
+    let cache_write = u.cached_write_tokens.unwrap_or(0);
+    TokenTotals {
+        input: u
+            .input_tokens
+            .saturating_add(cache_read)
+            .saturating_add(cache_write),
+        output: u.output_tokens.saturating_add(u.thought_tokens.unwrap_or(0)),
+        cache_read,
+        cache_write,
+        unknown_calls: 0,
+    }
+}
+
 /// 06 §3.3: one `session/update` → the [`AgentEvent`]s to publish, with the
 /// text and context window accumulating on `turn` and the messages to
 /// persist queued on it (06 §3.6).
@@ -1109,11 +1323,7 @@ pub(crate) fn translate(update: SessionUpdate, turn: &mut Turn) -> Vec<AgentEven
         },
         // Plans are canonical state, not transcript text: `AcpChild::plan`.
         SessionUpdate::Plan(_) => Vec::new(),
-        SessionUpdate::UsageUpdate(u) => {
-            turn.context = u32::try_from(u.used).unwrap_or(u32::MAX);
-            turn.meter = u.cost.map(|c| (c.amount, c.currency));
-            Vec::new()
-        }
+        // usage_update: session facts, handled in the mailbox (75 §5).
         // user_message_chunk (load replay, 06 §8.11), commands, modes, config, info.
         _ => Vec::new(),
     }
@@ -1226,20 +1436,16 @@ impl Message<Connected> for AcpChild {
                 }
                 // 06 §8.2: the model select of the session response, else the
                 // entry's `model:`; nothing when neither says.
-                let model = h
-                    .model()
-                    .map(str::to_owned)
-                    .or_else(|| self.fallback_model.clone());
+                let model = h.model().or_else(|| self.fallback_model.clone());
                 if let Some(model) = model {
                     self.set_harness_model(model).await;
                 }
                 // 51 §6.3: a session this wrapper created has a known-zero
                 // baseline; persist that before any prompt so the first
-                // cumulative total is attributed in full.
-                // ponytail: the zero row needs a currency; USD is the only one
-                // OMP emits. A non-USD harness's first total opens an imported
-                // epoch instead — teach `apply_meter` to carry a zero known-zero
-                // baseline across a currency change when that shows up.
+                // cumulative total is attributed in full. Nothing has been
+                // observed yet, so the row's currency is a placeholder:
+                // `apply_meter` rewrites it in place from the first report
+                // when that comes in another currency (75 §6).
                 if !h.resumed()
                     && let Ok(zero) = meter_update(&self.name, h.session_id(), 0.0, "USD", true)
                 {
@@ -1402,6 +1608,14 @@ impl Message<Update> for AcpChild {
                     self.set_harness_model(model).await;
                 }
             }
+            // 75 §3/§5: session-level facts that arrive with no turn open
+            // (omp sends the manifest 50 ms after `session/new`; opencode's
+            // usage may follow the prompt response). Handled before the turn
+            // check; 06 §8.11's replay rule gets these two exceptions.
+            Update::Session(SessionUpdate::AvailableCommandsUpdate(u)) => {
+                self.set_harness_commands(u.available_commands).await;
+            }
+            Update::Session(SessionUpdate::UsageUpdate(u)) => self.usage(u).await,
             Update::Session(update) => {
                 // 06 §3.5 (2026-09-24): work after the prompt returned opens
                 // a continuation turn. Before any prompt on this connection
@@ -1421,15 +1635,11 @@ impl Message<Update> for AcpChild {
                     turn.quiet = Some(Self::timer(&me, self.quiet, Quiet(turn.id)));
                 }
                 let events = translate(update, turn);
-                let meter = turn.meter.take();
                 // Rows exist before the events that show them (29 §4.2).
                 let messages = std::mem::take(&mut turn.messages);
                 self.persist_all(messages).await;
                 for ev in events {
                     self.publish(ev).await;
-                }
-                if let Some((amount, currency)) = meter {
-                    self.meter(amount, &currency).await;
                 }
             }
             Update::Permission(p) => self.permission(p),
@@ -1445,7 +1655,12 @@ impl Message<PromptDone> for AcpChild {
     async fn handle(&mut self, PromptDone(r): PromptDone, ctx: &mut Context<Self, Self::Reply>) {
         let me = ctx.actor_ref().clone();
         match r {
-            Ok(stop) => self.finish(&stop, None).await,
+            Ok((stop, usage)) => {
+                if let Some(t) = &mut self.turn {
+                    t.tokens = usage.as_ref().map(tokens_of);
+                }
+                self.finish(&stop, None).await;
+            }
             Err(e) => {
                 if is_busy(&e) && self.retry_busy(&e, &me).await {
                     return;
@@ -1512,6 +1727,17 @@ impl Message<KillTimer> for AcpChild {
     }
 }
 
+impl Message<Shutdown> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Shutdown, ctx: &mut Context<Self, Self::Reply>) {
+        self.close_harness();
+        self.finish("cancelled", None).await;
+        self.drain("harness replaced by resume_child").await;
+        ctx.stop();
+    }
+}
+
 impl Message<Retry> for AcpChild {
     type Reply = ();
 
@@ -1553,6 +1779,49 @@ impl Message<IsRunning> for AcpChild {
 
     async fn handle(&mut self, _: IsRunning, _: &mut Context<Self, Self::Reply>) -> bool {
         self.turn.is_some() || !self.queue.is_empty()
+    }
+}
+
+impl Message<HarnessOptions> for AcpChild {
+    type Reply = Result<Vec<acp::ConfigOption>, String>;
+
+    async fn handle(
+        &mut self,
+        _: HarnessOptions,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.harness
+            .as_ref()
+            .map(Harness::options)
+            .ok_or_else(|| format!("{}: harness process not running", self.name))
+    }
+}
+
+/// 75 §8: idle → set now; a turn in flight (prompt or continuation) → queue
+/// it for the turn's end and say so. The queued change is validated
+/// against the option list now, so a refusal is immediate either way.
+impl Message<SetOption> for AcpChild {
+    type Reply = Result<acp::SetOptionResult, String>;
+
+    async fn handle(&mut self, m: SetOption, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(h) = &self.harness else {
+            return Err(format!("{}: harness process not running", self.name));
+        };
+        if self.turn.is_some() {
+            let options = h.options();
+            h.check_option(&m.config_id, &m.value)
+                .map_err(|e| format!("{}: {e}", self.name))?;
+            self.pending_options.push((m.config_id, m.value));
+            return Ok(acp::SetOptionResult {
+                options,
+                pending: true,
+            });
+        }
+        let options = self.apply_option(&m.config_id, &m.value).await?;
+        Ok(acp::SetOptionResult {
+            options,
+            pending: false,
+        })
     }
 }
 
@@ -1937,23 +2206,6 @@ mod tests {
         assert_eq!(plan_items(&long).len(), 40);
         assert!(translate(SessionUpdate::Plan(plan), &mut t).is_empty());
         assert!(t.text.is_empty());
-
-        let ev = translate(
-            SessionUpdate::UsageUpdate(UsageUpdate::new(12_345, 200_000)),
-            &mut t,
-        );
-        assert!(ev.is_empty());
-        assert_eq!(t.context, 12_345);
-        assert_eq!(t.meter, None);
-
-        let ev = translate(
-            SessionUpdate::UsageUpdate(
-                UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.35, "USD")),
-            ),
-            &mut t,
-        );
-        assert!(ev.is_empty());
-        assert_eq!(t.meter, Some((0.35, "USD".into())));
     }
 
     /// 51 §6.3: the wrapper's own new session has a known-zero baseline
@@ -2093,8 +2345,9 @@ mod tests {
 
     use agent_client_protocol::schema::ProtocolVersion;
     use agent_client_protocol::schema::v1::{
-        InitializeResponse, NewSessionResponse, PermissionOption, PromptResponse,
-        RequestPermissionRequest, SessionNotification, StopReason,
+        InitializeResponse, LoadSessionResponse, NewSessionResponse, PermissionOption,
+        PromptResponse, RequestPermissionRequest, SessionConfigOption, SessionNotification,
+        SetSessionConfigOptionResponse, StopReason,
     };
     use kameo::actor::Spawn;
     use parking_lot::Mutex;
@@ -2172,17 +2425,29 @@ mod tests {
             self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
         }
 
-        /// `initialize` → `session/new` as omp answers them.
-        async fn handshake(&mut self) {
+        /// `initialize` → `session/new` as omp answers them, announcing `options`.
+        async fn handshake(&mut self, options: Vec<SessionConfigOption>) {
             let m = self.next().await;
             assert_eq!(m["method"], "initialize", "{m}");
             self.respond(&m["id"], InitializeResponse::new(ProtocolVersion::V1));
             let m = self.next().await;
             assert_eq!(m["method"], "session/new", "{m}");
-            self.respond(
-                &m["id"],
-                NewSessionResponse::new(agent_client_protocol::schema::v1::SessionId::new("s1")),
-            );
+            let mut r =
+                NewSessionResponse::new(agent_client_protocol::schema::v1::SessionId::new("s1"));
+            r.config_options = Some(options);
+            self.respond(&m["id"], r);
+        }
+
+        /// The next `session/set_config_option`: `(id, configId, value)`.
+        async fn set_option(&mut self) -> (serde_json::Value, String, String) {
+            let m = self.next().await;
+            assert_eq!(m["method"], "session/set_config_option", "{m}");
+            let p = &m["params"];
+            (
+                m["id"].clone(),
+                p["configId"].as_str().unwrap().to_owned(),
+                p["value"].as_str().unwrap().to_owned(),
+            )
         }
 
         /// The next `session/prompt`: `(id, text)`.
@@ -2270,6 +2535,11 @@ mod tests {
 
     impl Rig {
         async fn new(deadline: Duration) -> Self {
+            Self::with_options(deadline, Vec::new()).await
+        }
+
+        /// A rig whose `session/new` announces `options` (75 §8).
+        async fn with_options(deadline: Duration, options: Vec<SessionConfigOption>) -> Self {
             let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&dir).unwrap();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
@@ -2300,9 +2570,12 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 deadline,
                 store.clone(),
                 rt.clone(),
+                Default::default(),
+                Vec::new(),
             );
             // The fake stands in for a child process, not a dialled node.
             child.remote = false;
@@ -2310,7 +2583,7 @@ mod tests {
             child.retry = FAST_RETRY;
             child.quiet = FAST_QUIET;
             let actor = AcpChild::spawn(child);
-            fake.handshake().await;
+            fake.handshake(options).await;
             Self {
                 actor,
                 fake,
@@ -2334,6 +2607,20 @@ mod tests {
                 })
                 .await
                 .unwrap();
+        }
+
+        /// The next `HarnessModelChanged` (the connect-time one proves the
+        /// actor holds its harness); other events on the way are dropped.
+        async fn model_changed(&mut self) -> String {
+            loop {
+                let e = tokio::time::timeout(Duration::from_secs(10), self.events.recv())
+                    .await
+                    .expect("an event")
+                    .expect("bus alive");
+                if let AgentEvent::HarnessModelChanged { model, .. } = e {
+                    return model;
+                }
+            }
         }
 
         /// Events up to and including the next `TurnFinished`.
@@ -2382,6 +2669,90 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// 75 §10: a child idle after a cancelled turn — the harness may still be
+    /// working (06 §8.3) — is stopped by [`Shutdown`], which closes its
+    /// connection; a second actor for the same row opens the stored ACP
+    /// session with `session/load` and the next prompt goes to the new
+    /// process, without a "starting fresh" note.
+    #[tokio::test]
+    async fn shutdown_then_resume_loads_stored_session() {
+        let mut rig = Rig::new(Duration::from_secs(60)).await;
+        rig.input("task").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.actor.tell(CancelTurn).await.unwrap();
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        rig.fake
+            .respond(&id, PromptResponse::new(StopReason::Cancelled));
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["cancelled"], "{events:?}");
+        assert_eq!(
+            rig.store.acp_session(rig.session).await.unwrap().as_deref(),
+            Some("s1")
+        );
+        assert!(rig.actor.is_alive(), "idle after cancel, process kept");
+
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), rig.fake.from_client.recv())
+                .await
+                .expect("connection closes")
+                .is_none(),
+            "the old harness connection is gone"
+        );
+
+        let (mut fake, dialer) = Fake::new();
+        let mut child = AcpChild::new(
+            rig.session,
+            "omp".into(),
+            Transport::Dial(dialer),
+            rig.rt.data_dir.clone(),
+            Some("s1".into()),
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        let actor = AcpChild::spawn(child);
+        let m = fake.next().await;
+        assert_eq!(m["method"], "initialize", "{m}");
+        let mut init = InitializeResponse::new(ProtocolVersion::V1);
+        init.agent_capabilities.load_session = true;
+        fake.respond(&m["id"], init);
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/load", "{m}");
+        assert_eq!(m["params"]["sessionId"], "s1", "{m}");
+        fake.respond(&m["id"], LoadSessionResponse::new());
+
+        actor
+            .tell(UserInput {
+                id: None,
+                text: "again".into(),
+                files: Vec::new(),
+                ticket: None,
+                scope: None,
+                defer: false,
+            })
+            .await
+            .unwrap();
+        let (id, text) = fake.prompt().await;
+        assert_eq!(text, "again", "the next prompt reaches the new process");
+        fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(
+            errors(&events).is_empty(),
+            "no 'starting fresh' note: {events:?}"
+        );
     }
 
     /// 06 §8.3: a `session_busy` refusal keeps the turn open — no
@@ -2574,6 +2945,185 @@ mod tests {
         );
     }
 
+    /// 75 §3/§5: the manifest and usage arrive with no turn open and are
+    /// applied — persisted, then published once per distinct value — instead
+    /// of dropped as replay. `size` rides on `ContextUsed` and the row; a
+    /// turnless update after a turn is attributed to that turn.
+    #[tokio::test]
+    async fn manifest_and_usage_apply_without_a_turn() {
+        use agent_client_protocol::schema::v1::{
+            AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+            UnstructuredCommandInput,
+        };
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        let manifest = || {
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("skill:ponytail", "Lazy senior developer"),
+                AvailableCommand::new("/ponytail", "Set the level").input(
+                    AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("lite|full")),
+                ),
+            ]))
+        };
+        rig.fake.update(manifest());
+        rig.fake.update(manifest());
+        rig.fake
+            .update(SessionUpdate::UsageUpdate(UsageUpdate::new(1_000, 200_000)));
+        // The three ride the transport; the prompt is a direct tell. Wait for
+        // the size to land so the updates are provably turnless.
+        let landed = async {
+            loop {
+                let row = rig.store.session(rig.session).await.unwrap().unwrap();
+                if row.context_size == Some(200_000) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), landed)
+            .await
+            .expect("usage persisted");
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.update(SessionUpdate::UsageUpdate(
+            UsageUpdate::new(5_000, 200_000).cost(Cost::new(0.25, "USD")),
+        ));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+
+        let manifests: Vec<&Vec<HarnessCommand>> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::HarnessCommandsChanged { commands, .. } => Some(commands),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(manifests.len(), 1, "published once for two identical sends");
+        assert_eq!(
+            manifests[0]
+                .iter()
+                .map(|c| (c.name.as_str(), c.hint.as_deref()))
+                .collect::<Vec<_>>(),
+            [("skill:ponytail", None), ("/ponytail", Some("lite|full"))]
+        );
+        assert_eq!(
+            rig.store.harness_commands(rig.session).await.unwrap(),
+            *manifests[0]
+        );
+        let used: Vec<(u32, Option<u32>)> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ContextUsed { context, size, .. } => Some((*context, *size)),
+                _ => None,
+            })
+            .collect();
+        // The pre-turn update had no turn to publish on; the in-turn one did.
+        assert_eq!(used, [(5_000, Some(200_000))]);
+        let AgentEvent::TurnFinished { turn, context, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(*context, 5_000);
+        let row = rig.store.session(rig.session).await.unwrap().unwrap();
+        assert_eq!(row.context_size, Some(200_000));
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        assert_eq!(cost.direct.returned, vec![Money::from_f64(0.25, "USD").unwrap()]);
+
+        // omp's `agent_end` usage can land after the prompt response: no
+        // turn open, still applied, attributed to the turn just closed.
+        rig.fake
+            .update(SessionUpdate::UsageUpdate(UsageUpdate::new(6_000, 200_000)));
+        let e = tokio::time::timeout(Duration::from_secs(10), rig.events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match e {
+            AgentEvent::ContextUsed {
+                turn: t,
+                context,
+                size,
+                ..
+            } => assert_eq!((t, context, size), (*turn, 6_000, Some(200_000))),
+            other => panic!("{other:?}"),
+        }
+        assert!(!rig.actor.ask(IsRunning).await.unwrap(), "no continuation turn");
+    }
+
+    /// 75 §7: a `session/prompt` response with `usage` lands as this turn's
+    /// `TurnFinished.usage` and as one `remote_turns` row under the harness
+    /// model (cache split kept); a response without `usage` writes no row
+    /// and reports zero usage.
+    #[tokio::test]
+    async fn prompt_response_usage_is_the_turn_usage_and_a_ledger_row() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        // The harness announces its model; the row carries it.
+        rig.fake.update(
+            serde_json::from_value(json!({
+                "sessionUpdate": "config_option_update",
+                "configOptions": [{"id": "model", "name": "Model", "category": "model", "type": "select",
+                    "currentValue": "a/one", "options": [{"value": "a/one", "name": "One"}]}],
+            }))
+            .unwrap(),
+        );
+        loop {
+            let e = tokio::time::timeout(Duration::from_secs(10), rig.events.recv())
+                .await
+                .expect("model announced")
+                .unwrap();
+            if matches!(e, AgentEvent::HarnessModelChanged { .. }) {
+                break;
+            }
+        }
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.respond(
+            &id,
+            PromptResponse::new(StopReason::EndTurn).usage(
+                AcpUsage::new(1500, 1200, 300)
+                    .thought_tokens(50)
+                    .cached_read_tokens(1000)
+                    .cached_write_tokens(100),
+            ),
+        );
+        let events = rig.until_finished().await;
+        let AgentEvent::TurnFinished { usage, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(
+            (usage.prompt, usage.completion, usage.cached),
+            (2300, 350, 1000),
+            "input + cache → prompt, output + thought → completion, cachedRead → cached"
+        );
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        assert_eq!(
+            cost.remote_tokens
+                .iter()
+                .map(|r| (r.harness.as_str(), r.model.as_deref(), r.turns))
+                .collect::<Vec<_>>(),
+            [("omp", Some("a/one"), 1)]
+        );
+        assert_eq!(
+            cost.direct.tokens,
+            TokenTotals {
+                input: 2300,
+                output: 350,
+                cache_read: 1000,
+                cache_write: 100,
+                unknown_calls: 0
+            }
+        );
+
+        // No usage on the wire: zero usage, no row.
+        rig.input("again").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        let AgentEvent::TurnFinished { usage, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!((usage.prompt, usage.completion, usage.cached), (0, 0, 0));
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        assert_eq!(cost.remote_tokens[0].turns, 1);
+    }
+
     /// 06 §8.3: a `session/request_permission` with no turn open is asked
     /// through the approval actor (destructive → ask) and the human's
     /// answer reaches the harness as `allow_once`, not `cancelled`.
@@ -2631,5 +3181,223 @@ mod tests {
         assert_eq!(reply["id"], "p1", "{reply}");
         assert_eq!(reply["result"]["outcome"]["outcome"], "selected", "{reply}");
         assert_eq!(reply["result"]["outcome"]["optionId"], "y", "{reply}");
+    }
+
+    /// omp 18.3.1's `configOptions`: mode, model, thinking (75 §8).
+    fn omp_options(model: &str) -> Vec<SessionConfigOption> {
+        serde_json::from_value(json!([
+            {"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"default",
+             "options":[{"value":"default","name":"Default"}]},
+            {"id":"model","name":"Model","category":"model","type":"select","currentValue":model,
+             "options":[{"value":"anthropic/claude-opus-4-8","name":"Claude Opus 4.8"},
+                        {"value":"openai/gpt-5.4","name":"GPT-5.4"}]},
+            {"id":"thinking","name":"Thinking","category":"thought_level","type":"select","currentValue":"medium",
+             "options":[{"value":"off","name":"Off"},{"value":"medium","name":"Medium"},{"value":"xhigh","name":"Extra high"}]}
+        ]))
+        .unwrap()
+    }
+
+    fn current(options: &[acp::ConfigOption], id: &str) -> String {
+        options.iter().find(|o| o.id == id).unwrap().current.clone()
+    }
+
+    /// kameo lifts a `Result` reply's `Err` into `SendError::HandlerError`; back to the plain result.
+    fn reply<T, M>(r: Result<T, kameo::error::SendError<M, String>>) -> Result<T, String> {
+        match r {
+            Ok(t) => Ok(t),
+            Err(kameo::error::SendError::HandlerError(e)) => Err(e),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// 75 §8, idle: `SetOption{model}` goes straight to the harness, the
+    /// response's list is what the caller gets, and the model select feeds
+    /// `harness_model` (row + `HarnessModelChanged`). Then `effort` reaches
+    /// omp's `thinking` option by category alias, and a harness refusal
+    /// comes back with the option's values appended.
+    #[tokio::test]
+    async fn set_option_when_idle_applies_and_updates_the_harness_model() {
+        let mut rig = Rig::with_options(
+            Duration::from_secs(3600),
+            omp_options("anthropic/claude-opus-4-8"),
+        )
+        .await;
+        // Connect published the initial model.
+        assert_eq!(rig.model_changed().await, "anthropic/claude-opus-4-8");
+        let session = rig.session;
+        let Rig {
+            actor, fake, store, ..
+        } = &mut rig;
+        let ask = actor.ask(SetOption {
+            config_id: "model".into(),
+            value: "openai/gpt-5.4".into(),
+        });
+        let (r, ()) = tokio::join!(ask, async {
+            let (id, config_id, value) = fake.set_option().await;
+            assert_eq!(
+                (config_id.as_str(), value.as_str()),
+                ("model", "openai/gpt-5.4")
+            );
+            fake.respond(
+                &id,
+                SetSessionConfigOptionResponse::new(omp_options("openai/gpt-5.4")),
+            );
+        });
+        let r = reply(r).unwrap();
+        assert!(!r.pending);
+        assert_eq!(current(&r.options, "model"), "openai/gpt-5.4");
+        assert_eq!(
+            store
+                .session(session)
+                .await
+                .unwrap()
+                .unwrap()
+                .harness_model
+                .as_deref(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(rig.model_changed().await, "openai/gpt-5.4");
+        assert_eq!(
+            current(
+                &reply(rig.actor.ask(HarnessOptions).await).unwrap(),
+                "model"
+            ),
+            "openai/gpt-5.4"
+        );
+
+        // `effort` → the `thought_level` option, whatever the harness calls it.
+        let Rig { actor, fake, .. } = &mut rig;
+        let ask = actor.ask(SetOption {
+            config_id: "effort".into(),
+            value: "xhigh".into(),
+        });
+        let (r, ()) = tokio::join!(ask, async {
+            let (id, config_id, value) = fake.set_option().await;
+            assert_eq!((config_id.as_str(), value.as_str()), ("thinking", "xhigh"));
+            fake.send(json!({"jsonrpc": "2.0", "id": id, "error": {
+                "code": -32602, "message": "Unknown ACP thinking level"}}));
+        });
+        let e = reply(r).unwrap_err();
+        assert!(
+            e.starts_with("omp: Unknown ACP thinking level")
+                && e.ends_with("(has: off, medium, xhigh)"),
+            "{e}"
+        );
+    }
+
+    /// 75 §8 "refuse, never ignore": no `thought_level` option → the error
+    /// names what the harness has; a value the option does not list → its
+    /// values. Neither reaches the wire.
+    #[tokio::test]
+    async fn set_option_refuses_a_missing_option_or_an_unlisted_value_with_the_list() {
+        let opencode: Vec<SessionConfigOption> = serde_json::from_value(json!([
+            {"id":"model","name":"Model","category":"model","type":"select","currentValue":"opencode/big-pickle",
+             "options":[{"value":"opencode/big-pickle","name":"Big Pickle"}]},
+            {"id":"mode","name":"Session Mode","category":"mode","type":"select","currentValue":"build",
+             "options":[{"value":"build","name":"Build"}]}
+        ]))
+        .unwrap();
+        let mut rig = Rig::with_options(Duration::from_secs(3600), opencode).await;
+        assert_eq!(rig.model_changed().await, "opencode/big-pickle");
+        let e = reply(
+            rig.actor
+                .ask(SetOption {
+                    config_id: "effort".into(),
+                    value: "high".into(),
+                })
+                .await,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "omp: this harness offers no effort option (has: model, mode)"
+        );
+        let e = reply(
+            rig.actor
+                .ask(SetOption {
+                    config_id: "model".into(),
+                    value: "nope/none".into(),
+                })
+                .await,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "omp: unknown value `nope/none` for model (has: opencode/big-pickle)"
+        );
+        assert!(
+            rig.fake.from_client.try_recv().is_err(),
+            "nothing was sent to the harness"
+        );
+    }
+
+    /// 75 §8 "Mid-turn": a change asked during a prompt is queued
+    /// (`pending: true`, nothing on the wire), then sent when the prompt
+    /// returns — before the next queued input's `session/prompt` — and the
+    /// new model lands as `HarnessModelChanged` right after that turn's finish.
+    #[tokio::test]
+    async fn set_option_mid_turn_is_queued_and_applied_at_prompt_done() {
+        let mut rig = Rig::with_options(
+            Duration::from_secs(3600),
+            omp_options("anthropic/claude-opus-4-8"),
+        )
+        .await;
+        rig.input("go").await;
+        rig.input("again").await;
+        let (prompt_id, _) = rig.fake.prompt().await;
+        let r = reply(
+            rig.actor
+                .ask(SetOption {
+                    config_id: "model".into(),
+                    value: "openai/gpt-5.4".into(),
+                })
+                .await,
+        )
+        .unwrap();
+        assert!(r.pending);
+        assert_eq!(
+            current(&r.options, "model"),
+            "anthropic/claude-opus-4-8",
+            "not yet applied"
+        );
+        assert!(rig.fake.from_client.try_recv().is_err(), "queued, not sent");
+        // An unlisted value is refused at once even mid-turn.
+        assert!(
+            reply(
+                rig.actor
+                    .ask(SetOption {
+                        config_id: "model".into(),
+                        value: "nope".into(),
+                    })
+                    .await
+            )
+            .is_err()
+        );
+
+        rig.fake.end_turn(&prompt_id);
+        let (id, config_id, value) = rig.fake.set_option().await;
+        assert_eq!(
+            (config_id.as_str(), value.as_str()),
+            ("model", "openai/gpt-5.4")
+        );
+        rig.fake.respond(
+            &id,
+            SetSessionConfigOptionResponse::new(omp_options("openai/gpt-5.4")),
+        );
+        let (_, text) = rig.fake.prompt().await;
+        assert_eq!(text, "again", "the queued input follows the option change");
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"]);
+        // The model change precedes the next turn's start.
+        loop {
+            match rig.events.recv().await.unwrap() {
+                AgentEvent::HarnessModelChanged { model, .. } => {
+                    assert_eq!(model, "openai/gpt-5.4");
+                    break;
+                }
+                AgentEvent::TurnStarted { .. } => panic!("turn started before the model change"),
+                _ => {}
+            }
+        }
     }
 }

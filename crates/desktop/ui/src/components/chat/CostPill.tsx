@@ -1,11 +1,12 @@
 import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins } from 'lucide-react'
-import { Fragment, useEffect } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { costLines, costShort, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
+import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import { MenuRow } from './HeaderMenu'
 
@@ -25,6 +26,67 @@ function Bucket({ label, bucket }: { label: string; bucket: CostBucket }) {
   )
 }
 
+/** `12.3k`, `200k`, `1.0M`: the TUI's `k`, so `/cost` reads the same on both surfaces. */
+export function k(n: number): string {
+  const t = n / 1000
+  if (n < 1000) return String(n)
+  if (t < 100) return `${t.toFixed(1)}k`
+  if (t < 1000) return `${t.toFixed(0)}k`
+  return `${(t / 1000).toFixed(1)}M`
+}
+
+/** How many harness rows show before `Show more`. */
+const HARNESS_CAP = 5
+
+/**
+ * ACP children's tokens per harness model (75 §7, §13 row 6). Raw as the harness sent them: omp per turn, opencode
+ * its last request only (#1860), so those rows are a lower bound and say so.
+ */
+export function HarnessTokens({ rows }: { rows: RemoteTokens[] }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!rows.length) return null
+  const shown = expanded ? rows : rows.slice(0, HARNESS_CAP)
+  const hidden = rows.length - shown.length
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-fg-secondary">Harness tokens</div>
+      <table className="w-full text-xs tabular-nums">
+        <thead className="text-left text-fg-tertiary">
+          <tr>
+            <th className="font-normal">Model</th>
+            <th className="text-right font-normal">Turns</th>
+            <th className="text-right font-normal">In</th>
+            <th className="text-right font-normal">Out</th>
+            <th className="text-right font-normal">Cache read</th>
+            <th className="text-right font-normal">Cache write</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((r) => (
+            <tr key={`${r.harness}\0${r.model ?? ''}`}>
+              <td className="truncate py-0.5">
+                {r.harness}
+                {r.model && <span className="text-fg-tertiary"> · {r.model}</span>}
+                {r.harness === 'opencode' && <span className="ml-1 text-fg-tertiary">(last request only)</span>}
+              </td>
+              <td className="py-0.5 text-right">{r.turns}</td>
+              <td className="py-0.5 text-right">{k(r.tokens.input)}</td>
+              <td className="py-0.5 text-right">{k(r.tokens.output)}</td>
+              <td className="py-0.5 text-right">{k(r.tokens.cache_read)}</td>
+              <td className="py-0.5 text-right">{k(r.tokens.cache_write)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {(hidden > 0 || expanded) && (
+        <button type="button" className="self-start text-xs text-fg-tertiary hover:text-fg" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Show less' : `Show more (${hidden})`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Breakdown({ cost }: { cost: SessionCost }) {
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -36,6 +98,7 @@ function Breakdown({ cost }: { cost: SessionCost }) {
         {cost.scope === 'opaque_remote_inclusive' && ' · includes hidden remote descendants'}
         {cost.remote_meter_gaps > 0 && ` · ${cost.remote_meter_gaps} remote meter gaps`}
       </p>
+      <HarnessTokens rows={cost.remote_tokens} />
       {cost.children.length > 0 && (
         <table className="w-full text-xs">
           <thead className="text-left text-fg-tertiary">

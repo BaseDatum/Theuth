@@ -2362,6 +2362,7 @@ impl Worker {
             | AgentEvent::VisionProgress { .. }
             | AgentEvent::SessionMetadataChanged { .. }
             | AgentEvent::ModelUsageChanged { .. }
+            | AgentEvent::HarnessCommandsChanged { .. }
             | AgentEvent::ContextUsed { .. }
             | AgentEvent::SessionClosing { .. } => {}
         }

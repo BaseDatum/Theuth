@@ -370,6 +370,213 @@ pub fn remove_repo(dir: &Path, name: &str) -> Result<(), String> {
     std::fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Skills written into an ACP child's cwd (design doc 75 §4): what
+/// [`materialise`] created, undone by [`Materialised::remove`] when the
+/// child stops. Directories that already existed and exclude lines already
+/// present are not recorded, so a second materialise on the same cwd (or a
+/// crash's leftovers) is never removed by the wrong owner.
+#[derive(Debug, Default)]
+pub struct Materialised {
+    /// The child's cwd: the parent walk of [`Self::remove`] stops here.
+    cwd: PathBuf,
+    /// `<cwd>/<skills_dir>/<name>` directories created here.
+    dirs: Vec<PathBuf>,
+    /// The git exclude file and the lines appended to it.
+    exclude: Option<(PathBuf, Vec<String>)>,
+}
+
+impl Materialised {
+    /// Delete the written skill directories (and the now-empty `skills_dir`
+    /// chain below cwd) and the exclude lines. Best effort, logged.
+    pub fn remove(self) {
+        for dir in &self.dirs {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                tracing::warn!(path = %dir.display(), %e, "materialised skill not removed");
+            }
+        }
+        // `<cwd>/.agents/skills`, then `<cwd>/.agents`: only while empty.
+        let mut parent = self.dirs.first().and_then(|d| d.parent());
+        while let Some(p) = parent
+            && p != self.cwd
+            && std::fs::remove_dir(p).is_ok()
+        {
+            parent = p.parent();
+        }
+        if let Some((path, lines)) = self.exclude
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            let mut lines = lines;
+            let kept: Vec<&str> = text
+                .lines()
+                .filter(|l| match lines.iter().position(|x| x == l) {
+                    Some(i) => {
+                        lines.swap_remove(i);
+                        false
+                    }
+                    None => true,
+                })
+                .collect();
+            let mut out = kept.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            if let Err(e) = std::fs::write(&path, out) {
+                tracing::warn!(path = %path.display(), %e, "exclude lines not removed");
+            }
+        }
+    }
+}
+
+/// `git rev-parse --git-path info/exclude --show-prefix` in `cwd`: the
+/// exclude file (worktrees included — the `.git` file is git's to follow)
+/// and cwd's path under the repo root (`""` at the root, `sub/` below).
+/// `None` outside a repo or without git.
+fn git_exclude(cwd: &Path) -> Option<(PathBuf, String)> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["rev-parse", "--git-path", "info/exclude", "--show-prefix"])
+        .current_dir(cwd);
+    platform::process::hide_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let path = Path::new(lines.next()?.trim());
+    let prefix = lines.next().unwrap_or_default().trim().to_owned();
+    Some((cwd.join(path), prefix))
+}
+
+/// Write the `always` skills of `dir` plus those in `names` as
+/// `<cwd>/<skills_dir>/<name>/SKILL.md` (front matter `name`/`description`,
+/// the body, a `SKILL.md` skill's sibling files copied beside it) for an
+/// ACP child to load (design doc 75 §4). An existing `<name>/` is the
+/// user's and skipped. Inside a git repo each new directory gets a line in
+/// `info/exclude` under a `# theuth <session>` comment; lines already there
+/// are not repeated. Errors: an unknown name (lists the index), a
+/// `skills_dir` that is absolute or climbs out, a cwd that is not a
+/// writable directory. Nothing selected → nothing touched.
+pub fn materialise(
+    dir: &Path,
+    cwd: &Path,
+    skills_dir: &Path,
+    names: &[String],
+    session: &str,
+) -> Result<Materialised, String> {
+    let index = index(dir);
+    let unknown: Vec<&str> = names
+        .iter()
+        .filter(|n| !index.iter().any(|s| &s.name == *n))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        let have: Vec<&str> = index.iter().map(|s| s.name.as_str()).collect();
+        return Err(format!(
+            "unknown skill(s) {}; available: {}",
+            unknown.join(", "),
+            if have.is_empty() {
+                "none".to_owned()
+            } else {
+                have.join(", ")
+            }
+        ));
+    }
+    let selected: Vec<&SkillMeta> = index
+        .iter()
+        .filter(|s| s.always || names.contains(&s.name))
+        .collect();
+    if selected.is_empty() {
+        return Ok(Materialised::default());
+    }
+    if skills_dir.is_absolute()
+        || !skills_dir
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "skills_dir `{}` must be a relative path inside the cwd",
+            skills_dir.display()
+        ));
+    }
+    if !cwd.is_dir() {
+        return Err(format!("cwd {} is not a directory", cwd.display()));
+    }
+    let root = cwd.join(skills_dir);
+    let mut m = Materialised {
+        cwd: cwd.to_path_buf(),
+        ..Default::default()
+    };
+    for meta in selected {
+        let dest = root.join(&meta.name);
+        if dest.exists() {
+            tracing::info!(path = %dest.display(), "skill directory exists, left as is");
+            continue;
+        }
+        let body = body(meta).map_err(|e| format!("{}: {e}", meta.name))?;
+        let fm = serde_yaml::to_string(&FrontMatter {
+            name: Some(meta.name.clone()),
+            description: Some(meta.description.clone()),
+            always: false,
+        })
+        .map_err(|e| e.to_string())?;
+        let write = |m: &mut Materialised| -> std::io::Result<()> {
+            std::fs::create_dir_all(&dest)?;
+            m.dirs.push(dest.clone());
+            std::fs::write(
+                dest.join("SKILL.md"),
+                format!("---\n{fm}---\n\n{}\n", body.body.trim()),
+            )?;
+            let src = Path::new(&meta.path).parent().unwrap_or(Path::new(""));
+            for rel in &body.files {
+                let to = dest.join(rel);
+                if let Some(p) = to.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                std::fs::copy(src.join(rel), to)?;
+            }
+            Ok(())
+        };
+        if let Err(e) = write(&mut m) {
+            m.remove();
+            return Err(format!("cannot write skills into {}: {e}", cwd.display()));
+        }
+    }
+    if m.dirs.is_empty() {
+        return Ok(m);
+    }
+    if let Some((path, prefix)) = git_exclude(cwd) {
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let have: BTreeSet<&str> = existing.lines().collect();
+        let mut lines: Vec<String> = m
+            .dirs
+            .iter()
+            .filter_map(|d| d.strip_prefix(cwd).ok())
+            .map(|rel| format!("/{prefix}{}/", rel.to_string_lossy().replace('\\', "/")))
+            .filter(|l| !have.contains(l.as_str()))
+            .collect();
+        if !lines.is_empty() {
+            lines.insert(0, format!("# theuth {session}"));
+            let mut text = existing;
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            for l in &lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, text));
+            match written {
+                Ok(()) => m.exclude = Some((path, lines)),
+                Err(e) => tracing::warn!(path = %path.display(), %e, "info/exclude not written"),
+            }
+        }
+    }
+    Ok(m)
+}
+
 fn out(r: Result<String, String>) -> anyhow::Result<ToolOutput> {
     Ok(match r {
         Ok(s) => ToolOutput::ok(s),
@@ -832,6 +1039,152 @@ mod tests {
         assert!(remove_repo(&dir, "nope").is_err());
         remove_repo(&dir, "bare").unwrap();
         assert!(index(&dir).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 75 §4: written into a repo subdir, a worktree (`.git` is a file) and
+    /// a plain dir; excluded from git exactly once; removed without a trace.
+    #[test]
+    fn materialise_writes_excludes_and_removes() {
+        let root = tmp();
+        let dir = root.join("skills");
+        std::fs::create_dir_all(dir.join("pack")).unwrap();
+        std::fs::write(
+            dir.join("brief.md"),
+            "---\nname: brief\ndescription: Be brief\nalways: true\n---\nShort.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pack/SKILL.md"),
+            "---\ndescription: Pack\n---\npack body\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("pack/helper.py"), "print(1)").unwrap();
+        std::fs::write(dir.join("two.md"), "Two line\nmore\n").unwrap();
+        let git = |args: &[&str], cwd: &Path| -> String {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let repo = root.join("repo");
+        let cwd = repo.join("sub");
+        std::fs::create_dir_all(&cwd).unwrap();
+        git(&["init", "-q", "-b", "main"], &repo);
+        std::fs::write(repo.join("README.md"), "about").unwrap();
+        git(&["add", "."], &repo);
+        git(&["commit", "-q", "-m", "one"], &repo);
+        let exclude = repo.join(".git/info/exclude");
+        std::fs::write(&exclude, "*.log").unwrap(); // no trailing newline
+        let skills_dir = Path::new(acp::DEFAULT_SKILLS_DIR);
+
+        // Unknown name: the index is listed; nothing written.
+        let e = materialise(&dir, &cwd, skills_dir, &["nope".into()], "s1").unwrap_err();
+        assert!(e.contains("nope") && e.contains("brief, pack, two"), "{e}");
+        assert!(!cwd.join(".agents").exists());
+        // Bad skills_dir and bad cwd refuse before writing.
+        assert!(materialise(&dir, &cwd, Path::new("../x"), &[], "s1").is_err());
+        assert!(materialise(&dir, &cwd, Path::new("/tmp/x"), &[], "s1").is_err());
+        assert!(
+            materialise(&dir, &repo.join("README.md"), skills_dir, &[], "s1")
+                .unwrap_err()
+                .contains("not a directory")
+        );
+
+        // `always` + named, from a repo subdir. The user's own `two/` wins.
+        std::fs::create_dir_all(cwd.join(".agents/skills/two")).unwrap();
+        std::fs::write(cwd.join(".agents/skills/two/SKILL.md"), "mine").unwrap();
+        let m = materialise(&dir, &cwd, skills_dir, &["pack".into(), "two".into()], "s1").unwrap();
+        let brief = std::fs::read_to_string(cwd.join(".agents/skills/brief/SKILL.md")).unwrap();
+        assert_eq!(
+            brief,
+            "---\nname: brief\ndescription: Be brief\n---\n\nShort.\n"
+        );
+        let pack = std::fs::read_to_string(cwd.join(".agents/skills/pack/SKILL.md")).unwrap();
+        assert_eq!(
+            pack,
+            "---\nname: pack\ndescription: Pack\n---\n\npack body\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(".agents/skills/pack/helper.py")).unwrap(),
+            "print(1)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(".agents/skills/two/SKILL.md")).unwrap(),
+            "mine"
+        );
+        let text = std::fs::read_to_string(&exclude).unwrap();
+        assert_eq!(
+            text,
+            "*.log\n# theuth s1\n/sub/.agents/skills/brief/\n/sub/.agents/skills/pack/\n"
+        );
+        // Not `two/`: we did not create it, so we do not hide or remove it
+        // (`-uall`: the exact file, not a collapsed `sub/`).
+        assert_eq!(
+            git(&["status", "--porcelain", "-uall"], &repo).trim(),
+            "?? sub/.agents/skills/two/SKILL.md"
+        );
+        std::fs::remove_dir_all(cwd.join(".agents/skills/two")).unwrap();
+        assert_eq!(git(&["status", "--porcelain"], &repo), "");
+
+        // A second materialise on the same cwd adds nothing and removes nothing.
+        let again = materialise(&dir, &cwd, skills_dir, &["pack".into()], "s2").unwrap();
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), text);
+        again.remove();
+        assert!(cwd.join(".agents/skills/pack/SKILL.md").exists());
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), text);
+
+        m.remove();
+        assert!(!cwd.join(".agents").exists());
+        assert!(cwd.is_dir());
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "*.log\n");
+        assert_eq!(git(&["status", "--porcelain"], &repo), "");
+
+        // A worktree: `.git` is a file; the exclude is the main repo's.
+        let wt = root.join("wt");
+        git(
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+            &repo,
+        );
+        assert!(wt.join(".git").is_file());
+        let m = materialise(&dir, &wt, Path::new(".claude/skills"), &[], "s3").unwrap();
+        assert!(wt.join(".claude/skills/brief/SKILL.md").is_file());
+        assert!(!wt.join(".agents").exists());
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "*.log\n# theuth s3\n/.claude/skills/brief/\n"
+        );
+        assert_eq!(git(&["status", "--porcelain"], &wt), "");
+        m.remove();
+        assert!(!wt.join(".claude").exists());
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "*.log\n");
+        assert_eq!(git(&["status", "--porcelain"], &wt), "");
+
+        // Outside git: files only.
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let m = materialise(&dir, &plain, skills_dir, &[], "s4").unwrap();
+        assert!(plain.join(".agents/skills/brief/SKILL.md").is_file());
+        m.remove();
+        assert_eq!(std::fs::read_dir(&plain).unwrap().count(), 0);
+
+        // Nothing selected: nothing touched, even a missing cwd.
+        std::fs::remove_file(dir.join("brief.md")).unwrap();
+        materialise(&dir, &root.join("missing"), skills_dir, &[], "s5")
+            .unwrap()
+            .remove();
+        assert!(!root.join("missing").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -102,6 +102,10 @@ pub enum UiEvent {
     ModelSet(ModelInfo),
     /// Reply to [`Command::SetEffort`]: the value now in force.
     EffortSet(Option<String>),
+    /// Reply to [`Command::HarnessOptions`] (75 §8): the harness's option list.
+    HarnessOptions(Vec<acp::ConfigOption>),
+    /// Reply to [`Command::SetHarnessOption`]: the option key asked for, the value, and the result.
+    HarnessOptionSet(String, String, acp::SetOptionResult),
     /// Reply to [`Command::ListMcp`] (also sent after every [`Command::SetGate`] / [`Command::SetHidden`]).
     Mcp(Vec<McpServer>),
     /// Reply to [`Command::SetApprovals`].
@@ -502,6 +506,20 @@ pub enum Command {
         /// Effort keyword or token budget; `None` clears it (provider default).
         effort: Option<String>,
     },
+    /// `harness_options` on an ACP session (75 §8).
+    HarnessOptions(SessionId),
+    /// `set_harness_option` on an ACP session (75 §8): `config_id` is an
+    /// option id or the alias `model` / `effort`.
+    SetHarnessOption {
+        /// The ACP session.
+        session: SessionId,
+        /// Option id or alias.
+        config_id: String,
+        /// One of the option's listed values.
+        value: String,
+    },
+    /// `resume_child` on the open ACP session (75 §10).
+    ResumeChild(SessionId),
     /// `list_mcp` for the root session (its in-memory hides).
     ListMcp(Option<SessionId>),
     /// `mcp_status`: the snapshot a late-attaching UI missed.
@@ -1383,7 +1401,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "[query]",
         "attach a note, concept, artifact, chat or meeting to the next message (66)",
     ),
-    ("/resume", "<id>", "open a session"),
+    (
+        "/resume",
+        "[id]",
+        "open a session; on a stopped ACP child, restart its harness in the same context (75 §10)",
+    ),
     (
         "/new",
         "[private]",
@@ -2886,11 +2908,11 @@ pub enum MenuKey {
 /// How full the context window is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// Under 70 %.
+    /// Under 75 %.
     Normal,
-    /// 70–90 %.
+    /// 75–90 %: context filling up.
     Warn,
-    /// 90 % and above.
+    /// 90 % and above: start a new session or summarise.
     Danger,
 }
 
@@ -3059,6 +3081,15 @@ pub struct Model {
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
+    /// The ACP harness's manifest of loaded skills (`skill:<name>`) and
+    /// commands (75 §3); empty for native sessions.
+    pub harness_commands: Vec<agent::HarnessCommand>,
+    /// Context window the harness reported (75 §5); the header prefers it
+    /// over the catalog limit. `None` for native sessions.
+    pub context_size: Option<u32>,
+    /// `Loaded.agent`: the shown session runs on an external harness (75 §8);
+    /// `/model` and `/effort` then pick from the harness's own options.
+    pub agent: Option<String>,
     /// Reasoning effort of the shown session; `None` = provider default.
     pub effort: Option<String>,
     /// A `SetEffort` is in flight; its `EffortChanged` echo is not announced twice.
@@ -3342,6 +3373,9 @@ impl Model {
         self.queued = loaded.queued;
         self.model_id = loaded.model;
         self.harness_model = loaded.harness_model;
+        self.harness_commands = loaded.harness_commands;
+        self.context_size = loaded.context_size;
+        self.agent = loaded.agent;
         self.effort = loaded.effort;
         self.streaming = loaded.running;
         self.session_name = loaded.name;
@@ -4375,6 +4409,15 @@ impl Model {
                     None => "effort cleared".to_owned(),
                 }));
                 self.effort = effort;
+            }
+            UiEvent::HarnessOptions(options) => {
+                for line in harness_options_lines(&options) {
+                    self.entries.push(Entry::Info(line));
+                }
+            }
+            UiEvent::HarnessOptionSet(key, value, r) => {
+                self.entries
+                    .push(Entry::Info(harness_option_set_line(&key, &value, &r)));
             }
             // The cursor is clamped where it is used (`mcp_key`, renderer).
             UiEvent::Mcp(list) => match &mut self.menu {
@@ -5611,9 +5654,12 @@ impl Model {
                 self.vision = None;
             }
             // The gauge moves per round, with the cost (51 §6.4).
-            AgentEvent::ContextUsed { context, .. } => {
+            AgentEvent::ContextUsed { context, size, .. } => {
                 self.context = context;
                 self.context_estimated = false;
+                if let Some(s) = size {
+                    self.context_size = Some(s);
+                }
             }
             AgentEvent::ModelChanged { model, .. } => {
                 self.entries.push(Entry::Info(format!("model → {model}")));
@@ -5627,6 +5673,19 @@ impl Model {
                         .push(Entry::Info(format!("harness model → {model}")));
                 }
                 self.harness_model = Some(model);
+            }
+            // The harness's manifest (75 §3): the first report is silent, a
+            // change in size afterwards is one line.
+            AgentEvent::HarnessCommandsChanged { commands, .. } => {
+                if !self.harness_commands.is_empty()
+                    && self.harness_commands.len() != commands.len()
+                {
+                    self.entries.push(Entry::Info(format!(
+                        "harness commands → {}",
+                        commands.len()
+                    )));
+                }
+                self.harness_commands = commands;
             }
             // Our own `SetEffort` is announced by its reply; anything else
             // (a `/model` switch dropping a level the new model lacks) here.
@@ -5844,6 +5903,12 @@ impl Model {
             },
             "/search" => self.open_search(arg, tx),
             "/attach" => self.open_attach(arg, tx),
+            // 75 §10: on an ACP child, `/resume` alone restarts its harness.
+            "/resume" if arg.is_empty() && self.agent.is_some() => {
+                if let Some(s) = self.session {
+                    send(tx, Command::ResumeChild(s));
+                }
+            }
             "/resume" => match arg.parse::<SessionId>() {
                 Ok(id) => self.resume(id, tx),
                 Err(_) => self
@@ -5855,6 +5920,24 @@ impl Model {
                 self.leave_private(tx);
                 self.reset();
                 self.entries.push(Entry::Info("new session".into()));
+            }
+            // 75 §8: an ACP session picks from its harness's options.
+            "/model" | "/effort" if self.agent.is_some() && arg.is_empty() => {
+                if let Some(s) = self.session {
+                    send(tx, Command::HarnessOptions(s));
+                }
+            }
+            "/model" | "/effort" if self.agent.is_some() => {
+                if let Some(s) = self.session {
+                    send(
+                        tx,
+                        Command::SetHarnessOption {
+                            session: s,
+                            config_id: cmd[1..].to_owned(),
+                            value: arg.to_owned(),
+                        },
+                    );
+                }
             }
             "/model" if arg.is_empty() => send(tx, Command::ListModels),
             "/model" => send(
@@ -6419,9 +6502,16 @@ impl Model {
             0 => String::new(),
             n => format!("  ·  {n} job(s)"),
         };
-        let skills = match self.loaded_skills.len() {
-            0 => String::new(),
-            _ => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
+        let harness_skills: Vec<&str> = self
+            .harness_commands
+            .iter()
+            .filter_map(|c| c.name.strip_prefix("skill:"))
+            .collect();
+        let skills = match (self.harness_commands.len(), self.loaded_skills.len()) {
+            (0, 0) => String::new(),
+            (0, _) => format!("  ·  skills: {}", self.loaded_skills.join(", ")),
+            (n, _) if harness_skills.is_empty() => format!("  ·  harness commands: {n}"),
+            _ => format!("  ·  harness skills: {}", harness_skills.join(", ")),
         };
         let scrolled = if self.anchor.is_some() {
             "  ·  ↑ history · PgDn follows"
@@ -6484,12 +6574,15 @@ impl Model {
             Some(name) => format!("↳ {name}  child · {model}"),
             None => model,
         };
-        match catalog.closest(&self.model_id).map(|m| m.limit.context) {
+        let limit = self
+            .context_size
+            .or_else(|| catalog.closest(&self.model_id).map(|m| m.limit.context));
+        match limit {
             Some(limit) if limit > 0 => {
                 let pct = u64::from(self.context) * 100 / u64::from(limit);
                 let level = match pct {
-                    0..70 => Level::Normal,
-                    70..90 => Level::Warn,
+                    0..75 => Level::Normal,
+                    75..90 => Level::Warn,
                     _ => Level::Danger,
                 };
                 (
@@ -8402,6 +8495,9 @@ impl Model {
         self.anchor = Some((target.unwrap_or(0), 0));
         self.model_id = loaded.model;
         self.harness_model = loaded.harness_model;
+        self.harness_commands = loaded.harness_commands;
+        self.context_size = loaded.context_size;
+        self.agent = loaded.agent;
         self.effort = loaded.effort;
         self.session_name = loaded.name;
         self.session_parent = loaded.parent;
@@ -9984,6 +10080,37 @@ pub fn removal_line(r: &ContextRemoval) -> String {
     )
 }
 
+/// `/model` / `/effort` on an ACP session (75 §8): one line per harness
+/// option — `model: anthropic/claude-opus-4-8  (has: a, b, c)` — the current
+/// value first, then its values verbatim; the `thought_level` option is
+/// labelled `effort` so `/effort <value>` reads back.
+pub fn harness_options_lines(options: &[acp::ConfigOption]) -> Vec<String> {
+    if options.is_empty() {
+        return vec!["harness offers no options".into()];
+    }
+    options
+        .iter()
+        .map(|o| {
+            let label = match o.category.as_deref() {
+                Some("thought_level") => "effort",
+                _ => o.id.as_str(),
+            };
+            let values: Vec<&str> = o.options.iter().map(|v| v.value.as_str()).collect();
+            format!("{label}: {}  (has: {})", o.current, values.join(", "))
+        })
+        .collect()
+}
+
+/// The announcement after `set_harness_option` (75 §8): `model → x`, or
+/// `model → x after this turn` when the change waits for the turn in flight.
+pub fn harness_option_set_line(key: &str, value: &str, r: &acp::SetOptionResult) -> String {
+    if r.pending {
+        format!("{key} → {value} after this turn")
+    } else {
+        format!("{key} → {value}")
+    }
+}
+
 /// `/schedules`: one row per file — `name · when · next · runs · last · result · state`,
 /// plus `last check` (`10:15:03 quiet 1200 ms`, 40 §6) when any row is a watcher that was checked.
 /// `runs` is `—` for a plain schedule, `N` or `N/max` for a loop (33 §3.2);
@@ -10608,6 +10735,23 @@ impl Model {
                 n => format!(" · {n} calls without token counts"),
             }
         ));
+        // 75 §7: ACP children's tokens per harness model. opencode reports
+        // its last request only (#1860), so its rows are a lower bound.
+        // ponytail: keyed on the agents.yaml entry name; switch to the
+        // harness's `agentInfo.name` if entries get renamed.
+        for r in &c.remote_tokens {
+            rows.push(format!(
+                "{:<12}{} · {} turn(s) · in {} · out {} · cache read {} · cache write {}{}",
+                "",
+                r.model.as_deref().unwrap_or(&r.harness),
+                r.turns,
+                k(u32::try_from(r.tokens.input).unwrap_or(u32::MAX)),
+                k(u32::try_from(r.tokens.output).unwrap_or(u32::MAX)),
+                k(u32::try_from(r.tokens.cache_read).unwrap_or(u32::MAX)),
+                k(u32::try_from(r.tokens.cache_write).unwrap_or(u32::MAX)),
+                if r.harness == "opencode" { " · last request only" } else { "" }
+            ));
+        }
         rows.push(format!(
             "{:<12}{}",
             "history",
@@ -10849,8 +10993,8 @@ mod tests {
             MenuKey::Input("/model ".into())
         );
         assert_eq!(
-            m.menu_key(KeyCode::Enter, "/res", &tx),
-            MenuKey::Input("/resume ".into())
+            m.menu_key(KeyCode::Enter, "/logo", &tx),
+            MenuKey::Input("/logout ".into())
         );
         assert!(rx.try_recv().is_err(), "nothing submitted yet");
         // `/q` has one match; Enter runs it and clears the input.
@@ -13750,6 +13894,57 @@ mod tests {
         );
     }
 
+    /// 75 §8: on an ACP session `/model` lists the harness's options,
+    /// `/model <v>` and `/effort <v>` set them by alias, and a queued change
+    /// is announced as landing after the turn.
+    #[test]
+    fn acp_session_model_and_effort_go_to_the_harness() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        let id = SessionId::new();
+        m.session = Some(id);
+        m.agent = Some("omp".into());
+        m.submit("/model", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::HarnessOptions(s)) if s == id));
+        m.submit("/effort xhigh", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHarnessOption { session, config_id, value })
+                if session == id && config_id == "effort" && value == "xhigh"
+        ));
+        m.submit("/model openai/gpt-5.4", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHarnessOption { config_id, value, .. })
+                if config_id == "model" && value == "openai/gpt-5.4"
+        ));
+        let options: Vec<acp::ConfigOption> = serde_json::from_value(serde_json::json!([
+            {"id":"model","name":"Model","category":"model","current":"a/x",
+             "options":[{"value":"a/x","name":"X","description":null},{"value":"b/y","name":"Y","description":null}]},
+            {"id":"thinking","name":"Thinking","category":"thought_level","current":"medium",
+             "options":[{"value":"low","name":"Low","description":null},{"value":"medium","name":"Medium","description":null}]}
+        ]))
+        .unwrap();
+        assert_eq!(
+            harness_options_lines(&options),
+            [
+                "model: a/x  (has: a/x, b/y)",
+                "effort: medium  (has: low, medium)"
+            ]
+        );
+        m.apply(UiEvent::HarnessOptionSet(
+            "model".into(),
+            "b/y".into(),
+            acp::SetOptionResult {
+                options,
+                pending: true,
+            },
+        ));
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Info(t)) if t == "model → b/y after this turn")
+        );
+    }
+
     #[test]
     fn aws_picks_sets_and_clears_the_harness_profile() {
         let (tx, mut rx) = unbounded_channel();
@@ -13897,6 +14092,95 @@ mod tests {
             },
         ));
         assert_eq!(m.header(&catalog).0, "omp · openai/gpt-5.4  ·  ctx 0");
+    }
+
+    /// Context bands (75 §5): the header prefers the harness's window over
+    /// the catalog and turns at 75 / 90 for every session.
+    #[test]
+    fn header_context_bands_prefer_the_harness_window() {
+        let catalog = Catalog::load(
+            std::env::temp_dir()
+                .join("theuth-tui-no-user-file")
+                .as_path(),
+        );
+        let mut m = Model::new("nobody/nothing".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.apply(UiEvent::History(
+            s,
+            Loaded {
+                model: "omp".into(),
+                agent: Some("omp".into()),
+                context_size: Some(200_000),
+                ..Loaded::default()
+            },
+        ));
+        m.apply_agent(AgentEvent::ContextUsed {
+            session: s,
+            turn: TurnId::new(),
+            context: 150_000,
+            size: Some(200_000),
+        });
+        let (text, level) = m.header(&catalog);
+        assert!(text.contains("ctx 150k / 200k (75%)"), "{text}");
+        assert_eq!(level, Level::Warn);
+        m.apply_agent(AgentEvent::ContextUsed {
+            session: s,
+            turn: TurnId::new(),
+            context: 190_000,
+            size: None,
+        });
+        let (text, level) = m.header(&catalog);
+        assert!(text.contains("ctx 190k / 200k (95%)"), "{text}");
+        assert_eq!(level, Level::Danger);
+
+        let mut m = Model::new("anthropic/claude-sonnet-4-5".into(), true);
+        let limit = catalog.get(&m.model_id).expect("bundled model").1.limit.context;
+        m.context = limit * 74 / 100;
+        assert_eq!(m.header(&catalog).1, Level::Normal);
+        m.context = limit * 3 / 4;
+        assert_eq!(m.header(&catalog).1, Level::Warn);
+    }
+
+    /// The harness manifest (75 §3): `skill:` entries are the status badge,
+    /// the first report is silent, a change in count is one line.
+    #[test]
+    fn status_shows_harness_skills_and_announces_manifest_changes() {
+        let cmd = |name: &str| agent::HarnessCommand {
+            name: name.into(),
+            description: String::new(),
+            hint: None,
+        };
+        let mut m = Model::new("nobody/nothing".into(), true);
+        let s = SessionId::new();
+        m.session = Some(s);
+        m.loaded_skills = vec!["native".into()];
+        assert!(m.status().ends_with("skills: native"), "{}", m.status());
+        let infos = m.entries.len();
+        m.apply_agent(AgentEvent::HarnessCommandsChanged {
+            session: s,
+            commands: vec![cmd("skill:ponytail"), cmd("skill:caveman"), cmd("/ponytail")],
+        });
+        assert!(
+            m.status().ends_with("harness skills: ponytail, caveman"),
+            "{}",
+            m.status()
+        );
+        assert_eq!(m.entries.len(), infos, "first report is silent: {:?}", m.entries);
+        m.apply_agent(AgentEvent::HarnessCommandsChanged {
+            session: s,
+            commands: vec![cmd("/ponytail"), cmd("init")],
+        });
+        assert!(m.status().ends_with("harness commands: 2"), "{}", m.status());
+        assert_eq!(
+            m.entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Info(t) if t == "harness commands → 2"))
+                .count(),
+            1,
+            "{:?}",
+            m.entries
+        );
     }
 
     #[test]
@@ -15629,6 +15913,7 @@ mod tests {
             agent: None,
             cwd: None,
             harness_model: None,
+            context_size: None,
             desk: None,
             pinned: false,
             archived: false,

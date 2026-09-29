@@ -3,6 +3,7 @@
 
 mod bench_models;
 mod link_cli;
+mod mcp;
 mod secret_cli;
 mod service;
 mod worker;
@@ -156,6 +157,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SessionCmd,
     },
+    /// The stdio MCP server an ACP child gets in `session/new.mcpServers`
+    /// (75 §9): `list_skills`, `load_skill`, `send_message` proxied to the
+    /// running engine for one child session.
+    Mcp {
+        /// The child's theuth session id.
+        #[arg(long)]
+        session: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -274,6 +283,13 @@ enum SessionCmd {
     },
 }
 
+/// The running engine's RPC address per `engine.json`, else the configured one.
+fn listen(data_dir: &Path, config: &Figment) -> String {
+    rpc::engine::discover(data_dir)
+        .and_then(|r| r.record.listen)
+        .unwrap_or_else(|| link_cli::listen(config))
+}
+
 /// `t mesh …` / `t tasks …`: one RPC call on the running engine, its JSON
 /// reply pretty-printed; the server's error message (today `not built`) on
 /// stderr, exit 1. No daemon → the `t --link` hint, exit 1.
@@ -282,9 +298,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
     use jsonrpsee::core::client::ClientT;
     use jsonrpsee::rpc_params;
 
-    let listen = rpc::engine::discover(data_dir)
-        .and_then(|r| r.record.listen)
-        .unwrap_or_else(|| link_cli::listen(config));
+    let listen = listen(data_dir, config);
     let Ok(client) = link_cli::connect(data_dir, &listen).await else {
         eprintln!("no harness on {listen}; start `t --headless` first");
         std::process::exit(1);
@@ -386,6 +400,8 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     .await
             }
         },
+        // Dispatched by `run` before this: stdout is its protocol channel.
+        Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
     };
     match r {
         Ok(v) => {
@@ -740,6 +756,9 @@ const DEFAULT_AGENTS: &str =
 #   command: opencode
 #   args: [acp]
 #   description: OpenCode, local install
+#   skills: true               # default; false: no theuth skills written into the child's cwd (design doc 75 §4)
+#   skills_dir: .agents/skills # default, relative to the child's cwd; .claude/skills for Claude Code
+#   mcp: true                  # opt-in (default false): theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
 # codex-acp:
 #   command: npx
 #   args: [-y, \"@agentclientprotocol/codex-acp\"]
@@ -827,8 +846,12 @@ async fn run() -> anyhow::Result<()> {
     let config = Figment::new()
         .merge(Yaml::file(&config_path))
         .merge(Env::prefixed("THEUTH_").split("__"));
-    if let Some(cmd) = cli.cmd {
-        return cmd_67(&data_dir, &config, cmd).await;
+    match cli.cmd {
+        Some(Cmd::Mcp { session }) => {
+            return mcp::run(&data_dir, &listen(&data_dir, &config), session).await;
+        }
+        Some(cmd) => return cmd_67(&data_dir, &config, cmd).await,
+        None => {}
     }
     // 58 step 12: one process-wide knob every model loader reads; set before any plugin starts.
     let models_cfg: models::accelerator::ModelsConfig =

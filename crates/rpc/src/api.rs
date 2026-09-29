@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
+use agent::supervisor::{HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
@@ -571,6 +572,30 @@ pub trait Api {
     #[method(name = "set_effort", with_extensions)]
     async fn set_effort(&self, session: Option<SessionId>, effort: Option<String>)
     -> RpcResult<()>;
+    /// An ACP child's harness config options (75 §8): model, effort/thinking,
+    /// mode … as the harness lists them, with current values. Errors when the
+    /// session is not an external harness or its process is gone.
+    #[method(name = "harness_options", with_extensions)]
+    async fn harness_options(&self, session: SessionId) -> RpcResult<Vec<acp::ConfigOption>>;
+    /// Set one harness config option on an ACP child (75 §8): `config_id` is
+    /// the option's id or the alias `model` / `effort`; `value` one of its
+    /// `options[].value`. Mid-turn the change is queued for the turn's end
+    /// (`pending: true`). A missing option or an unlisted value is refused
+    /// with the list. The model change follows as `HarnessModelChanged`.
+    #[method(name = "set_harness_option", with_extensions)]
+    async fn set_harness_option(
+        &self,
+        session: SessionId,
+        config_id: String,
+        value: String,
+    ) -> RpcResult<acp::SetOptionResult>;
+    /// Resume a stopped ACP child in its prior harness context (75 §10): a
+    /// new harness process, `session/load` on the stored ACP session id, no
+    /// prompt; a still-live process for the session is killed first. Errors
+    /// when the session is native, belongs to a remote node, or has no
+    /// stored harness session id.
+    #[method(name = "resume_child", with_extensions)]
+    async fn resume_child(&self, session: SessionId) -> RpcResult<()>;
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
     /// a session, which tools it hid (`set_mcp_hidden`).
     #[method(name = "list_mcp", with_extensions)]
@@ -662,6 +687,17 @@ pub trait Api {
         &self,
         session: SessionId,
         reply_to: Uuid,
+        text: String,
+    ) -> RpcResult<PeerReceipt>;
+    /// A peer message from `session` to `to` (`parent`, `session:<uuid>`,
+    /// `peer:<name>`, a child's name), routed like the model's `send_message`
+    /// tool without a wait; the MCP back-channel's `send_message` (75 §9).
+    /// `Err` is a refused admission and nothing was sent.
+    #[method(name = "send_message", with_extensions)]
+    async fn send_message(
+        &self,
+        session: SessionId,
+        to: String,
         text: String,
     ) -> RpcResult<PeerReceipt>;
     /// The assembled system prompt; without `session` the peers section is omitted.
@@ -3106,6 +3142,55 @@ impl ApiServer for Server {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
     }
 
+    async fn harness_options(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<Vec<acp::ConfigOption>> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "harness_options", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, HarnessOptions { session }).await
+    }
+
+    async fn set_harness_option(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        config_id: String,
+        value: String,
+    ) -> RpcResult<acp::SetOptionResult> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "set_harness_option",
+            (session, &config_id, &value),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetHarnessOption {
+                session,
+                config_id,
+                value,
+            },
+        )
+        .await
+    }
+
+    async fn resume_child(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
+        self.authorize(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "resume_child", (session,)).await? {
+            return Ok(r);
+        }
+        ask::<Agents, _>(agent::AGENT_ACTOR, ResumeChild { session }).await
+    }
+
     async fn list_mcp(
         &self,
         ext: &Extensions,
@@ -3286,6 +3371,30 @@ impl ApiServer for Server {
             },
         )
         .await
+    }
+
+    async fn send_message(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        to: String,
+        text: String,
+    ) -> RpcResult<PeerReceipt> {
+        self.authorize(ext, session).await?;
+        let d = ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::supervisor::Deliver {
+                from: session,
+                to,
+                text,
+                await_reply: false,
+                reply_to: None,
+                request_id: None,
+                admitted: tokio_util::sync::CancellationToken::new(),
+            },
+        )
+        .await?;
+        Ok(d.receipt)
     }
 
     async fn get_prompt(&self, ext: &Extensions, session: Option<SessionId>) -> RpcResult<String> {

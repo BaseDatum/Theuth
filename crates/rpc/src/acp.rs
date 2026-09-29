@@ -983,6 +983,7 @@ mod tests {
             },
             children: Vec::new(),
             remote_meter_gaps: 0,
+            remote_tokens: Vec::new(),
         };
         let cost = acp_cost(&c).unwrap();
         assert_eq!((cost.amount, cost.currency.as_str()), (0.35, "USD"));
@@ -1202,6 +1203,8 @@ mod tests {
                     ..Default::default()
                 }),
                 model: None,
+                effort: None,
+                mcp_servers: Vec::new(),
             },
             tx,
         )
