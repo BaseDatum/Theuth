@@ -8,10 +8,10 @@ the engine behind `talk_start` is TALK-CORE's and was not on this branch (see *N
 
 All under `crates/desktop/ui/` unless noted.
 
-### The orb — `@shadercn/orb-20`
+### The orb — `@shadercn/orb-16`
 
-- `src/components/orbs/{renderer.ts, canvas.tsx, orb-20/{index.tsx, meta.ts, gpu.ts}}`, `src/lib/shader.ts`: the
-  `orb` (core) and `orb-20` registry items, files as the registry targets them (`components/orbs/…`, not
+- `src/components/orbs/{renderer.ts, canvas.tsx, orb-16/{index.tsx, meta.ts, gpu.ts}}`, `src/lib/shader.ts`: the
+  `orb` (core) and `orb-16` registry items, files as the registry targets them (`components/orbs/…`, not
   `components/ui/` as the brief guessed). Dependencies added: `vgpu ^0.5.0`, `typegpu ^0.12.6`; dev:
   `unplugin-typegpu ^0.12.4`. `components.json` gains `registries["@shadercn"]`.
 - `vite.config.ts`: `typegpu({ include: [/\/components\/orbs\/.*\.ts$/, /\/lib\/shader\.ts$/] })` — the
@@ -19,10 +19,12 @@ All under `crates/desktop/ui/` unless noted.
   for tgpu.fn function body* (observed, then fixed).
 - `renderer.ts`: eleven `!` non-null assertions on loop-bounded index reads — the vendored file does not compile
   under this tree's `noUncheckedIndexedAccess`. No other change to the vendored code.
-- `src/components/talk/Orb.tsx`: `Orb({state, size, onClick, label})` — a `<button>` around `Orb20` tinted with the
-  theme's `--fg-accent`; where `navigator.gpu` is absent or `prefers-reduced-motion: reduce` holds, a CSS orb
+- `src/components/talk/Orb.tsx`: `Orb({state, size, onClick, label})` — a `<button>` around `Orb16` rendered with the
+  registry's own `stateColors` (no theme tint); where `navigator.gpu` is absent or `prefers-reduced-motion: reduce` holds, a CSS orb
   (`.talk-orb`, `styles.css`) shows the same three states (thinking pulses, speaking swells; static under reduced
   motion).
+- 2026-09-29: orb-16 replaced orb-20 at Sky's request; the accent tint was dropped (orb-16 has no tint slot and
+  carries its own state palette); the CSS fallback is unchanged.
 
 ### Talk state — `src/lib/talk.ts`
 

@@ -204,7 +204,7 @@ when the interruption committed.
     composer); the normal right-hand panels available as in any session;
     the whole window pops out exactly like a session (`lib/popout.ts`).
     Centre, with everything collapsed by default: the **orb**
-    (`npx shadcn@latest add @shadercn/orb-20`, states `idle | thinking |
+    (`npx shadcn@latest add @shadercn/orb-16`, states `idle | thinking |
     speaking`) mapped from `TalkState`: `Listening`, `Idle` → idle;
     `Thinking` → thinking; `Speaking`, `Holding` → speaking (Holding keeps
     the speaking look — the player is paused, not stopped — and drops to
