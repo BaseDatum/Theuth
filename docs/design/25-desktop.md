@@ -949,3 +949,13 @@ is a plain link to `/`. The preset rides in the leaf id,
 `draftProject(id)`): the tree logic keeps treating the id as opaque, and
 `NewChatPane` hands it to `NewChat`'s `preset` like `routes/index.tsx` does
 from the URL. Drag-drop of New chat is unchanged.
+
+Phones do not tile (2026-09-30, MOBILE-NAV): under `md` (`useSidebar().isMobile`)
+`Panes` renders one leaf — `shown(root, focused, session)` in `lib/panes.ts`:
+the focused pane of whatever tree exists, else its first leaf, else the
+route's chat — always as `first`, so the header always carries the sidebar
+toggle, the Sheet's only opener; desktop and iPad keep the split. The
+breakpoint itself (`hooks/use-mobile.ts`) is the `(max-width: 767px)` query
+read synchronously, never `window.innerWidth`, which WKWebView reports stale
+after a resume or rotation and which left the phone with neither sidebar nor
+toggle.

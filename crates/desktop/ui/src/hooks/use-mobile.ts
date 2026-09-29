@@ -1,19 +1,23 @@
-import * as React from "react"
+import { useSyncExternalStore } from 'react'
 
 const MOBILE_BREAKPOINT = 768
+/** Tailwind's `md:` negated: the sidebar's desktop/Sheet split (`hidden md:block`) and this hook read one breakpoint. */
+const QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`
 
-export function useIsMobile() {
-  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
+const subscribe = (cb: () => void) => {
+  const mql = window.matchMedia(QUERY)
+  mql.addEventListener('change', cb)
+  return () => mql.removeEventListener('change', cb)
+}
+const snapshot = () => window.matchMedia(QUERY).matches
 
-  React.useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
-    const onChange = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
-    }
-    mql.addEventListener("change", onChange)
-    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
-    return () => mql.removeEventListener("change", onChange)
-  }, [])
-
-  return !!isMobile
+/**
+ * Under `md` (768 px): the sidebar is a Sheet and the chat header carries its only toggle. Read from the media
+ * query — never `window.innerWidth` — and synchronously on the first render. iOS WKWebView reports a stale or
+ * desktop-sized `innerWidth` after a resume or a rotation (WebKit 170595, 262207) while the CSS `md:` rules follow
+ * the query; a JS/CSS disagreement hid both the desktop sidebar and the toggle, trapping the phone in the chat
+ * (MOBILE-NAV). The first-render `false` of a state-plus-effect version painted a toggle-less header on every remount.
+ */
+export function useIsMobile(): boolean {
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
 }

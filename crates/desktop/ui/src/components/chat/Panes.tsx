@@ -2,7 +2,8 @@ import { useNavigate } from '@tanstack/react-router'
 import type { PointerEvent, ReactNode, SyntheticEvent } from 'react'
 import { useRef } from 'react'
 import { touch } from '@/lib/hotkeys'
-import { isDraft, type Node, newDraft, type Path, usePanes, zone } from '@/lib/panes'
+import { isDraft, type Node, newDraft, type Path, shown, usePanes, zone } from '@/lib/panes'
+import { useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 
 /** Pointer travel (px) before a press on a sidebar row becomes a drag. */
@@ -150,8 +151,15 @@ function Branch({ node, path, render }: { node: Node; path: Path; render(session
   )
 }
 
-/** The chat area: the split tree when there is one, else the route's single chat (still a drop target). */
+/**
+ * The chat area: the split tree when there is one, else the route's single chat (still a drop target). A phone
+ * (`isMobile`) does not tile (25 §12.3): whatever the tree holds, the focused leaf alone fills the screen as `first`, so
+ * its header always carries the sidebar toggle — the Sheet's only opener.
+ */
 export function Panes({ session, render }: { session: string; render(session: string, first: boolean): ReactNode }) {
   const root = usePanes((s) => s.root)
+  const focused = usePanes((s) => s.focused)
+  const { isMobile } = useSidebar()
+  if (isMobile) return <Leaf session={shown(root, focused, session)} first render={render} />
   return <Branch node={root ?? { session }} path={[]} render={render} />
 }

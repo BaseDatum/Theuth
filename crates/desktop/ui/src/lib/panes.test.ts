@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { draftProject, isDraft, leaves, newDraft, usePanes } from './panes'
+import { draftProject, isDraft, leaves, newDraft, shown, usePanes } from './panes'
 
 const reset = () => usePanes.setState({ root: null, focused: null, drag: null })
 
@@ -100,4 +100,19 @@ test('a draft carries the project preset of "New chat in <project>"', () => {
   expect(draftProject(d)).toBe('Q&A / ops')
   expect(draftProject(newDraft())).toBeUndefined()
   expect(draftProject(newDraft(null))).toBeUndefined()
+})
+
+test('a phone shows one leaf: the focused pane of a split (a draft included), its first leaf when focus is elsewhere, the route chat without a tree', () => {
+  reset()
+  expect(shown(null, null, 'a')).toBe('a')
+  expect(shown(null, 'stale', 'a')).toBe('a')
+  usePanes.getState().place('a', 'b', 'right')
+  usePanes.getState().place('b', 'c', 'bottom')
+  const { root } = usePanes.getState()
+  // `c` was placed last: the non-first leaf a desktop split would deny the sidebar toggle.
+  expect(shown(root, 'c', 'a')).toBe('c')
+  expect(shown(root, 'gone', 'a')).toBe('a')
+  expect(shown(root, null, 'a')).toBe('a')
+  const d = usePanes.getState().fresh()!
+  expect(shown(usePanes.getState().root, usePanes.getState().focused, 'a')).toBe(d)
 })

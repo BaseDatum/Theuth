@@ -27,6 +27,10 @@ export function draftProject(id: string): string | undefined {
 /** Sessions shown, left-to-right, top-to-bottom. */
 export const leaves = (n: Node): string[] => ('session' in n ? [n.session] : [...leaves(n.a), ...leaves(n.b)])
 
+/** The one leaf a phone shows (it does not tile, 25 §12.3): the focused pane while the tree has it, else its first leaf; the route's `session` without a tree. */
+export const shown = (root: Node | null, focused: string | null, session: string): string =>
+  root === null ? session : focused !== null && leaves(root).includes(focused) ? focused : (leaves(root)[0] as string)
+
 /** The tree with the leaf showing `session` swapped for `f(leaf)`. */
 function replace(n: Node, session: string, f: (leaf: Node) => Node): Node {
   if ('session' in n) return n.session === session ? f(n) : n
