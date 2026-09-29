@@ -512,6 +512,17 @@ fn gate(
     (CheckOutcome::Fired, fired_next)
 }
 
+/// A run's end reason is a normal stop (40 §1.7). The reason is the
+/// provider's raw string (`agent` `TurnFinished.stop_reason`: `end_turn`
+/// Anthropic, `stop` OpenAI chat, `completed` OpenAI Responses, …), so the
+/// classification is genai's, not a string list of our own.
+fn run_succeeded(kind: &str) -> bool {
+    matches!(
+        genai::chat::StopReason::from(kind.to_owned()),
+        genai::chat::StopReason::Completed(_)
+    )
+}
+
 /// `"`, `<`, `&` escaped for a `<when …="…">` attribute: envelope tokens are
 /// untrusted text (40 §7).
 fn attr(s: &str) -> String {
@@ -521,7 +532,7 @@ fn attr(s: &str) -> String {
 }
 
 /// What a `when:` fire carries into the run (40 §3.3) and commits when the
-/// run ends `end_turn` (§1.7). Also the `mode: queue` pending payload.
+/// run ends successfully (§1.7). Also the `mode: queue` pending payload.
 #[derive(Clone, Debug)]
 struct WhenFire {
     payload: String,
@@ -695,8 +706,8 @@ struct Run {
     turn_open: bool,
     /// `stop_reason` of the last `TurnFinished`; what [`Settle`] closes with.
     last_stop: String,
-    /// A `when:` fire's payload, hash and state: committed on `end_turn`,
-    /// a strike on `error` / `timeout` (40 §1.7, §5).
+    /// A `when:` fire's payload, hash and state: committed when the run
+    /// [`run_succeeded`], a strike on `error` / `timeout` (40 §1.7, §5).
     watch: Option<WhenFire>,
     /// The fire's wall clock (`watch.last_fired_at` on commit).
     fired_at: DateTime<Local>,
@@ -852,7 +863,7 @@ impl Schedule {
     /// wrapped prompt becomes a task through the registered [`TaskCreator`]
     /// instead of a session input. `when` is a watcher's payload (40 §3.3):
     /// it joins the wrapper, its first line is the row's `envelope`, and the
-    /// run commits it when it ends `end_turn` (§1.7).
+    /// run commits it when it ends successfully (§1.7, [`run_succeeded`]).
     async fn fire(
         &mut self,
         name: &str,
@@ -1662,21 +1673,63 @@ impl Schedule {
         Some(outcome)
     }
 
-    /// 40 §3.3: the fire with the payload; `fire: once` disables afterwards (§1.6).
+    /// 40 §3.3: the fire with the payload; `last_fired_at` is the fire, not
+    /// the commit (§1.8: `cooldown` spaces fires whose runs fail too);
+    /// `fire: once` disables afterwards (§1.6).
     async fn fire_when(&mut self, name: &str, now: DateTime<Local>, w: WhenFire) {
         let once = self
             .entries
             .get(name)
             .is_some_and(|e| e.spec.as_ref().is_ok_and(|s| s.fire == file::Fire::Once));
         match self.fire(name, now, false, Some(w)).await {
-            Ok(_) if once => {
-                if let Err(e) = self.set_enabled(name, false).await {
-                    tracing::warn!(%name, "not disabled after firing once: {e}");
+            Ok(_) => {
+                if let Err(e) = self.store.watch_fired_at(name, now).await {
+                    tracing::error!(%name, "fire not recorded: {e:#}");
                 }
-                self.rt.publish(ScheduleEvent::Changed).await;
+                if once {
+                    if let Err(e) = self.set_enabled(name, false).await {
+                        tracing::warn!(%name, "not disabled after firing once: {e}");
+                    }
+                    self.rt.publish(ScheduleEvent::Changed).await;
+                }
             }
-            Ok(_) => {}
             Err(e) => tracing::warn!(%name, "not fired: {e}"),
+        }
+    }
+
+    /// §3.3: the `mode: queue` payload meets the gate again when the run
+    /// closes — its hash against the just-committed one, its fire against
+    /// `cooldown` — so a tick that landed mid-run does not fire on stale news.
+    async fn deliver_pending(&mut self, name: &str, p: WhenFire) {
+        let now = Local::now();
+        let Some(spec) = self.entries.get(name).and_then(|e| e.spec.as_ref().ok()) else {
+            return;
+        };
+        let w = self
+            .store
+            .watch_get(name)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(%name, "watch row unreadable: {e:#}");
+                None
+            })
+            .unwrap_or_default();
+        let dropped =
+            if spec.fire == file::Fire::OnChange && w.last_hash.as_deref() == Some(&p.hash) {
+                Some(CheckOutcome::Unchanged)
+            } else {
+                w.last_fired_at
+                    .filter(|t| since(now, *t) < spec.cooldown)
+                    .map(|t| CheckOutcome::Cooldown {
+                        left: since(plus(t, spec.cooldown), now),
+                    })
+            };
+        match dropped {
+            Some(o) => {
+                tracing::info!(%name, "queued payload dropped: {o}");
+                self.row(name, now, &o.to_string()).await;
+            }
+            None => self.fire_when(name, now, p).await,
         }
     }
 
@@ -1957,26 +2010,25 @@ impl Schedule {
             deliver(Some(session), name.clone(), text);
         }
 
-        // 40 §1.7, §5: a watcher's run commits its check on `end_turn`; `error` /
+        // 40 §1.7, §5: a watcher's run commits its check when it succeeds; `error` /
         // `timeout` keep the old state and strike; `cancelled` is a human's (or a restart).
         let Some(w) = run.watch else { return };
-        match kind {
-            "end_turn" => {
-                match self
-                    .store
-                    .watch_commit(&name, &w.state, &w.hash, run.fired_at)
-                    .await
-                {
-                    Ok(()) => tracing::info!(%name, hash = %w.hash, "watch committed"),
-                    Err(e) => tracing::error!(%name, "watch not committed: {e:#}"),
-                }
-                // §3.3: the `mode: queue` payload fires now through the same path.
-                if let Some(p) = self.pending.remove(&name) {
-                    self.fire_when(&name, Local::now(), p).await;
-                }
+        if run_succeeded(kind) {
+            match self
+                .store
+                .watch_commit(&name, &w.state, &w.hash, run.fired_at)
+                .await
+            {
+                Ok(()) => tracing::info!(%name, hash = %w.hash, "watch committed"),
+                Err(e) => tracing::error!(%name, "watch not committed: {e:#}"),
             }
-            "error" | "timeout" => self.strike(&name, Local::now(), &result).await,
-            _ => tracing::info!(%name, "watch not committed: run {kind}"),
+            if let Some(p) = self.pending.remove(&name) {
+                self.deliver_pending(&name, p).await;
+            }
+        } else if matches!(kind, "error" | "timeout") {
+            self.strike(&name, Local::now(), &result).await;
+        } else {
+            tracing::info!(%name, "watch not committed: run {kind}");
         }
     }
 
@@ -3094,6 +3146,167 @@ mod watch_tests {
 
     fn fs_exists_true() -> FakeSensor {
         Arc::new(|_, _| run(true, "events=x\np".into(), serde_json::json!({})))
+    }
+
+    /// The live `pr-smoke-1` loop: an OpenAI Responses run ends `completed`,
+    /// not `end_turn`; the commit must still happen so the next identical
+    /// payload is `unchanged` (default `fire: on_change`).
+    #[tokio::test]
+    async fn completed_run_commits_and_the_same_payload_is_then_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut sched, rec) =
+            watcher(dir.path(), "when: fs_exists.py path=/x\n", fs_exists_true()).await;
+        let t0 = Local::now();
+        let sid = SessionId::new();
+        sched.entries.get_mut("w").unwrap().session = Some(sid);
+        let run = in_flight("w", t0, Some(when("events=x\np")));
+        sched.finished(sid, run, "completed").await;
+
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(
+            (w.fired_count, w.strikes, w.state.as_str()),
+            (1, 0, "{\"n\":1}")
+        );
+        assert_eq!(
+            w.last_hash.as_deref(),
+            Some(agent::sensor::payload_hash("events=x\np").as_str())
+        );
+        assert_eq!(w.last_fired_at, Some(t0));
+        assert_eq!(
+            step(&mut sched, t0 + s(30)).await,
+            Some(CheckOutcome::Unchanged)
+        );
+        assert!(rec.calls.lock().unwrap().is_empty());
+        assert!(run_succeeded("end_turn") && run_succeeded("stop"));
+        assert!(!run_succeeded("error") && !run_succeeded("cancelled") && !run_succeeded("lost"));
+    }
+
+    /// `cooldown` counts from the fire (`watch_fired_at` in `fire_when`), so a
+    /// failed run — no commit — still spaces the next fire; and a payload
+    /// queued before the fire was recorded is dropped `cooldown` on close.
+    #[tokio::test]
+    async fn cooldown_runs_from_the_fire_even_when_the_run_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut sched, rec) = watcher(
+            dir.path(),
+            "when: fs_exists.py path=/x\nfire: while_true\ncooldown: 3m\nmode: queue\n",
+            fs_exists_true(),
+        )
+        .await;
+        let t0 = Local::now();
+        let sid = SessionId::new();
+        sched.entries.get_mut("w").unwrap().session = Some(sid);
+
+        // a pre-fix row (no `last_fired_at`): the mid-run tick queues, the close
+        // commits `last_fired_at = t0` and the queued payload is dropped `cooldown`
+        sched
+            .running
+            .insert(sid, in_flight("w", t0, Some(when("events=first\nfirst"))));
+        assert_eq!(
+            step(&mut sched, t0 + s(30)).await,
+            Some(CheckOutcome::Queued { coalesced: 0 })
+        );
+        let run = sched.running.remove(&sid).unwrap();
+        sched.finished(sid, run, "completed").await;
+        assert!(sched.pending.is_empty());
+        assert!(rec.calls.lock().unwrap().is_empty(), "stale payload fired");
+        // the drop row is stamped `now`, the tick rows are in the future
+        let rows = results(&sched, 2).await;
+        assert!(rows.iter().any(|r| r.starts_with("cooldown: ")), "{rows:?}");
+
+        // a fire at t0 + 3m whose run fails: `last_fired_at` moved anyway
+        let t1 = t0 + s(180);
+        sched.store.watch_fired_at("w", t1).await.unwrap();
+        let run = in_flight("w", t1, Some(when("events=second\nsecond")));
+        sched.finished(sid, run, "error").await;
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(
+            (w.strikes, w.fired_count, w.last_fired_at),
+            (1, 1, Some(t1))
+        );
+        assert_eq!(
+            step(&mut sched, t1 + s(60)).await.unwrap().to_string(),
+            "cooldown: 2m left"
+        );
+        assert_eq!(
+            step(&mut sched, t1 + s(180)).await,
+            Some(CheckOutcome::Fired)
+        );
+        assert_eq!(rec.calls.lock().unwrap().len(), 1);
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.last_fired_at, Some(t1 + s(180)), "recorded by fire_when");
+    }
+
+    /// A queued payload is re-gated on close: equal to the committed hash →
+    /// dropped `unchanged`; different → fires.
+    #[tokio::test]
+    async fn queued_payload_is_regated_when_the_run_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = Arc::new(AtomicU32::new(0));
+        let n2 = n.clone();
+        let fake: FakeSensor = Arc::new(move |_, _| {
+            let i = n2.fetch_add(1, Ordering::SeqCst) + 1;
+            run(
+                true,
+                format!("events=change n={i}\nbody {i}"),
+                serde_json::json!({"n": i}),
+            )
+        });
+        let (mut sched, rec) = watcher(
+            dir.path(),
+            "when: fs_exists.py path=/x\nmode: queue\n",
+            fake,
+        )
+        .await;
+        let t0 = Local::now();
+        let sid = SessionId::new();
+        sched.entries.get_mut("w").unwrap().session = Some(sid);
+
+        // the run's own payload is what the mid-run tick sees again (the live loop)
+        sched.running.insert(
+            sid,
+            in_flight("w", t0, Some(when("events=change n=1\nbody 1"))),
+        );
+        assert_eq!(
+            step(&mut sched, t0 + s(30)).await,
+            Some(CheckOutcome::Queued { coalesced: 0 })
+        );
+        let run = sched.running.remove(&sid).unwrap();
+        sched.finished(sid, run, "completed").await;
+        assert!(sched.pending.is_empty());
+        assert!(rec.calls.lock().unwrap().is_empty(), "stale payload fired");
+        assert!(results(&sched, 2).await.contains(&"unchanged".to_owned()));
+        assert_eq!(
+            sched
+                .store
+                .watch_get("w")
+                .await
+                .unwrap()
+                .unwrap()
+                .fired_count,
+            1
+        );
+
+        // a different one fires
+        sched.running.insert(
+            sid,
+            in_flight("w", t0 + s(60), Some(when("events=first\nfirst"))),
+        );
+        assert_eq!(
+            step(&mut sched, t0 + s(60)).await,
+            Some(CheckOutcome::Queued { coalesced: 0 })
+        );
+        let run = sched.running.remove(&sid).unwrap();
+        sched.finished(sid, run, "end_turn").await;
+        let calls = rec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].3.contains("events=change n=2"), "{}", calls[0].3);
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.fired_count, 3, "two closed runs and the queued fire");
+        assert_eq!(
+            w.last_hash.as_deref(),
+            Some(agent::sensor::payload_hash("events=change n=2\nbody 2").as_str())
+        );
     }
 
     /// The live `pr-smoke-1` case: a fired run spawns a child, its first turn

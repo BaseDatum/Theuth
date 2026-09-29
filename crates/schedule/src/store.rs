@@ -260,6 +260,20 @@ impl Store {
         Ok(())
     }
 
+    /// `last_fired_at` at fire time (40 §1.8: `cooldown` counts from the fire,
+    /// whatever its run ends as). Creates the row when missing.
+    pub async fn watch_fired_at(&self, name: &str, at: DateTime<Local>) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO watch (name, last_fired_at) VALUES (?1, ?2) \
+             ON CONFLICT(name) DO UPDATE SET last_fired_at = ?2",
+        )
+        .bind(name)
+        .bind(at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// `strikes` +1 (40 §5); returns the new count. Creates the row when missing.
     pub async fn watch_strike(&self, name: &str) -> anyhow::Result<u32> {
         let (n,): (i64,) = sqlx::query_as(

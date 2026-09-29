@@ -12,6 +12,7 @@ mesh = { workspace = true }
 platform = { workspace = true }
 tools = { workspace = true }
 agent = { workspace = true }
+genai = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
