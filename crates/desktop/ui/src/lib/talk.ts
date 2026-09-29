@@ -4,8 +4,10 @@
 
 import { useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
+import { chime } from '@/lib/cue'
 import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import * as speech from '@/lib/speech'
+import { useTalkSettings } from '@/lib/talk-settings'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { Aec } from '@/rpc/bindings/Aec'
@@ -21,27 +23,95 @@ export type OrbState = 'idle' | 'thinking' | 'speaking'
 export const orbState = (s: State): OrbState =>
   s === 'thinking' ? 'thinking' : s === 'speaking' || s === 'holding' ? 'speaking' : 'idle'
 
-/** The two subtitle lines and the utterance the agent line belongs to (cleared by its `SpeechFinished`). */
-export type Subtitles = { agent: string; speech: string | null; user: string; utts: string[] }
+/**
+ * TALK-UI-A A2: the muted line above the orb, mirroring the talk state. `Thinking…` = the turn started, no speech
+ * yet; `Working…` = a tool call is running (the session's `activity`, since the talk state does not distinguish it)
+ * while the model thinks, or between spoken sentences; `Holding` (a paused barge-in) keeps `Speaking` — nothing new.
+ */
+export function phaseLine(s: State, tool: boolean, saying: boolean): string {
+  switch (s) {
+    case 'listening':
+      return 'Listening'
+    case 'thinking':
+      return tool ? 'Working…' : 'Thinking…'
+    case 'speaking':
+      return tool && !saying ? 'Working…' : 'Speaking'
+    case 'holding':
+      return 'Speaking'
+    default:
+      return ''
+  }
+}
 
-export const NO_SUBTITLES: Subtitles = { agent: '', speech: null, user: '', utts: [] }
+/** TALK-UI-A A4: the muted hint under the orb — what a tap does now (`idle` also = no talk on this session). */
+export function orbHint(s: State): string {
+  return s === 'idle' ? 'Tap the orb to speak' : s === 'listening' || s === 'interrupted' ? 'Tap the orb to stop listening' : 'Tap the orb to stop'
+}
+
+/**
+ * The two subtitle lines. `speech`: the utterance the agent line shows. `said`: every `Saying` of the talk by
+ * utterance, for a client that plays the audio itself. `plays`: this client reported playback (`Playing`), so the
+ * agent line follows what its speaker plays, not the engine's synthesis. `cut`: the sentence on the line was
+ * stopped mid-way (a `Flush` or a non-`done` `SpeechFinished`), so the line waits for `Interrupted` or the next
+ * `TalkState` instead of blanking. `frozen`: `Interrupted` — the line holds the sentence that was cut until the talk
+ * leaves `listening` (the next turn) or ends.
+ */
+export type Subtitles = {
+  agent: string
+  speech: string | null
+  user: string
+  utts: string[]
+  said: Record<string, string>
+  plays: boolean
+  cut: boolean
+  frozen: boolean
+}
+
+export const NO_SUBTITLES: Subtitles = { agent: '', speech: null, user: '', utts: [], said: {}, plays: false, cut: false, frozen: false }
 
 /** The string 53 shows and `Degraded { mic_no_aec }` means. */
 export const NO_AEC = 'No echo cancellation; headphones recommended'
 
 /**
- * Subtitle reducer (§4 of the brief). Agent: `Saying` text until the matching `SpeechFinished` or `Interrupted`.
+ * `speech.ts` reports the utterance its speaker plays now; `null` = nothing (76 §5.3, client sink). `cut`: the
+ * `null` is a `Flush`/stop, not the tail running out.
+ */
+export type Playing = { type: 'Playing'; speech: string | null; cut?: boolean }
+
+export type SubEvent = TalkEvent | Extract<VoiceEvent, { type: 'SpeechFinished' }> | Playing
+
+/**
+ * Subtitle reducer (§4 of the brief; TALK-UI-A A1). Agent: the sentence being PLAYED, never streamed text that has
+ * not been spoken. Engine speaker (device sink, ≤ 200 ms of ring ahead): `Saying` text until the matching
+ * `SpeechFinished` or `Interrupted`. This client's speaker (client sink, synthesis seconds ahead): once a `Playing`
+ * arrived, `Saying` only records the text and the line follows `Playing` (`null` clears); `SpeechFinished` —
+ * synthesis done, not playback — is ignored. A cut (barge-in): the line freezes on the sentence that was cut and
+ * clears with the state — when the talk leaves `listening` for the next turn, or ends.
  * User: `Heard` partials per utterance, append-only (a shorter partial never replaces a longer one, so the line
  * never flickers), the final replaces, `Submitted` clears the turn.
  */
-export function applySubtitles(s: Subtitles, e: TalkEvent | Extract<VoiceEvent, { type: 'SpeechFinished' }>): Subtitles {
+export function applySubtitles(s: Subtitles, e: SubEvent): Subtitles {
   switch (e.type) {
-    case 'Saying':
-      return { ...s, agent: e.text, speech: e.speech }
+    case 'Saying': {
+      const said = { ...s.said, [e.speech]: e.text }
+      if (s.frozen) return { ...s, said }
+      if (!s.plays) return { ...s, said, agent: e.text, speech: e.speech, cut: false }
+      // The text for the sentence already playing (its first packet beat the `Saying`).
+      return s.speech === e.speech ? { ...s, said, agent: e.text } : { ...s, said }
+    }
+    case 'Playing':
+      if (s.frozen) return { ...s, plays: true }
+      if (e.speech === null) return e.cut ? { ...s, plays: true, speech: null, cut: true } : { ...s, plays: true, agent: '', speech: null, cut: false }
+      return { ...s, plays: true, agent: s.said[e.speech] ?? '', speech: e.speech, cut: false }
     case 'SpeechFinished':
-      return s.speech === e.id ? { ...s, agent: '', speech: null } : s
+      if (s.frozen || s.plays || s.speech !== e.id) return s
+      return e.reason.reason === 'done' ? { ...s, agent: '', speech: null } : { ...s, speech: null, cut: true }
     case 'Interrupted':
-      return { ...s, agent: '', speech: null }
+      return { ...s, speech: null, said: {}, cut: false, frozen: true }
+    case 'TalkState':
+      // The frozen line goes when the next turn starts; a cut that no `Interrupted` claimed (an Esc elsewhere) goes now.
+      if (s.frozen) return e.state === 'listening' || e.state === 'holding' || e.state === 'interrupted' ? s : { ...s, agent: '', speech: null, frozen: false }
+      return s.cut ? { ...s, agent: '', speech: null, cut: false } : s
     case 'Heard': {
       const utts = s.utts.slice()
       while (utts.length <= e.utterance) utts.push('')
@@ -75,6 +145,8 @@ let talk: Talk = OFF
 const subs = new Set<() => void>()
 /** The relay client's mic graph while a `client`-sink talk of ours runs. */
 let tap: Tap | null = null
+/** A2: `Submitted` seen and the turn has not left `listening` yet — the next `thinking` is the model taking it. */
+let committed = false
 
 function set(next: Talk): void {
   if (next === talk) return
@@ -99,14 +171,14 @@ function endAudio(): void {
   if (tap) {
     closeTap(tap)
     tap = null
-    void speech.release('talk')
   }
+  void speech.release('talk')
   speech.setTalk(null)
 }
 
 /** Reducer over the events; exported for the simulator, which feeds the same path the bus does. */
-export function handle(e: TalkEvent | Extract<VoiceEvent, { type: 'SpeechFinished' }>): void {
-  if (e.type === 'SpeechFinished') {
+export function handle(e: SubEvent): void {
+  if (e.type === 'SpeechFinished' || e.type === 'Playing') {
     set({ ...talk, subs: applySubtitles(talk.subs, e) })
     return
   }
@@ -114,10 +186,18 @@ export function handle(e: TalkEvent | Extract<VoiceEvent, { type: 'SpeechFinishe
   if (talk.id !== null && e.id !== talk.id && e.type !== 'TalkStarted') return
   switch (e.type) {
     case 'TalkStarted':
+      committed = false
       set({ ...talk, phase: 'on', id: e.id, session: e.session, aec: e.aec, state: 'listening', subs: NO_SUBTITLES })
       return
     case 'TalkState':
-      set({ ...talk, state: e.state })
+      // A2: the turn cue — the state leaves `listening` for `thinking` after the user's utterance was committed
+      // (`Submitted`). Not a typed turn elsewhere (no `Submitted`), not a barge-in resume (`Holding` → `Speaking`),
+      // never while the user speaks (the gate closed before the submit). Only the client that owns the talk chimes.
+      if (e.state === 'thinking' && talk.state === 'listening' && committed && talk.mine && useTalkSettings.getState().cue) {
+        chime(speech.unlock('talk'))
+      }
+      if (e.state !== 'listening') committed = false
+      set({ ...talk, state: e.state, subs: applySubtitles(talk.subs, e) })
       return
     case 'Degraded':
       set({ ...talk, degraded: NO_AEC })
@@ -125,7 +205,13 @@ export function handle(e: TalkEvent | Extract<VoiceEvent, { type: 'SpeechFinishe
     case 'Flush':
       if (talk.mine) speech.stop()
       return
+    case 'Submitted':
+      // The user's utterance is committed; `TalkState thinking` follows and plays the cue.
+      committed = true
+      set({ ...talk, subs: applySubtitles(talk.subs, e) })
+      return
     case 'TalkFinished':
+      committed = false
       endAudio()
       set(OFF)
       if (e.reason.reason === 'error') toast.error(e.reason.message)
@@ -178,11 +264,13 @@ export async function start(api: Api, session: string): Promise<void> {
   if (talk.phase !== 'off') return
   set({ ...OFF, phase: 'starting', session, mine: true })
   const remote = useEngines.getState().active !== LOCAL
+  // Inside the gesture: the context the A2 chime plays on (a relay client's tap takes the same hold again).
+  speech.unlock('talk')
   let id: string | null = null
   try {
     const t = remote ? await openTap('talk') : null
     tap = t
-    if (t) speech.setTalk(session)
+    if (t) speech.setTalk(session, (playing, cut) => handle({ type: 'Playing', speech: playing, cut: cut === true }))
     const tid = await api.talk_start(session, t ? 'client' : 'device', t ? t.ctx.sampleRate : null)
     id = tid
     // `talk` was narrowed above and TS keeps that across awaits; read it fresh. `TalkStarted` may have beaten the reply.

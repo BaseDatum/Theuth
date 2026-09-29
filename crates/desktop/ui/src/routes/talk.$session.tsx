@@ -47,6 +47,7 @@ function TalkRoute() {
   const mobile = useIsMobile()
   const t = talk.useTalk()
   const title = useSessionField(session, 'title')
+  const activity = useSessionField(session, 'activity')
   const otherTitle = useSessionField(t.session ?? '', 'title')
   useSessionLoad(session)
   const [open, setOpen] = useState(() => transcriptPref(session))
@@ -61,7 +62,7 @@ function TalkRoute() {
     let stop: (() => void) | undefined
     void import('@/lib/talk-sim').then((m) => {
       const flag = m.simFlag()
-      if (flag) stop = m.runSim(session, flag.hold)
+      if (flag) stop = m.runSim(session, flag)
     })
     return () => stop?.()
   }, [session])
@@ -113,13 +114,11 @@ function TalkRoute() {
     return () => ro.disconnect()
   }, [])
 
-  const caption = here
-    ? t.degraded
-    : elsewhere
-      ? null
-      : t.phase === 'off'
-        ? 'Tap the orb to start talking'
-        : null
+  const caption = here ? t.degraded : null
+  // A2: the turn's phase, muted, above the orb (`talk.phaseLine`).
+  const phase = here ? talk.phaseLine(state, activity === 'tool', t.subs.agent !== '') : ''
+  // A4: what the tap does now, below the subtitles.
+  const hint = elsewhere ? null : talk.orbHint(state)
   const label = here ? 'Stop talking' : elsewhere ? `Talking in ${otherTitle || 'another chat'}` : 'Start talking'
 
   const transcript = (
@@ -151,8 +150,14 @@ function TalkRoute() {
           </button>
         )}
         <div ref={centre} className="relative flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-10 px-4 pb-8">
+          <p aria-live="polite" className={cn('h-[1lh] text-center text-xs text-fg-tertiary transition-opacity duration-150 motion-reduce:transition-none', phase ? 'opacity-100' : 'opacity-0')}>
+            {phase}
+          </p>
           <Orb state={orb} size={size} onClick={toggle} label={label} />
           <Subtitles agent={here ? t.subs.agent : ''} user={here ? t.subs.user : ''} caption={caption} />
+          <p className={cn('h-[1lh] text-center text-xs text-fg-tertiary transition-opacity duration-150 motion-reduce:transition-none', hint ? 'opacity-100' : 'opacity-0')}>
+            {hint}
+          </p>
           {elsewhere && t.session && (
             <Link
               to="/talk/$session"

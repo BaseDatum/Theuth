@@ -93,6 +93,30 @@ function cut(): void {
   active.clear()
   done = null
   next = 0
+  sched.length = 0
+  if (heardNow !== null) {
+    heardNow = null
+    onHeard?.(null, true)
+  }
+}
+
+/**
+ * Utterances scheduled, oldest first, with the sources of each still to end: the head is what the speaker plays
+ * NOW. A talk's sentences arrive seconds ahead of playback (synthesis outruns speech), so the agent subtitle
+ * follows this, not the engine's `Saying` (TALK-UI-A A1); `onHeard` is the talk store's callback.
+ */
+const sched: { speech: string; left: number }[] = []
+let heardNow: string | null = null
+/** `cut`: the `null` is a stop (`Flush`, a new read-aloud), not the tail running out. */
+let onHeard: ((speech: string | null, cut?: boolean) => void) | null = null
+
+/** Report a change of the utterance heard. An empty schedule with packets still to come (underrun) is not the end. */
+function heard(): void {
+  const head = sched[0]?.speech ?? null
+  if (head === null && heardNow !== null && mine.has(heardNow)) return
+  if (head === heardNow) return
+  heardNow = head
+  onHeard?.(head)
 }
 
 /** Unlock Web Audio on the click that starts speak (43 §2.3) and warm the decoder during the RPC round-trip. */
@@ -152,9 +176,19 @@ export function push(speech: string, b64: string, seq = -1): void {
     src.start(at)
     next = at + buf.duration
     active.add(src)
+    let tail = sched.at(-1)
+    if (tail?.speech !== speech) sched.push((tail = { speech, left: 0 }))
+    tail.left++
+    // Nothing scheduled before it: it plays from `at`.
+    if (sched.length === 1) heard()
     src.onended = () => {
       active.delete(src)
       if (id === speech && seq > played) played = seq
+      const head = sched[0]
+      if (head?.speech === speech && --head.left === 0) {
+        sched.shift()
+        heard()
+      }
       drain()
     }
   })
@@ -225,9 +259,13 @@ let held: { id: string; sampleRate: number; packets: string[] } | null = null
  */
 let talkSession: string | null = null
 
-/** Enter (`session`) or leave (`null`) talk playback; leaving cuts and frees the decoder. `Flush` mid-talk is `stop()`. */
-export function setTalk(session: string | null): void {
+/**
+ * Enter (`session`) or leave (`null`) talk playback; leaving cuts and frees the decoder. `Flush` mid-talk is `stop()`.
+ * `heard(speech | null, cut?)` reports the utterance the speaker plays now (see `sched`); `cut` marks a stop.
+ */
+export function setTalk(session: string | null, heard?: (speech: string | null, cut?: boolean) => void): void {
   talkSession = session
+  onHeard = heard ?? null
   if (session === null) stop()
 }
 

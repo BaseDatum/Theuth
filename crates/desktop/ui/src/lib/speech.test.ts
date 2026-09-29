@@ -241,3 +241,42 @@ test("a client-sink talk claims its session's utterances and queues them gapless
   await speech.release('talk')
   expect(audioSession.type).toBe('auto')
 })
+
+test('a talk reports the utterance heard now: from the first packet, at the join to the next, null when the tail ends, `cut` on a stop', async () => {
+  const heard: (string | null)[] = []
+  // Ids no earlier test left claimed (`mine` is module state).
+  speech.unlock('talk')
+  speech.setTalk('sess', (s, cut) => heard.push(cut ? 'cut' : s))
+  emit('SpeechStarted', { id: 'ha', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'ha', session: 'sess', seq: 0, opus: 'AA==' })
+  emit('SpeechAudio', { id: 'ha', session: 'sess', seq: 1, opus: 'AA==' })
+  await settle()
+  expect(heard).toEqual(['ha'])
+  // Synthesis ahead of playback: `b` is announced, queued and "finished" while `a` still plays.
+  emit('SpeechFinished', { id: 'ha', session: 'sess', reason: { reason: 'done' } })
+  emit('SpeechStarted', { id: 'hb', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'hb', session: 'sess', seq: 0, opus: 'AA==' })
+  emit('SpeechFinished', { id: 'hb', session: 'sess', reason: { reason: 'done' } })
+  await settle()
+  sources[0]!.onended?.()
+  expect(heard).toEqual(['ha'])
+  sources[1]!.onended?.()
+  expect(heard).toEqual(['ha', 'hb'])
+  sources[2]!.onended?.()
+  await settle()
+  expect(heard).toEqual(['ha', 'hb', null])
+  // An underrun (sources drained, packets still to come) is not the end of the sentence…
+  emit('SpeechStarted', { id: 'hc', session: 'sess', sink: 'client', sample_rate: 24_000 })
+  emit('SpeechAudio', { id: 'hc', session: 'sess', seq: 0, opus: 'AA==' })
+  await settle()
+  sources[3]!.onended?.()
+  expect(heard).toEqual(['ha', 'hb', null, 'hc'])
+  emit('SpeechAudio', { id: 'hc', session: 'sess', seq: 1, opus: 'AA==' })
+  await settle()
+  expect(heard).toEqual(['ha', 'hb', null, 'hc'])
+  // …a `Flush` (stop) is, and says so (`cut`: the talk store holds the line for `Interrupted`).
+  speech.stop()
+  expect(heard).toEqual(['ha', 'hb', null, 'hc', 'cut'])
+  speech.setTalk(null)
+  await speech.release('talk')
+})
