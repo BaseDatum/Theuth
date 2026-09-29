@@ -589,10 +589,29 @@ from anyone else (the user pressed Esc in the TUI) → `Stop{None}`, ledger
 closed, `Listening`.
 
 Blocks longer than one sentence begin to be heard after their first sentence
-synthesises (~200 ms + one 80 ms frame, 43 §0.5); a block is committed only
-when it closes, so a long paragraph still waits for its own end — the model
-is asked for short sentences and paragraphs by the prompt block, which is
-the cheap half of the latency budget (§8).
+synthesises (~200 ms + one 80 ms frame, 43 §0.5). **Sentence streaming
+(TALK-STREAM, 2026-09-29):** the open block — the pending tail after
+`Text::committed()` — is spoken sentence by sentence while it streams when it
+is plain prose: exactly one paragraph by pulldown-cmark, first line without
+`|`. On every delta `spoken(tail)` is cut by the same splitter as committed
+blocks (`policy::sentences`/`split`: `.` `?` `!` + whitespace, a short
+abbreviation list — "e.g.", "Dr." — never splits, decimals have no whitespace
+after the dot); each sentence that is complete (whitespace after its terminal
+punctuation has arrived) is `Speak`-ed at once and counted in `streamed`;
+the last fragment waits for the block to close, and the commit skips the
+`streamed` sentences it already spoke. A sentence still holding inline markup
+characters (`*`, `_`, a backtick, `[`, `<`, `~`, `|` — half-arrived emphasis, a link, a possible table
+row) is held, with everything after it, until the close renders it. Headings,
+lists, code fences, tables, block quotes and HTML still commit on close
+whole; a first line that could yet become a list marker ("1", "-") has no
+complete sentence, so it waits for its kind as before. Ledger indices stay
+monotonic per turn, so `Cancel{keep}`, `TrimAssistant` and `Interrupted{heard,
+dropped}` are unchanged; deltas that arrive after our own `Cancel` are
+ignored. Known misses: an unlisted abbreviation or initial ("J. Smith")
+splits; a paragraph later re-read as a setext heading or as a table whose
+header row does not start with `|` has had its leading sentences spoken as
+prose (same words). The model is still asked for short sentences by the
+prompt block, now the only lever on time-to-first-sentence (§8).
 
 ### 4.9 Events (`TalkEvent`, `#[serde(tag = "type")]`, `ts` export)
 
