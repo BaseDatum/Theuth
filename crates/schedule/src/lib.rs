@@ -156,6 +156,8 @@ pub struct BindSession {
 pub enum CheckOutcome {
     /// The sensor failed; the text after `check broken: ` (a [`agent::sensor::SensorError`] display).
     Broken(String),
+    /// The runtime had no sensor slot within 1 s (40 §5): retried at `every`, no strike.
+    Deferred,
     /// `fire: false`.
     Quiet,
     /// `fire: true`, same hash as the last fired payload (`fire: on_change`).
@@ -190,6 +192,7 @@ impl std::fmt::Display for CheckOutcome {
         let fmt_d = |d: Duration| humantime::format_duration(Duration::from_secs(d.as_secs()));
         match self {
             Self::Broken(why) => write!(f, "check broken: {why}"),
+            Self::Deferred => f.write_str("deferred"),
             Self::Quiet => f.write_str("quiet"),
             Self::Unchanged => f.write_str("unchanged"),
             Self::Holding { held, need } => {
@@ -429,6 +432,11 @@ fn plus(t: DateTime<Local>, d: Duration) -> DateTime<Local> {
     t + chrono::TimeDelta::from_std(d).unwrap_or(chrono::TimeDelta::MAX)
 }
 
+/// `SensorRunner::check` found no free slot within 1 s (40 §5).
+fn deferred(r: &Result<SensorRun, SensorError>) -> bool {
+    matches!(r, Err(SensorError::Budget(m)) if m == "deferred")
+}
+
 /// 40 §3.2 as a pure function: the outcome of one check and the watcher's
 /// next tick, given the file, its `watch` row, the sensor's answer, the clock
 /// and whether its run is in flight. `queued` is the pending payload's
@@ -444,6 +452,9 @@ fn gate(
     queued: Option<u32>,
 ) -> (CheckOutcome, DateTime<Local>) {
     let every = every_of(spec);
+    if deferred(r) {
+        return (CheckOutcome::Deferred, plus(now, every));
+    }
     let r = match r {
         Ok(r) => r,
         Err(e) => return (CheckOutcome::Broken(e.to_string()), plus(now, every)),
@@ -1565,9 +1576,8 @@ impl Schedule {
         now: DateTime<Local>,
     ) -> Option<CheckOutcome> {
         self.checking.remove(name);
-        // Its dry run (40 §1.12) unless the runtime merely deferred it.
-        let dry_run = self.unvalidated.remove(name)
-            && !matches!(result, Err(SensorError::Budget(_)));
+        // Its dry run (40 §1.12); a deferred check leaves it for the next tick.
+        let dry_run = !deferred(&result) && self.unvalidated.remove(name);
         let e = self.entries.get(name)?;
         let spec = e.spec.as_ref().ok()?.clone();
         spec.sensor.as_ref()?;
@@ -1585,6 +1595,13 @@ impl Schedule {
         let (outcome, next) = gate(&spec, &mut w, &result, now, busy, queued);
         let reason = outcome.to_string();
         match (&outcome, result) {
+            // §5: deferred, not dropped — a row and `last_check`, no strike, no state.
+            (CheckOutcome::Deferred, _) => {
+                self.row(name, now, &reason).await;
+                if let Err(e) = self.store.watch_last_check(name, now, &reason, 0).await {
+                    tracing::error!(%name, "check not recorded: {e:#}");
+                }
+            }
             (CheckOutcome::Broken(why), _) => {
                 self.row(name, now, &reason).await;
                 if let Err(e) = self.store.watch_last_check(name, now, &reason, 0).await {
@@ -1636,7 +1653,7 @@ impl Schedule {
                     _ => self.row(name, now, &reason).await,
                 }
             }
-            // `gate` answers `Broken` for every `Err`.
+            // `gate` answers `Broken` or `Deferred` for every `Err`.
             (_, Err(_)) => {}
         }
         if !matches!(outcome, CheckOutcome::Fired | CheckOutcome::Restarted) {
@@ -2661,6 +2678,30 @@ mod gate_tests {
     }
 
     #[test]
+    fn deferred_is_not_broken() {
+        let spec = spec("for: 1m\n");
+        let now = Local::now();
+        let mut w = WatchRow {
+            holding_since: Some(now - s(10)),
+            strikes: 2,
+            ..WatchRow::default()
+        };
+        let r = Err(SensorError::Budget("deferred".into()));
+        let (o, next) = gate(&spec, &mut w, &r, now, false, None);
+        assert_eq!(o, CheckOutcome::Deferred);
+        assert_eq!(o.to_string(), "deferred");
+        assert_eq!(next, now + s(30), "deferred: now + every");
+        assert_eq!(
+            (w.holding_since, w.strikes),
+            (Some(now - s(10)), 2),
+            "deferred touches neither first_true_at nor strikes"
+        );
+        let r = Err(SensorError::Budget("heap: boom".into()));
+        let (o, _) = gate(&spec, &mut w, &r, now, false, None);
+        assert_eq!(o, CheckOutcome::Broken("over budget: heap: boom".into()));
+    }
+
+    #[test]
     fn on_change_vs_while_true_vs_once() {
         let now = Local::now();
         let mut w = WatchRow {
@@ -3237,6 +3278,70 @@ mod watch_tests {
             (0, Some("check broken: timeout after 20s"))
         );
         assert!(sched.entries["w"].next.is_some());
+    }
+
+    /// 40 §5: a deferred check (no sensor slot for 1 s) is a row, not a strike;
+    /// it keeps `first_true_at`, the dry run and the strike count as they were.
+    #[tokio::test]
+    async fn deferred_is_a_row_not_a_strike() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let fake: FakeSensor = Arc::new(move |_, _| {
+            match c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Err(SensorError::Budget("deferred".into())),
+                1 => run(false, String::new(), serde_json::json!({})),
+                2 => run(true, "here".into(), serde_json::json!({})),
+                3 => Err(SensorError::Budget("deferred".into())),
+                _ => Err(SensorError::Timeout(Duration::from_secs(20))),
+            }
+        });
+        let (mut sched, rec) =
+            watcher(dir.path(), "when: fs_exists.py path=/x\nfor: 5m\n", fake).await;
+        let t0 = Local::now();
+
+        // deferred before its dry run: the dry run waits for the next tick
+        assert_eq!(step(&mut sched, t0).await, Some(CheckOutcome::Deferred));
+        assert!(sched.unvalidated.contains("w"));
+        assert_eq!(sched.entries["w"].next, Some(t0 + s(30)));
+        let h = sched.store.history("w", 1).await.unwrap();
+        assert_eq!(
+            (h[0].result.as_deref(), h[0].session),
+            (Some("deferred"), None)
+        );
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!((w.last_outcome.as_deref(), w.strikes), (Some("deferred"), 0));
+
+        assert_eq!(step(&mut sched, t0 + s(30)).await, Some(CheckOutcome::Quiet));
+        assert!(!sched.unvalidated.contains("w"), "the dry run ran");
+        assert_eq!(
+            step(&mut sched, t0 + s(60)).await.map(|o| o.to_string()),
+            Some("holding: 0s of 5m".into())
+        );
+        // deferred mid-hold: first_true_at survives
+        assert_eq!(step(&mut sched, t0 + s(90)).await, Some(CheckOutcome::Deferred));
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.holding_since, Some(t0 + s(60)));
+        assert_eq!(w.strikes, 0);
+        // the first real failure is strike one, not two
+        assert_eq!(
+            step(&mut sched, t0 + s(120)).await,
+            Some(CheckOutcome::Broken("timeout after 20s".into()))
+        );
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.strikes, 1);
+        assert!(sched.entries["w"].spec.as_ref().unwrap().enabled);
+        assert_eq!(
+            results(&sched, 5).await,
+            [
+                "check broken: timeout after 20s",
+                "deferred",
+                "holding: 0s of 5m",
+                "quiet",
+                "deferred"
+            ]
+        );
+        assert!(rec.calls.lock().unwrap().is_empty());
     }
 
     /// 40 §1.12 last sentence: a hand-edited file's first check is its dry run;
