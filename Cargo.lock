@@ -16951,6 +16951,7 @@ dependencies = [
  "croner",
  "dirs 6.0.0",
  "figment",
+ "genai",
  "gray_matter",
  "humantime",
  "kameo",

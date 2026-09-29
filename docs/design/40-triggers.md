@@ -106,7 +106,8 @@ and no model turn while the PR sits still.
    https://www.home-assistant.io/docs/automation/modes/). `skip`
    (default): a fire during the watcher's run is a row `skipped: busy`.
    `queue`: one pending payload; later fires coalesce into it (newest
-   wins, count kept), delivered when the run's `TurnFinished` closes it.
+   wins, count kept), re-gated and delivered when the run's `TurnFinished`
+   closes it (§3.3).
    `restart`: cancel the in-flight run (34's cancel path) and fire. A
    watcher never overlaps its own sensor: `skipped: check still running`.
    Harness-wide at most 4 sensors run at once; a deferred tick is
@@ -227,8 +228,8 @@ Every tick of a `when:` file ends in one of these; each is a run row
 | busy | `skipped: busy` | clamped | `mode: skip`, run in flight |
 | queued | `queued` / `queued (3 coalesced)` | clamped | `mode: queue`; pending payload replaced, count +1; the eventual fire's row says `fired (queued, 3 coalesced)` |
 | restarted | `restarted` | — | `mode: restart`; `Cancel { session }`, in-flight run closes `cancelled`, then `fired` |
-| fired | `fired` → `end_turn` / `error: …` / `timeout` as 34 §7 | `last + every` | the row is the run row |
-| committed / not committed | *(log line + `last_check` in `ScheduleInfo`)* | | state, hash, `last_fired_at` written on `end_turn`; `error` / `timeout` / `cancelled` keep the previous state, so the next true check fires again |
+| fired | `fired` → `end_turn` / `completed` / `error: …` / `timeout` as 34 §7 | `last + every` | the row is the run row; `last_fired_at` is written at the fire |
+| committed / not committed | *(log line + `last_check` in `ScheduleInfo`)* | | state, hash written when the run ends with a normal stop (genai `StopReason::Completed`: `end_turn`, `stop`, `completed`, …); `error` / `timeout` / `cancelled` keep the previous state, so the next true check fires again |
 
 Skips are rows like 34's `skipped: busy`. A `while_true` watcher at
 `every: 30s` writes ~3k rows a day; sqlite does not notice (34 §7).
@@ -290,11 +291,16 @@ async fn tick_when(&mut self, name: &str, now: DateTime<Local>) {
   ```
   `subject`, `stage`, `events` are copied from the envelope when present;
   other tokens stay in the first line. `coalesced` is the queue count.
-- On `TurnFinished` with `end_turn`: `store.commit_watch(name, state, hash,
-  fired_at)`; a `pending` payload (`queue`) fires now through the same
-  path. On `error` / `timeout` / `cancelled`: nothing committed; `pending`
-  is kept and meets the gate on the next tick (still subject to
-  `cooldown`).
+- On `TurnFinished` with a normal stop (`run_succeeded`: genai classifies
+  the provider's raw reason — `end_turn`, `stop`, `completed` — as
+  `Completed`): `store.watch_commit(name, state, hash, fired_at)`; a
+  `pending` payload (`queue`) is re-gated now (hash against the committed
+  one under `on_change`, `cooldown` against `last_fired_at`) and fires
+  through the same path or is a row `unchanged` / `cooldown: …`. On
+  `error` / `timeout` / `cancelled`: nothing committed; `pending` is kept
+  and meets the gate on the next tick (still subject to `cooldown`).
+  `last_fired_at` is written by the fire itself (`watch_fired_at`), so
+  `cooldown` spaces fires whose runs fail.
 
 `end(name, "expired")` follows 33 §3.3: row, `remove_file`, `Deliver`
 regardless of `quiet`. `once` disables rather than removes: the file is
@@ -744,6 +750,17 @@ Design v1 written 2026-09-28; W1–W5 merged the same day; integration
 - `fix/40-deferred-row` — `CheckOutcome::Deferred`: `Budget("deferred")` is a
   `deferred` row (no session, no strike, no state, `first_true_at` kept, next
   at `now + every`), no longer a `check broken` strike (W3 had no case for it).
+- `fix/40-commit-on-completed` — live `pr-smoke-1` (2026-09-29): one model
+  turn a minute saying "nothing to do". Root cause: `finished()` committed
+  only on `end_turn`, but `TurnFinished.stop_reason` is the provider's raw
+  string (`loop_.rs` `captured_stop_reason.raw()`; OpenAI Responses says
+  `completed`), so `watch_commit` never ran — `last_hash` NULL (`on_change`
+  never `unchanged`), `last_fired_at` NULL (`cooldown` never engaged) — and
+  the `mode: queue` tick that landed mid-run fired unconditionally on close.
+  Fix: `run_succeeded(kind)` = genai `StopReason::Completed` for the commit
+  path; `fire_when` writes `last_fired_at` at the fire (`watch_fired_at`);
+  a queued payload is re-gated on close (`deliver_pending`: `unchanged` /
+  `cooldown` rows instead of a fire).
 
 Deviations from §1–§9: the dry run on load is not a separate inline call
 (the actor would block on the sensor and unit tests could not fake it);
