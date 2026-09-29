@@ -98,6 +98,15 @@ export function parseBroadcast(text: string): { id: string; count: number; text:
   return m ? { id: m[1] as string, count: Number(m[2]), text: text.trimStart().slice(m[0].length) } : null
 }
 
+/** 76 talk: `[spoken, N s] text` / `[spoken, N s, interrupted] text` — one utterance from the live talk; `interrupted` = the user cut the agent off. */
+const SPOKEN = /^\[spoken, (\d+) s(, interrupted)?\]\s*/
+
+/** The talk marker's seconds, interruption flag and transcript; `null` for any other input. */
+export function parseSpoken(text: string): { secs: number; interrupted: boolean; text: string } | null {
+  const m = SPOKEN.exec(text.trimStart())
+  return m ? { secs: Number(m[1]), interrupted: m[2] !== undefined, text: text.trimStart().slice(m[0].length) } : null
+}
+
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`

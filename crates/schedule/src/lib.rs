@@ -156,6 +156,8 @@ pub struct BindSession {
 pub enum CheckOutcome {
     /// The sensor failed; the text after `check broken: ` (a [`agent::sensor::SensorError`] display).
     Broken(String),
+    /// The runtime had no sensor slot within 1 s (40 §5): retried at `every`, no strike.
+    Deferred,
     /// `fire: false`.
     Quiet,
     /// `fire: true`, same hash as the last fired payload (`fire: on_change`).
@@ -190,6 +192,7 @@ impl std::fmt::Display for CheckOutcome {
         let fmt_d = |d: Duration| humantime::format_duration(Duration::from_secs(d.as_secs()));
         match self {
             Self::Broken(why) => write!(f, "check broken: {why}"),
+            Self::Deferred => f.write_str("deferred"),
             Self::Quiet => f.write_str("quiet"),
             Self::Unchanged => f.write_str("unchanged"),
             Self::Holding { held, need } => {
@@ -429,6 +432,11 @@ fn plus(t: DateTime<Local>, d: Duration) -> DateTime<Local> {
     t + chrono::TimeDelta::from_std(d).unwrap_or(chrono::TimeDelta::MAX)
 }
 
+/// `SensorRunner::check` found no free slot within 1 s (40 §5).
+fn deferred(r: &Result<SensorRun, SensorError>) -> bool {
+    matches!(r, Err(SensorError::Budget(m)) if m == "deferred")
+}
+
 /// 40 §3.2 as a pure function: the outcome of one check and the watcher's
 /// next tick, given the file, its `watch` row, the sensor's answer, the clock
 /// and whether its run is in flight. `queued` is the pending payload's
@@ -444,6 +452,9 @@ fn gate(
     queued: Option<u32>,
 ) -> (CheckOutcome, DateTime<Local>) {
     let every = every_of(spec);
+    if deferred(r) {
+        return (CheckOutcome::Deferred, plus(now, every));
+    }
     let r = match r {
         Ok(r) => r,
         Err(e) => return (CheckOutcome::Broken(e.to_string()), plus(now, every)),
@@ -675,10 +686,11 @@ struct Run {
     timed_out: bool,
     /// Subagent sessions spawned under the run, grandchildren included (33 §3.4).
     children: HashSet<SessionId>,
-    /// Direct children whose `<subagent_result>` has not reached the run's
-    /// session yet: a just-spawned child is `Idle` before its first turn, so
-    /// liveness alone would close the run early (33 §3.4).
-    pending: HashSet<String>,
+    /// Direct children whose result has not reached the run's session yet
+    /// (a `PeerDelivered` from `session:<child>`, 50 §10): a just-spawned
+    /// child is `Idle` before its first turn, so liveness alone would close
+    /// the run early (33 §3.4).
+    pending: HashSet<SessionId>,
     /// A turn is in flight on the run's session (`TurnStarted`/`TurnFinished`).
     turn_open: bool,
     /// `stop_reason` of the last `TurnFinished`; what [`Settle`] closes with.
@@ -1564,9 +1576,8 @@ impl Schedule {
         now: DateTime<Local>,
     ) -> Option<CheckOutcome> {
         self.checking.remove(name);
-        // Its dry run (40 §1.12) unless the runtime merely deferred it.
-        let dry_run = self.unvalidated.remove(name)
-            && !matches!(result, Err(SensorError::Budget(_)));
+        // Its dry run (40 §1.12); a deferred check leaves it for the next tick.
+        let dry_run = !deferred(&result) && self.unvalidated.remove(name);
         let e = self.entries.get(name)?;
         let spec = e.spec.as_ref().ok()?.clone();
         spec.sensor.as_ref()?;
@@ -1584,6 +1595,13 @@ impl Schedule {
         let (outcome, next) = gate(&spec, &mut w, &result, now, busy, queued);
         let reason = outcome.to_string();
         match (&outcome, result) {
+            // §5: deferred, not dropped — a row and `last_check`, no strike, no state.
+            (CheckOutcome::Deferred, _) => {
+                self.row(name, now, &reason).await;
+                if let Err(e) = self.store.watch_last_check(name, now, &reason, 0).await {
+                    tracing::error!(%name, "check not recorded: {e:#}");
+                }
+            }
             (CheckOutcome::Broken(why), _) => {
                 self.row(name, now, &reason).await;
                 if let Err(e) = self.store.watch_last_check(name, now, &reason, 0).await {
@@ -1635,7 +1653,7 @@ impl Schedule {
                     _ => self.row(name, now, &reason).await,
                 }
             }
-            // `gate` answers `Broken` for every `Err`.
+            // `gate` answers `Broken` or `Deferred` for every `Err`.
             (_, Err(_)) => {}
         }
         if !matches!(outcome, CheckOutcome::Fired | CheckOutcome::Restarted) {
@@ -1784,28 +1802,16 @@ impl Message<agent::AgentEvent> for Schedule {
                 }
             }
             // 33 §3.4: grandchildren count.
-            E::SubagentSpawned {
-                parent,
-                child,
-                name,
-                ..
-            } => {
+            E::SubagentSpawned { parent, child, .. } => {
                 if let Some(r) = self.running.get_mut(&parent) {
                     r.children.insert(child);
-                    r.pending.insert(name);
+                    r.pending.insert(child);
                 } else if let Some(r) = self
                     .running
                     .values_mut()
                     .find(|r| r.children.contains(&parent))
                 {
                     r.children.insert(child);
-                }
-            }
-            // A direct child's result landed in the run's session; the turn it
-            // starts (or extends) is the run's.
-            E::MessageDelivered { session, from, .. } => {
-                if let Some(r) = self.running.get_mut(&session) {
-                    r.pending.remove(&from);
                 }
             }
             E::TurnStarted { session, .. } => {
@@ -1840,6 +1846,26 @@ impl Message<agent::AgentEvent> for Schedule {
                 });
             }
             _ => {}
+        }
+    }
+}
+
+/// A peer body landed in the run's session (50 §10): a direct child's result
+/// clears it from `pending`; the turn it starts (or extends) is the run's.
+/// `MessageDelivered` no longer fires for peer bodies, only for jobs and
+/// reminders, which never hold a run open.
+impl Message<agent::PeerDelivered> for Schedule {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: agent::PeerDelivered, _: &mut Context<Self, Self::Reply>) {
+        if let Some(r) = self.running.get_mut(&ev.session)
+            && let Some(child) = ev
+                .origin
+                .from
+                .strip_prefix("session:")
+                .and_then(|id| id.parse::<SessionId>().ok())
+        {
+            r.pending.remove(&child);
         }
     }
 }
@@ -2254,6 +2280,7 @@ impl runtime::Plugin for SchedulePlugin {
         );
         actor.register(SCHEDULE_ACTOR)?;
         rt.subscribe::<Schedule, agent::AgentEvent>(&actor).await;
+        rt.subscribe::<Schedule, agent::PeerDelivered>(&actor).await;
 
         // Watcher (34 §2.3): the `tools::mcp` idiom.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2651,6 +2678,30 @@ mod gate_tests {
     }
 
     #[test]
+    fn deferred_is_not_broken() {
+        let spec = spec("for: 1m\n");
+        let now = Local::now();
+        let mut w = WatchRow {
+            holding_since: Some(now - s(10)),
+            strikes: 2,
+            ..WatchRow::default()
+        };
+        let r = Err(SensorError::Budget("deferred".into()));
+        let (o, next) = gate(&spec, &mut w, &r, now, false, None);
+        assert_eq!(o, CheckOutcome::Deferred);
+        assert_eq!(o.to_string(), "deferred");
+        assert_eq!(next, now + s(30), "deferred: now + every");
+        assert_eq!(
+            (w.holding_since, w.strikes),
+            (Some(now - s(10)), 2),
+            "deferred touches neither first_true_at nor strikes"
+        );
+        let r = Err(SensorError::Budget("heap: boom".into()));
+        let (o, _) = gate(&spec, &mut w, &r, now, false, None);
+        assert_eq!(o, CheckOutcome::Broken("over budget: heap: boom".into()));
+    }
+
+    #[test]
     fn on_change_vs_while_true_vs_once() {
         let now = Local::now();
         let mut w = WatchRow {
@@ -3045,6 +3096,97 @@ mod watch_tests {
         Arc::new(|_, _| run(true, "events=x\np".into(), serde_json::json!({})))
     }
 
+    /// The live `pr-smoke-1` case: a fired run spawns a child, its first turn
+    /// ends while the child's result is outstanding, the result lands and a
+    /// continuation turn runs. The run stays open through the first turn-end
+    /// and closes on the last one: `watch_commit`, then the queued payload
+    /// fires. Driven through the actor: `Settle` is a self-tell after [`SETTLE`].
+    #[tokio::test]
+    async fn fanned_out_run_closes_after_its_continuation_turn_and_fires_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut sched, rec) = watcher(
+            dir.path(),
+            "when: fs_exists.py path=/x\nfire: while_true\nmode: queue\n",
+            fs_exists_true(),
+        )
+        .await;
+        let t0 = Local::now();
+        let sid = SessionId::new();
+        let child = SessionId::new();
+        sched.entries.get_mut("w").unwrap().session = Some(sid);
+        sched
+            .running
+            .insert(sid, in_flight("w", t0, Some(when("events=first\nfirst"))));
+        assert_eq!(
+            step(&mut sched, t0).await,
+            Some(CheckOutcome::Queued { coalesced: 0 })
+        );
+        let store = store::Store::open(&dir.path().join(DB)).await.unwrap();
+        let actor = Schedule::spawn(sched);
+        let turn = |stop: &str| agent::AgentEvent::TurnFinished {
+            session: sid,
+            turn: runtime::TurnId::new(),
+            stop_reason: stop.to_owned(),
+            usage: agent::Usage::default(),
+            context: 0,
+        };
+        let grace = SETTLE + Duration::from_millis(300);
+
+        // turn 1: spawns the child, ends waiting for its result
+        actor
+            .tell(agent::AgentEvent::SubagentSpawned {
+                parent: sid,
+                child,
+                name: "pr-review".into(),
+                cap: None,
+            })
+            .await
+            .unwrap();
+        actor.tell(turn("end_turn")).await.unwrap();
+        tokio::time::sleep(grace).await;
+        assert!(rec.calls.lock().unwrap().is_empty(), "closed too early");
+        assert!(store.watch_get("w").await.unwrap().unwrap().last_hash.is_none());
+
+        // the child's result lands (50 §10: `PeerDelivered`, not `MessageDelivered`)
+        // and starts the continuation turn
+        actor
+            .tell(agent::PeerDelivered {
+                session: sid,
+                origin: agent::PeerOrigin {
+                    id: SessionId::new().0,
+                    from: format!("session:{child}"),
+                    reply_to: None,
+                    scope: None,
+                },
+                text: "P1 finding".into(),
+                seq: 33,
+                turn: runtime::TurnId::new(),
+            })
+            .await
+            .unwrap();
+        actor
+            .tell(agent::AgentEvent::TurnStarted {
+                session: sid,
+                turn: runtime::TurnId::new(),
+                text: String::new(),
+                model: String::new(),
+                turn_seq: 34,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(grace).await;
+        assert!(rec.calls.lock().unwrap().is_empty(), "turn open");
+
+        // turn 2 ends: no live child, no turn → close, commit, fire the queue
+        actor.tell(turn("end_turn")).await.unwrap();
+        tokio::time::sleep(grace).await;
+        let calls = rec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "queued payload fired once");
+        assert!(calls[0].3.contains("coalesced=\"0\">\nevents=x"), "{}", calls[0].3);
+        let w = store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.fired_count, 2, "the closed run and the queued fire");
+    }
+
     #[tokio::test]
     async fn restart_closes_the_run_cancelled_and_fires() {
         let dir = tempfile::tempdir().unwrap();
@@ -3136,6 +3278,70 @@ mod watch_tests {
             (0, Some("check broken: timeout after 20s"))
         );
         assert!(sched.entries["w"].next.is_some());
+    }
+
+    /// 40 §5: a deferred check (no sensor slot for 1 s) is a row, not a strike;
+    /// it keeps `first_true_at`, the dry run and the strike count as they were.
+    #[tokio::test]
+    async fn deferred_is_a_row_not_a_strike() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let fake: FakeSensor = Arc::new(move |_, _| {
+            match c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Err(SensorError::Budget("deferred".into())),
+                1 => run(false, String::new(), serde_json::json!({})),
+                2 => run(true, "here".into(), serde_json::json!({})),
+                3 => Err(SensorError::Budget("deferred".into())),
+                _ => Err(SensorError::Timeout(Duration::from_secs(20))),
+            }
+        });
+        let (mut sched, rec) =
+            watcher(dir.path(), "when: fs_exists.py path=/x\nfor: 5m\n", fake).await;
+        let t0 = Local::now();
+
+        // deferred before its dry run: the dry run waits for the next tick
+        assert_eq!(step(&mut sched, t0).await, Some(CheckOutcome::Deferred));
+        assert!(sched.unvalidated.contains("w"));
+        assert_eq!(sched.entries["w"].next, Some(t0 + s(30)));
+        let h = sched.store.history("w", 1).await.unwrap();
+        assert_eq!(
+            (h[0].result.as_deref(), h[0].session),
+            (Some("deferred"), None)
+        );
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!((w.last_outcome.as_deref(), w.strikes), (Some("deferred"), 0));
+
+        assert_eq!(step(&mut sched, t0 + s(30)).await, Some(CheckOutcome::Quiet));
+        assert!(!sched.unvalidated.contains("w"), "the dry run ran");
+        assert_eq!(
+            step(&mut sched, t0 + s(60)).await.map(|o| o.to_string()),
+            Some("holding: 0s of 5m".into())
+        );
+        // deferred mid-hold: first_true_at survives
+        assert_eq!(step(&mut sched, t0 + s(90)).await, Some(CheckOutcome::Deferred));
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.holding_since, Some(t0 + s(60)));
+        assert_eq!(w.strikes, 0);
+        // the first real failure is strike one, not two
+        assert_eq!(
+            step(&mut sched, t0 + s(120)).await,
+            Some(CheckOutcome::Broken("timeout after 20s".into()))
+        );
+        let w = sched.store.watch_get("w").await.unwrap().unwrap();
+        assert_eq!(w.strikes, 1);
+        assert!(sched.entries["w"].spec.as_ref().unwrap().enabled);
+        assert_eq!(
+            results(&sched, 5).await,
+            [
+                "check broken: timeout after 20s",
+                "deferred",
+                "holding: 0s of 5m",
+                "quiet",
+                "deferred"
+            ]
+        );
+        assert!(rec.calls.lock().unwrap().is_empty());
     }
 
     /// 40 §1.12 last sentence: a hand-edited file's first check is its dry run;

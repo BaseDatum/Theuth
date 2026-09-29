@@ -1781,13 +1781,21 @@ fn queued_text(text: &str) -> String {
 fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'static> {
     match e {
         // Human turns: the same card shape as tools and peers, own colour and glyph.
-        Entry::User { text: t, .. } => element! {
-            View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
-                Text(content: "◆ you", color: USER, weight: Weight::Bold)
-                #(plain(&crate::attach::display(t), TextWrap::Wrap, |c| c))
+        // A live-talk utterance shows its `[spoken, N s]` marker as a muted tag line.
+        Entry::User { text: t, .. } => {
+            let (tag, body) = match crate::attach::spoken(t) {
+                Some((secs, cut, body)) => (Some(crate::attach::spoken_tag(secs, cut)), body),
+                None => (None, t.as_str()),
+            };
+            element! {
+                View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: USER, padding_left: 1, padding_right: 1, margin_top: 1) {
+                    Text(content: "◆ you", color: USER, weight: Weight::Bold)
+                    #(tag.map(|t| element!(Text(content: t, color: SAND))))
+                    #(plain(&crate::attach::display(body), TextWrap::Wrap, |c| c))
+                }
             }
+            .into_any()
         }
-        .into_any(),
         // Cards (peer traffic, skill bodies, the prompt): body hidden until Ctrl+O.
         Entry::Card {
             kind,
@@ -2383,5 +2391,23 @@ mod tests {
                 assert!(frame.contains(talk::DEGRADED), "{state:?}\n{frame}");
             }
         }
+    }
+
+    /// A live-talk turn draws its marker as a tag line, not as raw text.
+    #[test]
+    fn spoken_user_card_shows_tag_not_marker() {
+        let e = Entry::User {
+            text: "[spoken, 5 s, interrupted] hello".into(),
+            turn: None,
+        };
+        let frame = element! {
+            View(flex_direction: FlexDirection::Column, width: 60u16) {
+                #(entry(&e, "", 0, 60))
+            }
+        }
+        .to_string();
+        assert!(frame.contains("spoken 5 s · cut in"), "{frame}");
+        assert!(frame.contains("hello"), "{frame}");
+        assert!(!frame.contains("[spoken"), "{frame}");
     }
 }

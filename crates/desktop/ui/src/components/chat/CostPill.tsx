@@ -87,7 +87,7 @@ export function HarnessTokens({ rows }: { rows: RemoteTokens[] }) {
   )
 }
 
-function Breakdown({ cost }: { cost: SessionCost }) {
+export function Breakdown({ cost }: { cost: SessionCost }) {
   return (
     <div className="flex flex-col gap-3 text-sm">
       <Bucket label="Direct" bucket={cost.direct} />
@@ -98,6 +98,7 @@ function Breakdown({ cost }: { cost: SessionCost }) {
         {cost.scope === 'opaque_remote_inclusive' && ' · includes hidden remote descendants'}
         {cost.remote_meter_gaps > 0 && ` · ${cost.remote_meter_gaps} remote meter gaps`}
       </p>
+      {cost.delta_suspected && <p className="text-xs text-fg-tertiary">harness may report per-turn cost — totals may be low</p>}
       <HarnessTokens rows={cost.remote_tokens} />
       {cost.children.length > 0 && (
         <table className="w-full text-xs">

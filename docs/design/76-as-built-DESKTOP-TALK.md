@@ -94,14 +94,14 @@ All under `crates/desktop/ui/` unless noted.
   that fills to a closed accent lock as the finger rises. `navigator.vibrate?.(15)` on record and lock (no haptics
   helper exists in the tree; iOS WebKit has no vibration API). Pointer capture, `touch-none select-none`, context menu
   suppressed; the `click` that ends a locking gesture is swallowed.
-- `Composer.tsx`: the `AudioLines` voice-note button is now **Talk** (`Orbit`): `talk.open(api, session)` then
+- `Composer.tsx`: the `AudioLines` voice-note button is now **Talk** (`AudioLines`): `talk.open(api, session)` then
   `navigate('/talk/$session')`; `aria-disabled` + tooltip *Talking in <title> — open* when another session holds the
   talk (click opens it). The `Mic` button is `MicButton`; the dictating `LevelMeter` branch is unchanged. Visibility
   rules of 54 §0.8 kept (`canDictate` gates both; Talk hides while typing/recording/dictating as the note button did).
   New `readOnly` prop (the talk view): textarea `readOnly`, placeholder *Talking — speak, or stop the talk to type*,
   Send/Steer disabled, voice buttons hidden. `record()` gains a pending-stop guard so a hold released before
   `getUserMedia` resolves still stops (or discards) once the recorder exists.
-- `AppSidebar.tsx`: **Talk** (`Orbit`) between *New chat* and *Agents*; click → `talk.open(api, null)` (creates the
+- `AppSidebar.tsx`: **Talk** (`AudioLines`) between *New chat* and *Agents*; click → `talk.open(api, null)` (creates the
   session, starts, invalidates the session list) → `/talk/$session`, whole-window like `/`; a `bg-success` dot while
   `talk.phase !== 'off'`.
 - `Header.tsx`: optional `popout?: PopoutTarget` (default `{kind:'chat'}`); `lib/popout.ts` gains
@@ -196,7 +196,9 @@ Toolchain per brief; commands run in `crates/desktop/ui` unless noted.
 - `SpeechStarted`/`SpeechAudio` carry no `sink` yet (76 §4.9 says they will); the talk leg claims by `session`. When
   `sink` lands, add `&& e.sink === 'client'` in `speech.ts`'s `SpeechStarted` handler.
 - Once TALK-CORE lands: run the real talk with an interruption from the desktop and from a phone through the relay;
-  confirm the heard prefix in the transcript and the `[spoken …]` markers render.
+  confirm the heard prefix in the transcript. FIX-1: `[spoken, N s(, interrupted)] …` markers render in
+  `MessageUser` as the user's bubble under an `AudioLines` caption (`spoken · N s`, plus `· cut in` when
+  interrupted) via `lib/injected.ts`'s `parseSpoken`, like the `[voice note …]` caption.
 - WebGPU in WKWebView (macOS 26 / iOS 26 ship it): confirm the orb renders in the Tauri shell; the CSS orb is the
   fallback either way.
 - The `orb` renderer's `!` patches should be re-applied if the vendored files are refreshed from the registry.

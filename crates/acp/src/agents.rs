@@ -44,7 +44,8 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_dir: Option<PathBuf>,
     /// Give the child the theuth MCP shim (`load_skill`, `list_skills`,
-    /// `send_message`; 75 §9) in `session/new.mcpServers`; default false.
+    /// `send_message`; 75 §9) in `session/new.mcpServers`; default true,
+    /// `mcp: false` opts out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<bool>,
 }

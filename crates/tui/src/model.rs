@@ -1106,7 +1106,10 @@ impl Entry {
             v.lines().map(|l| line_rows(l, width)).sum::<usize>() + text_rows(v.plain, width)
         };
         match self {
-            Entry::User { text, .. } => text_rows(&crate::attach::display(text), inner) + 4,
+            Entry::User { text, .. } => match crate::attach::spoken(text) {
+                Some((_, _, body)) => text_rows(&crate::attach::display(body), inner) + 5,
+                None => text_rows(&crate::attach::display(text), inner) + 4,
+            },
             // Rendered fences (diagrams, surfaces) never exceed the construction
             // width, so they count one row per line like everything else.
             Entry::Assistant(t) => md(t, width),
@@ -6359,7 +6362,9 @@ impl Model {
                 } => Some((
                     i,
                     *t,
-                    text.lines()
+                    crate::attach::spoken(text)
+                        .map_or(text.as_str(), |(_, _, body)| body)
+                        .lines()
                         .next()
                         .unwrap_or_default()
                         .chars()
@@ -10872,6 +10877,12 @@ impl Model {
             rows.push(format!(
                 "{:<12}{} remote meter(s) with incomplete coverage",
                 "remote", c.remote_meter_gaps
+            ));
+        }
+        if c.delta_suspected {
+            rows.push(format!(
+                "{:<12}harness may report per-turn cost — totals may be low",
+                "remote"
             ));
         }
         rows.push(format!(

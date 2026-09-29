@@ -128,6 +128,9 @@ pub struct AcpChild {
     /// `(key, value)` option changes asked for mid-turn (75 §8): sent at
     /// `PromptDone`, before the next queued input's prompt.
     pending_options: Vec<(String, String)>,
+    /// Runtime notes for the harness, each sent as `<runtime>…</runtime>`
+    /// ahead of the first prompt's text and never persisted (75 §10, §4).
+    notes: Vec<String>,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -347,6 +350,17 @@ pub struct HarnessOptions;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Shutdown;
 
+/// `tell`: a runtime note for the harness — sent inside the first
+/// `session/prompt` after it, before the user's text. Used after a resume
+/// (75 §10): [`CANCELLED_NOTE`] when the replayed turn ended `cancelled`, and
+/// one per stored skill that no longer exists (75 §4).
+#[derive(Clone, Debug)]
+pub struct Note(pub String);
+
+/// The [`Note`] after a resume of a cancelled turn: `session/load` replays
+/// the unfinished work and the harness would otherwise pick it up.
+pub const CANCELLED_NOTE: &str = "your previous turn was cancelled by the user before it finished; do not continue it — answer only the message below";
+
 /// A `session/set_config_option` round trip is bounded so a hung harness
 /// cannot hold the actor's mailbox.
 // ponytail: the option request is awaited on the mailbox (one short round
@@ -417,6 +431,7 @@ impl AcpChild {
             last_turn: None,
             skills: Some(skills),
             pending_options: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -782,7 +797,9 @@ impl AcpChild {
         }
     }
 
-    /// Send one `session/prompt`; its result arrives as [`PromptDone`].
+    /// Send one `session/prompt`; its result arrives as [`PromptDone`]. Pending
+    /// [`Note`]s go ahead of the text on the wire only — the persisted user
+    /// message is the text alone — and stay with the turn for a busy retry.
     async fn start(&mut self, q: Queued, me: &ActorRef<Self>) {
         if self.harness.is_none() {
             return;
@@ -790,7 +807,19 @@ impl AcpChild {
         if self.open(&q).await.is_err() {
             return;
         }
-        self.prompt(&q.text, me);
+        let mut text = q.text;
+        if !self.notes.is_empty() {
+            let notes: String = self
+                .notes
+                .drain(..)
+                .map(|n| format!("<runtime>{n}</runtime>\n"))
+                .collect();
+            text.insert_str(0, &notes);
+            if let Some(t) = &mut self.turn {
+                t.input = Some((text.clone(), q.admitted));
+            }
+        }
+        self.prompt(&text, me);
     }
 
     /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`].
@@ -1737,6 +1766,14 @@ impl Message<Shutdown> for AcpChild {
         self.finish("cancelled", None).await;
         self.drain("harness replaced by resume_child").await;
         ctx.stop();
+    }
+}
+
+impl Message<Note> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, Note(n): Note, _: &mut Context<Self, Self::Reply>) {
+        self.notes.push(n);
     }
 }
 
@@ -2725,6 +2762,8 @@ mod tests {
         );
         child.remote = false;
         let actor = AcpChild::spawn(child);
+        // What the supervisor tells a resumed child whose turn was cancelled.
+        actor.tell(Note(CANCELLED_NOTE.to_owned())).await.unwrap();
         let m = fake.next().await;
         assert_eq!(m["method"], "initialize", "{m}");
         let mut init = InitializeResponse::new(ProtocolVersion::V1);
@@ -2747,7 +2786,11 @@ mod tests {
             .await
             .unwrap();
         let (id, text) = fake.prompt().await;
-        assert_eq!(text, "again", "the next prompt reaches the new process");
+        assert_eq!(
+            text,
+            format!("<runtime>{CANCELLED_NOTE}</runtime>\nagain"),
+            "the note precedes the next prompt on the wire"
+        );
         fake.end_turn(&id);
         let events = rig.until_finished().await;
         assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
@@ -2755,6 +2798,28 @@ mod tests {
             errors(&events).is_empty(),
             "no 'starting fresh' note: {events:?}"
         );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnStarted { text, .. } if text == "again")),
+            "the persisted turn text is the input alone: {events:?}"
+        );
+        // The note is spent: the following prompt is bare.
+        actor
+            .tell(UserInput {
+                id: None,
+                text: "more".into(),
+                files: Vec::new(),
+                ticket: None,
+                scope: None,
+                defer: false,
+            })
+            .await
+            .unwrap();
+        let (id, text) = fake.prompt().await;
+        assert_eq!(text, "more");
+        fake.end_turn(&id);
+        assert_eq!(stop_reasons(&rig.until_finished().await), ["end_turn"]);
     }
 
     /// 06 §8.3: a `session_busy` refusal keeps the turn open — no

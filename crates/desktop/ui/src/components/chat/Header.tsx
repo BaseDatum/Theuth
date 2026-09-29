@@ -16,6 +16,7 @@ import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout
 import { useEngineLabel } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { parseSpoken } from '@/lib/injected'
 import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
@@ -190,7 +191,7 @@ export function Header({
   const compact = tier > 0
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
-  const title = parseNote(raw)?.body || raw
+  const title = parseNote(raw)?.body || parseSpoken(raw)?.text || raw
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()
   const nav = first && (!open || isMobile) && !popped

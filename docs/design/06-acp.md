@@ -1,12 +1,12 @@
 # Agent Client Protocol: external harnesses as subagents, theuth as an agent
 
-Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness.
+Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness. Amended 2026-09-29 per 75 §11: §1 table and line 9, §3.2 (`resume_child`), §3.3 rows, §3.6 store/RPC, §3.8 (MCP back-channel in scope), §7 cost visibility, §8 rule 11, §8.2 rendering.
 
 Verified 2026-09-12. Client half (headless, real models; harness `opencode acp` 1.18.20 from `agents.yaml`, parent claude-sonnet-4-5): `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, child `TurnStarted{model:"opencode"}`, `ToolCallStarted bash`, `ToolCallFinished`, `TextDelta "ACP-OK-17"`, `TurnFinished end_turn`, parent turn with `<subagent_result stop="end_turn">ACP-OK-17</subagent_result>`; `send_message` with `await_reply` → second `session/prompt` on the same ACP session, answered from the child's context, `MessageDelivered` published; an entry with `OPENCODE_CONFIG` permission `bash: ask` → `ApprovalRequested{tool:"echo PERM-OK-5", risk: mutating, args:{command, kind:"execute"}}` on the child session, `resolve_approval allow` ran it, `deny` gave the harness `The user rejected permission to use this specific tool call.` and a silent turn end (result falls back to `[no reply; last tool result]`, §8.17); `cancel` on a child running `sleep 120` → `session/cancel` → `TurnFinished cancelled`, `<subagent_result stop="cancelled">`, process stays (idle child); RPC `shutdown` → zero `opencode acp` processes; restart + `send_message` to a store-only child respawned and `session/load`ed (harness recalled its first turn); unknown agent → tool error `unknown agent \`nope\`; configured: opencode, opencode-ask`; `list_acp(probe:true)` → `ok` for both; `command: /nonexistent/harness` → child `Error "spawn failed: Internal error: No such file or directory (os error 2)"` + `TurnFinished error`, parent `<subagent_result stop="error">` with that text.
 Registry: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote `codex-acp: {command: npx, args: [-y, "@agentclientprotocol/codex-acp@1.11.0"], description: "ACP adapter for OpenAI's coding assistant"}`; `spawn_subagent{agent:"codex-acp"}` streamed `CODEX-OK` and delivered the result (codex login already on disk); `remove_acp` removed entries.
 Agent half (`t --acp` driven by a throwaway Bun stdio client): `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:true, promptCapabilities:{embeddedContext:true}}, authMethods:[], agentInfo:{name:"theuth", version}}`; `session/new` → theuth session id; `session/prompt` streamed `tool_call{title:"shell", kind:"execute", in_progress}`, `session/request_permission` with `allow_once`/`reject_once`, `tool_call_update completed` with the shell output, `agent_message_chunk`, `usage_update`, `{stopReason:"end_turn"}`; `reject_once` → `tool_call_update failed "shell: denied by user"` and the model explained the denial; `session/cancel` during `sleep 30` → `{stopReason:"cancelled"}`; `session/load` replayed `user_message_chunk`, `tool_call`, `agent_message_chunk` and a follow-up prompt answered from the replayed history; `session/list` returned the session with `cwd` and title; stdin EOF → exit 0, no leftover process.
 TUI on a pty: `/acp` opened the menu (entries, blank, registry rows `+ id  name version  description`); `p` showed `probing…` then `ok`.
-Not exercised: `binary` distribution install (download/sha256/tar|unzip), the `terminal`-type auth message, Zed/acpx as clients (not installed), `session/set_config_option`.
+Not exercised: `binary` distribution install (download/sha256/tar|unzip), the `terminal`-type auth message, Zed/acpx as clients (not installed). `session/set_config_option` is used since 75 §8 (live model/effort on a child).
 
 [ACP](https://agentclientprotocol.com) is JSON-RPC 2.0 between an **Agent**
 (an LLM harness: Claude Code, Codex, Gemini CLI, OpenCode, Goose, Copilot,
@@ -43,6 +43,7 @@ Stable v1 only. v2 is a published draft; nothing here needs it.
 | C→A | `session/cancel {sessionId}` (notification) | abort; prompt then returns `cancelled` |
 | C→A | `session/load` / `session/list` / `session/close` | optional, capability-gated |
 | A→C | `session/update {sessionId, update}` (notification) | `agent_message_chunk`, `agent_thought_chunk`, `user_message_chunk`, `tool_call`, `tool_call_update`, `plan`, `usage_update`, `available_commands_update`, `current_mode_update`, `config_option_update` |
+| C→A | `session/set_config_option {sessionId, configId, value}` → `{configOptions}` | live model / effort on a child (75 §8) |
 | A→C | `session/request_permission {toolCall, options[]}` → `{outcome}` | approval; `options[].kind` ∈ `allow_once` `allow_always` `reject_once` `reject_always`; outcome `selected{optionId}` or `cancelled` |
 | A→C | `fs/read_text_file`, `fs/write_text_file`, `terminal/*` | optional; we advertise none (§3.8) |
 
@@ -222,10 +223,12 @@ so the TUI, RPC subscribers and the supervisor see a normal session.
 | `tool_call_update {status: completed \| failed, content, rawOutput}` | `ToolCallFinished { output: rendered content, is_error: status == failed }`; the call and its result are also persisted as chat messages (§3.6) |
 | `tool_call_update` with other statuses / partial content | dropped (UI already shows the pending call) |
 | `plan {entries}` | `TextDelta` of a rendered checklist, once per change — no new event type until a UI wants to render plans specially |
-| `usage_update {used, size}` | remembered; emitted in `TurnFinished.context = used` |
+| `usage_update {used, size, cost}` | `ContextUsed { context: used, size }` per update, handled in the actor's mailbox with or without a turn open (not `translate()`); `size` stored as `sessions.context_size`; `cost` to the remote meter; `used` also in `TurnFinished.context` (75 §5, §6) |
 | `user_message_chunk` (only during `session/load` replay) | ignored (§8 rule 11: the local history already holds the turn) |
-| `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update` | ignored |
-| `session/prompt` response `{stopReason}` | `TurnFinished { stop_reason, usage: {0,0} unless usage_update seen, context }` |
+| `available_commands_update` | `HarnessCommandsChanged` + `sessions.harness_commands` (75 §3) |
+| `config_option_update` | refreshes the harness option list (75 §8); no event |
+| `current_mode_update`, `session_info_update` | ignored |
+| `session/prompt` response `{stopReason, usage?}` | `TurnFinished { stop_reason, usage: from PromptResponse.usage when present (75 §7), context }` |
 | transport EOF / process exit mid-turn | `Error { message }` then `TurnFinished { stop_reason: "error" }` |
 
 Content rendering: `content` blocks → their text (images: `[image]`,
@@ -326,9 +329,14 @@ discovered and shown beside it). ACP children appear in the `/agents` picker and
 board (19) with `running`/`idle`/`approval` only — never `awaiting`, since
 they have no `send_message` (§3.8); opening one and approval modals work
 because they key on `SessionId`.
-RPC: no new methods beyond `list_acp` / `add_acp` / `remove_acp` (the
-`/acp` menu over the wire, same shape as `list_mcp` / `add_mcp_server` /
-`remove_mcp_server`).
+Since 75: `harness_commands` (0027), `context_size` (0028),
+`remote_turns` (0029) and `acp_skills` (0030) join the store;
+`Loaded.harness_commands` / `Loaded.context_size` and
+`SessionSummary.context_size` carry them.
+RPC: `list_acp` / `add_acp` / `remove_acp` (the `/acp` menu over the wire,
+same shape as `list_mcp` / `add_mcp_server` / `remove_mcp_server`), plus
+`harness_options`, `set_harness_option` (75 §8), `resume_child` (75 §10)
+and `send_message` from the MCP back-channel (75 §9).
 
 ### 3.7 Authentication
 
@@ -361,18 +369,15 @@ subscription is already on disk once the user has used the harness.
   uses its own tools, which is what the user runs it for. Advertising `fs`
   would route every edit through theuth for unsaved-buffer awareness we do not
   have. Add when an editor-integrated theuth needs it (§4.4).
-- **MCP back-channel** (`session/new.mcpServers` pointing at a theuth-hosted
-  MCP server exposing `send_message`, skills, the shared approval gate): the
-  right way to give children a voice and theuth's tools. Needs an MCP *server*
-  in theuth (`rmcp` `server` feature) reachable from a subprocess — a stdio
-  shim `theuth mcp --session <id>` proxying to the daemon over RPC. One
-  transcript showing a stuck child that should have asked a question
-  triggers it. (A remote child on a node, 32, is in the same position: it
-  cannot ask its parent either.)
+- **MCP back-channel** — in scope since 75 §9, on by default: `session/new.mcpServers`
+  carries a stdio shim `theuth mcp --session <id>` proxying `list_skills`,
+  `load_skill` and `send_message` to the daemon; `agents.yaml` `mcp: false`
+  opts a harness out. The shared approval gate for mutating back-channel
+  tools is still a follow-up. (A remote child on a node, 32, is in the
+  same position as before: it cannot ask its parent.)
 - **Forwarding `~/.theuth/mcp/*.json` to children.** Same mechanism
   (`mcpServers`), zero code beyond a mapping — but doubles every MCP server
-  process per child and bypasses our gates. Off by default; `agents.yaml`
-  entry flag `mcp: inherit` when wanted.
+  process per child and bypasses our gates. Still out (75 §12).
 - **`session/list` / registry-driven install of `binary` distributions on
   Windows** (no Windows build of theuth).
 - **ACP proxies/conductor**: theuth as a proxy that adds its skills and tools
@@ -522,10 +527,10 @@ Each step left `theuth` runnable.
   Acceptable — the user chose that harness and its policy — and stated in
   the `/acp` entry line (`approvals: the harness's own; theuth relays what it
   asks`).
-- **Cost visibility.** External turns bill the harness's account;
-  `usage_update` is optional and often absent, so `TurnFinished.usage` is
-  zero for ACP children. The header shows the harness name, not a model, so
-  the gap is visible rather than misleading.
+- **Cost visibility** — retired by 75: both pinned harnesses (omp, opencode)
+  send `usage_update` with cumulative `cost`, and per-turn tokens arrive in
+  `PromptResponse.usage` (75 §7). Remaining gap: opencode's usage is its last
+  request only, labelled a lower bound in `/cost`.
 
 ## 8. Revisions at build time (2026-09-12)
 
@@ -591,7 +596,11 @@ decision.
 11. **`session/load` replay chunks are ignored**: the local history was
     persisted per turn (§3.6, text and tool calls alike), so replay would
     duplicate it. Mechanism: replay arrives before any turn is open, and
-    `AcpChild` drops every `session/update` that has no turn in flight.
+    `AcpChild` drops every `session/update` that has no turn in flight —
+    with two exceptions since 75: `usage_update` and
+    `available_commands_update` are current-state facts and are applied
+    during replay too (a stale replayed `usage_update` is overwritten by the
+    first live one).
 12. **Agent half subscribes typed events.** There is no typed broadcast;
     the RPC bridge carries JSON and only exists with `RpcPlugin`. `rpc::acp`
     registers its own kameo actor on the bus for `AgentEvent`,
@@ -685,9 +694,10 @@ harness itself runs on is discovered and carried beside it.
   id, which for an ACP child must stay the harness name. `TurnStarted` did
   not grow a field; the event precedes the first turn and the store row
   covers a client that loads later.
-- **Rendering.** Desktop `ModelMenu`: an ACP child (`agent` set) renders
-  `agent · harnessModel` (or `agent`) as plain text — no picker, no effort
-  menu; `set_model` on a harness is not possible from theuth. Store slice
+- **Rendering.** Superseded by 75 §8: the desktop `ModelMenu` and TUI
+  `/model` / `/effort` on an ACP child pick from the harness's own
+  `configOptions` via `harness_options` / `set_harness_option`; the plain
+  `agent · harnessModel` text remains only for a gone process. Store slice
   `harnessModel` from `Loaded` and the event. TUI `Model::header`:
   `model_id · harness_model` before the effort/ctx segments (`↳ name  child ·
   …` when a subagent); `HarnessModelChanged` after a shown value adds

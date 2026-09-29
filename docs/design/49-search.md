@@ -1102,6 +1102,17 @@ claims a measurement or check that §11 does not list.
 - **Concurrency bound** (§4.3): each owner matches under a one-permit
   semaphore; a second concurrent query is refused with an `error` page
   (`… is busy; retry`), not queued.
+- **Client request discipline** (§5.3; SEARCH-DEBOUNCE, 2026-09-29, see
+  `49-as-built-SEARCH-DEBOUNCE.md`): the server bound above is kept, so the
+  app never issues two `search` calls at once. Each search surface
+  (`SearchDialog`, `AttachPicker`) owns one `lib/search-queue.ts`
+  `SearchQueue`: a resetting 200 ms debounce (nothing is sent while typing
+  continues; Enter settles at once), one RPC in flight, the latest settled
+  query held pending behind it (an older pending query is dropped, never
+  sent), same-query pages (Show more, indexing poll) FIFO behind the base
+  page, and an emptied box or closed surface dropping the pending query and
+  the list. Results and errors stay keyed by query text in React Query, so a
+  late answer for an older query lands under a key nothing observes.
 - **Names**: `SearchSessions` → `SearchSessionPage`; the session hit type
   stays `SearchHit`.
 

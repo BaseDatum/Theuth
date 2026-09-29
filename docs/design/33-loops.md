@@ -205,12 +205,13 @@ shows end rows: they are the last word.
 
 ### 3.4 A run and its subtree
 
-`Run` gains `children: HashSet<SessionId>`, `pending: HashSet<String>`
-(direct children by peer name whose result has not landed), `turn_open`
-and `last_stop`. `AgentEvent::SubagentSpawned { parent, child, name }`
-with `parent` the run's session → `children += child`, `pending += name`;
-`parent` already in `children` → `children += child` (grandchildren count).
-`MessageDelivered { session: run, from }` → `pending -= from`.
+`Run` gains `children: HashSet<SessionId>`, `pending: HashSet<SessionId>`
+(direct children whose result has not landed), `turn_open` and
+`last_stop`. `AgentEvent::SubagentSpawned { parent, child }` with `parent`
+the run's session → `children += child`, `pending += child`; `parent`
+already in `children` → `children += child` (grandchildren count).
+`PeerDelivered { session: run, origin.from: "session:<child>" }` (50 §10;
+`MessageDelivered` no longer fires for peer bodies) → `pending -= child`.
 `TurnStarted`/`TurnFinished` on the run's session track `turn_open`.
 
 On `TurnFinished`: a run with no children (34's case) or a timed-out one

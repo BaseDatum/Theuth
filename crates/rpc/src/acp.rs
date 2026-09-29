@@ -983,6 +983,7 @@ mod tests {
             },
             children: Vec::new(),
             remote_meter_gaps: 0,
+            delta_suspected: false,
             remote_tokens: Vec::new(),
         };
         let cost = acp_cost(&c).unwrap();

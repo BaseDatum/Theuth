@@ -79,6 +79,9 @@ pub struct Footer {
     pub elapsed: Duration,
     /// Tool calls made.
     pub tools: u32,
+    /// `(used, window)` when the session's window size is known — an ACP
+    /// child's `usage_update` (75 §5); native sessions carry none here.
+    pub context: Option<(u32, u32)>,
 }
 
 impl fmt::Display for Footer {
@@ -91,7 +94,11 @@ impl fmt::Display for Footer {
             fmt_k(self.usage.completion),
             fmt_elapsed(self.elapsed),
             self.tools
-        )
+        )?;
+        if let Some((used, size)) = self.context {
+            write!(f, " · ctx {}/{}", fmt_k(used), fmt_k(size))?;
+        }
+        Ok(())
     }
 }
 
@@ -1144,8 +1151,10 @@ fn host(url: &str) -> &str {
 fn fmt_k(n: u32) -> String {
     if n < 1000 {
         n.to_string()
-    } else {
+    } else if n < 1_000_000 {
         format!("{:.1}k", f64::from(n) / 1000.0)
+    } else {
+        format!("{:.1}M", f64::from(n) / 1_000_000.0)
     }
 }
 
@@ -1451,6 +1460,7 @@ mod tests {
             },
             elapsed: Duration::from_secs(42),
             tools: 3,
+            context: None,
         }
     }
 
@@ -1989,6 +1999,12 @@ mod tests {
         assert_eq!(describe("x", &serde_json::Value::Null), "");
         assert_eq!(truncate_chars("héllo", 3), "hé…");
         assert_eq!(fmt_k(999), "999");
+        assert_eq!(fmt_k(16_500), "16.5k");
+        assert_eq!(fmt_k(1_000_000), "1.0M");
+        let mut f = footer();
+        assert!(!f.to_string().contains("ctx"));
+        f.context = Some((16_500, 1_000_000));
+        assert!(f.to_string().ends_with(" · 3 tools · ctx 16.5k/1.0M"), "{f}");
         assert_eq!(fmt_elapsed(Duration::from_millis(1200)), "1.2 s");
         assert_eq!(fmt_elapsed(Duration::from_secs(92)), "1m32s");
     }

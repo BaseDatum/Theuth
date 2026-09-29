@@ -377,6 +377,10 @@ pub struct SessionCost {
     pub children: Vec<ChildCost>,
     /// Remote meters in the subtree whose coverage is not complete.
     pub remote_meter_gaps: u32,
+    /// A remote meter in the subtree reported a lower total twice in one
+    /// epoch (75 §6): the harness may send per-turn cost, not a cumulative
+    /// total, so `total` may be low. Never summed.
+    pub delta_suspected: bool,
     /// ACP turn tokens in the subtree per harness and model (75 §7); empty
     /// for a native-only subtree.
     pub remote_tokens: Vec<RemoteTokens>,

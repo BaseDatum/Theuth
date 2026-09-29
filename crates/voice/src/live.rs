@@ -108,6 +108,12 @@ impl Utterer {
         self.total
     }
 
+    /// The gate's speech threshold (see [`Gate::set_threshold`]); [`Gate::THRESHOLD`]
+    /// by default and untouched by [`Utterer::reset`].
+    pub fn set_vad_threshold(&mut self, threshold: f32) {
+        self.gate.set_threshold(threshold);
+    }
+
     /// An utterance is open (audio is being fed to the model).
     pub fn is_open(&self) -> bool {
         self.open.is_some()

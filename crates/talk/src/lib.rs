@@ -16,7 +16,7 @@
 //! the bus, and does exactly what the policy tells it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -137,6 +137,9 @@ pub struct TalkConfig {
     /// Stage 2 fallback: onset → decision deadline when no partial has arrived
     /// (76 §4.4 says 900; raise it where the STT window lands later, e.g. debug builds).
     pub decide_ms: u64,
+    /// VAD probability a frame must exceed to count as speech while the agent
+    /// speaks (`Speaking`/`Holding`); `Listening`/`Thinking` keep the gate's 0.5.
+    pub barge_in_vad: f32,
     /// The turn commits this long after an utterance closes without terminal punctuation.
     pub end_of_turn_ms: u64,
     /// The same, when the utterance ends in `.`, `?` or `!`.
@@ -160,6 +163,7 @@ impl Default for TalkConfig {
             enabled: true,
             barge_in_min_ms: 400,
             decide_ms: 900,
+            barge_in_vad: 0.7,
             end_of_turn_ms: 700,
             end_of_turn_punct_ms: 250,
             hold: Hold::Pause,
@@ -243,7 +247,7 @@ pub struct TalkState {
     pub model: ModelState,
 }
 
-/// Why a hold ended in playback resuming (76 §4.4 stage 2 a/b).
+/// Why a hold ended in playback resuming (76 §4.4 stage 2 a/b, and noise).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
@@ -252,6 +256,8 @@ pub enum ResumeReason {
     Backchannel,
     /// The candidate is a fuzzy prefix of what the agent just said.
     Echo,
+    /// The gate opened on something that never became a word.
+    Noise,
 }
 
 /// What a talk runs without (76 §0.5).
@@ -391,6 +397,12 @@ pub enum TalkEvent {
 
 /// Prompt block registered as `RegisterPrompt { plugin: "talk" }` (76 §0.11).
 const PROMPT: &str = "## Live talk\n\
+You are talking out loud. Your reply is synthesised to speech and played on the user's speaker \
+the moment you write it, so the user and anyone with them hears you aloud, in the room. When the \
+user asks you to say something to a person present (\"say hello to my friend\"), just say it in \
+your reply — they are listening. Do not send messages, DM, or look up agents or contacts for \
+people the user mentions unless they explicitly ask you to send a message elsewhere; you are a \
+voice in the room, not a messenger.\n\
 A user message that starts with `[spoken, N s]` was said aloud to you just now, in a live \
 conversation: what follows is a transcript of N seconds of speech, so read through recognition \
 slips and never quote them back. Your reply is spoken to the user sentence by sentence as you \
@@ -417,6 +429,8 @@ struct Live {
     policy: Policy,
     /// Ends the audio task.
     cancel: Arc<AtomicBool>,
+    /// The gate's speech threshold (`f32` bits), read by the task each chunk.
+    vad_threshold: Arc<AtomicU32>,
     /// The remote PCM inbox ([`Sink::Client`]).
     remote: Option<Remote>,
     /// Generation per [`Timer`]; a stale [`Fired`] is dropped.
@@ -642,16 +656,18 @@ impl Talk {
                         live.paused = true;
                     }
                 }
-                Action::Resume(reason) => {
+                Action::Resume { reason, text } => {
                     if live.paused
                         && let Some(v) = voice()
                     {
                         let _ = v.ask(voice::Resume).await;
                     }
                     live.paused = false;
+                    tracing::info!(target: "talk", ?reason, text = text.as_deref().unwrap_or(""), "resumed");
                     self.rt.publish(TalkEvent::Resumed { id, reason }).await;
                 }
                 Action::Holding { since_speech_ms } => {
+                    tracing::info!(target: "talk", since_speech_ms, "holding");
                     self.rt
                         .publish(TalkEvent::Holding {
                             id,
@@ -670,7 +686,12 @@ impl Talk {
                         queue.push_front(a);
                     }
                 }
-                Action::Interrupted { heard, dropped } => {
+                Action::Interrupted {
+                    heard,
+                    dropped,
+                    text,
+                } => {
+                    tracing::info!(target: "talk", heard, dropped, text = text.as_deref().unwrap_or(""), "interrupted");
                     self.rt
                         .publish(TalkEvent::Interrupted {
                             id,
@@ -679,6 +700,7 @@ impl Talk {
                         })
                         .await;
                 }
+                Action::VadThreshold(t) => live.vad_threshold.store(t.to_bits(), Ordering::Relaxed),
                 Action::Timer(timer, after) => {
                     let g = &mut live.timers[slot(timer)];
                     *g += 1;
@@ -778,12 +800,15 @@ impl Message<StartTalk> for Talk {
         };
         let id = TalkId::new();
         let cancel = Arc::new(AtomicBool::new(false));
+        let vad_threshold = Arc::new(AtomicU32::new(voice::vad::Gate::THRESHOLD.to_bits()));
         let me = ctx.actor_ref().clone();
         let task = Task {
             me: me.clone(),
             id,
             live: *engine,
             levels: Vec::with_capacity(LEVELS),
+            vad_threshold: vad_threshold.clone(),
+            applied: voice::vad::Gate::THRESHOLD,
         };
         let stop = cancel.clone();
         tokio::spawn(async move {
@@ -814,6 +839,7 @@ impl Message<StartTalk> for Talk {
             aec,
             policy: Policy::new(self.cfg.clone(), m.sink),
             cancel,
+            vad_threshold,
             remote,
             timers: [0; 3],
             paused: false,
@@ -1058,6 +1084,10 @@ struct Task {
     id: TalkId,
     live: Utterer,
     levels: Vec<f32>,
+    /// The actor's wish (`f32` bits): `talk.barge_in_vad` while the agent speaks.
+    vad_threshold: Arc<AtomicU32>,
+    /// What the gate has; the lease goes back at [`voice::vad::Gate::THRESHOLD`].
+    applied: f32,
 }
 
 impl Task {
@@ -1101,6 +1131,7 @@ impl Task {
             }
         };
         drop(cap);
+        self.live.set_vad_threshold(voice::vad::Gate::THRESHOLD);
         match reason.and_then(|r| self.live.close().map(|texts| (r, texts))) {
             Ok((reason, texts)) => {
                 self.texts(texts);
@@ -1124,6 +1155,12 @@ impl Task {
             if let Ok(rms) = <[f32; LEVELS]>::try_from(levels) {
                 self.report(Progress::Level(rms));
             }
+        }
+        let wanted = f32::from_bits(self.vad_threshold.load(Ordering::Relaxed));
+        if wanted != self.applied {
+            self.live.set_vad_threshold(wanted);
+            self.applied = wanted;
+            tracing::debug!(threshold = wanted, "talk: vad threshold");
         }
         let was_open = self.live.is_open();
         let texts = self.live.chunk(pcm)?;
@@ -1253,7 +1290,17 @@ mod tests {
         );
         assert_eq!(cfg.barge_in_min_ms, 400);
         assert_eq!((cfg.end_of_turn_ms, cfg.end_of_turn_punct_ms), (700, 250));
+        assert_eq!(cfg.barge_in_vad, 0.7);
         assert_eq!(cfg.backchannels.len(), 15);
         assert!(cfg.enabled);
+    }
+
+    /// FIX-1: the model is a voice in the room — it says things, it does not
+    /// message people the user mentions.
+    #[test]
+    fn prompt_says_it_is_heard_aloud_and_not_a_messenger() {
+        assert!(PROMPT.starts_with("## Live talk\n"));
+        assert!(PROMPT.contains("aloud"));
+        assert!(PROMPT.contains("Do not send messages"));
     }
 }

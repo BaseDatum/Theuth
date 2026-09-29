@@ -650,7 +650,8 @@ agent:
 # talk:                      # a live, interruptible spoken conversation with one session (design doc 76): STT and TTS local
 #   enabled: true            # false: no actor, `talk_*` answers \"talk is disabled\"
 #   barge_in_min_ms: 400     # stage 1: the gate stays open this long before playback pauses (Holding)
-#   decide_ms: 900           # stage 2 fallback: a barge-in with no transcript yet commits this long after onset (raise if the STT lands later)
+#   decide_ms: 900           # stage 2 fallback: a hold with no transcript yet resumes as noise this long after onset (raise if the STT lands later)
+#   barge_in_vad: 0.7        # VAD probability a frame must exceed to count as speech while the agent speaks (Listening/Thinking keep 0.5)
 #   end_of_turn_ms: 700      # the turn commits this long after an utterance closes without terminal punctuation
 #   end_of_turn_punct_ms: 250  # the same, when the utterance ends in . ? !
 #   hold: pause              # pause | none — whether stage 1 pauses the player while the barge-in classifier decides
@@ -772,7 +773,7 @@ const DEFAULT_AGENTS: &str =
 #   description: OpenCode, local install
 #   skills: true               # default; false: no theuth skills written into the child's cwd (design doc 75 §4)
 #   skills_dir: .agents/skills # default, relative to the child's cwd; .claude/skills for Claude Code
-#   mcp: true                  # opt-in (default false): theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
+#   mcp: true                  # default; false opts out of the theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)
 # codex-acp:
 #   command: npx
 #   args: [-y, \"@agentclientprotocol/codex-acp\"]

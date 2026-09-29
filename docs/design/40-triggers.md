@@ -219,7 +219,7 @@ Every tick of a `when:` file ends in one of these; each is a run row
 |---|---|---|---|
 | check broken | `check broken: <exception \| timeout after 20s \| exit 3: <tail> \| state too large: 17 KiB \| malformed result: …>` | `last + every` | strike +1; 3 consecutive → `set_enabled(false)`, row `check broken ×3, disabled`, `Deliver` regardless of `quiet` |
 | check still running | `skipped: check still running` | `last + every` | the previous tick's sensor has not returned (rare under `timeout < every/2`; recorded when it happens) |
-| deferred | *(no row)* | now + 1 s | 4 sensors already running; the tick loop floors at 1 s (34 §13) and retries |
+| deferred | `deferred` | `now + every` | 4 sensors already running for 1 s (§5); no strike, no state commit, `first_true_at` kept; `last_check` says `deferred`; a pending dry run (§1.12) waits for the next tick |
 | quiet | `quiet` | sensor `next`, clamped | `fire: false`; state committed (a quiet check is a successful check); strikes reset |
 | unchanged | `unchanged` | clamped | `fire: true`, same hash as the last fired payload, `fire: on_change` |
 | holding | `holding: 2m of 10m` | clamped | `for` not met; `first_true_at` set on the first true tick, cleared by any false tick |
@@ -428,7 +428,7 @@ nothing is built for it.
 | state | ≤ 16 KiB JSON | rejected: previous state kept, `check broken: state too large: N KiB`, strike |
 | cadence | floor `every: 30s`; `next` clamped to `[every, 10 × every]` | parse error / clamp, never a strike |
 | self-overlap | none | `skipped: check still running` |
-| sensors harness-wide | 4 | tick deferred 1 s |
+| sensors harness-wide | 4 | tick deferred: row `deferred`, next at `now + every`, no strike |
 | strikes | 3 consecutive | `set_enabled(false)`, row `check broken ×3, disabled`, `Deliver` regardless of `quiet`; a successful check resets; `resume` re-arms at 0 |
 | CPython child | same clock; own process group / Job Object; low priority | killed at the deadline, descendants included |
 | model turn | 34's `run_timeout_secs`, `max_runs`, `expires`, `agent.max_tool_rounds` | as 34 / 33 |
@@ -741,11 +741,13 @@ Design v1 written 2026-09-28; W1–W5 merged the same day; integration
   suspensions (`FunctionCall` + `ResolveFutures`), so 8 gave four calls and
   `pr_watch.py`'s first check died at its 5th GET (`RuntimeError:
   suspension limit 8 exceeded`, observed live).
+- `fix/40-deferred-row` — `CheckOutcome::Deferred`: `Budget("deferred")` is a
+  `deferred` row (no session, no strike, no state, `first_true_at` kept, next
+  at `now + every`), no longer a `check broken` strike (W3 had no case for it).
 
 Deviations from §1–§9: the dry run on load is not a separate inline call
 (the actor would block on the sensor and unit tests could not fake it);
-it is the first tick, which for `every:` is immediate. `deferred` is not
-special-cased by the gate (W3): it is a `check broken` row + strike.
+it is the first tick, which for `every:` is immediate.
 
 Smoke, headless on `/tmp/40-smoke` (`THEUTH_RPC__LISTEN` from the desktop
 app must be unset; it beats the file): both sensors installed
@@ -786,5 +788,5 @@ Not reproduced: the previous run's three `check broken: timeout after 15s`
 rows (v1 `fs_exists.py`, `23:09–23:11`); no sensor timeout in this run.
 
 Remaining: a model-driven babysitter run on a real PR (§9 step 6); the
-gate's `deferred` row; the scratch repo `skymoore/theuth-40-smoke` still
-exists (`gh auth refresh -s delete_repo` needs a browser).
+scratch repo `skymoore/theuth-40-smoke` still exists (`gh auth refresh -s
+delete_repo` needs a browser).

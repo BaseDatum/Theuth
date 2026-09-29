@@ -534,6 +534,10 @@ const NOUNS: [&str; 8] = [
     "otter", "heron", "fox", "lynx", "finch", "hare", "wren", "elk",
 ];
 
+/// `Agents::session`'s `acp` argument: `(harness, cwd, cap, skills)` of a new
+/// child on an external harness (06 §3.2, 75 §4).
+type AcpSpawn = (String, Option<PathBuf>, Option<Risk>, Vec<String>);
+
 impl Agents {
     /// Resolve a config/row id; on failure keep it raw and carry the message
     /// for the session's next round to surface.
@@ -561,7 +565,7 @@ impl Agents {
         &mut self,
         id: Option<SessionId>,
         parent: Option<(SessionId, &str)>,
-        acp: Option<(String, Option<PathBuf>, Option<Risk>, Vec<String>)>,
+        acp: Option<AcpSpawn>,
         pick: (Option<&str>, Option<&str>),
     ) -> anyhow::Result<(SessionId, LiveActor)> {
         let id = id.unwrap_or_default();
@@ -796,7 +800,7 @@ impl Agents {
                             .clone()
                             .unwrap_or_else(|| acp::DEFAULT_SKILLS_DIR.into()),
                     )),
-                    entry.mcp.unwrap_or(false),
+                    entry.mcp.unwrap_or(true),
                 ),
                 // A node: native there, or its own `harness`; either way the
                 // instructions ride in `session/new` `_meta`.
@@ -834,11 +838,21 @@ impl Agents {
         // 75 §4: skills into the cwd before the row exists, so a bad cwd or
         // name is a clean spawn error. A resume (75 §10) writes the row's
         // stored names back — the stopped actor removed them; a directory
-        // still there is left alone.
-        let stored_names;
+        // still there is left alone, and a name no longer in the index is
+        // dropped with a warning and a note to the child, not a failure.
+        let mut stored_names = Vec::new();
+        let mut notes = Vec::new();
         let names: &[String] = match &row {
             Some(_) => {
-                stored_names = self.store.acp_skills(id).await?;
+                let index = crate::skills::index(&crate::skills::dir(&self.rt.data_dir));
+                for name in self.store.acp_skills(id).await? {
+                    if index.iter().any(|s| s.name == name) {
+                        stored_names.push(name);
+                    } else {
+                        tracing::warn!(session = %id, skill = %name, "stored skill no longer exists, not materialised on resume");
+                        notes.push(format!("skill {name} no longer exists and was not materialised"));
+                    }
+                }
                 &stored_names
             }
             None => &skills,
@@ -898,6 +912,11 @@ impl Agents {
             materialised,
             mcp_servers,
         )));
+        if let LiveActor::Acp(a) = &actor {
+            for n in notes {
+                let _ = a.tell(crate::acp_child::Note(n)).await;
+            }
+        }
         self.ledger
             .register(id, parent.as_ref().map(|p| p.0), resumed);
         self.sessions.insert(
@@ -6297,20 +6316,36 @@ impl Message<ResumeChild> for Agents {
         if self.store.acp_session(m.session).await.map_err(|e| e.to_string())?.is_none() {
             return Err(format!("{agent}: no harness session id stored; nothing to resume"));
         }
+        // The replayed turn ended `cancelled` — the last one this process
+        // saw, or the one the shutdown below is about to cut — so the first
+        // prompt tells the harness not to pick it up (75 §10).
+        let mut cancelled = self
+            .last_stop
+            .get(&m.session)
+            .is_some_and(|(r, _)| r == "cancelled");
         if let Some(Live {
             actor: LiveActor::Acp(a),
             ..
         }) = self.sessions.remove(&m.session)
             && a.is_alive()
         {
+            cancelled |= a.ask(IsRunning).await.unwrap_or(false);
             let _ = a.tell(crate::acp_child::Shutdown).await;
             a.wait_for_shutdown().await;
         }
         self.running.remove(&m.session);
-        self.session(Some(m.session), None, None, (None, None))
+        let (_, actor) = self
+            .session(Some(m.session), None, None, (None, None))
             .await
-            .map(drop)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if cancelled && let LiveActor::Acp(a) = &actor {
+            let _ = a
+                .tell(crate::acp_child::Note(
+                    crate::acp_child::CANCELLED_NOTE.to_owned(),
+                ))
+                .await;
+        }
+        Ok(())
     }
 }
 
@@ -10855,7 +10890,8 @@ pub(crate) mod tests {
     /// 75 §10: a resumed child gets exactly one actor — the live one (a
     /// harness that stayed up after its cancel, 06 §8.3) is stopped before
     /// the respawn from the row, and a row without a stored ACP session id
-    /// is refused before anything is stopped.
+    /// is refused before anything is stopped. A stored skill name that no
+    /// longer exists does not block the resume (75 §4).
     #[tokio::test]
     async fn resume_child_replaces_the_live_actor() {
         let mut a = agents().await;
@@ -10907,21 +10943,10 @@ pub(crate) mod tests {
         assert!(old.is_alive(), "refused before the live actor is touched");
 
         store.set_acp_session(child, "s1").await.unwrap();
-        let r = agents.ask(ResumeChild { session: child }).await;
-        assert!(!old.is_alive(), "the previous actor is stopped");
-        // The stored skill name is unknown here: the respawn refuses it
-        // before a second actor exists, and the session has no live entry.
-        assert!(
-            refused(r).contains("nope"),
-            "unknown stored skill named in the refusal"
-        );
-        assert!(
-            !agents.ask(UnloadSession { session: child }).await.unwrap(),
-            "no live entry left behind"
-        );
-
-        store.set_acp(child, "omp", Some(&dir), &[]).await.unwrap();
+        // The stored skill `nope` is unknown here: dropped with a warning
+        // and a note to the child; the respawn proceeds.
         agents.ask(ResumeChild { session: child }).await.unwrap();
+        assert!(!old.is_alive(), "the previous actor is stopped");
         assert!(
             agents.ask(UnloadSession { session: child }).await.unwrap(),
             "exactly one new live entry for the session"
