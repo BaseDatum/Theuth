@@ -11,6 +11,7 @@ tools = { workspace = true }     # `RegisterPrompt` (76 §0.11)
 agent = { workspace = true }     # `SendInput` / `Cancel{keep}` (76 §0.7; used by the actor, TALK-CORE)
 voice = { workspace = true }     # `SpeechId`, `ModelState`, the `Dictation` lease (76 §4.1)
 markdown = { workspace = true }  # `spoken` → sentences (76 §0.4; TALK-CORE)
+pulldown-cmark = { workspace = true }  # is the open block prose? (76 §4.8; TALK-STREAM)
 kameo = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

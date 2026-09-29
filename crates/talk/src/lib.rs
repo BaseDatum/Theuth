@@ -439,6 +439,8 @@ struct Live {
     paused: bool,
     /// Stop requested; `TalkFinished` follows when the task hands the engine back.
     ending: Option<EndReason>,
+    /// The last `TurnStarted`, for the first-sentence latency log (76 §4.8).
+    turn_started: Option<Instant>,
 }
 
 /// The actor's end of a client talk's audio: pushed PCM rechunked into 20 ms
@@ -560,6 +562,9 @@ impl Talk {
                         .await;
                 }
                 Action::Speak { index, text } => {
+                    if index == 0 && let Some(t) = live.turn_started {
+                        tracing::info!(target: "talk", "talk: first sentence spoken after {} ms (turn started → first Speak)", t.elapsed().as_millis());
+                    }
                     let spoke = match voice() {
                         Some(v) => v
                             .ask(voice::Speak {
@@ -582,6 +587,11 @@ impl Talk {
                     }
                 }
                 Action::Saying { speech, text } => {
+                    if let (Some(t), Some(first)) = (live.turn_started, live.policy.ledger.sentences.first())
+                        && first.speech == Some(speech)
+                    {
+                        tracing::info!(target: "talk", "talk: first audio after {} ms", t.elapsed().as_millis());
+                    }
                     self.rt
                         .publish(TalkEvent::Saying { id, speech, text })
                         .await;
@@ -844,6 +854,7 @@ impl Message<StartTalk> for Talk {
             timers: [0; 3],
             paused: false,
             ending: None,
+            turn_started: None,
         });
         self.rt
             .publish(TalkEvent::TalkStarted {
@@ -1006,7 +1017,7 @@ impl Message<Fired> for Talk {
 impl Message<AgentEvent> for Talk {
     type Reply = ();
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
-        let Some(live) = self.active.as_ref().filter(|l| l.ending.is_none()) else {
+        let Some(live) = self.active.as_mut().filter(|l| l.ending.is_none()) else {
             return;
         };
         let input = match ev {
@@ -1018,7 +1029,10 @@ impl Message<AgentEvent> for Talk {
             }
             AgentEvent::TurnStarted {
                 session, turn_seq, ..
-            } if session == live.session => Input::TurnStarted(turn_seq),
+            } if session == live.session => {
+                live.turn_started = Some(Instant::now());
+                Input::TurnStarted(turn_seq)
+            }
             AgentEvent::TurnFinished {
                 session,
                 stop_reason,
