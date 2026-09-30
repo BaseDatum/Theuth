@@ -123,6 +123,7 @@ package-windows:
 #   just build-remote <win-host> windows      → theuth_<ver>_windows-x86_64-setup.exe + theuth_<ver>_windows-x86_64.zip
 #   just build-remote <linux-host> linux      → theuth_<ver>_linux-x86_64.{AppImage,deb,rpm,tar.gz}
 #   just package-macos → just notarize-macos → just package-update-macos → just release
+#   a platform that finishes after the release went out: just release-update
 # (linux-aarch64 CLI tarball: `just stage-linux` on this Mac, Docker; it lands in dist/ too.)
 build-remote host os *ARGS:
     ./scripts/build-remote.sh {{host}} {{os}} {{ARGS}}
@@ -133,11 +134,18 @@ build-remote host os *ARGS:
 release-s3:
     ./scripts/release-s3.sh
 
-# Add one Linux arch (linux-x86_64 | linux-aarch64) to the version already live: gates for that tarball
-# only, append SHA256SUMS + latest.json, tap re-rendered from the merged sums. Refuses objects already
-# under <ver>/ unless byte-identical. Same env as release-s3.
-release-add arch:
-    THEUTH_RELEASE_ADD={{arch}} ./scripts/release-s3.sh
+# Gates for those files only, append SHA256SUMS + latest.json, tap re-rendered from the merged sums and
+# committed only when it changed. Refuses objects already under <ver>/ unless byte-identical. Same env as release-s3.
+# Add named platforms to the live version: linux-x86_64 | linux-aarch64 | windows-x86_64, or a comma list.
+release-add platforms:
+    THEUTH_RELEASE_ADD={{platforms}} ./scripts/release-s3.sh
+
+# Every platform (linux-x86_64, linux-aarch64, windows-x86_64) in dist/ or staging/<ver>/ but missing from
+# releases/<ver>/ or latest.json goes out in one pass (release-add with the list worked out for you); nothing
+# missing → "up to date", exit 0. THEUTH_S3_DRY_RUN=1 just release-update shows what it would do. Same env as release-s3.
+# Add every built platform the live version is missing (Windows, Linux x86_64 / aarch64).
+release-update:
+    THEUTH_RELEASE_ADD=auto ./scripts/release-s3.sh
 
 # Every model file the daemon loads (pocket-tts, parakeet-tdt, nemotron-streaming-en, nemotron-diarization,
 # pyannote/wespeaker, laya decision checkpoints) under ${THEUTH_DATA_DIR:-~/.theuth}/models: missing → fetched from

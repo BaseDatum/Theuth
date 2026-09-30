@@ -29,12 +29,18 @@
 # dist/ = target/release/dist (package-update-macos.sh). Objects under <ver>/ are never
 # re-uploaded; latest.json is mutable, SHA256SUMS is append-only (add-arch below).
 #
-# Add-arch (THEUTH_RELEASE_ADD=<arch>): publish one Linux arch into an already-released version —
-#   gate 5 inverted (<ver>/ exists, live manifest == VERSION), gates 2-3 and the macOS/Windows parts
-#   of 6/8 off, gate 7/8 for the new tarball only; refuses any object already under <ver>/ unless
-#   byte-identical (then that upload is skipped); appends the new lines to the live SHA256SUMS,
-#   adds cli-<arch> (+ <arch> when an AppImage exists) to the live manifest, re-renders the tap
-#   from the merged SHA256SUMS, commits "theuth <ver>: add <arch>". staging/<ver>/ is left alone.
+# Add-arch (THEUTH_RELEASE_ADD=<platforms>|auto): publish platforms built after a version went live —
+#   linux-x86_64 | linux-aarch64 | windows-x86_64, one or a comma list; `auto` (= just release-update)
+#   picks, after gate 5, every platform whose files exist in dist/ or staging/<ver>/ (Linux: the tarball,
+#   else "not built") but are not all under <ver>/ or whose manifest keys are missing, and exits 0
+#   "up to date" when there is none. Gate 5 inverted (<ver>/ exists, live manifest == VERSION), gates 2-3
+#   and the macOS parts of 6/8 off, gate 7/8 for the new files only (Windows: -setup.exe and/or zip, at
+#   least one); refuses any object already under <ver>/ unless byte-identical (then that upload is
+#   skipped and the published .sig is reused); appends the new lines to the live SHA256SUMS, adds
+#   cli-<platform> (+ <platform> with an AppImage) / windows-x86_64 + cli-windows-x86_64 to the live
+#   manifest, re-renders the tap from the merged SHA256SUMS and commits "theuth <ver>: add <platforms>"
+#   only when the rendered files changed (a Windows-only add leaves the tap alone). staging/<ver>/ is
+#   left alone.
 #
 # Env (defaults for rustfs @ s3.rwx.dev; repo-root .env.signing is loaded):
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
@@ -49,7 +55,9 @@
 #                            WARN, its latest.json keys and formula branch are omitted); require = both
 #                            x86_64 and aarch64 must exist; skip = manifest without cli-linux-* / linux-*
 #                            keys, formula without on_linux (macOS-only hotfix)
-#   THEUTH_RELEASE_ADD          linux-x86_64 | linux-aarch64: add-arch mode (above) instead of a release
+#   THEUTH_RELEASE_ADD          auto | linux-x86_64 | linux-aarch64 | windows-x86_64 (comma list allowed):
+#                            add-arch mode (above) instead of a release. With THEUTH_RELEASE_LINUX=skip,
+#                            auto leaves the Linux platforms out; naming one is an error.
 #   THEUTH_SKIP_LINUX_SMOKE=1   gate 7 off: no Docker on this Mac (the Ubuntu build host already ran
 #                            `t --version` natively; glibc breakage of the Docker-built aarch64 tarball
 #                            would reach users). Without it, a missing docker fails gate 7.
@@ -90,9 +98,18 @@ PRERELEASE="${THEUTH_RELEASE_PRERELEASE:-0}"
 TAP_REPO="${THEUTH_TAP_REPO:-git@github.com:basedatum/homebrew-tap}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
 case "$LINUX" in present | require | skip) ;; *) echo "error: THEUTH_RELEASE_LINUX must be present|require|skip" >&2; exit 1 ;; esac
-ADD="${THEUTH_RELEASE_ADD:-}"
-case "$ADD" in "" | linux-x86_64 | linux-aarch64) ;; *) echo "error: THEUTH_RELEASE_ADD must be linux-x86_64|linux-aarch64" >&2; exit 1 ;; esac
-[[ -z "$ADD" || "$LINUX" != "skip" ]] || { echo "error: THEUTH_RELEASE_LINUX=skip contradicts THEUTH_RELEASE_ADD=$ADD" >&2; exit 1; }
+ADD="${THEUTH_RELEASE_ADD:-}"   # non-empty = add-arch mode ("auto" or the platform list as given)
+PLATFORMS=(linux-x86_64 linux-aarch64 windows-x86_64)
+ADDS=()                          # the platforms to add; auto resolves them after gate 5
+if [[ -n "$ADD" && "$ADD" != auto ]]; then
+  IFS=, read -r -a ADDS <<<"$ADD"
+  for p in ${ADDS[@]+"${ADDS[@]}"}; do
+    case "$p" in linux-x86_64 | linux-aarch64 | windows-x86_64) ;;
+      *) echo "error: THEUTH_RELEASE_ADD must be auto, or one or a comma list of linux-x86_64|linux-aarch64|windows-x86_64 (got '$p')" >&2; exit 1 ;;
+    esac
+    [[ "$LINUX" != "skip" || "$p" != linux-* ]] || { echo "error: THEUTH_RELEASE_LINUX=skip contradicts THEUTH_RELEASE_ADD=$p" >&2; exit 1; }
+  done
+fi
 
 # rustfs: path-style, no mandatory checksums, no IMDS probe (jarvis release-s3.sh:164-174).
 export AWS_S3_FORCE_PATH_STYLE=true
@@ -188,9 +205,12 @@ CONF_PUBKEY="$(jq -r '.plugins.updater.pubkey // empty' crates/desktop/tauri.con
 RESUME=0
 if [[ -n "$ADD" ]]; then
   gate 5 "$S3_VER/ exists and $MANIFEST_NAME is $VERSION (add-arch)"
-  "${AWS[@]}" s3 ls "$S3_VER/" >/dev/null 2>&1 || fail 5 "$S3_VER/ does not exist — nothing to add to (release first)"
-  LIVE="$(curl -fsSL --max-time 15 "$PUBLIC_BASE/$MANIFEST_NAME" | jq -r '.version // empty')" || fail 5 "cannot read $PUBLIC_BASE/$MANIFEST_NAME"
+  # The listing and the live manifest are reused: auto detection, gate 6 immutability, the manifest merge.
+  EXISTING="$("${AWS[@]}" s3 ls "$S3_VER/" 2>/dev/null | awk '{print $4}')" || fail 5 "$S3_VER/ does not exist — nothing to add to (release first)"
+  LIVE_MANIFEST="$(curl -fsSL --max-time 15 "$PUBLIC_BASE/$MANIFEST_NAME")" || fail 5 "cannot read $PUBLIC_BASE/$MANIFEST_NAME"
+  LIVE="$(jq -r '.version // empty' <<<"$LIVE_MANIFEST")"
   [[ "$LIVE" == "$VERSION" ]] || fail 5 "$MANIFEST_NAME is '$LIVE', not $VERSION — add-arch only extends the live version"
+  published() { grep -qxF "$1" <<<"$EXISTING"; }
 else
   gate 5 "$S3_VER/ does not exist"
   if "${AWS[@]}" s3 ls "$S3_VER/" >/dev/null 2>&1; then
@@ -204,7 +224,47 @@ else
   fi
 fi
 
-gate 6 "dist/ (primary) or staging/$VERSION/ (fallback) holds every Linux tarball${ADD:+ of $ADD}"
+if [[ "$ADD" == auto ]]; then
+  # A platform is built when its files exist in dist/ or staging/ (no download, no byte comparison —
+  # a rebuilt artifact of an already released platform must not fail this); it needs adding when any
+  # of them is not under <ver>/ or any manifest key it implies is missing (a run that died before the
+  # manifest write is repaired by re-running).
+  echo "==> add-arch auto: platforms built since the release"
+  exists() { [[ -f "$DIST/$1" ]] || "${AWS[@]}" s3 ls "$S3_STAGING/$1" >/dev/null 2>&1; }
+  has_key() { jq -e --arg k "$1" '.platforms[$k]' <<<"$LIVE_MANIFEST" >/dev/null; }
+  for p in "${PLATFORMS[@]}"; do
+    if [[ "$LINUX" == "skip" && "$p" == linux-* ]]; then echo "    $p: skipped (THEUTH_RELEASE_LINUX=skip)"; continue; fi
+    files=(); keys=()
+    case "$p" in
+      linux-*)
+        f="theuth_${VERSION}_${p}.tar.gz"
+        if exists "$f"; then
+          files=("$f"); keys=("cli-$p")
+          for ext in AppImage deb rpm; do
+            f="theuth_${VERSION}_${p}.${ext}"
+            if exists "$f"; then files+=("$f"); [[ "$ext" != AppImage ]] || keys+=("$p"); fi
+          done
+        fi ;;
+      windows-x86_64)
+        f="theuth_${VERSION}_windows-x86_64-setup.exe"; if exists "$f"; then files+=("$f"); keys+=(windows-x86_64); fi
+        f="theuth_${VERSION}_windows-x86_64.zip";       if exists "$f"; then files+=("$f"); keys+=(cli-windows-x86_64); fi ;;
+    esac
+    if [[ ${#files[@]} -eq 0 ]]; then echo "    $p: not built"; continue; fi
+    why=""   # the first object or manifest key not yet live
+    for f in "${files[@]}"; do published "$f" || why="${why:-$f not published yet}"; done
+    for k in ${keys[@]+"${keys[@]}"}; do has_key "$k" || why="${why:-$MANIFEST_NAME has no $k}"; done
+    if [[ -n "$why" ]]; then echo "    $p: added ($why)"; ADDS+=("$p")
+    else echo "    $p: already released"; fi
+  done
+  if [[ ${#ADDS[@]} -eq 0 ]]; then
+    echo
+    echo "theuth $VERSION is up to date: nothing to add"
+    exit 0
+  fi
+fi
+ADD_LIST="${ADDS[*]+${ADDS[*]}}"; ADD_LIST="${ADD_LIST// /, }"   # "linux-aarch64, windows-x86_64"
+
+gate 6 "dist/ (primary) or staging/$VERSION/ (fallback) holds every Linux tarball${ADD:+ / Windows file of $ADD_LIST}"
 # fetch <name>: 0 when dist/ has it (already, or pulled from staging/); 1 when nowhere.
 fetch() {
   if [[ -f "$DIST/$1" ]]; then echo "    dist/ $1"; return 0; fi
@@ -220,27 +280,41 @@ LINUX_APPIMAGE=()  # signed; latest.json linux-<arch> (Tauri's AppImage updater)
 WIN_SETUP=""; WIN_ZIP=""
 SKIP=()            # add-arch: already published byte-identical — not re-signed, not re-uploaded
 skipped() { local s; for s in ${SKIP[@]+"${SKIP[@]}"}; do [[ "$s" == "$1" ]] && return 0; done; return 1; }
+fetch_windows() { # optional on a release (absent → key omitted, one WARN each); add-arch needs at least one
+  f="theuth_${VERSION}_windows-x86_64-setup.exe"
+  if fetch "$f"; then WIN_SETUP="$f"; else echo "    WARN: no $f — $MANIFEST_NAME gets no windows-x86_64 key" >&2; fi
+  f="theuth_${VERSION}_windows-x86_64.zip"
+  if fetch "$f"; then WIN_ZIP="$f"; else echo "    WARN: no $f — $MANIFEST_NAME gets no cli-windows-x86_64 key" >&2; fi
+}
 if [[ -n "$ADD" ]]; then
-  f="theuth_${VERSION}_${ADD}.tar.gz"
-  fetch "$f" || fail 6 "$f neither in $DIST/ nor $S3_STAGING/ (just build-remote <host> linux, or just stage-linux on that arch)"
-  LINUX_TGZ=("$f")
-  for ext in AppImage deb rpm; do
-    f="theuth_${VERSION}_${ADD}.${ext}"
-    if fetch "$f"; then case "$ext" in AppImage) LINUX_APPIMAGE+=("$f") ;; *) LINUX_DESKTOP+=("$f") ;; esac
-    elif [[ "$ext" == AppImage ]]; then echo "    WARN: no $f — $MANIFEST_NAME gets no $ADD key" >&2
-    else echo "    WARN: no $f — not added" >&2; fi
+  for p in "${ADDS[@]}"; do
+    case "$p" in
+      linux-*)
+        f="theuth_${VERSION}_${p}.tar.gz"
+        fetch "$f" || fail 6 "$f neither in $DIST/ nor $S3_STAGING/ (just build-remote <host> linux, or just stage-linux on that arch)"
+        LINUX_TGZ+=("$f")
+        for ext in AppImage deb rpm; do
+          f="theuth_${VERSION}_${p}.${ext}"
+          if fetch "$f"; then case "$ext" in AppImage) LINUX_APPIMAGE+=("$f") ;; *) LINUX_DESKTOP+=("$f") ;; esac
+          elif [[ "$ext" == AppImage ]]; then echo "    WARN: no $f — $MANIFEST_NAME gets no $p key" >&2
+          else echo "    WARN: no $f — not added" >&2; fi
+        done ;;
+      windows-x86_64)
+        fetch_windows
+        [[ -n "$WIN_SETUP$WIN_ZIP" ]] || fail 6 "neither theuth_${VERSION}_windows-x86_64-setup.exe nor theuth_${VERSION}_windows-x86_64.zip in $DIST/ or $S3_STAGING/ (just build-remote <win-host> windows)" ;;
+    esac
   done
+  # Everything add-arch publishes; signed payloads (.tar.gz, .AppImage, .exe, .zip) also get a .sig.
+  NEW_FILES=(${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"} ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"} ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"} ${WIN_SETUP:+"$WIN_SETUP"} ${WIN_ZIP:+"$WIN_ZIP"})
   # Objects under <ver>/ are immutable: refuse anything already there unless byte-identical (then skip it).
-  EXISTING="$("${AWS[@]}" s3 ls "$S3_VER/" | awk '{print $4}')"
-  published() { grep -qxF "$1" <<<"$EXISTING"; }
-  for f in "${LINUX_TGZ[@]}" ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"} ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"}; do
+  for f in ${NEW_FILES[@]+"${NEW_FILES[@]}"}; do
     if ! published "$f"; then
       ! published "$f.sig" || fail 6 "$f.sig is published without $f — remove it by hand first"
       continue
     fi
     curl -fsSL --retry 3 -o "$WORK/$f" "$PUB_VER/$f"
     cmp -s "$WORK/$f" "$DIST/$f" || fail 6 "$f is already published with different bytes — objects under $S3_VER/ are immutable"
-    case "$f" in *.tar.gz | *.AppImage)
+    case "$f" in *.tar.gz | *.AppImage | *.exe | *.zip)
       published "$f.sig" || fail 6 "$f is published without $f.sig — remove it by hand first"
       curl -fsSL --retry 3 -o "$DIST/$f.sig" "$PUB_VER/$f.sig"   # the manifest carries the published signature
       ;;
@@ -274,16 +348,10 @@ else
   echo "    desktop bundles: ${#LINUX_DESKTOP[@]} deb/rpm, ${#LINUX_APPIMAGE[@]} AppImage"
   [[ ${#LINUX_APPIMAGE[@]} -gt 0 ]] || echo "    WARN: no theuth_${VERSION}_linux-*.AppImage — latest.json gets no linux-* key" >&2
 fi
-if [[ -z "$ADD" ]]; then
-  # Windows (just build-remote <host> windows) is optional: absent → keys omitted, one WARN each.
-  f="theuth_${VERSION}_windows-x86_64-setup.exe"
-  if fetch "$f"; then WIN_SETUP="$f"; else echo "    WARN: no $f — latest.json gets no windows-x86_64 key" >&2; fi
-  f="theuth_${VERSION}_windows-x86_64.zip"
-  if fetch "$f"; then WIN_ZIP="$f"; else echo "    WARN: no $f — latest.json gets no cli-windows-x86_64 key" >&2; fi
-fi
+[[ -n "$ADD" ]] || fetch_windows   # just build-remote <host> windows
 
 gate 7 "each Linux tarball runs in a clean ubuntu:24.04 of its arch"
-if [[ "$LINUX" == "skip" ]]; then
+if [[ ${#LINUX_TGZ[@]} -eq 0 ]]; then   # THEUTH_RELEASE_LINUX=skip, or a Windows-only add
   echo "    skipped (no Linux tarballs)"
 elif [[ "${THEUTH_SKIP_LINUX_SMOKE:-0}" == "1" ]]; then
   echo "    WARNING: THEUTH_SKIP_LINUX_SMOKE=1 — Linux tarballs are NOT smoke-tested (glibc/shared-lib breakage would reach users)" >&2
@@ -304,7 +372,7 @@ fi
 
 CLI_TGZS=(${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}); [[ -n "$ADD" ]] || CLI_TGZS=("$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"})
 gate 8 "every CLI tarball holds exactly t + $HELPER + $DOC_HELPER (the Windows zip: the same three .exe); the macOS helpers run here"
-for f in "${CLI_TGZS[@]}"; do
+for f in ${CLI_TGZS[@]+"${CLI_TGZS[@]}"}; do
   listed="$(tar -tzf "$DIST/$f" | sed 's|^\./||' | sort | tr '\n' ' ')"
   [[ "$listed" == "t $HELPER $DOC_HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER $DOC_HELPER' (stale dist/ or staging from another library hash / protocol version)"
   echo "    $f: t $HELPER $DOC_HELPER"
@@ -316,7 +384,7 @@ if [[ -n "$WIN_ZIP" ]]; then
   echo "    $WIN_ZIP: t.exe $HELPER.exe $DOC_HELPER.exe"
 fi
 if [[ -n "$ADD" ]]; then
-  echo "    $ADD is a foreign arch: t --version / --app-parser-hash not run on this host (gate 7 covers it in Docker)"
+  echo "    $ADD_LIST: foreign platforms — t --version / --app-parser-hash not run on this host (gate 7 covers Linux in Docker)"
 else
   mkdir -p "$WORK/cli" && tar -xzf "$DIST/$CLI_TGZ" -C "$WORK/cli"
   check_helper "$WORK/cli/$HELPER"
@@ -329,7 +397,7 @@ fi
 # Every updater payload gets a minisign .sig: tarballs, AppImages, the NSIS installer, the Windows CLI zip.
 if [[ -n "$ADD" ]]; then
   SIGNED=()
-  for f in "${LINUX_TGZ[@]}" ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"}; do skipped "$f" || SIGNED+=("$f"); done
+  for f in ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"} ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"} ${WIN_SETUP:+"$WIN_SETUP"} ${WIN_ZIP:+"$WIN_ZIP"}; do skipped "$f" || SIGNED+=("$f"); done
 else
   SIGNED=("$APP_TGZ" "$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"} ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"})
   [[ -z "$WIN_SETUP" ]] || SIGNED+=("$WIN_SETUP")
@@ -368,7 +436,7 @@ else
     # payload whose line is missing — SHA256SUMS upload died last time — gets its line now).
     curl -fsSL --retry 3 -o "$DIST/SHA256SUMS" "$PUB_VER/SHA256SUMS" || { echo "error: cannot read $PUB_VER/SHA256SUMS" >&2; exit 1; }
     SUM=()
-    for f in "${LINUX_TGZ[@]}" ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"} ${LINUX_DESKTOP[@]+"${LINUX_DESKTOP[@]}"}; do
+    for f in ${NEW_FILES[@]+"${NEW_FILES[@]}"}; do
       [[ -n "$(sha_of "$f")" ]] || SUM+=("$f")
     done
     [[ ${#SUM[@]} -eq 0 ]] || (cd "$DIST" && shasum -a 256 "${SUM[@]}" >>SHA256SUMS)
@@ -416,8 +484,8 @@ fi
 # ── manifest (§3.1) ──────────────────────────────────────────────────────────
 echo "==> $MANIFEST_NAME"
 if [[ -n "$ADD" ]]; then
-  # The live manifest: version, notes and every other platform stay as they are; jq round-trips them.
-  MANIFEST="$(curl -fsSL --retry 3 "$PUBLIC_BASE/$MANIFEST_NAME")" || { echo "error: cannot read $PUBLIC_BASE/$MANIFEST_NAME" >&2; exit 1; }
+  # The live manifest (gate 5): version, notes and every other platform stay as they are; jq round-trips them.
+  MANIFEST="$LIVE_MANIFEST"
 else
   MANIFEST="$(jq -n --arg v "$VERSION" '{version: $v, platforms: {}}')"
 fi
@@ -436,10 +504,8 @@ done
 for f in ${LINUX_APPIMAGE[@]+"${LINUX_APPIMAGE[@]}"}; do
   case "$f" in *linux-x86_64*) platform linux-x86_64 "$f" ;; *) platform linux-aarch64 "$f" ;; esac
 done
-if [[ -z "$ADD" ]]; then
-  [[ -z "$WIN_SETUP" ]] || platform windows-x86_64 "$WIN_SETUP"
-  [[ -z "$WIN_ZIP" ]] || platform cli-windows-x86_64 "$WIN_ZIP"
-fi
+[[ -z "$WIN_SETUP" ]] || platform windows-x86_64 "$WIN_SETUP"
+[[ -z "$WIN_ZIP" ]] || platform cli-windows-x86_64 "$WIN_ZIP"
 printf '%s\n' "$MANIFEST" >"$DIST/$MANIFEST_NAME"
 jq . "$DIST/$MANIFEST_NAME"
 s3_cp "$DIST/$MANIFEST_NAME" "s3://${BUCKET}/${PREFIX}/${MANIFEST_NAME}"
@@ -456,15 +522,16 @@ fi
 # ── tap bump (§5.3) ──────────────────────────────────────────────────────────
 # Rendered files always land in dist/tap/ so a failed audit or a dry run leaves something to inspect.
 # has_linux_tgz <arch>: that arch's CLI tarball is in SHA256SUMS — what ships (release) or what is
-# published plus what is being added (add-arch reads the merged live file).
+# published plus what is being added (add-arch reads the merged live file). No Linux tarball at all
+# (THEUTH_RELEASE_LINUX=skip, or adding to a macOS-only release) → no on_linux block.
 has_linux_tgz() { [[ -n "$(sha_of "theuth_${VERSION}_linux-$1.tar.gz")" ]]; }
 render() { # tmpl out
   sed -e "s|@VERSION@|$VERSION|g" -e "s|@BASE_URL@|$PUBLIC_BASE|g" \
       -e "s|@SHA_MACOS_CLI@|$(sha_of "$CLI_TGZ")|g" -e "s|@SHA_DMG@|$(sha_of "$DMG")|g" \
       -e "s|@SHA_LINUX_X86@|$(sha_of "theuth_${VERSION}_linux-x86_64.tar.gz")|g" \
       -e "s|@SHA_LINUX_ARM@|$(sha_of "theuth_${VERSION}_linux-aarch64.tar.gz")|g" "$1" \
-    | if [[ "$LINUX" == "skip" ]]; then sed '/^# @LINUX_BEGIN@$/,/^# @LINUX_END@$/d'
-      else sed -e '/^# @LINUX_BEGIN@$/d' -e '/^# @LINUX_END@$/d'; fi \
+    | if has_linux_tgz aarch64 || has_linux_tgz x86_64; then sed -e '/^# @LINUX_BEGIN@$/d' -e '/^# @LINUX_END@$/d'
+      else sed '/^# @LINUX_BEGIN@$/,/^# @LINUX_END@$/d'; fi \
     | if has_linux_tgz aarch64; then sed -e '/^# @LINUX_ARM_BEGIN@$/d' -e '/^# @LINUX_ARM_END@$/d'
       else sed '/^# @LINUX_ARM_BEGIN@$/,/^# @LINUX_ARM_END@$/d'; fi \
     | if has_linux_tgz x86_64; then sed -e '/^# @LINUX_X86_BEGIN@$/d' -e '/^# @LINUX_X86_END@$/d'
@@ -474,7 +541,7 @@ mkdir -p "$DIST/tap/Formula" "$DIST/tap/Casks"
 render scripts/tap/theuth.rb.formula.tmpl "$DIST/tap/Formula/theuth.rb"
 render scripts/tap/theuth.rb.cask.tmpl "$DIST/tap/Casks/theuth.rb"
 
-TAP_MSG="theuth $VERSION${ADD:+: add $ADD}"
+TAP_MSG="theuth $VERSION${ADD:+: add $ADD_LIST}"
 TAP_STATUS="not bumped (prerelease); rendered at $DIST/tap/"
 if [[ "$PRERELEASE" != "1" ]]; then
   echo "==> tap bump: $TAP_REPO"
@@ -483,8 +550,13 @@ if [[ "$PRERELEASE" != "1" ]]; then
   mkdir -p "$TAP/Formula" "$TAP/Casks"
   cp "$DIST/tap/Formula/theuth.rb" "$TAP/Formula/theuth.rb"
   cp "$DIST/tap/Casks/theuth.rb" "$TAP/Casks/theuth.rb"
+  # Nothing to commit when the rendered files equal what is live (add-arch of platforms the tap does
+  # not mention, e.g. Windows): `git commit` with nothing staged would fail after everything is published.
+  TAP_CHANGED=1; [[ -n "$(git -C "$TAP" status --porcelain)" ]] || TAP_CHANGED=0
   AUDIT_OK=1
-  if command -v brew >/dev/null 2>&1; then
+  if [[ "$TAP_CHANGED" == 0 ]]; then
+    echo "    unchanged: the formula and cask do not mention $ADD_LIST — nothing to commit"
+  elif command -v brew >/dev/null 2>&1; then
     # Homebrew rejects `brew audit path.rb` (odisabled). Named audit reads the
     # installed tap, so stage the rendered files there and restore afterwards.
     # --online checks url reachability and sha256 (39 §5.3).
@@ -518,7 +590,9 @@ if [[ "$PRERELEASE" != "1" ]]; then
   else
     echo "    brew not found: audit skipped"
   fi
-  if [[ "$AUDIT_OK" != "1" ]]; then
+  if [[ "$TAP_CHANGED" == 0 ]]; then
+    TAP_STATUS="unchanged (the formula and cask do not mention the added platforms)"
+  elif [[ "$AUDIT_OK" != "1" ]]; then
     # §5.3: a failed audit leaves the tap untouched; the release is otherwise complete.
     echo "    WARNING: brew audit failed — tap NOT updated; fix and commit $DIST/tap/ by hand" >&2
     TAP_STATUS="NOT bumped (brew audit failed); rendered at $DIST/tap/"
