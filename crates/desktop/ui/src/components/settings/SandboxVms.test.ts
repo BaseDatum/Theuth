@@ -38,7 +38,7 @@ async function render(seed?: (qc: QueryClient) => void): Promise<string> {
   return paint()
 }
 
-test('blocked host: every blocker is a sentence with its fix, Install runtime shows for the installable one, Add is disabled with the first blocker as tooltip', async () => {
+test('blocked host: every blocker is a sentence with its fix, Set up runtime shows for the installable one, Add is disabled with the first blocker as tooltip', async () => {
   preflight = PREFLIGHT_BLOCKED
   const html = await render()
   expect(html).toContain('does not meet the requirements')
@@ -46,27 +46,36 @@ test('blocked host: every blocker is a sentence with its fix, Install runtime sh
     expect(html).toContain(b.message)
     expect(html).not.toContain(`>${b.code}<`)
   }
-  expect(html).toContain('brew install superradcompany/tap/microsandbox')
   expect(html).toContain('Enable virtualization in the firmware')
-  expect(html).toContain('Install runtime')
+  expect(html).toContain('Set up runtime')
+  expect(html).not.toContain('downloads microsandbox')
   // Warnings render but do not change the button.
   expect(html).toContain('more than half of this host')
   expect(html).toMatch(new RegExp(`title="${PREFLIGHT_BLOCKED.blockers[0]?.message}"[^>]*>\\s*<button[^>]*disabled`))
 })
 
-test('ok host: green summary with runtime, virtualization, host facts and defaults; Add enabled; no Install button', async () => {
+test('ok host: green summary with runtime, virtualization, host facts and defaults; Add enabled; no Set up button', async () => {
   preflight = PREFLIGHT_OK
   const html = await render()
   expect(html).toContain('This host can run sandbox VMs')
-  expect(html).toContain('microsandbox 0.7.4')
+  expect(html).toContain('microsandbox 0.7.4 (embedded, in /Users/sky/.microsandbox)')
   expect(html).toContain('virtualization via hvf')
   expect(html).toContain('16 cores')
   expect(html).toContain('64 GiB')
   expect(html).toContain('defaults 4 CPUs (up to 16) · 8 GiB (up to 32 GiB) · 20 GiB disk')
-  expect(html).not.toContain('Install runtime')
+  expect(html).not.toContain('Set up runtime')
   expect(html).not.toMatch(/aria-label="Add a sandbox VM"[^>]*disabled/)
   // The docker warning is amber text, not a blocker.
   expect(html).toContain('Docker is not installed')
+})
+
+test('embedded runtime not extracted yet: green, says first use sets it up without a download, offers Set up runtime, Add stays enabled', async () => {
+  preflight = { ...PREFLIGHT_OK, runtime: { state: 'embedded', version: '0.7.4', extracted: false, home: '/Users/sky/.microsandbox' } }
+  const html = await render()
+  expect(html).toContain('This host can run sandbox VMs')
+  expect(html).toContain('microsandbox 0.7.4 embedded — set up on first use (no download)')
+  expect(html).toContain('Set up runtime')
+  expect(html).not.toMatch(/aria-label="Add a sandbox VM"[^>]*disabled/)
 })
 
 test('the create sheet starts from Preflight.defaults, the next free vm-N name, and sends only what differs', () => {
