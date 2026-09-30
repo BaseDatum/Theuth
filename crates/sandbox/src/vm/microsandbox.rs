@@ -55,6 +55,9 @@ pub struct Microsandbox {
     // ponytail: process-local; after an engine restart the actor re-issues set_mounts/set_ports
     // from its record before `start` (the SDK config keeps the *old* mounts until then).
     pending: Mutex<HashMap<String, PendingSpec>>,
+    /// Why the last extraction of the embedded runtime failed; preflight shows it as
+    /// `runtime_extract_failed` until one succeeds.
+    extract_failed: Mutex<Option<String>>,
 }
 
 /// Build the SDK backend for `home` (`""` = the SDK default) and install it process-wide.
@@ -95,7 +98,23 @@ impl Microsandbox {
             cfg,
             sdk,
             pending: Mutex::default(),
+            extract_failed: Mutex::default(),
         })
+    }
+
+    /// Extract the embedded runtime into the home when it is not there yet (first use; seconds,
+    /// no network). Remembers a failure for preflight.
+    async fn setup_runtime(&self, out: &Progress) -> anyhow::Result<()> {
+        match install::install(&self.sdk, out).await {
+            Ok(_) => {
+                *self.extract_failed.lock() = None;
+                Ok(())
+            }
+            Err(e) => {
+                *self.extract_failed.lock() = Some(format!("{e:#}"));
+                Err(e)
+            }
+        }
     }
 
     async fn handle(&self, name: &str) -> anyhow::Result<SandboxHandle> {
@@ -371,7 +390,13 @@ impl VmRuntime for Microsandbox {
     async fn preflight(&self) -> Preflight {
         let cfg = self.cfg.clone();
         let cfg2 = cfg.clone();
-        match tokio::task::spawn_blocking(move || preflight::evaluate(&preflight::probe(&cfg), &cfg)).await {
+        let extract_failed = self.extract_failed.lock().clone();
+        let probe = move || {
+            let mut facts = preflight::probe(&cfg);
+            facts.extract_failed = extract_failed;
+            preflight::evaluate(&facts, &cfg)
+        };
+        match tokio::task::spawn_blocking(probe).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("sandbox preflight probe panicked: {e}");
@@ -401,11 +426,17 @@ impl VmRuntime for Microsandbox {
     }
 
     async fn install(&self, out: &Progress) -> anyhow::Result<()> {
-        install::install(&self.sdk, out).await.map(|_| ())
+        self.setup_runtime(out).await
     }
 
     async fn create(&self, spec: &VmSpec, out: &Progress) -> anyhow::Result<VmHandle> {
         let name = spec.name.as_str();
+        if !matches!(
+            install::resolve(&self.sdk),
+            super::RuntimeState::Embedded { extracted: true, .. } | super::RuntimeState::Installed { .. }
+        ) {
+            self.setup_runtime(out).await?;
+        }
         if let Ok(h) = Sandbox::get(name).await {
             let cfg = h.config().with_context(|| ctx(name, "read config"))?;
             if cfg.spec.labels.get(LABEL).is_none_or(|v| v != name) {

@@ -15,6 +15,10 @@ const HEADROOM_BYTES: u64 = 2 * GIB;
 pub struct Facts {
     pub host: HostFacts,
     pub runtime: RuntimeState,
+    /// Why the last extraction of the embedded pair failed (cleared by a successful one).
+    pub extract_failed: Option<String>,
+    /// The version of the user's own `msb` in the default home when theuth runs in another home.
+    pub other_msb: Option<String>,
     /// Linux only: `/dev/kvm` exists.
     pub kvm_present: bool,
     /// Linux only: `/dev/kvm` opens read/write.
@@ -45,6 +49,8 @@ pub fn probe(cfg: &VmConfig) -> Facts {
             disk_free_bytes: disk_free_bytes(&probe_dir),
         },
         runtime: super::install::resolve(&sdk),
+        extract_failed: None,
+        other_msb: super::install::other_msb(&cfg.home),
         kvm_present: std::path::Path::new("/dev/kvm").exists(),
         kvm_rw: std::fs::OpenOptions::new()
             .read(true)
@@ -122,19 +128,27 @@ pub fn evaluate(facts: &Facts, cfg: &VmConfig) -> Preflight {
     }
 
     match &facts.runtime {
-        RuntimeState::Installed { .. } => {}
+        RuntimeState::Embedded { .. } | RuntimeState::Installed { .. } => {}
         RuntimeState::Missing => blockers.push(Blocker {
             code: "runtime_missing".into(),
-            message: "The microsandbox runtime is not installed.".into(),
-            fix: Some("Install runtime (downloads ~30 MB from GitHub)".into()),
-            installable: true,
+            message: "This build of t carries no microsandbox runtime.".into(),
+            fix: None,
+            installable: false,
         }),
         RuntimeState::Incomplete { why } => blockers.push(Blocker {
             code: "runtime_incomplete".into(),
             message: format!("The microsandbox runtime is only half installed ({why})."),
-            fix: Some("Reinstall runtime".into()),
+            fix: Some("remove <home>/bin/msb and <home>/lib/libkrunfw*, then Set up runtime".into()),
             installable: true,
         }),
+    }
+    if let Some(why) = &facts.extract_failed {
+        blockers.push(Blocker {
+            code: "runtime_extract_failed".into(),
+            message: format!("The embedded microsandbox runtime could not be set up ({why})."),
+            fix: Some("check that the home is writable, then Set up runtime again".into()),
+            installable: true,
+        });
     }
 
     let defaults = Resources::derive(&facts.host, &cfg.defaults);
@@ -167,6 +181,18 @@ pub fn evaluate(facts: &Facts, cfg: &VmConfig) -> Preflight {
             "docker is not on PATH; building a dev image locally needs it (pulling a released image does not)."
                 .into(),
             None,
+        ));
+    }
+    if let Some(v) = &facts.other_msb
+        && let RuntimeState::Embedded { home, .. } | RuntimeState::Installed { home, .. } =
+            &facts.runtime
+    {
+        warnings.push(block(
+            "runtime_home",
+            format!(
+                "theuth's VMs live in {home}; your own msb ({v} in the default home) will not list them."
+            ),
+            Some("set sandbox.vm.home to the default home once its msb is the version theuth embeds"),
         ));
     }
 
@@ -255,11 +281,13 @@ mod tests {
                 mem_bytes: 16 * GIB,
                 disk_free_bytes: 200 * GIB,
             },
-            runtime: RuntimeState::Installed {
+            runtime: RuntimeState::Embedded {
                 version: "0.7.4".into(),
+                extracted: false,
                 home: "/h".into(),
-                libkrunfw: "/h/lib/libkrunfw.5.dylib".into(),
             },
+            extract_failed: None,
+            other_msb: None,
             kvm_present: true,
             kvm_rw: true,
             glibc: Some((2, 36)),
@@ -309,16 +337,41 @@ mod tests {
     }
 
     #[test]
-    fn runtime_states_are_installable() {
+    fn runtime_states() {
+        // Not yet extracted is not a blocker: the first create extracts.
         let mut f = facts("macos", "aarch64");
+        assert!(evaluate(&f, &VmConfig::default()).blockers.is_empty());
+        f.runtime = RuntimeState::Installed {
+            version: "0.8.0".into(),
+            home: "/h".into(),
+            libkrunfw: "/h/lib/libkrunfw.5.dylib".into(),
+        };
+        assert!(evaluate(&f, &VmConfig::default()).blockers.is_empty());
         f.runtime = RuntimeState::Missing;
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["runtime_missing"]);
-        assert!(p.blockers[0].installable);
+        assert!(!p.blockers[0].installable);
         f.runtime = RuntimeState::Incomplete { why: "no libkrunfw".into() };
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["runtime_incomplete"]);
         assert!(p.blockers[0].installable && p.blockers[0].message.contains("no libkrunfw"));
+        // A failed extraction is an installable blocker on top of the state.
+        f.runtime = RuntimeState::Embedded { version: "0.7.4".into(), extracted: false, home: "/h".into() };
+        f.extract_failed = Some("read-only file system".into());
+        let p = evaluate(&f, &VmConfig::default());
+        assert_eq!(codes(&p), ["runtime_extract_failed"]);
+        assert!(p.blockers[0].installable && p.blockers[0].message.contains("read-only file system"));
+    }
+
+    #[test]
+    fn another_msb_in_the_default_home_warns() {
+        let mut f = facts("macos", "aarch64");
+        f.other_msb = Some("0.8.0".into());
+        let p = evaluate(&f, &VmConfig::default());
+        assert!(p.blockers.is_empty());
+        let w: Vec<&str> = p.warnings.iter().map(|b| b.code.as_str()).collect();
+        assert_eq!(w, ["runtime_home"]);
+        assert!(p.warnings[0].message.contains("/h") && p.warnings[0].message.contains("0.8.0"));
     }
 
     #[test]

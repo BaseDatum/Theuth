@@ -270,8 +270,11 @@ pub struct SandboxActor {
 
 impl SandboxActor {
     /// The production actor: `vm::runtime(&cfg.vm)` when `vm.enabled`, the mesh actor, the vault.
-    pub fn new(rt: Runtime, cfg: SandboxConfig) -> Self {
+    /// `cfg.vm.home` becomes the home theuth really uses (`install::effective_home`: shared when
+    /// it matches the embedded runtime, private otherwise) so the backend, shares and preflight agree.
+    pub fn new(rt: Runtime, mut cfg: SandboxConfig) -> Self {
         let vm = if cfg.vm.enabled {
+            cfg.vm.home = crate::vm::install::effective_home(&cfg.vm.home, &rt.data_dir);
             crate::vm::runtime(&cfg.vm).map_err(|e| format!("{e:#}"))
         } else {
             Err("sandbox VMs are disabled (sandbox.vm.enabled: false)".into())

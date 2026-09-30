@@ -337,7 +337,7 @@ impl Tool for InstallRuntimeTool {
     type Args = NoArgs;
 
     fn description(&self) -> String {
-        "Install the sandbox VM runtime (microsandbox: msb + libkrunfw, ~30 MB, no root) into the user's home when sandbox_create reported it missing or incomplete. Refuses when the runtime is already installed or the host cannot run VMs.".into()
+        "Set up the sandbox VM runtime (microsandbox: msb + libkrunfw, embedded in t, no download, no root) in the user's home. sandbox_create does this itself on first use; call it only when preflight reported the runtime half installed or a failed set-up. Refuses when the runtime is already set up or the host cannot run VMs.".into()
     }
 
     async fn call(&self, _: NoArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -349,14 +349,21 @@ impl Tool for InstallRuntimeTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("sandbox: {e}"))),
         };
-        if let RuntimeState::Installed { version, .. } = &pf.runtime {
-            return Ok(ToolOutput::err(format!("runtime already installed ({version})")));
+        if let RuntimeState::Installed { version, .. }
+        | RuntimeState::Embedded {
+            version,
+            extracted: true,
+            ..
+        } = &pf.runtime
+            && pf.blockers.iter().all(|b| !b.installable)
+        {
+            return Ok(ToolOutput::err(format!("runtime already set up ({version})")));
         }
         if pf.blockers.iter().any(|b| !b.installable) {
             return Ok(ToolOutput::err(actor::blockers_text(&pf.blockers)));
         }
         match ask(&actor, actor::InstallRuntime).await {
-            Ok(()) => Ok(ToolOutput::ok("runtime installed; sandbox_create can run now")),
+            Ok(()) => Ok(ToolOutput::ok("runtime set up; sandbox_create can run now")),
             Err(e) => Ok(e),
         }
     }

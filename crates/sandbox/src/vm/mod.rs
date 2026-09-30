@@ -283,16 +283,19 @@ pub struct Preflight {
 /// needs Apple Silicon"), `no_kvm` ("/dev/kvm missing — enable virtualization in firmware, or nested
 /// virtualization in the outer hypervisor"), `kvm_not_writable` ("add your user to the kvm group:
 /// sudo usermod -aG kvm $USER, then log in again"), `glibc_too_old` ("needs glibc ≥ 2.28"),
-/// `runtime_missing`, `runtime_incomplete` ("msb X but libkrunfw Y"), `disk_low` ("N GiB free; a VM
-/// needs root_disk + image + 2 GiB"), `memory_low` (warning: default memory > host/2),
-/// `docker_missing` (warning, dev image path only), `vm_disabled` (`sandbox.vm.enabled: false`).
+/// `runtime_extract_failed` (the embedded pair could not be written into the home; retry),
+/// `runtime_missing` (only when no runtime was built), `runtime_incomplete` ("msb X but libkrunfw Y"),
+/// `disk_low` ("N GiB free; a VM needs root_disk + image + 2 GiB"), `memory_low` (warning: default
+/// memory > host/2), `docker_missing` (warning, dev image path only), `runtime_home` (warning: theuth's
+/// VMs live in a home the user's own `msb` does not look at), `vm_disabled` (`sandbox.vm.enabled: false`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Blocker {
     pub code: String,
     pub message: String,
     pub fix: Option<String>,
-    /// `true` only for `runtime_missing` / `runtime_incomplete`.
+    /// `true` only for `runtime_extract_failed` / `runtime_missing` / `runtime_incomplete`: the
+    /// **Set up runtime** button (`sandbox_install_runtime`) can clear it.
     pub installable: bool,
 }
 
@@ -300,11 +303,22 @@ pub struct Blocker {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RuntimeState {
+    /// The pair compiled into `t` (79 decision 2, embed ruling). `extracted: false` = the first
+    /// `create` (or `sandbox_install_runtime`) writes it into `home`; `true` = `home` holds that
+    /// version already (ours or the user's own install of the same version).
+    Embedded {
+        version: String,
+        extracted: bool,
+        home: String,
+    },
+    /// A user-provided pair of another version (`sandbox.vm.home`, `MSB_PATH`, or an `msb` on
+    /// `PATH`); used as is.
     Installed {
         version: String,
         home: String,
         libkrunfw: String,
     },
+    /// No runtime at all — only when `t` was built without one (`vm::runtime` failed).
     Missing,
     Incomplete {
         why: String,
