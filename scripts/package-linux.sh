@@ -52,6 +52,7 @@ HOST_PKGS=(
   libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev libegl1-mesa-dev libgl-dev
   libasound2-dev libpulse-dev libudev-dev   # meeting capture (flexaudio: ALSA mic, PipeWire/Pulse loopback)
   libssl-dev
+  libcap-ng-dev   # microsandbox → msb_krun_devices → capng links libcap-ng (sandbox VMs, 79)
   libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
   xdg-utils file   # AppImage bundler copies xdg-open into the image and linuxdeploy runs file(1)
 )

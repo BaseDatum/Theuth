@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libdbus-1-dev \
       libpipewire-0.3-dev libspa-0.2-dev libdrm-dev libgbm-dev libwayland-dev libegl1-mesa-dev libgl-dev \
       libasound2-dev libpulse-dev libudev-dev \
-      libssl-dev \
+      libssl-dev libcap-ng-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Bun, pinned (SHASUMS256.txt of the GitHub release). Bump both sums with the version.
