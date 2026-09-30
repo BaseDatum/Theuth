@@ -420,3 +420,9 @@ libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 # signalapp/boring ships it.
 [patch."https://github.com/signalapp/boring"]
 boring-sys = { git = "https://github.com/skymoore/boring", branch = "theuth/cargo-include" }
+
+# The microsandbox SDK embeds its 28.5 MB runtime archive as a `const` (`include_bytes!`), which
+# rustc materialises once per codegen unit that touches it: with the default 16 units the release
+# `t` carried four copies (+114 MiB, F6 measured). One unit for that crate = one copy.
+[profile.release.package.microsandbox]
+codegen-units = 1

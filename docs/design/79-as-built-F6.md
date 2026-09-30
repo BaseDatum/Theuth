@@ -35,17 +35,19 @@ Targets: release v0.7.4 has assets for `darwin-aarch64`, `linux-x86_64`, `linux-
 1. `9c5739f1` feat(sandbox): `Cargo.toml` features + comment; `Cargo.lock` (ureq & co. for the SDK's build script); `vm/mod.rs` `RuntimeState::Embedded { version, extracted, home }`, `Blocker` docs; `vm/install.rs` rewritten (`embedded_version`, `config`, `effective_home`, `other_msb`, `resolve`, `msb_path`, `install` = extract, 2 tests); `vm/preflight.rs` (`Facts.extract_failed`, `Facts.other_msb`, states, blockers `runtime_extract_failed`/`runtime_incomplete`/`runtime_missing`, warning `runtime_home`, tests); `vm/microsandbox.rs` (`extract_failed`, `setup_runtime`, `create` extracts on first use, `install` = `setup_runtime`, preflight carries the failure); `actor.rs` `new()` sets `cfg.vm.home = effective_home(..)`; `tools.rs` `sandbox_install_runtime` description/refusal/success texts.
 2. `7add4005` feat(desktop): `SandboxVms.tsx` runtime line + **Set up runtime** button (also while `Embedded { extracted: false }`), no download sentence; fixtures; tests (+1 for the not‑yet‑extracted card).
 3. `7b774362` docs(79): decision 2, §4.6 tool rows, §5.1, §7 button, §16 row; contract `RuntimeState`.
-4. (this file) docs(79): as‑built.
+4. `ff606490` docs(79): as‑built draft.
+5. (last) build: `[profile.release.package.microsandbox] codegen-units = 1` (4 → 2 copies of the archive, −64 MiB; §4); as‑built final.
 
 ## 4. Measured (this Mac, M‑series 16 cores / 64 GiB, `cargo build --release -p theuth`)
 
 | Measure | Result |
 |---|---|
 | Release archive embedded | `microsandbox-runtime-0.7.4-macos-aarch64.tar.gz` 29,918,400 B (28.5 MiB), cached in `target/release/.microsandbox-runtime-cache/` |
-| `target/release/t` with embed | 688,508,144 B |
-| `target/release/t` without (`["local","net"]`, same tree) | SIZE_WITHOUT |
-| Delta | DELTA |
-| Release build wall time (cold after the feature flip) | 21 m 25 s |
+| `target/release/t` without the feature (`["local","net"]`, same tree) | **567,866,208 B** |
+| `target/release/t` with the feature, default profile | **688,508,144 B** (+120,641,936 B = +115 MiB): `__TEXT,__const` grew 4× the archive — the SDK's `const EMBEDDED_RUNTIME_ARCHIVE: Option<&[u8]> = Some(include_bytes!(…))` is materialised once per codegen unit that uses it; `grep` of the archive's first 4 KiB found **4 copies** |
+| with `[profile.release.package.microsandbox] codegen-units = 1` (commit 5) | **621,718,336 B** (+53,852,128 B = **+51.4 MiB**, 2 copies) |
+| Where the 2 remaining copies are (`nm -n`) | one `_anon.e995…` in **`libsandbox`** (theuth's own `install()` awaits `setup::install_runtime`; the `pub async fn` body is cross‑crate MIR‑inlined, so the const is instantiated in the caller crate); one in `libmicrosandbox` next to `snapshot::verify::hash_zeroes::ZEROES` (the SDK's own `runtime/spawn.rs:318-326`: with `embed-binaries` **every spawn calls `ensure_runtime(EmbeddedArchive)` itself**). Getting to one copy needs an upstream change (`static` + a `#[inline(never)]` accessor); not reachable from theuth |
+| Release build wall time | 21 m 25 s cold after the feature flip; 4 m 40 s for the profile change (microsandbox + dependents) |
 | First‑use extraction (`create`, empty `MSB_HOME`) | **0.3 s** (`bin/msb` 36,110,304 B + `lib/libkrunfw.5.dylib` 24,801,440 B + `libkrunfw.dylib` symlink) |
 | Unit test extraction into a temp home (`extraction_is_versioned_and_idempotent`) | whole `vm::` suite 1.05 s |
 
@@ -81,9 +83,9 @@ Rig notes: (a) an engine started with a plain `&` from a tool shell died silentl
 
 ## 8. Gates
 
-- `cargo check -p sandbox -p rpc -p theuth --tests` — GATE_CHECK
-- `cargo clippy -p sandbox -- -D warnings` — GATE_CLIPPY
-- `cargo test -p sandbox --lib` — GATE_TEST
+- `cargo check -p sandbox -p rpc -p theuth --tests` — `Finished dev profile` in 5 m 37 s, no warnings, no errors
+- `cargo clippy -p sandbox -- -D warnings` — clean (42 s)
+- `cargo test -p sandbox --lib` — **44 passed**, 0 failed (1.29 s) — includes the two new `vm::install` tests (real embedded archive extracted into a temp home; foreign/partial pairs) and the preflight tests `runtime_states`, `another_msb_in_the_default_home_warns`
 - UI: `bun run check` (tsc) — pass (after `bun install` in `crates/desktop/ui` and `packages/apps`; bindings regenerated with `cargo test -p rpc --features ts --quiet export_bindings` and copied, as `just ts-desktop` does); `bunx vitest run src/components/settings/SandboxVms.test.ts` — 10 passed.
 
 ## 9. Follow‑ups for the integrator
