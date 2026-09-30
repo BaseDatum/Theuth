@@ -326,7 +326,7 @@ number-flow-react {
   height: var(--visible-band, 100dvh);
 }
 
-/* A sidebar row that drags onto a pane (`useSessionDrag`): a finger's hold must not select the title or raise the iOS link callout. */
+/* A press-drag source (`usePressDrag`: sidebar rows, board cards): a finger's hold must not select the text or raise the iOS link callout. */
 [data-drag-row] {
   -webkit-touch-callout: none;
   user-select: none;

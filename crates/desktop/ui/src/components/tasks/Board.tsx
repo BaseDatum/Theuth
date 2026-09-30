@@ -1,6 +1,6 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
 import { Blocks, Circle, PanelLeft, Play, Plus } from 'lucide-react'
-import { type DragEvent, type MutableRefObject, type PointerEvent, type SyntheticEvent, useEffect, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useRef, useState } from 'react'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Badge } from '@/components/ui/badge'
@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, Sele
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { isMacDesktop, touch } from '@/lib/hotkeys'
+import { edgeScroll, usePressDrag } from '@/hooks/use-press-drag'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskState } from '@/rpc/bindings/TaskState'
@@ -24,11 +25,9 @@ const route = getRouteApi('/tasks/')
 // Radix Select refuses '' as a value: `any` stands for no filter, `all` for every project, labels get a prefix.
 const ANY = 'any'
 const ALL = 'all'
-/** Pointer travel (px) before a press on a card becomes a drag (`useSessionDrag`'s figure). */
-const SLOP = 6
 
-/** A card drag in flight: the task, the pointer, and the column under it. */
-type Drag = { task: Task; x: number; y: number; over: TaskState | null }
+/** A card drag in flight: the task, the pointer, the column under it, and the source card's way out (Escape). */
+type Drag = { task: Task; x: number; y: number; over: TaskState | null; cancel(): void }
 /** What the board hands a draggable card: the shared drag (ref for handlers, setter for renders) and the drop. */
 type DragProps = { ref: MutableRefObject<Drag | null>; set(d: Drag | null): void; onDrop(to: TaskState): void }
 
@@ -39,60 +38,26 @@ function columnAt(x: number, y: number): TaskState | null {
 }
 
 /**
- * Drag a card onto a column. Pointer events, not HTML5 DnD (same as `useSessionDrag`): the WebKit webview keeps the
- * native drag handler for file drops, which swallows `dragstart`, so `draggable` cards never moved in the app.
- * Spread on the card's `<li>`; a press that became a drag never follows the card's link. Without `drag` (a card on a
- * page that does not move tasks) the handlers do nothing.
- *
- * The card's `<a>` must not start a native drag of its href: that ends the pointer sequence without `pointerup`
- * while the `<li>` keeps capture, so the drop only landed on the next click (UI-FIXES-3). The link is
- * `draggable={false}` and `dragstart` is cancelled here as well.
+ * Drag a card onto a column: `usePressDrag` (the sidebar's gesture — mouse: move; finger: hold, then move — and its
+ * DOM glue, including the cancelled `dragstart` on the card's `<a>`, UI-FIXES-3). Spread on the card's `<li>`; a press
+ * that became a drag never follows the card's link, a quick tap still does. Without `drag` (a card on a page that
+ * does not move tasks) there are no handlers.
  */
 function useCardDrag(task: Task, drag?: DragProps) {
-  const press = useRef<{ x: number; y: number } | null>(null)
-  const swallow = useRef(false)
-  const finish = (e: PointerEvent<HTMLElement>, drop: boolean) => {
-    press.current = null
-    if (!drag || !e.currentTarget.hasPointerCapture(e.pointerId)) return
-    e.currentTarget.releasePointerCapture(e.pointerId)
-    // The click that follows this pointerup belongs to the drag.
-    swallow.current = true
-    setTimeout(() => (swallow.current = false), 0)
-    // `null` after Escape: the drag is already cancelled, only the capture is left to release.
-    const d = drag.ref.current
-    drag.set(null)
-    if (drop && d?.over && canDrag(d.task.state, d.over)) drag.onDrop(d.over)
-  }
-  return {
-    draggable: false,
-    onDragStart(e: DragEvent<HTMLElement>) {
-      e.preventDefault()
+  const { props, cancel } = usePressDrag({
+    onStart: (x, y) => drag?.set({ task, x, y, over: null, cancel }),
+    onMove(x, y) {
+      const d = drag?.ref.current
+      if (d) drag.set({ ...d, x, y, over: columnAt(x, y) })
     },
-    onPointerDown(e: PointerEvent<HTMLElement>) {
-      if (!drag || e.button !== 0 || touch() || e.metaKey || e.shiftKey) return
-      press.current = { x: e.clientX, y: e.clientY }
+    onEnd(drop) {
+      const d = drag?.ref.current
+      if (!drag || !d) return
+      drag.set(null)
+      if (drop && d.over && canDrag(d.task.state, d.over)) drag.onDrop(d.over)
     },
-    onPointerMove(e: PointerEvent<HTMLElement>) {
-      const p = press.current
-      if (!p || !drag) return
-      if (drag.ref.current) drag.set({ ...drag.ref.current, x: e.clientX, y: e.clientY, over: columnAt(e.clientX, e.clientY) })
-      else if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SLOP) {
-        e.currentTarget.setPointerCapture(e.pointerId)
-        drag.set({ task, x: e.clientX, y: e.clientY, over: null })
-      }
-    },
-    onPointerUp(e: PointerEvent<HTMLElement>) {
-      finish(e, true)
-    },
-    onPointerCancel(e: PointerEvent<HTMLElement>) {
-      finish(e, false)
-    },
-    onClickCapture(e: SyntheticEvent) {
-      if (!swallow.current) return
-      e.preventDefault()
-      e.stopPropagation()
-    },
-  }
+  })
+  return drag ? props : {}
 }
 
 /**
@@ -118,13 +83,31 @@ export function Board() {
     setDragState(d)
   }
   const dragging = drag !== null
+  const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!dragging) return
+    // Escape ends the gesture at its source, which releases capture and the finger's touchmove blocker too.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDrag(null)
+      if (e.key === 'Escape') dragRef.current?.cancel()
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // The board scrolls sideways (a phone shows one column and a sliver): a pointer near either edge scrolls it, and
+    // the column that slid under a still pointer becomes the target.
+    let frame = requestAnimationFrame(function tick() {
+      const d = dragRef.current
+      const el = scroller.current
+      if (d && el) {
+        const { left, right } = el.getBoundingClientRect()
+        const before = el.scrollLeft
+        el.scrollLeft += edgeScroll(d.x, left, right)
+        if (el.scrollLeft !== before) setDrag({ ...d, over: columnAt(d.x, d.y) })
+      }
+      frame = requestAnimationFrame(tick)
+    })
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      cancelAnimationFrame(frame)
+    }
   }, [dragging])
   // No `?project=` yet: the first known project; '' is the explicit "All projects".
   const project = search.project ?? projects[0] ?? ''
@@ -219,7 +202,7 @@ export function Board() {
           Cancelled
         </Label>
       </div>
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
         {tasks.isPending && (
           <div className="flex gap-3 p-3">
             <Skeleton className="h-40 w-64" />
