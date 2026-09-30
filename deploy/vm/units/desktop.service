@@ -1,0 +1,21 @@
+[Unit]
+Description=XFCE session on DISPLAY=:1
+After=xvnc.service
+Requires=xvnc.service
+
+[Service]
+User=engine
+Group=engine
+# /run/user/1000 comes from /etc/tmpfiles.d/theuth-vm.conf (no logind session
+# exists for a unit-started desktop; enable-linger would need user@1000).
+Environment=DISPLAY=:1 XDG_RUNTIME_DIR=/run/user/1000 HOME=/home/engine
+WorkingDirectory=/home/engine
+# xvnc is up when it forks, not when it accepts: wait for the display so dbus-launch's
+# --exit-with-session babysitter does not lose X and kill the bus under xfce4-session.
+ExecStartPre=/bin/sh -c 'for n in $$(seq 100); do xdpyinfo -display :1 >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+ExecStart=/usr/bin/dbus-launch --exit-with-session startxfce4
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

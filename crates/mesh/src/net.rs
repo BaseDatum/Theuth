@@ -30,7 +30,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::identity::now_ms;
-use crate::pairing::{self, Payload, PeerEntry, Pending};
+use crate::pairing::{self, Payload, PeerEntry, Pending, Rank, Side};
 use crate::store::Store;
 use crate::types::{AlpnTraffic, EngineId, HubPref, Peer};
 
@@ -54,6 +54,13 @@ const DIAL_GRACE: Duration = Duration::from_secs(3);
 const INBOUND_QUEUE: usize = 64;
 
 /// Messages on `ALPN_MESH` streams (`u32 LE len ‖ JSON`).
+///
+/// The vault key rides in `PairHello` only inside the already-authenticated
+/// QUIC stream: `ALPN_MESH` is TLS keyed to both engines' identities (the
+/// dialer checked `remote_id` against the pairing string, the acceptor checks
+/// the one-time token before reading anything else), so the key is seen by
+/// exactly the engine the string named. Unknown fields are ignored on read,
+/// so a pre-F5 `t` on either end still pairs (it never adopts, never ranks).
 #[derive(Debug, Serialize, Deserialize)]
 enum Msg {
     /// Dialer of `t mesh add`: prove the one-time token, introduce yourself.
@@ -61,17 +68,69 @@ enum Msg {
         token: String,
         me: PeerEntry,
         peers: Vec<PeerEntry>,
+        /// The dialer's mesh vault key (base32); the acceptor adopts it when
+        /// [`pairing::key_owner`] says the dialer owns the key (79 F5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault_key: Option<String>,
+        /// The dialer's standing; `None` from a pre-F5 `t`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rank: Option<Rank>,
     },
     /// Inviter's answer: token echoed, its own row and peer set.
     PairAck {
         token: String,
         me: PeerEntry,
         peers: Vec<PeerEntry>,
+        /// The acceptor took the dialer's key.
+        #[serde(default)]
+        adopted: bool,
+        /// The acceptor's standing; `None` from a pre-F5 `t`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rank: Option<Rank>,
     },
     /// Inviter's refusal.
     PairReject { reason: String },
     /// Peer-set exchange between paired engines (on connect and on change).
     Peers { peers: Vec<PeerEntry> },
+}
+
+/// The vault's mesh data key as the handshake reads and replaces it (67 §5.4).
+/// Production talks to the secrets actor ([`SecretsKeys`]); tests hand each
+/// node its own cell, since the actor is one per process.
+#[async_trait::async_trait]
+pub trait VaultKeys: Send + Sync {
+    /// The current key; `None` when secrets is not running.
+    async fn get(&self) -> Option<[u8; 32]>;
+    /// Re-seal every local row under `key` and keep it.
+    async fn adopt(&self, key: [u8; 32]) -> Result<(), String>;
+}
+
+/// [`VaultKeys`] over [`secrets::SECRETS_ACTOR`].
+pub struct SecretsKeys;
+
+impl SecretsKeys {
+    fn actor() -> Option<kameo::actor::ActorRef<secrets::SecretsActor>> {
+        kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
+            .ok()
+            .flatten()
+    }
+}
+
+#[async_trait::async_trait]
+impl VaultKeys for SecretsKeys {
+    async fn get(&self) -> Option<[u8; 32]> {
+        Self::actor()?.ask(secrets::GetMeshKey).await.ok()
+    }
+
+    async fn adopt(&self, key: [u8; 32]) -> Result<(), String> {
+        match Self::actor() {
+            Some(a) => a
+                .ask(secrets::AdoptMeshKey(key))
+                .await
+                .map_err(|e| e.to_string()),
+            None => Err("secrets is not running".into()),
+        }
+    }
 }
 
 /// How to bind (production from `MeshConfig`; tests on loopback, no relay).
@@ -87,6 +146,10 @@ pub struct BindOpts {
     pub bind_addr: Option<std::net::SocketAddr>,
     /// `mesh.storm_frames_per_sec`: one ALPN above this for 10 s is warned about.
     pub storm_frames_per_sec: u64,
+    /// Identity creation (`identity.rs`); the age half of [`Rank`].
+    pub first_seen_ms: u64,
+    /// Where the vault key lives; `None` = the secrets actor.
+    pub keys: Option<Arc<dyn VaultKeys>>,
 }
 
 /// Frames = one `poll_read` that returned bytes, or one `poll_write`. Not
@@ -265,6 +328,8 @@ pub struct Net {
     /// Per ALPN, what its streams moved (69 audit).
     traffic: Mutex<HashMap<String, Arc<Counters>>>,
     storm_frames_per_sec: u64,
+    first_seen_ms: u64,
+    keys: Arc<dyn VaultKeys>,
 }
 
 impl std::fmt::Debug for Net {
@@ -382,6 +447,8 @@ impl Net {
                 inbound,
                 traffic: Mutex::new(HashMap::new()),
                 storm_frames_per_sec: opts.storm_frames_per_sec,
+                first_seen_ms: opts.first_seen_ms,
+                keys: opts.keys.unwrap_or_else(|| Arc::new(SecretsKeys)),
             }
         });
         if !net.paired_ids().is_empty() {
@@ -536,18 +603,7 @@ impl Net {
         // Join now so the string carries a relay address (a moment for the home relay).
         self.join_network().await;
         let _ = tokio::time::timeout(Duration::from_secs(3), self.endpoint.online()).await;
-        let vault_key =
-            match kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
-                .ok()
-                .flatten()
-            {
-                Some(a) => a
-                    .ask(secrets::GetMeshKey)
-                    .await
-                    .ok()
-                    .map(|k| BASE32_NOPAD.encode(&k)),
-                None => None,
-            };
+        let vault_key = self.keys.get().await.map(|k| BASE32_NOPAD.encode(&k));
         pairing::build(&Payload {
             id: self.endpoint.id(),
             name: self.name.clone(),
@@ -558,8 +614,46 @@ impl Net {
         })
     }
 
+    /// This engine's standing for [`pairing::key_owner`], before the new peer is learned.
+    fn rank(&self) -> Rank {
+        Rank {
+            paired_peers: u32::try_from(self.paired_ids().len()).unwrap_or(u32::MAX),
+            first_seen_ms: self.first_seen_ms,
+            id: self.id.clone(),
+        }
+    }
+
+    /// Take `key` (base32) as the mesh vault key; a bad string or a secrets
+    /// failure is logged, never fatal — the pairing itself stands.
+    async fn adopt_key(&self, key: &str, from: &str) -> bool {
+        let Some(key) = BASE32_NOPAD
+            .decode(key.to_ascii_uppercase().as_bytes())
+            .ok()
+            .and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok())
+        else {
+            tracing::warn!("mesh: {from} sent an unreadable vault key");
+            return false;
+        };
+        match self.keys.adopt(key).await {
+            Ok(()) => {
+                tracing::info!("mesh: adopted the vault key from {from}");
+                true
+            }
+            Err(e) => {
+                tracing::warn!("mesh: adopting the vault key from {from}: {e}");
+                false
+            }
+        }
+    }
+
     /// `t mesh add <string>`: dial, prove the token, store each other, merge
     /// peer sets (67 §4.1). Returns the new peer.
+    ///
+    /// The vault key follows [`pairing::key_owner`], not the dial direction
+    /// (79 F5): the established side keeps its key and the fresh side adopts,
+    /// whether the fresh side dialed (a laptop pasting a mesh's string) or was
+    /// dialed (a host bringing up a VM). A pre-F5 acceptor sends no rank; then
+    /// the dialer adopts the string's key as before, with a warning.
     pub async fn add_peer(self: &Arc<Self>, s: &str) -> anyhow::Result<Peer> {
         let payload = pairing::parse(s).context("not a mesh pairing string")?;
         if payload.id == self.endpoint.id() {
@@ -576,6 +670,8 @@ impl Net {
         if conn.remote_id() != payload.id {
             anyhow::bail!("dialed engine has a different id");
         }
+        let mine = self.rank();
+        let my_key = self.keys.get().await;
         let (mut send, mut recv) = conn.open_bi().await.context("open stream")?;
         write_msg(
             &mut send,
@@ -583,35 +679,56 @@ impl Net {
                 token: payload.token.clone(),
                 me: self.me(),
                 peers: self.store.peer_entries().await?,
+                vault_key: my_key.as_ref().map(|k| BASE32_NOPAD.encode(k)),
+                rank: Some(mine.clone()),
             },
         )
         .await?;
-        let entry = match read_msg(&mut recv).await? {
-            Msg::PairAck { token, me, peers } => {
+        let (entry, adopted, theirs) = match read_msg(&mut recv).await? {
+            Msg::PairAck {
+                token,
+                mut me,
+                peers,
+                adopted,
+                rank,
+            } => {
                 if token != payload.token {
                     anyhow::bail!("pairing token mismatch in reply");
                 }
+                // The addresses we just dialed are known-good, and may be ones the
+                // peer cannot see itself (a VM's loopback port, 79 smoke bug 9).
+                me.addrs = pairing::union(&payload.addrs, &me.addrs);
                 self.learn(me.clone(), &peers).await?;
-                me
+                (me, adopted, rank)
             }
             Msg::PairReject { reason } => anyhow::bail!("pairing refused: {reason}"),
             other => anyhow::bail!("unexpected reply: {other:?}"),
         };
         let net = self.clone();
         tokio::spawn(async move { net.drive(conn).await });
-        // The inviter's vault key becomes ours before any of its rows arrive (67 §5.4).
-        if let Some(key) = payload
-            .vault_key
-            .as_deref()
-            .and_then(|k| BASE32_NOPAD.decode(k.to_ascii_uppercase().as_bytes()).ok())
-            && let Ok(key) = <[u8; 32]>::try_from(key.as_slice())
-            && let Some(a) =
-                kameo::actor::ActorRef::<secrets::SecretsActor>::lookup(secrets::SECRETS_ACTOR)
-                    .ok()
-                    .flatten()
-            && let Err(e) = a.ask(secrets::AdoptMeshKey(key)).await
-        {
-            tracing::warn!("mesh: adopting the vault key: {e}");
+        let from = format!("{} ({})", entry.name, entry.id);
+        let owner = match &theirs {
+            Some(theirs) => pairing::key_owner(&mine, theirs),
+            None => {
+                tracing::warn!(
+                    "mesh: {from} runs a pre-79-F5 t (no key rank in its PairAck): \
+                     taking its vault key as before"
+                );
+                Side::Acceptor
+            }
+        };
+        match owner {
+            // The inviter's vault key becomes ours before any of its rows arrive (67 §5.4).
+            Side::Acceptor => {
+                if let Some(key) = payload.vault_key.as_deref() {
+                    self.adopt_key(key, &from).await;
+                }
+            }
+            Side::Dialer => {
+                if my_key.is_some() && !adopted {
+                    tracing::warn!("mesh: {from} should have taken our vault key but did not");
+                }
+            }
         }
         Ok(self.peer_of(&entry))
     }
@@ -828,7 +945,14 @@ impl Net {
         }
         // Stranger: the first stream must be a valid PairHello.
         let (mut send, mut recv) = conn.accept_bi().await?;
-        let Ok(Msg::PairHello { token, me, peers }) = read_msg(&mut recv).await else {
+        let Ok(Msg::PairHello {
+            token,
+            me,
+            peers,
+            vault_key,
+            rank,
+        }) = read_msg(&mut recv).await
+        else {
             tracing::debug!(
                 "mesh: {} is not in the paired set and sent no PairHello; closed",
                 peer.fmt_short()
@@ -867,10 +991,23 @@ impl Net {
             .await;
             return Ok(());
         }
+        // 79 F5: the fresh side takes the established side's key. Decided here
+        // with the pre-pairing counts on both ends; a pre-F5 dialer sends no
+        // rank and adopts our key from the string as before.
+        let mine = self.rank();
+        let adopted = match (&rank, &vault_key) {
+            (Some(theirs), Some(key)) if pairing::key_owner(theirs, &mine) == Side::Dialer => {
+                self.adopt_key(key, &format!("{} ({})", me.name, me.id))
+                    .await
+            }
+            _ => false,
+        };
         let reply = Msg::PairAck {
             token,
             me: self.me(),
             peers: self.store.peer_entries().await.map_err(user_err)?,
+            adopted,
+            rank: Some(mine),
         };
         self.learn(me, &peers).await.map_err(user_err)?;
         write_msg(&mut send, &reply).await.map_err(user_err)?;
@@ -1156,7 +1293,30 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
+    /// One node's vault key: a cell standing in for the secrets actor.
+    struct MemKeys(Mutex<[u8; 32]>);
+
+    #[async_trait::async_trait]
+    impl VaultKeys for MemKeys {
+        async fn get(&self) -> Option<[u8; 32]> {
+            Some(*Net::lock(&self.0))
+        }
+        async fn adopt(&self, key: [u8; 32]) -> Result<(), String> {
+            *Net::lock(&self.0) = key;
+            Ok(())
+        }
+    }
+
     async fn node(name: &str) -> (Arc<Net>, tempfile::TempDir) {
+        let (net, dir, _) = node_at(name, 1_000).await;
+        (net, dir)
+    }
+
+    /// A node whose identity was created at `first_seen_ms`, with its own key.
+    async fn node_at(
+        name: &str,
+        first_seen_ms: u64,
+    ) -> (Arc<Net>, tempfile::TempDir, Arc<MemKeys>) {
         let dir = tempfile::tempdir().unwrap();
         let secret = SecretKey::generate();
         let store = Store::open(
@@ -1165,6 +1325,7 @@ mod tests {
         )
         .await
         .unwrap();
+        let keys = Arc::new(MemKeys(Mutex::new(rand::random())));
         let net = Net::bind(
             BindOpts {
                 secret,
@@ -1172,6 +1333,8 @@ mod tests {
                 discovery: false,
                 bind_addr: Some("127.0.0.1:0".parse().unwrap()),
                 storm_frames_per_sec: 50,
+                first_seen_ms,
+                keys: Some(keys.clone()),
             },
             store,
             name.into(),
@@ -1179,7 +1342,39 @@ mod tests {
         )
         .await
         .unwrap();
-        (net, dir)
+        (net, dir, keys)
+    }
+
+    /// 79 F5 (smoke bug 10): the established engine keeps its vault key in
+    /// both dial directions. `c` (fresh, newer) dials `a` → `c` adopts; then
+    /// `a` (one peer) dials fresh `b` → `b` adopts and `a`'s bytes never move.
+    #[tokio::test]
+    async fn vault_key_stays_with_the_established_engine() {
+        let (a, _da, ka) = node_at("a", 1_000).await;
+        let (b, _db, kb) = node_at("b", 3_000).await;
+        let (c, _dc, kc) = node_at("c", 2_000).await;
+        let key_a = ka.get().await.unwrap();
+        assert_ne!(key_a, kb.get().await.unwrap());
+
+        // Fresh dials established (a laptop pastes the mesh's string): as before.
+        c.add_peer(&a.pairing_string().await).await.unwrap();
+        assert_eq!(kc.get().await.unwrap(), key_a);
+        assert_eq!(ka.get().await.unwrap(), key_a);
+
+        // Established dials fresh (the host pairs a VM): the fresh side adopts.
+        let peer = a.add_peer(&b.pairing_string().await).await.unwrap();
+        assert_eq!(peer.id, b.id);
+        assert!(a.is_paired(&b.endpoint.id()) && b.is_paired(&a.endpoint.id()));
+        assert_eq!(kb.get().await.unwrap(), key_a, "the fresh acceptor adopted");
+        assert_eq!(
+            ka.get().await.unwrap(),
+            key_a,
+            "the established dialer kept its key"
+        );
+        assert_eq!(kc.get().await.unwrap(), key_a);
+        a.shutdown().await;
+        b.shutdown().await;
+        c.shutdown().await;
     }
 
     /// Two endpoints on loopback, no relay: pair, connect, round-trip bytes on

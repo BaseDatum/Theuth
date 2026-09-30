@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::types::{AgentFile, AgentName, Budget};
+use crate::types::{AgentFile, AgentName, Budget, RunsIn};
 
 /// Directory under `data_dir` holding the agent files.
 pub const DIR: &str = "agents";
@@ -24,11 +24,12 @@ struct FrontMatter {
     capabilities: Option<String>,
     paused: Option<bool>,
     proposed_by: Option<String>,
+    runs_in: Option<String>,
 }
 
 /// Parse one file's text as the agent `name`. `Err` is the user-facing reason
-/// (`agent name …`, `front matter: …`, `budget: …`, `tools: …`, `empty charter`,
-/// `theuth is reserved`).
+/// (`agent name …`, `front matter: …`, `budget: …`, `tools: …`, `runs_in: …`,
+/// `empty charter`, `theuth is reserved`).
 pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     let name = AgentName::new(name)?;
     if name.as_str() == AgentName::DEFAULT {
@@ -76,6 +77,7 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         capabilities: trimmed(fm.capabilities),
         paused: fm.paused.unwrap_or(false),
         proposed_by: trimmed(fm.proposed_by),
+        runs_in: fm.runs_in.as_deref().map_or(Ok(RunsIn::Any), str::parse)?,
         body: body.to_owned(),
     })
 }
@@ -119,6 +121,9 @@ pub fn render(f: &AgentFile) -> String {
     }
     if let Some(p) = &f.proposed_by {
         s.push_str(&format!("proposed_by: {}\n", p.trim()));
+    }
+    if !f.runs_in.is_any() {
+        s.push_str(&format!("runs_in: {}\n", f.runs_in));
     }
     if !s.is_empty() {
         s.insert_str(0, "---\n");
@@ -208,6 +213,7 @@ pub fn default_agent(data_dir: &Path) -> AgentFile {
         capabilities: None,
         paused: false,
         proposed_by: None,
+        runs_in: RunsIn::Any,
         body: body.to_owned(),
     }
 }
@@ -297,6 +303,7 @@ mod tests {
         );
         assert!(!f.paused);
         assert_eq!(f.proposed_by.as_deref(), Some("agent:cto"));
+        assert_eq!(f.runs_in, RunsIn::Any);
         assert_eq!(f.body, "You are Ops. Your charter is production.");
     }
 
@@ -336,6 +343,26 @@ mod tests {
     }
 
     #[test]
+    fn runs_in_forms() {
+        assert_eq!(parse("ops", "Ops.").unwrap().runs_in, RunsIn::Any);
+        assert_eq!(
+            parse("ops", "---\nruns_in: any\n---\nOps.")
+                .unwrap()
+                .runs_in,
+            RunsIn::Any
+        );
+        let own = parse("ops", "---\nruns_in: vm\n---\nOps.").unwrap();
+        assert_eq!(own.runs_in, RunsIn::OwnVm);
+        assert_eq!(render(&own), "---\nruns_in: vm\n---\n\nOps.\n");
+        let named = parse("ops", "---\nruns_in: vm:lab\n---\nOps.").unwrap();
+        assert_eq!(named.runs_in, RunsIn::Vm("lab".into()));
+        assert_eq!(parse("ops", &render(&named)).unwrap(), named);
+        let e = parse("ops", "---\nruns_in: docker\n---\nOps.").unwrap_err();
+        assert!(e.starts_with("runs_in: "), "{e}");
+        assert!(parse("ops", "---\nruns_in: 'vm:'\n---\nOps.").is_err());
+    }
+
+    #[test]
     fn render_parse_round_trip() {
         let f = AgentFile {
             name: AgentName::new("ops").unwrap(),
@@ -355,6 +382,7 @@ mod tests {
             capabilities: Some("Production health. Not \"code\" review.".into()),
             paused: true,
             proposed_by: Some("agent:cto".into()),
+            runs_in: RunsIn::Vm("lab".into()),
             body: "You are Ops.\n\nYour charter is production.".into(),
         };
         assert_eq!(parse("ops", &render(&f)).unwrap(), f);

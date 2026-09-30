@@ -24,6 +24,8 @@ import type { SignalEvent } from '@/rpc/bindings/SignalEvent'
 import type { SlackEvent } from '@/rpc/bindings/SlackEvent'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
 import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
+import type { MeshEvent } from '@/rpc/bindings/MeshEvent'
+import type { SandboxEvent } from '@/rpc/bindings/SandboxEvent'
 import type {
   AppCallChanged,
   ArtifactShown,
@@ -93,4 +95,8 @@ export type WireEvent =
   | ActivityAppended
   /** 73 §5.1: `CodeToolRan` (per session) · `CodeReconciled` (global, filtered by `root`). */
   | CodeindexEvent
+  /** 79 §4.4: sandbox VM records, bring-up progress, desktop open / take-over. `Changed` is shared with `ScheduleEvent`: guard on `'sandbox' in e`. */
+  | SandboxEvent
+  /** 67 §4, bridged since 79: a peer changed or the hub lease moved; the Mesh page refetches on it. */
+  | MeshEvent
   | Lagged

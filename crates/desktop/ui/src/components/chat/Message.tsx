@@ -196,7 +196,7 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
     ) : prompt.type === 'AskRequested' ? (
       <AskCard ask={prompt} />
     ) : (
-      <SecretRequestCard id={prompt.id} name={prompt.name} note={prompt.note} current={prompt.current} />
+      <SecretRequestCard id={prompt.id} note={prompt.note} fields={[{ name: prompt.name, label: prompt.name, masked: true, current: prompt.current }]} />
     )
   if (!from) return card
   return (

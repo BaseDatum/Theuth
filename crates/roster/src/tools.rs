@@ -101,6 +101,7 @@ fn file_of(
         capabilities: a.capabilities,
         paused: false,
         proposed_by: None,
+        runs_in: Default::default(),
         body: a.charter,
     })
 }

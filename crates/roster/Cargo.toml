@@ -13,7 +13,9 @@ agent = { workspace = true }
 knowledge = { workspace = true }
 document = { workspace = true }
 mesh = { workspace = true }
+sandbox = { workspace = true }  # the agent pin asks EnsureVm (79 §4.9)
 replica = { workspace = true }
+secrets = { workspace = true }
 platform = { workspace = true }
 chrono = { workspace = true }
 kameo = { workspace = true }

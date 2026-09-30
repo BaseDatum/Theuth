@@ -1,0 +1,16 @@
+[Unit]
+Description=theuth engine (t --headless) on DISPLAY=:1
+After=network-online.target desktop.service
+Wants=network-online.target
+
+[Service]
+User=engine
+Group=engine
+Environment=DISPLAY=:1 THEUTH_DATA_DIR=/data THEUTH_LAUNCH=1 HOME=/home/engine XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/engine
+ExecStart=/usr/local/bin/t --headless
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -9,16 +9,27 @@
 //! - [`bringup::run`], the detect → binary → first run → daemon → pair →
 //!   verify sequence, generic over the backend and over how the mesh is
 //!   reached ([`MeshJoin`]: the mesh actor in-process, JSON-RPC from the CLI)
-//! - commands on the [`SANDBOX_ACTOR`] actor ([`SandboxActor`]):
-//!   [`MakeEngine`], [`Engines`]
+//! - commands on the [`SANDBOX_ACTOR`] actor ([`SandboxActor`], [`actor`]):
+//!   [`MakeEngine`], [`Engines`], and the sandbox VM commands of design 79
+//!   ([`Create`] … [`EnsureVm`]); [`tools`]: the `sandbox_*` tools and prompt
+//!   blocks; [`config`]: the `sandbox:` section and what it switches on
 //! - `<data_dir>/computers/<name>.yaml` ([`record`]), one per compute this
 //!   crate created
+//! - [`vm`]: the `VmRuntime` trait (79 §4.1); [`types`]: the wire types and
+//!   the `sandbox:` config (79 §2.2, §4.7)
 
+pub mod actor;
 pub mod bringup;
+pub mod config;
 pub mod docker;
+pub mod guest;
 pub mod record;
 pub mod release;
 pub mod ssh;
+pub mod takeover;
+pub mod tools;
+pub mod types;
+pub mod vm;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,21 +37,33 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use kameo::actor::{ActorRef, Spawn};
-use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
+pub use actor::{
+    Create, DesktopAccess, Destroy, Engines, EnsureVm, InstallRuntime, List, Logs, MakeEngine,
+    Metrics, Pause, PreflightNow, Resize, Restore, Resume, Retry, SandboxActor, SetShares,
+    Snapshot, Start, Stop, Takeover, Terminal,
+};
 pub use bringup::{MeshJoin, Spec};
 pub use record::Computer;
+// 79 wire types at the crate root; `types::DesktopAccess` stays qualified (the
+// message struct of the same name lives here).
+pub use types::{
+    DesktopView, GuestConfig, PendingView, SandboxConfig, SandboxCreate, SandboxEvent, SandboxInfo,
+    SandboxState, VmConfig, VmDefaults, VmView,
+};
+pub use vm::{
+    Blocker, HostFacts, ImageRef, LogLine, Mount, NetPolicy, Pending, Port, Preflight,
+    ResizeOutcome, ResizeStatus, ResourceChange, Resources, RuntimeState, SnapshotId, VmSnapshotInfo,
+    VirtState, VmMetrics, VmStatus,
+};
 
 /// Registry name of the [`SandboxActor`].
 pub const SANDBOX_ACTOR: &str = "sandbox";
 
 /// Directory under `data_dir` holding one record per compute this crate created (64 §4.7).
 pub const DIR: &str = "computers";
-
-/// Per-command ceiling (`sandbox.step_timeout_secs` in 64 §4.7; a constant here).
-pub const STEP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One progress sink: `(step, line)`.
 type Sink = dyn Fn(&str, &str) + Send + Sync;
@@ -65,6 +88,11 @@ impl Progress {
     /// Drops every line (tests).
     pub fn silent() -> Self {
         Self(Arc::new(|_, _| {}))
+    }
+
+    /// Any sink.
+    pub fn new(sink: impl Fn(&str, &str) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(sink))
     }
 
     /// Emit one line.
@@ -94,13 +122,22 @@ pub struct Cmd {
 }
 
 impl Cmd {
+    /// The ceiling when none is set: `sandbox.step_timeout_secs`' default (600 s).
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+
     /// A command with no stdin and the default ceiling.
     pub fn new(line: impl Into<String>) -> Self {
         Self {
             line: line.into(),
             stdin: None,
-            timeout: STEP_TIMEOUT,
+            timeout: Self::DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Set the ceiling.
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = d;
+        self
     }
 
     /// Feed `bytes` on stdin.
@@ -271,59 +308,6 @@ pub enum Target {
     },
 }
 
-/// `ask` → `Result<mesh::Peer, String>`: run bring-up on `Target` and join the
-/// mesh; the reply is the new peer. Progress goes to the log.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MakeEngine(pub Target);
-
-/// `ask` → `Result<Vec<Computer>, String>`: the records under `computers/`.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct Engines;
-
-/// The [`SANDBOX_ACTOR`] actor.
-#[derive(kameo::Actor)]
-pub struct SandboxActor {
-    rt: Runtime,
-}
-
-impl Message<MakeEngine> for SandboxActor {
-    type Reply = Result<mesh::Peer, String>;
-
-    // ponytail: bring-up runs inside the handler (minutes) so one engine is
-    // made at a time; spawn + progress events if the UI ever drives this.
-    async fn handle(
-        &mut self,
-        MakeEngine(target): MakeEngine,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        let rt = self.rt.clone();
-        make_engine(
-            &self.rt.data_dir,
-            target,
-            move |name| async move {
-                let vault = secrets::handle(&rt)
-                    .await
-                    .ok_or("secrets vault unavailable")?;
-                vault
-                    .get(&name, 0)
-                    .ok_or_else(|| format!("no secret named {name}"))
-            },
-            &ActorJoin,
-            &Progress::log(),
-        )
-        .await
-        .map_err(|e| format!("{e:#}"))
-    }
-}
-
-impl Message<Engines> for SandboxActor {
-    type Reply = Result<Vec<Computer>, String>;
-
-    async fn handle(&mut self, _: Engines, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        record::list(&self.rt.data_dir).map_err(|e| format!("{e:#}"))
-    }
-}
-
 /// [`MeshJoin`] through the in-process mesh actor.
 pub struct ActorJoin;
 
@@ -337,6 +321,11 @@ impl MeshJoin for ActorJoin {
     async fn status(&self) -> anyhow::Result<mesh::MeshStatus> {
         let actor = mesh::actor().ok_or_else(|| anyhow::anyhow!("mesh not running"))?;
         actor.ask(mesh::Status).await.map_err(mesh_err)
+    }
+
+    async fn remove_peer(&self, id: mesh::EngineId) -> anyhow::Result<()> {
+        let actor = mesh::actor().ok_or_else(|| anyhow::anyhow!("mesh not running"))?;
+        actor.ask(mesh::RemovePeer(id)).await.map_err(mesh_err)
     }
 }
 
@@ -357,6 +346,7 @@ pub async fn make_engine<F, Fut>(
     secret: F,
     join: &dyn MeshJoin,
     out: &Progress,
+    step_timeout: Duration,
 ) -> anyhow::Result<mesh::Peer>
 where
     F: FnOnce(String) -> Fut,
@@ -381,7 +371,11 @@ where
                 ),
                 (true, _) => ssh::SshSandbox::system(t),
             };
-            (Box::new(sb), Spec::new(name))
+            let spec = Spec {
+                step_timeout,
+                ..Spec::new(name)
+            };
+            (Box::new(sb), spec)
         }
         Target::Docker {
             name,
@@ -391,6 +385,7 @@ where
             let sb = docker::DockerSandbox::connect(&name, image, local_t.clone()).await?;
             let spec = Spec {
                 local_t,
+                step_timeout,
                 ..Spec::new(name)
             };
             (Box::new(sb), spec)
@@ -401,17 +396,19 @@ where
         name: spec.name.clone(),
         backend: sb.kind().into(),
         handle: done.handle,
-        engine: done.peer.id.clone(),
-        created_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64),
+        engine: Some(done.peer.id.clone()),
+        created_ms: record::now_ms(),
+        vm: None,
     };
     record::write(data_dir, &rec)?;
     out.say("record", format!("{}/{}.yaml", DIR, rec.name));
     Ok(done.peer)
 }
 
-/// The plugin: spawns [`SandboxActor`] as [`SANDBOX_ACTOR`].
+/// The plugin (79 §4.7): `enabled: false` → nothing; `guest:` set → the guest
+/// prompt block and `sandbox_takeover` only; else the [`SandboxActor`] as
+/// [`SANDBOX_ACTOR`], its tools, a reconcile at start (+ autostart) and every
+/// `health_interval_secs`.
 pub struct SandboxPlugin;
 
 #[async_trait::async_trait]
@@ -421,9 +418,36 @@ impl runtime::Plugin for SandboxPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
-        let actor = SandboxActor::spawn(SandboxActor { rt: rt.clone() });
-        actor.register(SANDBOX_ACTOR)?;
-        Ok(())
+        let cfg = config::load(rt);
+        match config::mode(&cfg) {
+            config::Mode::Disabled => {
+                tracing::info!("sandbox disabled (sandbox.enabled: false)");
+                Ok(())
+            }
+            config::Mode::Guest(g) => {
+                tracing::info!(vm = %g.name, host = %g.host, "sandbox: this engine is a guest");
+                guest::start(rt, g);
+                Ok(())
+            }
+            config::Mode::Host { vm } => {
+                tracing::info!(vm, runtime = %cfg.vm.runtime, "sandbox config");
+                let health = Duration::from_secs(cfg.health_interval_secs);
+                let actor = SandboxActor::spawn(SandboxActor::new(rt.clone(), cfg.clone()));
+                actor.register(SANDBOX_ACTOR)?;
+                let _ = actor.tell(actor::Reconcile { autostart: true }).await;
+                actor::spawn_health(actor.clone(), health);
+                let rt2 = rt.clone();
+                tokio::spawn(async move {
+                    if let Some(reg) = rt2
+                        .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
+                        .await
+                    {
+                        tools::register(&reg, rt2.clone(), cfg).await;
+                    }
+                });
+                Ok(())
+            }
+        }
     }
 }
 

@@ -1,7 +1,8 @@
-//! The `secret_list`, `secret_request`, `secret_capture` and `secret_restore`
-//! tools and the plugin's prompt block (design doc 37 §3.2, §4), registered by
-//! `SecretsPlugin::start` once the tool registry is up. None of them returns a
-//! value, ever: names, notes, version numbers, dates and byte counts only.
+//! The `secret_list`, `secret_request`, `secret_request_form`, `secret_capture`
+//! and `secret_restore` tools and the plugin's prompt block (design doc 37 §3.2,
+//! §4; 79 §6.6), registered by `SecretsPlugin::start` once the tool registry is
+//! up. None of them returns a value, ever: names, notes, version numbers, dates
+//! and byte counts only.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,7 @@ use tools::{
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
-use crate::{Request, SecretsActor};
+use crate::{Outcome, Request, SecretRequestField, SecretsActor};
 
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
@@ -31,7 +32,7 @@ tool and stores its output (a fresh token from a login command, a key from a fil
 `replace: true` to update one that exists; `secret_restore` undoes a bad update. Never ask the user to paste a \
 secret into the chat, and never try to print one.";
 
-/// Register the four tools and the prompt block on `reg`. `timeout` is the
+/// Register the five tools and the prompt block on `reg`. `timeout` is the
 /// actor's `request_timeout_secs`, for the `no answer after N s` receipt.
 pub async fn register(
     reg: &ActorRef<ToolRegistry>,
@@ -43,7 +44,16 @@ pub async fn register(
         .ask(RegisterTool(Arc::new(SecretListTool(vault.clone()))))
         .await;
     let _ = reg
-        .ask(RegisterTool(Arc::new(SecretRequestTool { actor, timeout })))
+        .ask(RegisterTool(Arc::new(SecretRequestTool {
+            actor: actor.clone(),
+            timeout,
+        })))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(SecretRequestFormTool {
+            actor,
+            timeout,
+        })))
         .await;
     let _ = reg
         .ask(RegisterTool(Arc::new(SecretCaptureTool(vault.clone()))))
@@ -156,8 +166,13 @@ impl Tool for SecretRequestTool {
             .actor
             .ask(Request {
                 session: cx.session,
-                name: name.clone(),
-                note: a.note,
+                title: None,
+                fields: vec![SecretRequestField {
+                    name: name.clone(),
+                    label: a.note,
+                    masked: true,
+                    current: None,
+                }],
             })
             .await
         {
@@ -165,17 +180,108 @@ impl Tool for SecretRequestTool {
             Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
             Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
         };
-        Ok(match out.stored {
-            Some(v) if v > 1 => ToolOutput::ok(format!(
+        Ok(match out.stored.first() {
+            Some((_, v)) if *v > 1 => ToolOutput::ok(format!(
                 "stored {name} v{v} (v{} is {{{{secret:{name}:-1}}}})",
                 v - 1
             )),
-            Some(v) => ToolOutput::ok(format!("stored {name} v{v}")),
-            None if out.timed_out => {
-                ToolOutput::err(format!("no answer after {} s", self.timeout.as_secs()))
-            }
-            None => ToolOutput::err("declined"),
+            Some((_, v)) => ToolOutput::ok(format!("stored {name} v{v}")),
+            None => not_stored(&out, self.timeout),
         })
+    }
+}
+
+/// The receipt when nothing was stored.
+fn not_stored(out: &Outcome, timeout: Duration) -> ToolOutput {
+    if out.timed_out {
+        ToolOutput::err(format!("no answer after {} s", timeout.as_secs()))
+    } else {
+        ToolOutput::err("declined")
+    }
+}
+
+/// One field of a `secret_request_form`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FormField {
+    /// Name to store it under (`github.alice.password`; `[A-Za-z0-9_.-]`, no `/`). An existing name gets a new version.
+    pub name: String,
+    /// Label on the card (`Password`).
+    pub label: String,
+    /// Masked input; default true. `false` for a username or an e-mail.
+    #[serde(default)]
+    pub masked: Option<bool>,
+}
+
+/// `secret_request_form`: several secrets on one card (79 §6.6).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FormArgs {
+    /// Card title (`Log in to GitHub as alice`).
+    pub title: String,
+    /// The fields, in card order.
+    pub fields: Vec<FormField>,
+}
+
+/// The `secret_request_form` tool: one card, several masked fields, one vault row each.
+pub struct SecretRequestFormTool {
+    /// The secrets actor.
+    pub actor: ActorRef<SecretsActor>,
+    /// How long the actor waits; only for the receipt text.
+    pub timeout: Duration,
+}
+
+#[async_trait::async_trait]
+impl Tool for SecretRequestFormTool {
+    const NAME: &'static str = "secret_request_form";
+    const RISK: Risk = Risk::ReadOnly;
+    const DIRECT: bool = true;
+    const CONSUMES_SECRETS: bool = false;
+    type Args = FormArgs;
+
+    fn description(&self) -> String {
+        "Ask the user for several secrets on one card (username, password, one-time code) and store \
+         each under its `name`; you never see the values. Then use `{{secret:NAME}}` placeholders, \
+         e.g. in `computer_type`. Returns `stored a, b, c`, `declined` or `no answer`. The card \
+         reaches the user on whatever engine their app is attached to."
+            .into()
+    }
+
+    async fn call(&self, a: FormArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if a.fields.is_empty() {
+            return Ok(ToolOutput::err("fields: at least one"));
+        }
+        if let Some(f) = a.fields.iter().find(|f| !vault::valid_name(&f.name)) {
+            return Ok(ToolOutput::err(format!(
+                "fields[].name {:?}: [A-Za-z0-9_.-]{{1,64}}",
+                f.name
+            )));
+        }
+        let out = match self
+            .actor
+            .ask(Request {
+                session: cx.session,
+                title: Some(a.title),
+                fields: a
+                    .fields
+                    .into_iter()
+                    .map(|f| SecretRequestField {
+                        name: f.name,
+                        label: f.label,
+                        masked: f.masked.unwrap_or(true),
+                        current: None,
+                    })
+                    .collect(),
+            })
+            .await
+        {
+            Ok(o) => o,
+            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Err(e) => return Ok(ToolOutput::err(format!("secrets actor: {e}"))),
+        };
+        if out.stored.is_empty() {
+            return Ok(not_stored(&out, self.timeout));
+        }
+        let names: Vec<&str> = out.stored.iter().map(|(n, _)| n.as_str()).collect();
+        Ok(ToolOutput::ok(format!("stored {}", names.join(", "))))
     }
 }
 

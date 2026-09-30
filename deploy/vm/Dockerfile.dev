@@ -1,0 +1,9 @@
+# Dev image: the `desktop` stage of ./Dockerfile plus a local Linux `t` for the
+# host's arch copied from the build context (`deploy/vm/t`, git-ignored).
+# `just vm-image-dev` builds the desktop stage, then this, then `docker save | msb load`.
+# The guest is Debian 13 (glibc 2.41): a `t` built on ≤ 2.41 runs; one built on
+# Ubuntu 26.04 (2.43) does not.
+FROM theuth-vm:desktop
+
+COPY --chmod=755 t /usr/local/bin/t
+RUN /usr/local/bin/t --version

@@ -22,6 +22,8 @@ export type PopoutTarget =
   | { kind: 'codemap'; session: string; root: string }
   /** `/talk/$session`: the session's talk view alone (76 §0.12); it attaches to the running talk, never starts one. */
   | { kind: 'talk'; session: string }
+  /** `/vm/$name`: one sandbox VM's desktop alone (79 §6.2); label `popout-vm-<name>`. */
+  | { kind: 'vm'; name: string }
 
 const idOf = (t: PopoutTarget): string =>
   t.kind === 'chat' || t.kind === 'talk'
@@ -30,11 +32,13 @@ const idOf = (t: PopoutTarget): string =>
       ? t.callId
       : t.kind === 'note'
         ? t.doc
-        : t.kind === 'pty'
-          ? `${t.session}-${t.job}`
-          : t.kind === 'codemap'
-            ? `${t.session}-${t.root}`
-            : t.meeting
+        : t.kind === 'vm'
+          ? t.name
+          : t.kind === 'pty'
+            ? `${t.session}-${t.job}`
+            : t.kind === 'codemap'
+              ? `${t.session}-${t.root}`
+              : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'chat' || t.kind === 'talk'
@@ -43,11 +47,13 @@ const pathOf = (t: PopoutTarget): string =>
       ? `/artifacts/${encodeURIComponent(t.callId)}`
       : t.kind === 'note'
         ? `/notes/${encodeURIComponent(t.doc)}`
-        : t.kind === 'pty'
-          ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
-          : t.kind === 'codemap'
-            ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
-            : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
+        : t.kind === 'vm'
+          ? `/vm/${encodeURIComponent(t.name)}`
+          : t.kind === 'pty'
+            ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
+            : t.kind === 'codemap'
+              ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
+              : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
 
 /** Tauri window labels allow `[A-Za-z0-9/:_-]`; ids are passed through the same filter. */
 const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
@@ -66,6 +72,7 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'talk') return { kind: 'talk', session: decodeURIComponent(id) }
+  if (head === 'vm') return { kind: 'vm', name: decodeURIComponent(id) }
   if (head === 'artifacts') return { kind: 'artifact', callId: decodeURIComponent(id) }
   if (head === 'notes') return { kind: 'note', doc: decodeURIComponent(id) }
   if (head === 'meetings') {

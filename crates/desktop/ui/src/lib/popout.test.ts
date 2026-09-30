@@ -61,6 +61,15 @@ test('a talk view pops out at /talk/$session, a separate label from the chat of 
   expect(popoutSession(t)).toBe('01J8ZK-abc')
 })
 
+test('a sandbox VM desktop pops out at /vm/$name with the contract label popout-vm-<name> (79 §6.2); no session closes it', () => {
+  const t = { kind: 'vm', name: 'lab' } as const
+  expect(popoutLabel(t)).toBe('popout-vm-lab')
+  expect(popoutUrl(t)).toBe('/vm/lab?window=popout-vm-lab')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutSession(t)).toBeNull()
+  expect(popoutTarget('/vm/lab')).toBeNull()
+})
+
 test('a CodeMap pops out at /codemap/$session/$root; the root (a path, spaces allowed) survives the url and the label is Tauri-safe', () => {
   const t = { kind: 'codemap', session: '01J8ZK-abc', root: '/Users/sky/My Code/theuth' } as const
   expect(popoutLabel(t)).toBe('popout-codemap-01J8ZK-abc-_Users_sky_My_Code_theuth')

@@ -247,6 +247,16 @@ Config (`~/.theuth/`, created on first run; details in
     guest_handshakes_per_minute: 10  # share-link guests (design doc 59 §8) admitted per minute; 5 s to join, 3 refused calls close the conn
   nodes:                          # design doc 32; `/nodes add <key>` pairs, the node ran `t --install-service`
     enabled: true                 # false: no dials, nodes invisible to the model and the UI; nodes.yaml kept
+  sandbox:                        # design doc 79; sandbox VMs — isolated Linux desktops on this machine that join the mesh as engines. `t mesh add --vm`, `t sandbox ls|start|stop|rm|desktop`, `/sandbox`
+    enabled: true                 # false: no actor, no `sandbox_*` tools, no RPC; records and VMs on disk untouched (VMs keep running detached)
+    vm:
+      enabled: true               # false: docker/ssh engines only
+      image: ghcr.io/basedatum/theuth-vm   # tag = this binary's version
+      defaults: { cpus: auto, memory_mib: auto, root_disk_mib: 20480, max_cpus: auto, max_memory_mib: auto, desktop: true, geometry: 1440x900, network: public_host }
+      autostart: true             # start recorded VMs with this engine
+      max_vms: 4
+      loopback_mesh: false        # publish the VM's iroh UDP port on 127.0.0.1 and pair over it; off = relay path (79 S1 #4: a ≥ 1500 B datagram wedges the guest NIC)
+    create_timeout_secs: 900      # `sandbox_create` waits this long for `ready`; step_timeout_secs 600 per bring-up step; health_interval_secs 60
   schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
@@ -652,3 +662,9 @@ its own sessions. `/nodes` lists, renames, removes and invites; `theuth
 --uninstall-service` removes the unit and nothing else. The node has its own
 `~/.theuth` (config, secrets vault, skills, MCP servers): nothing is synced.
 Design: [`docs/design/32-nodes.md`](docs/design/32-nodes.md).
+
+A node this machine makes itself is a *sandbox* (`crates/sandbox`, design
+doc 79): `t mesh add --vm` creates an isolated Linux desktop microVM
+(microsandbox) with chosen host directories shared in, joins it to the mesh
+as an engine, and the `sandbox_*` tools let the model do the same;
+`t sandbox ls|start|stop|rm|desktop` and `/sandbox` manage them.

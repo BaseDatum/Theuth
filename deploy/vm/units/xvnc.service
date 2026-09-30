@@ -1,0 +1,16 @@
+[Unit]
+Description=Xtigervnc :1 (RFB on localhost:5901, VncAuth from /home/engine/.vnc/passwd)
+After=systemd-tmpfiles-setup.service
+
+[Service]
+User=engine
+Group=engine
+Environment=HOME=/home/engine
+# -ac: no X access control, so root (msb exec) and the engine share DISPLAY=:1
+# without xauth; the socket never leaves the guest and RFB is behind VncAuth.
+ExecStart=/usr/bin/Xtigervnc :1 -rfbauth /home/engine/.vnc/passwd -geometry 1440x900 -depth 24 -localhost -AcceptSetDesktopSize -ac
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

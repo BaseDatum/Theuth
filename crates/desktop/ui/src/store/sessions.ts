@@ -228,6 +228,8 @@ export type SessionSlice = {
   progress: Map<string, { name?: string; writing?: boolean; bytes: number }>;
   /** Live crawl/scrape URLs by `call_id`; dropped on finish, the card then parses the result. */
   scrape: Map<string, { inflight: string[]; done: string[]; limit: number }>;
+  /** 79 §4.4: the latest `SandboxEvent.Progress` line of a `sandbox_*` tool call by `call_id`; dropped on finish. */
+  sandbox: Map<string, { step: string; line: string; pct: number | null }>;
   /** Pending/failed direct `app` calls by `call_id` (46 §8.1); a panel opened on one is promoted in place by `ArtifactShown`. */
   appDrafts: Map<string, AppDraft>;
   /** Latest `AppCallChanged` per statement of each app record (46 §6.4), so a reopened view still shows what its

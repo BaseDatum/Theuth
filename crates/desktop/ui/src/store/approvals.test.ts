@@ -38,7 +38,7 @@ test('PendingPrompts replaces the pending set with what the engine reports', () 
         type: 'PendingPrompts',
         approvals: [],
         asks: [ask('live')],
-        secrets: [{ type: 'SecretsChanged' }, { type: 'SecretRequested', id: 'sr', session: 's1', name: 'TOKEN', note: '', current: null }],
+        secrets: [{ type: 'SecretsChanged' }, { type: 'SecretRequested', id: 'sr', session: 's1', name: 'TOKEN', note: '', current: null, title: null, fields: [] }],
       },
     ],
     st,

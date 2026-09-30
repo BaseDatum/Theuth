@@ -348,12 +348,21 @@ impl Store {
     /// A default: write `value` only when `key` has no row yet, stamped at
     /// wall-clock zero instead of now — so any explicit [`Self::meta_set`]
     /// (stamped at its real time) beats every default in the per-column LWW
-    /// merge, whichever engine wrote it first. Two engines' defaults tie on
-    /// the clock and the larger origin id wins. Returns whether this call wrote.
-    pub async fn meta_default(&self, key: &str, value: &str) -> anyhow::Result<bool> {
+    /// merge, whichever engine wrote it first. Two engines' defaults meet
+    /// when they pair (both started alone): the counter ranks them by age,
+    /// `u32::MAX - first_seen_s`, so the OLDER engine's default wins — the
+    /// host outlives the VM it creates (79 smoke bug 5: the tie fell to the
+    /// larger origin id and the guest renamed the mesh). Returns whether this
+    /// call wrote.
+    pub async fn meta_default(
+        &self,
+        key: &str,
+        value: &str,
+        first_seen_ms: u64,
+    ) -> anyhow::Result<bool> {
         let hlc = replica::Hlc {
             wall_ms: 0,
-            counter: 0,
+            counter: u32::MAX - u32::try_from(first_seen_ms / 1000).unwrap_or(u32::MAX),
             origin: replica::PeerId(self.me.0.clone()),
         }
         .to_text();
@@ -420,13 +429,14 @@ fn hub_pref_from(s: &str) -> HubPref {
     }
 }
 
-/// `server | desktop | laptop | container` (the `class` column).
+/// `server | desktop | laptop | container | vm` (the `class` column).
 pub fn class_str(c: EngineClass) -> &'static str {
     match c {
         EngineClass::Server => "server",
         EngineClass::Desktop => "desktop",
         EngineClass::Laptop => "laptop",
         EngineClass::Container => "container",
+        EngineClass::Vm => "vm",
     }
 }
 
@@ -435,6 +445,7 @@ fn class_from(s: &str) -> EngineClass {
         "server" => EngineClass::Server,
         "laptop" => EngineClass::Laptop,
         "container" => EngineClass::Container,
+        "vm" => EngineClass::Vm,
         _ => EngineClass::Desktop,
     }
 }
@@ -524,8 +535,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.meta_get("name").await.unwrap(), None);
-        assert!(store.meta_default("name", "work").await.unwrap());
-        assert!(!store.meta_default("name", "other").await.unwrap());
+        assert!(store.meta_default("name", "work", 1_000).await.unwrap());
+        assert!(!store.meta_default("name", "other", 1_000).await.unwrap());
         assert_eq!(
             store.meta_get("name").await.unwrap().as_deref(),
             Some("work")
@@ -547,34 +558,36 @@ mod tests {
         );
     }
 
+    /// One mesh store attached to its own replica engine.
+    async fn side(
+        name: &str,
+    ) -> (
+        Store,
+        std::sync::Arc<replica::engine::Engine>,
+        replica::engine::ReplicaHandle,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(name.into()))
+            .await
+            .unwrap();
+        let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
+            .await
+            .unwrap();
+        let handle = engine.attach(store.pool(), &["mesh_meta"]).await.unwrap();
+        (store, engine, handle, dir)
+    }
+
     /// A rename on A, then a fresh B's default written *later*: the rename
     /// wins on both sides once the batches cross (before: B's default carried
     /// its first-seen stamp, newer than the rename, and won everywhere).
     #[tokio::test]
     async fn an_explicit_rename_beats_a_later_default_across_engines() {
-        async fn side(
-            name: &str,
-        ) -> (
-            Store,
-            std::sync::Arc<replica::engine::Engine>,
-            replica::engine::ReplicaHandle,
-            tempfile::TempDir,
-        ) {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::open(&dir.path().join("mesh.sqlite"), EngineId(name.into()))
-                .await
-                .unwrap();
-            let engine = replica::engine::Engine::open(&dir.path().join("replica.sqlite"))
-                .await
-                .unwrap();
-            let handle = engine.attach(store.pool(), &["mesh_meta"]).await.unwrap();
-            (store, engine, handle, dir)
-        }
         let (a, a_engine, a_handle, _da) = side("a").await;
         let (b, b_engine, b_handle, _db) = side("b").await;
 
         a.meta_set("name", "renamed").await.unwrap();
-        b.meta_default("name", "b-host").await.unwrap();
+        b.meta_default("name", "b-host", 2_000_000).await.unwrap();
 
         while let Some(batch) = a_handle.flush().await.unwrap() {
             b_engine.apply(&batch).await.unwrap();
@@ -590,6 +603,50 @@ mod tests {
             b.meta_get("name").await.unwrap().as_deref(),
             Some("renamed")
         );
+    }
+
+    /// 79 smoke bug 5: a host (older identity) and the VM it just created (newer
+    /// identity, larger origin id) both start alone and write their defaults;
+    /// after pairing the host's name stands on both, whichever batch lands first.
+    /// Batches travel by feed (as `sync` ships the outbox): an apply captures the
+    /// receiver's pending local row into a batch `flush` never returns.
+    #[tokio::test]
+    async fn the_older_engines_default_wins_a_tie_of_defaults() {
+        for host_first in [true, false] {
+            let (host, host_engine, host_handle, _dh) = side("a-host").await;
+            let (vm, vm_engine, vm_handle, _dv) = side("z-vm").await;
+            let (mut host_feed, mut vm_feed) = (host_handle.subscribe(), vm_handle.subscribe());
+            host.meta_default("name", "smoke-host", 1_700_000_000_000)
+                .await
+                .unwrap();
+            vm.meta_default("name", "lab", 1_700_000_100_000).await.unwrap();
+            let host_to_vm = async {
+                host_handle.flush().await.unwrap();
+                while let Ok(batch) = host_feed.try_recv() {
+                    vm_engine.apply(&batch).await.unwrap();
+                }
+            };
+            let vm_to_host = async {
+                vm_handle.flush().await.unwrap();
+                while let Ok(batch) = vm_feed.try_recv() {
+                    host_engine.apply(&batch).await.unwrap();
+                }
+            };
+            if host_first {
+                host_to_vm.await;
+                vm_to_host.await;
+            } else {
+                vm_to_host.await;
+                host_to_vm.await;
+            }
+            for s in [&host, &vm] {
+                assert_eq!(
+                    s.meta_get("name").await.unwrap().as_deref(),
+                    Some("smoke-host"),
+                    "host_first={host_first}"
+                );
+            }
+        }
     }
 
     /// 69 audit, idle writer: three heartbeats while connected write no row

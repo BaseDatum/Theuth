@@ -8,15 +8,18 @@
 //! version (`secret_restore`) — never from the model's arguments.
 //!
 //! - [`vault`]: the encrypted file, five versions per name, the scrubber.
-//! - [`tools`]: the four `secret_*` tools and the prompt block.
+//! - [`requests`]: the replicated `secret_requests` rows (79 §6.6).
+//! - [`tools`]: the five `secret_*` tools and the prompt block.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
-//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`PendingRequests`], [`Handle`]
+//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`PendingRequests`],
+//!   [`ListRequests`], [`SetEngine`], [`Handle`]
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
 mod key;
+pub mod requests;
 pub mod store;
 pub mod tools;
 pub mod vault;
@@ -72,6 +75,47 @@ impl Default for SecretsConfig {
 #[serde(transparent)]
 pub struct RequestId(pub uuid::Uuid);
 
+/// One field of a replicated [`SecretRequest`] (79 §6.6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SecretRequestField {
+    /// Vault name the answer is stored under.
+    pub name: String,
+    /// Label shown on the card.
+    pub label: String,
+    /// Masked input.
+    pub masked: bool,
+    /// `Some(v)` when the name exists: the answer adds `v + 1`.
+    pub current: Option<u32>,
+}
+
+/// One `secret_requests` row (79 §6.6, contract §2.7): a session on any engine
+/// asked for one or several secrets; any engine's app answers it. Replicated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SecretRequest {
+    /// Row id.
+    pub id: RequestId,
+    /// Engine the session runs on.
+    pub engine: String,
+    /// The asking session.
+    pub session: String,
+    /// Card title (a form); `None` for a single `secret_request`.
+    pub title: Option<String>,
+    /// The `fields` JSON column.
+    pub fields: Vec<SecretRequestField>,
+    /// ms since epoch.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub created_ms: u64,
+    /// Set by `answer_secret`.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub answered_ms: Option<u64>,
+    /// `stored` | `declined` | `timeout` once answered.
+    pub outcome: Option<String>,
+    /// Replication clock.
+    pub hlc: Option<String>,
+}
+
 /// `ask` → [`SecretsList`]: names, notes, versions, key store. Never values.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct List;
@@ -108,37 +152,59 @@ pub struct Delete {
     pub name: String,
 }
 
-/// `ask` → `Result<Outcome, String>`: ask the user to type `name` into a
-/// masked field. Leaves the mailbox; publishes [`SecretsEvent::Requested`],
-/// waits `request_timeout_secs` for an [`Answer`], publishes
+/// `ask` → `Result<Outcome, String>`: ask the user to type one or several
+/// secrets into masked fields. Leaves the mailbox; writes a replicated
+/// `secret_requests` row, publishes [`SecretsEvent::Requested`] locally, waits
+/// `request_timeout_secs` for an [`Answer`] here or on another engine (the
+/// row's `answered_ms` or the vault rows arriving by replication), publishes
 /// [`SecretsEvent::Resolved`]. `Err` = invalid name or write failure.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     /// The asking session.
     pub session: SessionId,
-    /// Name to store under.
-    pub name: String,
-    /// What it is for, shown to the user.
-    pub note: String,
+    /// Card title (a form); `None` for a single `secret_request`.
+    pub title: Option<String>,
+    /// What to store, in card order (`label` = what it is for). `current` is filled here.
+    pub fields: Vec<SecretRequestField>,
 }
 
-/// What [`Request`] resolves to: the new version when stored, else why not.
-#[derive(Clone, Copy, Debug, kameo::Reply)]
+/// What [`Request`] resolves to: the new version per field when stored, else why not.
+#[derive(Clone, Debug, kameo::Reply)]
 pub struct Outcome {
-    /// New version number when the user typed a value.
-    pub stored: Option<u32>,
+    /// `(name, new version)` per field the user typed a value for; empty when declined or timed out.
+    pub stored: Vec<(String, u32)>,
     /// Nobody answered in time.
     pub timed_out: bool,
 }
 
-/// `ask` → `Option<SessionId>`: the requesting session if `id` was pending.
-/// `value: None` declines; `Some` is stored with source `user`.
+/// `ask` → `Result<bool, String>`: answer a request — one waiting here, or a
+/// replicated row from another engine (the vault rows and `answered_ms`
+/// replicate back; its poller finishes the tool call). `value` is the single
+/// field's value (`secret_request`), `values` per-field (`secret_request_form`);
+/// neither = declined. Stored with source `user`. `false` when `id` is unknown
+/// or already answered.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Answer {
-    /// From [`SecretsEvent::Requested`].
+    /// From [`SecretsEvent::Requested`] / the row.
     pub id: RequestId,
-    /// The typed value, or `None` when the user declined.
+    /// The typed value for a single-field request.
     pub value: Option<String>,
+    /// Field name → typed value for a form.
+    pub values: HashMap<String, String>,
+}
+
+/// `tell`: this engine's mesh id, stamped on the rows this engine writes
+/// (79 §6.6). Sent by the mesh plugin as soon as its endpoint is bound; the
+/// hostname until then. Secrets cannot ask the mesh itself (mesh depends on secrets).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetEngine(pub String);
+
+/// `ask` → `Result<Vec<SecretRequest>, String>`: the replicated rows, newest
+/// first (the attention inbox's `secret:<id>` items).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListRequests {
+    /// Only rows without `answered_ms`.
+    pub unanswered_only: bool,
 }
 
 /// `ask` → `Arc<Vault>`: in-process readers (genai auth, `web`, `slack`)
@@ -165,19 +231,27 @@ pub enum SecretsEvent {
     /// Wire `type` is `SecretsChanged`: `ScheduleEvent::Changed` already owns `Changed`.
     #[serde(rename = "SecretsChanged")]
     Changed,
-    /// The model asked for one; frontends show a masked field.
+    /// The model asked for one or several; frontends show masked fields.
+    /// `name` / `note` / `current` are the first field (pre-79 clients);
+    /// `fields` is every field, `title` the form's card title.
     #[serde(rename = "SecretRequested")]
     Requested {
         /// Answer with this id.
         id: RequestId,
         /// The asking session.
         session: SessionId,
-        /// Name it will be stored under.
+        /// Name the (first) field is stored under.
         name: String,
-        /// What it is for.
+        /// What it is for (the form's title when there is one).
         note: String,
         /// `Some(v)` when the name exists: the answer adds `v + 1`.
         current: Option<u32>,
+        /// A form's card title.
+        #[serde(default)]
+        title: Option<String>,
+        /// Every field, in card order; one entry for `secret_request`.
+        #[serde(default)]
+        fields: Vec<SecretRequestField>,
     },
     /// The request was answered, declined or timed out; frontends drop the field.
     #[serde(rename = "SecretResolved")]
@@ -191,12 +265,15 @@ pub enum SecretsEvent {
     },
 }
 
-/// Internal `tell`: drop a pending entry whose waiter gave up.
-struct Expire(RequestId);
+/// Internal `tell`: the waiter finished (answered, timed out) — drop its pending entry.
+struct Forget(RequestId);
 
-/// A waiting `secret_request`: its session, the `Requested` event (replayed to
-/// late subscribers) and where the value goes.
-type Waiter = (SessionId, SecretsEvent, oneshot::Sender<Option<String>>);
+/// How often a waiting request re-reads its row (a peer's answer lands by replication).
+const REQUEST_POLL: Duration = Duration::from_secs(1);
+
+/// A waiting request: its session, the `Requested` event (replayed to late
+/// subscribers) and the wake-up for a local [`Answer`].
+type Waiter = (SessionId, SecretsEvent, oneshot::Sender<()>);
 
 /// The [`SECRETS_ACTOR`] actor: the vault plus the requests waiting on a user.
 #[derive(kameo::Actor)]
@@ -204,6 +281,8 @@ pub struct SecretsActor {
     vault: Arc<Vault>,
     rt: Runtime,
     timeout: Duration,
+    /// This engine's mesh id once the mesh told us ([`SetEngine`]).
+    engine: Option<String>,
     pending: HashMap<RequestId, Waiter>,
 }
 
@@ -214,6 +293,7 @@ impl SecretsActor {
             vault,
             rt,
             timeout,
+            engine: None,
             pending: HashMap::new(),
         }
     }
@@ -263,35 +343,72 @@ impl Message<Delete> for SecretsActor {
     }
 }
 
+impl SecretsActor {
+    /// The engine id stamped on rows: the mesh id once known, else the hostname.
+    fn engine(&self) -> String {
+        self.engine
+            .clone()
+            .unwrap_or_else(|| platform::process::hostname().to_owned())
+    }
+}
+
 impl Message<Request> for SecretsActor {
     type Reply = DelegatedReply<Result<Outcome, String>>;
 
     async fn handle(&mut self, m: Request, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
-        if !vault::valid_name(&m.name) {
+        let fail = |tx: Option<kameo::reply::ReplySender<Result<Outcome, String>>>, e: String| {
             if let Some(tx) = tx {
-                tx.send(Err(format!(
-                    "invalid secret name {:?}: [A-Za-z0-9_.-]{{1,64}}",
-                    m.name
-                )));
+                tx.send(Err(e));
             }
+        };
+        if m.fields.is_empty() {
+            fail(tx, "fields: at least one".into());
             return reply;
         }
-        let id = RequestId(uuid::Uuid::now_v7());
-        let (atx, arx) = oneshot::channel();
-        let current = self
-            .vault
-            .list()
+        if let Some(bad) = m.fields.iter().find(|f| !vault::valid_name(&f.name)) {
+            fail(
+                tx,
+                format!("invalid secret name {:?}: [A-Za-z0-9_.-]{{1,64}}", bad.name),
+            );
+            return reply;
+        }
+        let known = self.vault.list();
+        let fields: Vec<SecretRequestField> = m
+            .fields
             .into_iter()
-            .find(|s| s.name == m.name)
-            .map(|s| s.current);
+            .map(|mut f| {
+                f.current = known.iter().find(|s| s.name == f.name).map(|s| s.current);
+                f
+            })
+            .collect();
+        let id = RequestId(uuid::Uuid::now_v7());
+        let row = SecretRequest {
+            id,
+            engine: self.engine(),
+            session: m.session.to_string(),
+            title: m.title.clone(),
+            fields: fields.clone(),
+            created_ms: now_ms(),
+            answered_ms: None,
+            outcome: None,
+            hlc: None,
+        };
+        if let Err(e) = requests::insert(self.vault.pool(), &row).await {
+            fail(tx, format!("secret_requests: {e:#}"));
+            return reply;
+        }
+        let first = &fields[0];
         let requested = SecretsEvent::Requested {
             id,
             session: m.session,
-            name: m.name.clone(),
-            note: m.note.clone(),
-            current,
+            name: first.name.clone(),
+            note: m.title.clone().unwrap_or_else(|| first.label.clone()),
+            current: first.current,
+            title: m.title,
+            fields: fields.clone(),
         };
+        let (atx, arx) = oneshot::channel();
         self.pending.insert(id, (m.session, requested.clone(), atx));
         let rt = self.rt.clone();
         let vault = self.vault.clone();
@@ -299,63 +416,184 @@ impl Message<Request> for SecretsActor {
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let (value, timed_out) = match tokio::time::timeout(timeout, arx).await {
-                Ok(Ok(v)) => (v, false),
-                // Sender dropped: actor died; treat as declined.
-                Ok(Err(_)) => (None, false),
-                Err(_) => {
-                    let _ = me.tell(Expire(id)).await;
-                    (None, true)
-                }
-            };
-            let result = match value {
-                Some(v) => vault
-                    .set(
-                        &m.name,
-                        &v,
-                        (!m.note.is_empty()).then_some(m.note.as_str()),
-                        "user",
-                    )
-                    .await
-                    .map(|info| Some(info.current)),
-                None => Ok(None),
-            };
-            let stored = match &result {
-                Ok(s) => *s,
-                Err(_) => None,
-            };
-            if stored.is_some() {
-                rt.publish(SecretsEvent::Changed).await;
-            }
+            let outcome = wait(&vault, id, &fields, arx, timeout).await;
+            let _ = me.tell(Forget(id)).await;
             rt.publish(SecretsEvent::Resolved {
                 id,
-                stored,
-                timed_out,
+                stored: outcome.stored.first().map(|(_, v)| *v),
+                timed_out: outcome.timed_out,
             })
             .await;
             if let Some(tx) = tx {
-                tx.send(result.map(|stored| Outcome { stored, timed_out }));
+                tx.send(Ok(outcome));
             }
         });
         reply
     }
 }
 
+/// Until the row is answered (here or by a peer, arriving by replication),
+/// every field's vault row moved past its `current` (a peer stored them and
+/// its `answered_ms` is still in flight), or `timeout` — checked every
+/// [`REQUEST_POLL`] and at once when a local [`Answer`] fires `woken`.
+async fn wait(
+    vault: &Vault,
+    id: RequestId,
+    fields: &[SecretRequestField],
+    woken: oneshot::Receiver<()>,
+    timeout: Duration,
+) -> Outcome {
+    let pool = vault.pool();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut woken = Some(woken);
+    let mut timed_out = false;
+    let outcome = loop {
+        match requests::get(pool, id).await {
+            Ok(Some(r)) if r.answered_ms.is_some() => break r.outcome.unwrap_or_default(),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("secrets: request {id:?}: {e:#}"),
+        }
+        let known = vault.list();
+        let advanced = |f: &SecretRequestField| {
+            known
+                .iter()
+                .find(|s| s.name == f.name)
+                .is_some_and(|s| Some(s.current) > f.current)
+        };
+        if fields.iter().all(advanced) {
+            let _ = requests::answer(pool, id, "stored", now_ms()).await;
+            continue;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            match requests::answer(pool, id, "timeout", now_ms()).await {
+                Ok(true) => {
+                    timed_out = true;
+                    break "timeout".to_owned();
+                }
+                // A peer answered meanwhile: the next read has its outcome.
+                Ok(false) => continue,
+                Err(e) => {
+                    tracing::warn!("secrets: request {id:?}: {e:#}");
+                    timed_out = true;
+                    break "timeout".to_owned();
+                }
+            }
+        }
+        let nap =
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + REQUEST_POLL));
+        match woken.as_mut() {
+            Some(rx) => tokio::select! {
+                () = nap => {}
+                _ = rx => woken = None,
+            },
+            None => nap.await,
+        }
+    };
+    let stored = if outcome == "stored" {
+        // A peer's vault rows may have landed after the last 1 s refresh.
+        if let Err(e) = vault.refresh().await {
+            tracing::warn!("secrets: refresh: {e:#}");
+        }
+        let known = vault.list();
+        fields
+            .iter()
+            .filter_map(|f| {
+                known
+                    .iter()
+                    .find(|s| s.name == f.name)
+                    .map(|s| (f.name.clone(), s.current))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Outcome { stored, timed_out }
+}
+
 impl Message<Answer> for SecretsActor {
-    type Reply = Option<SessionId>;
+    type Reply = Result<bool, String>;
 
     async fn handle(&mut self, m: Answer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let (session, _requested, tx) = self.pending.remove(&m.id)?;
-        tx.send(m.value).ok().map(|()| session)
+        let pool = self.vault.pool();
+        let Some(row) = requests::get(pool, m.id).await.map_err(|e| e.to_string())? else {
+            return Ok(false);
+        };
+        if row.answered_ms.is_some() {
+            return Ok(false);
+        }
+        let mut values = m.values;
+        if let Some(v) = m.value
+            && let Some(first) = row.fields.first()
+        {
+            values.entry(first.name.clone()).or_insert(v);
+        }
+        // Names outside the row's fields are ignored: the card is the form.
+        let outcome = if values.is_empty() {
+            "declined"
+        } else {
+            for f in &row.fields {
+                if let Some(v) = values.get(&f.name) {
+                    self.vault
+                        .set(
+                            &f.name,
+                            v,
+                            (!f.label.is_empty()).then_some(&f.label),
+                            "user",
+                        )
+                        .await?;
+                }
+            }
+            self.rt.publish(SecretsEvent::Changed).await;
+            "stored"
+        };
+        let fresh = requests::answer(pool, m.id, outcome, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some((_, _, tx)) = self.pending.remove(&m.id) {
+            let _ = tx.send(());
+        }
+        Ok(fresh)
     }
 }
 
-impl Message<Expire> for SecretsActor {
+impl Message<Forget> for SecretsActor {
     type Reply = ();
 
-    async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(&mut self, m: Forget, _: &mut Context<Self, Self::Reply>) {
         self.pending.remove(&m.0);
     }
+}
+
+impl Message<SetEngine> for SecretsActor {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetEngine, _: &mut Context<Self, Self::Reply>) {
+        self.engine = Some(m.0);
+    }
+}
+
+impl Message<ListRequests> for SecretsActor {
+    type Reply = Result<Vec<SecretRequest>, String>;
+
+    async fn handle(&mut self, m: ListRequests, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        requests::list(self.vault.pool(), m.unanswered_only)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// ms since the Unix epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The secrets actor; `None` before the plugin started or when the vault failed to open.
+pub fn actor() -> Option<kameo::actor::ActorRef<SecretsActor>> {
+    kameo::actor::ActorRef::<SecretsActor>::lookup(SECRETS_ACTOR)
+        .ok()
+        .flatten()
 }
 
 /// `ask` → the still-pending [`SecretsEvent::Requested`]s, for the
@@ -592,5 +830,289 @@ async fn replicate(rt: Runtime, vault: Arc<Vault>) {
             Ok(()) => rt.publish(SecretsEvent::Changed).await,
             Err(e) => tracing::warn!("secrets: refresh: {e:#}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use kameo::actor::ActorRef;
+
+    use super::*;
+
+    fn field(name: &str, label: &str) -> SecretRequestField {
+        SecretRequestField {
+            name: name.into(),
+            label: label.into(),
+            masked: true,
+            current: None,
+        }
+    }
+
+    async fn actor(dir: &Path, timeout: Duration) -> (ActorRef<SecretsActor>, Arc<Vault>) {
+        let rt = Runtime::new(figment::Figment::new(), dir.to_path_buf());
+        let vault = Arc::new(Vault::open(dir, KeyStore::File).await.unwrap());
+        let a = SecretsActor::spawn(SecretsActor::new(vault.clone(), rt, timeout));
+        (a, vault)
+    }
+
+    /// The `Request` is delegated: ask it from a task and wait for its row to appear.
+    async fn open_request(
+        a: &ActorRef<SecretsActor>,
+        title: Option<&str>,
+        fields: Vec<SecretRequestField>,
+    ) -> (
+        tokio::task::JoinHandle<Result<Outcome, String>>,
+        SecretRequest,
+    ) {
+        let a2 = a.clone();
+        let title = title.map(Into::into);
+        let ask = tokio::spawn(async move {
+            a2.ask(Request {
+                session: SessionId::new(),
+                title,
+                fields,
+            })
+            .await
+            .map_err(|e| e.to_string())
+        });
+        let row = loop {
+            let rows = a
+                .ask(ListRequests {
+                    unanswered_only: true,
+                })
+                .await
+                .unwrap();
+            if let Some(r) = rows.into_iter().next() {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        (ask, row)
+    }
+
+    #[tokio::test]
+    async fn single_request_round_trip_through_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let (ask, row) = open_request(&a, None, vec![field("TOKEN", "GitHub PAT")]).await;
+        assert_eq!(row.title, None);
+        assert_eq!(row.fields, [field("TOKEN", "GitHub PAT")]);
+        assert_eq!(
+            row.engine,
+            platform::process::hostname(),
+            "no mesh id told yet"
+        );
+
+        let pending = a.ask(PendingRequests).await.unwrap();
+        match &pending[..] {
+            [
+                SecretsEvent::Requested {
+                    id,
+                    name,
+                    note,
+                    title,
+                    fields,
+                    ..
+                },
+            ] => {
+                assert_eq!(*id, row.id);
+                assert_eq!((name.as_str(), note.as_str()), ("TOKEN", "GitHub PAT"));
+                assert_eq!(*title, None);
+                assert_eq!(fields.len(), 1, "the single field is in `fields` too");
+            }
+            other => panic!("pending: {other:?}"),
+        }
+
+        let answer = Answer {
+            id: row.id,
+            value: Some("ghp_secret_value".into()),
+            values: HashMap::new(),
+        };
+        assert!(a.ask(answer.clone()).await.unwrap());
+        let out = ask.await.unwrap().unwrap();
+        assert_eq!(out.stored, [("TOKEN".to_owned(), 1)]);
+        assert!(!out.timed_out);
+        assert_eq!(
+            vault.get("TOKEN", 0).map(|v| v.to_string()),
+            Some("ghp_secret_value".into())
+        );
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert!(after.answered_ms.is_some());
+        assert_eq!(after.outcome.as_deref(), Some("stored"));
+        assert!(
+            a.ask(ListRequests {
+                unanswered_only: true,
+            })
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(a.ask(PendingRequests).await.unwrap().is_empty());
+        assert!(
+            !a.ask(answer).await.unwrap(),
+            "a second answer is not fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn form_stores_every_field_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        a.tell(SetEngine("engine-a".into())).await.unwrap();
+        vault.set("gh.pass", "old", None, "user").await.unwrap();
+        let (ask, row) = open_request(
+            &a,
+            Some("GitHub"),
+            vec![
+                field("gh.user", "Username"),
+                field("gh.pass", "Password"),
+                field("gh.totp", "One-time code"),
+            ],
+        )
+        .await;
+        assert_eq!(row.engine, "engine-a");
+        assert_eq!(row.title.as_deref(), Some("GitHub"));
+        assert_eq!(
+            row.fields.iter().map(|f| f.current).collect::<Vec<_>>(),
+            [None, Some(1), None],
+            "`current` filled per field"
+        );
+        match &a.ask(PendingRequests).await.unwrap()[..] {
+            [SecretsEvent::Requested { name, note, .. }] => {
+                assert_eq!((name.as_str(), note.as_str()), ("gh.user", "GitHub"));
+            }
+            other => panic!("pending: {other:?}"),
+        }
+        let values = HashMap::from([
+            ("gh.totp".to_owned(), "123456".to_owned()),
+            ("gh.user".to_owned(), "alice".to_owned()),
+            ("gh.pass".to_owned(), "hunter22".to_owned()),
+            ("not.asked".to_owned(), "ignored".to_owned()),
+        ]);
+        assert!(
+            a.ask(Answer {
+                id: row.id,
+                value: None,
+                values,
+            })
+            .await
+            .unwrap()
+        );
+        let out = ask.await.unwrap().unwrap();
+        assert_eq!(
+            out.stored,
+            [
+                ("gh.user".to_owned(), 1),
+                ("gh.pass".to_owned(), 2),
+                ("gh.totp".to_owned(), 1)
+            ]
+        );
+        assert_eq!(
+            vault.get("gh.pass", 0).map(|v| v.to_string()),
+            Some("hunter22".into())
+        );
+        assert_eq!(
+            vault.get("gh.pass", 1).map(|v| v.to_string()),
+            Some("old".into())
+        );
+        assert!(vault.get("not.asked", 0).is_none());
+        let pass = vault
+            .list()
+            .into_iter()
+            .find(|s| s.name == "gh.pass")
+            .unwrap();
+        assert_eq!(pass.note, "Password", "the label is the note");
+    }
+
+    #[tokio::test]
+    async fn decline_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let (ask, row) = open_request(&a, None, vec![field("TOKEN", "x")]).await;
+        assert!(
+            a.ask(Answer {
+                id: row.id,
+                value: None,
+                values: HashMap::new(),
+            })
+            .await
+            .unwrap()
+        );
+        let out = ask.await.unwrap().unwrap();
+        assert!(out.stored.is_empty() && !out.timed_out);
+        assert!(vault.get("TOKEN", 0).is_none());
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert_eq!(after.outcome.as_deref(), Some("declined"));
+    }
+
+    /// A peer's `answer_secret` reaches this engine as rows only: the vault row
+    /// and the request row's `answered_ms`. No `Answer` message here.
+    #[tokio::test]
+    async fn a_peer_answer_arriving_as_rows_finishes_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let (ask, row) = open_request(&a, None, vec![field("TOKEN", "x")]).await;
+        vault.set("TOKEN", "from-peer", None, "user").await.unwrap();
+        assert!(
+            requests::answer(vault.pool(), row.id, "stored", 1)
+                .await
+                .unwrap()
+        );
+        let out = ask.await.unwrap().unwrap();
+        assert_eq!(out.stored, [("TOKEN".to_owned(), 1)]);
+        assert!(a.ask(PendingRequests).await.unwrap().is_empty());
+    }
+
+    /// The `answered_ms` may lag the vault rows: every field advancing past its `current` is enough.
+    #[tokio::test]
+    async fn vault_rows_alone_finish_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        vault.set("A", "a1", None, "user").await.unwrap();
+        let (ask, row) = open_request(&a, Some("f"), vec![field("A", "a"), field("B", "b")]).await;
+        vault.set("A", "a2", None, "user").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            requests::get(vault.pool(), row.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .answered_ms
+                .is_none(),
+            "one of two fields is not enough"
+        );
+        vault.set("B", "b1", None, "user").await.unwrap();
+        let out = ask.await.unwrap().unwrap();
+        assert_eq!(out.stored, [("A".to_owned(), 2), ("B".to_owned(), 1)]);
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.outcome.as_deref(),
+            Some("stored"),
+            "the row is closed for every peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_closes_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_millis(1500)).await;
+        let (ask, row) = open_request(&a, None, vec![field("TOKEN", "x")]).await;
+        let out = ask.await.unwrap().unwrap();
+        assert!(out.timed_out && out.stored.is_empty());
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert_eq!(after.outcome.as_deref(), Some("timeout"));
+        assert!(
+            !a.ask(Answer {
+                id: row.id,
+                value: Some("late".into()),
+                values: HashMap::new(),
+            })
+            .await
+            .unwrap(),
+            "a late answer is refused"
+        );
+        assert!(vault.get("TOKEN", 0).is_none());
     }
 }

@@ -763,7 +763,7 @@ pub struct PlaceContext {
 }
 
 /// Reply to [`PlaceContext`].
-#[derive(Clone, Debug, Default, kameo::Reply)]
+#[derive(Clone, Debug, kameo::Reply)]
 pub struct PlaceContextReply {
     /// theuth's desk session, when open.
     pub desk: Option<String>,
@@ -771,6 +771,19 @@ pub struct PlaceContextReply {
     pub read_only: bool,
     /// `tasks.place_prefer`.
     pub prefer: Vec<String>,
+    /// The owner's pin (79 §4.9): `Err(blocker)` when pinned but not placeable now.
+    pub pin: Result<Option<place::Pin>, String>,
+}
+
+impl Default for PlaceContextReply {
+    fn default() -> Self {
+        Self {
+            desk: None,
+            read_only: false,
+            prefer: Vec::new(),
+            pin: Ok(None),
+        }
+    }
 }
 
 impl Message<PlaceContext> for Tasks {
@@ -778,12 +791,17 @@ impl Message<PlaceContext> for Tasks {
 
     async fn handle(&mut self, m: PlaceContext, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let router = self.ledger.router.as_ref();
+        let pin = match router {
+            Some(r) => r.pin_of(&m.owner).await,
+            None => Ok(None),
+        };
         PlaceContextReply {
             desk: router.and_then(|r| r.desk_for("theuth")),
             read_only: router
                 .and_then(|r| r.tools_of(&m.owner))
                 .is_some_and(|t| t == "read_only"),
             prefer: self.ledger.cfg.place_prefer.clone(),
+            pin,
         }
     }
 }
@@ -913,7 +931,8 @@ impl Tool for TaskPlaceTool {
          claude) onto the task; when several engines fit, theuth's desk is asked for the pick. Call it before \
          opening a work session for a task whose `where` is empty; never choose an engine yourself. Pass `where` \
          and `harness` only when you are theuth's desk answering. When no engine satisfies the needs the task is set \
-         `blocked: engine:<what is missing>`."
+         `blocked: engine:<what is missing>`. An owner whose file says `runs_in: vm` or `vm:<name>` is pinned: the \
+         task goes to that sandbox VM's engine or waits `blocked: sandbox:<name>` until it is ready — never elsewhere."
             .into()
     }
 
@@ -937,18 +956,24 @@ impl Tool for TaskPlaceTool {
             _ => "user".to_owned(),
         };
         let ctx = actor.ask(PlaceContext { owner }).await.unwrap_or_default();
-        let (engines, cwds) = tokio::join!(engines(), project_cwds(task.project.as_deref()));
-        let inputs = place::Inputs {
-            task: &task,
-            needs: a.needs.as_deref(),
-            read_only: ctx.read_only,
-            project_cwds: &cwds,
-            engines: &engines,
-            prefer: &ctx.prefer,
+        let placed = match ctx.pin {
+            Err(blocker) => Err(blocker),
+            Ok(pin) => {
+                let (engines, cwds) =
+                    tokio::join!(engines(), project_cwds(task.project.as_deref()));
+                let inputs = place::Inputs {
+                    task: &task,
+                    needs: a.needs.as_deref(),
+                    read_only: ctx.read_only,
+                    project_cwds: &cwds,
+                    engines: &engines,
+                    prefer: &ctx.prefer,
+                    pin,
+                };
+                let desk = ctx.desk.clone();
+                place::place(&inputs, |prompt| ask_desk(desk, cx.session, &a.id, prompt)).await
+            }
         };
-        let desk = ctx.desk.clone();
-        let placed =
-            place::place(&inputs, |prompt| ask_desk(desk, cx.session, &a.id, prompt)).await;
         match placed {
             Ok(p) => {
                 let reason = match a.reason {
@@ -968,7 +993,7 @@ impl Tool for TaskPlaceTool {
                         .await,
                 ))
             }
-            Err(missing) if missing.starts_with("engine:") => {
+            Err(missing) if missing.starts_with("engine:") || missing.starts_with("sandbox:") => {
                 let blocked = TaskPatch {
                     state: Some(TaskState::Blocked),
                     blockers: Some(vec![missing.clone()]),
@@ -984,13 +1009,14 @@ impl Tool for TaskPlaceTool {
                         })
                         .await,
                 );
+                let what = if missing.starts_with("sandbox:") {
+                    "the owner is pinned to a sandbox VM that is not ready"
+                } else {
+                    "no engine satisfies the needs"
+                };
                 Ok(ToolOutput::err(match r {
-                    Ok(_) => {
-                        format!("no engine satisfies the needs; task set blocked on `{missing}`")
-                    }
-                    Err(e) => format!(
-                        "no engine satisfies the needs (`{missing}`); could not block the task: {e}"
-                    ),
+                    Ok(_) => format!("{what}; task set blocked on `{missing}`"),
+                    Err(e) => format!("{what} (`{missing}`); could not block the task: {e}"),
                 }))
             }
             Err(e) => Ok(ToolOutput::err(e)),

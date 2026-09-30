@@ -46,6 +46,7 @@ export function empty(id: string): SessionSlice {
     artifacts: new Map(),
     progress: new Map(),
     scrape: new Map(),
+    sandbox: new Map(),
     appDrafts: new Map(),
     appCalls: new Map(),
     artifactPanel: null,
@@ -643,6 +644,13 @@ export function apply(
           limit: e.limit,
         }),
       };
+    // 79 §4.4: a `sandbox_*` tool's bring-up line, joined to its card by `call_id` like `ScrapeProgress`.
+    case "Progress":
+      if (e.call_id === null) return slice;
+      return {
+        ...slice,
+        sandbox: new Map(slice.sandbox).set(e.call_id, { step: e.step, line: e.line, pct: e.pct }),
+      };
     case "SkillsChanged":
       return { ...slice, skills: e.skills };
     // A full snapshot committed with its tool batch; the settled reload carries the same list, so `live` is untouched.
@@ -849,6 +857,7 @@ function turn(
           ...s,
           entries,
           scrape: without(s.scrape, e.call_id),
+          sandbox: without(s.sandbox, e.call_id),
           activity: "thinking",
         },
         e.call_id,
@@ -1108,7 +1117,7 @@ export function route(
     return true;
   }
   // Policy revisions (global `session: null` or a subtree) are query invalidations, not slice state: see `useInvalidateOn`.
-  if (e.type === "CommunicationChanged" || !("session" in e)) return false;
+  if (e.type === "CommunicationChanged" || !("session" in e) || e.session === null) return false;
   const cur = draft[e.session] ?? empty(e.session);
   const next = apply(cur, e, ctx);
   if (next !== cur) draft[e.session] = next;

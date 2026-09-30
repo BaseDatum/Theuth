@@ -90,12 +90,12 @@ pub fn bucket(availability: f32) -> u8 {
     }
 }
 
-/// `Server` = `Container` > `Desktop` > `Laptop`.
+/// `Server` = `Container` > `Desktop` > `Laptop` = `Vm` (79 decision 9).
 pub fn class_rank(c: EngineClass) -> u8 {
     match c {
         EngineClass::Server | EngineClass::Container => 2,
         EngineClass::Desktop => 1,
-        EngineClass::Laptop => 0,
+        EngineClass::Laptop | EngineClass::Vm => 0,
     }
 }
 
@@ -183,6 +183,38 @@ mod tests {
             since_ms: 0,
             reason: "test".into(),
         }
+    }
+
+    #[test]
+    fn vm_ranks_with_laptop_and_never_above_it() {
+        // Equal availability and uptime: the tie falls to the ascending id, so
+        // put the vm first alphabetically — it still must not win by class.
+        let laptop = cand("b-laptop", EngineClass::Laptop);
+        let vm = cand("a-vm", EngineClass::Vm);
+        assert_eq!(class_rank(vm.class), class_rank(laptop.class));
+        assert_eq!(
+            elect(&[vm.clone(), laptop.clone()], None, NOW, PROBATION, HANDOVER),
+            id("a-vm"),
+            "equal class: id tie-break only"
+        );
+        let mut older = laptop.clone();
+        older.uptime_since_ms -= HOUR;
+        assert_eq!(
+            elect(&[vm.clone(), older], None, NOW, PROBATION, HANDOVER),
+            id("b-laptop"),
+            "more uptime on the laptop wins; vm has no class edge"
+        );
+        assert_eq!(
+            elect(&[vm, cand("c-desktop", EngineClass::Desktop)], None, NOW, PROBATION, HANDOVER),
+            id("c-desktop")
+        );
+        let mut never = cand("a-never-vm", EngineClass::Vm);
+        never.hub_pref = HubPref::Never;
+        assert_eq!(
+            elect(&[never, laptop], None, NOW, PROBATION, HANDOVER),
+            id("b-laptop"),
+            "hub: never is filtered"
+        );
     }
 
     #[test]

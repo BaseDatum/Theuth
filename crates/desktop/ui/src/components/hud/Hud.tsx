@@ -1,7 +1,10 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity as ActivityIcon, Bell, Bot, ListChecks, Network, PanelLeft, Wallet, Workflow } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
+import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
+import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { useRoutines } from '@/components/routines/queries'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { age } from '@/components/tasks/helpers'
@@ -11,14 +14,16 @@ import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { canPopout, openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import type { ActivityEntry } from '@/rpc/bindings/ActivityEntry'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AttentionItem } from '@/rpc/bindings/AttentionItem'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { Task } from '@/rpc/bindings/Task'
+import { useSecretRequests } from '@/store/approvals'
 import { boardPulse, headline, inFlight, runningRoutines, snoozeUntil, spend } from './model'
-import { useActivity, useAttention, useAttentionActions } from './queries'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useActivity, useAttention, useAttentionActions, useSecretRequestRows } from './queries'
 
 /**
  * `/` — the THEUTH mark's overview (70 HUD, paperclip's dashboard + attention inbox), Sky's order top → bottom:
@@ -170,12 +175,14 @@ const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   review: 'review',
   budget: 'budget',
   node: 'node',
+  handoff: 'hand-off',
+  secret: 'secret',
 }
 
 /** The inbox rows, or what will land in them. Shared by the HUD section and `/attention`. */
 export function AttentionList({ items }: { items: AttentionItem[] | undefined }) {
   if (!items || items.length === 0) {
-    return <EmptyNote>Nothing needs you. Tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 % and unreachable nodes land here.</EmptyNote>
+    return <EmptyNote>Nothing needs you. Tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs and secret requests land here.</EmptyNote>
   }
   return (
     <ul className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
@@ -189,14 +196,46 @@ export function AttentionList({ items }: { items: AttentionItem[] | undefined })
 /** One inbox row with its decision inline: allow/deny · answer · hire/decline · done/back · start/unblock · un-pause; snooze and dismiss on every row. */
 function AttentionCard({ item }: { item: AttentionItem }) {
   const act = useAttentionActions()
+  const qc = useQueryClient()
   const [answer, setAnswer] = useState('')
   const busy = Object.values(act).some((a) => a.isPending)
+  // 79 §6.6: a hand-off's `detail` is the VM's name when its engine is a VM here; the click opens that desktop.
+  const sandboxes = useSandboxes()
+  const vm = item.kind === 'handoff' ? sandboxes.data?.find((s) => s.name === item.detail || (s.engine !== null && s.engine === item.detail)) : undefined
+  const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
+  // 79 §6.6: the replicated row (`secret_requests_list`) is the card's source on every engine — `title`, `fields`, and
+  // the VM it was raised on (`engine` ↔ `SandboxInfo.engine`); the local `SecretRequested` fills in until the poll lands.
+  const secretId = item.kind === 'secret' ? item.id.replace(/^secret:/, '') : null
+  const rows = useSecretRequestRows(secretId !== null)
+  const row = secretId !== null ? rows.data?.find((r) => r.id === secretId) : undefined
+  const local = useSecretRequests((s) => (secretId !== null ? s.pending.find((p) => p.id === secretId) : undefined))
+  if (row || local) {
+    const origin = row ? (sandboxes.data?.find((s) => s.engine === row.engine)?.name ?? item.detail) : item.detail
+    const one = row?.fields.length === 1 ? row.fields[0] : undefined
+    const answered = () => {
+      void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
+      void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+    }
+    return (
+      <li className="px-3 py-1 text-[13px]">
+        {row ? (
+          <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} origin={origin} onAnswered={answered} />
+        ) : local ? (
+          <SecretRequestCard id={local.id} note={local.note} fields={[{ name: local.name, label: local.name, masked: true, current: local.current }]} origin={origin} onAnswered={answered} />
+        ) : null}
+      </li>
+    )
+  }
   return (
     <li className="flex flex-col gap-2 px-3 py-2 text-[13px] sm:flex-row sm:items-center sm:gap-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[item.kind]}</span>
-          {item.task ? (
+          {vm && canPopout() ? (
+            <button type="button" className="truncate text-left font-medium hover:underline" onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+              {item.title}
+            </button>
+          ) : item.task ? (
             <Link to="/tasks/$id" params={{ id: item.task }} className="truncate font-medium hover:underline">
               {item.title}
             </Link>
@@ -216,6 +255,22 @@ function AttentionCard({ item }: { item: AttentionItem }) {
         {item.detail && <p className="truncate text-fg-secondary">{item.detail}</p>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        {item.kind === 'handoff' && handoffId && (
+          <>
+            {vm && canPopout() && (
+              <Button size="xs" disabled={busy} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+                Open desktop
+              </Button>
+            )}
+            <Button size="xs" variant={vm ? 'outline' : 'default'} disabled={busy} onClick={() => act.handoff.mutate({ id: handoffId, outcome: 'done' })}>
+              Done
+            </Button>
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => act.handoff.mutate({ id: handoffId, outcome: 'cancelled' })}>
+              Cancel
+            </Button>
+          </>
+        )}
+        {item.kind === 'secret' && <span className="text-xs text-fg-tertiary">{rows.isPending ? 'loading the request…' : `answer it in the session${item.detail ? ` on ${item.detail}` : ''}`}</span>}
         {item.kind === 'approval' && item.approval && (
           <>
             <Button size="xs" disabled={busy} onClick={() => act.approve.mutate({ id: item.approval as NonNullable<typeof item.approval>, allow: true })}>

@@ -12,6 +12,9 @@
 //! the ceiling); (e) repo work runs in `omp` when the engine advertises it,
 //! else native. One engine left → placed, with the rules that led there as
 //! the reason. Several → `tasks.place_prefer` breaks the tie, else the desk.
+//! A pin (79 §4.9, the owner's `runs_in`) comes before all of it: the pinned
+//! engine is the only candidate — placed there with the harness (d)–(e) pick,
+//! or `Missing` when it cannot start work now; never a fallback engine.
 
 use mesh::EngineStats;
 
@@ -41,6 +44,15 @@ pub struct Inputs<'a> {
     pub engines: &'a [Engine],
     /// `tasks.place_prefer`.
     pub prefer: &'a [String],
+    /// The owner's `runs_in`, resolved to an engine (79 §4.9); `None` = unpinned.
+    pub pin: Option<Pin>,
+}
+
+/// A placement constraint: the task runs here or nowhere.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pin {
+    /// Engine name (`Engine.name`, what `spawn_subagent` resolves).
+    Engine(String),
 }
 
 /// The answer written onto the task.
@@ -90,7 +102,10 @@ const REPO_WORDS: &[&str] = &[
 #[must_use]
 pub fn decide(i: &Inputs) -> Verdict {
     let mut why: Vec<String> = Vec::new();
-    if let (Some(w), Some(h)) = (&i.task.where_, &i.task.harness) {
+    let pinned = i.pin.as_ref().map(|Pin::Engine(n)| n.as_str());
+    if pinned.is_none()
+        && let (Some(w), Some(h)) = (&i.task.where_, &i.task.harness)
+    {
         return Verdict::Placed(Placement {
             where_: w.clone(),
             harness: h.clone(),
@@ -106,7 +121,13 @@ pub fn decide(i: &Inputs) -> Verdict {
     let has_word = |words: &[&str]| words.iter().any(|w| lower.contains(w));
 
     let mut candidates: Vec<&Engine> = i.engines.iter().collect();
-    if let Some(w) = &i.task.where_ {
+    if let Some(n) = pinned {
+        candidates.retain(|e| e.name == n);
+        if candidates.is_empty() {
+            return Verdict::Missing(n.to_owned());
+        }
+        why.push(format!("pinned to {n} (runs_in)"));
+    } else if let Some(w) = &i.task.where_ {
         candidates.retain(|e| e.name == *w || e.stats.id.0.starts_with(w.as_str()));
         if candidates.is_empty() {
             return Verdict::Missing(w.clone());
@@ -114,12 +135,15 @@ pub fn decide(i: &Inputs) -> Verdict {
         why.push(format!("`where: {w}` set on the task"));
     }
 
-    // (b) a repo the work names.
+    // (b) a repo the work names. A pin skips the engine-narrowing rules (b)–(c):
+    // there is nothing to choose among; `repo_work` still picks the harness.
     let mut paths: Vec<String> = mentioned_paths(&text);
     paths.extend(i.project_cwds.iter().cloned());
     let mut repo_work = has_word(REPO_WORDS);
     if !paths.is_empty() {
         repo_work = true;
+    }
+    if !paths.is_empty() && pinned.is_none() {
         let with_repo: Vec<&Engine> = candidates
             .iter()
             .copied()
@@ -145,14 +169,14 @@ pub fn decide(i: &Inputs) -> Verdict {
     }
 
     // (c) a display, a GPU.
-    if has_word(DISPLAY_WORDS) {
+    if pinned.is_none() && has_word(DISPLAY_WORDS) {
         candidates.retain(|e| e.stats.display);
         if candidates.is_empty() {
             return Verdict::Missing("display".into());
         }
         why.push("needs a display".into());
     }
-    if has_word(GPU_WORDS) {
+    if pinned.is_none() && has_word(GPU_WORDS) {
         candidates.retain(|e| e.stats.gpu);
         if candidates.is_empty() {
             return Verdict::Missing("gpu".into());
@@ -474,6 +498,14 @@ mod tests {
             project_cwds: &[],
             engines,
             prefer,
+            pin: None,
+        }
+    }
+
+    fn pinned<'a>(task: &'a Task, engines: &'a [Engine], to: &str) -> Inputs<'a> {
+        Inputs {
+            pin: Some(Pin::Engine(to.into())),
+            ..inputs(task, engines, &[])
         }
     }
 
@@ -482,6 +514,49 @@ mod tests {
             Verdict::Placed(p) => p,
             other => panic!("expected Placed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pin_wins_over_every_better_engine() {
+        let mut f = fleet();
+        // A VM with the repo nowhere near it and no display; `build-a` has the repo, `mac` the display.
+        f.push(engine("vm-ops", EngineClass::Vm, &["native", "omp"], &[], false, false));
+        let t = task("fix the flaky test in /srv/theuth and screenshot the browser");
+        let p = placed(decide(&pinned(&t, &f, "vm-ops")));
+        assert_eq!(p.where_, "vm-ops");
+        assert_eq!(p.harness, "omp", "repo work → omp on the pinned engine");
+        assert!(p.reason.starts_with("pinned to vm-ops (runs_in)"), "{}", p.reason);
+
+        // `where`/`harness` set on the task do not beat the pin.
+        let mut t2 = task("anything");
+        t2.where_ = Some("build-a".into());
+        t2.harness = Some("omp".into());
+        let p = placed(decide(&pinned(&t2, &f, "vm-ops")));
+        assert_eq!((p.where_.as_str(), p.harness.as_str()), ("vm-ops", "omp"));
+
+        // read_only still forces native on the pinned engine.
+        let i = Inputs {
+            read_only: true,
+            ..pinned(&t, &f, "vm-ops")
+        };
+        assert_eq!(placed(decide(&i)).harness, "native");
+    }
+
+    #[test]
+    fn pinned_engine_absent_is_missing_never_a_fallback() {
+        let f = fleet();
+        let t = task("plain work");
+        assert_eq!(
+            decide(&pinned(&t, &f, "vm-ops")),
+            Verdict::Missing("vm-ops".into())
+        );
+        // Even with `place_prefer` naming an available engine.
+        let prefer = ["mac".to_owned()];
+        let i = Inputs {
+            prefer: &prefer,
+            ..pinned(&t, &f, "vm-ops")
+        };
+        assert_eq!(decide(&i), Verdict::Missing("vm-ops".into()));
     }
 
     /// (a) both fields set → exactly those, nothing else consulted.

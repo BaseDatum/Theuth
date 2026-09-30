@@ -20,6 +20,7 @@
     "@codemirror/language-data": "^6.5.2",
     "@json-render/core": "^0.20.0",
     "@json-render/react": "^0.20.0",
+    "@novnc/novnc": "^1.7.0",
     "@number-flow/react": "^0.6.2",
     "@streamdown/code": "^1.1.1",
     "@tailwindcss/vite": "^4.3.3",

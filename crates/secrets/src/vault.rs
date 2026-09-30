@@ -118,13 +118,20 @@ pub const OAUTH_PREFIX: &str = "oauth/";
 /// [`Vault::set_if_version`], never listed, never expandable by placeholder.
 pub const MESH_PREFIX: &str = "mesh/";
 
+/// Prefix of a sandbox VM's rows (79 decision 4): `sandbox/<vm>/vnc`. Same
+/// rules as `mesh/`; the segments after the prefix are each a `valid_name`.
+pub const SANDBOX_PREFIX: &str = "sandbox/";
+
 /// `valid_name`, or one of the `/` families a local caller may write
-/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`.
+/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`.
 fn writable_name(name: &str) -> bool {
     valid_name(name)
         || [OAUTH_PREFIX, MESH_PREFIX]
             .iter()
             .any(|p| name.strip_prefix(p).is_some_and(valid_name))
+        || name
+            .strip_prefix(SANDBOX_PREFIX)
+            .is_some_and(|rest| rest.split('/').all(valid_name))
 }
 
 #[derive(Deserialize)]
@@ -1264,6 +1271,8 @@ mod tests {
         assert!(writable_name("mesh/device_key"));
         assert!(!writable_name("mesh/"));
         assert!(!writable_name("mesh/a/b"));
+        assert!(writable_name("sandbox/lab/vnc"));
+        assert!(!writable_name("sandbox/lab/"));
     }
 
     /// 69 decision 1: `mesh/*` rows are written only through `set_if_version`,

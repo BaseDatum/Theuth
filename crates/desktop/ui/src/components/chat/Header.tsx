@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, MessageSquare, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, CornerLeftUp, Gauge, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
+import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { EngineChip } from '@/components/sidebar/SessionItem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -179,6 +180,9 @@ export function Header({
   // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: !!session })
   const row = session ? sessions.data?.find((s) => s.id === session) : undefined
+  // 79 §6.5: the owner engine is a sandbox VM (`SessionSummary.owner` ↔ `SandboxInfo.engine`) → its desktop is one click away.
+  const sandboxes = useSandboxes()
+  const vm = row?.owner ? sandboxes.data?.find((s) => s.engine === row.owner && s.vm?.desktop?.enabled) : undefined
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
@@ -245,6 +249,15 @@ export function Header({
           <EngineChip owner={row.owner} epoch={row.epoch} />
         )
       ) : null,
+    desktop: (mode) =>
+      !vm || !canPopout() ? null : mode === 'row' ? (
+        <MenuRow icon={Monitor} label="Desktop" detail={vm.name} onSelect={() => void openPopout({ kind: 'vm', name: vm.name })} />
+      ) : (
+        <Button variant="ghost" size="sm" className="rounded-lg text-fg-secondary" aria-label={`Desktop of ${vm.name}`} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+          <Monitor className="size-5" />
+          {!compact && vm.name}
+        </Button>
+      ),
     context: (mode) =>
       !session ? null : mode === 'row' ? (
         <MenuRow icon={Gauge} label="Context" detail={<ContextMeter session={session} />} />

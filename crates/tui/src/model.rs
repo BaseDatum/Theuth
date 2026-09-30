@@ -232,6 +232,10 @@ pub enum UiEvent {
     MeshDevices(Vec<link::DeviceInfo>),
     /// Reply to [`Command::MeshDevicesAdd`]: the 4-part string a device scans and its pending id (69 decision 4).
     MeshDevicePairing(link::PairingPayload),
+    /// Reply to [`Command::SandboxList`]: every sandbox record (79 §8).
+    Sandboxes(Vec<sandbox::SandboxInfo>),
+    /// Reply to [`Command::SandboxDesktop`]: the noVNC URL for a browser (the password stays out of the transcript).
+    SandboxDesktop(String, sandbox::types::DesktopAccess),
     /// The self-updater staged a newer version (39 §4.1).
     UpdateReady(update::UpdateReady),
     /// Reply to [`Command::ListNodes`] and the node commands that change the list.
@@ -668,6 +672,10 @@ pub enum Command {
     LinkRevoke(String),
     /// `devices_list` (69 §3).
     MeshDevicesList,
+    /// `sandboxes_list` (79 §8).
+    SandboxList,
+    /// `sandbox_desktop_access(name)`: the URL to open in a browser.
+    SandboxDesktop(String),
     /// `device_pair_start(name)`: the mesh pairing QR.
     MeshDevicesAdd(Option<String>),
     /// `device_revoke(id)`, then `devices_list`.
@@ -1510,6 +1518,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/nodes",
         "[add <key>|rm <n>|name <n> <name>|invite <n>]",
         "machines this harness can run sessions on",
+    ),
+    (
+        "/sandbox",
+        "[desktop <name>]",
+        "sandbox VMs on this engine (design doc 79); `desktop` prints the noVNC URL",
     ),
     (
         "/artifacts",
@@ -4963,6 +4976,20 @@ impl Model {
                     self.entries.push(Entry::Info(mesh_device_line(&d, now)));
                 }
             }
+            UiEvent::Sandboxes(list) => {
+                if list.is_empty() {
+                    self.entries.push(Entry::Info("sandboxes: none".into()));
+                }
+                for i in list {
+                    self.entries.push(Entry::Info(sandbox_line(&i)));
+                }
+            }
+            UiEvent::SandboxDesktop(name, d) => {
+                self.entries.push(Entry::Info(format!(
+                    "{name} desktop: {} (password in the vault as sandbox/{name}/vnc; `t sandbox desktop {name}` prints it)",
+                    d.http_url
+                )));
+            }
             UiEvent::MeshDevicePairing(p) => {
                 // The QR any engine may show; the hub accepts (69 decision 4). Shares the
                 // node-invite countdown slot: one ticking invite card at a time.
@@ -5276,6 +5303,7 @@ impl Model {
                 name,
                 note,
                 current,
+                ..
             } => {
                 if self.session == Some(session) || self.agents.contains_key(&session) {
                     self.secret_requests.push_back(SecretRequest {
@@ -6241,6 +6269,7 @@ impl Model {
             "/provider" => self.provider_cmd(arg, tx),
             "/secrets" => self.secrets_cmd(arg, tx),
             "/mesh" => self.mesh_cmd(arg, tx),
+            "/sandbox" => self.sandbox_cmd(arg, tx),
             "/link" => self.link_cmd(arg, tx),
             "/nodes" => self.nodes_cmd(arg, tx),
             // `/<skill> [args]` hands the skill to the model (04 §2.4); any other `/word` — a path, a typo —
@@ -9001,6 +9030,22 @@ impl Model {
         }
     }
 
+    /// `/sandbox` lists the sandbox VMs; `/sandbox desktop NAME` prints the noVNC URL (79 §8).
+    fn sandbox_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
+        let (sub, rest) = arg
+            .split_once(char::is_whitespace)
+            .map_or((arg, ""), |(s, r)| (s, r.trim()));
+        match (sub, rest) {
+            ("" | "ls" | "list", _) => send(tx, Command::SandboxList),
+            ("desktop", name) if !name.is_empty() => {
+                send(tx, Command::SandboxDesktop(name.to_owned()))
+            }
+            _ => self
+                .entries
+                .push(Entry::Error("usage: /sandbox [desktop <name>]".into())),
+        }
+    }
+
     /// `/mesh devices [list|add [name]|rm <id>|name <id> <name…>]` (69 §7), the CLI's `t mesh devices`.
     fn mesh_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         const USAGE: &str = "usage: /mesh devices [list|add [name]|rm <id>|name <id> <name>]";
@@ -9308,6 +9353,33 @@ pub fn link_line(s: &link::LinkStatus) -> String {
         if s.devices.len() == 1 { "" } else { "s" },
         s.devices.iter().filter(|d| d.online).count()
     )
+}
+
+/// One `/sandbox` line: name, backend, state, engine, size.
+pub fn sandbox_line(i: &sandbox::SandboxInfo) -> String {
+    let state = serde_json::to_value(&i.state)
+        .ok()
+        .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_owned))
+        .unwrap_or_default();
+    let mut s = format!(
+        "{} {} {} engine={}",
+        i.name,
+        i.backend,
+        state,
+        i.engine.as_deref().unwrap_or("-")
+    );
+    if let Some(vm) = &i.vm {
+        let r = vm.resources;
+        s.push_str(&format!(
+            " cpus={} memory={}M disk={}M shares={} desktop={}",
+            r.cpus,
+            r.memory_mib,
+            r.root_disk_mib,
+            vm.shares.len(),
+            if vm.desktop.is_some() { "yes" } else { "no" }
+        ));
+    }
+    s
 }
 
 /// One `/mesh devices` row: `<id>  <name>  <platform>  paired 2d ago · seen 3h ago | never seen | revoked`.
@@ -12657,6 +12729,8 @@ mod tests {
             name: "other".into(),
             note: String::new(),
             current: None,
+            title: None,
+            fields: vec![],
         }));
         assert!(m.secret_request().is_none());
         m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Requested {
@@ -12665,6 +12739,8 @@ mod tests {
             name: "github".into(),
             note: "PAT".into(),
             current: Some(2),
+            title: None,
+            fields: vec![],
         }));
         assert!(m.secret_request().is_some() && m.input_focused());
         m.answer_secret(Some("ghp_requested".into()), &tx);
@@ -12681,6 +12757,8 @@ mod tests {
             name: "github".into(),
             note: "PAT".into(),
             current: None,
+            title: None,
+            fields: vec![],
         }));
         m.apply(UiEvent::SecretsEvent(secrets::SecretsEvent::Resolved {
             id,

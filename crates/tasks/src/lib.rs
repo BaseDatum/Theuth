@@ -86,6 +86,15 @@ pub trait DeskRouter: Send + Sync {
         let _ = agent;
         None
     }
+    /// The engine `agent`'s work must run on (79 §4.9, its `runs_in`):
+    /// `Ok(None)` = unpinned; `Ok(Some(pin))` = place there or nowhere;
+    /// `Err(blocker)` = pinned but the engine cannot take work now — the
+    /// task is set `blocked` on `blocker` (`sandbox:<name>`) and the roster
+    /// clears it when the sandbox is ready.
+    async fn pin_of(&self, agent: &str) -> Result<Option<place::Pin>, String> {
+        let _ = agent;
+        Ok(None)
+    }
 }
 
 /// `ask` → `()`: the roster hands over its router once it is up. Replaces any earlier one.

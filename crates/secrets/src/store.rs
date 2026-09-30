@@ -14,7 +14,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 pub const DB: &str = "secrets.sqlite";
 
 /// The replicated tables, for `replica::attach`.
-pub const TABLES: &[&str] = &["vault", "vault_current"];
+pub const TABLES: &[&str] = &["vault", "vault_current", "secret_requests"];
 
 /// One `vault` row as stored.
 pub struct Row {
@@ -33,6 +33,12 @@ pub struct Row {
 }
 
 /// Open or create the file and run the migrations (WAL, 4 connections, 5 s busy).
+///
+/// Two processes may open a fresh file at once — a VM's boot-started engine
+/// and the host's `first_run` CLI (79 F5) — and the migrator's "list applied,
+/// then create" is not atomic on its own ("table … already exists"). `BEGIN
+/// IMMEDIATE` takes the write lock first, so the loser waits on `busy_timeout`
+/// and then sees the winner's rows.
 pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::new()
         .filename(path)
@@ -44,10 +50,17 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .connect_with(opts)
         .await
         .with_context(|| format!("open {}", path.display()))?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("lock for migrations")?;
+    // `run_direct`, not `run(&mut tx)`: the `Acquire` blanket impl trips
+    // "implementation of `Send` is not general enough" in the plugin's `start`.
     sqlx::migrate!("./migrations")
-        .run(&pool)
+        .run_direct(None, &mut *tx, false)
         .await
         .context("run migrations")?;
+    tx.commit().await.context("commit migrations")?;
     Ok(pool)
 }
 
@@ -101,4 +114,28 @@ pub async fn meta_put(pool: &SqlitePool, k: &str, v: &[u8]) -> anyhow::Result<()
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 79 F5: the guest engine and the host's `first_run` CLI open a fresh
+    /// vault at the same moment; every opener must come up with the schema.
+    #[tokio::test]
+    async fn concurrent_first_opens_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.sqlite");
+        let mut opens = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let p = path.clone();
+            opens.spawn(async move { open(&p).await });
+        }
+        for pool in opens.join_all().await {
+            let pool = pool.unwrap();
+            assert!(meta_get(&pool, "nothing").await.unwrap().is_none());
+            let (rows, _) = rows(&pool).await.unwrap();
+            assert!(rows.is_empty());
+        }
+    }
 }

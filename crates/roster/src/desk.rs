@@ -159,6 +159,14 @@ pub fn identity(f: &AgentFile, journal: Option<&str>, max_rounds: u32) -> String
             "\n\nCapabilities (when you are the one to hand a task to): {c}"
         ));
     }
+    if let Some(vm) = crate::pin::record_name(f.name.as_str(), &f.runs_in) {
+        s.push_str(&format!(
+            "\n\nRuns in: sandbox VM `{vm}` (your file's `runs_in`). Every work child of yours runs on that VM's \
+             engine, never here or on another engine: `task_place` resolves it into the task's `where` (the task \
+             waits `blocked: sandbox:{vm}` while the VM is not ready — do nothing until the wake), and \
+             `spawn_subagent` then takes `agent: \"<where>\"` or `\"<harness>@<where>\"` from the task."
+        ));
+    }
     s.push_str(&format!(
         "\n\n<journal>\n{journal}\n</journal>\n\n{}",
         manual(f, max_rounds)
@@ -848,6 +856,23 @@ Attached (read with the tool for the kind, see Attachments):\n\
         assert!(child.starts_with(
             "You are working for Infrastructure (`karol`), an agent on this theuth roster. Its desk"
         ));
+    }
+
+    /// 79 §4.9: a pinned agent's desk is told its children run on the VM's
+    /// engine; an unpinned one has no such line.
+    #[test]
+    fn identity_names_the_pin() {
+        let unpinned = parse("ops", "---\ntitle: Ops\n---\nx").unwrap();
+        assert!(!identity(&unpinned, None, 3).contains("Runs in:"));
+        let own = parse("ops", "---\ntitle: Ops\nruns_in: vm\n---\nx").unwrap();
+        let text = identity(&own, None, 3);
+        assert!(
+            text.contains("Runs in: sandbox VM `vm-ops`")
+                && text.contains("`blocked: sandbox:vm-ops`"),
+            "{text}"
+        );
+        let named = parse("ops", "---\ntitle: Ops\nruns_in: vm:lab\n---\nx").unwrap();
+        assert!(identity(&named, None, 3).contains("Runs in: sandbox VM `lab`"));
     }
 
     /// 70 DESK-PROTOCOL (e): the fit-check roster lists every other active agent with capabilities.

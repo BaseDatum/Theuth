@@ -3,8 +3,9 @@
 //! exists — permission prompts (subscribed [`ApprovalRequested`]), tasks
 //! blocked on a `decision:` or a person, tasks in review with the user as
 //! reviewer, proposed agents (the hire approval), budgets at 80 % / paused,
-//! unreachable mesh peers. Only dismiss / snooze per item id is stored
-//! (`attention_state`, engine-local). Badge count = the returned list's length.
+//! unreachable mesh peers, unresolved desktop hand-offs and unanswered secret
+//! requests (79 §6.6, replicated rows). Only dismiss / snooze per item id is
+//! stored (`attention_state`, engine-local). Badge count = the returned list's length.
 
 use std::collections::HashMap;
 
@@ -17,6 +18,8 @@ use tools::{ApprovalId, ApprovalRequested, ApprovalResolved};
 
 use crate::store::Store;
 use crate::types::{AgentStatus, AgentSummary, Budget};
+
+pub use crate::handoff::Handoff;
 
 /// Registry name of the [`Attention`] actor.
 pub const ATTENTION_ACTOR: &str = "attention";
@@ -43,13 +46,17 @@ pub enum AttentionKind {
     Budget,
     /// A paired engine is unreachable.
     Node,
+    /// An agent in a VM needs a human at its desktop (79 §6.6): open it, then Done / Cancel.
+    Handoff,
+    /// A session asked for a secret (79 §6.6): the masked card, one or several fields.
+    Secret,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>`.
+    /// `approval:<id>` | `decision:<task>:<decision>` | `hire:<agent>` | `blocked:<task>` | `review:<task>` | `budget:<agent>` | `node:<id>` | `handoff:<id>` | `secret:<id>`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,
@@ -70,6 +77,20 @@ pub struct AttentionItem {
     pub approval: Option<ApprovalId>,
     /// The `decision:<id>` blocker, for decisions.
     pub decision: Option<String>,
+}
+
+/// `ask` → `Result<Vec<Handoff>, String>`: unresolved hand-offs, newest first (`handoffs_list`).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct ListHandoffs;
+
+/// `ask` → `Result<(), String>`: Done / Cancel on a hand-off (`handoff_resolve`).
+/// `Err` when `outcome` is not `done` | `cancelled`, or the row is unknown / already resolved.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolveHandoff {
+    /// The row.
+    pub id: String,
+    /// `done` | `cancelled`.
+    pub outcome: String,
 }
 
 /// `ask` → `Result<Vec<AttentionItem>, String>`: undismissed, unsnoozed, newest first.
@@ -100,6 +121,12 @@ pub struct Inputs {
     pub approvals: Vec<(ApprovalRequested, u64)>,
     /// Mesh peers.
     pub peers: Vec<mesh::Peer>,
+    /// Unresolved `handoffs` rows (79 §6.6).
+    pub handoffs: Vec<Handoff>,
+    /// Unanswered `secret_requests` rows (79 §6.6).
+    pub secrets: Vec<secrets::SecretRequest>,
+    /// Engine id → display name, this engine included (the `detail` of a hand-off).
+    pub engines: HashMap<String, String>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -288,6 +315,60 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         ));
     }
 
+    // 79 §6.6: who = the agent's title, else the session's short id.
+    let who = |agent: Option<&str>, session: &str| -> String {
+        agent
+            .and_then(|n| inputs.agents.iter().find(|a| a.file.name.as_str() == n))
+            .map(|a| a.file.title.clone())
+            .or_else(|| agent.map(str::to_owned))
+            .unwrap_or_else(|| session.chars().take(8).collect())
+    };
+    let engine_name = |id: &str| {
+        inputs
+            .engines
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_owned())
+    };
+
+    for h in &inputs.handoffs {
+        out.push(AttentionItem {
+            agent: h.agent.clone(),
+            session: Some(h.session.clone()),
+            ..item(
+                format!("handoff:{}", h.id),
+                AttentionKind::Handoff,
+                format!(
+                    "{} needs you: {}",
+                    who(h.agent.as_deref(), &h.session),
+                    h.reason
+                ),
+                Some(engine_name(&h.engine)),
+                h.created_ms,
+            )
+        });
+    }
+
+    for r in &inputs.secrets {
+        let what = r.title.clone().unwrap_or_else(|| {
+            r.fields
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        out.push(AttentionItem {
+            session: Some(r.session.clone()),
+            ..item(
+                format!("secret:{}", r.id.0),
+                AttentionKind::Secret,
+                format!("{} asks for a secret: {what}", who(None, &r.session)),
+                Some(engine_name(&r.engine)),
+                r.created_ms,
+            )
+        });
+    }
+
     out.retain(|i| {
         !states
             .get(&i.id)
@@ -350,12 +431,34 @@ impl Attention {
             Some(r) => r.ask(crate::ListAgents).await.ok().unwrap_or_default(),
             None => vec![],
         };
-        let peers = match mesh::actor() {
-            Some(m) => m
-                .ask(mesh::Status)
+        let (peers, engines) = match mesh::actor() {
+            Some(m) => match m.ask(mesh::Status).await {
+                Ok(s) => {
+                    let mut engines: HashMap<String, String> = s
+                        .peers
+                        .iter()
+                        .map(|p| (p.id.0.clone(), p.name.clone()))
+                        .collect();
+                    engines.insert(s.self_id.0, s.self_name);
+                    (s.peers, engines)
+                }
+                Err(_) => (vec![], HashMap::new()),
+            },
+            None => (vec![], HashMap::new()),
+        };
+        let handoffs = crate::handoff::list(&self.pool, true)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("attention: handoffs: {e:#}");
+                vec![]
+            });
+        let secrets = match secrets::actor() {
+            Some(s) => s
+                .ask(secrets::ListRequests {
+                    unanswered_only: true,
+                })
                 .await
                 .ok()
-                .map(|s| s.peers)
                 .unwrap_or_default(),
             None => vec![],
         };
@@ -364,6 +467,38 @@ impl Attention {
             agents,
             approvals: self.pending.values().cloned().collect(),
             peers,
+            handoffs,
+            secrets,
+            engines,
+        }
+    }
+}
+
+impl Message<ListHandoffs> for Attention {
+    type Reply = Result<Vec<Handoff>, String>;
+
+    async fn handle(&mut self, _: ListHandoffs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        crate::handoff::list(&self.pool, true)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<ResolveHandoff> for Attention {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: ResolveHandoff,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if !matches!(m.outcome.as_str(), "done" | "cancelled") {
+            return Err(format!("outcome: {:?} is not done | cancelled", m.outcome));
+        }
+        match crate::handoff::resolve(&self.pool, &m.id, &m.outcome, now_ms()).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("hand-off {} is unknown or already resolved", m.id)),
+            Err(e) => Err(e.to_string()),
         }
     }
 }
@@ -554,6 +689,7 @@ mod tests {
                 capabilities: None,
                 paused,
                 proposed_by: proposed_by.map(Into::into),
+                runs_in: Default::default(),
                 body: "x".into(),
             },
             status,
@@ -654,6 +790,7 @@ mod tests {
                 last_seen_ms: 5,
                 hub_pref: mesh::HubPref::Eligible,
             }],
+            ..Default::default()
         };
         let items = derive(&inputs, &HashMap::new(), 100);
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
@@ -724,6 +861,134 @@ mod tests {
             "dismissed and live-snoozed gone, expired snooze back"
         );
         assert!(left.iter().any(|i| i.id == "budget:ops"));
+    }
+
+    fn handoff(id: &str, agent: Option<&str>, created_ms: u64, resolved: bool) -> Handoff {
+        Handoff {
+            id: id.into(),
+            engine: "vm1".into(),
+            session: "0199aaaa-bbbb-7000-8000-000000000000".into(),
+            agent: agent.map(Into::into),
+            reason: "log in to GitHub".into(),
+            url: None,
+            created_ms,
+            resolved_ms: resolved.then_some(created_ms + 1),
+            outcome: resolved.then(|| "done".to_owned()),
+            hlc: None,
+        }
+    }
+
+    fn secret(
+        id: &str,
+        title: Option<&str>,
+        names: &[&str],
+        created_ms: u64,
+    ) -> secrets::SecretRequest {
+        secrets::SecretRequest {
+            id: secrets::RequestId(uuid::Uuid::parse_str(id).unwrap()),
+            engine: "e9".into(),
+            session: "s-secret".into(),
+            title: title.map(Into::into),
+            fields: names
+                .iter()
+                .map(|n| secrets::SecretRequestField {
+                    name: (*n).to_owned(),
+                    label: (*n).to_owned(),
+                    masked: true,
+                    current: None,
+                })
+                .collect(),
+            created_ms,
+            answered_ms: None,
+            outcome: None,
+            hlc: None,
+        }
+    }
+
+    #[test]
+    fn handoffs_and_secret_requests_become_items() {
+        // The gatherer only passes unresolved / unanswered rows; `derive` trusts that.
+        let inputs = Inputs {
+            agents: vec![agent(
+                "ops",
+                AgentStatus::Idle,
+                Budget::None,
+                0.0,
+                None,
+                false,
+            )],
+            handoffs: vec![
+                handoff("h1", Some("ops"), 50, false),
+                handoff("h2", None, 60, false),
+            ],
+            secrets: vec![
+                secret(
+                    "0199aaaa-0000-7000-8000-000000000001",
+                    Some("GitHub login"),
+                    &["gh/user", "gh/pass"],
+                    70,
+                ),
+                secret("0199aaaa-0000-7000-8000-000000000002", None, &["TOKEN"], 40),
+            ],
+            engines: HashMap::from([("vm1".to_owned(), "lab".to_owned())]),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 100);
+        let ids: Vec<_> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "secret:0199aaaa-0000-7000-8000-000000000001",
+                "handoff:h2",
+                "handoff:h1",
+                "secret:0199aaaa-0000-7000-8000-000000000002",
+            ],
+            "newest first"
+        );
+        let h1 = &items[2];
+        assert_eq!(h1.kind, AttentionKind::Handoff);
+        assert_eq!(h1.title, "OPS needs you: log in to GitHub", "agent title");
+        assert_eq!(h1.detail.as_deref(), Some("lab"), "engine's peer name");
+        assert_eq!(h1.agent.as_deref(), Some("ops"));
+        assert_eq!(
+            h1.session.as_deref(),
+            Some("0199aaaa-bbbb-7000-8000-000000000000")
+        );
+        assert_eq!(h1.at_ms, 50);
+        assert_eq!(
+            items[1].title, "0199aaaa needs you: log in to GitHub",
+            "session short id"
+        );
+        let form = &items[0];
+        assert_eq!(form.kind, AttentionKind::Secret);
+        assert_eq!(form.title, "s-secret asks for a secret: GitHub login");
+        assert_eq!(form.detail.as_deref(), Some("e9"), "unknown engine: the id");
+        assert_eq!(items[3].title, "s-secret asks for a secret: TOKEN");
+
+        let states = HashMap::from([
+            (
+                "handoff:h1".to_owned(),
+                State {
+                    dismissed_ms: Some(1),
+                    snoozed_until_ms: None,
+                },
+            ),
+            (
+                "secret:0199aaaa-0000-7000-8000-000000000001".to_owned(),
+                State {
+                    dismissed_ms: None,
+                    snoozed_until_ms: Some(200),
+                },
+            ),
+        ]);
+        let left: Vec<_> = derive(&inputs, &states, 100)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(
+            left,
+            ["handoff:h2", "secret:0199aaaa-0000-7000-8000-000000000002"]
+        );
     }
 
     #[tokio::test]

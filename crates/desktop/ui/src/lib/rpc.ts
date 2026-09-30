@@ -5,6 +5,8 @@ import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
+import { isPopout, openPopout } from '@/lib/popout'
+import { applySandboxEvent } from '@/store/sandboxes'
 
 /** The connected `Api`. Routes render only once connected, so a missing client is a bug. */
 export function useApi(): Api {
@@ -242,6 +244,19 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
       }),
       on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
+      // 79 §4.4: VM rows are patched in place; the bring-up log per name; `OpenDesktop` (the `sandbox_desktop` tool) pops
+      // the window out of the main shell only — pop-outs receive the same stream. `Changed` is also a `ScheduleEvent`.
+      on('Changed', (e) => {
+        if ('sandbox' in e) applySandboxEvent(qc, e)
+      }),
+      on('Removed', (e) => applySandboxEvent(qc, e)),
+      on('Progress', (e) => applySandboxEvent(qc, e)),
+      on('OpenDesktop', (e) => {
+        if (!isPopout()) void openPopout({ kind: 'vm', name: e.name })
+      }),
+      // 67 §4, bridged since 79: the Mesh page's peers and lease follow the bus instead of the poll alone.
+      on('peer', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
+      on('lease', () => void qc.invalidateQueries({ queryKey: ['mesh'] })),
     ]
     return () => {
       clearTimeout(timer)

@@ -151,6 +151,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   const source = useMemo(() => codeDetails(tool.name, tool.args), [tool.name, tool.args])
   const lines = useMemo(() => describe(tool.name, source?.args ?? tool.args), [tool.name, tool.args, source])
   const progress = useSessions((s) => (tool.pending ? s.sessions[session]?.progress.get(tool.callId) : undefined))
+  const sandbox = useSessions((s) => (tool.pending ? s.sessions[session]?.sandbox.get(tool.callId) : undefined))
   const { result } = tool
   const running = tool.pending || !result
   const edit = tool.name === 'edit' ? editArgs(tool.args) : null
@@ -174,6 +175,12 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
           </pre>
         )}
         {progress && <Progress tool={tool.name} progress={progress} />}
+        {sandbox && (
+          <div className="w-full truncate font-mono text-xs text-fg-secondary">
+            {sandbox.step} · {sandbox.line}
+            {sandbox.pct !== null && ` · ${sandbox.pct}%`}
+          </div>
+        )}
         {result && (
           <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}

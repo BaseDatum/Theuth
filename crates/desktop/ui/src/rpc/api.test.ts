@@ -10,9 +10,7 @@ const METHODS_JSON = fileURLToPath(new URL('../../../../../bindings/methods.json
 const STREAM = ['subscribe_events', 'unsubscribe_events', 'subscribe_pty', 'unsubscribe_pty', 'doc_subscribe', 'doc_unsubscribe']
 
 test.skipIf(!existsSync(METHODS_JSON))('METHODS equals the server method list', () => {
-  const server = (JSON.parse(readFileSync(METHODS_JSON, 'utf8')) as string[]).filter(
-    (m) => !STREAM.includes(m),
-  )
+  const server = (JSON.parse(readFileSync(METHODS_JSON, 'utf8')) as string[]).filter((m) => !STREAM.includes(m))
   expect([...METHODS]).toEqual([...server].sort())
 })
 

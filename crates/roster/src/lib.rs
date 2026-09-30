@@ -16,7 +16,9 @@ pub mod budget;
 pub mod config;
 pub mod desk;
 pub mod file;
+pub mod handoff;
 pub mod lease;
+pub mod pin;
 pub mod proposals;
 pub mod routing;
 pub mod store;
@@ -36,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 pub use config::RosterConfig;
 pub use desk::Shared;
-pub use types::{AgentFile, AgentName, AgentStatus, AgentSummary, Budget, Episode};
+pub use types::{AgentFile, AgentName, AgentStatus, AgentSummary, Budget, Episode, RunsIn};
 
 /// Registry name of the [`Roster`] actor.
 pub const ROSTER_ACTOR: &str = "roster";
@@ -1409,6 +1411,62 @@ impl Message<mesh::MeshEvent> for Roster {
     }
 }
 
+/// 79 §4.9: a pinned task waits `blocked` on `sandbox:<name>`; when that VM
+/// takes work again the blocker is cleared, the ledger's unblock wakes the
+/// owner, and its desk runs `task_place` again — now with the engine present.
+impl Message<sandbox::SandboxEvent> for Roster {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: sandbox::SandboxEvent, _: &mut Context<Self, Self::Reply>) {
+        let sandbox::SandboxEvent::Changed { sandbox: info } = ev else {
+            return;
+        };
+        if !self.lease.holding || !pin::takes_work(&info.state) {
+            return;
+        }
+        let Some(tasks) = tasks::actor() else {
+            return;
+        };
+        let blocked = tasks
+            .ask(tasks::ListTasks(tasks::TaskFilter {
+                state: Some(vec![tasks::TaskState::Blocked]),
+                ..Default::default()
+            }))
+            .await
+            .ok()
+            .unwrap_or_default();
+        for t in blocked {
+            if !t
+                .blockers
+                .iter()
+                .any(|b| pin::blocked_on(b) == Some(info.name.as_str()))
+            {
+                continue;
+            }
+            let rest: Vec<String> = t
+                .blockers
+                .iter()
+                .filter(|b| pin::blocked_on(b) != Some(info.name.as_str()))
+                .cloned()
+                .collect();
+            let r = tasks
+                .ask(tasks::UpdateTask {
+                    id: t.id.clone(),
+                    patch: tasks::TaskPatch {
+                        blockers: Some(rest),
+                        ..Default::default()
+                    },
+                    actor: "system".into(),
+                    session: None,
+                })
+                .await;
+            if let Err(e) = r {
+                tracing::warn!(task = %t.id, sandbox = %info.name, error = %e, "sandbox ready: could not unblock");
+            }
+        }
+    }
+}
+
 impl Message<SetSelf> for Roster {
     type Reply = ();
 
@@ -1485,6 +1543,7 @@ impl Message<ListAgents> for Roster {
                             capabilities: None,
                             paused: true,
                             proposed_by: None,
+                            runs_in: Default::default(),
                             body: String::new(),
                         },
                         status: AgentStatus::Invalid,
@@ -1852,6 +1911,11 @@ impl tasks::DeskRouter for Desks {
         self.0.file(agent)?.tools
     }
 
+    async fn pin_of(&self, agent: &str) -> Result<Option<tasks::place::Pin>, String> {
+        let runs_in = self.0.file(agent).map(|f| f.runs_in).unwrap_or_default();
+        pin::resolve(agent, &runs_in).await
+    }
+
     async fn deliver(
         &self,
         agent: &str,
@@ -2004,9 +2068,9 @@ impl runtime::Plugin for RosterPlugin {
                 return Ok(());
             }
         };
-        // 67 §5.1: `agents` and `budget` replicate; local only without the plugin.
-        match replica::attach(store.pool(), &["agents", "budget"]).await {
-            Ok(_) => tracing::info!("roster: agents and budget replicate"),
+        // 67 §5.1: `agents` and `budget` replicate, 79 §6.6: `handoffs` too; local only without the plugin.
+        match replica::attach(store.pool(), &["agents", "budget", "handoffs"]).await {
+            Ok(_) => tracing::info!("roster: agents, budget and handoffs replicate"),
             Err(e) => tracing::debug!("roster: local only ({e})"),
         }
         let attention_store = store.clone();
@@ -2025,6 +2089,8 @@ impl runtime::Plugin for RosterPlugin {
         rt.subscribe::<Roster, document::Exported>(&actor).await;
         // 67 §4.4: desks and dispatch follow the lease; self id once the mesh is up.
         rt.subscribe::<Roster, mesh::MeshEvent>(&actor).await;
+        // 79 §4.9: a VM that takes work again unblocks the tasks pinned to it.
+        rt.subscribe::<Roster, sandbox::SandboxEvent>(&actor).await;
         let me = actor.clone();
         let rt2 = rt.clone();
         tokio::spawn(async move {
@@ -2114,6 +2180,11 @@ impl runtime::Plugin for RosterPlugin {
             }
         });
         let rt2 = rt.clone();
+        let handoff_tool = handoff::DesktopHandoffTool {
+            pool: attention_store.pool().clone(),
+            shared: shared.clone(),
+            timeout: handoff::timeout(rt),
+        };
         tokio::spawn(async move {
             if let Some(reg) = rt2
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
@@ -2124,6 +2195,8 @@ impl runtime::Plugin for RosterPlugin {
                     .ask(::tools::InstallMcpAccess(Arc::new(Desks(shared.clone()))))
                     .await;
                 tools::register(&reg, shared).await;
+                // 79 §6.6: on every engine, VM or not.
+                let _ = reg.ask(::tools::RegisterTool(Arc::new(handoff_tool))).await;
                 let _ = reg
                     .ask(::tools::RegisterPrompt {
                         plugin: "roster",

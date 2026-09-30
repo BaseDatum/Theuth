@@ -18,8 +18,10 @@ use kameo::message::{Context, Message};
 use knowledge::KnowledgeChanged;
 use link::LinkEvent;
 use meeting::{BriefEvent, MeetingEvent};
+use mesh::MeshEvent;
 use nodes::NodeEvent;
 use runtime::Runtime;
+use sandbox::SandboxEvent;
 use schedule::ScheduleEvent;
 use secrets::SecretsEvent;
 use serde::Serialize;
@@ -120,7 +122,9 @@ forward!(
     BriefEvent,
     AppCallChanged,
     ActivityAppended,
-    CodeindexEvent
+    CodeindexEvent,
+    MeshEvent,
+    SandboxEvent
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -169,5 +173,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
     rt.subscribe::<Bridge, ActivityAppended>(&actor).await;
     rt.subscribe::<Bridge, CodeindexEvent>(&actor).await;
+    rt.subscribe::<Bridge, MeshEvent>(&actor).await;
+    rt.subscribe::<Bridge, SandboxEvent>(&actor).await;
     tx
 }

@@ -82,6 +82,8 @@ pub enum EngineClass {
     Laptop,
     /// Container on a server (as `Server` for the score, but marked).
     Container,
+    /// A VM on another engine's machine (79); ranks with Laptop.
+    Vm,
 }
 
 /// One row of the peer set (`peers` table) with live reachability.

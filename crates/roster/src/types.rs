@@ -144,6 +144,69 @@ impl FromStr for Budget {
     }
 }
 
+/// `runs_in:` front matter (79 §2.8): `any` (default) | `vm` (the agent's own
+/// VM, `vm-<agent>`) | `vm:<name>` (a named, shared VM). Wire form is the same
+/// string.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(into = "String", try_from = "String")]
+pub enum RunsIn {
+    /// No constraint; placement policy decides.
+    #[default]
+    Any,
+    /// The agent's own VM, created from `sandbox.vm.defaults` on first need.
+    OwnVm,
+    /// A named VM record.
+    Vm(String),
+}
+
+impl RunsIn {
+    /// `true` for the default (omitted when rendering).
+    pub fn is_any(&self) -> bool {
+        *self == Self::Any
+    }
+}
+
+impl fmt::Display for RunsIn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Any => f.write_str("any"),
+            Self::OwnVm => f.write_str("vm"),
+            Self::Vm(n) => write!(f, "vm:{n}"),
+        }
+    }
+}
+
+impl FromStr for RunsIn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "any" => Ok(Self::Any),
+            "vm" => Ok(Self::OwnVm),
+            v => match v.strip_prefix("vm:").map(str::trim) {
+                Some(n) if !n.is_empty() => Ok(Self::Vm(n.to_owned())),
+                _ => Err(format!("runs_in: expected any|vm|vm:<name>, got {s:?}")),
+            },
+        }
+    }
+}
+
+impl From<RunsIn> for String {
+    fn from(r: RunsIn) -> Self {
+        r.to_string()
+    }
+}
+
+impl TryFrom<String> for RunsIn {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
 /// `agents/<name>.md` parsed (67 §6.1): the front matter plus the charter body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -171,6 +234,10 @@ pub struct AgentFile {
     pub paused: bool,
     /// `agent:<name>` when this file came from `agent_propose` and is not yet approved (67 §6.5).
     pub proposed_by: Option<String>,
+    /// Placement pin (79 decision 14): where every work session of this agent runs.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "\"any\" | \"vm\" | `vm:${string}`"))]
+    pub runs_in: RunsIn,
     /// The charter (markdown body).
     pub body: String,
 }

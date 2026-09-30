@@ -6,7 +6,7 @@ import type { Task } from '@/rpc/bindings/Task'
 import { appendActivity, badgeCount, boardPulse, headline, inFlight, snoozeUntil, spend } from './model'
 
 const agent = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => ({
-  file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: [], budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x', ...file },
+  file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: [], budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x', ...file },
   status: 'idle',
   desk: null,
   open_tasks: 0,

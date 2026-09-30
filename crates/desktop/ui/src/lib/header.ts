@@ -34,6 +34,8 @@ export type HeaderId =
   | 'title'
   | 'parent'
   | 'owner'
+  /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
+  | 'desktop'
   | 'context'
   | 'cost'
   | 'terminals'
@@ -75,6 +77,7 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     { id: 'title', slot: 'bar' },
     { id: 'parent', slot: 'menu' },
     { id: 'owner', slot: 'menu' },
+    { id: 'desktop', slot: 'menu' },
     { id: 'context', slot: 'both', shed: true },
     { id: 'cost', slot: 'menu' },
     { id: 'terminals', slot: panel === 'terminals' ? 'bar' : 'menu', shed: true },

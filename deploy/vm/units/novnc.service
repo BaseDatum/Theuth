@@ -1,0 +1,11 @@
+[Unit]
+Description=websockify on 6080 serving noVNC, bridging to Xtigervnc :1
+After=xvnc.service
+
+[Service]
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc 0.0.0.0:6080 localhost:5901
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

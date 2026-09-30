@@ -308,3 +308,22 @@ models-check:
     trap 'rm -f "$tmp"' EXIT
     curl -sL https://models.dev/api.json | cargo run -q -p models --bin trim > "$tmp"
     diff -q "$tmp" crates/models/data/models.json || { echo "catalog drift: run \`just models\`" >&2; exit 1; }
+
+# Sandbox VM image (design doc 79 §6.1): buildx amd64+arm64 → ghcr.io/basedatum/theuth-vm:<tag>.
+# Local by default; `just vm-image tag=2.3.3 --push` publishes.
+vm-image tag push="":
+    docker buildx build --platform linux/amd64,linux/arm64 \
+      --build-arg THEUTH_PUBKEY="$(cat crates/update/pubkey.txt)" \
+      -t ghcr.io/basedatum/theuth-vm:{{tag}} {{push}} deploy/vm
+
+# The `base` stage only (debian:trixie-slim + systemd, getty masked): the bootstrap route's
+# base image, ghcr.io/basedatum/theuth-vm-base:<tag>. `--push` publishes.
+vm-image-base tag="trixie" push="":
+    docker buildx build --platform linux/amd64,linux/arm64 --target base \
+      -t ghcr.io/basedatum/theuth-vm-base:{{tag}} {{push}} deploy/vm
+
+# Dev VM image for the host's arch with a local Linux `t` at deploy/vm/t, loaded into msb.
+vm-image-dev:
+    docker build --platform linux/$(arch) --target desktop -t theuth-vm:desktop deploy/vm
+    docker build --platform linux/$(arch) -f deploy/vm/Dockerfile.dev -t theuth-vm:dev deploy/vm
+    docker save theuth-vm:dev | msb load

@@ -3,7 +3,7 @@ import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import { hiring, managerNames, proposed } from './hiring'
 
 const s = (name: string, extra: Partial<AgentSummary> = {}, file: Partial<AgentSummary['file']> = {}): AgentSummary => ({
-  file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'x', ...file },
+  file: { name, title: name, reports_to: 'theuth', model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'x', ...file },
   status: 'idle', desk: null, open_tasks: 0, spent_month: 0, ...extra,
 })
 

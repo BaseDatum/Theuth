@@ -138,8 +138,9 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
-/// Subcommands (67 §4.1, §12). Each connects to the running engine and calls
-/// one RPC method; every one answers `not built` until its worker lands.
+/// Subcommands (67 §4.1, §12; 79 §8). Each connects to the running engine and
+/// calls one RPC method (`mesh add --ssh|--docker` runs bring-up here and joins
+/// over RPC; `--vm` is a pure RPC client of `sandbox_create`).
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
     /// The engine mesh: peers, pairing, the hub lease (design doc 67 §4).
@@ -156,6 +157,11 @@ enum Cmd {
     Session {
         #[command(subcommand)]
         cmd: SessionCmd,
+    },
+    /// Sandbox VMs on this engine (design doc 79 §8): list, start, stop, remove, desktop URL.
+    Sandbox {
+        #[command(subcommand)]
+        cmd: SandboxCmd,
     },
     /// The stdio MCP server an ACP child gets in `session/new.mcpServers`
     /// (75 §9): `list_skills`, `load_skill`, `send_message` proxied to the
@@ -176,13 +182,16 @@ enum MeshCmd {
     /// Pair with the engine behind a pairing string (mutual and transitive) —
     /// or make one first: `--ssh user@host [--key NAME | --system-ssh]` installs
     /// `t` over SSH, `--docker [--name N] [--image I | --local-t PATH]` runs it
-    /// in a container here; both end paired (design doc 67 §13).
+    /// in a container here, `--vm [--name N] [--cpus N] [--memory 4G] [--disk 20G]
+    /// [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network public,host[,private]]
+    /// [--image REF | --bootstrap] [--local-t PATH]` makes a sandbox VM (design
+    /// doc 79); all end paired (design doc 67 §13).
     Add {
         /// The string `t mesh pair` printed on the other engine.
-        #[arg(required_unless_present_any = ["ssh", "docker"])]
+        #[arg(required_unless_present_any = ["ssh", "docker", "vm"])]
         pairing: Option<String>,
         /// Make an engine on this SSH host (`[user@]host[:port]`, or an `~/.ssh/config` alias with --system-ssh).
-        #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker"])]
+        #[arg(long, value_name = "TARGET", conflicts_with_all = ["pairing", "docker", "vm"])]
         ssh: Option<String>,
         /// Vault name of the private key for the built-in SSH client (store it with `t --secret-set NAME < key`).
         #[arg(
@@ -196,22 +205,41 @@ enum MeshCmd {
         #[arg(long, requires = "ssh")]
         system_ssh: bool,
         /// Make an engine in a Docker container on this machine.
-        #[arg(long, conflicts_with_all = ["pairing", "ssh"])]
+        #[arg(long, conflicts_with_all = ["pairing", "ssh", "vm"])]
         docker: bool,
-        /// Engine and record name; default: the SSH host, or `engine` for docker.
+        /// Make a sandbox VM on this machine (an isolated Linux desktop, design doc 79); the engine does the work.
+        #[arg(long, conflicts_with_all = ["pairing", "ssh", "docker"])]
+        vm: bool,
+        /// Engine and record name; default: the SSH host, `engine` for docker, `vm-1` for a VM.
         #[arg(long, value_name = "N")]
         name: Option<String>,
-        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile.
-        #[arg(
-            long,
-            value_name = "I",
-            requires = "docker",
-            conflicts_with = "local_t"
-        )]
+        /// --docker: a pre-built image ref instead of building deploy/computer/Dockerfile; --vm: the OCI image.
+        #[arg(long, value_name = "I", conflicts_with_all = ["local_t", "bootstrap", "ssh"])]
         image: Option<String>,
-        /// --docker: a locally built Linux `t`, baked in with deploy/computer/Dockerfile.dev.
-        #[arg(long, value_name = "PATH", requires = "docker")]
+        /// --docker / --vm: a locally built Linux `t` to install instead of the image's.
+        #[arg(long, value_name = "PATH", conflicts_with = "ssh")]
         local_t: Option<PathBuf>,
+        /// --vm: vCPUs (default from the host).
+        #[arg(long, requires = "vm")]
+        cpus: Option<u8>,
+        /// --vm: memory, e.g. `4G` or `4096M` (default from the host).
+        #[arg(long, requires = "vm", value_name = "SIZE")]
+        memory: Option<String>,
+        /// --vm: root disk, e.g. `20G` (default 20G).
+        #[arg(long, requires = "vm", value_name = "SIZE")]
+        disk: Option<String>,
+        /// --vm: share a host directory: `HOST[:GUEST][:ro]` (repeatable).
+        #[arg(long, requires = "vm", value_name = "HOST[:GUEST][:ro]")]
+        share: Vec<String>,
+        /// --vm: no desktop (no VNC, no XFCE).
+        #[arg(long, requires = "vm")]
+        no_desktop: bool,
+        /// --vm: network policy `public,host` (default) | `public,host,private` | `public` | `none`.
+        #[arg(long, requires = "vm", value_name = "POLICY")]
+        network: Option<String>,
+        /// --vm: our `theuth-vm-base:trixie` systemd base plus a first-boot install script instead of the published image.
+        #[arg(long, requires = "vm")]
+        bootstrap: bool,
     },
     /// Leave an engine out of the mesh.
     Remove {
@@ -283,6 +311,38 @@ enum SessionCmd {
     },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum SandboxCmd {
+    /// Every sandbox with state, engine and resources.
+    Ls,
+    /// Boot a stopped VM.
+    Start {
+        /// Record name.
+        name: String,
+    },
+    /// Stop a VM gracefully (refuses while sessions run unless --force).
+    Stop {
+        /// Record name.
+        name: String,
+        /// Stop even with running sessions.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Destroy a VM: peer, VM, disk, vault row, record.
+    Rm {
+        /// Record name.
+        name: String,
+        /// Keep its snapshots (default: keep).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        keep_snapshots: bool,
+    },
+    /// Print the noVNC URL and password for a browser.
+    Desktop {
+        /// Record name.
+        name: String,
+    },
+}
+
 /// The running engine's RPC address per `engine.json`, else the configured one.
 fn listen(data_dir: &Path, config: &Figment) -> String {
     rpc::engine::discover(data_dir)
@@ -313,13 +373,33 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
             } => client.request("mesh_add", rpc_params![pairing]).await,
             MeshCmd::Add {
                 pairing: None,
-                ssh,
-                key,
-                system_ssh,
-                docker: _,
+                vm: true,
                 name,
                 image,
                 local_t,
+                cpus,
+                memory,
+                disk,
+                share,
+                no_desktop,
+                network,
+                bootstrap,
+                ..
+            } => {
+                let spec = vm_spec(
+                    name, image, local_t, cpus, memory, disk, share, no_desktop, network, bootstrap,
+                )?;
+                return sandbox_create(client, spec).await;
+            }
+            MeshCmd::Add {
+                pairing: None,
+                ssh,
+                key,
+                system_ssh,
+                name,
+                image,
+                local_t,
+                ..
             } => {
                 let target = match ssh {
                     Some(target) => sandbox::Target::Ssh {
@@ -400,6 +480,50 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
                     .await
             }
         },
+        Cmd::Sandbox { cmd } => match cmd {
+            SandboxCmd::Ls => {
+                let r: Result<Vec<sandbox::SandboxInfo>, ClientError> =
+                    client.request("sandboxes_list", rpc_params![]).await;
+                match r {
+                    Ok(list) if list.is_empty() => {
+                        println!("no sandboxes");
+                        return Ok(());
+                    }
+                    Ok(list) => {
+                        for i in &list {
+                            println!("{}", sandbox_line(i));
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            SandboxCmd::Start { name } => client.request("sandbox_start", rpc_params![name]).await,
+            SandboxCmd::Stop { name, force } => {
+                client
+                    .request("sandbox_stop", rpc_params![name, 20u64, force])
+                    .await
+            }
+            SandboxCmd::Rm {
+                name,
+                keep_snapshots,
+            } => {
+                client
+                    .request("sandbox_destroy", rpc_params![name, keep_snapshots])
+                    .await
+            }
+            SandboxCmd::Desktop { name } => {
+                let r: Result<sandbox::types::DesktopAccess, ClientError> =
+                    client.request("sandbox_desktop_access", rpc_params![name]).await;
+                match r {
+                    Ok(d) => {
+                        println!("{}\npassword: {}\ngeometry: {}", d.http_url, d.password, d.geometry);
+                        return Ok(());
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        },
         // Dispatched by `run` before this: stdout is its protocol channel.
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
     };
@@ -439,6 +563,9 @@ async fn make_engine(
         async fn status(&self) -> anyhow::Result<mesh::MeshStatus> {
             Ok(self.0.request("mesh_status", rpc_params![]).await?)
         }
+        async fn remove_peer(&self, id: mesh::EngineId) -> anyhow::Result<()> {
+            Ok(self.0.request("mesh_remove", rpc_params![id.0]).await?)
+        }
     }
 
     let cfg: secrets::SecretsConfig = if config.contains("secrets") {
@@ -460,6 +587,7 @@ async fn make_engine(
         secret,
         &RpcJoin(client),
         &sandbox::Progress::stdout(),
+        sandbox::Cmd::DEFAULT_TIMEOUT,
     )
     .await
     {
@@ -472,6 +600,197 @@ async fn make_engine(
             std::process::exit(1);
         }
     }
+}
+
+/// `4G` | `4096M` | `4096` (MiB) → MiB.
+fn parse_mib(s: &str) -> anyhow::Result<u32> {
+    let t = s.trim();
+    let (num, mul) = match t.chars().last() {
+        Some('G' | 'g') => (&t[..t.len() - 1], 1024),
+        Some('M' | 'm') => (&t[..t.len() - 1], 1),
+        _ => (t, 1),
+    };
+    let n: u32 = num
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{s}: expected a size like 4G or 4096M"))?;
+    Ok(n * mul)
+}
+
+/// `HOST[:GUEST][:ro]` → a mount.
+fn parse_share(s: &str) -> anyhow::Result<sandbox::Mount> {
+    let mut parts = s.split(':');
+    let host = parts
+        .next()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("--share: empty host path"))?;
+    let mut guest = String::new();
+    let mut readonly = false;
+    for p in parts {
+        match p {
+            "ro" => readonly = true,
+            "rw" => readonly = false,
+            g if g.starts_with('/') && guest.is_empty() => guest = g.to_owned(),
+            other => anyhow::bail!("--share {s}: unexpected part {other:?}"),
+        }
+    }
+    Ok(sandbox::Mount {
+        host: host.into(),
+        guest,
+        readonly,
+    })
+}
+
+/// The `t mesh add --vm` flags as a `SandboxCreate`.
+#[allow(clippy::too_many_arguments)]
+fn vm_spec(
+    name: Option<String>,
+    image: Option<String>,
+    local_t: Option<PathBuf>,
+    cpus: Option<u8>,
+    memory: Option<String>,
+    disk: Option<String>,
+    share: Vec<String>,
+    no_desktop: bool,
+    network: Option<String>,
+    bootstrap: bool,
+) -> anyhow::Result<sandbox::SandboxCreate> {
+    let network = network
+        .map(|n| {
+            let n = n.replace(' ', "");
+            let v = match n.as_str() {
+                "public,host" | "host,public" => "public_host",
+                "public,host,private" | "public,private,host" | "host,public,private" => {
+                    "public_host_private"
+                }
+                "public" => "public_only",
+                "none" => "none",
+                other => anyhow::bail!("--network {other}: expected public,host | public,host,private | public | none"),
+            };
+            Ok::<_, anyhow::Error>(serde_json::from_value::<sandbox::NetPolicy>(
+                serde_json::Value::String(v.into()),
+            )?)
+        })
+        .transpose()?;
+    let image = match (image, bootstrap) {
+        (Some(r), _) => Some(sandbox::ImageRef::Oci { r#ref: r }),
+        (None, true) => Some(sandbox::ImageRef::Bootstrap {
+            base: "ghcr.io/basedatum/theuth-vm-base:trixie".into(),
+            script: "start-desktop".into(),
+        }),
+        (None, false) => None,
+    };
+    Ok(sandbox::SandboxCreate {
+        name: name.unwrap_or_else(|| "vm-1".into()),
+        purpose: None,
+        cpus,
+        memory_mib: memory.as_deref().map(parse_mib).transpose()?,
+        root_disk_mib: disk.as_deref().map(parse_mib).transpose()?,
+        max_cpus: None,
+        max_memory_mib: None,
+        shares: share.iter().map(|s| parse_share(s)).collect::<Result<_, _>>()?,
+        desktop: Some(!no_desktop),
+        geometry: None,
+        network,
+        image,
+        autostart: None,
+        local_t,
+    })
+}
+
+/// One line of `t sandbox ls`.
+fn sandbox_line(i: &sandbox::SandboxInfo) -> String {
+    let state = serde_json::to_value(&i.state)
+        .ok()
+        .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_owned))
+        .unwrap_or_default();
+    let mut s = format!(
+        "{:<16} {:<7} {:<10} engine={}",
+        i.name,
+        i.backend,
+        state,
+        i.engine.as_deref().unwrap_or("-")
+    );
+    if let Some(vm) = &i.vm {
+        let r = vm.resources;
+        s.push_str(&format!(
+            " cpus={} memory={}M disk={}M shares={} desktop={}",
+            r.cpus,
+            r.memory_mib,
+            r.root_disk_mib,
+            vm.shares.len(),
+            if vm.desktop.is_some() { "yes" } else { "no" }
+        ));
+    }
+    s
+}
+
+/// `t mesh add --vm`: `sandbox_create` over RPC, then print `Progress` lines
+/// from `subscribe_events` until the record is `ready` or `failed`. Preflight
+/// blockers arrive as the server's error message, one sentence per line.
+async fn sandbox_create(
+    client: jsonrpsee::ws_client::WsClient,
+    spec: sandbox::SandboxCreate,
+) -> anyhow::Result<()> {
+    use jsonrpsee::core::ClientError;
+    use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
+    use jsonrpsee::rpc_params;
+
+    // Subscribe first so no progress line is missed.
+    let mut events: Subscription<serde_json::Value> = client
+        .subscribe(
+            "subscribe_events",
+            rpc_params![serde_json::Value::Null, serde_json::Value::Null],
+            "unsubscribe_events",
+        )
+        .await?;
+    let name = spec.name.clone();
+    let r: Result<sandbox::SandboxInfo, ClientError> =
+        client.request("sandbox_create", rpc_params![spec]).await;
+    match r {
+        Ok(_) => println!("[create] {name}: creating"),
+        Err(ClientError::Call(e)) => {
+            eprintln!("cannot create {name}:\n{}", e.message());
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    }
+    while let Some(ev) = events.next().await {
+        let ev = ev?;
+        let of_ours = ev.get("name").and_then(|n| n.as_str()) == Some(name.as_str())
+            || ev.pointer("/sandbox/name").and_then(|n| n.as_str()) == Some(name.as_str());
+        if !of_ours {
+            continue;
+        }
+        match ev.get("type").and_then(|t| t.as_str()) {
+            Some("Progress") => println!(
+                "[{}] {}",
+                ev.get("step").and_then(|s| s.as_str()).unwrap_or("-"),
+                ev.get("line").and_then(|l| l.as_str()).unwrap_or("")
+            ),
+            Some("Changed") => match ev.pointer("/sandbox/state/state").and_then(|s| s.as_str()) {
+                Some("ready") | Some("running") => {
+                    let engine = ev
+                        .pointer("/sandbox/engine")
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("-");
+                    println!("engine {name} ({engine}) joined the mesh");
+                    return Ok(());
+                }
+                Some("failed") => {
+                    eprintln!(
+                        "{name} failed at {}: {}\nretry from Settings › Mesh or `t sandbox rm {name}`",
+                        ev.pointer("/sandbox/state/step").and_then(|s| s.as_str()).unwrap_or("?"),
+                        ev.pointer("/sandbox/state/error").and_then(|s| s.as_str()).unwrap_or("?")
+                    );
+                    std::process::exit(1);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    anyhow::bail!("the engine closed the event stream before {name} was ready")
 }
 
 const DEFAULT_CONFIG: &str = "# theuth configuration. Every plugin reads its own section.
@@ -606,6 +925,34 @@ agent:
 #   lapse_secs: 30           # heartbeats missed for this long = the lease lapsed
 #   capabilities_secs: 300   # how often harnesses / repos / display / gpu are re-advertised
 #   workspaces: []           # repo roots this engine advertises for task placement
+#   class: ~                 # server | desktop | laptop | container | vm — declare the machine class; ~ → detect (a sandbox VM's host writes `vm`, design doc 79)
+
+# sandbox:                   # sandbox VMs: isolated Linux desktops on this machine that join the mesh as engines (design doc 79). `t mesh add --vm`, `t sandbox ls|start|stop|rm|desktop`
+#   enabled: true            # false: no actor, no tools, no RPC; records and VMs on disk untouched (VMs keep running detached)
+#   vm:
+#     enabled: true          # false: docker/ssh engines only
+#     runtime: microsandbox  # the only value in v1
+#     home: \"\"               # MSB_HOME; \"\" = the SDK default (~/.microsandbox), shared with the user's own msb
+#     image: ghcr.io/basedatum/theuth-vm   # tag = this binary's version; `--bootstrap` = `theuth-vm-base:trixie` + first-boot script
+#     defaults:
+#       cpus: auto           # auto = clamp(host_cores / 4, 2, 4)
+#       memory_mib: auto     # auto = clamp(host_mem / 4, 2048, 8192)
+#       root_disk_mib: 20480
+#       max_cpus: auto       # live-resize ceiling; auto = host_cores
+#       max_memory_mib: auto # auto = host_mem / 2
+#       desktop: true
+#       geometry: 1440x900
+#       network: public_host # public_host | public_host_private | public_only | none
+#     autostart: true        # start recorded VMs with this engine
+#     max_vms: 4
+#     resize_settle_secs: 20
+#     loopback_mesh: false   # publish the VM's iroh UDP port on 127.0.0.1 and pair over it; off = relay path (a ≥ 1500 B host→guest datagram wedges the guest NIC, 79 S1 #4)
+#   create_timeout_secs: 900 # sandbox_create waits this long for `ready`
+#   step_timeout_secs: 600   # per bring-up step and per command inside the VM
+#   health_interval_secs: 60 # status + metrics reconcile → SandboxEvent::Changed on change
+#   max_concurrent_bringups: 2
+#   snapshots_keep: 5        # oldest auto-snapshots pruned; named ones kept
+#   handoff_timeout_secs: 1800   # desktop_handoff waits this long for Done
 
 # roster:                    # agents as files in <data_dir>/agents/*.md, one desk each on the hub (design doc 67 §6)
 #   decision_wait_secs: 120  # `escalate` waits this long for a live answer before parking the task
@@ -1127,10 +1474,11 @@ async fn run() -> anyhow::Result<()> {
         start_plugins(&rt, plugins).await?;
     }
 
+    // 79 smoke bug 7: every normal exit names its origin (an rpc `shutdown` logs its peer in `api.rs`).
     tokio::select! {
-        _ = rt.shutdown.cancelled() => {}
-        _ = tokio::signal::ctrl_c() => rt.shutdown.cancel(),
-        _ = parent_gone() => rt.shutdown.cancel(),
+        _ = rt.shutdown.cancelled() => tracing::warn!("exiting: shutdown token cancelled (rpc shutdown, plugin or actor)"),
+        _ = tokio::signal::ctrl_c() => { tracing::warn!("exiting: SIGINT"); rt.shutdown.cancel() }
+        _ = parent_gone() => { tracing::warn!("exiting: parent process gone"); rt.shutdown.cancel() }
     }
     // Give actors a moment to flush (sqlite writes, terminal restore), then
     // leave without waiting for the runtime: a `spawn_blocking` pipe drain

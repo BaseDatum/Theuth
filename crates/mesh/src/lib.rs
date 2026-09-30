@@ -222,15 +222,13 @@ impl Ctx {
     /// rewritten: every write is a replicated batch, and heartbeats already
     /// carry liveness.
     async fn refresh_stats(&self) {
-        let (id, started, data_dir, workspaces) = (
-            self.net.id.clone(),
-            self.started_ms,
-            self.rt.data_dir.clone(),
-            self.cfg().workspaces,
-        );
-        let Ok(s) =
-            tokio::task::spawn_blocking(move || stats::probe(id, started, &data_dir, &workspaces))
-                .await
+        let cfg = self.cfg();
+        let (id, started, data_dir) =
+            (self.net.id.clone(), self.started_ms, self.rt.data_dir.clone());
+        let Ok(s) = tokio::task::spawn_blocking(move || {
+            stats::probe(id, started, &data_dir, &cfg.workspaces, cfg.class)
+        })
+        .await
         else {
             return;
         };
@@ -630,6 +628,7 @@ impl runtime::Plugin for MeshPlugin {
         let stop = rt.shutdown.clone();
         tokio::spawn(async move {
             if platform::process::stop_signal().await.is_ok() {
+                tracing::warn!("exiting: SIGTERM (mesh plugin releases the lease and cancels shutdown)");
                 stop.cancel();
             }
         });
@@ -664,6 +663,8 @@ impl runtime::Plugin for MeshPlugin {
                 discovery: cfg.discovery,
                 bind_addr: cfg.bind,
                 storm_frames_per_sec: cfg.storm_frames_per_sec,
+                first_seen_ms: identity.first_seen_ms,
+                keys: None,
             },
             store.clone(),
             name,
@@ -683,19 +684,24 @@ impl runtime::Plugin for MeshPlugin {
             cfg.relay,
             cfg.discovery
         );
+        // 79 §6.6: secrets stamps its replicated rows with the engine id; it starts
+        // before us and cannot ask the mesh (mesh depends on secrets), so we tell it.
+        tokio::spawn(tell_secrets_engine(rt.clone(), net.id.clone()));
 
-        // 69 decision 8: the mesh's name defaults to the first engine's own,
-        // stamped at this engine's first_seen so the oldest engine's default
-        // wins in replication and any rename beats every default. Written
-        // after the attach (below) so the trigger captures it.
+        // 69 decision 8: the mesh's name defaults to the first engine's own.
+        // Written after the attach (below) so the trigger captures it, and only
+        // by an engine that starts alone: a joiner (peers at start) takes the
+        // row replication brings. Two defaults meeting at pairing time are
+        // ranked by identity age in `Store::meta_default` (79 smoke bug 5).
+        let alone = store.peers().await.map(|p| p.is_empty()).unwrap_or(false);
 
         let (events, _) = broadcast::channel(256);
         let started_ms = now_ms();
         let self_stats = {
-            let (id, data_dir, workspaces) =
-                (net.id.clone(), rt.data_dir.clone(), cfg.workspaces.clone());
+            let (id, data_dir, workspaces, class) =
+                (net.id.clone(), rt.data_dir.clone(), cfg.workspaces.clone(), cfg.class);
             tokio::task::spawn_blocking(move || {
-                stats::probe(id, started_ms, &data_dir, &workspaces)
+                stats::probe(id, started_ms, &data_dir, &workspaces, class)
             })
             .await
             .unwrap_or_else(|_| EngineStats {
@@ -760,7 +766,7 @@ impl runtime::Plugin for MeshPlugin {
                     Err(e) => tracing::info!("mesh: replication unavailable ({e}); local only"),
                 }
             }
-            if let Err(e) = c.store.meta_default("name", &name).await {
+            if alone && let Err(e) = c.store.meta_default("name", &name, c.first_seen_ms).await {
                 tracing::warn!("mesh: mesh_meta name: {e:#}");
             }
             c.write_stats(stats).await;
@@ -814,4 +820,68 @@ impl runtime::Plugin for MeshPlugin {
 /// The mesh actor; `None` before the plugin started or when its store failed.
 pub fn actor() -> Option<ActorRef<Mesh>> {
     ActorRef::<Mesh>::lookup(MESH_ACTOR).ok().flatten()
+}
+
+/// Hand this engine's id to the secrets actor ([`secrets::SetEngine`]) once it is registered.
+async fn tell_secrets_engine(rt: Runtime, id: EngineId) {
+    if let Some(s) = rt
+        .lookup_when::<secrets::SecretsActor>(secrets::SECRETS_ACTOR)
+        .await
+    {
+        let _ = s.tell(secrets::SetEngine(id.0)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 79 §6.6 (was roster→secrets, now mesh→secrets): once the mesh has its id,
+    /// the secrets actor stamps the rows it writes with it, not the hostname.
+    #[tokio::test]
+    async fn secrets_learns_the_engine_id_from_mesh() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(Default::default(), dir.path().to_path_buf());
+        let vault = Arc::new(
+            secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let a = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
+            vault,
+            rt.clone(),
+            Duration::from_secs(10),
+        ));
+        a.register(secrets::SECRETS_ACTOR).unwrap();
+        tell_secrets_engine(rt, EngineId("engine-f3".into())).await;
+
+        let asker = a.clone();
+        tokio::spawn(async move {
+            asker
+                .ask(secrets::Request {
+                    session: runtime::SessionId::new(),
+                    title: None,
+                    fields: vec![secrets::SecretRequestField {
+                        name: "TOKEN".into(),
+                        label: "a token".into(),
+                        masked: true,
+                        current: None,
+                    }],
+                })
+                .await
+        });
+        let row = loop {
+            let rows = a
+                .ask(secrets::ListRequests {
+                    unanswered_only: true,
+                })
+                .await
+                .unwrap();
+            if let Some(r) = rows.into_iter().next() {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(row.engine, "engine-f3");
+    }
 }

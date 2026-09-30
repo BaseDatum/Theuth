@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Dot as PresenceDot, meshChip, useMembersLine } from '@/components/link/EngineSwitcher'
 import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { Editable } from '@/components/settings/Link'
+import { SandboxVms } from '@/components/settings/SandboxVms'
 import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { ago } from '@/components/sidebar/AgentTree'
 import { age } from '@/components/tasks/helpers'
@@ -200,6 +201,8 @@ function ThisMesh() {
         </form>
         <OverSsh />
       </Section>
+
+      <SandboxVms />
     </>
   )
 }

@@ -33,7 +33,7 @@ impl Tool for MeshPeersTool {
 
     fn description(&self) -> String {
         "List the engines in this harness's mesh: one line per engine with its name, id, whether it is \
-         reachable now, its class (server / desktop / laptop / container), which harnesses it has installed \
+         reachable now, its class (server / desktop / laptop / container / vm), which harnesses it has installed \
          (native, omp, opencode, claude), the repo paths it can open, whether it has a display and a GPU, and \
          which one holds the hub lease. Use it before creating or assigning a task to choose `where` (an \
          engine name) and `harness` from what the task needs; pass `reachable: true` to see only engines that \
@@ -67,38 +67,74 @@ impl Tool for MeshPeersTool {
             if args.reachable && !p.reachable {
                 continue;
             }
-            let s = stats.iter().find(|s| s.id == p.id);
-            let (class, harnesses, repos, display, gpu) = match s {
-                Some(s) => (
-                    crate::store::class_str(s.class).to_owned(),
-                    s.harnesses.join(","),
-                    if s.repos.is_empty() {
-                        "-".to_owned()
-                    } else {
-                        s.repos.join(",")
-                    },
-                    s.display,
-                    s.gpu,
-                ),
-                None => (
-                    "unknown".to_owned(),
-                    "-".to_owned(),
-                    "-".to_owned(),
-                    false,
-                    false,
-                ),
-            };
-            lines.push(format!(
-                "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{hub}",
-                name = p.name,
-                id = p.id,
-                reach = if p.reachable { "reachable" } else { "unreachable" },
-                hub = if hub.as_ref() == Some(&p.id) { " hub" } else { "" },
-            ));
+            lines.push(peer_line(p, stats.iter().find(|s| s.id == p.id), hub.as_ref()));
         }
         if lines.is_empty() {
             lines.push("no engines match".into());
         }
         Ok(ToolOutput::ok(lines.join("\n")))
+    }
+}
+
+/// One `mesh_peers` line: `<name> id=<id> <reach> class=<class> harnesses=… repos=… display=… gpu=…[ hub]`.
+fn peer_line(p: &crate::Peer, s: Option<&crate::EngineStats>, hub: Option<&crate::EngineId>) -> String {
+    let (class, harnesses, repos, display, gpu) = match s {
+        Some(s) => (
+            crate::store::class_str(s.class).to_owned(),
+            s.harnesses.join(","),
+            if s.repos.is_empty() {
+                "-".to_owned()
+            } else {
+                s.repos.join(",")
+            },
+            s.display,
+            s.gpu,
+        ),
+        None => (
+            "unknown".to_owned(),
+            "-".to_owned(),
+            "-".to_owned(),
+            false,
+            false,
+        ),
+    };
+    format!(
+        "{name} id={id} {reach} class={class} harnesses={harnesses} repos={repos} display={display} gpu={gpu}{hub}",
+        name = p.name,
+        id = p.id,
+        reach = if p.reachable { "reachable" } else { "unreachable" },
+        hub = if hub == Some(&p.id) { " hub" } else { "" },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_line_prints_class_vm() {
+        let p = crate::Peer {
+            id: crate::EngineId("id1".into()),
+            name: "lab".into(),
+            addrs: vec![],
+            reachable: true,
+            last_seen_ms: 0,
+            hub_pref: crate::HubPref::Never,
+        };
+        let s = crate::EngineStats {
+            id: p.id.clone(),
+            uptime_since_ms: 0,
+            class: crate::EngineClass::Vm,
+            availability_30d: 1.0,
+            harnesses: vec!["native".into(), "omp".into()],
+            repos: vec![],
+            display: true,
+            gpu: false,
+        };
+        assert_eq!(
+            peer_line(&p, Some(&s), None),
+            "lab id=id1 reachable class=vm harnesses=native,omp repos=- display=true gpu=false"
+        );
+        assert!(peer_line(&p, None, Some(&p.id)).ends_with("class=unknown harnesses=- repos=- display=false gpu=false hub"));
     }
 }

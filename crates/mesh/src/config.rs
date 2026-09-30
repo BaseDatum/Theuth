@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::HubPref;
+use crate::types::{EngineClass, HubPref};
 
 /// `mesh:` config section. Every key has a default; an absent section is the
 /// defaults.
@@ -35,6 +35,10 @@ pub struct MeshConfig {
     pub capabilities_secs: u64,
     /// Repo roots this engine advertises for placement (67 §8); empty = none.
     pub workspaces: Vec<String>,
+    /// Declared machine class (`server | desktop | laptop | container | vm`);
+    /// `None` = detect (79 decision 9: the engine that made a VM writes
+    /// `class: vm` into it so it never detects as a desktop and outranks its host).
+    pub class: Option<EngineClass>,
     /// While a peer stays connected, its open `availability` interval is
     /// written (a replicated row) at most this often; open and close always
     /// write. Keeps the 10 s heartbeat off the replication feed.
@@ -59,6 +63,7 @@ impl Default for MeshConfig {
             lapse_secs: 30,
             capabilities_secs: 300,
             workspaces: Vec::new(),
+            class: None,
             availability_flush_secs: 600,
             storm_frames_per_sec: 50,
         }

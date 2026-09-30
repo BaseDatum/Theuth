@@ -18,7 +18,7 @@ export function useAgentFile(name: string) {
       const f = AGENTS.find((a) => a.file.name === name)?.file
       if (f) return f
       if (name === THEUTH)
-        return { name, title: name, reports_to: 'user', model: null, effort: null, tools: 'destructive', mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, body: 'Standing instructions (prompt.md).' }
+        return { name, title: name, reports_to: 'user', model: null, effort: null, tools: 'destructive', mcp: null, budget: { type: 'none' }, capabilities: null, paused: false, proposed_by: null, runs_in: 'any', body: 'Standing instructions (prompt.md).' }
       return Promise.reject(new Error('no such agent'))
     },
   })

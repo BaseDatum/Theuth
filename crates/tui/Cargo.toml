@@ -22,6 +22,7 @@ nodes = { workspace = true }
 schedule = { workspace = true }
 tasks = { workspace = true }
 roster = { workspace = true }
+sandbox = { workspace = true }
 artifact = { workspace = true }
 document = { workspace = true }
 meeting = { workspace = true }

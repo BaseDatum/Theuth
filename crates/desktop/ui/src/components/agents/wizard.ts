@@ -22,7 +22,7 @@ export const TOOLS = ['read_only', 'mutating', 'destructive'] as const
 export const EFFORTS = ['low', 'medium', 'high', 'max'] as const
 
 export function emptyDraft(): Draft {
-  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, body: '' }
+  return { name: '', title: '', reports_to: THEUTH, model: null, effort: null, tools: null, mcp: null, budget: { type: 'none' }, capabilities: null, runs_in: 'any', body: '' }
 }
 
 /** The charter the editor opens with; the agent fills in the blanks. */

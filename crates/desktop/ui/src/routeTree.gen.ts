@@ -37,6 +37,7 @@ import { Route as SkillsNameRouteImport } from './routes/skills.$name'
 import { Route as TalkSessionRouteImport } from './routes/talk.$session'
 import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
+import { Route as VmNameRouteImport } from './routes/vm.$name'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
 import { Route as CodemapSessionRootRouteImport } from './routes/codemap.$session.$root'
@@ -184,6 +185,11 @@ const TasksIdRoute = TasksIdRouteImport.update({
   path: '/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const VmNameRoute = VmNameRouteImport.update({
+  id: '/vm/$name',
+  path: '/vm/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsNameIndexRoute = AgentsNameIndexRouteImport.update({
   id: '/agents/$name/',
   path: '/agents/$name/',
@@ -239,6 +245,7 @@ export interface FileRoutesByFullPath {
   '/skills/$name': typeof SkillsNameRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/vm/$name': typeof VmNameRoute
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
@@ -275,6 +282,7 @@ export interface FileRoutesByTo {
   '/skills/$name': typeof SkillsNameRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/vm/$name': typeof VmNameRoute
   '/agents': typeof AgentsIndexRoute
   '/meetings': typeof MeetingsIndexRoute
   '/routines': typeof RoutinesIndexRoute
@@ -312,6 +320,7 @@ export interface FileRoutesById {
   '/skills/$name': typeof SkillsNameRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/vm/$name': typeof VmNameRoute
   '/agents/': typeof AgentsIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
   '/routines/': typeof RoutinesIndexRoute
@@ -350,6 +359,7 @@ export interface FileRouteTypes {
     | '/skills/$name'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/vm/$name'
     | '/agents/'
     | '/meetings/'
     | '/routines/'
@@ -386,6 +396,7 @@ export interface FileRouteTypes {
     | '/skills/$name'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/vm/$name'
     | '/agents'
     | '/meetings'
     | '/routines'
@@ -422,6 +433,7 @@ export interface FileRouteTypes {
     | '/skills/$name'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/vm/$name'
     | '/agents/'
     | '/meetings/'
     | '/routines/'
@@ -457,6 +469,7 @@ export interface RootRouteChildren {
   SkillsNameRoute: typeof SkillsNameRoute
   TalkSessionRoute: typeof TalkSessionRoute
   TasksIdRoute: typeof TasksIdRoute
+  VmNameRoute: typeof VmNameRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
   RoutinesIndexRoute: typeof RoutinesIndexRoute
@@ -668,6 +681,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/vm/$name': {
+      id: '/vm/$name'
+      path: '/vm/$name'
+      fullPath: '/vm/$name'
+      preLoaderRoute: typeof VmNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/$name/': {
       id: '/agents/$name/'
       path: '/agents/$name'
@@ -759,6 +779,7 @@ const rootRouteChildren: RootRouteChildren = {
   SkillsNameRoute: SkillsNameRoute,
   TalkSessionRoute: TalkSessionRoute,
   TasksIdRoute: TasksIdRoute,
+  VmNameRoute: VmNameRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
   RoutinesIndexRoute: RoutinesIndexRoute,

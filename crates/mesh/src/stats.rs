@@ -7,24 +7,17 @@ use std::path::{Path, PathBuf};
 use crate::types::{EngineClass, EngineId, EngineStats};
 
 /// Probe everything. `workspaces` = `mesh.workspaces`; `data_dir` for
-/// `acp/agents.yaml`.
+/// `acp/agents.yaml`; `declared` = `mesh.class` (79 decision 9), which
+/// short-circuits detection when set.
 pub fn probe(
     id: EngineId,
     uptime_since_ms: u64,
     data_dir: &Path,
     workspaces: &[String],
+    declared: Option<EngineClass>,
 ) -> EngineStats {
-    let battery = has_battery();
     let display = has_display();
-    let class = if in_container() {
-        EngineClass::Container
-    } else if battery {
-        EngineClass::Laptop
-    } else if !display {
-        EngineClass::Server
-    } else {
-        EngineClass::Desktop
-    };
+    let class = declared.unwrap_or_else(|| detect_class(has_battery(), display));
     EngineStats {
         id,
         uptime_since_ms,
@@ -34,6 +27,20 @@ pub fn probe(
         repos: repos(workspaces),
         display,
         gpu: has_gpu(),
+    }
+}
+
+/// Detection order: container marker, battery → laptop, no display → server,
+/// else desktop (67 §4.5).
+fn detect_class(battery: bool, display: bool) -> EngineClass {
+    if in_container() {
+        EngineClass::Container
+    } else if battery {
+        EngineClass::Laptop
+    } else if !display {
+        EngineClass::Server
+    } else {
+        EngineClass::Desktop
     }
 }
 
@@ -159,6 +166,18 @@ fn shellexpand_home(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_class_beats_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let detected = probe(EngineId("e".into()), 0, dir.path(), &[], None).class;
+        // Pick a declared value the host cannot detect as, so the assertion bites.
+        assert_eq!(
+            probe(EngineId("e".into()), 0, dir.path(), &[], Some(EngineClass::Vm)).class,
+            EngineClass::Vm
+        );
+        assert_ne!(detected, EngineClass::Vm, "detection never yields vm");
+    }
 
     #[test]
     fn repos_finds_git_roots_two_levels_down() {

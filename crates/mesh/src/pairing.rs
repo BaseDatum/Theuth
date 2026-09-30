@@ -135,7 +135,13 @@ pub fn newer(incoming: &PeerEntry, local: &PeerEntry) -> bool {
 }
 
 /// Union of two peer sets under [`newer`]; `me` is never merged in (an
-/// engine is not its own peer). Returns the merged set and which rows changed.
+/// engine is not its own peer). A replacing live row keeps the addresses the
+/// local row already had (union, first-seen order): an address injected by
+/// hand — the host's `127.0.0.1:<port>` into a loopback-published VM — must
+/// survive the peer's own advertisement (79 smoke bug 9). Returns the merged
+/// set and which rows changed.
+// ponytail: addresses only ever accumulate; prune stale ones if a peer that
+// changes networks often makes iroh's dial list long.
 pub fn merge(
     local: &[PeerEntry],
     incoming: &[PeerEntry],
@@ -148,13 +154,71 @@ pub fn merge(
         if &p.id == me {
             continue;
         }
-        let replace = by_id.get(&p.id).is_none_or(|cur| newer(p, cur));
-        if replace {
+        let Some(cur) = by_id.get(&p.id) else {
             by_id.insert(p.id.clone(), p.clone());
             changed.push(p.clone());
+            continue;
+        };
+        if !newer(p, cur) {
+            continue;
         }
+        let mut p = p.clone();
+        if !p.removed() {
+            p.addrs = union(&cur.addrs, &p.addrs);
+        }
+        by_id.insert(p.id.clone(), p.clone());
+        changed.push(p);
     }
     (by_id.into_values().collect(), changed)
+}
+
+/// `a` then whatever of `b` is not already in it.
+pub fn union(a: &[TransportAddr], b: &[TransportAddr]) -> Vec<TransportAddr> {
+    let mut out = a.to_vec();
+    out.extend(b.iter().filter(|x| !a.contains(x)).cloned());
+    out
+}
+
+/// An engine's standing in the mesh when a handshake decides who keeps the
+/// vault key (79 F5, smoke bug 10). Counted before the new peer is learned,
+/// on both sides, so both compute the same answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rank {
+    /// Live (not removed) paired peers.
+    pub paired_peers: u32,
+    /// Identity creation (`identity.rs`), the same age signal as the mesh name.
+    pub first_seen_ms: u64,
+    /// Final tie-break.
+    pub id: EngineId,
+}
+
+/// Which end of a pairing handshake keeps its mesh vault key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// The engine running `t mesh add`.
+    Dialer,
+    /// The engine whose pairing string was pasted.
+    Acceptor,
+}
+
+/// The established engine keeps the key and the fresh one adopts it,
+/// whichever way the handshake was dialed: more paired peers wins; tie → the
+/// older identity; tie → the lower id. A laptop pasting an existing mesh's
+/// string (dialer fresh) adopts as before; a host bringing up a VM (acceptor
+/// fresh) keeps its key and the VM adopts.
+pub fn key_owner(dialer: &Rank, acceptor: &Rank) -> Side {
+    let key = |r: &Rank| {
+        (
+            std::cmp::Reverse(r.paired_peers),
+            r.first_seen_ms,
+            r.id.clone(),
+        )
+    };
+    if key(dialer) < key(acceptor) {
+        Side::Dialer
+    } else {
+        Side::Acceptor
+    }
 }
 
 #[cfg(test)]
@@ -217,5 +281,55 @@ mod tests {
         assert!(!m[0].removed());
         let (m, _) = merge(&[entry("x", 50, None)], &[entry("x", 50, Some(50))], &me);
         assert!(m[0].removed());
+    }
+
+    /// 79 smoke bug 9: the host adds a VM by its injected `127.0.0.1:<port>`;
+    /// the VM's own advertisement (relay + NAT address) must add to, not
+    /// replace, that address. A tombstone carries no addresses.
+    #[test]
+    fn merge_keeps_the_local_addrs_of_a_replaced_live_row() {
+        let me = EngineId("me".into());
+        let ip = |s: &str| TransportAddr::Ip(s.parse().unwrap());
+        let mut local = entry("vm", 10, None);
+        local.addrs = vec![ip("127.0.0.1:56082")];
+        let mut adv = entry("vm", 20, None);
+        adv.addrs = vec![ip("172.16.0.6:7800"), ip("127.0.0.1:56082")];
+        let (m, changed) = merge(std::slice::from_ref(&local), &[adv.clone()], &me);
+        assert_eq!(m[0].addrs, [ip("127.0.0.1:56082"), ip("172.16.0.6:7800")]);
+        assert_eq!(changed[0].addrs, m[0].addrs);
+        // An older advertisement changes nothing; a removal keeps its (empty) list.
+        let (m, changed) = merge(&[adv.clone()], &[local], &me);
+        assert_eq!(m[0].addrs, adv.addrs);
+        assert!(changed.is_empty());
+        let (m, _) = merge(&[adv], &[entry("vm", 30, Some(30))], &me);
+        assert!(m[0].removed() && m[0].addrs.is_empty());
+    }
+
+    /// 79 F5: peers, then age, then id; the direction of the dial never matters.
+    #[test]
+    fn key_owner_is_peers_then_age_then_id() {
+        let rank = |peers: u32, first_seen_ms: u64, id: &str| Rank {
+            paired_peers: peers,
+            first_seen_ms,
+            id: EngineId(id.into()),
+        };
+        let table = [
+            // (dialer, acceptor, owner)
+            (rank(2, 900, "z"), rank(0, 100, "a"), Side::Dialer), // host with VMs dials a fresh VM
+            (rank(0, 900, "a"), rank(1, 100, "z"), Side::Acceptor), // laptop pastes an established mesh's string
+            (rank(0, 100, "z"), rank(0, 900, "a"), Side::Dialer), // no peers on either side: the older identity
+            (rank(0, 900, "z"), rank(0, 100, "a"), Side::Acceptor),
+            (rank(1, 500, "a"), rank(1, 500, "b"), Side::Dialer), // full tie: the lower id
+            (rank(1, 500, "b"), rank(1, 500, "a"), Side::Acceptor),
+        ];
+        for (d, a, want) in &table {
+            assert_eq!(key_owner(d, a), *want, "{d:?} dials {a:?}");
+            // Swapping the roles swaps the answer.
+            let flipped = match want {
+                Side::Dialer => Side::Acceptor,
+                Side::Acceptor => Side::Dialer,
+            };
+            assert_eq!(key_owner(a, d), flipped, "{a:?} dials {d:?}");
+        }
     }
 }

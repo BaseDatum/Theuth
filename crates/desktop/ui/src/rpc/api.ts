@@ -144,6 +144,19 @@ import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { HubPref } from '@/rpc/bindings/HubPref'
 import type { MeshStatus } from '@/rpc/bindings/MeshStatus'
+import type { DesktopAccess } from '@/rpc/bindings/DesktopAccess'
+import type { Handoff } from '@/rpc/bindings/Handoff'
+import type { LogLine } from '@/rpc/bindings/LogLine'
+import type { Mount } from '@/rpc/bindings/Mount'
+import type { Pending } from '@/rpc/bindings/Pending'
+import type { Preflight } from '@/rpc/bindings/Preflight'
+import type { ResizeOutcome } from '@/rpc/bindings/ResizeOutcome'
+import type { ResourceChange } from '@/rpc/bindings/ResourceChange'
+import type { SandboxCreate } from '@/rpc/bindings/SandboxCreate'
+import type { SandboxInfo } from '@/rpc/bindings/SandboxInfo'
+import type { VmMetrics } from '@/rpc/bindings/VmMetrics'
+import type { VmSnapshotInfo } from '@/rpc/bindings/VmSnapshotInfo'
+import type { SecretRequest } from '@/rpc/bindings/SecretRequest'
 import type { Peer } from '@/rpc/bindings/Peer'
 import type { Task } from '@/rpc/bindings/Task'
 import type { TaskCreate } from '@/rpc/bindings/TaskCreate'
@@ -439,6 +452,48 @@ export interface Api {
   mesh_remove(id: string): Promise<null>
   /** This engine's hub lease preference (67 §4.5). */
   mesh_set_hub(pref: HubPref): Promise<null>
+  // 79 §4.5 / contract §2.4: sandbox VMs. Every record the sandbox actor holds (`backend` docker|ssh|vm).
+  sandboxes_list(): Promise<SandboxInfo[]>
+  /** Host readiness (79 §5.1): `blockers` empty ⇒ a VM can be created now; the card renders each one as a sentence. */
+  sandbox_preflight(): Promise<Preflight>
+  /** Install microsandbox into `MSB_HOME`; progress as `SandboxEvent.Progress { name: "runtime" }`. */
+  sandbox_install_runtime(): Promise<null>
+  /** Returns at once in `creating`; `Progress` / `Changed` follow. */
+  sandbox_create(spec: SandboxCreate): Promise<SandboxInfo>
+  sandbox_retry(name: string): Promise<SandboxInfo>
+  sandbox_start(name: string): Promise<SandboxInfo>
+  /** `grace_secs` default 20, `force` default false. */
+  sandbox_stop(name: string, grace_secs: number | null, force: boolean | null): Promise<SandboxInfo>
+  sandbox_pause(name: string): Promise<SandboxInfo>
+  sandbox_resume(name: string): Promise<SandboxInfo>
+  /** Live within the ceilings; a ceiling change answers `restart_required` (79 §5.5). */
+  sandbox_resize(name: string, change: ResourceChange): Promise<ResizeOutcome>
+  /** Bind mounts, applied by the next start (79 decision 7). */
+  sandbox_set_shares(name: string, shares: Mount[]): Promise<Pending>
+  /** `full` default false (disk only). */
+  sandbox_snapshot(name: string, label: string, full: boolean | null): Promise<VmSnapshotInfo>
+  /** Discards the current disk (79 §5.6). */
+  sandbox_restore(name: string, id: string): Promise<SandboxInfo>
+  /** `keep_snapshots` default true. */
+  sandbox_destroy(name: string, keep_snapshots: boolean | null): Promise<null>
+  /** What the pop-out needs (79 §6.2); the password never crosses a tool result. */
+  sandbox_desktop_access(name: string): Promise<DesktopAccess>
+  sandbox_metrics(name: string): Promise<VmMetrics>
+  /** `tail` default 200. */
+  sandbox_logs(name: string, tail: number | null): Promise<LogLine[]>
+  /** Steer every running turn on the VM's engine (79 §6.5); answers how many were steered. */
+  sandbox_takeover(name: string, on: boolean): Promise<number>
+  /**
+   * 79 §7 (F2): a PTY job running a login shell on the VM (`msb exec --tty <name> -- bash -l`) through 55's terminal
+   * machinery; the answer is what `/pty/$session/$job` needs. Every PTY RPC is keyed by `(session, job)`, so `session`
+   * is part of the shape here even where F2's brief wrote `{ job }`.
+   */
+  sandbox_terminal(name: string): Promise<{ session: string; job: string }>
+  /** Every `handoffs` row, unresolved first (79 §6.6). */
+  handoffs_list(): Promise<Handoff[]>
+  handoff_resolve(id: string, outcome: 'done' | 'cancelled'): Promise<null>
+  /** The unanswered replicated `secret_requests` rows, newest first (79 §6.6): the inbox's `secret` cards. */
+  secret_requests_list(): Promise<SecretRequest[]>
   /** Every roster agent with status, desk, open tasks and month spend (67 §12). */
   agents_list(): Promise<AgentSummary[]>
   /** One agent file (67 §6.1). */
@@ -624,8 +679,8 @@ export interface Api {
   resolve_approval(id: ApprovalId, decision: Decision): Promise<boolean>
   /** Answer a pending `ask_user`: one answer per question, or `null` to dismiss the set (which cancels the turn). */
   answer_ask(id: AskId, answers: Answer[] | null): Promise<boolean>
-  /** Answer a `SecretsEvent.SecretRequested` (37 §3.8); `null` declines. `false` when `id` was no longer pending. */
-  answer_secret(id: string, value: string | null): Promise<boolean>
+  /** Answer a `SecretsEvent.SecretRequested` (37 §3.8) or a replicated `secret_requests` row (79 §6.6): `value` answers the (first) field, `values` answers a form by field name (H's positional params); both `null` declines. `false` when `id` was no longer pending. */
+  answer_secret(id: string, value: string | null, values?: Record<string, string> | null): Promise<boolean>
   /** Names, notes, versions and the key store (37 §3.8); never a value. */
   list_secrets(): Promise<SecretsList>
   /** Store a new version of `name`; the value transits once and is never echoed. `note: null` keeps the old note. */
@@ -843,6 +898,8 @@ export const METHODS = [
   'get_prompt',
   'get_schedule',
   'get_todos',
+  'handoff_resolve',
+  'handoffs_list',
   'harness_options',
   'info',
   'invite_node',
@@ -957,6 +1014,25 @@ export const METHODS = [
   'restore_secret',
   'resume_child',
   'resume_private',
+  'sandbox_create',
+  'sandbox_desktop_access',
+  'sandbox_destroy',
+  'sandbox_install_runtime',
+  'sandbox_logs',
+  'sandbox_metrics',
+  'sandbox_pause',
+  'sandbox_preflight',
+  'sandbox_resize',
+  'sandbox_restore',
+  'sandbox_resume',
+  'sandbox_retry',
+  'sandbox_set_shares',
+  'sandbox_snapshot',
+  'sandbox_start',
+  'sandbox_stop',
+  'sandbox_takeover',
+  'sandbox_terminal',
+  'sandboxes_list',
   'schedule_history',
   'search',
   'search_provider_test',
@@ -965,6 +1041,7 @@ export const METHODS = [
   'search_settings_set',
   'search_status',
   'search_test',
+  'secret_requests_list',
   'send_input',
   'send_message',
   'session_context_breakdown',

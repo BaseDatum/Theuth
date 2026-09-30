@@ -229,15 +229,7 @@ pub async fn serve_mesh(rt: Runtime) {
             for p in status.peers {
                 let name = node_name(&p, &seen);
                 seen.insert(p.id.0.clone(), name.clone());
-                let describe = match stats.iter().find(|s| s.id == p.id) {
-                    _ if !p.reachable => "mesh · offline".to_owned(),
-                    Some(s) => format!(
-                        "mesh · {} · harnesses: {}",
-                        format!("{:?}", s.class).to_lowercase(),
-                        s.harnesses.join(", ")
-                    ),
-                    None => "mesh".to_owned(),
-                };
+                let describe = describe(&p, stats.iter().find(|s| s.id == p.id));
                 let _ = agents
                     .ask(RegisterNode {
                         name: name.clone(),
@@ -281,6 +273,20 @@ fn node_name(p: &mesh::Peer, taken: &HashMap<String, String>) -> String {
         format!("{name}-{short}")
     } else {
         name.to_owned()
+    }
+}
+
+/// The node's `describe` line: `mesh · <class> · harnesses: a, b`, `mesh · offline`
+/// while unreachable, bare `mesh` before its stats row arrives.
+fn describe(p: &mesh::Peer, s: Option<&mesh::EngineStats>) -> String {
+    match s {
+        _ if !p.reachable => "mesh · offline".to_owned(),
+        Some(s) => format!(
+            "mesh · {} · harnesses: {}",
+            format!("{:?}", s.class).to_lowercase(),
+            s.harnesses.join(", ")
+        ),
+        None => "mesh".to_owned(),
     }
 }
 
@@ -911,6 +917,30 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn describe_names_a_vm_engine() {
+        let p = mesh::Peer {
+            id: mesh::EngineId("id1".into()),
+            name: "lab".into(),
+            addrs: vec![],
+            reachable: true,
+            last_seen_ms: 0,
+            hub_pref: mesh::HubPref::Never,
+        };
+        let s = mesh::EngineStats {
+            id: p.id.clone(),
+            uptime_since_ms: 0,
+            class: mesh::EngineClass::Vm,
+            availability_30d: 1.0,
+            harnesses: vec!["native".into(), "omp".into()],
+            repos: vec![],
+            display: true,
+            gpu: false,
+        };
+        assert_eq!(describe(&p, Some(&s)), "mesh · vm · harnesses: native, omp");
+        assert_eq!(describe(&p, None), "mesh");
+    }
+
     /// 67 §8: `_meta.theuth` picks the root's model/effort and installs its
     /// `tools` ceiling; no `_meta` is the plain create; a bad entry is refused.
     #[test]
@@ -1116,6 +1146,8 @@ mod tests {
                     discovery: false,
                     bind_addr: Some("127.0.0.1:0".parse().unwrap()),
                     storm_frames_per_sec: 50,
+                    first_seen_ms: identity.first_seen_ms,
+                    keys: None,
                 },
                 store,
                 name.into(),

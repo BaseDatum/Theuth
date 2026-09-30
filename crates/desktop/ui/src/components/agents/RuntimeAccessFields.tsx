@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
+import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -30,6 +31,10 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
   const models = useModels()
   const harnesses = useHarnesses()
   const efforts = models.data?.find((m) => m.id === d.model)?.efforts ?? EFFORTS
+  const sandboxes = useSandboxes()
+  // The named VMs of the list, plus the one on file when it is not (destroyed, or on another hub) so the value stays selectable.
+  const pinned = d.runs_in.startsWith('vm:') ? d.runs_in.slice(3) : null
+  const vms = [...new Set([...(sandboxes.data ?? []).filter((s) => s.backend === 'vm').map((s) => s.name), ...(pinned ? [pinned] : [])])].sort()
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label="Model" id="rt-model" hint="Every session this agent opens; default = the node's model.">
@@ -73,6 +78,22 @@ export function RuntimeFields({ d, set }: { d: Draft; set: Setter }) {
             {TOOLS.map((t) => (
               <SelectItem key={t} value={t}>
                 {t.replace('_', ' ')}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label="Runs in" id="rt-runs-in" hint={d.runs_in === 'any' ? 'theuth places each task where it fits (67 decision 3).' : d.runs_in === 'vm' ? `Every work session on its own sandbox VM (vm-${d.name || '<name>'}), created on first need.` : 'Every work session on that VM; a stopped VM is started, an unreachable one blocks the task.'}>
+        <Select value={d.runs_in} onValueChange={(v) => set('runs_in', v as Draft['runs_in'])}>
+          <SelectTrigger id="rt-runs-in" size="sm" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">anywhere</SelectItem>
+            <SelectItem value="vm">its own VM</SelectItem>
+            {vms.map((n) => (
+              <SelectItem key={n} value={`vm:${n}`}>
+                VM {n}
               </SelectItem>
             ))}
           </SelectContent>
