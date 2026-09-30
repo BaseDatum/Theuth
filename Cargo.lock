@@ -12047,6 +12047,7 @@ dependencies = [
  "dirs 7.0.0",
  "libc",
  "reflink-copy",
+ "ureq 3.4.2",
  "windows-sys 0.61.2",
 ]
 
@@ -23624,6 +23625,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "rustls-platform-verifier 0.7.0",
  "socks",
  "ureq-proto",
  "utf8-zero",

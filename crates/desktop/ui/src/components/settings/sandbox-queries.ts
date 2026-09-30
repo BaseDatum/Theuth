@@ -28,7 +28,7 @@ const HOST = { os: 'macos', arch: 'aarch64', cores: 16, mem_bytes: 64 * 1024 ** 
 const DEFAULTS = { cpus: 4, max_cpus: 16, memory_mib: 8192, max_memory_mib: 32768, root_disk_mib: 20480 }
 
 export const PREFLIGHT_OK: Preflight = {
-  runtime: { state: 'installed', version: '0.7.4', home: '/Users/sky/.microsandbox', libkrunfw: '4.9.0' },
+  runtime: { state: 'embedded', version: '0.7.4', extracted: true, home: '/Users/sky/.microsandbox' },
   virt: { state: 'ok', via: 'hvf' },
   host: HOST,
   defaults: DEFAULTS,
@@ -39,7 +39,7 @@ export const PREFLIGHT_OK: Preflight = {
 
 export const PREFLIGHT_BLOCKED: Preflight = {
   ...PREFLIGHT_OK,
-  runtime: { state: 'missing' },
+  runtime: { state: 'embedded', version: '0.7.4', extracted: false, home: '/root/.microsandbox' },
   virt: { state: 'unsupported', why: '/dev/kvm missing' },
   host: { ...HOST, os: 'linux', arch: 'x86_64', disk_free_bytes: 6 * 1024 ** 3 },
   blockers: [
@@ -49,7 +49,7 @@ export const PREFLIGHT_BLOCKED: Preflight = {
       fix: 'Enable virtualization in the firmware, or nested virtualization in the outer hypervisor.',
       installable: false,
     },
-    { code: 'runtime_missing', message: 'The microsandbox runtime is not installed.', fix: 'brew install superradcompany/tap/microsandbox', installable: true },
+    { code: 'runtime_extract_failed', message: 'The embedded microsandbox runtime could not be set up (read-only file system).', fix: 'check that the home is writable, then Set up runtime again', installable: true },
     { code: 'disk_low', message: '6 GiB free; a VM needs its root disk plus the image plus 2 GiB (about 25 GiB).', fix: null, installable: false },
   ],
   warnings: [{ code: 'memory_low', message: 'The default memory (8 GiB) is more than half of this host.', fix: null, installable: false }],

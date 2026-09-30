@@ -69,14 +69,25 @@ const CODE_RE = /^[\w./~-]+(\s|$)|^(sudo|brew|curl|apt|usermod)\b/
 
 /**
  * Host readiness (79 §5.1). Green: the runtime, virtualization, the host's cores / memory / free disk and the derived
- * defaults. Red: one sentence per blocker (`message`), its `fix` as an instruction line, and **Install runtime** only
- * when a blocker is `installable`. Amber: warnings, which never disable anything.
+ * defaults. Red: one sentence per blocker (`message`), its `fix` as an instruction line, and **Set up runtime** when a
+ * blocker is `installable` or the embedded runtime is not extracted yet (the first create does it too). Amber: warnings,
+ * which never disable anything.
  */
 export function SandboxPreflightCard({ preflight: p, onInstall, installing }: { preflight: Preflight; onInstall: () => void; installing: boolean }) {
   const log = useSandboxLog('runtime')
   const ok = p.blockers.length === 0
-  const installable = p.blockers.some((b) => b.installable)
-  const runtime = p.runtime.state === 'installed' ? `microsandbox ${p.runtime.version} (libkrunfw ${p.runtime.libkrunfw})` : p.runtime.state === 'missing' ? 'runtime not installed' : `runtime incomplete: ${p.runtime.why}`
+  const pending = p.runtime.state === 'embedded' && !p.runtime.extracted
+  const installable = pending || p.blockers.some((b) => b.installable)
+  const runtime =
+    p.runtime.state === 'embedded'
+      ? pending
+        ? `microsandbox ${p.runtime.version} embedded — set up on first use (no download)`
+        : `microsandbox ${p.runtime.version} (embedded, in ${p.runtime.home})`
+      : p.runtime.state === 'installed'
+        ? `microsandbox ${p.runtime.version} (libkrunfw ${p.runtime.libkrunfw})`
+        : p.runtime.state === 'missing'
+          ? 'no runtime in this build'
+          : `runtime incomplete: ${p.runtime.why}`
   const virt = p.virt.state === 'ok' ? `virtualization via ${p.virt.via}` : `no virtualization: ${p.virt.why}`
   return (
     <div className={cn('my-2 flex flex-col gap-2 rounded-xl border px-4 py-3 text-[13px]', ok ? 'border-success-border bg-success-bg' : 'border-danger-border bg-danger-bg')} data-testid="sandbox-preflight">
@@ -113,9 +124,9 @@ export function SandboxPreflightCard({ preflight: p, onInstall, installing }: { 
       {installable && (
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={installing} onClick={onInstall}>
-            <Download /> {installing ? 'Installing…' : 'Install runtime'}
+            <Download /> {installing ? 'Setting up…' : 'Set up runtime'}
           </Button>
-          <span className="text-xs text-fg-tertiary">downloads microsandbox into its home; no root</span>
+          <span className="text-xs text-fg-tertiary">writes the embedded msb + libkrunfw into its home; no root</span>
         </div>
       )}
       {(installing || log.length > 0) && <StepLog lines={log} />}

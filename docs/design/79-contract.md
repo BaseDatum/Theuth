@@ -158,7 +158,7 @@ pub struct Preflight { pub runtime: RuntimeState, pub virt: VirtState, pub host:
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct Blocker { pub code: String, pub message: String, pub fix: Option<String>, pub installable: bool /* true only for runtime_missing / runtime_incomplete */ }
+pub struct Blocker { pub code: String, pub message: String, pub fix: Option<String>, pub installable: bool /* true only for runtime_extract_failed / runtime_incomplete (F6) */ }
 // codes: unsupported_os (Windows v1), unsupported_arch (x86_64 macOS: "microsandbox needs Apple Silicon"), no_kvm ("/dev/kvm missing — enable virtualization in firmware, or nested virtualization in the outer hypervisor"),
 // kvm_not_writable ("add your user to the kvm group: sudo usermod -aG kvm $USER, then log in again"), glibc_too_old ("needs glibc ≥ 2.28"), runtime_missing, runtime_incomplete ("msb X but libkrunfw Y"),
 // disk_low ("N GiB free; a VM needs root_disk + image + 2 GiB"), memory_low (warning: default memory > host/2), docker_missing (warning, dev image path only)
@@ -166,7 +166,7 @@ pub struct Blocker { pub code: String, pub message: String, pub fix: Option<Stri
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum RuntimeState { Installed { version: String, home: String, libkrunfw: String }, Missing, Incomplete { why: String } }
+pub enum RuntimeState { Embedded { version: String, extracted: bool, home: String } /* F6: the pair compiled into t; extracted = home holds it */, Installed { version: String, home: String, libkrunfw: String } /* a user-provided pair of another version */, Missing, Incomplete { why: String } }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
