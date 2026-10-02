@@ -261,7 +261,7 @@ fn main() -> anyhow::Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir.join("models").join(decision::MODEL_SUBDIR));
-    if !decision::engine::MODEL_FILES
+    if !decision::engine::model_files(decision::Kind::Laya)
         .iter()
         .all(|f| dir.join(f).is_file())
     {

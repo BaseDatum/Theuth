@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use decision::engine::MODEL_FILES;
+use decision::engine::model_files;
 use decision::log::Log;
 use decision::{DecisionConfig, Engine, Mode};
 use kameo::actor::Spawn;
@@ -25,7 +25,10 @@ fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("DECISION_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| data.join("models/decision"));
-    if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
+    if model_files(decision::Kind::Laya)
+        .iter()
+        .all(|f| dir.join(f).is_file())
+    {
         Some(dir)
     } else {
         eprintln!("skipping: no decision checkpoint in {}", dir.display());

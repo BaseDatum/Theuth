@@ -29,6 +29,7 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
 libc = { workspace = true }  # `process_memory`: proc_pid_rusage on macOS
+regex = { workspace = true }  # gliner: the word splitter the Python processor uses
 ts-rs = { workspace = true, optional = true }
 # laya's fast BPE `tokenizer.json`; the same build parakeet-rs pulls (57 §1).
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
