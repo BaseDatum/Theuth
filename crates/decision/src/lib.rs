@@ -783,7 +783,11 @@ mod tests {
         assert_eq!(cfg.kind_for("default"), Kind::Laya);
         assert_eq!(
             engine::model_files(Kind::Gliner),
-            ["model.safetensors", "tokenizer.json", "config.json"]
+            [
+                "model.safetensors",
+                "tokenizer.json",
+                "encoder_config/config.json"
+            ]
         );
         // The gliner checkpoint lives at the sibling convention and is checked for its own list.
         let models = dir.path();
@@ -794,14 +798,15 @@ mod tests {
         assert_eq!(
             m.reason.as_deref().unwrap(),
             format!(
-                "checkpoint missing: decision-guard — model.safetensors, tokenizer.json, config.json not in {}",
+                "checkpoint missing: decision-guard — model.safetensors, tokenizer.json, encoder_config/config.json not in {}",
                 models.join("decision-guard").display()
             )
         );
         // laya's `encoder/config.json` etc. are not asked of it: the three files alone install it.
         for f in engine::model_files(Kind::Gliner) {
-            std::fs::create_dir_all(models.join("decision-guard")).unwrap();
-            std::fs::write(models.join("decision-guard").join(f), b"x").unwrap();
+            let p = models.join("decision-guard").join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
         }
         let m = mode_for(&cfg, &default, "guard");
         assert_eq!((m.effective, m.reason), (Mode::Active, None));

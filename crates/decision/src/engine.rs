@@ -26,8 +26,9 @@ use crate::training::{self, Store, TrainingInfo};
 use crate::{DecisionConfig, Kind, laya};
 
 /// The checkpoint files a `kind` needs in its directory, `release-models.sh` REQUIRED:
-/// laya is the Hugging Face `convaiinnovations/laya` layout; gliner's list is provisional
-/// until GLINER-3 lands the loader.
+/// laya is the Hugging Face `convaiinnovations/laya` layout; gliner is `fastino/GLiNER2.5-Decide`'s
+/// (weights, the DeBERTa tokenizer, the nested encoder config `gliner2` saves — the top-level
+/// `config.json` holds nothing the loader reads).
 pub fn model_files(kind: Kind) -> &'static [&'static str] {
     match kind {
         Kind::Laya => &[
@@ -36,7 +37,11 @@ pub fn model_files(kind: Kind) -> &'static [&'static str] {
             "tokenizer/tokenizer.json",
             "rl_agent_config.json",
         ],
-        Kind::Gliner => &["model.safetensors", "tokenizer.json", "config.json"],
+        Kind::Gliner => &[
+            "model.safetensors",
+            "tokenizer.json",
+            "encoder_config/config.json",
+        ],
     }
 }
 
@@ -618,16 +623,14 @@ impl Engine {
 }
 
 /// The production [`Loader`] by kind: laya → [`crate::candle::Loaded`] on `cfg.device` (f16 on
-/// Metal, f32 on CPU); gliner → [`crate::gliner::Loaded`].
+/// Metal, f32 on CPU); gliner → [`crate::gliner::Loaded`] on the same device, always f32.
 fn open(dir: &Path, kind: Kind, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
+    let gpu = cfg.device.gpu();
     match kind {
-        Kind::Laya => {
-            let gpu = cfg.device.gpu();
-            crate::candle::Loaded::open(dir, gpu, gpu.dtype())
-                .map(|l| Box::new(l) as Box<dyn Oracle>)
-        }
+        Kind::Laya => crate::candle::Loaded::open(dir, gpu, gpu.dtype())
+            .map(|l| Box::new(l) as Box<dyn Oracle>),
         Kind::Gliner => {
-            crate::gliner::Loaded::open(dir, cfg).map(|l| Box::new(l) as Box<dyn Oracle>)
+            crate::gliner::Loaded::open(dir, gpu).map(|l| Box::new(l) as Box<dyn Oracle>)
         }
     }
 }
