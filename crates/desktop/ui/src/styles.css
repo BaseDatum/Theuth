@@ -48,10 +48,14 @@
   --project-slate: #566472;
   --project-sand: #8a6f42;
   --project-plum: #7d3f5c;
+  /* 82: the electric waveform (components/ui/electric-waveform) — no white-hot core in the light theme. */
+  --electric-heat: 0%;
 }
 
 .dark {
   color-scheme: dark;
+  /* 82: the waveform's white-hot core follows theuth's `.dark` (the vendored `dark:` fallback is the same class). */
+  --electric-heat: 70%;
   --bg-page: #12100e; /* soot */
   --bg-layer-1: #1c1915; /* soot-2: raised surface */
   --bg-layer-2: #2a241c; /* basalt: input wells */
