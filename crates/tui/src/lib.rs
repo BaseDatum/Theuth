@@ -132,13 +132,18 @@ impl runtime::Plugin for TuiPlugin {
                 attached,
             ));
         }
-        // The one startup fact the runtime does not hand out as a config
-        // section: whether the app plugin runs (46 §9, `Info.app_enabled`).
+        // Startup facts the runtime does not hand out as config sections: whether
+        // the app plugin runs (46 §9) and the engine's live default model (82 §3;
+        // config.yaml as read at launch is the fallback when `info` fails).
         let engine = api.read().unwrap().clone();
-        let app_enabled = engine.info().await.is_ok_and(|i| i.app_enabled);
+        let info = engine.info().await.ok();
+        let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let default_model = rt.section::<AgentConfig>("agent").unwrap_or_default().model;
+        let default_model = info.map_or_else(
+            || rt.section::<AgentConfig>("agent").unwrap_or_default().model,
+            |i| i.default_model,
+        );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
             .map_or(true, |c| c.approvals);
@@ -622,7 +627,8 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         }
         Command::ListModels => UiEvent::Models(msg(api.list_models().await)?),
         Command::SetModel { session, model } => {
-            UiEvent::ModelSet(msg(api.set_model(session, model).await)?)
+            // A pick in this TUI's picker or `/model`: manual, so also the default (82 §2).
+            UiEvent::ModelSet(msg(api.set_model(session, model, Some(true)).await)?)
         }
         Command::SetEffort { session, effort } => {
             msg(api.set_effort(session, effort.clone()).await)?;
@@ -1347,6 +1353,9 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             )
         }
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
+        UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
+            writeln!(out, "default model → {model}")
+        }
         UiEvent::Agent(AgentEvent::HarnessModelChanged { model, .. }) => {
             writeln!(out, "harness model → {model}")
         }
