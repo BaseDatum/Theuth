@@ -14,6 +14,7 @@ pub mod candle;
 pub mod engine;
 pub mod escalate;
 pub mod gate;
+pub mod gliner;
 pub mod laya;
 pub mod log;
 pub mod question;

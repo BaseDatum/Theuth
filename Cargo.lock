@@ -4476,6 +4476,7 @@ dependencies = [
  "libc",
  "models",
  "parking_lot",
+ "regex",
  "runtime",
  "schemars 1.2.2",
  "serde",
