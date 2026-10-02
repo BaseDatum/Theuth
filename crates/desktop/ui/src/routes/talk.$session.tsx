@@ -10,12 +10,14 @@ import { Header } from '@/components/chat/Header'
 import { Transcript } from '@/components/chat/Transcript'
 import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Orb } from '@/components/talk/Orb'
+import { VoiceWave, type VoiceState, useVoiceSource } from '@/components/voice/VoiceWave'
 import { Subtitles } from '@/components/talk/Subtitles'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useApi } from '@/lib/rpc'
 import * as talk from '@/lib/talk'
+import { tapOrLevels } from '@/lib/visual-source'
 import { cn } from '@/lib/utils'
 import { useSessionLoad } from '@/routes/c.$session'
 import { useSessionField } from '@/store/sessions'
@@ -74,6 +76,11 @@ function TalkRoute() {
   const elsewhere = t.phase !== 'off' && t.session !== null && t.session !== session
   const state = here ? t.state : 'idle'
   const orb = talk.orbState(state)
+  // 82 §D: the band under the orb. The mic feeds it while the user may speak (the relay tap's analyser, else the
+  // engine's level packets); `thinking` pulses; `speaking` hums idle — the engine's speaker is not reachable here
+  // (speech.ts schedules each Opus packet straight to `destination`; the local engine plays natively).
+  const wave: VoiceState = state === 'listening' || state === 'interrupted' || state === 'holding' ? 'listening' : state === 'thinking' || state === 'speaking' ? state : 'idle'
+  const mic = useVoiceSource(here, () => tapOrLevels(talk.currentTap(), talk.onLevels))
 
   const toggle = () => {
     if (here) void talk.stop(api)
@@ -164,6 +171,7 @@ function TalkRoute() {
             {phase}
           </p>
           <Orb state={orb} size={size} onClick={toggle} label={label} />
+          <VoiceWave state={wave} source={wave === 'listening' ? mic : null} label="Voice level" className={cn('shrink-0', size >= 320 ? 'h-16' : 'h-14')} style={{ width: size }} />
           <Subtitles agent={here ? t.subs.agent : ''} user={here ? t.subs.user : ''} caption={caption} />
           <p className={cn('h-[1lh] text-center text-xs text-fg-tertiary transition-opacity duration-150 motion-reduce:transition-none', hint ? 'opacity-100' : 'opacity-0')}>
             {hint}
