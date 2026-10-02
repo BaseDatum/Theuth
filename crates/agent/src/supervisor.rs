@@ -2722,6 +2722,7 @@ impl Message<SetCompaction> for Agents {
             .tell(SetCompactionOverride(CompactionOverride {
                 at_tokens: m.at_tokens,
                 hint: m.hint,
+                head: m.head,
             }))
             .await
             .map_err(|e| e.to_string())

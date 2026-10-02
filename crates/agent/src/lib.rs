@@ -342,8 +342,13 @@ pub struct SetCompactStyle {
 /// `ask` → `Result<(), String>`: one session's compaction override, in memory
 /// only (`meetings/02-live.md` §0.2): `at_tokens` replaces `compact_at × window`
 /// as the auto-compaction trigger, `hint` is appended as one paragraph to the
-/// summariser instruction. `None` clears each; nothing is persisted, so a
-/// restarted session compacts like any other.
+/// summariser instruction, `head` is a ready-made compaction head body. When
+/// `head` is set, every compaction of the session that has no head of its own
+/// (auto, and `Compact` without `head`) uses it as the given summary: Summary
+/// style is forced — no summariser call, no snap frames, no pre-compaction
+/// harvest — whatever `agent.compact_style` says (`/clear` still clears).
+/// `None` clears each; nothing is persisted, so a restarted session compacts
+/// like any other.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetCompaction {
     /// Target session.
@@ -354,6 +359,10 @@ pub struct SetCompaction {
     /// Extra summariser paragraph; `None` = the plain instruction.
     #[serde(default)]
     pub hint: Option<String>,
+    /// Ready-made head body for every compaction without one of its own;
+    /// `None` = the configured style runs.
+    #[serde(default)]
+    pub head: Option<String>,
 }
 
 /// A session's allowlisted toolset (`meetings/06-live-toolset.md`): only the

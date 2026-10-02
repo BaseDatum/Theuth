@@ -218,7 +218,7 @@ fn model(b: &Value) -> &str {
 }
 
 /// The leading system message's text, `""` without one.
-fn system(b: &Value) -> &str {
+pub(super) fn system(b: &Value) -> &str {
     let m = &b["messages"][0];
     if m["role"] == "system" {
         m["content"].as_str().unwrap_or_default()
@@ -228,7 +228,7 @@ fn system(b: &Value) -> &str {
 }
 
 /// Every text content part of every message, in order (string contents included).
-fn texts(b: &Value) -> Vec<String> {
+pub(super) fn texts(b: &Value) -> Vec<String> {
     let mut out = Vec::new();
     for m in b["messages"].as_array().into_iter().flatten() {
         match &m["content"] {
@@ -279,7 +279,7 @@ impl Message<AgentEvent> for Sink {
 
 /// A fresh store, session, runtime bus and fake provider per scenario.
 pub(super) struct Harness {
-    dir: PathBuf,
+    pub(super) dir: PathBuf,
     pub(super) store: Store,
     rt: Runtime,
     server: MockServer,
@@ -432,6 +432,11 @@ impl Harness {
     /// The session actor itself, as `Agents::session` spawns one over the
     /// stored frame: the `UserInput`/`CompactNow`/`TurnDone` seam.
     pub(super) async fn actor(&self, main: &str) -> ActorRef<Session> {
+        self.actor_styled(main, CompactStyle::default()).await
+    }
+
+    /// [`Harness::actor`] with a configured default compaction style (`agent.compact_style`).
+    pub(super) async fn actor_styled(&self, main: &str, style: CompactStyle) -> ActorRef<Session> {
         let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
         Session::spawn(Session::new(
             self.id,
@@ -440,7 +445,7 @@ impl Harness {
             None,
             SessionState::resume(epoch, head, history),
             Arc::new(AgentConfig::default()),
-            Arc::default(),
+            Arc::new(RwLock::new(style)),
             Arc::default(),
             self.vision_model.clone(),
             Arc::default(),
@@ -532,7 +537,7 @@ impl Harness {
         (epoch, events)
     }
 
-    async fn requests(&self) -> Vec<Value> {
+    pub(super) async fn requests(&self) -> Vec<Value> {
         self.server
             .received_requests()
             .await

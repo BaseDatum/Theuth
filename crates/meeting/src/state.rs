@@ -197,6 +197,11 @@ pub struct Live {
     /// 57 §11.4: live topics whose brief a captured example produced (the oracle's own publish,
     /// or the model's in a turn that had captured batches) → the example ids to amend on tap/dismiss.
     pub captured: Vec<(TopicId, ExampleId)>,
+    /// 02 §4.1: speakers heard so far (`Utterance::who`), in order of first utterance.
+    pub speakers: Vec<String>,
+    /// 02 §4.1: the compaction head last pushed to the session; a re-render that
+    /// equals it is not pushed again.
+    pub last_head: Option<String>,
     /// `live.jsonl`, append-only.
     live_log: Option<File>,
     /// `briefs.jsonl`, append-only.
@@ -213,8 +218,12 @@ impl Live {
             .ok()
     }
 
-    /// One `live.jsonl` line.
+    /// One `live.jsonl` line; the speaker joins [`Live::speakers`] on first hearing.
     pub fn log_utterance(&mut self, u: &Utterance) {
+        let who = u.who();
+        if !self.speakers.contains(&who) {
+            self.speakers.push(who);
+        }
         Self::append(self.live_log.as_mut(), u);
     }
 
@@ -308,6 +317,8 @@ impl Recording {
                 published: Vec::new(),
                 published_topics: Vec::new(),
                 captured: Vec::new(),
+                speakers: Vec::new(),
+                last_head: None,
                 live_log: Live::open_log(dir, crate::LIVE_LOG),
                 briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
             },
@@ -338,6 +349,8 @@ mod tests {
             published: Vec::new(),
             published_topics: Vec::new(),
             captured: Vec::new(),
+            speakers: Vec::new(),
+            last_head: None,
             live_log: None,
             briefs_log: None,
         }

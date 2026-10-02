@@ -1010,7 +1010,7 @@ agent:
 # meeting:                   # record a meeting: the meeting app's audio + the mic as Opus tracks, live briefs from the notch (design doc 53); macOS 15
 #   enabled: true            # false: no actor, `meeting_*` answers \"meetings are disabled\"
 #   max_minutes: 180         # hard stop; warning (NearMaxLength) at max_minutes - 10
-#   context_tokens: 24000    # per-session compaction trigger for the meeting session
+#   context_tokens: 32000    # per-session compaction trigger for the meeting session (02 §4.1)
 #   batch_secs: 25           # transcript batch cadence
 #   batch_utterances: 6      # transcript batch size
 #   live_model_dir: ~        # Nemotron streaming dir; default <data_dir>/models/nemotron-streaming-en (the dictation checkpoint)
