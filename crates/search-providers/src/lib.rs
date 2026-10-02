@@ -8,7 +8,9 @@
 //! [`SearchProviders`] actor ([`SEARCH_PROVIDERS_ACTOR`]) so Settings › Search
 //! can read, persist and re-apply the provider set at runtime, and so a new
 //! key ([`secrets::SecretsEvent::Changed`]) registers its provider without a
-//! restart. This crate owns no tools.
+//! restart. The one tool this crate owns is [`xai::XSearchTool`] (`search_x`,
+//! design doc 80), registered on the tool registry while an `xai` credential
+//! exists.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,6 +26,7 @@ pub mod brave;
 pub mod firecrawl;
 pub mod openserp;
 pub mod searxng;
+pub mod xai;
 
 /// Registered name of the [`SearchProviders`] actor.
 pub const SEARCH_PROVIDERS_ACTOR: &str = "search-providers";
@@ -46,6 +49,8 @@ pub struct SearchProvidersConfig {
     pub openserp: Option<OpenserpConfig>,
     /// Brave Search API; needs its secret.
     pub brave: Option<BraveConfig>,
+    /// `search_x` through xAI (80); needs the `xai` key or login.
+    pub x: Option<xai::XConfig>,
 }
 
 impl Default for SearchProvidersConfig {
@@ -55,6 +60,7 @@ impl Default for SearchProvidersConfig {
             searxng: None,
             openserp: None,
             brave: None,
+            x: Some(xai::XConfig::default()),
         }
     }
 }
@@ -468,6 +474,11 @@ pub fn persist(path: &std::path::Path, cfg: &SearchProvidersConfig) -> std::io::
         w("brave", "timeout_ms", c.timeout_ms.to_string())?;
         w("brave", "priority", c.priority.to_string())?;
     }
+    if let Some(c) = &cfg.x {
+        w("x", "enabled", c.enabled.to_string())?;
+        w("x", "model", yaml_str(&c.model))?;
+        w("x", "timeout_ms", c.timeout_ms.to_string())?;
+    }
     Ok(())
 }
 
@@ -515,15 +526,27 @@ pub struct GetProviders;
 #[derive(Clone, Debug)]
 pub struct SetProviders(pub Vec<ProviderSettings>);
 
+/// The `x` block when `search_x` should be advertised: enabled and an `xai`
+/// credential exists (80 §0.5).
+#[must_use]
+pub fn advertise_x(cfg: &SearchProvidersConfig, has_credential: bool) -> Option<&xai::XConfig> {
+    cfg.x.as_ref().filter(|c| c.enabled && has_credential)
+}
+
 /// Owns the provider config at runtime: builds providers from config +
-/// vault, (un)registers them with the `web` actor, persists edits.
+/// vault, (un)registers them with the `web` actor, persists edits; registers
+/// `search_x` on the tool registry while an `xai` credential exists.
 #[derive(kameo::Actor)]
 pub struct SearchProviders {
     cfg: SearchProvidersConfig,
     config_path: PathBuf,
     vault: Option<Arc<secrets::Vault>>,
+    oauth: oauth::Store,
+    env_key: Option<String>,
     web: ActorRef<web::WebActor>,
+    registry: Option<ActorRef<tools::ToolRegistry>>,
     registered: Vec<String>,
+    x_registered: bool,
 }
 
 impl SearchProviders {
@@ -565,6 +588,43 @@ impl SearchProviders {
             }
         }
         self.registered = now;
+        self.sync_x().await;
+    }
+
+    /// Register or unregister `search_x` + its prompt block as the `xai`
+    /// credential (vault key, login grant or env) comes and goes.
+    async fn sync_x(&mut self) {
+        let Some(reg) = &self.registry else { return };
+        let has_credential = self.secret_set(xai::NS)
+            || self.oauth.load(xai::NS).is_some()
+            || self.env_key.is_some();
+        match advertise_x(&self.cfg, has_credential) {
+            Some(x) if !self.x_registered => {
+                let tool = xai::XSearchTool::new(
+                    x.clone(),
+                    self.vault.clone(),
+                    self.oauth.clone(),
+                    self.env_key.clone(),
+                );
+                let _ = reg.ask(tools::RegisterTool(Arc::new(tool))).await;
+                let _ = reg
+                    .ask(tools::RegisterPrompt {
+                        plugin: "search-providers",
+                        text: xai::PROMPT.to_owned(),
+                    })
+                    .await;
+                self.x_registered = true;
+            }
+            None if self.x_registered => {
+                use tools::Tool as _;
+                let _ = reg
+                    .ask(tools::UnregisterTool(xai::XSearchTool::NAME.to_owned()))
+                    .await;
+                let _ = reg.ask(tools::UnregisterPrompt("search-providers")).await;
+                self.x_registered = false;
+            }
+            _ => {}
+        }
     }
 
     fn view(&self) -> Vec<ProviderSettings> {
@@ -631,12 +691,20 @@ impl runtime::Plugin for SearchProvidersPlugin {
                 tracing::warn!("web plugin not running; nothing to register with");
                 return;
             };
+            let registry = rt
+                .lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)
+                .await;
             let mut state = SearchProviders {
                 cfg,
                 config_path: rt.data_dir.join("config.yaml"),
+                oauth: oauth::Store::new(&rt.data_dir)
+                    .with_grants(vault.clone().map(|v| v as Arc<dyn oauth::Grants>)),
+                env_key: xai::env_key(),
                 vault,
                 web,
+                registry,
                 registered: Vec::new(),
+                x_registered: false,
             };
             state.sync().await;
             let actor = kameo::actor::Spawn::spawn(state);
@@ -727,6 +795,7 @@ mod tests {
             }),
             openserp: Some(OpenserpConfig::default()),
             brave: Some(BraveConfig::default()),
+            x: None,
         };
         let names: Vec<_> = build(&cfg, &HashMap::new())
             .iter()
@@ -836,6 +905,29 @@ mod tests {
             back.openserp.as_ref().unwrap().engines,
             ["google", "bing", "duckduckgo"]
         );
+        let x = back.x.as_ref().expect("x block persisted");
+        assert!(x.enabled && x.model == "grok-4.7" && x.timeout_ms == 90_000);
+        assert!(text.contains("  x:\n"), "{text}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_x_is_advertised_only_enabled_with_a_credential() {
+        let cfg = SearchProvidersConfig::default();
+        assert!(advertise_x(&cfg, true).is_some());
+        assert!(advertise_x(&cfg, false).is_none());
+        let off = SearchProvidersConfig {
+            x: Some(xai::XConfig {
+                enabled: false,
+                ..xai::XConfig::default()
+            }),
+            ..SearchProvidersConfig::default()
+        };
+        assert!(advertise_x(&off, true).is_none());
+        let absent = SearchProvidersConfig {
+            x: None,
+            ..SearchProvidersConfig::default()
+        };
+        assert!(advertise_x(&absent, true).is_none());
     }
 }
