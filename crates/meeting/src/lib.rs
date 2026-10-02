@@ -39,6 +39,7 @@ pub mod batch;
 pub mod cache;
 pub mod capture;
 pub mod diar;
+pub mod head;
 pub mod note;
 pub mod ogg;
 pub mod oracle;
@@ -530,7 +531,11 @@ pub struct MeetingConfig {
     pub enabled: bool,
     /// Hard stop; `NearMaxLength` at `max_minutes - 10`.
     pub max_minutes: u32,
-    /// Per-session compaction trigger (tokens) for the meeting session.
+    /// 02 §4.1: per-session compaction trigger (tokens) for the meeting session, set as a
+    /// `SetCompaction` override. The agent sizes the kept tail and the head as fractions of
+    /// `trigger − fixed` (COMPACT-FLOOR), so with a 32k trigger and a ~7k system prompt a
+    /// meeting keeps roughly the last 8–9k tokens of transcript verbatim and compacts every
+    /// ~15k tokens of growth — at no model cost, since the plugin supplies the head.
     pub context_tokens: u32,
     /// Batcher cadence: a batch goes out this long after the last send if anything is pending.
     pub batch_secs: u32,
@@ -561,7 +566,7 @@ impl Default for MeetingConfig {
         Self {
             enabled: true,
             max_minutes: 180,
-            context_tokens: 24_000,
+            context_tokens: 32_000,
             batch_secs: 25,
             batch_utterances: 6,
             live_model_dir: None,
@@ -1123,11 +1128,8 @@ impl Meeting {
             };
             rec.live.log_record(&Record::Topic(topic.clone()));
             rec.live.log_record(&Record::Brief(brief));
-            let meeting = rec.manifest.id;
             self.topics_gone(expired).await;
-            self.rt
-                .publish(MeetingEvent::TopicAdded { meeting, topic })
-                .await;
+            self.topic_added(topic).await;
             tracing::debug!(
                 label,
                 since_t1_us = since.elapsed().as_micros(),
@@ -1299,6 +1301,32 @@ impl Meeting {
         }
     }
 
+    /// 02 §4.1: re-render the state head and, when it differs from the last one pushed,
+    /// hand it to the session with the trigger and hint — one ask per change, never a timer.
+    async fn push_head(&mut self) {
+        let Some(rec) = self.current.as_mut() else {
+            return;
+        };
+        let head = head::render(&head::of(rec, chrono::Utc::now()));
+        if !head::changed(rec.live.last_head.as_deref(), &head) {
+            return;
+        }
+        rec.live.last_head = Some(head.clone());
+        let session = rec.manifest.session;
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Err(e) = agents
+                .ask(agent::SetCompaction {
+                    session,
+                    at_tokens: Some(self.cfg.context_tokens),
+                    hint: Some(tools::COMPACTION_HINT.to_owned()),
+                    head: Some(head),
+                })
+                .await
+        {
+            tracing::warn!(%session, "meeting: push head: {e}");
+        }
+    }
+
     /// One transcript batch, or a deferral when the session's steer queue is deep. The batch
     /// goes through the decision oracle off the mailbox (57 §3; [`oracle::run`]) and comes
     /// back as a [`oracle::Verdict`]; with the oracle off that is today's delivery, one hop later.
@@ -1356,6 +1384,7 @@ impl Meeting {
         if let Some(p) = pending {
             rec.live.pending.push(p);
         }
+        self.push_head().await;
         self.deliver(text).await;
     }
 
@@ -1442,6 +1471,19 @@ impl Meeting {
                 why,
             })
             .await;
+        self.push_head().await;
+    }
+
+    /// A topic joined the live set: event + head.
+    async fn topic_added(&mut self, topic: Topic) {
+        let Some(rec) = self.current.as_ref() else {
+            return;
+        };
+        let meeting = rec.manifest.id;
+        self.rt
+            .publish(MeetingEvent::TopicAdded { meeting, topic })
+            .await;
+        self.push_head().await;
     }
 
     async fn topics_gone(&mut self, gone: Vec<Gone>) {
@@ -1460,6 +1502,7 @@ impl Meeting {
         self.rt
             .publish(MeetingEvent::Brief { meeting, brief })
             .await;
+        self.push_head().await;
     }
 
     /// A closed utterance: `live.jsonl`, the alias scan (05 §3), then the batcher
@@ -1768,12 +1811,14 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     {
         tracing::warn!(%session, "rename meeting session: {e}");
     }
-    // 02 §4: meeting-sized compaction with the meeting hint; cleared at stop.
+    // 02 §4, §4.1: meeting-sized compaction with the meeting hint and the initial state
+    // head (nothing heard yet); re-pushed on every change, cleared at stop.
     if let Err(e) = agents
         .ask(agent::SetCompaction {
             session,
             at_tokens: Some(setup.context_tokens),
             hint: Some(tools::COMPACTION_HINT.to_owned()),
+            head: Some(head::render(&head::initial(&manifest, &setup.title))),
         })
         .await
     {
@@ -2237,12 +2282,14 @@ impl Message<StopMeeting> for Meeting {
                 tracing::warn!(meeting = %manifest.id, "meeting: last batch: {e}");
             }
         }
+        // 02 §4.1: trigger, hint and head all go; the session compacts like any other.
         if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
             && let Err(e) = agents
                 .ask(agent::SetCompaction {
                     session: manifest.session,
                     at_tokens: None,
                     hint: None,
+                    head: None,
                 })
                 .await
         {
@@ -2499,7 +2546,6 @@ impl Message<oracle::Verdict> for Meeting {
             oracle::Action::Skip => self.carry(v.batch),
             oracle::Action::Publish { row, label } => {
                 let at_ms = rec.clock.now_ms();
-                let meeting = rec.manifest.id;
                 match rec.live.topics.insert_cached(
                     &label,
                     &row,
@@ -2515,9 +2561,7 @@ impl Message<oracle::Verdict> for Meeting {
                             rec.live.captured.push((topic.id, id));
                         }
                         self.topics_gone(expired).await;
-                        self.rt
-                            .publish(MeetingEvent::TopicAdded { meeting, topic })
-                            .await;
+                        self.topic_added(topic).await;
                         self.touch_use(row.id);
                     }
                     // A live/dismissed label or a row shown meanwhile: no turn spent either way.
@@ -2879,9 +2923,7 @@ impl Message<AddTopic> for Meeting {
         rec.live.published_topics.push(topic.id);
         rec.live.log_record(&Record::Brief(brief));
         self.topics_gone(expired).await;
-        self.rt
-            .publish(MeetingEvent::TopicAdded { meeting, topic })
-            .await;
+        self.topic_added(topic).await;
         if let Some(id) = learnt {
             self.touch_use(id);
             if let Some(c) = self.cache.clone() {
