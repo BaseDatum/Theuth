@@ -321,7 +321,7 @@ impl Oracle for Loaded {
 /// so the 843 MB pass runs once per download, not on every load (a checkpoint is released at
 /// every meeting stop / browser close and after `idle_unload`, 57 §2.1). A size or mtime
 /// mismatch rehashes; a sidecar that cannot be written is only a debug line.
-fn sha256_cached(weights: &Path) -> std::io::Result<String> {
+pub(crate) fn sha256_cached(weights: &Path) -> std::io::Result<String> {
     let meta = std::fs::metadata(weights)?;
     let stamp = format!(
         "{} {}",

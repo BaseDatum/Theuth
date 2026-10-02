@@ -1046,7 +1046,8 @@ agent:
 #                            # loaded by the first question (the meeting warms it at Recording), released when the meeting stops /
 #                            # the browser session closes, and by idle_unload as the safety net. Nothing loads at daemon start.
 #     default: ~             # = model_dir; a bare path, or { dir: <path>, idle_unload: 3m, kind: laya | gliner } (kind defaults to laya;
-#                            # gliner = GLiNER2.5-Decide checkpoint: model.safetensors, tokenizer.json, config.json — backend lands with GLINER-3)
+#                            # gliner = fastino/GLiNER2.5-Decide @ 5a7adf72 (57 §2.2): model.safetensors, tokenizer.json, encoder_config/config.json;
+#                            # `gliner: { kind: gliner }` resolves <data_dir>/models/decision-gliner (scripts/fetch-models.sh fetches it); f32, ~1.9 GB resident)
 #     browser: ~             # cklxx/laya-browser v10, same layout; default <data_dir>/models/decision-browser
 #                            # (scripts/fetch-laya-browser.sh until release-models publishes it). A family's `checkpoint: <name>` picks one.
 #                            # Its idle_unload defaults to 2m (loop steps are sub-second; a run never trips it).

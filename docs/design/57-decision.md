@@ -127,6 +127,18 @@ Today (as built through step 5): lazy load (RSS ≈ 100 MiB at daemon start, no 
 3. **Measured reclaim** — for both checkpoints, RSS before load / after first inference / after `Release` (Metal f16 and CPU f32); "after release" must be within ~50 MB of "before". If Metal keeps buffers alive, the session owns its `Device` and drops it; a fresh device per load. The numbers go in the as-built; a model-gated test asserts the bound.
 4. **Visible** — `decision_stats` gains `loaded: [{ checkpoint, since, rss_mb }]`; Labs shows *"Loaded now: none"* / *"meeting checkpoint · 903 MB · 4 min"*; `t --headless` smoke: start → nothing loaded; meeting `Recording` → default loaded; stop → nothing loaded within one watchdog tick. *(As built — step 6: a separate `decision_loaded` RPC, `rss_mb` = process footprint; the line is the first section of Settings → Labs after the step-10 merge.)*
 
+### 2.2 GLiNER2.5-Decide checkpoint (`Kind::Gliner`, GLINER-1…3)
+
+The second classifier family (28 v1's untrusted-content guard will run on it): Hugging Face **`fastino/GLiNER2.5-Decide`**, Apache-2.0, pinned at revision **`5a7adf72`** (`5a7adf72a23b4d311abae6ce050d7f0012bb3416`, the repo's `main` on 2026-10-02). A DeBERTa-v3-large encoder (24 layers, hidden 1024, relative attention, 256 position buckets, vocab 128011 — the ten `gliner2` markers appended) with a per-label head (`classifier`: Linear 1024→2048, ReLU, Linear 2048→1) scoring one logit per `[L]` marker; softmax over a question's labels. Preprocessing is GLINER-2's `gliner/prompt.rs`; the loader is GLINER-3's `gliner/candle.rs` over candle-transformers' `debertav2` (f32 on Metal and CPU — the port has no f16 path, see the module docs). `scripts/fetch-models.sh` lists it as `decision-gliner/*` with origin `hf:fastino/GLiNER2.5-Decide/<path>` (freshness tracks the repo's `main`; a new upstream commit shows as `STALE`, never auto-trusted); config entry `decision.checkpoints.gliner: { kind: gliner }` resolves `<models>/decision-gliner/`. `engine::model_files(Kind::Gliner)`, exactly what `Loaded::open` reads:
+
+| file | bytes | sha256 |
+|---|---|---|
+| `model.safetensors` (f32, 419 tensors, 486,444,053 params; `encoder.*`, `classifier.{0,2}.*` used; `span_rep.*`, `count_embed.*`, `count_pred.*` not read) | 1,945,828,140 | `40a5a23ff860dc3dff426cecd1048cacdd29c648c96db209dad818e9686dc997` |
+| `tokenizer.json` (DeBERTa-v3 Unigram + markers) | 8,333,952 | `3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8` |
+| `encoder_config/config.json` (the DeBERTa config `gliner2` saves beside its own `config.json`, which the loader does not read) | 920 | `bd32f1484ba5a199f7a63df44df3814b839fffcf6e64478323c4689868ef6015` |
+
+The model is BCE-trained and uncalibrated (temperature 1.0 in the log); per-family temperature fitting is a later task. Measurements and the ORT-vs-candle decision: `docs/design/70-as-built-GLINER-3.md`.
+
 ## §3 First integration: meeting (53)
 
 Today (`meeting/src/lib.rs:1150-1215`, `tools.rs:24-50`): each flushed batch is steered into the meeting session; the reasoning model decides among nothing / `brief_search` / `meeting_topic` / research; cached alias hits (`cache.rs:395-434`) already bypass the model and stay as they are.
