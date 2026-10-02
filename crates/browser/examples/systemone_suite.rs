@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".theuth"));
     let browser_dir = browser_dir.unwrap_or_else(|| data_dir.join("models/decision-browser"));
-    if !decision::engine::MODEL_FILES
+    if !decision::engine::model_files(decision::Kind::Laya)
         .iter()
         .all(|f| browser_dir.join(f).is_file())
     {

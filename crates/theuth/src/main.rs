@@ -1045,7 +1045,8 @@ agent:
 #   checkpoints:             # one engine per checkpoint (57 §4.1 item 6). A checkpoint is resident only while in use (57 §2.1):
 #                            # loaded by the first question (the meeting warms it at Recording), released when the meeting stops /
 #                            # the browser session closes, and by idle_unload as the safety net. Nothing loads at daemon start.
-#     default: ~             # = model_dir; a bare path, or { dir: <path>, idle_unload: 3m }
+#     default: ~             # = model_dir; a bare path, or { dir: <path>, idle_unload: 3m, kind: laya | gliner } (kind defaults to laya;
+#                            # gliner = GLiNER2.5-Decide checkpoint: model.safetensors, tokenizer.json, config.json — backend lands with GLINER-3)
 #     browser: ~             # cklxx/laya-browser v10, same layout; default <data_dir>/models/decision-browser
 #                            # (scripts/fetch-laya-browser.sh until release-models publishes it). A family's `checkpoint: <name>` picks one.
 #                            # Its idle_unload defaults to 2m (loop steps are sub-second; a run never trips it).

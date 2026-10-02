@@ -5,6 +5,7 @@
 //! it while the daemon runs). One engine per checkpoint (57 §4.1 item 6): an `Ask` whose
 //! family names another checkpoint is forwarded to that engine's actor ([`crate::actor_name`]).
 
+use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,24 +17,28 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
-use crate::DecisionConfig;
-use crate::candle::Loaded;
 use crate::gate::{FamilyGate, Mode};
-use crate::laya::{self, RowOut, Sequence};
-use crate::log::{AskRow, FamilyStats, Log, Row};
+use crate::log::{AskRow, FamilyStats, Log, Row as LogRow};
 use crate::question::{
     Ask, Candidate, Decision, Disposition, Family, LogId, Outcome, Question, Reason,
 };
 use crate::training::{self, Store, TrainingInfo};
+use crate::{DecisionConfig, Kind, laya};
 
-/// The checkpoint files [`Engine`] needs in `model_dir` — the Hugging Face
-/// `convaiinnovations/laya` layout, `release-models.sh` REQUIRED.
-pub const MODEL_FILES: [&str; 4] = [
-    "model.safetensors",
-    "encoder/config.json",
-    "tokenizer/tokenizer.json",
-    "rl_agent_config.json",
-];
+/// The checkpoint files a `kind` needs in its directory, `release-models.sh` REQUIRED:
+/// laya is the Hugging Face `convaiinnovations/laya` layout; gliner's list is provisional
+/// until GLINER-3 lands the loader.
+pub fn model_files(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Laya => &[
+            "model.safetensors",
+            "encoder/config.json",
+            "tokenizer/tokenizer.json",
+            "rl_agent_config.json",
+        ],
+        Kind::Gliner => &["model.safetensors", "tokenizer.json", "config.json"],
+    }
+}
 
 /// The mandatory negative control appended to every `Choice` (57 §0.4).
 pub const NONE_ID: &str = "none";
@@ -43,21 +48,66 @@ pub const NONE_ID: &str = "none";
 /// carry the size tag (and a `gate_version` derived from it); the fold does not care.
 pub type ModelSha = Arc<Mutex<String>>;
 
-/// What the engine runs: [`Loaded`] in production, a fake in the timeout test.
+/// One rendered question, owned by the [`Oracle`] that built it. The engine reads only the
+/// 57 §0.5 truncation flags and the token ids (hashed into the log); the oracle downcasts
+/// through [`Row::as_any`] to its own type at `run`.
+pub trait Row: Send {
+    /// `state_cut || markers_lost`.
+    fn truncated(&self) -> bool;
+    /// The state was right-truncated; a hard error unless the family says `cut_ok`.
+    fn state_cut(&self) -> bool;
+    /// An option could not be scored (its marker/label fell past the length cap). Always hard.
+    fn markers_lost(&self) -> bool;
+    /// The rendered token ids, hashed as the log's `question_hash`.
+    fn ids(&self) -> &[i64];
+    /// For the oracle's downcast.
+    fn as_any(&self) -> &dyn Any;
+}
+
+/// What one row scores as, model-neutral: one entry per option in [`laya::labels`] order
+/// (Bool = `[false, true]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scores {
+    /// Calibrated probabilities, sum to 1.
+    pub probs: Vec<f32>,
+    /// Raw logits, for the log.
+    pub logits: Vec<f32>,
+    /// Temperature applied; `1.0` when the model is not temperature-scaled.
+    pub temperature: f32,
+    /// laya's act head, logged only; `0.0` for a model without one.
+    pub act_p: f32,
+}
+
+impl Scores {
+    /// Entropy-derived over the options (Choice/Score), `max(p, 1 − p)` for a Bool.
+    pub fn confidence(&self, q: &Question) -> f32 {
+        match (q, self.probs.as_slice()) {
+            (Question::Bool { .. }, [_, p]) => p.max(1.0 - p),
+            (_, p) => laya::entropy_confidence(p, p.len()),
+        }
+    }
+}
+
+/// What the engine runs: [`crate::candle::Loaded`] for laya, [`crate::gliner::Loaded`] for
+/// gliner, a fake in tests. The engine never sees a model's row format: `build` hands back an
+/// opaque [`Row`], `run` takes those rows back and answers one [`Scores`] per row.
 pub trait Oracle: Send {
     /// The model's identity, see [`ModelSha`].
     fn model_sha(&self) -> ModelSha;
     /// Render one question.
-    fn build(&self, q: &Question) -> Result<Sequence, String>;
-    /// One forward pass.
-    fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>>;
+    fn build(&self, q: &Question) -> Result<Box<dyn Row>, String>;
+    /// One forward pass, `rows` as `build` returned them.
+    fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>>;
     /// Cold-load wall clock, logged once.
     fn load_time(&self) -> Duration;
 }
 
-/// Opens an [`Oracle`] from `(model_dir, cfg)`; blocking.
+/// Opens an [`Oracle`] from `(model_dir, kind, cfg)`; blocking.
 pub type Loader =
-    Arc<dyn Fn(&Path, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
+    Arc<dyn Fn(&Path, Kind, &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> + Send + Sync>;
+
+/// One batch's rows and their scores, in question order, plus the model sha they ran under.
+type Scored = (Vec<(Box<dyn Row>, Scores)>, String);
 
 type Shared = Arc<Mutex<Box<dyn Oracle>>>;
 
@@ -229,6 +279,8 @@ pub struct Engine {
     checkpoint: String,
     /// This engine's checkpoint directory.
     model_dir: PathBuf,
+    /// This checkpoint's classifier family ([`DecisionConfig::kind_for`]).
+    kind: Kind,
     /// The `default` checkpoint directory, which `mode_for` resolves the others from.
     default_dir: PathBuf,
     /// This checkpoint's idle unload ([`DecisionConfig::idle_unload_for`]).
@@ -259,8 +311,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// The `default` engine over `cfg` with the real [`Loaded`]; nothing loads until the
-    /// first `Ask`.
+    /// The `default` engine over `cfg` with the real loader ([`open`]); nothing loads until
+    /// the first `Ask`.
     pub fn new(cfg: DecisionConfig, model_dir: PathBuf, log: Log) -> Self {
         Self::with_loader(cfg, model_dir, log, Arc::new(open))
     }
@@ -269,6 +321,7 @@ impl Engine {
     pub fn with_loader(cfg: DecisionConfig, model_dir: PathBuf, log: Log, loader: Loader) -> Self {
         Engine {
             idle: cfg.idle_unload_for(crate::DEFAULT_CHECKPOINT),
+            kind: cfg.kind_for(crate::DEFAULT_CHECKPOINT),
             cfg,
             checkpoint: crate::DEFAULT_CHECKPOINT.to_owned(),
             default_dir: model_dir.clone(),
@@ -290,11 +343,12 @@ impl Engine {
     }
 
     /// Make this the engine of checkpoint `name` living in `dir` (57 §4.1 item 6); `new`'s
-    /// `model_dir` stays the `default` one for `mode_for`. The idle unload becomes `name`'s.
+    /// `model_dir` stays the `default` one for `mode_for`. The idle unload and kind become `name`'s.
     pub fn with_checkpoint(mut self, name: &str, dir: PathBuf) -> Self {
         self.checkpoint = name.to_owned();
         self.model_dir = dir;
         self.idle = self.cfg.idle_unload_for(name);
+        self.kind = self.cfg.kind_for(name);
         self
     }
 
@@ -403,10 +457,11 @@ impl Engine {
             .collect()
     }
 
-    /// The files that are not in the model dir, checked fresh each time.
+    /// The files of this checkpoint's kind that are not in the model dir, checked fresh each time.
     pub fn missing_files(&self) -> Vec<&'static str> {
-        MODEL_FILES
-            .into_iter()
+        model_files(self.kind)
+            .iter()
+            .copied()
             .filter(|f| !self.model_dir.join(f).is_file())
             .collect()
     }
@@ -415,7 +470,7 @@ impl Engine {
         self.model_sha.lock().clone()
     }
 
-    fn append(&self, row: Row) {
+    fn append(&self, row: LogRow) {
         if let Err(e) = self.log.append(&row) {
             tracing::warn!("decision log: {e}");
         }
@@ -445,7 +500,7 @@ impl Engine {
         };
         let mode = gate.map_or(Mode::Off, |g| g.mode);
         let text = self.cfg.log_text.then(|| ask.question.clone());
-        self.append(Row::Ask(Box::new(AskRow::new(
+        self.append(LogRow::Ask(Box::new(AskRow::new(
             &d,
             mode,
             &model_sha,
@@ -478,12 +533,13 @@ impl Engine {
                     return Err(Reason::ModelMissing);
                 }
                 self.missing_logged = false;
-                let (loader, dir, cfg) = (
+                let (loader, dir, kind, cfg) = (
                     self.loader.clone(),
                     self.model_dir.clone(),
+                    self.kind,
                     self.cfg.clone(),
                 );
-                tokio::task::spawn_blocking(move || loader(&dir, &cfg))
+                tokio::task::spawn_blocking(move || loader(&dir, kind, &cfg))
             }
         };
         let mut handle = handle;
@@ -561,10 +617,19 @@ impl Engine {
     }
 }
 
-/// The production [`Loader`]: [`Loaded`] on `cfg.device`, f16 on Metal, f32 on CPU.
-fn open(dir: &Path, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
-    let gpu = cfg.device.gpu();
-    Loaded::open(dir, gpu, gpu.dtype()).map(|l| Box::new(l) as Box<dyn Oracle>)
+/// The production [`Loader`] by kind: laya → [`crate::candle::Loaded`] on `cfg.device` (f16 on
+/// Metal, f32 on CPU); gliner → [`crate::gliner::Loaded`].
+fn open(dir: &Path, kind: Kind, cfg: &DecisionConfig) -> anyhow::Result<Box<dyn Oracle>> {
+    match kind {
+        Kind::Laya => {
+            let gpu = cfg.device.gpu();
+            crate::candle::Loaded::open(dir, gpu, gpu.dtype())
+                .map(|l| Box::new(l) as Box<dyn Oracle>)
+        }
+        Kind::Gliner => {
+            crate::gliner::Loaded::open(dir, cfg).map(|l| Box::new(l) as Box<dyn Oracle>)
+        }
+    }
 }
 
 /// `none` appended once to a `Choice`; other questions unchanged.
@@ -598,8 +663,8 @@ fn decide(
     gate: &FamilyGate,
     family: &Family,
     q: &Question,
-    seq: &Sequence,
-    out: &RowOut,
+    row: &dyn Row,
+    out: &Scores,
     latency: Duration,
     model_sha: &str,
 ) -> Decision {
@@ -611,11 +676,12 @@ fn decide(
         .iter()
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or_else(|| NONE_ID.to_owned(), |(l, _)| l.clone());
-    let hard = (seq.markers_lost || (seq.state_cut && !gate.cut_ok)).then_some(Reason::Truncated);
+    let hard =
+        (row.markers_lost() || (row.state_cut() && !gate.cut_ok)).then_some(Reason::Truncated);
     let d = Decision {
         family: family.clone(),
         choice,
-        confidence: out.confidence,
+        confidence: out.confidence(q),
         act_probability: out.act_p,
         disposition: gate.decide(&probabilities, hard),
         probabilities,
@@ -717,38 +783,36 @@ impl Engine {
 
         let qs: Vec<Question> = items.iter().map(|i| i.q.clone()).collect();
         let batch_forward = self.cfg.batch_forward;
-        let mut run = tokio::task::spawn_blocking(
-            move || -> Result<(Vec<(Sequence, RowOut)>, String), Reason> {
-                let mut o = shared.lock();
-                let seqs = qs
-                    .iter()
-                    .map(|q| o.build(q))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(Reason::HardError)?;
-                // One padded batch, or one forward per row (each padded to its own length;
-                // `examples/bench.rs` (b2)/(b3) measures which wins on this device).
-                let outs = if batch_forward || seqs.len() == 1 {
-                    o.run(&seqs)
-                } else {
-                    seqs.iter()
-                        .map(|s| o.run(std::slice::from_ref(s)))
-                        .collect::<anyhow::Result<Vec<_>>>()
-                        .map(|v| v.into_iter().flatten().collect())
-                }
-                .map_err(|e| Reason::HardError(format!("{e:#}")))?;
-                if outs.len() != seqs.len() {
-                    return Err(Reason::HardError(format!(
-                        "{} rows for {} questions",
-                        outs.len(),
-                        seqs.len()
-                    )));
-                }
-                Ok((
-                    seqs.into_iter().zip(outs).collect(),
-                    o.model_sha().lock().clone(),
-                ))
-            },
-        );
+        let mut run = tokio::task::spawn_blocking(move || -> Result<Scored, Reason> {
+            let mut o = shared.lock();
+            let seqs = qs
+                .iter()
+                .map(|q| o.build(q))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Reason::HardError)?;
+            // One padded batch, or one forward per row (each padded to its own length;
+            // `examples/bench.rs` (b2)/(b3) measures which wins on this device).
+            let outs = if batch_forward || seqs.len() == 1 {
+                o.run(&seqs)
+            } else {
+                seqs.iter()
+                    .map(|s| o.run(std::slice::from_ref(s)))
+                    .collect::<anyhow::Result<Vec<_>>>()
+                    .map(|v| v.into_iter().flatten().collect())
+            }
+            .map_err(|e| Reason::HardError(format!("{e:#}")))?;
+            if outs.len() != seqs.len() {
+                return Err(Reason::HardError(format!(
+                    "{} rows for {} questions",
+                    outs.len(),
+                    seqs.len()
+                )));
+            }
+            Ok((
+                seqs.into_iter().zip(outs).collect(),
+                o.model_sha().lock().clone(),
+            ))
+        });
         let texts: Vec<Option<Question>> = items
             .iter()
             .map(|i| self.cfg.log_text.then(|| i.ask.question.clone()))
@@ -762,18 +826,19 @@ impl Engine {
                     .zip(rows)
                     .zip(texts)
                     .map(|((i, (seq, row)), text)| {
-                        let d = decide(&i.gate, &i.ask.family, &i.q, &seq, &row, t.elapsed(), &sha);
+                        let d =
+                            decide(&i.gate, &i.ask.family, &i.q, &*seq, &row, t.elapsed(), &sha);
                         let mut r = AskRow::new(
                             &d,
                             i.gate.mode,
                             &sha,
-                            &seq.input_ids,
+                            seq.ids(),
                             row.logits.clone(),
                             row.temperature,
                             text,
                         );
                         r.load_ms = load_ms;
-                        self.append(Row::Ask(Box::new(r)));
+                        self.append(LogRow::Ask(Box::new(r)));
                         d
                     })
                     .collect()
@@ -806,7 +871,7 @@ impl Engine {
                     })
                     .collect();
                 tokio::spawn(async move {
-                    let rows: Vec<Row> = match run.await {
+                    let rows: Vec<LogRow> = match run.await {
                         Ok(Ok((rows, sha))) => items
                             .iter()
                             .zip(rows)
@@ -816,17 +881,17 @@ impl Engine {
                                     &i.gate,
                                     &i.ask.family,
                                     &i.q,
-                                    &seq,
+                                    &*seq,
                                     &row,
                                     t.elapsed(),
                                     &sha,
                                 );
                                 d.disposition = Disposition::Escalate(Reason::Timeout);
-                                Row::Ask(Box::new(AskRow::new(
+                                LogRow::Ask(Box::new(AskRow::new(
                                     &d,
                                     i.gate.mode,
                                     &sha,
-                                    &seq.input_ids,
+                                    seq.ids(),
                                     row.logits,
                                     row.temperature,
                                     text,
@@ -844,7 +909,7 @@ impl Engine {
                                     t.elapsed(),
                                     &sha,
                                 );
-                                Row::Ask(Box::new(AskRow::new(
+                                LogRow::Ask(Box::new(AskRow::new(
                                     &d,
                                     i.gate.mode,
                                     &sha,
@@ -1023,7 +1088,7 @@ impl Message<Report> for Engine {
     type Reply = ();
 
     async fn handle(&mut self, r: Report, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.append(Row::Outcome {
+        self.append(LogRow::Outcome {
             log_id: r.log_id,
             ts: chrono::Utc::now(),
             outcome: r.outcome,
@@ -1204,7 +1269,7 @@ impl Message<Record> for Engine {
         let sha = self.model_sha();
         let mut row = AskRow::new(d, mode, &sha, &[], Vec::new(), 0.0, None);
         row.note = r.note;
-        self.append(Row::Ask(Box::new(row)));
+        self.append(LogRow::Ask(Box::new(row)));
     }
 }
 
@@ -1247,7 +1312,7 @@ mod tests {
     use kameo::actor::Spawn;
 
     use super::*;
-    use crate::laya::{CLS, MASK, SEP};
+    use crate::laya::{CLS, MASK, SEP, Sequence};
 
     fn ask(family: &str) -> Ask {
         Ask::new(
@@ -1260,14 +1325,50 @@ mod tests {
     }
 
     fn touch_files(model_dir: &Path) {
-        for f in MODEL_FILES {
+        for f in model_files(Kind::Laya) {
             let p = model_dir.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, b"x").unwrap();
         }
     }
 
-    /// Answers `[0.1, 0.9]` for two options after sleeping `delay`.
+    /// A laya-shaped row for `q`: one `[MASK]` per label; `cut` sets `state_cut`/`truncated`.
+    fn fake_seq(q: &Question, cut: bool) -> Sequence {
+        let k = laya::labels(q).len();
+        let mut ids = vec![CLS, 7, SEP];
+        let markers: Vec<i64> = (0..k)
+            .map(|_| {
+                let m = ids.len() as i64;
+                ids.extend([MASK, 9]);
+                m
+            })
+            .collect();
+        ids.extend([SEP, 11, SEP]);
+        Sequence {
+            attention_mask: vec![1; ids.len()],
+            marker_mask: vec![true; k],
+            input_ids: ids,
+            marker_pos: markers,
+            qtype: 2,
+            truncated: cut,
+            state_cut: cut,
+            markers_lost: false,
+        }
+    }
+
+    /// `[0.1/(k−1) …, 0.9]` over `k` options: the last label wins.
+    fn last_wins(k: usize) -> Scores {
+        let mut probs = vec![0.1 / (k.max(2) - 1) as f32; k];
+        probs[k - 1] = 0.9;
+        Scores {
+            logits: vec![0.0; k],
+            probs,
+            temperature: 1.0,
+            act_p: 0.5,
+        }
+    }
+
+    /// Answers `[0.1, 0.9]` for two options after sleeping `delay`; rows are laya [`Sequence`]s.
     struct Fake {
         delay: Duration,
     }
@@ -1276,45 +1377,20 @@ mod tests {
         fn model_sha(&self) -> ModelSha {
             Arc::new(Mutex::new("fake".into()))
         }
-        fn build(&self, q: &Question) -> Result<Sequence, String> {
-            let k = laya::labels(q).len();
-            let mut ids = vec![CLS, 7, SEP];
-            let markers: Vec<i64> = (0..k)
-                .map(|_| {
-                    let m = ids.len() as i64;
-                    ids.extend([MASK, 9]);
-                    m
-                })
-                .collect();
-            ids.extend([SEP, 11, SEP]);
-            Ok(Sequence {
-                attention_mask: vec![1; ids.len()],
-                marker_mask: vec![true; k],
-                input_ids: ids,
-                marker_pos: markers,
-                qtype: 2,
-                truncated: false,
-                state_cut: false,
-                markers_lost: false,
-            })
+        fn build(&self, q: &Question) -> Result<Box<dyn Row>, String> {
+            Ok(Box::new(fake_seq(q, false)))
         }
-        fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
+        fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
             std::thread::sleep(self.delay);
-            Ok(rows
-                .iter()
+            rows.iter()
                 .map(|r| {
-                    let k = r.marker_pos.len();
-                    let mut probs = vec![0.1 / (k.max(2) - 1) as f32; k];
-                    probs[k - 1] = 0.9;
-                    RowOut {
-                        logits: vec![0.0; k],
-                        probs,
-                        temperature: 1.0,
-                        act_p: 0.5,
-                        confidence: 0.9,
-                    }
+                    let s = r
+                        .as_any()
+                        .downcast_ref::<Sequence>()
+                        .ok_or_else(|| anyhow::anyhow!("not a laya row"))?;
+                    Ok(last_wins(s.marker_pos.len()))
                 })
-                .collect())
+                .collect()
         }
         fn load_time(&self) -> Duration {
             Duration::from_millis(1)
@@ -1322,7 +1398,7 @@ mod tests {
     }
 
     fn fake_loader(delay: Duration) -> Loader {
-        Arc::new(move |_, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
+        Arc::new(move |_, _, _| Ok(Box::new(Fake { delay }) as Box<dyn Oracle>))
     }
 
     #[tokio::test]
@@ -1456,6 +1532,172 @@ mod tests {
         assert_eq!(candidates.len(), 3);
     }
 
+    /// A row with none of laya's fields: ids, label count, and whether a label fell off.
+    struct Flat {
+        ids: Vec<i64>,
+        k: usize,
+        lost: bool,
+    }
+
+    impl Row for Flat {
+        fn truncated(&self) -> bool {
+            self.lost
+        }
+        fn state_cut(&self) -> bool {
+            false
+        }
+        fn markers_lost(&self) -> bool {
+            self.lost
+        }
+        fn ids(&self) -> &[i64] {
+            &self.ids
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// One logit per label, the first label scoring 0.7 and the rest sharing 0.3 — the
+    /// opposite of [`Fake`], so a label-order mix-up would show. A state of `lost` drops a label.
+    struct PerLabel;
+
+    impl Oracle for PerLabel {
+        fn model_sha(&self) -> ModelSha {
+            Arc::new(Mutex::new("per-label".into()))
+        }
+        fn build(&self, q: &Question) -> Result<Box<dyn Row>, String> {
+            let k = laya::labels(q).len();
+            let state = match q {
+                Question::Choice { state, .. }
+                | Question::Bool { state, .. }
+                | Question::Score { state, .. } => state,
+            };
+            Ok(Box::new(Flat {
+                ids: (0..k as i64 + 1).collect(),
+                k,
+                lost: state == "lost",
+            }))
+        }
+        fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
+            rows.iter()
+                .map(|r| {
+                    let f = r
+                        .as_any()
+                        .downcast_ref::<Flat>()
+                        .ok_or_else(|| anyhow::anyhow!("not my row"))?;
+                    let mut probs = vec![0.3 / (f.k - 1) as f32; f.k];
+                    probs[0] = 0.7;
+                    Ok(Scores {
+                        logits: (0..f.k).map(|i| -(i as f32)).collect(),
+                        probs,
+                        temperature: 1.0,
+                        act_p: 0.0,
+                    })
+                })
+                .collect()
+        }
+        fn load_time(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    #[tokio::test]
+    async fn non_laya_rows_answer_choice_bool_and_score_through_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_files(dir.path());
+        let active = || FamilyGate {
+            mode: Mode::Active,
+            ..FamilyGate::shadow(0.6, 0.2)
+        };
+        let cfg = DecisionConfig {
+            families: [
+                ("guard.choice".to_owned(), active()),
+                ("guard.bool".to_owned(), active()),
+                ("guard.score".to_owned(), active()),
+            ]
+            .into(),
+            ..DecisionConfig::default()
+        };
+        let engine = Engine::spawn(Engine::with_loader(
+            cfg,
+            dir.path().into(),
+            Log::new(dir.path().join("d")),
+            Arc::new(|_, _, _| Ok(Box::new(PerLabel) as Box<dyn Oracle>)),
+        ));
+        let cand = |id: &str| Candidate {
+            id: id.into(),
+            text: id.into(),
+        };
+        let choice = |state: &str| Question::Choice {
+            instructions: "which".into(),
+            candidates: vec![cand("a"), cand("b")],
+            state: state.into(),
+        };
+
+        let d = engine
+            .ask(Ask::new("guard.choice", choice("page")))
+            .await
+            .unwrap();
+        assert_eq!(d.choice, "a");
+        assert_eq!(
+            d.probabilities,
+            vec![
+                ("a".to_owned(), 0.7),
+                ("b".to_owned(), 0.15),
+                ("none".to_owned(), 0.15)
+            ]
+        );
+        assert_eq!(d.disposition, Disposition::Accept);
+        assert!(
+            (d.confidence - laya::entropy_confidence(&[0.7, 0.15, 0.15], 3)).abs() < 1e-6,
+            "{}",
+            d.confidence
+        );
+        assert_eq!(d.act_probability, 0.0);
+
+        let d = engine
+            .ask(Ask::new(
+                "guard.bool",
+                Question::Bool {
+                    statement: "holds".into(),
+                    state: "page".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(d.choice, "false");
+        assert_eq!(
+            d.probabilities,
+            vec![("false".to_owned(), 0.7), ("true".to_owned(), 0.3)]
+        );
+        assert!((d.confidence - 0.7).abs() < 1e-6);
+        assert_eq!(d.disposition, Disposition::Accept);
+
+        let d = engine
+            .ask(Ask::new(
+                "guard.score",
+                Question::Score {
+                    instructions: "how".into(),
+                    levels: vec!["low".into(), "mid".into(), "high".into()],
+                    state: "page".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(d.choice, "0");
+        let labels: Vec<&str> = d.probabilities.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["0", "1", "2"]);
+        assert_eq!(d.disposition, Disposition::Accept);
+
+        // The 57 §0.5 hard failure is read through the trait, not laya's struct.
+        let d = engine
+            .ask(Ask::new("guard.choice", choice("lost")))
+            .await
+            .unwrap();
+        assert_eq!(d.disposition, Disposition::Escalate(Reason::Truncated));
+        assert_eq!(d.choice, "a", "probabilities are still reported");
+    }
+
     /// Counts `run` calls and the rows per call; answers like [`Fake`].
     struct Counting {
         calls: Arc<Mutex<Vec<usize>>>,
@@ -1466,16 +1708,10 @@ mod tests {
         fn model_sha(&self) -> ModelSha {
             Arc::new(Mutex::new("fake".into()))
         }
-        fn build(&self, q: &Question) -> Result<Sequence, String> {
-            let mut s = Fake {
-                delay: Duration::ZERO,
-            }
-            .build(q)?;
-            s.state_cut = self.cut;
-            s.truncated = self.cut;
-            Ok(s)
+        fn build(&self, q: &Question) -> Result<Box<dyn Row>, String> {
+            Ok(Box::new(fake_seq(q, self.cut)))
         }
-        fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
+        fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
             self.calls.lock().push(rows.len());
             Fake {
                 delay: Duration::ZERO,
@@ -1507,7 +1743,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let loader: Loader = {
             let calls = calls.clone();
-            Arc::new(move |_, _| {
+            Arc::new(move |_, _, _| {
                 Ok(Box::new(Counting {
                     calls: calls.clone(),
                     cut: true,
@@ -1749,7 +1985,7 @@ mod tests {
         };
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let n = loads.clone();
-        let loader: Loader = Arc::new(move |_, _| {
+        let loader: Loader = Arc::new(move |_, _, _| {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(Fake {
                 delay: Duration::ZERO,
@@ -1785,7 +2021,7 @@ mod tests {
         assert_eq!(cfg.idle_unload_for("browser"), crate::BROWSER_IDLE_UNLOAD);
         let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let n = loads.clone();
-        let loader: Loader = Arc::new(move |_, _| {
+        let loader: Loader = Arc::new(move |_, _, _| {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(Fake {
                 delay: Duration::ZERO,

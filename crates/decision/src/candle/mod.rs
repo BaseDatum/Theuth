@@ -7,6 +7,7 @@ pub mod config;
 pub mod model;
 pub mod weights;
 
+use std::borrow::Borrow;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,7 +22,7 @@ use self::config::{AgentConfig, EncoderConfig};
 use self::model::DecisionModel;
 use self::weights::{SanitizedBackend, sanitize_name};
 
-use crate::engine::{ModelSha, Oracle};
+use crate::engine::{ModelSha, Oracle, Row, Scores};
 use crate::laya::{
     Batch, LayaConfig, RowOut, Sequence, Special, build_sequence, collate, postprocess,
 };
@@ -162,7 +163,7 @@ impl Gpu {
 }
 
 impl Loaded {
-    /// Open a laya checkpoint dir (`crate::engine::MODEL_FILES`, the Hugging Face layout) on
+    /// Open a laya checkpoint dir (`crate::engine::model_files(Kind::Laya)`, the Hugging Face layout) on
     /// `gpu` or the CPU at `dtype`. A GPU that cannot be created — or CUDA in a binary built
     /// without `decision/cuda` — falls back to CPU f32 with a warning.
     pub fn open(dir: &Path, gpu: Gpu, dtype: DType) -> anyhow::Result<Loaded> {
@@ -256,7 +257,7 @@ impl Loaded {
     /// One forward pass over `rows` (dynamic S and K, at least two marker slots — the act
     /// head's top-2 features need them), one [`RowOut`] per row. The head's logits come back
     /// raw (unused slots at −1e4) and go through our [`postprocess`]; nothing is calibrated twice.
-    pub fn run(&self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
+    pub fn run<R: Borrow<Sequence>>(&self, rows: &[R]) -> anyhow::Result<Vec<RowOut>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -280,7 +281,7 @@ impl Loaded {
             .enumerate()
             .map(|(i, row)| {
                 postprocess(
-                    row,
+                    row.borrow(),
                     &logits[i * k..(i + 1) * k],
                     &act[i * na..(i + 1) * na],
                     &self.laya,
@@ -294,11 +295,22 @@ impl Oracle for Loaded {
     fn model_sha(&self) -> ModelSha {
         self.model_sha.clone()
     }
-    fn build(&self, q: &Question) -> Result<Sequence, String> {
-        Loaded::build(self, q)
+    fn build(&self, q: &Question) -> Result<Box<dyn Row>, String> {
+        Loaded::build(self, q).map(|s| Box::new(s) as Box<dyn Row>)
     }
-    fn run(&mut self, rows: &[Sequence]) -> anyhow::Result<Vec<RowOut>> {
-        Loaded::run(self, rows)
+    fn run(&mut self, rows: &[Box<dyn Row>]) -> anyhow::Result<Vec<Scores>> {
+        let seqs = rows
+            .iter()
+            .map(|r| {
+                r.as_any()
+                    .downcast_ref::<Sequence>()
+                    .ok_or_else(|| anyhow::anyhow!("laya oracle given a row it did not build"))
+            })
+            .collect::<anyhow::Result<Vec<&Sequence>>>()?;
+        Ok(Loaded::run(self, &seqs)?
+            .into_iter()
+            .map(Scores::from)
+            .collect())
     }
     fn load_time(&self) -> Duration {
         self.load_time

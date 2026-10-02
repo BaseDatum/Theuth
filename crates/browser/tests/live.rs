@@ -468,17 +468,42 @@ async fn drives_fixture_page() {
 /// A stand-in for the browser head: step 1 `TYPE_TEXT` into the first editable, step 2
 /// `CLICK` the `(button)`, step 3 `DONE`, cyclic. The operation question (the one offering
 /// `DONE`) opens a step — counting there, not in `run`, keeps the script independent of
-/// `decision.batch_forward` (one forward per batch or per row). `build` encodes the pick in
-/// `input_ids[1]` (it sees the question; `run` sees rows), P 0.9 on the pick.
+/// `decision.batch_forward` (one forward per batch or per row). `build` records the pick in
+/// its own [`Pick`] row (it sees the question; `run` sees rows), P 0.9 on the pick.
 struct Scripted {
     step: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// The scripted row: which of `k` candidates wins.
+struct Pick {
+    pick: usize,
+    k: usize,
+    ids: [i64; 1],
+}
+
+impl decision::Row for Pick {
+    fn truncated(&self) -> bool {
+        false
+    }
+    fn state_cut(&self) -> bool {
+        false
+    }
+    fn markers_lost(&self) -> bool {
+        false
+    }
+    fn ids(&self) -> &[i64] {
+        &self.ids
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl decision::Oracle for Scripted {
     fn model_sha(&self) -> decision::engine::ModelSha {
         Arc::new(parking_lot::Mutex::new("scripted".into()))
     }
-    fn build(&self, q: &decision::Question) -> Result<decision::laya::Sequence, String> {
+    fn build(&self, q: &decision::Question) -> Result<Box<dyn decision::Row>, String> {
         let decision::Question::Choice { candidates, .. } = q else {
             return Err("choice only".into());
         };
@@ -497,47 +522,30 @@ impl decision::Oracle for Scripted {
         } else {
             0
         };
-        let k = candidates.len();
-        let mut ids = vec![decision::laya::CLS, pick as i64, decision::laya::SEP];
-        let markers: Vec<i64> = (0..k)
-            .map(|_| {
-                let m = ids.len() as i64;
-                ids.extend([decision::laya::MASK, 9]);
-                m
-            })
-            .collect();
-        ids.extend([decision::laya::SEP, 11, decision::laya::SEP]);
-        Ok(decision::laya::Sequence {
-            attention_mask: vec![1; ids.len()],
-            marker_mask: vec![true; k],
-            input_ids: ids,
-            marker_pos: markers,
-            qtype: 0,
-            truncated: false,
-            state_cut: false,
-            markers_lost: false,
-        })
+        Ok(Box::new(Pick {
+            pick,
+            k: candidates.len(),
+            ids: [pick as i64],
+        }))
     }
-    fn run(
-        &mut self,
-        rows: &[decision::laya::Sequence],
-    ) -> anyhow::Result<Vec<decision::laya::RowOut>> {
-        Ok(rows
-            .iter()
+    fn run(&mut self, rows: &[Box<dyn decision::Row>]) -> anyhow::Result<Vec<decision::Scores>> {
+        rows.iter()
             .map(|r| {
-                let k = r.marker_pos.len();
-                let pick = r.input_ids[1] as usize;
+                let p = r
+                    .as_any()
+                    .downcast_ref::<Pick>()
+                    .ok_or_else(|| anyhow::anyhow!("not a scripted row"))?;
+                let k = p.k;
                 let mut probs = vec![if k > 1 { 0.1 / (k - 1) as f32 } else { 0.0 }; k];
-                probs[pick] = if k > 1 { 0.9 } else { 1.0 };
-                decision::laya::RowOut {
+                probs[p.pick] = if k > 1 { 0.9 } else { 1.0 };
+                Ok(decision::Scores {
                     logits: vec![0.0; k],
                     probs,
                     temperature: 1.0,
                     act_p: 0.5,
-                    confidence: 0.9,
-                }
+                })
             })
-            .collect())
+            .collect()
     }
     fn load_time(&self) -> Duration {
         Duration::ZERO
@@ -550,7 +558,7 @@ impl decision::Oracle for Scripted {
 fn scripted_engine(data_dir: &std::path::Path) -> kameo::actor::ActorRef<decision::Engine> {
     let models = data_dir.join("models");
     for dir in ["decision", "decision-browser"] {
-        for f in decision::engine::MODEL_FILES {
+        for f in decision::engine::model_files(decision::Kind::Laya) {
             let p = models.join(dir).join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, b"x").unwrap();
@@ -563,7 +571,7 @@ fn scripted_engine(data_dir: &std::path::Path) -> kameo::actor::ActorRef<decisio
         }
     }
     let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let loader: decision::Loader = Arc::new(move |_, _| {
+    let loader: decision::Loader = Arc::new(move |_, _, _| {
         Ok(Box::new(Scripted { step: step.clone() }) as Box<dyn decision::Oracle>)
     });
     let log = decision::log::Log::new(data_dir.join("decisions"));
