@@ -168,7 +168,9 @@ async fn manual_compaction_commits_then_the_queue_opens_a_turn() {
 /// behind the summariser, the turn finishes normally, then they open a turn.
 async fn auto_compaction_mid_turn_commits_and_the_queue_follows() {
     let (mut h, actor) = seeded(Fake::compact_held(HOLD)).await;
-    // Trigger at the next call: a one-token threshold.
+    // Trigger at the next call: a one-token threshold — raised to
+    // `fixed + MIN_HEADROOM` (80 COMPACT-FLOOR), so the input is big enough
+    // to project past it.
     actor
         .tell(SetCompactionOverride(CompactionOverride {
             at_tokens: Some(1),
@@ -176,10 +178,11 @@ async fn auto_compaction_mid_turn_commits_and_the_queue_follows() {
         }))
         .await
         .unwrap();
-    actor
-        .tell(user_input(None, "Third question, which compacts first."))
-        .await
-        .unwrap();
+    let big = format!(
+        "Third question, which compacts first. {}",
+        "x".repeat(4 * compact::MIN_HEADROOM as usize + 4_000)
+    );
+    actor.tell(user_input(None, &big)).await.unwrap();
     h.drain_until(|e| matches!(e, AgentEvent::Compacting { .. }))
         .await;
     // Back to the configured threshold so the queued turn does not compact again.

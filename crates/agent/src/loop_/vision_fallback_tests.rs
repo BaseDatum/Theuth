@@ -306,12 +306,16 @@ impl Harness {
                 "tool_call": true, "image": image
             })
         };
+        // `tiny`: a 9k window (80 COMPACT-FLOOR: trigger under `MIN_HEADROOM`).
+        let mut tiny = model("tiny", false);
+        tiny["limit"]["context"] = json!(9_000);
         std::fs::write(
             dir.join("models.json"),
             json!({"openai": {"id": "openai", "name": "OpenAI", "models": {
                 "textonly": model("textonly", false),
                 "eyes": model("eyes", true),
                 "broken": model("broken", true),
+                "tiny": tiny,
             }}})
             .to_string(),
         )
