@@ -62,6 +62,9 @@ REQUIRED=(
   decision-browser/encoder/config.json             # Gemma tokenizer; upstream removed v10 on 2026-09-27), same four-file layout
   decision-browser/tokenizer/tokenizer.json
   decision-browser/rl_agent_config.json
+  decision-gliner/model.safetensors                # decision.checkpoints.gliner { kind: gliner } (57 §GLiNER2.5-Decide checkpoint):
+  decision-gliner/tokenizer.json                   # fastino/GLiNER2.5-Decide @ 5a7adf72, decision/src/engine.rs model_files(Kind::Gliner),
+  decision-gliner/encoder_config/config.json       # loaded by gliner/candle.rs Loaded::open (the top-level config.json is not read)
 )
 
 # Where each REQUIRED file comes from. Only origins a design doc records — never a guessed URL.
@@ -75,6 +78,7 @@ origin_of() {
     pyannote/*)               echo "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/${1#*/}" ;;
     decision/*)               echo "hf:convaiinnovations/laya/${1#*/}" ;;
     decision-browser/*)       echo "hf:cklxx/laya-browser/v17s/${1#*/}" ;;
+    decision-gliner/*)        echo "hf:fastino/GLiNER2.5-Decide/${1#*/}" ;;
     *)                        echo "none:not in origin_of" ;;
   esac
 }

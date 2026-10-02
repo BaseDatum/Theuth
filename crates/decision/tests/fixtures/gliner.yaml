@@ -1,0 +1,9 @@
+# A `decision:` section running a guard family on the GLiNER2.5-Decide checkpoint (57 §2.2):
+# `checkpoints.gliner: { kind: gliner }` resolves `<models>/decision-gliner/`; the families name it
+# with `checkpoint: gliner`. Loaded by `tests/gliner.rs`.
+checkpoints:
+  gliner: { kind: gliner }
+families:
+  guard.inject: { mode: shadow, tau_top: 0.6, tau_margin: 0.1, checkpoint: gliner, budget: 60s }
+  guard.sufficient: { mode: shadow, tau_top: 0.6, tau_margin: 0.1, checkpoint: gliner, budget: 60s }
+  guard.severity: { mode: shadow, tau_top: 0.5, tau_margin: 0.1, checkpoint: gliner, budget: 60s, cut_ok: true }

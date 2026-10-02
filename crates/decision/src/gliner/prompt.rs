@@ -157,6 +157,9 @@ pub struct GlinerRow {
     /// instead, so this is `false` on every row it returns; kept so a laya-shaped consumer
     /// reads the same three flags.
     pub markers_lost: bool,
+    /// A `Bool` question: the labels are `[yes, no]` (Python order), which the engine reads back
+    /// as `[false, true]` — the backends reverse the two scores (`gliner::scores`).
+    pub is_bool: bool,
 }
 
 /// The classification labels in logit order.
@@ -253,7 +256,10 @@ pub fn build_row(tok: &Tokenizer, q: &Question, cfg: &GlinerConfig) -> Result<Gl
     encode(tok, ")", &mut ids)?;
     encode(tok, "[SEP_TEXT]", &mut ids)?;
     if ids.len() > cfg.max_len {
-        let lost = label_pos.iter().filter(|&&p| p as usize >= cfg.max_len).count();
+        let lost = label_pos
+            .iter()
+            .filter(|&&p| p as usize >= cfg.max_len)
+            .count();
         return Err(format!(
             "truncated: the schema is {} tokens, {lost} of {} label markers past max_len {}",
             ids.len(),
@@ -284,6 +290,7 @@ pub fn build_row(tok: &Tokenizer, q: &Question, cfg: &GlinerConfig) -> Result<Gl
         truncated: state_cut,
         state_cut,
         markers_lost: false,
+        is_bool: matches!(q, Question::Bool { .. }),
     })
 }
 
@@ -320,10 +327,15 @@ mod tests {
     fn real() -> Option<Tokenizer> {
         let dir = std::env::var_os("THEUTH_MODELS_DIR")
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".theuth/models")))?
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".theuth/models"))
+            })?
             .join("decision-gliner/tokenizer.json");
         if !dir.is_file() {
-            eprintln!("SKIP: {} missing — run scripts/tests/gliner-golden.py once", dir.display());
+            eprintln!(
+                "SKIP: {} missing — run scripts/tests/gliner-golden.py once",
+                dir.display()
+            );
             return None;
         }
         Some(Tokenizer::from_file(&dir).unwrap())
@@ -370,14 +382,30 @@ mod tests {
     fn word_split_is_pythons() {
         // Checked against `WhitespaceTokenSplitter` in gliner2 2.0.0.
         assert_eq!(
-            words("Mail Bob@Example.COM re: e-mail_v2 or https://x.io/a?b=1 — İstanbul日本語テキスト, straße…!"),
+            words(
+                "Mail Bob@Example.COM re: e-mail_v2 or https://x.io/a?b=1 — İstanbul日本語テキスト, straße…!"
+            ),
             [
-                "mail", "bob@example.com", "re", ":", "e-mail_v2", "or", "https://x.io/a?b=1", "—",
-                "i̇stanbul日本語テキスト", ",", "straße", "…", "!"
+                "mail",
+                "bob@example.com",
+                "re",
+                ":",
+                "e-mail_v2",
+                "or",
+                "https://x.io/a?b=1",
+                "—",
+                "i̇stanbul日本語テキスト",
+                ",",
+                "straße",
+                "…",
+                "!"
             ]
         );
         assert_eq!(words(""), ["."]);
-        assert_eq!(words("ends with a bang!"), ["ends", "with", "a", "bang", "!"]);
+        assert_eq!(
+            words("ends with a bang!"),
+            ["ends", "with", "a", "bang", "!"]
+        );
         assert_eq!(words("trailing space "), ["trailing", "space", "."]);
     }
 
@@ -395,7 +423,11 @@ mod tests {
             assert_eq!(row.attention_mask, c.attention_mask, "{}", c.name);
             assert_eq!(row.label_pos, c.label_pos, "{}", c.name);
             assert_eq!(row.label_count, c.labels.len(), "{}", c.name);
-            assert!(!row.truncated && !row.state_cut && !row.markers_lost, "{}", c.name);
+            assert!(
+                !row.truncated && !row.state_cut && !row.markers_lost,
+                "{}",
+                c.name
+            );
             for &p in &row.label_pos {
                 assert_eq!(row.input_ids[p as usize], L, "{}", c.name);
             }
@@ -405,7 +437,11 @@ mod tests {
                 let cut = build_row(&tok, &c.question, &GlinerConfig::default()).unwrap();
                 assert_eq!(cut.input_ids, &c.input_ids[..512], "{}", c.name);
                 assert_eq!(cut.label_pos, c.label_pos, "{}", c.name);
-                assert!(cut.state_cut && cut.truncated && !cut.markers_lost, "{}", c.name);
+                assert!(
+                    cut.state_cut && cut.truncated && !cut.markers_lost,
+                    "{}",
+                    c.name
+                );
                 let strict = GlinerConfig {
                     cut_ok: false,
                     ..GlinerConfig::default()
