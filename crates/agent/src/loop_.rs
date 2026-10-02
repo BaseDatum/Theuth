@@ -3853,10 +3853,8 @@ impl Turn {
             // transcript or the log: the user's message looked swallowed
             // (session 01a0e834, 2026-09-28: ten such turns over 1h50). Say so.
             if end.captured_content.as_ref().is_none_or(|c| c.is_empty()) {
-                self.error(format!(
-                    "model returned an empty reply (stop_reason={stop})"
-                ))
-                .await;
+                self.error(format!("model returned an empty reply (stop_reason={stop})"))
+                    .await;
             }
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
                 // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
