@@ -369,6 +369,10 @@ pub struct Toolset {
     pub prompts: Vec<String>,
     /// Whether `python` is offered at all.
     pub runtime: bool,
+    /// Lines per `<knowledge>` note for this session (`meetings/06-live-toolset.md`
+    /// §1.5, 80): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
+    /// hints, no knowledge search at turn start.
+    pub hint_limit: Option<u32>,
 }
 
 /// `ask` → `Result<(), String>`: one session's toolset override, in memory
@@ -380,6 +384,18 @@ pub struct SetToolset {
     pub session: SessionId,
     /// The allowlist; `None` clears it.
     pub toolset: Option<Toolset>,
+}
+
+/// `ask` → `Result<(), String>`: pin one session's title (`meetings/06-live-toolset.md`
+/// §1.7), in memory only: while pinned the titler never runs, however often
+/// the session compacts or how much the inputs grow. Nothing is persisted, so
+/// a restarted session is unpinned.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PinTitle {
+    /// Target session.
+    pub session: SessionId,
+    /// `true` pins, `false` releases.
+    pub pinned: bool,
 }
 
 /// `ask` → [`CompactStyle`]: the live default style.

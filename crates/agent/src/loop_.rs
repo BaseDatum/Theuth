@@ -354,6 +354,10 @@ pub struct SetToolsetOverride(pub Option<Toolset>);
 /// `ask` → the session's current toolset override ([`crate::ShowPrompt`] mirrors it).
 pub struct GetToolset;
 
+/// `tell`: pin or release the session's title ([`crate::PinTitle`]); read by
+/// `maybe_title` at every turn end.
+pub struct SetTitlePin(pub bool);
+
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
@@ -609,6 +613,8 @@ struct Shared {
     compaction: Arc<parking_lot::RwLock<CompactionOverride>>,
     /// [`SetToolsetOverride`] (`meetings/06-live-toolset.md`); shared with the running turn.
     toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
+    /// [`SetTitlePin`] (`meetings/06-live-toolset.md` §1.7); shared with the running turn.
+    title_pinned: Arc<std::sync::atomic::AtomicBool>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -720,6 +726,7 @@ impl Session {
                 compact_style,
                 compaction: Arc::default(),
                 toolset: Arc::default(),
+                title_pinned: Arc::default(),
                 title_model,
                 vision_model,
                 escalate_model,
@@ -1705,6 +1712,16 @@ impl Message<SetToolsetOverride> for Session {
         _: &mut Context<Self, Self::Reply>,
     ) {
         *self.shared.toolset.write() = t;
+    }
+}
+
+impl Message<SetTitlePin> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetTitlePin(p): SetTitlePin, _: &mut Context<Self, Self::Reply>) {
+        self.shared
+            .title_pinned
+            .store(p, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3391,6 +3408,14 @@ impl Turn {
     /// closed generation lands. Diagnostics never carry prompt/reply/title
     /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
+        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated.
+        if self
+            .shared
+            .title_pinned
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let epoch_changed = self.state.epoch != self.state.title_epoch;
         if !title::due(
             !self.state.title_model,
@@ -3626,9 +3651,19 @@ impl Turn {
             self.state.todo_touched_round = round;
         }
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
-        // rounds against what was appended since; each id once per epoch.
-        if let Some(knowledge) = self.knowledge() {
-            let cfg = &self.shared.cfg.knowledge;
+        // rounds against what was appended since; each id once per epoch. 06 §1.5:
+        // the session's toolset may cap the lines or (`Some(0)`) drop hints entirely.
+        let cfg = &self.shared.cfg.knowledge;
+        let hint_limit = self
+            .shared
+            .toolset
+            .read()
+            .as_ref()
+            .and_then(|t| t.hint_limit)
+            .unwrap_or(cfg.hint_limit);
+        if hint_limit > 0
+            && let Some(knowledge) = self.knowledge()
+        {
             let query = if round == 0 {
                 Some(std::mem::take(&mut self.input_text))
             } else if round - self.state.knowledge_hinted_round >= cfg.hint_rounds {
@@ -3647,7 +3682,7 @@ impl Turn {
                         &query,
                         &self.cwd,
                         &self.state.hinted,
-                        cfg.hint_limit,
+                        hint_limit,
                         Some(self.shared.id),
                     )
                     .await
@@ -3818,8 +3853,10 @@ impl Turn {
             // transcript or the log: the user's message looked swallowed
             // (session 01a0e834, 2026-09-28: ten such turns over 1h50). Say so.
             if end.captured_content.as_ref().is_none_or(|c| c.is_empty()) {
-                self.error(format!("model returned an empty reply (stop_reason={stop})"))
-                    .await;
+                self.error(format!(
+                    "model returned an empty reply (stop_reason={stop})"
+                ))
+                .await;
             }
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
                 // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
@@ -5457,6 +5494,10 @@ mod thinking_tests;
 #[cfg(test)]
 mod interrupt_tests;
 
+/// 80 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
+#[cfg(test)]
+mod meeting_diet_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5513,6 +5554,7 @@ mod tests {
             tools: vec!["brief_search".into(), "meeting_topic".into()],
             prompts: vec!["meeting".into(), "web".into()],
             runtime: false,
+            hint_limit: None,
         };
         assert_eq!(
             names(direct_specs(registry(), true, true, true, Some(&live))),
@@ -5523,6 +5565,7 @@ mod tests {
             tools: vec!["todo".into(), "ask_user".into()],
             prompts: vec![],
             runtime: true,
+            hint_limit: None,
         };
         assert_eq!(
             names(direct_specs(
@@ -5550,6 +5593,7 @@ mod tests {
             tools: vec![<SpawnSubagentTool as tools::Tool>::NAME.into()],
             prompts: vec![],
             runtime: false,
+            hint_limit: None,
         };
         assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
         // `None`: the floor with the runtime on, everything plus `todo` without.
