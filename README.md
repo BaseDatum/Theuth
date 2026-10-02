@@ -224,6 +224,7 @@ Config (`~/.theuth/`, created on first run; details in
     # searxng: { base_url: http://127.0.0.1:8080 }     # a SearXNG instance you run
     # openserp: { base_url: http://127.0.0.1:7000 }
     # brave: {}                    # Brave Search API (provider `brave_api`); secret `brave` in the vault
+    x: { enabled: true, model: grok-4.7, timeout_ms: 90000 }   # `search_x` tool over xAI's x_search (design doc 80); registered only while an `xai` secret or `/login xai` exists
   browser:                        # design doc 23
     enabled: true
     stealth: true                 # wreq TLS fingerprint + tracker blocklist (§0.4)

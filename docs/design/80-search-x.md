@@ -1,6 +1,6 @@
 # 80 — `search_x`: X (Twitter) posts through xAI's `x_search` tool
 
-Status: proposed 2026-10-02 (Sky). Extends 16 (web search tools) and 05 §2.2
+Status: built 2026-10-02 (§13; proposed the same day, Sky). Extends 16 (web search tools) and 05 §2.2
 (provider credentials); amends 00 §10 (crate table). Where this doc and 16
 disagree about the `search_x` tool, this doc wins; everything about
 `search_web`/`read_url` stays 16's.
@@ -253,11 +253,75 @@ exists (80)`. §10 dependency line: `search-providers` now also depends on
 
 - Settings › Search row for `search_x` (credential state = key / login /
   env; `enabled`; `model`) needs a second wire shape or a `kind` on
-  `ProviderSettings`.
+  `ProviderSettings`. `persist` already writes the `x:` block back, so a
+  row only needs the wire shape and `apply_settings`.
 - `search_web` could learn an `x` provider *name* that routes to this tool
   when the query names a handle — only if use shows the model picking wrong.
 - Siblings `web_search` / `code_interpreter` through the same request shape.
+- Live smoke against `api.x.ai` (a real `xai` login or key on a dev box):
+  the response shape is from xAI's docs and jarvis's parser, not observed.
 
 ## 12. Status
 
-Proposed. As-built sections are appended per step.
+Built 2026-10-02 (§13). Exercised: validation, credential precedence
+(pure + a file-backed `oauth::Store`), request body and response parsing
+against wiremock, the 401 text, the registration predicate, `persist`
+round-trip of the `x:` block. Not exercised: a live xAI call, the kameo
+actor's register/unregister through a real `ToolRegistry`, `/login xai`
+surfacing the tool through `SecretsEvent::Changed` on a running harness.
+
+## 13. As built — 2026-10-02
+
+Branch `feat/search-x` on `95f6496a`. `crates/search-providers/src/xai.rs`
+(692 lines, 6 tests) and `lib.rs` (+~110 lines, +1 test, +1 extended);
+`crates/search-providers/Cargo.toml` gains `oauth`, `tools`. Gates run
+per crate: `cargo fmt -p search-providers -- --check`,
+`cargo clippy -p search-providers --all-targets -- -D warnings`,
+`cargo test -p search-providers`, `cargo check -p theuth`.
+
+Pointers: `xai.rs:36` `XConfig`; `:57` `XSearchArgs`; `:83-104`
+`Credential` + `credential()` (pure precedence); `:144` `tool_def`
+(validation + `x_search` definition + names of filters set); `:244`
+`parse` (answer, citations union, title back-fill); `:294-425`
+`XSearchTool` (`bearer`, `run`); `:428` `Tool` impl. `lib.rs:53` the `x`
+block (default `Some`); `:477-481` `persist` writes it; `:532`
+`advertise_x` (the §0.5 predicate); `:596-628` `sync_x` (register tool +
+prompt / unregister both, idempotent on `x_registered`); `:694-708` the
+actor now holds `oauth::Store`, the env key read once, and the registry
+from `lookup_when`.
+
+Deviations from §3-§5, with reasons:
+
+1. **Cited lines were off.** `supervisor.rs` precedence is at `:6908-6917`
+   as cited, the store construction at `:7224-7231` as cited; `web/src/lib.rs`
+   registration is `:191-221` (doc said 193-216); `web/tools.rs` consts
+   `:358-360`, `structured` `:83-89` as cited; `search-providers/lib.rs`
+   `sync` was `:553-568`, `start` `:617-651` before this change.
+   `oauth::Store::access` is `:780-847` as cited.
+2. **`images`/`videos` are not "filters" for `degraded`.** They are
+   understanding flags passed through when given (`true` or `false`);
+   `degraded` counts only `handles`, `exclude_handles`, `from_date`,
+   `to_date` — the ones that can eat results. §4's table lists them apart
+   from the handle/date rules, so this reads as its intent.
+3. **`credential_source()` became `credential()` + `advertise_x()`.** The
+   pure precedence function takes `(vault key, login result, env key)` so
+   it is testable without a vault; the registration predicate is
+   `advertise_x(&cfg, has_credential) -> Option<&XConfig>` in `lib.rs`
+   (the actor computes `has_credential` from vault, store and env).
+4. **`persist` writes the `x:` block.** `open_flow_blocks` turns any
+   `x: {…}` into `x:` (null → `None`), so leaving the block unwritten would
+   silently disable the tool after a Settings › Search save; writing the
+   three scalars costs five lines and the round-trip test covers it.
+5. **Step 2's actor tests were not written as actor tests.** The crate has
+   never spawned the kameo actor in tests (web/registry handles needed);
+   the predicate is unit-tested, `sync_x` is a thin match on it.
+6. **`User-Agent`** is `web::WebConfig::default().user_agent` — the
+   workspace string, not the user's `web.user_agent` (plugins.md §3.6: a
+   plugin does not read another plugin's section).
+7. **`cargo fmt --all -- --check`** fails on the untouched base (`95f6496a`
+   is not rustfmt-clean under the pinned 1.98.1 toolchain: ~50 files in
+   `agent`, `mesh`, `sandbox`, `tui`, …); the gate was run as
+   `cargo fmt -p search-providers -- --check`, green. Nothing outside this
+   change was reformatted.
+8. **Doc 16 §3.1** said `search-providers` "owns no tools"; amended to say
+   `search_x` is doc 80's and needs only the tool registry.
