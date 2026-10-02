@@ -1019,6 +1019,7 @@ agent:
 #   models_dir: ~            # phase 4: diarization models root (nemotron-diarization/, pyannote/); default <data_dir>/models
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
+#   live_hint_limit: 2       # 06 §1.5: lines per <knowledge> note while recording; 0 = none
 
 # models:                    # where the local models run (design doc 58 steps 12–13). Check with `t --bench-models [--accelerator X]`.
 #   accelerator: auto        # auto | cpu | webgpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle); for the ONNX sessions
