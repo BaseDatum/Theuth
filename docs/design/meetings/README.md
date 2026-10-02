@@ -113,7 +113,7 @@ Config section (whole feature; a phase only reads the keys it implements):
 meeting:
   enabled: true
   max_minutes: 180          # hard stop; warning (NearMaxLength) at max_minutes - 10
-  context_tokens: 24000     # phase 2: per-session compaction trigger
+  context_tokens: 32000     # phase 2: per-session compaction trigger (02 §4.1: head + tail + record)
   batch_secs: 25            # phase 2
   batch_utterances: 6       # phase 2
   live_model_dir: null      # phase 2: defaults to <data_dir>/models/nemotron-streaming-en — the directory dictation (54) uses; one Nemotron streaming checkpoint for both
@@ -121,6 +121,7 @@ meeting:
   max_topics: 6             # phase 2
   models_dir: null          # phase 4: diarization models root; default <data_dir>/models (nemotron-diarization/, pyannote/)
   live_diarization: true    # 07: label the other side's live lines by speaker; off → `them:` (the post pass diarizes either way); next meeting start
+  live_hint_limit: 2        # 06 §1.5 / 81: lines per `<knowledge>` note while recording; 0 = none
 ```
 
 ## 4. Integration pass (phase 7, done together)

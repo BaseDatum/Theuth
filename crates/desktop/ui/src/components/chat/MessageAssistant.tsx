@@ -4,7 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
 import { memo, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { type PluginConfig, Streamdown } from 'streamdown'
+import { type Components, type PluginConfig, Streamdown } from 'streamdown'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -17,6 +17,7 @@ import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
 import { FenceContext, JsonRenderFence } from './surface/JsonRenderFence'
 import { OpenUIFence } from './surface/OpenUIFence'
+import { MarkdownTd } from './surface/registry'
 import { Stamp, useStampToggle } from './Stamp'
 
 // Module scope: a new object per render would re-initialise the highlighter.
@@ -31,6 +32,9 @@ export const plugins: PluginConfig = {
     { language: 'openui', component: OpenUIFence },
   ],
 }
+// Markdown tables (`| a | b |`) take streamdown's `td` with the json-render `Table`'s wrapping rules; the table itself goes
+// natural-width via the `[&_table]` variants on the Streamdown className below, so streamdown's `overflow-x-auto` wrapper scrolls.
+export const markdownComponents: Components = { td: MarkdownTd }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
 /** `text` fenced with `language`; the fence outruns any backtick run inside. */
@@ -230,8 +234,9 @@ export const MessageAssistant = memo(function MessageAssistant({
           mode={open ? undefined : 'static'}
           isAnimating={open}
           plugins={plugins}
+          components={markdownComponents}
           shikiTheme={shikiTheme}
-          className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table_th]:font-semibold"
+          className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
         >
           {text}
         </Streamdown>

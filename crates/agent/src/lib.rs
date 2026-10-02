@@ -66,6 +66,20 @@ pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::n
 #[cfg(test)]
 pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
     let _lock = REGISTRY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // The knowledge actor a previous body registered died with its runtime
+    // without its `on_stop` unregistration (`tools::registry::evict_dead`
+    // covers only the registry's own names); the stale entry would refuse
+    // the next `KnowledgePlugin::start`.
+    if kameo::actor::ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+        .ok()
+        .flatten()
+        .is_some_and(|a| !a.is_alive())
+    {
+        kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(knowledge::KNOWLEDGE_ACTOR);
+    }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -342,8 +356,13 @@ pub struct SetCompactStyle {
 /// `ask` → `Result<(), String>`: one session's compaction override, in memory
 /// only (`meetings/02-live.md` §0.2): `at_tokens` replaces `compact_at × window`
 /// as the auto-compaction trigger, `hint` is appended as one paragraph to the
-/// summariser instruction. `None` clears each; nothing is persisted, so a
-/// restarted session compacts like any other.
+/// summariser instruction, `head` is a ready-made compaction head body. When
+/// `head` is set, every compaction of the session that has no head of its own
+/// (auto, and `Compact` without `head`) uses it as the given summary: Summary
+/// style is forced — no summariser call, no snap frames, no pre-compaction
+/// harvest — whatever `agent.compact_style` says (`/clear` still clears).
+/// `None` clears each; nothing is persisted, so a restarted session compacts
+/// like any other.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetCompaction {
     /// Target session.
@@ -354,6 +373,10 @@ pub struct SetCompaction {
     /// Extra summariser paragraph; `None` = the plain instruction.
     #[serde(default)]
     pub hint: Option<String>,
+    /// Ready-made head body for every compaction without one of its own;
+    /// `None` = the configured style runs.
+    #[serde(default)]
+    pub head: Option<String>,
 }
 
 /// A session's allowlisted toolset (`meetings/06-live-toolset.md`): only the
@@ -369,6 +392,10 @@ pub struct Toolset {
     pub prompts: Vec<String>,
     /// Whether `python` is offered at all.
     pub runtime: bool,
+    /// Lines per `<knowledge>` note for this session (`meetings/06-live-toolset.md`
+    /// §1.5, 81): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
+    /// hints, no knowledge search at turn start.
+    pub hint_limit: Option<u32>,
 }
 
 /// `ask` → `Result<(), String>`: one session's toolset override, in memory
@@ -380,6 +407,18 @@ pub struct SetToolset {
     pub session: SessionId,
     /// The allowlist; `None` clears it.
     pub toolset: Option<Toolset>,
+}
+
+/// `ask` → `Result<(), String>`: pin one session's title (`meetings/06-live-toolset.md`
+/// §1.7), in memory only: while pinned the titler never runs, however often
+/// the session compacts or how much the inputs grow. Nothing is persisted, so
+/// a restarted session is unpinned.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PinTitle {
+    /// Target session.
+    pub session: SessionId,
+    /// `true` pins, `false` releases.
+    pub pinned: bool,
 }
 
 /// `ask` → [`CompactStyle`]: the live default style.
@@ -2136,16 +2175,23 @@ impl Default for BroadcastConfig {
     }
 }
 
-/// `agent.compaction`: token budgets the fold must land under (70 COMPACT-SIZE).
-/// Measured with `compact::est` scaled by the session's provider calibration.
+/// `agent.compaction`: CEILINGS on what a fold keeps (70 COMPACT-SIZE, 80
+/// COMPACT-FLOOR). The effective budgets are shares of the headroom over the
+/// compaction trigger (`limit − fixed`, where `fixed` is the system prompt and
+/// tool definitions): tail ≤ 35 %, head ≤ 25 %, each then capped by the value
+/// here (`compact::fold_budget`). Measured with `compact::est` scaled by the
+/// session's provider calibration.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionConfig {
-    /// Most tokens of history replayed verbatim after the head.
+    /// Ceiling on the history replayed verbatim after the head; the effective
+    /// budget is `min(this, 35 % of the headroom)`.
     pub tail_tokens: u32,
-    /// Most tokens of archive images in a `snap` head; oldest lines drop first.
+    /// Ceiling on archive images in a `snap` head (oldest lines drop first);
+    /// the effective cap is `min(this, 25 % of the headroom)`, and a fold whose
+    /// single frame is over the cap runs as `summary`.
     pub image_tokens: u32,
-    /// Head plus tail after a fold; a snap head over this falls back to `summary`.
+    /// Absolute ceiling on head plus tail after a fold, whatever the headroom.
     pub target_tokens: u32,
 }
 

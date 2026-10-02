@@ -338,13 +338,16 @@ pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 /// read by the running turn at its next trigger check, so it applies mid-turn.
 pub struct SetCompactionOverride(pub CompactionOverride);
 
-/// Per-session compaction override (`meetings/02-live.md` §0.2); both `None` = configured behaviour.
+/// Per-session compaction override (`meetings/02-live.md` §0.2); all `None` = configured behaviour.
 #[derive(Clone, Debug, Default)]
 pub struct CompactionOverride {
     /// Auto-compaction trigger in tokens instead of `compact_at × window`.
     pub at_tokens: Option<u32>,
     /// Paragraph appended to [`compact::COMPACT_INSTRUCTION`] for this session.
     pub hint: Option<String>,
+    /// Ready-made head body ([`crate::SetCompaction::head`]): stands in for the
+    /// summariser on every compaction that brings no head of its own.
+    pub head: Option<String>,
 }
 
 /// `tell`: the session's in-memory toolset override ([`crate::SetToolset`]);
@@ -353,6 +356,10 @@ pub struct SetToolsetOverride(pub Option<Toolset>);
 
 /// `ask` → the session's current toolset override ([`crate::ShowPrompt`] mirrors it).
 pub struct GetToolset;
+
+/// `tell`: pin or release the session's title ([`crate::PinTitle`]); read by
+/// `maybe_title` at every turn end.
+pub struct SetTitlePin(pub bool);
 
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
@@ -471,6 +478,15 @@ pub struct SessionState {
     /// `est` of system prompt + tool definitions at the last model call; the
     /// idle actor's share of the breakdown (tools live on the turn).
     pub system_tokens: u32,
+    /// `Compacted.after` of the last fold this process (07 §8.1, 80
+    /// COMPACT-FLOOR): the auto trigger waits for [`compact::REGROWTH_SHARE`]
+    /// of the headroom of growth past it.
+    pub last_after: Option<u32>,
+    /// `(limit, fixed)` auto-compaction was turned off at — headroom under
+    /// [`compact::MIN_HEADROOM`]; cleared when either moves by more than 10 %.
+    pub compaction_off: Option<(u32, u32)>,
+    /// The `at_tokens` clamp was logged this session.
+    pub clamp_warned: bool,
     /// The detached title call of the last turn (07 §15, 51 §6.1): aborted
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
@@ -513,6 +529,9 @@ impl SessionState {
             calibration: None,
             last_provider: None,
             system_tokens: 0,
+            last_after: None,
+            compaction_off: None,
+            clamp_warned: false,
             title_task: None,
             harvest_task: None,
         }
@@ -609,6 +628,8 @@ struct Shared {
     compaction: Arc<parking_lot::RwLock<CompactionOverride>>,
     /// [`SetToolsetOverride`] (`meetings/06-live-toolset.md`); shared with the running turn.
     toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
+    /// [`SetTitlePin`] (`meetings/06-live-toolset.md` §1.7); shared with the running turn.
+    title_pinned: Arc<std::sync::atomic::AtomicBool>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -720,6 +741,7 @@ impl Session {
                 compact_style,
                 compaction: Arc::default(),
                 toolset: Arc::default(),
+                title_pinned: Arc::default(),
                 title_model,
                 vision_model,
                 escalate_model,
@@ -1708,6 +1730,16 @@ impl Message<SetToolsetOverride> for Session {
     }
 }
 
+impl Message<SetTitlePin> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetTitlePin(p): SetTitlePin, _: &mut Context<Self, Self::Reply>) {
+        self.shared
+            .title_pinned
+            .store(p, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl Message<GetToolset> for Session {
     type Reply = Option<Toolset>;
 
@@ -2596,16 +2628,46 @@ impl Turn {
         self.shared.compaction.read().at_tokens
     }
 
-    /// Auto-compaction trigger in tokens: the session's [`CompactionOverride`]
-    /// when set, else `compact_at × window`; `None` = off (unknown window or
-    /// `compact_at: 0`). Also the threshold the kept tail and the tool-batch
-    /// budget are sized from.
-    fn threshold(&self, window: u32) -> Option<u32> {
+    /// Auto-compaction trigger in tokens (07 §8.1): the session's
+    /// [`CompactionOverride`] when set — raised to `fixed + MIN_HEADROOM` so
+    /// a fold can get back under it (81 COMPACT-FLOOR), logged once — else
+    /// `compact_at × window`; `None` = off (unknown window or `compact_at:
+    /// 0`). The fold's budgets are shares of the headroom over it
+    /// ([`compact::fold_budget`]); the tool-batch budget is a quarter of it.
+    fn threshold(&mut self, window: u32) -> Option<u32> {
         if let Some(at) = self.override_tokens() {
-            return Some(at);
+            let fixed = self.fixed_tokens();
+            let (limit, clamped) = compact::clamp_trigger(at, fixed);
+            if clamped && !self.state.clamp_warned {
+                self.state.clamp_warned = true;
+                tracing::warn!(session = %self.shared.id, at_tokens = at, fixed, limit, "compaction override under fixed + MIN_HEADROOM; raised");
+            }
+            return Some(limit);
         }
         let compact_at = self.shared.cfg.compact_at;
         (window > 0 && compact_at > 0.0).then_some((compact_at * window as f32) as u32)
+    }
+
+    /// 81 COMPACT-FLOOR: tokens of the frame that are not history — system
+    /// prompt and tool definitions — in provider units: the last reported
+    /// context (`used`) minus the calibrated `est` of the head and the
+    /// history that call sent (`history[..since]`); before any report, the
+    /// `est` of the system prompt and tools.
+    fn fixed_tokens(&self) -> u32 {
+        if self.state.used == 0 {
+            return self.system_tokens();
+        }
+        let sent = self
+            .state
+            .history
+            .iter()
+            .take(self.since)
+            .map(|(_, m)| compact::est(m))
+            .fold(
+                self.state.head.as_ref().map_or(0, compact::est),
+                u32::saturating_add,
+            );
+        self.state.used.saturating_sub(self.calibrated(sent))
     }
 
     /// The summariser instruction: [`compact::COMPACT_INSTRUCTION`], plus the
@@ -3391,6 +3453,14 @@ impl Turn {
     /// closed generation lands. Diagnostics never carry prompt/reply/title
     /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
+        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated.
+        if self
+            .shared
+            .title_pinned
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let epoch_changed = self.state.epoch != self.state.title_epoch;
         if !title::due(
             !self.state.title_model,
@@ -3594,8 +3664,37 @@ impl Turn {
                 window
             };
             let margin = span / 10;
-            if projected >= limit {
-                if let Err(e) = self
+            // 81 COMPACT-FLOOR: the trigger fires only once the frame regrew
+            // by 30 % of the headroom since the last fold, and not at all while
+            // the headroom is under `MIN_HEADROOM` — a fold could not get back
+            // under the trigger. Off until `(limit, fixed)` move by 10 %.
+            let fixed = self.fixed_tokens();
+            let avail = compact::headroom(limit, fixed);
+            if let Some(at) = self.state.compaction_off
+                && compact::inputs_moved(at, limit, fixed)
+            {
+                self.state.compaction_off = None;
+            }
+            let off = self.state.compaction_off.is_some();
+            if !off && compact::may_fire(projected, limit, self.state.last_after, avail) {
+                if compact::below_floor(limit, fixed) {
+                    self.state.compaction_off = Some((limit, fixed));
+                    let overridden = self.override_tokens().is_some();
+                    tracing::warn!(session = %self.shared.id, projected, limit, fixed, avail, min_headroom = compact::MIN_HEADROOM, overridden, window, "compaction budget cannot be met; auto-compaction off for this session");
+                    let why = if overridden {
+                        format!("the session's compaction trigger override ({limit} tokens)")
+                    } else {
+                        format!("the model's context window ({window} tokens, trigger {limit})")
+                    };
+                    self.note(
+                        "context_pressure",
+                        &format!(
+                            "The context is {projected} tokens, over the compaction trigger of {limit}, but compaction cannot help: {why} leaves {avail} tokens over the {fixed} the system prompt and tool definitions take, and a fold needs at least {}. Automatic compaction is off for this session. Keep replies short and state results and next steps explicitly.",
+                            compact::MIN_HEADROOM
+                        ),
+                    )
+                    .await;
+                } else if let Err(e) = self
                     .compact(
                         &current,
                         transport,
@@ -3608,7 +3707,11 @@ impl Turn {
                 {
                     self.error(format!("compaction: {e}")).await;
                 }
-            } else if !self.state.pressure_sent && limit > margin && projected >= limit - margin {
+            } else if !off
+                && !self.state.pressure_sent
+                && limit > margin
+                && projected >= limit - margin
+            {
                 let pct = (u64::from(projected) * 100 / u64::from(span.max(1))) as u32;
                 self.note(
                     "context_pressure",
@@ -3626,9 +3729,19 @@ impl Turn {
             self.state.todo_touched_round = round;
         }
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
-        // rounds against what was appended since; each id once per epoch.
-        if let Some(knowledge) = self.knowledge() {
-            let cfg = &self.shared.cfg.knowledge;
+        // rounds against what was appended since; each id once per epoch. 06 §1.5:
+        // the session's toolset may cap the lines or (`Some(0)`) drop hints entirely.
+        let cfg = &self.shared.cfg.knowledge;
+        let hint_limit = self
+            .shared
+            .toolset
+            .read()
+            .as_ref()
+            .and_then(|t| t.hint_limit)
+            .unwrap_or(cfg.hint_limit);
+        if hint_limit > 0
+            && let Some(knowledge) = self.knowledge()
+        {
             let query = if round == 0 {
                 Some(std::mem::take(&mut self.input_text))
             } else if round - self.state.knowledge_hinted_round >= cfg.hint_rounds {
@@ -3647,7 +3760,7 @@ impl Turn {
                         &query,
                         &self.cwd,
                         &self.state.hinted,
-                        cfg.hint_limit,
+                        hint_limit,
                         Some(self.shared.id),
                     )
                     .await
@@ -4347,8 +4460,9 @@ impl Turn {
 
     /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
     /// `projected` is reported in `Compacted.before`. Styles only change the head.
-    /// `given` is a ready-made summary body (`Compact::head`): it stands in for
-    /// the summariser and the pre-compaction harvest — no model call at all.
+    /// `given` is a ready-made summary body (`Compact::head`, else the session's
+    /// [`CompactionOverride::head`]): it stands in for the summariser and the
+    /// pre-compaction harvest — no model call at all.
     async fn compact(
         &mut self,
         current: &Current,
@@ -4358,6 +4472,18 @@ impl Turn {
         given: Option<String>,
         reason: compact::CompactReason,
     ) -> Result<u32, String> {
+        // `meetings/02-live.md` §0.2 (b): a session head stands in for a missing
+        // `given` and forces Summary (the `given` arm below) over the configured
+        // style, so a meeting never rasterises snap frames or calls the
+        // summariser. `/clear` keeps its own body and harvest, head or not.
+        let (given, r#override) = if r#override == Some(CompactStyle::Clear) {
+            (given, r#override)
+        } else {
+            match given.or_else(|| self.shared.compaction.read().head.clone()) {
+                Some(head) => (Some(head), Some(CompactStyle::Summary)),
+                None => (None, r#override),
+            }
+        };
         let cfg_style = *self
             .shared
             .compact_style
@@ -4376,22 +4502,29 @@ impl Turn {
         let n_msgs = self.state.history.len();
         let (head, mut full) = self.projected(&images);
         full.reserve(1);
-        // 70 COMPACT-SIZE: the tail is budgeted in tokens — the configured
-        // `tail_tokens` in `est` units after the session's calibration, and
-        // clamped so head images plus tail stay under `target_tokens`; without
-        // a calibration the count is capped too.
+        // 07 §8.2 (81 COMPACT-FLOOR): the tail and the head are shares of the
+        // headroom over the trigger (`limit − fixed`), capped by the configured
+        // ceilings (`tail_tokens`, `image_tokens` / `SUMMARY_TOKENS`,
+        // `target_tokens`) — all in provider tokens. `keep_from` compares `est`
+        // units, so the tail budget crosses the calibration ratio at that one
+        // boundary; without a calibration the message count is capped too.
+        // Invariant: head + tail ≤ 60 % of the headroom (`compact::FoldBudget`).
+        // No trigger at all (unknown window, `compact_at: 0`): the ceilings apply.
         let budgets = self.shared.cfg.compaction;
-        let images_cap = if style == CompactStyle::Snap {
+        let window = self.window(&current.model);
+        let limit = self
+            .threshold(window)
+            .unwrap_or(if window > 0 { window } else { u32::MAX });
+        let fixed = self.fixed_tokens();
+        let head_ceiling = if style == CompactStyle::Snap {
             budgets.image_tokens
         } else {
-            0
+            compact::SUMMARY_TOKENS
         };
-        let tail_tokens = budgets
-            .tail_tokens
-            .min(budgets.target_tokens.saturating_sub(images_cap));
+        let fold = compact::fold_budget(limit, fixed, head_ceiling, &budgets);
         let (tail_budget, max_msgs) = match self.state.calibration {
-            Some(ratio) => ((tail_tokens as f32 / ratio) as u32, usize::MAX),
-            None => (tail_tokens, compact::TAIL_MESSAGES_UNCALIBRATED),
+            Some(ratio) => ((fold.tail as f32 / ratio) as u32, usize::MAX),
+            None => (fold.tail, compact::TAIL_MESSAGES_UNCALIBRATED),
         };
         // `/clear` (11 §2.4): the fold is the whole frame, nothing is kept.
         let keep_from = if style == CompactStyle::Clear {
@@ -4441,18 +4574,18 @@ impl Turn {
                     &full[..keep_from],
                     snap::cols(&shape),
                 );
-                // 70 COMPACT-SIZE: `image_tokens` of archive, oldest lines first out.
-                let (lines, dropped) = snap::budget_lines(lines, images_cap, &shape);
+                // 70 COMPACT-SIZE / 81: `head_cap` of archive, oldest lines first out.
+                let (lines, dropped) = snap::budget_lines(lines, fold.head, &shape);
                 pngs = snap::rasterize(&lines, &shape);
                 let frame_tokens = (pngs.len() as u32).saturating_mul(shape.tokens_per_frame);
                 if pngs.is_empty() {
                     // 13 §2.2: nothing printable → degrade to cut.
                     style = CompactStyle::Cut;
                     cut_body()
-                } else if frame_tokens > budgets.target_tokens {
-                    // The archive alone would blow the post-compaction target
-                    // (`image_tokens` set above `target_tokens`): summarise instead.
-                    tracing::warn!(session = %session, frame_tokens, target = budgets.target_tokens, "snap head over target; compacting as summary");
+                } else if frame_tokens > fold.head {
+                    // One frame alone is over the head cap (a 4,500-token frame
+                    // on a 17k headroom): summarise instead.
+                    tracing::warn!(session = %session, frame_tokens, head_cap = fold.head, avail = fold.avail, "snap head over cap; compacting as summary");
                     pngs.clear();
                     style = CompactStyle::Summary;
                     String::new()
@@ -4657,7 +4790,15 @@ impl Turn {
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);
-        tracing::info!(session = %session, epoch = n, folded = keep_from, frames, tail = self.state.history.len(), folded_results, before = projected, after, style = %style, "compaction");
+        // 81 COMPACT-FLOOR: the hysteresis origin; a fold that freed under
+        // 30 % of the headroom is the 2026-09-28 shape, worth a warning.
+        self.state.last_after = Some(after);
+        tracing::info!(session = %session, epoch = n, folded = keep_from, frames, tail = self.state.history.len(), folded_results, before = projected, after, fixed, avail = fold.avail, tail_budget = fold.tail, head_cap = fold.head, style = %style, "compaction");
+        if reason == compact::CompactReason::Auto
+            && projected.saturating_sub(after) < compact::share(fold.avail, compact::REGROWTH_SHARE)
+        {
+            tracing::warn!(session = %session, before = projected, after, fixed, avail = fold.avail, tail_budget = fold.tail, "compaction freed under 30 % of the headroom");
+        }
         self.publish(AgentEvent::Compacted {
             session,
             turn: self.turn,
@@ -5449,6 +5590,10 @@ mod harvest_tests;
 #[cfg(test)]
 mod compact_queue_tests;
 
+/// 81 COMPACT-FLOOR: a trigger under `MIN_HEADROOM` turns auto-compaction off once, with the note.
+#[cfg(test)]
+mod compact_floor_tests;
+
 /// 70 THINKING-TRACES: the `thinking` field per effort and the signed round trip, at a fake Anthropic.
 #[cfg(test)]
 mod thinking_tests;
@@ -5456,6 +5601,10 @@ mod thinking_tests;
 /// 76 §7: `CancelTurn { keep }` persists the heard prefix and stops with `interrupted`.
 #[cfg(test)]
 mod interrupt_tests;
+
+/// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
+#[cfg(test)]
+mod meeting_diet_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5513,6 +5662,7 @@ mod tests {
             tools: vec!["brief_search".into(), "meeting_topic".into()],
             prompts: vec!["meeting".into(), "web".into()],
             runtime: false,
+            hint_limit: None,
         };
         assert_eq!(
             names(direct_specs(registry(), true, true, true, Some(&live))),
@@ -5523,6 +5673,7 @@ mod tests {
             tools: vec!["todo".into(), "ask_user".into()],
             prompts: vec![],
             runtime: true,
+            hint_limit: None,
         };
         assert_eq!(
             names(direct_specs(
@@ -5550,6 +5701,7 @@ mod tests {
             tools: vec![<SpawnSubagentTool as tools::Tool>::NAME.into()],
             prompts: vec![],
             runtime: false,
+            hint_limit: None,
         };
         assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
         // `None`: the floor with the runtime on, everything plus `todo` without.
@@ -5787,7 +5939,7 @@ mod tests {
 
         // The next turn's first trigger projection (`used + appended since
         // the turn began`) is the effective frame's estimate, not the old one.
-        let turn = Turn::new(
+        let mut turn = Turn::new(
             session.shared.clone(),
             None,
             CancellationToken::new(),
@@ -5806,6 +5958,8 @@ mod tests {
         // `compact_at × window` as the threshold (and is live for a turn already
         // running, through the shared handle); the hint rides behind the constant
         // so the summary/harvest distinction still holds; `None` clears both.
+        // 81 COMPACT-FLOOR: an override under `fixed + MIN_HEADROOM` is raised
+        // to it (logged once); one above passes through.
         let window = 100_000;
         let cfg_limit = (AgentConfig::default().compact_at * window as f32) as u32;
         assert_eq!(turn.threshold(window), Some(cfg_limit));
@@ -5815,9 +5969,20 @@ mod tests {
         set(CompactionOverride {
             at_tokens: Some(4_000),
             hint: Some("Keep the live topics.".into()),
+            head: None,
         });
-        assert_eq!(turn.threshold(window), Some(4_000));
-        assert_eq!(turn.threshold(0), Some(4_000));
+        let fixed = turn.fixed_tokens();
+        assert!(fixed < 4_000, "fixed {fixed}");
+        assert!(!turn.state.clamp_warned);
+        assert_eq!(turn.threshold(window), Some(fixed + compact::MIN_HEADROOM));
+        assert_eq!(turn.threshold(0), Some(fixed + compact::MIN_HEADROOM));
+        assert!(turn.state.clamp_warned);
+        set(CompactionOverride {
+            at_tokens: Some(40_000),
+            hint: Some("Keep the live topics.".into()),
+            head: None,
+        });
+        assert_eq!(turn.threshold(window), Some(40_000));
         let instruction = turn.compact_instruction();
         assert!(instruction.starts_with(compact::COMPACT_INSTRUCTION));
         assert!(

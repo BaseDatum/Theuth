@@ -444,8 +444,25 @@ window   = catalog.closest(model).limit.context          (0 when unknown)
 appended = Σ est(history[since..])                         // persisted since the last call: user text, steering, tool results
 projected = used + appended
 debug!(session, round, window, used, appended, projected, "trigger check")
-compact if window > 0 && compact_at > 0 && projected / window >= compact_at
+limit    = at_tokens override, raised to fixed + MIN_HEADROOM (8k), else compact_at × window
+fixed    = used − calibrated(Σ est(history[..since]) + est(head))   // system prompt + tools, provider tokens
+avail    = limit − fixed                                             // the headroom
+compact if limit > 0 && projected >= limit
+        && (no fold yet || projected − last_after >= 30 % of avail)   // hysteresis
+        && avail >= MIN_HEADROOM                                       // else off for the session (below)
 ```
+
+81 COMPACT-FLOOR added the last three lines. *Hysteresis*: `last_after` is
+the frame estimate right after the previous fold; a fold that could not
+free room is not followed by another on the very next turn. *Clamp*: an
+`at_tokens` override under `fixed + MIN_HEADROOM` is raised to it (`warn!`
+once per session). *Floor*: when the headroom is under `MIN_HEADROOM` —
+a window-derived trigger on a small model with a large system prompt — no
+fold can get back under the trigger, so auto-compaction is turned off for
+the session: one `warn!`, one `<context_pressure>` note telling the model
+compaction cannot help and why (window or override, `fixed`, `avail`),
+and no attempt until `limit` or `fixed` moves by more than 10 % of the
+trigger. The overflow path (§8.5) is unaffected.
 
 `compact_at` defaults to 0.8. The results of the batch that just ran are
 in `appended`, so the 20 % headroom is not for them; it covers the next
@@ -470,12 +487,14 @@ threshold ignored.
 ### 8.2 Cut
 
 `history` is `M[0..n)`. `compact::keep_from(&M, budget, max_msgs)` where,
-since 70 COMPACT-SIZE, the budget is a configured token count rather than a
-fraction of the threshold:
+since 81 COMPACT-FLOOR, the budgets are shares of the *headroom* (§8.1
+`avail = limit − fixed`) capped by the configured ceilings
+(`compact::fold_budget`, all in provider tokens):
 
 ```
-budget    = agent.compaction.tail_tokens (40k) / calibration     // in est units
-            clamped to target_tokens − image_tokens for a snap fold
+head_cap  = min(image_tokens (snap) | SUMMARY_TOKENS 6k (summary, cut), 25 % of avail)
+tail_cap  = min(agent.compaction.tail_tokens (40k), 35 % of avail, target_tokens − head_cap)
+budget    = tail_cap / calibration                                   // in est units, for keep_from
 max_msgs  = ∞ when calibrated, TAIL_MESSAGES_UNCALIBRATED (60) before the
             first provider `usage` of the process
 valid(i)  = M[i].role != Tool             // never orphan a tool_result from its tool_use
@@ -485,6 +504,14 @@ walk i from n-1 down to 1, acc += est_kept(M[i]):
 no keep_from recorded          → keep_from = largest valid i in 1..n   (smallest possible tail)
 no valid i in 1..n             → keep_from = 0: nothing to fold; skip ("nothing to compact")
 ```
+
+Invariant: `head_cap + tail_cap ≤ 60 % of avail`, so the compacted frame is
+at most `fixed + 0.6 × avail` and at least 40 % of the headroom is free
+before the trigger is true again. A snap fold whose single frame is over
+`head_cap` (4,500 tokens on a 17k headroom) runs as `summary`
+(`warn!("snap head over cap")`). The `compaction` log line carries
+`fixed, avail, tail_budget, head_cap`; a fold that freed under 30 % of
+`avail` logs a `warn!`.
 
 `calibration` is the provider's last `prompt_tokens` ÷ `est` of the frame
 that request sent (clamped 0.5–4, `SessionState::calibration`); `est` is
@@ -497,19 +524,25 @@ head 5k + tail 2k with a `[… n chars folded — read the archive]` marker
 `Active::effective` for rows `≤ at_seq` on every `Store::frame`, so a resume
 sends the same bytes. The store row and the spill file keep the whole text.
 
-The previous rule (`limit / 8`, an eighth of the *threshold*) is why a
-small `compact_at` did not re-compact every round; a fixed budget has the
-same property as long as `tail_tokens < compact_at × window`.
+History of the rule. The draft's `window / 8` re-compacted every round under
+a small `compact_at`; `limit / 8` (an eighth of the *threshold*) fixed that.
+70 COMPACT-SIZE replaced it with the absolute `tail_tokens` and lost the
+property: on 2026-09-28 a meeting session with `at_tokens: 24_000` and a
+~7k system prompt compacted on 65 of 83 turns, folding one message each
+time (a 40k tail budget over a 17k headroom keeps everything), the context
+never shrank and the prompt cache was busted every call. 81 COMPACT-FLOOR
+(`docs/design/81-as-built-COMPACT-FLOOR.md`) restored the rule as headroom
+shares plus the §8.1 hysteresis and floor; `compact::tests::meeting_shape_never_loops`
+replays that session's shape over 300 turns.
 
 The fallback keeps the last assistant message and its results even when
 they alone exceed the budget; if they alone exceed the *window* the
 compacted frame overflows too and §8.5 surfaces the error — nothing else
 can help at that point.
 
-Kept verbatim: `M[keep_from..n)`, at most ~1/8 of the threshold (20k on a
-200k window at 0.8) — the tool outputs, file contents and error text the
-model is *currently* working from. Folded: everything before it, plus the
-previous head.
+Kept verbatim: `M[keep_from..n)` — the tool outputs, file contents and
+error text the model is *currently* working from. Folded: everything
+before it, plus the previous head.
 Cutting before an assistant message is fine (its tool results follow it);
 cutting before a user message is fine; cutting before a Tool message is
 not, hence `valid`. The first message of the kept tail may be a User

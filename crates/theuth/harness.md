@@ -53,7 +53,7 @@ agent:
   runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
   compact_at: 0.8                      # auto-compact at this fraction of the context window; 0 = off
   compact_style: summary               # summary | cut | snap
-  compaction: {tail_tokens: 40000, image_tokens: 30000, target_tokens: 120000}  # post-compaction budgets (70 COMPACT-SIZE): verbatim tail, snap archive images, head+tail total
+  compaction: {tail_tokens: 40000, image_tokens: 30000, target_tokens: 120000}  # post-compaction CEILINGS (70 COMPACT-SIZE, 81 COMPACT-FLOOR): verbatim tail, snap archive images, head+tail total; the effective tail/head budgets are 35 %/25 % of the headroom over the trigger, capped by these
   communication: false                 # model-to-model communication (50): spawn_subagent, discover_peers, send_message; off is a ceiling; `/communication on always` writes true
   subagents: {model: null, effort: null, max_depth: 1, max_concurrent: 8, max_runtime_secs: 600, reply_timeout_secs: 120}
   knowledge: {hint_limit: 5, hint_rounds: 4, harvest_every: 3, harvest_max: 8}

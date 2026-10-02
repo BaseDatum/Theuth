@@ -16,7 +16,7 @@ import {
   SquareCheck,
   TriangleAlert,
 } from 'lucide-react'
-import { Children, useState } from 'react'
+import { Children, type ComponentProps, isValidElement, type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -182,6 +182,40 @@ function Metric({ label, value, trend, delta, spark }: { label: string; value: s
   )
 }
 
+/** Resets the transcript's inherited `wrap-anywhere` (Transcript.tsx) so a table column is never narrower than its longest word. */
+export const NO_MID_WORD_BREAK = 'break-normal wrap-normal hyphens-none'
+const MAX_CELL_CH = 48
+/** Table cell wrapping: a short or single-token value never wraps; a token wider than the column may break anywhere; prose wraps at words. */
+export function cellClass(text: string): string {
+  const tokens = text.split(/\s+/)
+  if (tokens.some((t) => t.length > MAX_CELL_CH)) return 'wrap-anywhere'
+  if (tokens.length === 1 || text.length <= 16) return 'whitespace-nowrap'
+  return ''
+}
+
+/** The text of a rendered cell (markdown inlines like `**b**` or `code` are elements around strings). */
+function textOf(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children)
+  return ''
+}
+
+/** A table cell that wraps at words only, shared by the json-render `Table` and the chat's markdown `td`.
+ * Engines ignore `max-width` on a `td`, so the column cap lives on a block inside it. */
+export function Td({ className, children, ...rest }: ComponentProps<'td'>) {
+  return (
+    <td {...rest} className={cn(className, NO_MID_WORD_BREAK, cellClass(textOf(children)))}>
+      <div className="min-w-[6ch] max-w-[48ch]">{children}</div>
+    </td>
+  )
+}
+
+/** streamdown's `components.td` (MessageAssistant): its default classes and `data-streamdown` marker on `Td`. */
+export function MarkdownTd({ node: _node, className, ...props }: ComponentProps<'td'> & { node?: unknown }) {
+  return <Td className={cn('px-4 py-2 text-sm', className)} data-streamdown="table-cell" {...props} />
+}
+
 const components: Components<typeof catalog> = {
   Card: ({ props, children }) => (
     <div className="flex flex-col gap-3 rounded-xl border border-border-subtle bg-layer-1 p-4">
@@ -221,12 +255,12 @@ const components: Components<typeof catalog> = {
     )
   },
   Table: ({ props }) => (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className="max-w-full overflow-x-auto [scrollbar-width:thin]">
+      <table className="w-max min-w-full table-auto text-sm">
         <thead>
           <tr className="border-b border-border-subtle text-left text-fg-secondary">
             {props.columns.map((c, i) => (
-              <th key={i} className="px-2 py-1.5 font-semibold">
+              <th key={i} className={cn('px-2 py-1.5 font-semibold whitespace-nowrap', NO_MID_WORD_BREAK)}>
                 {c}
               </th>
             ))}
@@ -236,9 +270,9 @@ const components: Components<typeof catalog> = {
           {props.rows.map((row, i) => (
             <tr key={i} className="border-b border-border-subtle last:border-0">
               {row.map((cell, j) => (
-                <td key={j} className="px-2 py-1.5 align-top">
+                <Td key={j} className="px-2 py-1.5 align-top">
                   {cell}
-                </td>
+                </Td>
               ))}
             </tr>
           ))}

@@ -63,8 +63,8 @@ use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, RestartTurn, Session, SessionState,
-    SetCompactionOverride, SetPendingEffort, SetToolsetOverride, SuppressPeerInputs, SwitchModel,
-    TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    SetCompactionOverride, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
+    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -87,9 +87,9 @@ use crate::{
     GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAcp,
     ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions,
     ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk,
-    ModelInfo, NewRootSession, NewSession, PinSession, ProviderInfo, QueuedInput, ReadSession,
-    Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
-    RenameSession, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
+    ModelInfo, NewRootSession, NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput,
+    ReadSession, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill,
+    RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
     SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
     SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
@@ -2722,6 +2722,7 @@ impl Message<SetCompaction> for Agents {
             .tell(SetCompactionOverride(CompactionOverride {
                 at_tokens: m.at_tokens,
                 hint: m.hint,
+                head: m.head,
             }))
             .await
             .map_err(|e| e.to_string())
@@ -2740,6 +2741,23 @@ impl Message<SetToolset> for Agents {
             .await?
             .native()?
             .tell(SetToolsetOverride(m.toolset))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<PinTitle> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: PinTitle,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.actor(m.session)
+            .await?
+            .native()?
+            .tell(SetTitlePin(m.pinned))
             .await
             .map_err(|e| e.to_string())
     }

@@ -80,14 +80,19 @@ persists and publishes — all observable headless over RPC. No UI.
    deps); WebRTC (binary output, weakest F1).
 2. **Agent gains two small, general messages; nothing meeting-shaped.**
    (a) `agent::SetCompaction { session, at_tokens: Option<u32>, hint:
-   Option<String> }` (`ask` → `Result<(), String>`), in-memory on the session
+   Option<String>, head: Option<String> }` (`ask` → `Result<(), String>`), in-memory on the session
    actor: `at_tokens` replaces `compact_at × window` as the trigger limit
    (the two `limit =` sites in `loop_.rs`, ~3492 and ~3715 as of 2026-09-20);
    `hint` is appended as one paragraph to `COMPACT_INSTRUCTION`
    (`compact.rs:13`) for that session — note `loop_.rs` compares
    `instruction == COMPACT_INSTRUCTION` (~4056) to tell a summary from a
    harvest, so the hint must be carried beside the instruction, not
-   concatenated into the compared string. `None` clears. Sent at meeting
+   concatenated into the compared string. `head` (MEETING-HEAD, 2026-10-02)
+   is a ready-made head body: every compaction of the session that brings
+   no head of its own (auto, and `Compact` without `head`) uses it as the
+   given summary, and Summary style is forced over `agent.compact_style` —
+   no summariser call, no snap frames, no pre-compaction harvest; `/clear`
+   is untouched. `None` clears each. Sent at meeting
    start, cleared at stop — after the meeting the session compacts like any
    other, so nothing is persisted and no migration exists. (b)
    `CreateSessionOptions.model: Option<String>` (`lifecycle.rs:23-36`) — sets
@@ -283,17 +288,47 @@ change.
 
 At `StartMeeting` (extends phase 1's handler): `CreateSessionOptions {
 model: manifest.session_model, .. }` (§0.2 b); `SetCompaction { session,
-at_tokens: Some(cfg.context_tokens), hint: Some(COMPACTION_HINT) }`;
+at_tokens: Some(cfg.context_tokens), hint: Some(COMPACTION_HINT), head:
+Some(head::render(initial)) }` (`context_tokens` defaults to 32 000);
 `RegisterTool` × 2 (§5); the `started.` line. The
 `COMPACTION_HINT` const: *"This session is a live meeting. Keep: who is in
 the meeting, what has been discussed in order, decisions and numbers said
-aloud, the current live topics and every dismissed topic."*
+aloud, the current live topics and every dismissed topic."* — the
+summariser's fallback while no head is set.
+
+While recording, the head is re-rendered (`head::of`) immediately before
+every batch delivery (`deliver_batch`) and after every topic add
+(`topic_added`), removal (`topic_gone`: viewed, dismissed, expired) and
+brief (`show_brief`); when it differs from `Live::last_head` it is pushed
+with the same `SetCompaction` (trigger, hint and head together) — one ask
+per change, at most one per batch, never on a timer.
 
 At `StopMeeting`: `UnregisterTool("meeting_topic")`, `("meeting_brief")`;
-`SetCompaction { session, at_tokens: None, hint: None }`; flush the
+`SetCompaction { session, at_tokens: None, hint: None, head: None }`; flush the
 batcher's pending lines as one last input; drop the engines. The prompt
 block (§5.3) is registered once at plugin start and stays — it is a pure
 function of config and only speaks about `[meeting …]` lines.
+
+### 4.1 Meeting memory shape
+
+The chat transcript is not the meeting's memory. Three layers:
+
+- **Head** — deterministic meeting state rendered by the plugin
+  (`meeting/src/head.rs`): title, start time, elapsed, speakers heard, live
+  topics with their batch-line label and first-seen stamp, dismissed
+  labels, the briefs given (last 20, "… and N earlier"), outstanding
+  steers, the meeting id, and two fixed lines — a `meeting_read(meeting=…,
+  to_ms=…)` pointer to the earlier transcript and the standing rule not to
+  re-offer a live or dismissed topic. Stable ordering, no wall-clock
+  "now" beyond the elapsed stamp; the same state renders the same text.
+- **Tail** — the last minutes of `[meeting …]` lines verbatim, sized by the
+  agent as a fraction of `context_tokens − fixed` (COMPACT-FLOOR): with a
+  32k trigger and a ~7k system prompt roughly the last 8–9k tokens stay,
+  and the session compacts every ~15k tokens of growth at no model cost.
+- **Record** — the meeting store (`live.jsonl`, `briefs.jsonl`), read back
+  with `meeting_read` / `meeting_search` when a question needs it;
+  `meeting_read` is in the default `live_tools` so the head's pointer is
+  actionable.
 
 ## 5. Tools (`meeting/src/tools.rs`)
 

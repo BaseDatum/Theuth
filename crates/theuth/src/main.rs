@@ -1014,7 +1014,7 @@ agent:
 # meeting:                   # record a meeting: the meeting app's audio + the mic as Opus tracks, live briefs from the notch (design doc 53); macOS 15
 #   enabled: true            # false: no actor, `meeting_*` answers \"meetings are disabled\"
 #   max_minutes: 180         # hard stop; warning (NearMaxLength) at max_minutes - 10
-#   context_tokens: 24000    # per-session compaction trigger for the meeting session
+#   context_tokens: 32000    # per-session compaction trigger for the meeting session (02 §4.1)
 #   batch_secs: 25           # transcript batch cadence
 #   batch_utterances: 6      # transcript batch size
 #   live_model_dir: ~        # Nemotron streaming dir; default <data_dir>/models/nemotron-streaming-en (the dictation checkpoint)
@@ -1023,6 +1023,7 @@ agent:
 #   models_dir: ~            # phase 4: diarization models root (nemotron-diarization/, pyannote/); default <data_dir>/models
 #   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]  # 06: the only tools the meeting session sees while recording, all called directly
 #   live_prompts: [meeting, knowledge, web]  # 06: the only prompt blocks it sees while recording
+#   live_hint_limit: 2       # 06 §1.5: lines per <knowledge> note while recording; 0 = none
 
 # models:                    # where the local models run (design doc 58 steps 12–13). Check with `t --bench-models [--accelerator X]`.
 #   accelerator: auto        # auto | cpu | webgpu | directml | cuda. auto = Metal on an Apple-silicon Mac (candle); for the ONNX sessions

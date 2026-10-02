@@ -52,7 +52,8 @@ meeting; when the user says a brief is stale or wrong, `brief_put` the fix or `b
 In a live meeting every tool you see is called directly; there is no python. Order of lookup: \
 `brief_search`, then knowledge, then one web search and one read, then brief.";
 
-/// 02 §4: appended to the compaction instruction for the meeting session.
+/// 02 §4: appended to the compaction instruction for the meeting session — the summariser's
+/// fallback while no plugin head is set (02 §4.1: a supplied head never reaches the summariser).
 pub const COMPACTION_HINT: &str = "This session is a live meeting. Keep: who is in the meeting, \
 what has been discussed in order, decisions and numbers said aloud, the current live topics and \
 every dismissed topic.";
