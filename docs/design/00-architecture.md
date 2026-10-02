@@ -179,7 +179,8 @@ contracts live in `tools`; the agent's commands and its `AgentEvent` live in
 `agent`. Plugins depend on each other's crates for those types along the
 `runtime ← tools ← secrets ← knowledge ← agent ← link ← {signal, slack, nodes, schedule, artifact, update, voice} ← rpc ← tui ← theuth`
 (`knowledge` joins the chain in 12 §9; `secrets` in 37 §0.10 — `web`,
-`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it; `update`
+`search-providers`, `agent`, `slack`, `rpc`, `signal` depend on it;
+`search-providers` also depends on `oauth`, a library, 80 §9; `update`
 in 39: depends on `agent` only, `rpc` forwards its `UpdateReady`; the
 `search` library in 49 §4.1 sits beside `runtime` — it depends on no
 workspace crate, and `knowledge`, `agent`, `artifact`, `rpc`, `tui` depend
@@ -776,7 +777,7 @@ crates/
   search/             library: nucleo query policy, prepared candidate text, snippets with scalar highlight ranges, SearchCategory/SearchPage envelope — no plugin, actor or store (49 §4.1)
   agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48, 49)
   web/                plugin: search_web / read_url, SSRF-guarded fetcher, RRF aggregator, keyless engines google/bing/brave/qwant/wikipedia/arxiv/github; one-call search reads top hits and returns relevant passages (16 §4.7)
-  search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16)
+  search-providers/   plugin: optional Firecrawl, SearXNG, OpenSERP, Brave API (`brave_api`) registered with web over the bus; only firecrawl present by default, key-gated (16); plus the `search_x` tool over xAI's `x_search`, registered while an `xai` credential exists (80)
   firecrawl-native/   library: vendored Firecrawl crawler/html heuristics (AGPL; 38)
   scrape/             plugin: scrape_url / crawl / map_site, two-tier engine, BFS crawler, `scrape` render provider (38)
   codeindex/          plugin: tree-sitter tags → sqlite symbol/reference index per repo root, workspace-aware import resolution, aider-style ranked map, code_* runtime tools (60)
@@ -817,7 +818,8 @@ live next to the handler that answers them (12 §8). Dependency order:
 `runtime` and `markdown` only, `rpc` forwards `VoiceEvent` and answers
 `speak`/`stop_speaking`/`voice_status`, 43 §6;
 `web`, `search-providers`, `agent`, `slack`, `rpc`, `signal` depend on
-`secrets`; `agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
+`secrets`; `search-providers` also depends on `oauth` (a library, 80 §9);
+`agent` calls `tools::secrets::redact` from `tools`, 37 §0.10;
 `rpc` names `link`'s and `nodes`' types like every plugin's; `signal`
 imports `link::qr`; `nodes` imports `link`'s identity, initiator and record
 codec; `tui` renders `link`'s status and QR; `rpc` sends `link` its

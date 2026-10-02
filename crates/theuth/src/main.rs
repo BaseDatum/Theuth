@@ -888,6 +888,10 @@ agent:
 #     engines: [google, bing, duckduckgo]
 #   brave:                   # Brave Search API (provider `brave_api`); needs the `brave` secret
 #     enabled: true
+#   x:                       # search_x: X posts through xAI's x_search (design doc 80); inert without the `xai` secret or `/login xai`
+#     enabled: true
+#     model: grok-4.7        # any xAI model that supports agent tools
+#     timeout_ms: 90000      # one Grok search can take tens of seconds
 
 # browser:                   # embedded headless browser, browser_* tools (design doc 23)
 #   enabled: true
