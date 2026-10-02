@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use browser::systemone::{self, Element, Observation, RecentAction, Scroll};
-use decision::engine::MODEL_FILES;
+use decision::engine::model_files;
 use decision::log::Log;
 use decision::{AskMany, DecisionConfig, Disposition, Engine, FamilyGate, Mode, Question};
 use kameo::actor::Spawn;
@@ -164,7 +164,10 @@ fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("DECISION_BROWSER_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| data.join("models/decision-browser"));
-    if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
+    if model_files(decision::Kind::Laya)
+        .iter()
+        .all(|f| dir.join(f).is_file())
+    {
         Some(dir)
     } else {
         eprintln!(

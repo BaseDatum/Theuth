@@ -14,6 +14,7 @@ pub mod candle;
 pub mod engine;
 pub mod escalate;
 pub mod gate;
+pub mod gliner;
 pub mod laya;
 pub mod log;
 pub mod question;
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 pub use engine::{
     AllStats, AskMany, Capture, DeleteTraining, Engine, GetMode, GetTrain, LoadedInfo, LoadedNow,
-    Loader, Oracle, Record, Release, Report, SetMode, SetShare, SetTrain, Stats, Warm,
+    Loader, Oracle, Record, Release, Report, Row, Scores, SetMode, SetShare, SetTrain, Stats, Warm,
 };
 pub use escalate::{EscalateError, SideCaller, escalate};
 pub use gate::{FamilyGate, Mode};
@@ -43,7 +44,7 @@ pub use training::TrainingInfo;
 pub const DECISION_ACTOR: &str = "decision";
 
 /// The checkpoint under `<data_dir>/models/` (57 §2), published by `release-models.sh`: the
-/// Hugging Face `convaiinnovations/laya` layout (`engine::MODEL_FILES`).
+/// Hugging Face `convaiinnovations/laya` layout (`engine::model_files(Kind::Laya)`).
 pub const MODEL_SUBDIR: &str = "decision";
 
 /// The checkpoint name a family runs on when its gate names none (`decision.checkpoints.default`
@@ -62,8 +63,20 @@ pub const IDLE_UNLOAD: Duration = Duration::from_secs(180);
 /// run never trips it, and a session that stops calling `browser_run` frees 0.9 GB sooner.
 pub const BROWSER_IDLE_UNLOAD: Duration = Duration::from_secs(120);
 
+/// Which classifier family a checkpoint is (`decision.checkpoints.<name>.kind`): the files
+/// expected on disk ([`engine::model_files`]) and the [`Oracle`] that loads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// laya: ModernBERT + decision head, one `[MASK]` per option ([`candle::Loaded`]).
+    #[default]
+    Laya,
+    /// GLiNER2.5-Decide: DeBERTa-v3-large + per-label head ([`gliner::Loaded`], GLINER-3).
+    Gliner,
+}
+
 /// One `decision.checkpoints.<name>` entry: a bare directory (`browser: /path`, or `~` for the
-/// convention) or `{ dir, idle_unload }` with either field optional.
+/// convention) or `{ dir, idle_unload, kind }` with every field optional.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(from = "CheckpointEntry")]
 pub struct Checkpoint {
@@ -72,6 +85,8 @@ pub struct Checkpoint {
     /// This checkpoint's idle unload, overriding [`DecisionConfig::idle_unload`] and the
     /// browser default.
     pub idle_unload: Option<Duration>,
+    /// The classifier family; `laya` unless said otherwise.
+    pub kind: Kind,
 }
 
 impl From<PathBuf> for Checkpoint {
@@ -79,6 +94,7 @@ impl From<PathBuf> for Checkpoint {
         Checkpoint {
             dir: Some(dir),
             idle_unload: None,
+            kind: Kind::Laya,
         }
     }
 }
@@ -92,6 +108,8 @@ enum CheckpointEntry {
         dir: Option<PathBuf>,
         #[serde(default, deserialize_with = "opt_duration")]
         idle_unload: Option<Duration>,
+        #[serde(default)]
+        kind: Kind,
     },
 }
 
@@ -101,8 +119,17 @@ impl From<CheckpointEntry> for Checkpoint {
             CheckpointEntry::Dir(dir) => Checkpoint {
                 dir,
                 idle_unload: None,
+                kind: Kind::Laya,
             },
-            CheckpointEntry::Full { dir, idle_unload } => Checkpoint { dir, idle_unload },
+            CheckpointEntry::Full {
+                dir,
+                idle_unload,
+                kind,
+            } => Checkpoint {
+                dir,
+                idle_unload,
+                kind,
+            },
         }
     }
 }
@@ -235,7 +262,7 @@ pub struct DecisionConfig {
     /// Checkpoints by name (57 §4.1 item 6): `default` (= `model_dir`) and `browser`
     /// (`<data_dir>/models/decision-browser`) exist unless overridden; any other name is a
     /// new checkpoint a family may point at with `checkpoint: <name>`. Each entry is a bare
-    /// directory or `{ dir, idle_unload }` ([`Checkpoint`]).
+    /// directory or `{ dir, idle_unload, kind }` ([`Checkpoint`]).
     pub checkpoints: BTreeMap<String, Checkpoint>,
     /// `auto` (Metal on an Apple-silicon Mac, else CPU) | `cpu` | `metal`.
     pub device: Device,
@@ -295,6 +322,13 @@ impl DecisionConfig {
             } else {
                 self.idle_unload
             })
+    }
+
+    /// The classifier family of `checkpoint`: its `kind` if configured, else laya.
+    pub fn kind_for(&self, checkpoint: &str) -> Kind {
+        self.checkpoints
+            .get(checkpoint)
+            .map_or(Kind::Laya, |c| c.kind)
     }
 
     /// Every checkpoint directory by name, given the `default` one: `browser` is
@@ -523,8 +557,9 @@ pub fn mode_for(cfg: &DecisionConfig, model_dir: &Path, prefix: &str) -> ModeInf
             )
         },
     );
-    let missing: Vec<&str> = engine::MODEL_FILES
-        .into_iter()
+    let missing: Vec<&str> = engine::model_files(cfg.kind_for(checkpoint))
+        .iter()
+        .copied()
         .filter(|f| !model_dir.join(f).is_file())
         .collect();
     let (effective, reason) = if mode == Mode::Off {
@@ -721,6 +756,63 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_kind_defaults_to_laya_in_every_entry_form() {
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "checkpoints:\n  a: /a\n  b: { dir: /b }\n  c: { idle_unload: 10s }\n  d: ~\n",
+        )
+        .unwrap();
+        for name in ["default", "browser", "a", "b", "c", "d"] {
+            assert_eq!(cfg.kind_for(name), Kind::Laya, "{name}");
+        }
+        assert_eq!(cfg.checkpoints["a"].dir.as_deref(), Some(Path::new("/a")));
+        assert_eq!(
+            cfg.checkpoints["c"].idle_unload,
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(DecisionConfig::default().kind_for("default"), Kind::Laya);
+    }
+
+    #[test]
+    fn gliner_kind_parses_and_mode_for_checks_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg: DecisionConfig = serde_yaml::from_str(
+            "checkpoints:\n  guard: { kind: gliner }\n  default: { kind: laya, dir: /l }\nfamilies:\n  guard.inject: { mode: active, tau_top: 0.5, tau_margin: 0.1, checkpoint: guard }\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.kind_for("guard"), Kind::Gliner);
+        assert_eq!(cfg.kind_for("default"), Kind::Laya);
+        assert_eq!(
+            engine::model_files(Kind::Gliner),
+            ["model.safetensors", "tokenizer.json", "config.json"]
+        );
+        // The gliner checkpoint lives at the sibling convention and is checked for its own list.
+        let models = dir.path();
+        let default = models.join("decision");
+        let m = mode_for(&cfg, &default, "guard");
+        assert_eq!(m.effective, Mode::Off);
+        assert!(!m.installed);
+        assert_eq!(
+            m.reason.as_deref().unwrap(),
+            format!(
+                "checkpoint missing: decision-guard — model.safetensors, tokenizer.json, config.json not in {}",
+                models.join("decision-guard").display()
+            )
+        );
+        // laya's `encoder/config.json` etc. are not asked of it: the three files alone install it.
+        for f in engine::model_files(Kind::Gliner) {
+            std::fs::create_dir_all(models.join("decision-guard")).unwrap();
+            std::fs::write(models.join("decision-guard").join(f), b"x").unwrap();
+        }
+        let m = mode_for(&cfg, &default, "guard");
+        assert_eq!((m.effective, m.reason), (Mode::Active, None));
+        assert!(m.installed);
+        // An unknown kind is a config error, not a silent laya.
+        assert!(
+            serde_yaml::from_str::<DecisionConfig>("checkpoints:\n  x: { kind: bert }\n").is_err()
+        );
+    }
+
+    #[test]
     fn prefix_entry_sets_every_family_under_it_and_wins() {
         let cfg: DecisionConfig = serde_yaml::from_str(
             "families:\n  meeting.kind: { mode: active }\n  meeting: { mode: off }\n",
@@ -796,7 +888,7 @@ mod tests {
             b.reason
         );
 
-        for f in engine::MODEL_FILES {
+        for f in engine::model_files(Kind::Laya) {
             let p = dir.path().join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, b"x").unwrap();

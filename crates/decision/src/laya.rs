@@ -8,11 +8,13 @@
 //! (`head_max_len`) runs out; the instructions get what the options leave (≥ 8 tokens); the
 //! state gets the rest of `max_len` and is right-truncated.
 
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use tokenizers::Tokenizer;
 
+use crate::engine::{Row, Scores};
 use crate::question::Question;
 
 /// `[CLS]` in ModernBERT's tokenizer (the root laya checkpoint); [`Special::MODERNBERT`].
@@ -183,6 +185,24 @@ pub struct Sequence {
     pub markers_lost: bool,
 }
 
+impl Row for Sequence {
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+    fn state_cut(&self) -> bool {
+        self.state_cut
+    }
+    fn markers_lost(&self) -> bool {
+        self.markers_lost
+    }
+    fn ids(&self) -> &[i64] {
+        &self.input_ids
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Option texts in label order (`render_options`). Bool is always `[false, true]`.
 pub fn render_options(q: &Question) -> Vec<String> {
     match q {
@@ -338,6 +358,18 @@ pub struct RowOut {
     pub confidence: f32,
 }
 
+impl From<RowOut> for Scores {
+    /// `confidence` is dropped: the engine derives it from `probs` ([`Scores::confidence`]).
+    fn from(r: RowOut) -> Scores {
+        Scores {
+            probs: r.probs,
+            logits: r.logits,
+            temperature: r.temperature,
+            act_p: r.act_p,
+        }
+    }
+}
+
 /// Rows padded to a common `[B, S]` / `[B, K]` (`collate_items`): `pad` with attention 0,
 /// marker position 0 with mask false.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -361,19 +393,20 @@ pub struct Batch {
 }
 
 /// Pad `rows` into one batch; `floor = Some((S, K))` pads at least that far (the model wants
-/// K ≥ 2 marker slots for its top-2 act features). Rows never shrink to the floor.
-pub fn collate(rows: &[Sequence], floor: Option<(usize, usize)>, pad: i64) -> Batch {
+/// K ≥ 2 marker slots for its top-2 act features). Rows never shrink to the floor. `rows` may be
+/// `&[Sequence]` or `&[&Sequence]`.
+pub fn collate<R: Borrow<Sequence>>(rows: &[R], floor: Option<(usize, usize)>, pad: i64) -> Batch {
     let b = rows.len();
     let (bs, bk) = floor.unwrap_or((0, 0));
     let s = rows
         .iter()
-        .map(|r| r.input_ids.len())
+        .map(|r| r.borrow().input_ids.len())
         .max()
         .unwrap_or(0)
         .max(bs);
     let k = rows
         .iter()
-        .map(|r| r.marker_pos.len())
+        .map(|r| r.borrow().marker_pos.len())
         .max()
         .unwrap_or(0)
         .max(bk);
@@ -388,6 +421,7 @@ pub fn collate(rows: &[Sequence], floor: Option<(usize, usize)>, pad: i64) -> Ba
         qtype: Vec::with_capacity(b),
     };
     for r in rows {
+        let r = r.borrow();
         let n = r.input_ids.len();
         batch.input_ids.extend_from_slice(&r.input_ids);
         batch.input_ids.resize(batch.input_ids.len() + s - n, pad);
@@ -778,7 +812,7 @@ mod tests {
         assert_eq!(&b.marker_pos[0..3], &[3, 5, 0]);
         assert_eq!(&b.marker_mask[6..9], &[true, true, true]);
         assert_eq!(b.qtype, vec![2, 0, 1]);
-        assert_eq!(collate(&[], None, PAD).b, 0);
+        assert_eq!(collate::<Sequence>(&[], None, PAD).b, 0);
     }
 
     #[test]

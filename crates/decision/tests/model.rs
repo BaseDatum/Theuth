@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use candle_core::DType;
 use decision::candle::{Gpu, Loaded};
-use decision::engine::MODEL_FILES;
+use decision::engine::model_files;
 use decision::log::Log;
 use decision::{
     Ask, Candidate, DecisionConfig, Device, Disposition, Engine, FamilyGate, LoadedNow, Mode,
@@ -23,7 +23,10 @@ fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("DECISION_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| data.join("models/decision"));
-    if MODEL_FILES.iter().all(|f| dir.join(f).is_file()) {
+    if model_files(decision::Kind::Laya)
+        .iter()
+        .all(|f| dir.join(f).is_file())
+    {
         Some(dir)
     } else {
         eprintln!("skipped: no laya checkpoint in {}", dir.display());
