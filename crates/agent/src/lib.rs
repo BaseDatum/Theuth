@@ -66,6 +66,20 @@ pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::n
 #[cfg(test)]
 pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
     let _lock = REGISTRY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // The knowledge actor a previous body registered died with its runtime
+    // without its `on_stop` unregistration (`tools::registry::evict_dead`
+    // covers only the registry's own names); the stale entry would refuse
+    // the next `KnowledgePlugin::start`.
+    if kameo::actor::ActorRef::<knowledge::KnowledgeActor>::lookup(knowledge::KNOWLEDGE_ACTOR)
+        .ok()
+        .flatten()
+        .is_some_and(|a| !a.is_alive())
+    {
+        kameo::registry::ACTOR_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(knowledge::KNOWLEDGE_ACTOR);
+    }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
