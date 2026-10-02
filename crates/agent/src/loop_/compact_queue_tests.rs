@@ -300,10 +300,13 @@ async fn session_head_forces_a_text_summary_without_a_model_call() {
         }))
         .await
         .unwrap();
-    actor
-        .tell(user_input(None, "Third question, which compacts first."))
-        .await
-        .unwrap();
+    // The one-token override is raised to `fixed + MIN_HEADROOM` (80
+    // COMPACT-FLOOR); the input must project past it to compact at all.
+    let big = format!(
+        "Third question, which compacts first. {}",
+        "x".repeat(4 * compact::MIN_HEADROOM as usize + 4_000)
+    );
+    actor.tell(user_input(None, &big)).await.unwrap();
     let events = h.drain().await;
 
     let styles: Vec<CompactStyle> = events
