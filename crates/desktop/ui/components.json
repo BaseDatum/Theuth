@@ -19,6 +19,7 @@
     "hooks": "@/hooks"
   },
   "registries": {
-    "@shadercn": "https://raw.githubusercontent.com/shadcn-labs/shadercn/main/public/r/{name}.json"
+    "@shadercn": "https://raw.githubusercontent.com/shadcn-labs/shadercn/main/public/r/{name}.json",
+    "@audiocn": "https://www.audiocn.dev/r/{name}.json"
   }
 }
