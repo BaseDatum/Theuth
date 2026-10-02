@@ -113,7 +113,9 @@ under a roadmap towards OpenSERP that never landed (§7).
 
 ## 2. Tool surface
 
-Two tools, small schemas. Every field is implemented.
+Two tools, small schemas. Every field is implemented. A third, `search_x`
+(X posts through xAI's `x_search`; registered by `search-providers` while an
+`xai` credential exists), is design doc 80.
 
 ```rust
 // search_web - Risk::ReadOnly
@@ -218,7 +220,8 @@ when nothing renders, rather than appearing and disappearing.
 If `search-providers` is absent or has nothing configured, `web` is
 complete on its own with the built-ins. If `web` is absent,
 `search-providers` logs one `warn` ("web plugin not running; nothing to
-register with") and does nothing — it owns no tools.
+register with") and registers no providers (its one tool, `search_x`, is doc
+80's and needs only the tool registry).
 
 ### 3.2 The set
 
