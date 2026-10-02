@@ -273,22 +273,31 @@ surfacing the tool through `SecretsEvent::Changed` on a running harness.
 ## 13. As built — 2026-10-02
 
 Branch `feat/search-x` on `95f6496a`. `crates/search-providers/src/xai.rs`
-(692 lines, 6 tests) and `lib.rs` (+~110 lines, +1 test, +1 extended);
-`crates/search-providers/Cargo.toml` gains `oauth`, `tools`. Gates run
+(749 lines, 7 tests) and `lib.rs` (+~110 lines, +1 test, +1 extended);
+`crates/search-providers/Cargo.toml` gains `oauth`, `tools`. Tests:
+12 unit (7 `xai`, 5 `lib`) + 4 wiremock provider contracts. Gates run
 per crate: `cargo fmt -p search-providers -- --check`,
 `cargo clippy -p search-providers --all-targets -- -D warnings`,
 `cargo test -p search-providers`, `cargo check -p theuth`.
 
 Pointers: `xai.rs:36` `XConfig`; `:57` `XSearchArgs`; `:83-104`
 `Credential` + `credential()` (pure precedence); `:144` `tool_def`
-(validation + `x_search` definition + names of filters set); `:244`
-`parse` (answer, citations union, title back-fill); `:294-425`
-`XSearchTool` (`bearer`, `run`); `:428` `Tool` impl. `lib.rs:53` the `x`
+(validation + `x_search` definition + names of filters set); `:245`
+`real_title` (blank or footnote-label titles → `None`); `:251`
+`top_citation` (URL string or `{url, title?}`; anything else skipped);
+`:264` `parse` (answer, citations union, title back-fill); `:315-446`
+`XSearchTool` (`bearer`, `run`); `:449` `Tool` impl. `lib.rs:53` the `x`
 block (default `Some`); `:477-481` `persist` writes it; `:532`
 `advertise_x` (the §0.5 predicate); `:596-628` `sync_x` (register tool +
 prompt / unregister both, idempotent on `x_registered`); `:694-708` the
 actor now holds `oauth::Store`, the env key read once, and the registry
 from `lookup_when`.
+
+Hardening after review (`fix(search-providers): tolerant citation shapes`):
+top-level `citations` is `Vec<Value>` so an object-form citation cannot
+make the whole response undeserialisable; `url_citation.title` in the
+Responses API is the footnote label (`"1"`, `"2"`), so a blank or purely
+numeric title is dropped and `citations[].title` is only ever a real title.
 
 Deviations from §3-§5, with reasons:
 

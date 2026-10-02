@@ -192,7 +192,8 @@ fn tool_def(a: &XSearchArgs, today: NaiveDate) -> Result<(Value, Vec<&'static st
 struct Response {
     output_text: Option<String>,
     output: Vec<Item>,
-    citations: Vec<String>,
+    /// Documented as URL strings; objects with a `url` are accepted too.
+    citations: Vec<Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -239,7 +240,26 @@ struct XSearchResult<'a> {
     took_ms: u128,
 }
 
-/// Answer text and citations (top-level URLs first, then inline
+/// A title worth keeping: not blank, not a footnote label (`"1"`, `"2"`, …
+/// is what the Responses API puts in `url_citation.title`).
+fn real_title(t: Option<&str>) -> Option<&str> {
+    t.map(str::trim)
+        .filter(|t| !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// `(url, title)` from a top-level citation: a URL string or `{url, title?}`.
+fn top_citation(v: &Value) -> Option<(&str, Option<&str>)> {
+    match v {
+        Value::String(u) => Some((u, None)),
+        Value::Object(o) => Some((
+            o.get("url")?.as_str()?,
+            o.get("title").and_then(Value::as_str),
+        )),
+        _ => None,
+    }
+}
+
+/// Answer text and citations (top-level citations first, then inline
 /// `url_citation` annotations), de-duplicated by URL in first-seen order.
 fn parse(r: Response) -> (String, Vec<Citation>) {
     let parts: Vec<&Part> = r
@@ -263,10 +283,11 @@ fn parse(r: Response) -> (String, Vec<Citation>) {
         .flat_map(|p| p.annotations.iter())
         .filter(|a| a.kind == "url_citation")
         .map(|a| (a.url.as_str(), a.title.as_deref()));
-    for (url, title) in r.citations.iter().map(|u| (u.as_str(), None)).chain(inline) {
+    for (url, title) in r.citations.iter().filter_map(top_citation).chain(inline) {
         if url.is_empty() {
             continue;
         }
+        let title = real_title(title);
         match cites.iter_mut().find(|c| c.url == url) {
             Some(c) => {
                 if c.title.is_none() {
@@ -553,6 +574,42 @@ mod tests {
         assert_eq!(
             credential(None, Some(Err("expired".into())), e()).unwrap_err(),
             "expired"
+        );
+    }
+
+    #[test]
+    fn citations_accept_objects_and_drop_footnote_labels() {
+        let r: Response = serde_json::from_value(json!({
+            "citations": [
+                { "url": "https://x.com/a/status/1", "title": "Post by A" },
+                "https://x.com/b/status/2",
+                { "no_url": true },
+                7
+            ],
+            "output": [{ "type": "message", "content": [{
+                "type": "output_text",
+                "text": "t",
+                "annotations": [
+                    { "type": "url_citation", "url": "https://x.com/b/status/2", "title": "3" },
+                    { "type": "url_citation", "url": "https://x.com/c/status/3", "title": " 12 " },
+                    { "type": "url_citation", "url": "https://x.com/d/status/4", "title": "" }
+                ]
+            }]}]
+        }))
+        .unwrap();
+        let (_, cites) = parse(r);
+        let got: Vec<(&str, Option<&str>)> = cites
+            .iter()
+            .map(|c| (c.url.as_str(), c.title.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("https://x.com/a/status/1", Some("Post by A")),
+                ("https://x.com/b/status/2", None),
+                ("https://x.com/c/status/3", None),
+                ("https://x.com/d/status/4", None),
+            ]
         );
     }
 
