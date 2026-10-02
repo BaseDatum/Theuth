@@ -5938,6 +5938,7 @@ mod tests {
         set(CompactionOverride {
             at_tokens: Some(40_000),
             hint: Some("Keep the live topics.".into()),
+            head: None,
         });
         assert_eq!(turn.threshold(window), Some(40_000));
         let instruction = turn.compact_instruction();
