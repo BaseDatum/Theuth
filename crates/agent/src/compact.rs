@@ -164,6 +164,97 @@ fn pdf_pages(b: &Binary) -> u32 {
 /// provider's `usage`: at most this many messages, whatever `est` says.
 pub const TAIL_MESSAGES_UNCALIBRATED: usize = 60;
 
+/// 07 §8.2 (80 COMPACT-FLOOR): the least headroom (`limit − fixed`, provider
+/// tokens) a fold can work with. An `at_tokens` override below
+/// `fixed + MIN_HEADROOM` is raised to it; a window-derived trigger below it
+/// turns auto-compaction off for the session — at 60 % of 8k the head and
+/// tail together get 4.8k, under which no fold keeps the current exchange.
+pub const MIN_HEADROOM: u32 = 8_000;
+/// Ceiling for a summary head (provider tokens): the instruction asks for "at
+/// most a few thousand words" plus the harness lines.
+pub const SUMMARY_TOKENS: u32 = 6_000;
+/// Share of the headroom (percent) the kept tail may take after a fold;
+/// with [`HEAD_SHARE`] 60 %, leaving 40 % for growth before the next trigger.
+pub const TAIL_SHARE: u32 = 35;
+/// Share of the headroom (percent) the head may take after a fold.
+pub const HEAD_SHARE: u32 = 25;
+/// Growth since the last fold (percent of the headroom) before the auto
+/// trigger may fire again — a fold that freed nothing is not repeated next turn.
+pub const REGROWTH_SHARE: u32 = 30;
+
+/// `limit − fixed`: the tokens history and head may occupy under the trigger.
+pub fn headroom(limit: u32, fixed: u32) -> u32 {
+    limit.saturating_sub(fixed)
+}
+
+/// `pct` percent of `n`.
+pub fn share(n: u32, pct: u32) -> u32 {
+    (u64::from(n) * u64::from(pct) / 100) as u32
+}
+
+/// 07 §8.2: what a fold may keep, all in provider tokens. Invariant:
+/// `head + tail ≤ 60 % of avail`, so the compacted frame is at most
+/// `fixed + 0.6 × avail` and at least 40 % of the headroom is free for growth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldBudget {
+    /// [`headroom`] of the trigger.
+    pub avail: u32,
+    /// Most tokens the kept tail may hold: `min(tail_tokens, 35 % avail,
+    /// target_tokens − head)`.
+    pub tail: u32,
+    /// Most tokens the head may hold: `min(head_ceiling, 25 % avail)`; the
+    /// ceiling is `image_tokens` for a snap fold, [`SUMMARY_TOKENS`] otherwise.
+    pub head: u32,
+}
+
+/// The [`FoldBudget`] for a trigger `limit` over `fixed` tokens of system
+/// prompt and tools, under the configured ceilings.
+pub fn fold_budget(
+    limit: u32,
+    fixed: u32,
+    head_ceiling: u32,
+    cfg: &crate::CompactionConfig,
+) -> FoldBudget {
+    let avail = headroom(limit, fixed);
+    let head = head_ceiling.min(share(avail, HEAD_SHARE));
+    let tail = cfg
+        .tail_tokens
+        .min(share(avail, TAIL_SHARE))
+        .min(cfg.target_tokens.saturating_sub(head));
+    FoldBudget { avail, tail, head }
+}
+
+/// 07 §8.1: an `at_tokens` override raised to `fixed + MIN_HEADROOM`; the
+/// returned flag says whether it was.
+pub fn clamp_trigger(at_tokens: u32, fixed: u32) -> (u32, bool) {
+    let floor = fixed.saturating_add(MIN_HEADROOM);
+    (at_tokens.max(floor), at_tokens < floor)
+}
+
+/// 07 §8.1 hysteresis: the auto trigger fires at `projected ≥ limit` only
+/// when the frame grew by [`REGROWTH_SHARE`] of `avail` since the last fold
+/// (`last_after`, `None` before the first).
+pub fn may_fire(projected: u32, limit: u32, last_after: Option<u32>, avail: u32) -> bool {
+    projected >= limit
+        && last_after
+            .is_none_or(|after| projected.saturating_sub(after) >= share(avail, REGROWTH_SHARE))
+}
+
+/// 07 §8.1 floor clamp: `true` when no fold can get under the trigger — the
+/// headroom is below [`MIN_HEADROOM`] (which includes `fixed + head ≥ limit`,
+/// since `head ≤ avail / 4`).
+pub fn below_floor(limit: u32, fixed: u32) -> bool {
+    headroom(limit, fixed) < MIN_HEADROOM
+}
+
+/// Re-enable test for a disabled session: the trigger or the fixed size moved
+/// by more than 10 % of the trigger it was disabled at (movement is measured
+/// against the trigger, so a small `fixed` estimate wobbling is not a change).
+pub fn inputs_moved((limit0, fixed0): (u32, u32), limit: u32, fixed: u32) -> bool {
+    let step = share(limit0, 10);
+    limit0.abs_diff(limit) > step || fixed0.abs_diff(fixed) > step
+}
+
 /// Index of the first message kept verbatim (07 §8.2). `budget` is the tail's
 /// token budget in `est` units (the caller has already divided the configured
 /// `tail_tokens` by the session's calibration ratio) measured with
@@ -555,6 +646,140 @@ mod tests {
         assert!(h.len() - k <= 7, "kept {}", h.len() - k);
         assert_ne!(h[k].role, ChatRole::Tool);
         assert_eq!(keep_from(&h, u32::MAX, usize::MAX), 1);
+    }
+
+    /// A budget under the history's size folds more than the single message
+    /// the 2026-09-28 session folded per turn.
+    #[test]
+    fn keep_from_folds_more_than_one_when_over_budget() {
+        let h = history(6, 400);
+        let total = kept(&h, 0);
+        let k = keep_from(&h, total / 2, usize::MAX);
+        assert!(k > 1, "folded {k}");
+        assert!(kept(&h, k) <= total / 2);
+    }
+
+    #[test]
+    fn fold_budget_is_a_share_of_the_headroom() {
+        let cfg = crate::CompactionConfig::default();
+        let b = fold_budget(24_000, 7_000, cfg.image_tokens, &cfg);
+        assert_eq!(
+            b,
+            FoldBudget {
+                avail: 17_000,
+                tail: 5_950,
+                head: 4_250
+            }
+        );
+        assert!(b.head + b.tail <= share(b.avail, HEAD_SHARE + TAIL_SHARE));
+        // Wide headroom: the configured ceilings hold.
+        let b = fold_budget(800_000, 10_000, cfg.image_tokens, &cfg);
+        assert_eq!(
+            b,
+            FoldBudget {
+                avail: 790_000,
+                tail: 40_000,
+                head: 30_000
+            }
+        );
+        // `target_tokens` stays the absolute ceiling on head + tail.
+        let small = crate::CompactionConfig {
+            target_tokens: 50_000,
+            ..cfg
+        };
+        let b = fold_budget(800_000, 0, 30_000, &small);
+        assert_eq!((b.head, b.tail), (30_000, 20_000));
+        assert_eq!(
+            fold_budget(5_000, 7_000, 30_000, &cfg),
+            FoldBudget {
+                avail: 0,
+                tail: 0,
+                head: 0
+            }
+        );
+    }
+
+    #[test]
+    fn trigger_clamp_floor_and_hysteresis() {
+        assert_eq!(clamp_trigger(24_000, 7_000), (24_000, false));
+        assert_eq!(clamp_trigger(1, 7_000), (7_000 + MIN_HEADROOM, true));
+        // A 9k-window model at compact_at 0.8 with nothing fixed: no fold can help.
+        assert!(below_floor(7_200, 0));
+        assert!(!below_floor(7_000 + MIN_HEADROOM, 7_000));
+        assert!(may_fire(24_000, 24_000, None, 17_000));
+        assert!(!may_fire(23_999, 24_000, None, 17_000));
+        // Grew 1k since the last fold: under 30 % of 17k.
+        assert!(!may_fire(24_000, 24_000, Some(23_000), 17_000));
+        assert!(may_fire(29_000, 24_000, Some(23_000), 17_000));
+        assert!(!inputs_moved((24_000, 7_000), 24_000, 7_500));
+        assert!(inputs_moved((24_000, 7_000), 30_000, 7_000));
+        assert!(!inputs_moved((24_000, 7_000), 24_000, 5_000));
+        assert!(inputs_moved((24_000, 7_000), 24_000, 4_000));
+        assert!(!inputs_moved((7_200, 30), 7_200, 0));
+    }
+
+    /// 80 COMPACT-FLOOR regression, the 2026-09-28 meeting shape: override
+    /// 24k, ~7k fixed, two ~350-token messages per turn, default budgets,
+    /// snap. Over 300 turns no two consecutive turns compact, every fold
+    /// leaves 40 % of the headroom free, snap always degrades to summary
+    /// (one frame is over the head cap) and the count is bounded.
+    #[test]
+    fn meeting_shape_never_loops() {
+        const FIXED: u32 = 7_000;
+        const TURNS: u32 = 300;
+        let cfg = crate::CompactionConfig::default();
+        let frame = crate::snap::shape("anthropic").tokens_per_frame;
+        let msg = "m".repeat(1_400);
+        let (limit, clamped) = clamp_trigger(24_000, FIXED);
+        assert!(!clamped);
+        assert!(!below_floor(limit, FIXED));
+        let b = fold_budget(limit, FIXED, cfg.image_tokens, &cfg);
+        assert_eq!(b.avail, 17_000);
+        let per_turn = 2 * est(&ChatMessage::user(msg.clone()));
+        // A fold leaves ≤ fixed + 60 % avail; the next trigger needs ≥ limit
+        // again, so at least 40 % of avail of growth between folds.
+        let free = b.avail - share(b.avail, HEAD_SHARE + TAIL_SHARE);
+        let bound = TURNS / free.div_ceil(per_turn);
+        let size =
+            |hist: &[ChatMessage], head: u32| FIXED + head + hist.iter().map(est).sum::<u32>();
+        let mut hist: Vec<ChatMessage> = Vec::new();
+        let mut head = 0u32;
+        let mut last_after = None;
+        let mut compactions: Vec<u32> = Vec::new();
+        for turn in 0..TURNS {
+            hist.push(ChatMessage::user(msg.clone()));
+            hist.push(ChatMessage::assistant(MessageContent::from_text(
+                msg.clone(),
+            )));
+            let projected = size(&hist, head);
+            if !may_fire(projected, limit, last_after, b.avail) {
+                continue;
+            }
+            assert_ne!(
+                compactions.last(),
+                turn.checked_sub(1).as_ref(),
+                "turn {turn}: two consecutive compactions"
+            );
+            assert!(frame > b.head, "frame {frame} fits head cap {}", b.head);
+            let keep = keep_from(&hist, b.tail, usize::MAX);
+            assert!(keep > 1, "turn {turn}: folded {keep}");
+            hist.drain(..keep);
+            // Worst case: the summary fills its cap.
+            head = b.head;
+            let after = size(&hist, head);
+            assert!(
+                after <= FIXED + share(b.avail, HEAD_SHARE + TAIL_SHARE),
+                "turn {turn}: after {after}"
+            );
+            compactions.push(turn);
+            last_after = Some(after);
+        }
+        assert!(compactions.len() > 1, "{compactions:?}");
+        assert!(
+            compactions.len() as u32 <= bound + 1,
+            "{} compactions, bound {bound}",
+            compactions.len()
+        );
     }
 
     #[test]

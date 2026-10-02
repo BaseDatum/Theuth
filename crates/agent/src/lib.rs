@@ -2136,16 +2136,23 @@ impl Default for BroadcastConfig {
     }
 }
 
-/// `agent.compaction`: token budgets the fold must land under (70 COMPACT-SIZE).
-/// Measured with `compact::est` scaled by the session's provider calibration.
+/// `agent.compaction`: CEILINGS on what a fold keeps (70 COMPACT-SIZE, 80
+/// COMPACT-FLOOR). The effective budgets are shares of the headroom over the
+/// compaction trigger (`limit − fixed`, where `fixed` is the system prompt and
+/// tool definitions): tail ≤ 35 %, head ≤ 25 %, each then capped by the value
+/// here (`compact::fold_budget`). Measured with `compact::est` scaled by the
+/// session's provider calibration.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionConfig {
-    /// Most tokens of history replayed verbatim after the head.
+    /// Ceiling on the history replayed verbatim after the head; the effective
+    /// budget is `min(this, 35 % of the headroom)`.
     pub tail_tokens: u32,
-    /// Most tokens of archive images in a `snap` head; oldest lines drop first.
+    /// Ceiling on archive images in a `snap` head (oldest lines drop first);
+    /// the effective cap is `min(this, 25 % of the headroom)`, and a fold whose
+    /// single frame is over the cap runs as `summary`.
     pub image_tokens: u32,
-    /// Head plus tail after a fold; a snap head over this falls back to `summary`.
+    /// Absolute ceiling on head plus tail after a fold, whatever the headroom.
     pub target_tokens: u32,
 }
 
