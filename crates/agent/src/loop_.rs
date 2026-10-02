@@ -338,13 +338,16 @@ pub struct SetPendingEffort(pub Option<ReasoningEffort>);
 /// read by the running turn at its next trigger check, so it applies mid-turn.
 pub struct SetCompactionOverride(pub CompactionOverride);
 
-/// Per-session compaction override (`meetings/02-live.md` §0.2); both `None` = configured behaviour.
+/// Per-session compaction override (`meetings/02-live.md` §0.2); all `None` = configured behaviour.
 #[derive(Clone, Debug, Default)]
 pub struct CompactionOverride {
     /// Auto-compaction trigger in tokens instead of `compact_at × window`.
     pub at_tokens: Option<u32>,
     /// Paragraph appended to [`compact::COMPACT_INSTRUCTION`] for this session.
     pub hint: Option<String>,
+    /// Ready-made head body ([`crate::SetCompaction::head`]): stands in for the
+    /// summariser on every compaction that brings no head of its own.
+    pub head: Option<String>,
 }
 
 /// `tell`: the session's in-memory toolset override ([`crate::SetToolset`]);
@@ -4347,8 +4350,9 @@ impl Turn {
 
     /// Compaction (07 §8.2–§8.4, 11): cut, build the head, open a new epoch.
     /// `projected` is reported in `Compacted.before`. Styles only change the head.
-    /// `given` is a ready-made summary body (`Compact::head`): it stands in for
-    /// the summariser and the pre-compaction harvest — no model call at all.
+    /// `given` is a ready-made summary body (`Compact::head`, else the session's
+    /// [`CompactionOverride::head`]): it stands in for the summariser and the
+    /// pre-compaction harvest — no model call at all.
     async fn compact(
         &mut self,
         current: &Current,
@@ -4358,6 +4362,18 @@ impl Turn {
         given: Option<String>,
         reason: compact::CompactReason,
     ) -> Result<u32, String> {
+        // `meetings/02-live.md` §0.2 (b): a session head stands in for a missing
+        // `given` and forces Summary (the `given` arm below) over the configured
+        // style, so a meeting never rasterises snap frames or calls the
+        // summariser. `/clear` keeps its own body and harvest, head or not.
+        let (given, r#override) = if r#override == Some(CompactStyle::Clear) {
+            (given, r#override)
+        } else {
+            match given.or_else(|| self.shared.compaction.read().head.clone()) {
+                Some(head) => (Some(head), Some(CompactStyle::Summary)),
+                None => (None, r#override),
+            }
+        };
         let cfg_style = *self
             .shared
             .compact_style
@@ -5815,6 +5831,7 @@ mod tests {
         set(CompactionOverride {
             at_tokens: Some(4_000),
             hint: Some("Keep the live topics.".into()),
+            head: None,
         });
         assert_eq!(turn.threshold(window), Some(4_000));
         assert_eq!(turn.threshold(0), Some(4_000));

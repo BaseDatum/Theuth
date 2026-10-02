@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use super::vision_fallback_tests::{Fake, Harness};
+use super::vision_fallback_tests::{Fake, Harness, system, texts};
 use super::*;
 
 /// How long the fake holds the summariser: long enough for two inputs to
@@ -132,6 +132,7 @@ async fn scenarios() {
     auto_compaction_mid_turn_commits_and_the_queue_follows().await;
     failed_compaction_rolls_back_and_keeps_the_queue().await;
     interrupted_compaction_rolls_back_and_keeps_the_queue().await;
+    session_head_forces_a_text_summary_without_a_model_call().await;
 
     let _ = std::fs::remove_dir_all(&reg_dir);
 }
@@ -173,6 +174,7 @@ async fn auto_compaction_mid_turn_commits_and_the_queue_follows() {
         .tell(SetCompactionOverride(CompactionOverride {
             at_tokens: Some(1),
             hint: None,
+            head: None,
         }))
         .await
         .unwrap();
@@ -272,4 +274,67 @@ async fn interrupted_compaction_rolls_back_and_keeps_the_queue() {
     let (epoch, head, _) = h.store.frame(h.id).await.unwrap();
     assert_eq!(epoch, 0);
     assert!(head.is_none());
+}
+
+/// `meetings/02-live.md` §0.2 (b): a session head (`SetCompaction{head}`)
+/// makes an auto compaction a Summary over that body whatever the configured
+/// style — `snap` on a vision model rasterises nothing and the summariser
+/// (which here would refuse) is never called; the body lands in the frame
+/// head and in `epoch_1.summary.md`.
+async fn session_head_forces_a_text_summary_without_a_model_call() {
+    const HEAD: &str = "# Meeting: standup\nLive topics: none.";
+    let mut h = Harness::new(Fake::compact_refused()).await;
+    let actor = h.actor_styled("openai/eyes", CompactStyle::Snap).await;
+    for text in ["First question.", "Second question."] {
+        actor.tell(user_input(None, text)).await.unwrap();
+        h.drain().await;
+    }
+    actor
+        .tell(SetCompactionOverride(CompactionOverride {
+            at_tokens: Some(1),
+            hint: None,
+            head: Some(HEAD.into()),
+        }))
+        .await
+        .unwrap();
+    actor
+        .tell(user_input(None, "Third question, which compacts first."))
+        .await
+        .unwrap();
+    let events = h.drain().await;
+
+    let styles: Vec<CompactStyle> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compacted { style, .. } => Some(*style),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(styles, [CompactStyle::Summary]);
+    assert_eq!(count(&events, |e| matches!(e, AgentEvent::Error { .. })), 0);
+    assert_eq!(stop_reasons(&events), ["stop"]);
+    // No summariser, no vision call: only main calls (and a title call at
+    // most) reached the provider.
+    for b in h.requests().await {
+        assert_ne!(system(&b), vision::VISION_SYSTEM);
+        assert!(
+            !texts(&b).join("\n").contains(compact::COMPACT_INSTRUCTION),
+            "summariser called"
+        );
+    }
+
+    let (epoch, head, _) = h.store.frame(h.id).await.unwrap();
+    assert_eq!(epoch, 1);
+    let head = head.expect("a head");
+    assert!(head.content.binaries().is_empty(), "no snap frames");
+    let text = text_of(&head.content);
+    assert!(text.contains(HEAD), "{text}");
+    let summary = std::fs::read_to_string(
+        h.dir
+            .join("spill")
+            .join(h.id.to_string())
+            .join("epoch_1.summary.md"),
+    )
+    .unwrap();
+    assert!(summary.contains(HEAD), "{summary}");
 }
