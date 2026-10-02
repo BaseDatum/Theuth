@@ -3,6 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { JsonRenderFence } from './JsonRenderFence'
+import { cellClass, MarkdownTd, NO_MID_WORD_BREAK } from './registry'
 import { SequenceSvg } from './Sequence'
 
 // The `Code` copy button toasts; none of that exists in a node test.
@@ -60,6 +61,33 @@ test('Tree nests by depth: a parent is a collapsible holding its children, a lea
 
 test('Glossary is a dl of term/text pairs', () => {
   expect(render('Glossary', { items: [{ term: 'ACK', text: 'acknowledged' }] })).toMatch(/<dl[^>]*>.*<dt[^>]*>ACK<\/dt><dd[^>]*>acknowledged<\/dd>/)
+})
+
+test('Table takes natural column widths behind a sideways-scrolling wrapper; headers never wrap, cells never break mid-word', () => {
+  const html = render('Table', {
+    columns: ['Option', 'Effort', 'Risk', 'Fixes', 'Notes'],
+    rows: [['Restore the invariant in the reducer', 'Small, one crate', 'Low', 'Yes', 'Keeps the public API as it is today and needs no migration.']],
+  })
+  expect(html).toMatch(/<div class="[^"]*\bmax-w-full\b[^"]*\boverflow-x-auto\b[^"]*"><table class="[^"]*\bw-max\b[^"]*\bmin-w-full\b/)
+  const cells = [...html.matchAll(/<(th|td) class="([^"]*)"/g)]
+  expect(cells).toHaveLength(10)
+  for (const [, , cls] of cells) for (const c of NO_MID_WORD_BREAK.split(' ')) expect(cls).toContain(c)
+  for (const [, tag, cls] of cells) if (tag === 'th') expect(cls).toContain('whitespace-nowrap')
+  expect(html).toMatch(/<td class="[^"]*whitespace-nowrap[^"]*"><div class="min-w-\[6ch\] max-w-\[48ch\]">Small, one crate</)
+  expect(html).toMatch(/<td class="(?:(?!whitespace-nowrap)[^"])*"><div[^>]*>Keeps the public API/)
+})
+
+test('cellClass: a short or single-token value never wraps, prose wraps at words, an over-wide token may break anywhere', () => {
+  expect(cellClass('Small, one crate')).toBe('whitespace-nowrap')
+  expect(cellClass('Low')).toBe('whitespace-nowrap')
+  expect(cellClass('a-single-token-that-is-long-but-under-48')).toBe('whitespace-nowrap')
+  expect(cellClass('Restore the invariant in the reducer')).toBe('')
+  expect(cellClass(`see ${'x'.repeat(60)} here`)).toBe('wrap-anywhere')
+})
+
+test('MarkdownTd keeps streamdown classes and marker and reads the text through inline elements', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownTd, { node: {}, style: { textAlign: 'right' } }, createElement('strong', null, 'Low')))
+  expect(html).toBe('<td data-streamdown="table-cell" style="text-align:right" class="px-4 py-2 text-sm break-normal wrap-normal hyphens-none whitespace-nowrap"><div class="min-w-[6ch] max-w-[48ch]"><strong>Low</strong></div></td>')
 })
 
 test('Quote is a blockquote with the source as an em-dash caption', () => {
