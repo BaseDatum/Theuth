@@ -67,7 +67,7 @@ the prompt is every plugin's block joined (`loop_.rs:2278-2291`).
    user can widen it (an MCP tool by name, `read_file`) or narrow it (drop
    `search_web`) without a code change. No separate `live_web` flag — the
    lists are the knob.
-   **80 MEETING-DIET:** `Toolset.hint_limit: Option<u32>` caps the lines per
+   **81 MEETING-DIET:** `Toolset.hint_limit: Option<u32>` caps the lines per
    `<knowledge>` note for the session (`None` = the configured
    `knowledge.hint_limit`; `Some(0)` = no hints and no knowledge search at
    turn start). The meeting sets it from `meeting.live_hint_limit` (default
@@ -81,10 +81,10 @@ the prompt is every plugin's block joined (`loop_.rs:2278-2291`).
    **`SetToolset(None)`** → `UnregisterTool` × 2 → hand-over to post. Also on
    `Starting → Failed`. A daemon restart mid-meeting loses both overrides
    with the recording — the session comes back ordinary, which is right.
-   **80:** `PinTitle{true}` follows `RenameSession` at start;
+   **81:** `PinTitle{true}` follows `RenameSession` at start;
    `PinTitle{false}` follows `SetToolset(None)` at stop and on
    `Starting → Failed`.
-7. **Title pinned while recording (80 MEETING-DIET).** The meeting names its
+7. **Title pinned while recording (81 MEETING-DIET).** The meeting names its
    session (`RenameSession` at start). `title::due` fires on `epoch_changed`
    (a meeting compacts often) and on `turns_since`, since `[meeting …]` lines
    count as user text — 68 title calls in 32 minutes on the 2026-09-28

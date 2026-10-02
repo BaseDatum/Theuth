@@ -170,7 +170,7 @@ async fn manual_compaction_commits_then_the_queue_opens_a_turn() {
 async fn auto_compaction_mid_turn_commits_and_the_queue_follows() {
     let (mut h, actor) = seeded(Fake::compact_held(HOLD)).await;
     // Trigger at the next call: a one-token threshold — raised to
-    // `fixed + MIN_HEADROOM` (80 COMPACT-FLOOR), so the input is big enough
+    // `fixed + MIN_HEADROOM` (81 COMPACT-FLOOR), so the input is big enough
     // to project past it.
     actor
         .tell(SetCompactionOverride(CompactionOverride {
@@ -300,7 +300,7 @@ async fn session_head_forces_a_text_summary_without_a_model_call() {
         }))
         .await
         .unwrap();
-    // The one-token override is raised to `fixed + MIN_HEADROOM` (80
+    // The one-token override is raised to `fixed + MIN_HEADROOM` (81
     // COMPACT-FLOOR); the input must project past it to compact at all.
     let big = format!(
         "Third question, which compacts first. {}",

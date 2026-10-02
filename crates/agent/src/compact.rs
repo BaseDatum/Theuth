@@ -164,7 +164,7 @@ fn pdf_pages(b: &Binary) -> u32 {
 /// provider's `usage`: at most this many messages, whatever `est` says.
 pub const TAIL_MESSAGES_UNCALIBRATED: usize = 60;
 
-/// 07 §8.2 (80 COMPACT-FLOOR): the least headroom (`limit − fixed`, provider
+/// 07 §8.2 (81 COMPACT-FLOOR): the least headroom (`limit − fixed`, provider
 /// tokens) a fold can work with. An `at_tokens` override below
 /// `fixed + MIN_HEADROOM` is raised to it; a window-derived trigger below it
 /// turns auto-compaction off for the session — at 60 % of 8k the head and
@@ -718,7 +718,7 @@ mod tests {
         assert!(!inputs_moved((7_200, 30), 7_200, 0));
     }
 
-    /// 80 COMPACT-FLOOR regression, the 2026-09-28 meeting shape: override
+    /// 81 COMPACT-FLOOR regression, the 2026-09-28 meeting shape: override
     /// 24k, ~7k fixed, two ~350-token messages per turn, default budgets,
     /// snap. Over 300 turns no two consecutive turns compact, every fold
     /// leaves 40 % of the headroom free, snap always degrades to summary

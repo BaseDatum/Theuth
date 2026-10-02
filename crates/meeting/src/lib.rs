@@ -559,7 +559,7 @@ pub struct MeetingConfig {
     pub live_tools: Vec<String>,
     /// 06 §1.5: the plugins whose prompt blocks the meeting session sees while recording.
     pub live_prompts: Vec<String>,
-    /// 06 §1.5 / 80: lines per `<knowledge>` note while recording; 0 = none.
+    /// 06 §1.5 / 81: lines per `<knowledge>` note while recording; 0 = none.
     pub live_hint_limit: u32,
 }
 
@@ -3667,7 +3667,7 @@ mod tests {
         }
     }
 
-    /// 06 §1.5 / 80: the toolset sent at start carries the configured hint
+    /// 06 §1.5 / 81: the toolset sent at start carries the configured hint
     /// limit (default 2); `0` reaches the agent as `Some(0)` = no hints.
     #[test]
     fn live_toolset_carries_the_hint_limit() {

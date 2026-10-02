@@ -133,8 +133,8 @@ from the *threshold*. A live-meeting session with `at_tokens: 24_000` and a
 ~7k system prompt (2026-09-28, 01a0e8f9…) compacted on 65 of 83 turns,
 folding one message each time (`keep_from` returns 1 when the whole history
 fits the budget); the context never shrank and the prompt cache was busted
-every call. Fixed by 80 COMPACT-FLOOR
-(`docs/design/80-as-built-COMPACT-FLOOR.md`): `tail_tokens` and
+every call. Fixed by 81 COMPACT-FLOOR
+(`docs/design/81-as-built-COMPACT-FLOOR.md`): `tail_tokens` and
 `image_tokens` are ceilings, the effective budgets are shares of the
 headroom over the trigger, with hysteresis and a floor clamp.
 

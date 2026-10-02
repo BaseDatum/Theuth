@@ -1,4 +1,4 @@
-# 80 — As built: MEETING-DIET (lean knowledge hints and a pinned title while recording)
+# 81 — As built: MEETING-DIET (lean knowledge hints and a pinned title while recording)
 
 Branch `feat/meeting-session-diet`, base `95f6496a`, worktree `../theuth-wt-meeting-diet`. Brief: `/tmp/mc-2026-10-02/omp-meeting-diet.md`. Sibling workers: COMPACT-FLOOR (compaction sizing), MEETING-HEAD (deterministic compaction head); nothing here touches their seams.
 
@@ -53,6 +53,6 @@ The harness bypasses `Session::start_turn`, which sets `input_text` (the round-0
 
 ## Open follow-ups
 
-- `DEFAULT_CONFIG` in `crates/theuth/src/main.rs:1033-1034`: add `#   live_hint_limit: 2  # 06 §1.5 / 80: lines per <knowledge> note while recording; 0 = none` after the merge.
+- `DEFAULT_CONFIG` in `crates/theuth/src/main.rs:1033-1034`: add `#   live_hint_limit: 2  # 06 §1.5 / 81: lines per <knowledge> note while recording; 0 = none` after the merge.
 - `KnowledgePlugin::start`: an `evict_dead`-style guard before `register(KNOWLEDGE_ACTOR)` would let the test-only eviction in `with_test_registry` go.
 - Measure on the next recorded meeting: with `live_hint_limit: 2` the `<knowledge>` block per batch should drop from ~1.8 KB to ~0.7 KB; the titler should run zero times between `started.` and stop.

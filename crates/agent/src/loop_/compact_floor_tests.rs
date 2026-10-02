@@ -1,4 +1,4 @@
-//! 80 COMPACT-FLOOR through the real [`Session`] actor against the fake
+//! 81 COMPACT-FLOOR through the real [`Session`] actor against the fake
 //! provider of [`super::vision_fallback_tests`]: a model whose trigger leaves
 //! less than `MIN_HEADROOM` over the fixed part (a 9k window at `compact_at`
 //! 0.8) turns auto-compaction off once — one `<context_pressure>` note, no

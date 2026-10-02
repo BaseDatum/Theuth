@@ -1,4 +1,4 @@
-//! 80 MEETING-DIET, through a real [`Turn`] against the fake provider of
+//! 81 MEETING-DIET, through a real [`Turn`] against the fake provider of
 //! [`super::vision_fallback_tests`]: a session's `Toolset.hint_limit` caps or
 //! drops the `<knowledge>` note at turn start, and a pinned title is never
 //! regenerated. One tokio test: the tool registry and the knowledge actor are

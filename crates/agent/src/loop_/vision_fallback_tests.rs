@@ -306,7 +306,7 @@ impl Harness {
                 "tool_call": true, "image": image
             })
         };
-        // `tiny`: a 9k window (80 COMPACT-FLOOR: trigger under `MIN_HEADROOM`).
+        // `tiny`: a 9k window (81 COMPACT-FLOOR: trigger under `MIN_HEADROOM`).
         let mut tiny = model("tiny", false);
         tiny["limit"]["context"] = json!(9_000);
         std::fs::write(

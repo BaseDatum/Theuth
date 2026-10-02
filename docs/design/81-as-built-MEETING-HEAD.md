@@ -1,4 +1,4 @@
-# 80 — As built: MEETING-HEAD (the meeting owns its compaction head)
+# 81 — As built: MEETING-HEAD (the meeting owns its compaction head)
 
 Branch `feat/meeting-owned-head`, base `95f6496a`, worktree `../theuth-wt-meeting-head`. Brief: `/tmp/mc-2026-10-02/omp-meeting-head.md`. Four commits; a meeting session now compacts over a head the plugin renders deterministically — no summariser, no snap frames, no harvest — and keeps its last minutes verbatim.
 

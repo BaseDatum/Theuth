@@ -393,7 +393,7 @@ pub struct Toolset {
     /// Whether `python` is offered at all.
     pub runtime: bool,
     /// Lines per `<knowledge>` note for this session (`meetings/06-live-toolset.md`
-    /// §1.5, 80): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
+    /// §1.5, 81): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
     /// hints, no knowledge search at turn start.
     pub hint_limit: Option<u32>,
 }

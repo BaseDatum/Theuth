@@ -121,7 +121,7 @@ meeting:
   max_topics: 6             # phase 2
   models_dir: null          # phase 4: diarization models root; default <data_dir>/models (nemotron-diarization/, pyannote/)
   live_diarization: true    # 07: label the other side's live lines by speaker; off → `them:` (the post pass diarizes either way); next meeting start
-  live_hint_limit: 2        # 06 §1.5 / 80: lines per `<knowledge>` note while recording; 0 = none
+  live_hint_limit: 2        # 06 §1.5 / 81: lines per `<knowledge>` note while recording; 0 = none
 ```
 
 ## 4. Integration pass (phase 7, done together)

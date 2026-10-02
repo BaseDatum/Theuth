@@ -1,4 +1,4 @@
-# 80 — as built: COMPACT-FLOOR
+# 81 — as built: COMPACT-FLOOR
 
 Branch `fix/compact-floor` off `95f6496a`. Brief:
 `/tmp/mc-2026-10-02/omp-compact-floor.md`. Compaction must always be able to

@@ -452,7 +452,7 @@ compact if limit > 0 && projected >= limit
         && avail >= MIN_HEADROOM                                       // else off for the session (below)
 ```
 
-80 COMPACT-FLOOR added the last three lines. *Hysteresis*: `last_after` is
+81 COMPACT-FLOOR added the last three lines. *Hysteresis*: `last_after` is
 the frame estimate right after the previous fold; a fold that could not
 free room is not followed by another on the very next turn. *Clamp*: an
 `at_tokens` override under `fixed + MIN_HEADROOM` is raised to it (`warn!`
@@ -487,7 +487,7 @@ threshold ignored.
 ### 8.2 Cut
 
 `history` is `M[0..n)`. `compact::keep_from(&M, budget, max_msgs)` where,
-since 80 COMPACT-FLOOR, the budgets are shares of the *headroom* (§8.1
+since 81 COMPACT-FLOOR, the budgets are shares of the *headroom* (§8.1
 `avail = limit − fixed`) capped by the configured ceilings
 (`compact::fold_budget`, all in provider tokens):
 
@@ -530,8 +530,8 @@ a small `compact_at`; `limit / 8` (an eighth of the *threshold*) fixed that.
 property: on 2026-09-28 a meeting session with `at_tokens: 24_000` and a
 ~7k system prompt compacted on 65 of 83 turns, folding one message each
 time (a 40k tail budget over a 17k headroom keeps everything), the context
-never shrank and the prompt cache was busted every call. 80 COMPACT-FLOOR
-(`docs/design/80-as-built-COMPACT-FLOOR.md`) restored the rule as headroom
+never shrank and the prompt cache was busted every call. 81 COMPACT-FLOOR
+(`docs/design/81-as-built-COMPACT-FLOOR.md`) restored the rule as headroom
 shares plus the §8.1 hysteresis and floor; `compact::tests::meeting_shape_never_loops`
 replays that session's shape over 300 turns.
 

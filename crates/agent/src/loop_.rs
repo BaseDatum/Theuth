@@ -2630,7 +2630,7 @@ impl Turn {
 
     /// Auto-compaction trigger in tokens (07 §8.1): the session's
     /// [`CompactionOverride`] when set — raised to `fixed + MIN_HEADROOM` so
-    /// a fold can get back under it (80 COMPACT-FLOOR), logged once — else
+    /// a fold can get back under it (81 COMPACT-FLOOR), logged once — else
     /// `compact_at × window`; `None` = off (unknown window or `compact_at:
     /// 0`). The fold's budgets are shares of the headroom over it
     /// ([`compact::fold_budget`]); the tool-batch budget is a quarter of it.
@@ -2648,7 +2648,7 @@ impl Turn {
         (window > 0 && compact_at > 0.0).then_some((compact_at * window as f32) as u32)
     }
 
-    /// 80 COMPACT-FLOOR: tokens of the frame that are not history — system
+    /// 81 COMPACT-FLOOR: tokens of the frame that are not history — system
     /// prompt and tool definitions — in provider units: the last reported
     /// context (`used`) minus the calibrated `est` of the head and the
     /// history that call sent (`history[..since]`); before any report, the
@@ -3664,7 +3664,7 @@ impl Turn {
                 window
             };
             let margin = span / 10;
-            // 80 COMPACT-FLOOR: the trigger fires only once the frame regrew
+            // 81 COMPACT-FLOOR: the trigger fires only once the frame regrew
             // by 30 % of the headroom since the last fold, and not at all while
             // the headroom is under `MIN_HEADROOM` — a fold could not get back
             // under the trigger. Off until `(limit, fixed)` move by 10 %.
@@ -4502,7 +4502,7 @@ impl Turn {
         let n_msgs = self.state.history.len();
         let (head, mut full) = self.projected(&images);
         full.reserve(1);
-        // 07 §8.2 (80 COMPACT-FLOOR): the tail and the head are shares of the
+        // 07 §8.2 (81 COMPACT-FLOOR): the tail and the head are shares of the
         // headroom over the trigger (`limit − fixed`), capped by the configured
         // ceilings (`tail_tokens`, `image_tokens` / `SUMMARY_TOKENS`,
         // `target_tokens`) — all in provider tokens. `keep_from` compares `est`
@@ -4574,7 +4574,7 @@ impl Turn {
                     &full[..keep_from],
                     snap::cols(&shape),
                 );
-                // 70 COMPACT-SIZE / 80: `head_cap` of archive, oldest lines first out.
+                // 70 COMPACT-SIZE / 81: `head_cap` of archive, oldest lines first out.
                 let (lines, dropped) = snap::budget_lines(lines, fold.head, &shape);
                 pngs = snap::rasterize(&lines, &shape);
                 let frame_tokens = (pngs.len() as u32).saturating_mul(shape.tokens_per_frame);
@@ -4790,7 +4790,7 @@ impl Turn {
         self.reset_this_round = true;
         self.since = self.state.history.len();
         self.hint_since = self.hint_since.saturating_sub(keep_from);
-        // 80 COMPACT-FLOOR: the hysteresis origin; a fold that freed under
+        // 81 COMPACT-FLOOR: the hysteresis origin; a fold that freed under
         // 30 % of the headroom is the 2026-09-28 shape, worth a warning.
         self.state.last_after = Some(after);
         tracing::info!(session = %session, epoch = n, folded = keep_from, frames, tail = self.state.history.len(), folded_results, before = projected, after, fixed, avail = fold.avail, tail_budget = fold.tail, head_cap = fold.head, style = %style, "compaction");
@@ -5590,7 +5590,7 @@ mod harvest_tests;
 #[cfg(test)]
 mod compact_queue_tests;
 
-/// 80 COMPACT-FLOOR: a trigger under `MIN_HEADROOM` turns auto-compaction off once, with the note.
+/// 81 COMPACT-FLOOR: a trigger under `MIN_HEADROOM` turns auto-compaction off once, with the note.
 #[cfg(test)]
 mod compact_floor_tests;
 
@@ -5602,7 +5602,7 @@ mod thinking_tests;
 #[cfg(test)]
 mod interrupt_tests;
 
-/// 80 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
+/// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
 #[cfg(test)]
 mod meeting_diet_tests;
 
@@ -5958,7 +5958,7 @@ mod tests {
         // `compact_at × window` as the threshold (and is live for a turn already
         // running, through the shared handle); the hint rides behind the constant
         // so the summary/harvest distinction still holds; `None` clears both.
-        // 80 COMPACT-FLOOR: an override under `fixed + MIN_HEADROOM` is raised
+        // 81 COMPACT-FLOOR: an override under `fixed + MIN_HEADROOM` is raised
         // to it (logged once); one above passes through.
         let window = 100_000;
         let cfg_limit = (AgentConfig::default().compact_at * window as f32) as u32;
