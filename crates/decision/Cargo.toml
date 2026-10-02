@@ -7,9 +7,12 @@ description = "Local typed-probability oracle (laya in candle) with a selective 
 
 [features]
 # NVIDIA (58): off by default, forwarded for the Linux/Windows build.
-cuda = ["candle-core/cuda", "candle-nn/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 # TypeScript bindings for the desktop (`Mode`, `ModeInfo`, `FamilyStats`).
 ts = ["dep:ts-rs", "runtime/ts"]
+# GLINER-3 spike only: the GLiNER2.5-Decide ONNX export through ONNX Runtime (`gliner::onnx`) as a
+# bench/parity control for the candle port. Off by default so `decision` ships ORT-free.
+gliner-onnx = ["dep:ort"]
 
 [dependencies]
 runtime = { workspace = true }
@@ -36,12 +39,15 @@ tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # The engine (57 §12.8): laya-rs 0.1.0's model code vendored under `src/candle/`, candle 0.11 is its pin.
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
+candle-transformers = { workspace = true }  # `models::debertav2`: GLiNER2.5-Decide's encoder
+ort = { workspace = true, optional = true }  # `gliner-onnx` spike only
 
 # On a Mac: Metal for the GPU path and Accelerate for the CPU fallback; the Linux/Windows build is
 # plain CPU unless `cuda` is on.
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { workspace = true, features = ["metal", "accelerate"] }
 candle-nn = { workspace = true, features = ["metal", "accelerate"] }
+candle-transformers = { workspace = true, features = ["metal", "accelerate"] }
 
 [dev-dependencies]
 tempfile = "3"
