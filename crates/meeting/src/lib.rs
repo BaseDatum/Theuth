@@ -554,6 +554,20 @@ pub struct MeetingConfig {
     pub live_tools: Vec<String>,
     /// 06 §1.5: the plugins whose prompt blocks the meeting session sees while recording.
     pub live_prompts: Vec<String>,
+    /// 06 §1.5 / 80: lines per `<knowledge>` note while recording; 0 = none.
+    pub live_hint_limit: u32,
+}
+
+impl MeetingConfig {
+    /// 06 §1.5: the session's allowlist while recording.
+    fn live_toolset(&self) -> agent::Toolset {
+        agent::Toolset {
+            tools: self.live_tools.clone(),
+            prompts: self.live_prompts.clone(),
+            runtime: false,
+            hint_limit: Some(self.live_hint_limit),
+        }
+    }
 }
 
 impl Default for MeetingConfig {
@@ -584,6 +598,7 @@ impl Default for MeetingConfig {
             .map(String::from)
             .to_vec(),
             live_prompts: ["meeting", "knowledge", "web"].map(String::from).to_vec(),
+            live_hint_limit: 2,
         }
     }
 }
@@ -1693,11 +1708,7 @@ impl Message<StartMeeting> for Meeting {
         let setup = Setup {
             title,
             context_tokens: self.cfg.context_tokens,
-            toolset: agent::Toolset {
-                tools: self.cfg.live_tools.clone(),
-                prompts: self.cfg.live_prompts.clone(),
-                runtime: false,
-            },
+            toolset: self.cfg.live_toolset(),
             live_model_dir: self.cfg.live_model_dir.clone().unwrap_or_else(|| {
                 self.rt
                     .data_dir
@@ -1767,6 +1778,16 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         .await
     {
         tracing::warn!(%session, "rename meeting session: {e}");
+    }
+    // 06 §1.7: the meeting named its session; the titler stays out until stop.
+    if let Err(e) = agents
+        .ask(agent::PinTitle {
+            session,
+            pinned: true,
+        })
+        .await
+    {
+        tracing::warn!(%session, "pin meeting session title: {e}");
     }
     // 02 §4: meeting-sized compaction with the meeting hint; cleared at stop.
     if let Err(e) = agents
@@ -1949,6 +1970,18 @@ impl Message<Begun> for Meeting {
                         .await
                 {
                     tracing::warn!(meeting = %manifest.id, "meeting: clear toolset: {e}");
+                }
+                // 06 §1.7: and titles itself like one.
+                if !manifest.session.0.is_nil()
+                    && let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    && let Err(e) = agents
+                        .ask(agent::PinTitle {
+                            session: manifest.session,
+                            pinned: false,
+                        })
+                        .await
+                {
+                    tracing::warn!(meeting = %manifest.id, "meeting: unpin title: {e}");
                 }
                 // The directory exists only if the session did; `save` creates
                 // the row either way so the failure is listed.
@@ -2258,6 +2291,17 @@ impl Message<StopMeeting> for Meeting {
                 .await
         {
             tracing::warn!(meeting = %manifest.id, "meeting: clear toolset: {e}");
+        }
+        // 06 §1.7: post-meeting turns title the session like any other.
+        if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Err(e) = agents
+                .ask(agent::PinTitle {
+                    session: manifest.session,
+                    pinned: false,
+                })
+                .await
+        {
+            tracing::warn!(meeting = %manifest.id, "meeting: unpin title: {e}");
         }
         tools::unregister().await;
         // 57 §2.1: the meeting checkpoint is resident only while recording.
@@ -3579,6 +3623,26 @@ mod tests {
         async fn handle(&mut self, h: Hold, _: &mut Context<Self, ()>) {
             self.summarizing.insert(h.0.manifest.id, h.0);
         }
+    }
+
+    /// 06 §1.5 / 80: the toolset sent at start carries the configured hint
+    /// limit (default 2); `0` reaches the agent as `Some(0)` = no hints.
+    #[test]
+    fn live_toolset_carries_the_hint_limit() {
+        let cfg = MeetingConfig::default();
+        let live = cfg.live_toolset();
+        assert_eq!(live.hint_limit, Some(2));
+        assert_eq!(
+            (live.tools, live.prompts, live.runtime),
+            (cfg.live_tools, cfg.live_prompts, false)
+        );
+        let none = MeetingConfig {
+            live_hint_limit: 0,
+            ..MeetingConfig::default()
+        };
+        assert_eq!(none.live_toolset().hint_limit, Some(0));
+        let parsed: MeetingConfig = serde_json::from_str(r#"{"live_hint_limit": 4}"#).unwrap();
+        assert_eq!(parsed.live_toolset().hint_limit, Some(4));
     }
 
     struct Held;
