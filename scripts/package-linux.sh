@@ -84,6 +84,22 @@ fi
 echo "==> prerequisites"
 check_prereqs
 
+# Cap cargo's parallelism to the RAM: one rustc per 2.5 GiB of MemAvailable, never more than the
+# cores. The release build of the microsandbox crates (sandbox VMs, 79) peaks well above 1.5 GiB per
+# rustc, and 12 jobs on the 8 GiB build-A container tripped the OOM killer ("signal: 9, SIGKILL" on
+# `microsandbox (lib)`, 2026-10-03). CARGO_BUILD_JOBS set by the caller wins.
+if [[ -z "${CARGO_BUILD_JOBS:-}" && -r /proc/meminfo ]]; then
+  mem_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  cores="$(nproc)"
+  jobs=$(( mem_kib / 2621440 ))
+  (( jobs > cores )) && jobs=$cores
+  (( jobs < 1 )) && jobs=1
+  if (( jobs < cores )); then
+    export CARGO_BUILD_JOBS="$jobs"
+    echo "    cargo jobs capped at $jobs ($cores cores, $(( mem_kib / 1048576 )) GiB available)"
+  fi
+fi
+
 HOST_TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
 ARCH="$(uname -m)"
 case "$ARCH" in
