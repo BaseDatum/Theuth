@@ -22,9 +22,14 @@ platform: string,
  */
 data_dir: string, 
 /**
- * `agent.model`: the model new sessions start on.
+ * `agent.model`: the model new sessions start on (live, 82 §3).
  */
 default_model: string, 
+/**
+ * `agent.effort`: the reasoning effort new sessions start on (live, 83 §3);
+ * `None` = the provider default. Absent from an older harness → `None`.
+ */
+default_effort: string | null, 
 /**
  * The global approval switch (`tools.approvals`).
  */
