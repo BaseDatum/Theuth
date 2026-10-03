@@ -5,8 +5,12 @@
 //! ([`Frame::request`] with [`crate::frame::default_effort`] filling `None`).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use genai::chat::{ChatMessage, ChatStreamEvent, ReasoningEffort, StreamEnd, Tool, ToolResponse};
+use genai::chat::{
+    ChatMessage, ChatStreamEvent, ContentPart, MessageContent, ReasoningEffort, StreamEnd, Tool,
+    ToolCall, ToolResponse,
+};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
 use parking_lot::Mutex;
@@ -22,15 +26,29 @@ const SIGNATURE: &str = "sig-deadbeef";
 /// `output_tokens` the fake reports: Anthropic counts thinking inside it.
 const OUTPUT_TOKENS: u32 = 57;
 
-/// The fake: records every request body, answers each with one signed thinking
-/// block followed by one `tool_use` (a tool-use turn), then `message_stop`.
-struct Fake(Arc<Mutex<Vec<Value>>>);
+/// The fake: records every request body, answers the first `reject` requests
+/// with Anthropic's rejected-signature 400 (90 §0), then each with one signed
+/// thinking block followed by one `tool_use` (a tool-use turn), then `message_stop`.
+struct Fake {
+    bodies: Arc<Mutex<Vec<Value>>>,
+    reject: AtomicUsize,
+}
+
+/// 90 §0: the body Anthropic answers a foreign or unverifiable signature with.
+const REJECTED: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0: Invalid `signature` in `thinking` block"}}"#;
 
 impl Respond for Fake {
     fn respond(&self, req: &Request) -> ResponseTemplate {
-        self.0
+        self.bodies
             .lock()
             .push(serde_json::from_slice(&req.body).unwrap());
+        if self
+            .reject
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return ResponseTemplate::new(400).set_body_raw(REJECTED, "application/json");
+        }
         let ev = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
         let body = [
             ev(
@@ -75,16 +93,25 @@ struct Harness {
     bodies: Arc<Mutex<Vec<Value>>>,
     client: Client,
     catalog: models::Catalog,
+    dir: std::path::PathBuf,
     _server: MockServer,
 }
 
 impl Harness {
     async fn new() -> Self {
+        Self::rejecting(0).await
+    }
+
+    /// A harness whose fake answers the first `reject` requests with [`REJECTED`].
+    async fn rejecting(reject: usize) -> Self {
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .respond_with(Fake(bodies.clone()))
+            .respond_with(Fake {
+                bodies: bodies.clone(),
+                reject: AtomicUsize::new(reject),
+            })
             .mount(&server)
             .await;
         let endpoint = format!("{}/v1/", server.uri());
@@ -104,6 +131,7 @@ impl Harness {
             bodies,
             client,
             catalog: models::Catalog::load(&dir),
+            dir,
             _server: server,
         }
     }
@@ -128,6 +156,7 @@ impl Harness {
             head: None,
             history,
             vision: false,
+            strip_reasoning: false,
         };
         let effort = effort.or_else(|| default_effort(model));
         let (req, opts) = frame.request(Transport::Anthropic, SessionId::new(), effort);
@@ -146,6 +175,98 @@ impl Harness {
         let body = self.bodies.lock().pop().unwrap();
         (body, end.unwrap())
     }
+
+    /// `Session::call` for one main round of `history` on `model`, through the
+    /// loop's retry path, with the session's ledger rows
+    /// `(call_id, request_id, kind, status)` by attempt.
+    async fn turn_call(
+        &self,
+        model: Resolved,
+        history: &[ChatMessage],
+    ) -> (
+        Result<StreamEnd, Abort>,
+        Vec<(String, String, String, String)>,
+    ) {
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, &model.id, None, None, None)
+            .await
+            .unwrap();
+        let rt = Runtime::new(figment::Figment::new(), self.dir.clone());
+        let mut session = Session::new(
+            id,
+            0,
+            (model, None),
+            None,
+            SessionState::resume(0, None, vec![]),
+            Arc::new(AgentConfig::default()),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            store.clone(),
+            self.client.clone(),
+            Auth::stub(&self.dir),
+            rt,
+            Arc::new(models::Catalog::load(&self.dir)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            SessionResources::durable_arc(&self.dir),
+        );
+        let mut turn = Turn::new(
+            session.shared.clone(),
+            Some(TurnId::new()),
+            CancellationToken::new(),
+            session.state.take().unwrap(),
+        );
+        let (current, transport) = turn.resolve().await.unwrap();
+        let tool = Tool::new("echo").with_schema(json!({"type": "object"}));
+        let frame = Frame {
+            tools: std::slice::from_ref(&tool),
+            system: "sys",
+            head: None,
+            history,
+            vision: false,
+            strip_reasoning: false,
+        };
+        let end = turn
+            .call(&current, frame, transport, None, id, CallKind::Round)
+            .await;
+        let rows = sqlx::query_as(
+            "SELECT call_id, request_id, kind, status FROM model_calls WHERE owner_id = ? ORDER BY attempt",
+        )
+        .bind(id.to_string())
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+        (end, rows)
+    }
+}
+
+/// 90 §1.5: the one construction of a thought signature in this module —
+/// integration swaps the payload type here alone.
+fn sig(s: &str) -> ContentPart {
+    ContentPart::ThoughtSignature(s.into())
+}
+
+/// A stored tool-use turn whose thinking block another provider signed:
+/// user, assistant (signature + reasoning + tool call), tool result.
+fn foreign_thinking_history() -> Vec<ChatMessage> {
+    let mut history = user();
+    history.push(ChatMessage::assistant(MessageContent::from_parts(vec![
+        sig("gAAAA-openai-fernet"),
+        ContentPart::ReasoningContent("summary from elsewhere".into()),
+        ContentPart::ToolCall(ToolCall {
+            call_id: "toolu_1".into(),
+            fn_name: "echo".into(),
+            fn_arguments: json!({"x": 1}),
+            thought_signatures: None,
+        }),
+    ])));
+    history.push(ChatMessage::from(ToolResponse::new("toolu_1", "ok")));
+    history
 }
 
 fn user() -> Vec<ChatMessage> {
@@ -196,6 +317,7 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         head: None,
         history: &user(),
         vision: false,
+        strip_reasoning: false,
     }
     .request(
         Transport::OpenAiLike,
@@ -294,4 +416,80 @@ async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
     assert_eq!(content[1]["type"], "tool_use", "{b}");
     assert_eq!(content[1]["id"], "toolu_1", "{b}");
     assert_eq!(msgs[2]["content"][0]["type"], "tool_result", "{b}");
+}
+
+/// 90 §1.5: a 400 for a replayed signature is resent once with every
+/// reasoning part stripped; the tool round survives and the ledger shows two
+/// attempts of one request.
+#[tokio::test]
+async fn rejected_thinking_signature_is_resent_stripped() {
+    let h = Harness::rejecting(1).await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let (end, rows) = h.turn_call(fable, &foreign_thinking_history()).await;
+
+    let end = match end {
+        Ok(end) => end,
+        Err(Abort::Model(e)) => panic!("resend failed: {e}"),
+        Err(Abort::Partial { err, .. }) => panic!("partial: {err}"),
+        Err(_) => panic!("cancelled"),
+    };
+    assert_eq!(end.captured_reasoning_content.as_deref(), Some(THINKING));
+    let bodies = h.bodies.lock().clone();
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    // First attempt replayed the block as stored.
+    assert_eq!(
+        bodies[0]["messages"][1]["content"][0]["type"], "thinking",
+        "{}",
+        bodies[0]
+    );
+    // The resend has no thinking block; tool_use and tool_result are intact.
+    let msgs = bodies[1]["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 3, "{}", bodies[1]);
+    let content = msgs[1]["content"].as_array().unwrap();
+    assert!(
+        content.iter().all(|c| c["type"] != "thinking"),
+        "{}",
+        bodies[1]
+    );
+    assert_eq!(content[0]["type"], "tool_use", "{}", bodies[1]);
+    assert_eq!(content[0]["id"], "toolu_1", "{}", bodies[1]);
+    assert_eq!(
+        msgs[2]["content"][0]["type"], "tool_result",
+        "{}",
+        bodies[1]
+    );
+
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_ne!(rows[0].0, rows[1].0);
+    assert_eq!(rows[0].1, rows[1].1);
+    assert_eq!(
+        (rows[0].3.as_str(), rows[1].3.as_str()),
+        ("failed", "settled")
+    );
+}
+
+/// 90 §1.5: a second rejection is the deterministic error it is today — two
+/// requests, no third.
+#[tokio::test]
+async fn second_rejection_is_a_turn_error() {
+    let h = Harness::rejecting(2).await;
+    let fable = h.resolve("anthropic/claude-fable-5-1");
+    let (end, rows) = h.turn_call(fable, &foreign_thinking_history()).await;
+
+    let err = match end {
+        Err(Abort::Model(e)) => e,
+        Ok(_) => panic!("a second rejection must not succeed"),
+        Err(_) => panic!("expected Abort::Model"),
+    };
+    assert!(
+        err.contains("Invalid `signature` in `thinking` block"),
+        "{err}"
+    );
+    assert_eq!(h.bodies.lock().len(), 2);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].1, rows[1].1);
+    assert_eq!(
+        (rows[0].3.as_str(), rows[1].3.as_str()),
+        ("failed", "failed")
+    );
 }
