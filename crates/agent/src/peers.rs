@@ -47,7 +47,7 @@ pub struct SpawnSubagentArgs {
     /// Model as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. On a node it is resolved there; an external harness switches to it when it offers a model option.
     #[serde(default)]
     pub model: Option<String>,
-    /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. On an external harness it must be one of the harness's own effort values (e.g. omp: low|medium|high|xhigh|max), else the spawn fails naming them.
+    /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. On an external harness it is applied when the harness offers that effort value (e.g. omp: low|medium|high|xhigh|max; opencode: the model's variants), else the harness keeps its default.
     #[serde(default)]
     pub effort: Option<String>,
     /// Risk ceiling: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk — enforced for theuth children here and on a node; an external harness only reads it as a first line of its brief.
