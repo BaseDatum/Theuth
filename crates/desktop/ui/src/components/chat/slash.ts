@@ -302,7 +302,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     case '/model':
       if (!arg) return openSurface('model')
-      await api.set_model(session, arg)
+      await api.set_model(session, arg, true)
       return
     case '/effort':
       if (!arg) return openSurface('model')
