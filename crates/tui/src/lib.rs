@@ -133,16 +133,19 @@ impl runtime::Plugin for TuiPlugin {
             ));
         }
         // Startup facts the runtime does not hand out as config sections: whether
-        // the app plugin runs (46 §9) and the engine's live default model (82 §3;
-        // config.yaml as read at launch is the fallback when `info` fails).
+        // the app plugin runs (46 §9) and the engine's live default model and effort
+        // (82 §3, 83 §3; config.yaml as read at launch is the fallback when `info` fails).
         let engine = api.read().unwrap().clone();
         let info = engine.info().await.ok();
         let app_enabled = info.as_ref().is_some_and(|i| i.app_enabled);
         tokio::spawn(run_commands(api, commands_rx, events_tx));
 
-        let default_model = info.map_or_else(
-            || rt.section::<AgentConfig>("agent").unwrap_or_default().model,
-            |i| i.default_model,
+        let (default_model, default_effort) = info.map_or_else(
+            || {
+                let cfg = rt.section::<AgentConfig>("agent").unwrap_or_default();
+                (cfg.model, cfg.effort)
+            },
+            |i| (i.default_model, i.default_effort),
         );
         let approvals = rt
             .section::<tools::ToolsConfig>("tools")
@@ -158,6 +161,7 @@ impl runtime::Plugin for TuiPlugin {
                     events: Some(events_rx),
                     commands: commands_tx,
                     default_model,
+                    default_effort,
                     approvals,
                     app_enabled,
                     catalog,
@@ -631,7 +635,8 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::ModelSet(msg(api.set_model(session, model, Some(true)).await)?)
         }
         Command::SetEffort { session, effort } => {
-            msg(api.set_effort(session, effort.clone()).await)?;
+            // A pick in this TUI's picker or `/effort`: manual, so also the default (83 §2).
+            msg(api.set_effort(session, effort.clone(), Some(true)).await)?;
             UiEvent::EffortSet(effort)
         }
         Command::HarnessOptions(session) => {
@@ -1355,6 +1360,13 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
         UiEvent::Agent(AgentEvent::ModelChanged { model, .. }) => writeln!(out, "model → {model}"),
         UiEvent::Agent(AgentEvent::DefaultModelChanged { model }) => {
             writeln!(out, "default model → {model}")
+        }
+        UiEvent::Agent(AgentEvent::DefaultEffortChanged { effort }) => {
+            writeln!(
+                out,
+                "default effort → {}",
+                effort.as_deref().unwrap_or("unset")
+            )
         }
         UiEvent::Agent(AgentEvent::HarnessModelChanged { model, .. }) => {
             writeln!(out, "harness model → {model}")

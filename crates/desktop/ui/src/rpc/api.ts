@@ -727,7 +727,8 @@ export interface Api {
   /** Global switch (`session: null`, persisted) or one session's memory-only opt-out (50 §2.1); `enabled: true` on a session lifts its own opt-out only, never an ancestor's or the global ceiling. */
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
-  set_effort(session: SessionId | null, effort: string | null): Promise<null>
+  /** Set or clear `session`'s effort; `manual` (a person picked it) also makes it the default for new chats (83 §2). */
+  set_effort(session: SessionId | null, effort: string | null, manual: boolean): Promise<null>
   /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
   set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
   /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */

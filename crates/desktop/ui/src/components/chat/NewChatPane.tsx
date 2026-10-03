@@ -27,7 +27,6 @@ export function NewChat({
   onClose?(): void
   onCreated?(session: string): void
 }) {
-  const [effort, setEffort] = useState<string | null>()
   const [priv, setPriv] = useState(false)
   const [project, setProject] = useState<string | null>(preset ?? null)
   // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
@@ -35,11 +34,11 @@ export function NewChat({
   const draft: DraftCreate = { private: priv, project: project?.trim() || null }
   return (
     <>
-      <Header session={null} draftEffort={effort} onDraftEffort={setEffort} first={first} onClose={onClose} />
+      <Header session={null} first={first} onClose={onClose} />
       <LinkBanner />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        <Composer session={null} pane={pane} draftEffort={effort} draftCreate={draft} onCreated={onCreated} />
+        <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} />
         <CreateOptions priv={priv} onPriv={setPriv} project={project} onProject={setProject} />
       </div>
     </>

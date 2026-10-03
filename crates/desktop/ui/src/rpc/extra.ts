@@ -21,6 +21,8 @@ export type Info = {
   version: string
   data_dir: string
   default_model: string
+  /** `agent.effort` new chats start on (live, 83 §3); `null` = provider default. Absent on an older engine. */
+  default_effort?: string | null
   approvals: ApprovalsState
   compact_style: CompactStyle
   subagent_timeout_secs: number

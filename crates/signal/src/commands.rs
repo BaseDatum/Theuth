@@ -328,10 +328,13 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         }
         "/effort" => {
             let effort = (arg != "clear").then(|| arg.to_owned());
+            // 83 §2: with a session the change is that session's; only the
+            // session-less form has nothing but the default to set.
             agent()?
                 .ask(agent::SetEffort {
                     session: cx.session,
                     effort: effort.clone(),
+                    manual: cx.session.is_none(),
                 })
                 .await
                 .map_err(err)?;

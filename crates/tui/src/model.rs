@@ -3127,8 +3127,12 @@ pub struct Model {
     /// `Loaded.agent`: the shown session runs on an external harness (75 §8);
     /// `/model` and `/effort` then pick from the harness's own options.
     pub agent: Option<String>,
-    /// Reasoning effort of the shown session; `None` = provider default.
+    /// Reasoning effort of the shown session (`default_effort` before the first turn);
+    /// `None` = provider default.
     pub effort: Option<String>,
+    /// The engine's default for new sessions (`Info.default_effort`, then
+    /// `DefaultEffortChanged`, 83 §3): what the header shows after `/new`.
+    pub default_effort: Option<String>,
     /// A `SetEffort` is in flight; its `EffortChanged` echo is not announced twice.
     awaiting_effort: bool,
     /// Effort levels per model for the `/effort` picker; `None` in the line printer.
@@ -3360,10 +3364,11 @@ impl Model {
         }
     }
 
-    /// `Self::new` on the engine's default model, keeping effort, catalog and skill index: `/new` and `/resume`.
+    /// `Self::new` on the engine's default model and effort, keeping catalog and skill index: `/new` and `/resume`.
     fn reset(&mut self) {
         *self = Self {
-            effort: self.effort.take(),
+            effort: self.default_effort.clone(),
+            default_effort: self.default_effort.take(),
             catalog: self.catalog.take(),
             skills: std::mem::take(&mut self.skills),
             width: self.width,
@@ -5454,6 +5459,14 @@ impl Model {
                 self.default_model = model;
                 return;
             }
+            // 83 §3: global; the draft header (no session open) follows it.
+            AgentEvent::DefaultEffortChanged { effort } => {
+                if self.session.is_none() {
+                    self.effort = effort.clone();
+                }
+                self.default_effort = effort;
+                return;
+            }
             ev => ev,
         };
         // Roster bookkeeping for the subtree, independent of what is shown.
@@ -5876,7 +5889,8 @@ impl Model {
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }
-            | AgentEvent::DefaultModelChanged { .. } => {}
+            | AgentEvent::DefaultModelChanged { .. }
+            | AgentEvent::DefaultEffortChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -14167,6 +14181,28 @@ mod tests {
         assert!(
             matches!(m.entries.last(), Some(Entry::Info(t)) if t.ends_with("no reasoning effort levels"))
         );
+    }
+
+    /// 83 §3: `DefaultEffortChanged` moves the draft header but not an open
+    /// session's; `/new` (`reset`) shows the default, not the last session's effort.
+    #[test]
+    fn default_effort_follows_the_engine() {
+        let mut m = Model::default();
+        m.apply(UiEvent::Agent(AgentEvent::DefaultEffortChanged {
+            effort: Some("high".into()),
+        }));
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        m.session = Some(SessionId::new());
+        m.effort = Some("low".into());
+        m.apply(UiEvent::Agent(AgentEvent::DefaultEffortChanged {
+            effort: None,
+        }));
+        assert_eq!(m.effort.as_deref(), Some("low"));
+        assert_eq!(m.default_effort, None);
+        m.default_effort = Some("medium".into());
+        m.reset();
+        assert_eq!(m.effort.as_deref(), Some("medium"));
+        assert_eq!(m.default_effort.as_deref(), Some("medium"));
     }
 
     /// 75 §8: on an ACP session `/model` lists the harness's options,
