@@ -3,7 +3,7 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import { Command as CommandPrimitive } from 'cmdk'
 import { Check, ChevronDown, CircleHelp, FileText, History, MessageSquare, Mic, Paperclip, RefreshCw, Search, StickyNote, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { LevelMeter } from '@/components/chat/LevelMeter'
+import { VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
@@ -19,6 +19,7 @@ import { type AttachRef, attachTo, chatName, toRef } from '@/lib/attach'
 import * as dictation from '@/lib/dictation'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
+import { tapOrLevels } from '@/lib/visual-source'
 import {
   CATEGORIES,
   CATEGORY_LABEL,
@@ -165,6 +166,8 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
   const voice = speech.useVoice()
   const mic = useEngines((s) => s.active) !== LOCAL
   const dict = dictation.useBox(api, typed, setTyped, inputRef, mic)
+  // 82 §B as in the composer pill: the dictation tap's analyser (remote engine) or frames from the engine's level packets.
+  const dictSource = useVoiceSource(dict.dictating && dict.dict.phase === 'dictating', () => tapOrLevels(dictation.tap(), dictation.onLevels))
   const wasOpen = useRef(false)
   const pendingScroll = useRef<number | null>(null)
   const refreshGen = useRef(0)
@@ -511,7 +514,7 @@ export function SearchDialog({ open, onOpenChange, request }: Props) {
                 title={dict.reason ?? undefined}
                 onClick={dict.toggle}
               >
-                {dict.dictating && dict.dict.active ? <LevelMeter levels={dict.dict.active.levels} active /> : <Mic className="size-4" />}
+                {dict.dictating ? <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-6 w-16" /> : <Mic className="size-4" />}
               </Button>
             )}
           </div>
