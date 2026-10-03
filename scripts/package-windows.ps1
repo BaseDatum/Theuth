@@ -125,7 +125,7 @@ $Setup = Join-Path $Dist "theuth_${Version}_windows-x86_64-setup.exe"
 $Zip = Join-Path $Dist "theuth_${Version}_windows-x86_64.zip"
 
 Write-Host "==> [1/6] TypeScript bindings"
-Exec 'cargo test -p rpc export_bindings' { cargo test -p rpc --features ts --quiet export_bindings }
+Exec 'cargo test -p rpc export_bindings' { cargo test -p rpc --features ts --lib --quiet export_bindings }
 $uiBindings = Join-Path $Desktop 'ui/src/rpc/bindings'
 if (Test-Path $uiBindings) { Remove-Item $uiBindings -Recurse -Force }
 New-Item -ItemType Directory -Path $uiBindings | Out-Null

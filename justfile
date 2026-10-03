@@ -64,9 +64,11 @@ documents-helper:
     build_doc_helper
     echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
 
-# Export TypeScript bindings for the RPC wire types.
+# Export TypeScript bindings for the RPC wire types. `--lib`: every ts-rs export test lives in the
+# library; without it cargo also links tests/prompts.rs, a second multi-GB debug link that thrashed
+# the 8 GiB linux-x86_64 host (two rust-lld at 3.6 GB each, 2026-10-03).
 ts:
-    cargo test -p rpc --features ts --quiet export_bindings
+    cargo test -p rpc --features ts --lib --quiet export_bindings
 
 # Bindings for the desktop UI: `just ts` plus a copy into the Vite tree (25 §5).
 ts-desktop: ts
