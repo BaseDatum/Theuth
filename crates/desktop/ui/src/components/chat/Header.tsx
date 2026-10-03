@@ -151,15 +151,11 @@ function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLEleme
  */
 export function Header({
   session,
-  draftEffort,
-  onDraftEffort,
   first = true,
   onClose,
   popout,
 }: {
   session: string | null
-  draftEffort?: string | null
-  onDraftEffort?(effort: string | null): void
   first?: boolean
   onClose?(): void
   /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`). */
@@ -227,10 +223,10 @@ export function Header({
       ) : null,
     model: (mode) =>
       mode === 'row' ? (
-        <ModelRow session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} onOpen={() => setPicker(true)} />
+        <ModelRow session={session} onOpen={() => setPicker(true)} />
       ) : (
         <div className="min-w-0">
-          <ModelMenu session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} />
+          <ModelMenu session={session} />
         </div>
       ),
     // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never pushes
@@ -337,7 +333,7 @@ export function Header({
         ))}
       </div>
       <ApprovalsSheet open={sheet} onOpenChange={setSheet} />
-      {compact && <ModelDialog session={session} draftEffort={draftEffort} onDraftEffort={onDraftEffort} open={picker} onOpenChange={setPicker} />}
+      {compact && <ModelDialog session={session} open={picker} onOpenChange={setPicker} />}
       {session && (
         <>
           <CostDialog session={session} open={cost} onOpenChange={setCost} />

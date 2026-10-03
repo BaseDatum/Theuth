@@ -58,8 +58,6 @@ export function ModelItems({ models, model, onSelect }: { models: ModelInfo[]; m
 
 type Props = {
   session: string | null
-  draftEffort?: string | null
-  onDraftEffort?(effort: string | null): void
 }
 
 /** The picker's state shared by the header button, the compact row and the dialog. */
@@ -84,7 +82,7 @@ type Model = {
 }
 
 /** `done` runs after a choice (closes whichever surface showed the picker). */
-function useModel({ session, draftEffort, onDraftEffort }: Props, done: () => void): Model {
+function useModel({ session }: Props, done: () => void): Model {
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
@@ -94,7 +92,8 @@ function useModel({ session, draftEffort, onDraftEffort }: Props, done: () => vo
   const harnessModel = useSessionField(session ?? '', 'harnessModel')
   const running = useSessionField(session ?? '', 'running')
   const model = sessionModel ?? info?.default_model
-  const effort = session ? sessionEffort : draftEffort
+  // 83 §3: the draft shows the engine's live default effort (`DefaultEffortChanged` keeps it current).
+  const effort = session ? sessionEffort : info?.default_effort
   const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent })
   const current = models.find((m) => m.id === model)
   const acp = !!agent && !!session
@@ -125,11 +124,11 @@ function useModel({ session, draftEffort, onDraftEffort }: Props, done: () => vo
       toast.error(e instanceof Error ? e.message : String(e))
     }
   }
+  // 83 §2: a pick here is manual — it becomes the default for new chats too; in the draft that is all it sets.
   const setEffort = async (level: string | null) => {
     done()
     try {
-      if (session) await api.set_effort(session, level)
-      else onDraftEffort?.(level)
+      await api.set_effort(session, level, true)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }

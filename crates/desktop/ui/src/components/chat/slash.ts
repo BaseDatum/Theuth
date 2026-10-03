@@ -306,7 +306,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     case '/effort':
       if (!arg) return openSurface('model')
-      await api.set_effort(session, arg === 'clear' ? null : arg)
+      await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
     case '/title': {
       if (!arg) return settings(navigate, 'loop', session)
