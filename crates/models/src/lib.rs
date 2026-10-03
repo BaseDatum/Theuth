@@ -53,6 +53,66 @@ pub struct Model {
     /// How reasoning can be steered (models.dev `reasoning_options`).
     #[serde(default)]
     pub reasoning_options: Vec<ReasoningOption>,
+    /// Wire protocol the model speaks (85 §0.3, from models.dev `provider.npm`);
+    /// absent in user files → the dispatcher falls back to [`Protocol::guess`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    /// Upstream vendor id (`anthropic/claude-opus-5-5`; models.dev `canonical_model_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical: Option<String>,
+}
+
+/// Wire protocol a model is served over (85 §0.2): decides which genai adapter
+/// builds the request when theuth dispatches the target itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    /// Anthropic Messages (`…/messages`, `x-api-key`).
+    Anthropic,
+    /// OpenAI Responses (`…/responses`, Bearer).
+    OpenaiResponses,
+    /// Gemini generateContent (`…/models/{id}:…`, `x-goog-api-key`).
+    Gemini,
+    /// OpenAI chat completions (`…/chat/completions`, Bearer).
+    OpenaiChat,
+}
+
+impl Protocol {
+    /// models.dev `provider.npm` → protocol; absent or `@ai-sdk/openai-compatible` → chat.
+    pub fn from_npm(npm: Option<&str>) -> Self {
+        match npm {
+            Some("@ai-sdk/anthropic") => Self::Anthropic,
+            Some("@ai-sdk/openai") => Self::OpenaiResponses,
+            Some("@ai-sdk/google") => Self::Gemini,
+            _ => Self::OpenaiChat,
+        }
+    }
+
+    /// Prefix fallback for a model with no catalog protocol (85 §0.3).
+    pub fn guess(slug: &str) -> Self {
+        if slug.starts_with("claude-") {
+            Self::Anthropic
+        } else if ["gpt-", "grok-", "muse-"]
+            .iter()
+            .any(|p| slug.starts_with(p))
+        {
+            Self::OpenaiResponses
+        } else if slug.starts_with("gemini-") {
+            Self::Gemini
+        } else {
+            Self::OpenaiChat
+        }
+    }
+}
+
+/// Zen models where the Zen docs disagree with models.dev (85 §0.3; docs win):
+/// `Some(protocol)` overrides, `None` excludes the model (System One, not chat).
+pub fn zen_override(id: &str) -> Option<Option<Protocol>> {
+    match id {
+        "qwen3.7-max" | "qwen3.7-plus" => Some(Some(Protocol::Anthropic)),
+        _ if id.starts_with("jev-") => Some(None),
+        _ => None,
+    }
 }
 
 /// One way a model lets callers steer reasoning.
@@ -192,8 +252,10 @@ pub struct Catalog {
     providers: BTreeMap<String, Provider>,
 }
 
-/// models.dev provider ids we bundle: the ones genai can route (`just models` keeps only these).
+/// models.dev provider ids we bundle: the ones genai can route (`just models` keeps only
+/// these) plus `opencode` (Zen), which theuth dispatches per model protocol (85 §0.2).
 pub const ROUTABLE: &[&str] = &[
+    "opencode",
     "google",
     "openrouter",
     "togetherai",
@@ -304,7 +366,8 @@ impl Catalog {
     /// `max`, ...) are ignored; the family token (`claude`, `gpt`) must agree.
     /// Ties go to the larger context, then the lower provider id. Models with
     /// no context limit are never candidates. For limits only; never for what
-    /// is sent to the provider.
+    /// is sent to the provider — [`Catalog::resolve`] drops a sibling's
+    /// `protocol`/`canonical` for that reason.
     pub fn closest(&self, id: &str) -> Option<&Model> {
         if let Some((_, m)) = self.get(id) {
             return Some(m);
@@ -351,11 +414,18 @@ impl Catalog {
     ///    them; none → pass through to genai unchanged.
     pub fn resolve(&self, id: &str, configured: &dyn Fn(&str) -> bool) -> Result<Resolved, String> {
         if let Some((provider, model)) = id.split_once('/') {
+            let exact = self.get(id).is_some();
             return Ok(Resolved {
                 id: id.to_owned(),
                 genai: format!("{}::{model}", Self::adapter(provider)),
                 provider: Some(provider.to_owned()),
-                model: self.closest(id).cloned(),
+                model: self.closest(id).cloned().map(|mut m| {
+                    if !exact {
+                        m.protocol = None;
+                        m.canonical = None;
+                    }
+                    m
+                }),
             });
         }
         let hits: Vec<(&String, &Model)> = self
@@ -428,6 +498,8 @@ mod tests {
             tool_call: false,
             image: false,
             reasoning_options: vec![],
+            protocol: None,
+            canonical: None,
         }
     }
 
@@ -645,5 +717,74 @@ mod tests {
             model("plain", 1).validate_effort("high").unwrap_err(),
             "plain accepts no reasoning effort"
         );
+    }
+
+    // 85 §0.3: npm mapping, prefix guess, Zen doc overrides.
+    #[test]
+    fn protocol_from_npm_guess_and_zen_overrides() {
+        assert_eq!(
+            Protocol::from_npm(Some("@ai-sdk/anthropic")),
+            Protocol::Anthropic
+        );
+        assert_eq!(
+            Protocol::from_npm(Some("@ai-sdk/openai")),
+            Protocol::OpenaiResponses
+        );
+        assert_eq!(Protocol::from_npm(Some("@ai-sdk/google")), Protocol::Gemini);
+        assert_eq!(
+            Protocol::from_npm(Some("@ai-sdk/openai-compatible")),
+            Protocol::OpenaiChat
+        );
+        assert_eq!(Protocol::from_npm(None), Protocol::OpenaiChat);
+        for (slug, want) in [
+            ("claude-opus-5-5", Protocol::Anthropic),
+            ("gpt-5.6-sol", Protocol::OpenaiResponses),
+            ("grok-5", Protocol::OpenaiResponses),
+            ("muse-1", Protocol::OpenaiResponses),
+            ("gemini-3.5-flash", Protocol::Gemini),
+            ("deepseek-v4", Protocol::OpenaiChat),
+        ] {
+            assert_eq!(Protocol::guess(slug), want, "{slug}");
+        }
+        assert_eq!(zen_override("qwen3.7-max"), Some(Some(Protocol::Anthropic)));
+        assert_eq!(
+            zen_override("qwen3.7-plus"),
+            Some(Some(Protocol::Anthropic))
+        );
+        assert_eq!(zen_override("jev-1.13"), Some(None));
+        assert_eq!(zen_override("jev-1.13-free"), Some(None));
+        assert_eq!(zen_override("claude-opus-5-5"), None);
+        assert_eq!(
+            serde_json::to_string(&Protocol::OpenaiResponses).unwrap(),
+            "\"openai_responses\""
+        );
+    }
+
+    // 85 §0.3: the bundled Zen catalog carries protocols; a sibling-derived
+    // model (gateway id) never leaks its protocol/canonical into `Resolved`.
+    #[test]
+    fn bundled_zen_protocols_and_sibling_strip() {
+        let cat = Catalog {
+            providers: BUNDLED.clone(),
+        };
+        let p = |id: &str| cat.get(id).unwrap().1.protocol;
+        assert_eq!(p("opencode/claude-opus-5-5"), Some(Protocol::Anthropic));
+        assert_eq!(p("opencode/gpt-5.6-sol"), Some(Protocol::OpenaiResponses));
+        assert_eq!(p("opencode/gemini-3.5-flash"), Some(Protocol::Gemini));
+        assert_eq!(p("opencode/qwen3.8-flash"), Some(Protocol::Anthropic));
+        assert!(cat.get("opencode/jev-1.13").is_none());
+        assert_eq!(
+            cat.get("openrouter/anthropic/claude-opus-5.5")
+                .unwrap()
+                .1
+                .canonical
+                .as_deref(),
+            Some("anthropic/claude-opus-5-5")
+        );
+        let exact = cat.resolve("opencode/claude-opus-5-5", &|_| true).unwrap();
+        assert_eq!(exact.model.unwrap().protocol, Some(Protocol::Anthropic));
+        let sibling = cat.resolve("rwx/claude-opus-5-5", &|_| true).unwrap();
+        let m = sibling.model.unwrap();
+        assert!(m.limit.context > 0 && m.protocol.is_none() && m.canonical.is_none());
     }
 }

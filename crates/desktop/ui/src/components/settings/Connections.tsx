@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { builtinKeyNote, BUILTIN_LABEL, splitProviders } from '@/components/settings/providers'
 import { Dot, Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ export function Connections() {
   return (
     <>
       <Logins />
+      <BuiltIns />
       <Gateways />
       <Bedrock />
     </>
@@ -126,6 +128,83 @@ function Logins() {
   )
 }
 
+/**
+ * The built-in key providers (85 §0.9): OpenCode Zen and OpenRouter, keyed by the
+ * `opencode` / `openrouter` secret through the same masked `set_secret` entry the
+ * other Settings key forms use; the value is never read back.
+ */
+function BuiltIns() {
+  const api = useApi()
+  const providers = useQuery({
+    queryKey: queryKeys.providers,
+    queryFn: () => api.list_providers(),
+  })
+  const [open, setOpen] = useState<string | null>(null)
+  const [value, setValue] = useState('')
+  const store = useAction((v: { name: string; value: string }) => api.set_secret(v.name, v.value, builtinKeyNote(v.name)), {
+    // A new key changes which models `list_models` may offer (85 §2).
+    keys: [queryKeys.providers, queryKeys.models, queryKeys.secrets],
+    onSuccess: (s) => {
+      setValue('')
+      setOpen(null)
+      toast.success(`Stored ${s.name}; the value is encrypted and never shown`)
+    },
+  })
+
+  return (
+    <Section title="Built-in providers">
+      {splitProviders(providers.data).builtins.map((p) => (
+        <Row
+          key={p.name}
+          label={
+            <span className="flex items-center gap-2">
+              <Dot on={p.configured} />
+              {BUILTIN_LABEL[p.name] ?? p.name}
+            </span>
+          }
+          description={
+            <>
+              <span className="font-mono">{p.name}/…</span> · {p.models} models ·{' '}
+              {p.configured ? 'key set' : `no key (secret \`${p.name}\`)`}
+            </>
+          }
+        >
+          {open === p.name ? (
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (value.trim()) store.mutate({ name: p.name, value: value.trim() })
+              }}
+            >
+              <Input
+                type="password"
+                autoComplete="off"
+                autoFocus
+                className="min-w-48"
+                aria-label={`value of ${p.name}`}
+                placeholder="Paste the key"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
+              <Button type="submit" size="sm" disabled={!value.trim() || store.isPending}>
+                Store
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(null)}>
+                Cancel
+              </Button>
+            </form>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setOpen(p.name)}>
+              {p.configured ? 'Replace key…' : 'Set key…'}
+            </Button>
+          )}
+        </Row>
+      ))}
+    </Section>
+  )
+}
+
 /** Named OpenAI-compatible gateways; the key is sent once and never echoed. */
 function Gateways() {
   const api = useApi()
@@ -133,6 +212,7 @@ function Gateways() {
     queryKey: queryKeys.providers,
     queryFn: () => api.list_providers(),
   })
+  const gateways = splitProviders(providers.data).gateways
   const [form, setForm] = useState({ name: '', url: '', key: '' })
   const add = useAction((v: typeof form) => api.add_provider(v.name, v.url, v.key), {
     keys: [queryKeys.providers, queryKeys.models],
@@ -148,8 +228,8 @@ function Gateways() {
 
   return (
     <Section title="Gateways">
-      {providers.data?.length === 0 && <Empty>No gateway configured.</Empty>}
-      {providers.data?.map((p) => (
+      {providers.data && gateways.length === 0 && <Empty>No gateway configured.</Empty>}
+      {gateways.map((p) => (
         <Row
           key={p.name}
           label={p.name}

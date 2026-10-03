@@ -46,6 +46,7 @@ agent:
   model: anthropic/claude-sonnet-4-5   # provider/model, or bare id resolved against configured providers
   effort: null                         # low | high | off | token budget; provider default when unset
   aws_profile: null                    # Bedrock; /aws or Settings → Connections selects a harness-wide profile
+  openrouter: {provider: null, referer: null, title: null}  # built-in OpenRouter (85 §0.6): `provider` preferences JSON passthrough, header overrides; key = secret `openrouter` / OPENROUTER_API_KEY. Zen (`opencode/*`) needs only secret `opencode` / OPENCODE_API_KEY
   max_tool_rounds: 32                  # tool-call rounds per turn before the loop asks for a text reply; also Settings → Agent loop
   stream_idle_secs: 120                # seconds without a stream event before a model call is abandoned as a dead socket (36 §2.3)
   max_salvages: 2                      # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors; 0 = off

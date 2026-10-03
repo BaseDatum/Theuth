@@ -102,6 +102,16 @@ entered on purpose); a login is also on purpose but a user who set a key *and* l
 in most likely wants the key. `configured(ns)` (doc 02 §1) gains clause 2, so
 `/model` lists OpenAI models right after login.
 
+Two built-in key providers have their own names (85 §2): **OpenCode Zen**
+(`opencode/*`) is configured by vault `opencode` or `OPENCODE_API_KEY` — the
+key never reaches genai's resolver; `backend::target_for` puts it on the
+`ServiceTarget` it builds. **OpenRouter** (`open_router` namespace) accepts
+vault `openrouter` (preferred) or `open_router`, then `OPENROUTER_API_KEY` or
+genai's `OPEN_ROUTER_API_KEY` (`Auth::openrouter_key`, used by both the auth
+resolver and `configured`). Settings → Connections lists both with their
+configured state and sets the key through `set_secret`; `opencode`,
+`openrouter`, `open_router` and `zen` are refused as gateway names.
+
 ### 2.3 Wiring
 
 genai resolves a request in three steps: auth resolver → default endpoint →

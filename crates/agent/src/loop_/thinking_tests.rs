@@ -164,6 +164,9 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         "amazon-bedrock/us.anthropic.claude-fable-5-1",
         "amazon-bedrock/anthropic.claude-opus-4-8",
         "amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        // 85 §0.4: Anthropic by canonical id or `claude-` slug under any provider.
+        "opencode/claude-opus-5-5",
+        "openrouter/anthropic/claude-opus-5.5",
     ] {
         assert!(
             matches!(default_effort(&r(id)), Some(ReasoningEffort::Medium)),
@@ -176,6 +179,8 @@ fn default_effort_is_medium_for_anthropic_thinking_models_only() {
         "amazon-bedrock/amazon.nova-pro-v1:0",
         "amazon-bedrock/us.openai.gpt-6-astra",
         "google/gemini-2.5-pro",
+        "opencode/gpt-5.6-sol",
+        "openrouter/openai/gpt-5.6-sol",
     ] {
         assert!(default_effort(&r(id)).is_none(), "{id}");
     }

@@ -63,11 +63,15 @@ export type LoginFinished = {
   error: string | null
 }
 
-/** One named OpenAI-compatible gateway (`list_providers`). */
+/** One provider row of `list_providers`: a built-in key provider (85 §0.9) or a named gateway. */
 export type ProviderInfo = {
   name: string
   base_url: string
   models: number
+  /** `opencode` / `openrouter`: keyed by a secret, not removable. */
+  builtin: boolean
+  /** A key exists (vault or env); gateways always carry one. */
+  configured: boolean
 }
 
 /** Live state of one subagent (`#[serde(tag = "state", rename_all = "snake_case")]`). */

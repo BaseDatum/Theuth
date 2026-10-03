@@ -6484,20 +6484,42 @@ impl Message<ListProviders> for Agents {
         _: ListProviders,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ProviderInfo> {
+        let count = |name: &str| {
+            self.catalog
+                .providers()
+                .find(|p| p.id == name)
+                .map_or(0, |p| p.models.len() as u32)
+        };
+        // 85 §0.9: the built-ins first, keyed by a secret rather than a gateway entry.
+        let mut out = vec![
+            ProviderInfo {
+                name: "opencode".into(),
+                base_url: crate::backend::ZEN_ENDPOINT.into(),
+                models: count("opencode"),
+                builtin: true,
+                configured: self.auth.opencode_key().is_some(),
+            },
+            ProviderInfo {
+                name: "openrouter".into(),
+                base_url: "https://openrouter.ai/api/v1/".into(),
+                models: count("openrouter"),
+                builtin: true,
+                configured: self.auth.openrouter_key().is_some(),
+            },
+        ];
         let gws = self.auth.gateways.read().unwrap_or_else(|e| e.into_inner());
-        let mut out: Vec<ProviderInfo> = gws
+        let mut gateways: Vec<ProviderInfo> = gws
             .iter()
             .map(|(name, g)| ProviderInfo {
-                models: self
-                    .catalog
-                    .providers()
-                    .find(|p| p.id == *name)
-                    .map_or(0, |p| p.models.len() as u32),
+                models: count(name),
                 name: name.clone(),
                 base_url: g.base_url.clone(),
+                builtin: false,
+                configured: true,
             })
             .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        gateways.sort_by(|a, b| a.name.cmp(&b.name));
+        out.extend(gateways);
         out
     }
 }
@@ -6559,6 +6581,8 @@ impl Message<AddProvider> for Agents {
             name: m.name,
             base_url,
             models: models.len() as u32,
+            builtin: false,
+            configured: true,
         })
     }
 }
@@ -6959,6 +6983,8 @@ pub(crate) struct Auth {
     pub(crate) gateways: Arc<RwLock<HashMap<String, crate::providers::Gateway>>>,
     /// Shared by every inference client; never mutates the process's AWS environment.
     aws_profile: Arc<parking_lot::RwLock<Option<String>>>,
+    /// `agent.openrouter` (85 §0.6), applied by the backend to OpenRouter requests.
+    pub(crate) openrouter: Arc<crate::OpenRouterConfig>,
 }
 
 impl Auth {
@@ -6970,6 +6996,7 @@ impl Auth {
             oauth: oauth::Store::new(dir),
             gateways: Arc::new(RwLock::new(HashMap::new())),
             aws_profile: Arc::new(parking_lot::RwLock::new(None)),
+            openrouter: Arc::default(),
         }
     }
 
@@ -6982,6 +7009,21 @@ impl Auth {
         self.vault.as_ref()?.get(ns, 0).map(|k| k.to_string())
     }
 
+    /// 85 §0.1: the Zen key — vault `opencode`, else `OPENCODE_API_KEY`. Read by
+    /// the backend's protocol target, never by genai's resolver.
+    pub(crate) fn opencode_key(&self) -> Option<String> {
+        self.key("opencode").or_else(|| env_key("OPENCODE_API_KEY"))
+    }
+
+    /// 85 §0.6: the OpenRouter key — vault `openrouter` (preferred) or genai's
+    /// `open_router`, else `OPENROUTER_API_KEY` or `OPEN_ROUTER_API_KEY`.
+    pub(crate) fn openrouter_key(&self) -> Option<String> {
+        self.key("openrouter")
+            .or_else(|| self.key("open_router"))
+            .or_else(|| env_key("OPENROUTER_API_KEY"))
+            .or_else(|| env_key("OPEN_ROUTER_API_KEY"))
+    }
+
     /// A login is in force for genai namespace `ns`: no key in the vault and
     /// tokens on disk.
     pub(crate) fn login(&self, ns: &str) -> bool {
@@ -6992,6 +7034,11 @@ impl Auth {
     pub(crate) fn gateway(&self, ns: &str) -> Option<crate::providers::Gateway> {
         self.gateways.read().ok()?.get(ns).cloned()
     }
+}
+
+/// A non-empty environment variable.
+fn env_key(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 /// Largest image a provider accepts (17 §1: Anthropic's 5 MB is the binding cap).
@@ -7044,6 +7091,10 @@ fn client(auth: Auth) -> anyhow::Result<Client> {
             // SigV4's AuthData is a profile, not a vault key. Resolve it per request below.
             if m.adapter_kind == AdapterKind::BedrockSigv4 {
                 return Ok(Some(AuthData::None));
+            }
+            // 85 §0.6: OpenRouter accepts the `openrouter` name and env too.
+            if m.adapter_kind == AdapterKind::OpenRouter {
+                return Ok(keys.openrouter_key().map(AuthData::Key));
             }
             // No vault key: `None` hands genai the adapter's own default
             // (its env var, or anonymous for local servers such as omlx and
@@ -7145,10 +7196,14 @@ const CLAUDE_CODE_UA: &str = "claude-cli/2.1.257 (external, cli)";
 /// adapter needing no key (`ollama`). `cursor` is not a genai adapter: only
 /// a login configures it. Bedrock has no key env, so SigV4 counts as
 /// configured only when [`bedrock_configured`] finds credentials to use.
+/// `opencode` (Zen) and `open_router` are keyed by name or env (85 §2).
 pub(crate) fn configured(auth: Auth) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
     Arc::new(move |ns: &str| {
-        if ns == "bedrock_sigv4" {
-            return bedrock_configured(&auth);
+        match ns {
+            "bedrock_sigv4" => return bedrock_configured(&auth),
+            "opencode" => return auth.opencode_key().is_some(),
+            "open_router" => return auth.openrouter_key().is_some(),
+            _ => {}
         }
         auth.key(ns).is_some()
             || auth.gateway(ns).is_some()
@@ -7299,6 +7354,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         vault,
         gateways: Arc::new(RwLock::new(gateways)),
         aws_profile: Arc::new(parking_lot::RwLock::new(cfg.aws_profile.clone())),
+        openrouter: Arc::new(cfg.openrouter.clone()),
     };
     auth.oauth.migrate_files().await;
     // One worker per concurrent child turn plus the root session (design doc 08 §9).
@@ -8286,6 +8342,7 @@ pub(crate) mod tests {
             oauth: oauth::Store::new(Path::new("/unused")),
             gateways: Arc::new(RwLock::new(HashMap::new())),
             aws_profile: Arc::new(parking_lot::RwLock::new(Some("work".into()))),
+            openrouter: Arc::default(),
         };
         let client = client(auth.clone()).unwrap();
         let catalog = Catalog::load(Path::new("/unused"));
@@ -8305,6 +8362,51 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(target.auth.single_key_value().unwrap(), "personal");
+    }
+
+    /// 85 §2: `opencode` is configured by its vault key; OpenRouter by either
+    /// vault name, and the genai resolver hands the `openrouter` key to the
+    /// `open_router` adapter. Env fallbacks are not exercised (process-global).
+    #[tokio::test]
+    async fn builtin_keys_configure_opencode_and_openrouter_by_either_name() {
+        let dir = std::env::temp_dir().join(format!("theuth-builtin-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let auth = Auth {
+            vault: Some(vault.clone()),
+            ..Auth::stub(&dir)
+        };
+        let is = configured(auth.clone());
+        let env_zen = std::env::var_os("OPENCODE_API_KEY").is_some();
+        let env_or = ["OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY"]
+            .iter()
+            .any(|k| std::env::var_os(k).is_some());
+        assert_eq!(is("opencode"), env_zen);
+        assert_eq!(is("open_router"), env_or);
+
+        vault.set("opencode", "zk", None, "test").await.unwrap();
+        assert!(is("opencode") && auth.opencode_key().as_deref() == Some("zk"));
+
+        vault
+            .set("open_router", "legacy", None, "test")
+            .await
+            .unwrap();
+        assert!(is("open_router") && auth.openrouter_key().as_deref() == Some("legacy"));
+        vault.set("openrouter", "ork", None, "test").await.unwrap();
+        assert_eq!(auth.openrouter_key().as_deref(), Some("ork"));
+
+        let client = client(auth).unwrap();
+        let target = client
+            .resolve_service_target("open_router::anthropic/claude-opus-5.5")
+            .await
+            .unwrap();
+        assert_eq!(target.model.adapter_kind, AdapterKind::OpenRouter);
+        assert_eq!(target.auth.single_key_value().unwrap(), "ork");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A keyless local provider (`omlx/...`) with no vault key and no env var

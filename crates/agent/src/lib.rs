@@ -1277,20 +1277,27 @@ pub struct LoginFinished {
     pub error: Option<String>,
 }
 
-/// `ask` → `Vec<ProviderInfo>`: named OpenAI-compatible gateways.
+/// `ask` → `Vec<ProviderInfo>`: the built-in key providers (`opencode`, `openrouter`;
+/// 85 §0.9) first, then the named OpenAI-compatible gateways.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListProviders;
 
-/// One named OpenAI-compatible gateway.
+/// One provider row of the Connections view: a built-in or a named gateway.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProviderInfo {
     /// User-facing prefix (`rwx` → `rwx/model`).
     pub name: String,
-    /// OpenAI-compatible base URL.
+    /// OpenAI-compatible base URL (the fixed upstream URL for a built-in).
     pub base_url: String,
-    /// Models last fetched from `GET {base}models`.
+    /// Models last fetched from `GET {base}models` (catalog count for a built-in).
     pub models: u32,
+    /// `opencode` / `openrouter`: keyed by a secret, not removable (85 §0.9).
+    #[serde(default)]
+    pub builtin: bool,
+    /// A key exists (vault or env); gateways always carry one.
+    #[serde(default)]
+    pub configured: bool,
 }
 
 /// `ask` → `Result<ProviderInfo, String>`: persist a gateway, fetch its models.
@@ -2168,6 +2175,8 @@ pub struct AgentConfig {
     pub broadcast: BroadcastConfig,
     /// Post-compaction token budgets (tail, archive images, total).
     pub compaction: CompactionConfig,
+    /// Request passthrough for the built-in OpenRouter provider (85 §0.6).
+    pub openrouter: OpenRouterConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -2195,6 +2204,7 @@ impl Default for AgentConfig {
             knowledge: KnowledgeUse::default(),
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),
+            openrouter: OpenRouterConfig::default(),
             surface: SurfaceConfig::default(),
         }
     }
@@ -2212,6 +2222,20 @@ impl Default for BroadcastConfig {
     fn default() -> Self {
         Self { max_targets: 32 }
     }
+}
+
+/// `agent.openrouter`: what theuth adds to an OpenRouter request (85 §0.6).
+/// All optional; genai sets the default `HTTP-Referer` / `X-OpenRouter-Title`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenRouterConfig {
+    /// OpenRouter `provider` preferences (`order`, `allow_fallbacks`,
+    /// `data_collection`, `sort`, `only`, `ignore`, …), sent verbatim.
+    pub provider: Option<serde_json::Value>,
+    /// `HTTP-Referer` header override.
+    pub referer: Option<String>,
+    /// `X-OpenRouter-Title` header override.
+    pub title: Option<String>,
 }
 
 /// `agent.compaction`: CEILINGS on what a fold keeps (70 COMPACT-SIZE, 80
