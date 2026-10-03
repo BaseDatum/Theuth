@@ -810,6 +810,9 @@ agent:
   # stream_idle_secs: 120     # seconds without a stream event before a model call is abandoned (36 §2.3); Settings → Agent loop
   # max_salvages: 2           # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors (36 §2.4); 0 = off
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
+  # openrouter:               # built-in OpenRouter provider (85 §0.6); key = secret `openrouter` or OPENROUTER_API_KEY
+  #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set
+  #   referer: https://theuth.io   # HTTP-Referer override; X-OpenRouter-Title via `title`
   # subagents:
   #   model: null              # preferred subagent model when spawn_subagent omits `model`, named in the system prompt; default: agent.model. /subagent or Settings → Agent loop
   #   max_depth: 1

@@ -30,11 +30,12 @@ minus dropped fields):
         "limit": { "context": 200000, "output": 64000 },
         "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 },
         "reasoning": true, "tool_call": true, "image": true,
+        "protocol": "anthropic", "canonical": "anthropic/claude-sonnet-4-5",
         "reasoning_options": [{ "type": "effort", "values": ["low", "medium", "high"] },
                               { "type": "budget_tokens", "min": 1024, "max": 32000 }] } } } }
 ```
 
-`image` is the one field not copied verbatim: `trim` folds models.dev
+`image` is one of three fields not copied verbatim: `trim` folds models.dev
 `modalities.input ∋ "image"` into it (`#[serde(default)]`, so a silent
 catalog means `false`); it gates snap compaction (13 §3). Since 52 (built
 2026-09-19) `ModelInfo.image` is the *effective* value — the catalog flag
@@ -42,6 +43,22 @@ constrained by `backend::supports_images`, so a Cursor row reports `false`
 even when its catalog sibling accepts images — and the same predicate
 decides whether the loop sends images natively or runs the vision fallback.
 Frontends filter on `ModelInfo.image`; none re-derives backend rules.
+
+`protocol` and `canonical` (85 §0.3) are the other two: `trim` maps the
+per-model `provider.npm` (else the provider's `npm`) to
+`Protocol { anthropic | openai_responses | gemini | openai_chat }` and copies
+`canonical_model_id`. `opencode` (OpenCode Zen) is in `ROUTABLE` although
+genai has no adapter for it: `Catalog::adapter("opencode")` passes the
+namespace through and `backend::target_for` builds the genai target from the
+model's protocol under `https://opencode.ai/zen/v1/`. `models::zen_override`
+applies the Zen docs where models.dev disagrees (`qwen3.7-max|plus` →
+anthropic; `jev-*` dropped — System One, not chat). A model with no
+`protocol` (a user-file entry) is guessed from its slug by `Protocol::guess`
+(`claude-*` → anthropic, `gpt-|grok-|muse-*` → openai_responses, `gemini-*` →
+gemini, else chat); `Catalog::resolve` clears `protocol`/`canonical` on a
+sibling-derived model so a gateway's `claude-x` is never dispatched by its
+models.dev look-alike. `canonical` also drives the medium default effort for
+Anthropic models under any provider (`frame::default_effort`, 85 §0.4).
 
 `include_str!` + `serde_json` on first use (`LazyLock`). Measured: full
 api.json 4.5 MB; trimmed to these fields 1.8 MB; filtered to routable

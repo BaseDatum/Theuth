@@ -247,7 +247,12 @@ v0. `cached_tokens` arrives in `prompt_tokens_details`.
 
 Cache marks per transport, chosen from the model's genai `AdapterKind`
 (`Client::resolve_service_target(model).model.adapter_kind`; the loop
-already keys on the namespace string for Cursor):
+already keys on the namespace string for Cursor). For a *protocol target*
+(85 §0.2: a Zen `opencode/*` model, or a gateway whose catalog entry names a
+`protocol`) theuth picks the kind itself in `backend::target_for`, and
+`Backend::transport` returns `Transport::of(that kind)` — Zen Claude gets the
+Anthropic breakpoints, Zen GPT the OpenAI fields, Zen Gemini none — instead of
+the gateway-wide `OpenAiLike` of a plain user gateway:
 
 | transport | system | marks |
 |---|---|---|
