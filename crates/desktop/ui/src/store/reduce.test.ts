@@ -4,7 +4,7 @@ import type { Usage } from '@/rpc/bindings/Usage'
 import type { TodoSnapshot } from '@/rpc/bindings/TodoSnapshot'
 import type { WireEvent } from '@/rpc/events'
 import type { LoadedPage, VisionNote, VisionSource } from '@/rpc/extra'
-import { adopt, apply, empty, fromHistory, route, type Ctx } from './reduce'
+import { adopt, apply, empty, fromHistory, route, settleCompacting, type Ctx } from './reduce'
 import { type Freshness, type SessionSlice, browserBusy, freshness, shownActivity, useSessions } from './sessions'
 import type { CodeToolRan } from '@/lib/codemap/types'
 import codemapEvents from '@/components/codemap/__fixtures__/events.json'
@@ -344,6 +344,30 @@ test('Compacted: clear wipes, other styles add a divider after the closed tail',
   const cleared = apply(streaming, { type: 'Compacted', session: S, turn: null, epoch: 3, before: 1, after: 50, folded: 3, style: 'clear' }, ctx())
   expect(cleared.entries).toHaveLength(1)
   expect(cleared.entries[0]).toMatchObject({ kind: 'info', text: 'context cleared (epoch 3)' })
+})
+
+test('Compacting is idempotent; settleCompacting undoes it only while still compacting (87 COMPACT-NONBLOCK)', () => {
+  const compacting: WireEvent = { type: 'Compacting', session: S, turn: null }
+  const once = run([compacting])
+  expect(once.activity).toBe('compacting')
+  expect(apply(once, compacting, ctx())).toBe(once)
+  expect(settleCompacting(once).activity).toBe('idle')
+  const done = apply(once, { type: 'Compacted', session: S, turn: null, epoch: 2, before: 1, after: 50, folded: 3, style: 'cut' }, ctx())
+  expect(done.activity).toBe('idle')
+  expect(done.entries.at(-1)).toMatchObject({ kind: 'compacted', epoch: 2, style: 'cut' })
+  expect(settleCompacting(done)).toBe(done)
+})
+
+test('store: settleCompacting flips compacting back to idle and is a no-op otherwise', () => {
+  const id = 'settle'
+  const st = useSessions.getState()
+  st.applyEvents([{ type: 'Compacting', session: id, turn: null }])
+  expect(useSessions.getState().sessions[id]?.activity).toBe('compacting')
+  st.settleCompacting(id)
+  const idle = useSessions.getState().sessions[id]
+  expect(idle?.activity).toBe('idle')
+  st.settleCompacting(id)
+  expect(useSessions.getState().sessions[id]).toBe(idle)
 })
 
 test('MessageDelivered interjects above a streaming tail without closing it', () => {
