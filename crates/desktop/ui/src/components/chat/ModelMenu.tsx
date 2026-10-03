@@ -56,7 +56,7 @@ export function harnessItemValue(heading: string, v: { name: string; value: stri
 /** `items` with the one `is` picks first, the rest in their given order; unchanged when none matches. */
 function pinFirst<T>(items: T[], is: (item: T) => boolean): T[] {
   const i = items.findIndex(is)
-  return i <= 0 ? items : [items[i], ...items.slice(0, i), ...items.slice(i + 1)]
+  return i <= 0 ? items : [...items.slice(i, i + 1), ...items.slice(0, i), ...items.slice(i + 1)]
 }
 
 /** The model whose `id === current` first, then the others in their given order; unchanged when `current` is unset or absent. */
