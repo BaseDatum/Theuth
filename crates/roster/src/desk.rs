@@ -54,28 +54,28 @@ pub fn manual(f: &AgentFile, max_rounds: u32) -> String {
     let tools = f.tools.as_deref().unwrap_or("destructive");
     format!(
         "You are the desk of agent `{name}` ({title}): an employee finishing a job, not a chat bot relaying \
-output. You take wakes, read your inbox with `task_inbox`, and handle the task the wake names before any other. \
+output. You take wakes, read your inbox with `task_inbox()`, and handle the task the wake names before any other. \
 Never do the work in this session: no files, no shells, no browsing here, only through a child session.\n\
 \n\
 1. Fit check first. On an `assigned` or `reassigned` wake, before any work, read the roster the wake carries \
 (active agents with their capabilities). If another agent's capabilities match the task better than your \
 charter, hand it over at once with `task_reassign {{task, to, why}}`: the thread records `reassigned to ‹agent›: \
 ‹why›` and they are woken. `theuth`'s desk is the router by default — most user tasks land on it, and routing IS \
-its job. Only when nobody fits do you work the task yourself: `task_checkout`, then `spawn_subagent` exactly where \
+its job. Only when nobody fits do you work the task yourself: `task_checkout()`, then `spawn_subagent` exactly where \
 the task says (`agent: \"<harness>@<engine>\"` from the task's `harness` and `where`, or the engine name alone for \
 the native harness; pass `model` and `tools` from your file: model {model}, tools {tools}) with a complete brief. \
-A role missing from the roster is a proposal, not a hire: `agent_propose` (it lands paused and files a \
+A role missing from the roster is a proposal, not a hire: `agent_propose()` (it lands paused and files a \
 `hire_agent` approval up your line); the user decides.\n\
 \n\
 2. Follow through. A child's result arrives in this same session as a `<message>`; your episode does not end \
 there. (i) Read it. (ii) Decide whether the task's `done_when` (its acceptance criteria) is met — if the findings \
 raise follow-up questions, spawn further children (at most {max_rounds} rounds per task in one episode) or file \
-child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the thread with `task_note`: a \
+child tasks with `task_create {{parent}}`. (iii) Write the deliverable into the thread with `task_note()`: a \
 report block — summary, findings, evidence, recommended actions — in your own words, having verified the child's \
-claims. (iv) Set the disposition with `task_update`. Write progress with `task_note progress: true` at natural \
-boundaries; call `escalate` when you need a decision you may not make yourself, and wait for the answer.\n\
+claims. (iv) Set the disposition with `task_update()`. Write progress with `task_note progress: true` at natural \
+boundaries; call `escalate()` when you need a decision you may not make yourself, and wait for the answer.\n\
 \n\
-3. Delegation and waiting. Long or parallel work is a child task (`task_create` with `parent` and your task's \
+3. Delegation and waiting. Long or parallel work is a child task (`task_create()` with `parent` and your task's \
 id in `blockers`, or `disposition: delegated {{to}}`). You are woken by `blockers_resolved` when what you wait on \
 is done and by `children_completed` when every child is closed — never poll, never busy-wait. Talking sideways \
 to another agent is creating a self-contained task for them. `blocked` names what you wait on (a task id, \
@@ -94,8 +94,8 @@ still unmoved after that it is set `blocked: \"no continuation\"` and your manag
 that closes an episode: every task you checked out must be in `review | blocked | done(by reviewer) | \
 delegated (child task exists) | continuing` when the episode closes.\n\
 \n\
-Tasks in `backlog` are not dispatched: they are not in your inbox and you do not `task_move` them to `todo` — \
-the user starts them. Your `knowledge_put` writes are private to you by default; `knowledge_share` opens them \
+Tasks in `backlog` are not dispatched: they are not in your inbox and you do not `task_move()` them to `todo` — \
+the user starts them. Your `knowledge_put()` writes are private to you by default; `knowledge_share()` opens them \
 to your team or everyone. When asked to write your journal, answer with the journal only.",
         title = f.title,
     )
@@ -126,7 +126,7 @@ pub fn roster_block<'a>(me: &str, agents: impl Iterator<Item = &'a AgentFile>) -
         lines.push("- (no other active agent)".into());
     }
     format!(
-        "<roster>\nFit check: hand the task over with `task_reassign` if one of these fits it better than your \
+        "<roster>\nFit check: hand the task over with `task_reassign()` if one of these fits it better than your \
 charter; otherwise work it.\n{}\n</roster>",
         lines.join("\n")
     )
@@ -412,8 +412,8 @@ continuation\"` and your manager is woken.";
                     "Task {} needs a disposition before this turn can end. Move it — exactly one of: `task_update \
 disposition: done` with `done_because` (reviewers only) · `disposition: review {{reviewer}}` (a different desk or \
 the user) · `disposition: blocked {{on}}` with what you wait on · `disposition: continuing {{by}}` / `delegated \
-{{to}}` (something that will wake you next). If it is still `todo`, either `task_reassign` it to the agent whose \
-capabilities fit or `task_checkout` and start the child now. Write the deliverable (`task_note` report: summary, \
+{{to}}` (something that will wake you next). If it is still `todo`, either `task_reassign()` it to the agent whose \
+capabilities fit or `task_checkout()` and start the child now. Write the deliverable (`task_note()` report: summary, \
 findings, evidence, recommended actions) before you dispose. {THEN}",
                     t.id
                 )
@@ -441,7 +441,7 @@ Your opinion alone is not a review: the transition is. {THEN}",
             unhandled: |s, t, events, _| events.is_empty() && !moved(s, t),
             text: |t| {
                 format!(
-                    "The thread of task {} got no reply from you. Answer it with `task_note` (or move the task if \
+                    "The thread of task {} got no reply from you. Answer it with `task_note()` (or move the task if \
 the comment changes its disposition). {THEN}",
                     t.id
                 )
@@ -899,7 +899,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
             !block.contains("mkt"),
             "paused agents are not offered: {block}"
         );
-        assert!(block.contains("`task_reassign`"));
+        assert!(block.contains("`task_reassign()`"));
         assert!(roster_block("karol", [karol].iter()).contains("(no other active agent)"));
     }
 

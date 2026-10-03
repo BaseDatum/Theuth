@@ -19,7 +19,7 @@ pub const GET: &str = "knowledge_get";
 /// The plugin's system-prompt block (07 §4 part 7, 10 §4.3): when to reach for
 /// the knowledge base. Static, so it never busts the system cache.
 pub const PROMPT: &str = "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
-check <knowledge> hints and knowledge_search before assuming, record with knowledge_put.";
+check <knowledge> hints and `knowledge_search()` before assuming, record with `knowledge_put()` (both python).";
 
 /// Register every `knowledge_*` tool and the prompt block on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {

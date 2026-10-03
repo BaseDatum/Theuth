@@ -28,10 +28,10 @@ use crate::render;
 
 /// Plugin prompt block: `search_web` answers in one call; the other tools are
 /// for one page in full or whole sites.
-pub const PROMPT: &str = "search_web is the one call for anything current or outside your knowledge: \
+pub const PROMPT: &str = "`search_web()` (python) is the one call for anything current or outside your knowledge: \
 it searches, reads the top pages and returns the relevant passages, so answer from a single call \
-without preface. Cite as markdown links to the URLs it returns. Reach for read_url only when you \
-need one specific page in full, scrape_url/crawl for whole sites.";
+without preface. Cite as markdown links to the URLs it returns. Reach for `read_url()` only when you \
+need one specific page in full, `scrape_url()`/`crawl()` for whole sites.";
 
 /// Most hits one `search_web` call reads.
 pub const MAX_READ: usize = 8;

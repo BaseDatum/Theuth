@@ -53,7 +53,7 @@ pub struct SpawnSubagentArgs {
     /// Risk ceiling: read_only | mutating | destructive (default: no ceiling). The child and its descendants only see and may only run tools at or below this risk — enforced for theuth children here and on a node; an external harness only reads it as a first line of its brief.
     #[serde(default)]
     pub tools: Option<String>,
-    /// Skills from ~/.theuth/skills (by name) written into an external harness's cwd for it to load, on top of the `always` ones; removed when it stops. Only for an external harness — a theuth subagent has load_skill.
+    /// Skills from ~/.theuth/skills (by name) written into an external harness's cwd for it to load, on top of the `always` ones; removed when it stops. Only for an external harness — a theuth subagent has `load_skill()`.
     #[serde(default)]
     pub skills: Vec<String>,
 }
@@ -387,13 +387,13 @@ impl Tool for SendMessageTool {
 
     fn description(&self) -> String {
         format!(
-            "Send one message to one or more peers. `to`: one canonical address from discover_peers (`session:<uuid>`, \
+            "Send one message to one or more peers. `to`: one canonical address from `discover_peers()` (python; `session:<uuid>`, \
              `peer:<name>`), `parent` if you are a subagent, or one of your subagents by name — or a list of up to \
              {SEND_MAX_RECIPIENTS} such addresses (every address must resolve or nothing is sent). Returns one receipt \
              per recipient (`structured.receipts`, always a list): `accepted` means committed to their intake, not read. \
              With await_reply=true you block until each answers with reply_to set to its message's id (or one shared \
              timeout passes; unanswered messages are not recalled). When answering a <message> with \
-             reply_expected=\"true\", set reply_to to its id. peer_message shows a message's current state."
+             reply_expected=\"true\", set reply_to to its id. `peer_message()` (python) shows a message's current state."
         )
     }
 

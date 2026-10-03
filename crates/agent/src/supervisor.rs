@@ -7531,7 +7531,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 text: format!(
                     "This harness is `theuth`; its state is under {d}: config.yaml (every plugin's section: \
                      `agent.model` = default `provider/model`, `tools.policy`, `rpc`, `web`, `knowledge`, `surface`, `signal`, `secrets`), \
-                     secrets.vault (encrypted; provider keys and every other secret — secret_list shows the names, never values), \
+                     secrets.vault (encrypted; provider keys and every other secret — `secret_list()` shows the names, never values), \
                      prompt.md (standing instructions, read every call), \
                      skills/ (markdown skills; this index), knowledge/, sessions.sqlite, logs/theuth.log.<date>. \
                      Load the `harness` skill before editing any of them; it has the full layout and every key. \

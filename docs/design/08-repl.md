@@ -247,7 +247,7 @@ parsing; use `shell()` to run programs, not to write shell programs. Discover a 
 full parameters with `help(name)` - the index below is names and signatures only. The
 tools defined directly for you are awaitable here too, by the same name.
 
-Tools available only in the runtime (all `async`):
+Runtime functions (NOT direct tools — call each as `r = await name(...)` inside `python`; all `async`):
 async def github__search_repos(query: str, page: int | None = None) -> Any  # Search for GitHub repositories.
 async def read_file(path: str, limit: int | None = None, offset: int | None = None) -> str  # Read a text file.
 …
@@ -263,9 +263,45 @@ Before the amendment the index listed every spec, so each `DIRECT` tool
 cost a definition plus a signature line. **The floor is enforced, not
 advisory** (same day): a model that reads a name off this index and emits a
 direct `tool_use` for it (providers do not validate names against the
-array) gets `NAME is not a direct tool here; call it from python: r = await
-NAME(...)` from the loop, before the registry - observed live, the model
-then wrote the cell. One line per tool,
+array) used to get `NAME is not a direct tool here; call it from python: r =
+await NAME(...)` from the loop, before the registry - observed live, the
+model then wrote the cell.
+
+**Amended 2026-10-03 (86 RUNTIME-BRIDGE): the floor means "runs only
+through the runtime's own path", not "is refused".** Measured from
+`~/.theuth/sessions.sqlite`: 30 such guessed direct calls in 24 of 329
+tool-using sessions (7 %) — claude-opus-5-5 11/57 sessions (19 %),
+claude-fable-5-1 7/67 (10 %), opus-4-8 1/58, gpt-5.6-sol 0/32 — almost never
+on the first tool call (1 of 24) but after 3–21 earlier calls, when prose
+names a function; `knowledge_put` (6) and `knowledge_get` (4) on top, then
+`discover_peers`, `cancel_reminder`, `send`, `task_update`, `task_note`,
+`shell`, `session_read`, `read_file`, `meeting_speakers`, `meeting_read`,
+`load_skill`, `computer_screenshot`, `brief_put`, `artifact_read`. Two fixes:
+every prompt constant now names a runtime function as a python call
+(`knowledge_put()`), with the rule stated first in the Guidance text and the
+index heading above; and the loop bridges instead of refusing. `Turn::rebase`
+keeps the exact name set the index was built from (`repl::indexed`, the same
+filter as `prompt_block`, over the same `ListTools`; empty without the
+runtime, under a `toolset`, or with `runtime_only: false`). A direct call of
+a name in that set is rewritten in place to a `python` call with the same
+call_id and the cell `import json as _j\n_v = await NAME(**_j.loads('<args
+JSON>'))\n_v` (`repl::bridge_cell`; `_` names do not persist, so the model's
+variables are untouched): it runs through `Repl::run` like any cell, so the
+repl's registry `Invoke` per inner call - risk policy, approvals, subagent
+caps, `inner_calls` accounting - applies unchanged. The result is the cell's
+output behind one note line (`repl::bridge_note`: "NAME is a runtime
+function, not a direct tool; it ran for you as python … Next time call it
+from python yourself"), `is_error` the cell's; the `ToolCallStarted` event
+carried the model's name and arguments, the `ToolCallFinished` the same
+call_id, so the card closes. A name outside the set - unknown, hidden for
+the session (risk cap, communication off, a flapped MCP tool), or a direct
+tool absent this turn - is still refused, now as `NAME is not available in
+this session (not a direct tool and not a runtime function you can see)`.
+Tests: `loop_/runtime_bridge_tests.rs` (bridged through a real turn, inner
+call carries the arguments, same call_id; unknown and hidden refused) and
+`repl::tests::bridge_cell_and_py_str_literal`.
+
+One line per tool,
 `repl::signature(spec)`: a Python signature
 derived from the JSON Schema (codemcp `py_type`: `string→str, integer→int,
 number→float, boolean→bool, array→list[T], object→dict, enum→Literal[…]`,

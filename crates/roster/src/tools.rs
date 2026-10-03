@@ -16,13 +16,13 @@ use crate::{GetAgent, ListAgents, ProposeAgent, PutAgent};
 /// 70 AGENTS-CHAT): hires are proposed in chat as cards; the user approves.
 pub const PROMPT: &str = "## Hiring\n\
 Agents are files (`agents/<name>.md`), but the user never writes one: hiring happens in chat. When the user \
-describes a standing role, asks to hire or add an agent, or a role is plainly missing, call `agents_list`, then \
-`agent_draft` with the proposed agents (name `[a-z0-9-]{1,32}`, title, `reports_to` = `theuth` or an existing \
+describes a standing role, asks to hire or add an agent, or a role is plainly missing, call `agents_list()`, then \
+`agent_draft()` with the proposed agents (name `[a-z0-9-]{1,32}`, title, `reports_to` = `theuth` or an existing \
 agent, charter a fresh model can act on alone, plus model / effort / tools / mcp / budget / capabilities as \
 needed) and wait: the user's press arrives as their next message (`[app agent-drafts …]` naming a draft id and \
-`hire | hire paused | replace | discard`). Then `agent_put` with that draft's fields — `paused: false` for hire \
+`hire | hire paused | replace | discard`). Then `agent_put()` with that draft's fields — `paused: false` for hire \
 or replace, `paused: true` for hire paused — and nothing for discard. Never tell the user to write or edit a \
-file. Desks (agent sessions) do not `agent_put`: they `agent_propose`, which lands the agent paused and files a \
+file. Desks (agent sessions) do not `agent_put()`: they `agent_propose()`, which lands the agent paused and files a \
 `hire_agent` approval up their line; the user decides in the Agents view.";
 
 /// Register the roster tools on `reg`.
@@ -418,12 +418,12 @@ mod tests {
         for p in [&attended, &unattended] {
             assert!(p.contains("## Hiring\n"), "{p}");
             assert!(
-                p.contains("`agent_draft`")
-                    && p.contains("`agent_put`")
+                p.contains("`agent_draft()`")
+                    && p.contains("`agent_put()`")
                     && p.contains("Never tell the user to write or edit a file")
             );
         }
         let manual = crate::desk::manual(&file::default_agent(&dir), 3);
-        assert!(manual.contains("`agent_propose`") && !manual.contains("agent_put"));
+        assert!(manual.contains("`agent_propose()`") && !manual.contains("agent_put"));
     }
 }
