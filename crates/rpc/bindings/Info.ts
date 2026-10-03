@@ -43,6 +43,12 @@ compact_style: CompactStyle,
  */
 subagent_timeout_secs: bigint, 
 /**
+ * `schedule.run_timeout_secs` (88): seconds a routine run may take before it is
+ * cancelled and its history row says `timeout`; a routine's own `run_timeout:`
+ * overrides it. `0` from an older harness.
+ */
+schedule_run_timeout_secs: bigint, 
+/**
  * `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
  */
 max_tool_rounds: number, 

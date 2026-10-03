@@ -749,6 +749,8 @@ export interface Api {
   /** Persist `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned; `0` rejects. New sessions only. */
   set_stream_idle(seconds: number): Promise<null>
   set_subagent_timeout(seconds: number): Promise<null>
+  /** Persist `schedule.run_timeout_secs` (88); routine runs fired from then on use it. Below 30 rejects. */
+  set_schedule_run_timeout(seconds: number): Promise<null>
   /** Persist `agent.subagents.model`: the model children get when `spawn_subagent` omits `model`; `null` = the session's model. */
   set_subagent_model(model: string | null): Promise<ModelInfo | null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
@@ -1072,6 +1074,7 @@ export const METHODS = [
   'set_peer_scope',
   'set_project_style',
   'set_pty_idle',
+  'set_schedule_run_timeout',
   'set_secret',
   'set_session_project',
   'set_stream_idle',

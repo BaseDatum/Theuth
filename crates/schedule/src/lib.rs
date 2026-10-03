@@ -74,6 +74,20 @@ pub struct Fire {
     pub name: String,
 }
 
+/// `ask` → `u64`: the live `schedule.run_timeout_secs` — seconds one run may
+/// take unless the file says `run_timeout:` (88).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetRunTimeout;
+
+/// `ask` → `Result<(), String>`: set and persist `schedule.run_timeout_secs`
+/// (88). Runs fired from then on use it; in-flight runs keep their deadline.
+/// `Err("run_timeout: below 30s")`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetRunTimeout {
+    /// New value, seconds (≥ 30).
+    pub seconds: u64,
+}
+
 /// `ask` → `Vec<RunInfo>`: the last `limit` fires and skips of `name`, newest first (34 §7).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct History {
@@ -849,6 +863,12 @@ impl Schedule {
         e.session.is_some_and(|s| self.running.contains_key(&s))
     }
 
+    /// When a run fired now is cancelled (88): the file's own `run_timeout:`,
+    /// else the live `schedule.run_timeout_secs`.
+    fn deadline_for(&self, run_timeout: Option<Duration>) -> Instant {
+        Instant::now() + run_timeout.unwrap_or(self.timeout)
+    }
+
     /// Fires since the loop's last end row (33 §3.2); 0 when the store fails.
     async fn runs_of(&self, name: &str) -> u32 {
         self.store.count_since_end(name).await.unwrap_or_else(|e| {
@@ -883,6 +903,7 @@ impl Schedule {
         );
         let (agent, project) = (spec.agent.clone(), spec.project.clone());
         let (memory, sensor_file) = (spec.memory, spec.sensor.as_ref().map(|s| s.file.clone()));
+        let run_timeout = spec.run_timeout;
         let one_shot = matches!(spec.when, file::When::At(_));
         let is_loop = until.is_some() || max_runs.is_some();
 
@@ -1108,7 +1129,7 @@ impl Schedule {
                 text: String::new(),
                 messaged: false,
                 last_error: None,
-                deadline: Instant::now() + self.timeout,
+                deadline: self.deadline_for(run_timeout),
                 timed_out: false,
                 children: HashSet::new(),
                 pending: HashSet::new(),
@@ -2149,6 +2170,39 @@ impl Message<Fire> for Schedule {
     }
 }
 
+impl Message<GetRunTimeout> for Schedule {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: GetRunTimeout, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.timeout.as_secs()
+    }
+}
+
+impl Message<SetRunTimeout> for Schedule {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetRunTimeout,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if m.seconds < 30 {
+            return Err("run_timeout: below 30s".into());
+        }
+        self.timeout = Duration::from_secs(m.seconds);
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(
+            &path,
+            "schedule",
+            "run_timeout_secs",
+            &m.seconds.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
 impl Message<History> for Schedule {
     type Reply = Vec<RunInfo>;
 
@@ -2545,6 +2599,47 @@ mod fire_tests {
             "agent is not running"
         );
         assert!(rec.calls.lock().unwrap().is_empty());
+    }
+
+    /// 88: `run_timeout:` caps one run instead of the schedule's default (60s here).
+    #[tokio::test]
+    async fn run_timeout_key_sets_the_run_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(
+            dir.path(),
+            &[
+                ("short", "---\nevery: 1h\nrun_timeout: 30s\n---\ngo\n"),
+                ("plain", "---\nevery: 1h\n---\ngo\n"),
+            ],
+        )
+        .await;
+        let override_of = |name: &str| s.entries[name].spec.as_ref().unwrap().run_timeout;
+        // Two `Instant::now()` reads may land in the same clock tick: allow the exact value.
+        let secs_left = |d: Instant| d.saturating_duration_since(Instant::now()).as_secs();
+        assert_eq!(override_of("short"), Some(Duration::from_secs(30)));
+        assert!((29..=30).contains(&secs_left(s.deadline_for(override_of("short")))));
+        assert_eq!(override_of("plain"), None);
+        assert!((59..=60).contains(&secs_left(s.deadline_for(override_of("plain")))));
+    }
+
+    /// 88: the global default is live for new runs and persisted to config.yaml.
+    #[tokio::test]
+    async fn set_run_timeout_is_live_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(dir.path(), &[]).await;
+        let actor = Schedule::spawn(s);
+        assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 60);
+        // A handler `Err` is lifted into `SendError::HandlerError`.
+        use kameo::error::SendError;
+        assert!(matches!(
+            actor.ask(SetRunTimeout { seconds: 29 }).await,
+            Err(SendError::HandlerError(e)) if e == "run_timeout: below 30s"
+        ));
+        assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 60);
+        actor.ask(SetRunTimeout { seconds: 90 }).await.unwrap();
+        assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 90);
+        let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
+        assert_eq!(cfg, "schedule:\n  run_timeout_secs: 90\n");
     }
 }
 
