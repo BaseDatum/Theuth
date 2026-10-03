@@ -10936,10 +10936,8 @@ impl Model {
                 n => format!(" · {n} calls without token counts"),
             }
         ));
-        // 75 §7: ACP children's tokens per harness model. opencode reports
-        // its last request only (#1860), so its rows are a lower bound.
-        // ponytail: keyed on the agents.yaml entry name; switch to the
-        // harness's `agentInfo.name` if entries get renamed.
+        // 75 §7 / 06 §8.4: ACP children's tokens per harness model; a
+        // `lower_bound` group (opencode 1.x, #1860) says so.
         for r in &c.remote_tokens {
             rows.push(format!(
                 "{:<12}{} · {} turn(s) · in {} · out {} · cache read {} · cache write {}{}",
@@ -10950,7 +10948,7 @@ impl Model {
                 k(u32::try_from(r.tokens.output).unwrap_or(u32::MAX)),
                 k(u32::try_from(r.tokens.cache_read).unwrap_or(u32::MAX)),
                 k(u32::try_from(r.tokens.cache_write).unwrap_or(u32::MAX)),
-                if r.harness == "opencode" { " · last request only" } else { "" }
+                if r.lower_bound { " · last request only" } else { "" }
             ));
         }
         rows.push(format!(
