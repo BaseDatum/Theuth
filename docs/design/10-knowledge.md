@@ -409,7 +409,7 @@ Turn::run, at the end of a completed turn, BEFORE TurnFinished is published:
 Turn::compact, before the summariser (07 §8.3):
   if harvest_every > 0 && depth == 0 && (turns_since_harvest > 0 || calls > 0) && knowledge is on:
       turns_since_harvest = 0; calls = 0   // this turn's work is folded now; the turn end recounts only work after the cut
-      harvest(model, tools, transport)  // same prefix, then the cut; Err → warn, compaction proceeds
+      spawn_harvest_chained()           // 87: detached on a copy of the pre-fold frame; a running harvest is joined first; Err → warn, compaction proceeds at once
 
 HarvestNow (ask on the Session; `/knowledge harvest`, RPC knowledge_harvest → Agents `Harvest { session }`):
   Err("turn in flight") while a turn (or another mini-turn) owns the state,
@@ -447,8 +447,18 @@ on `TurnFinished` takes the harvest with it (the paragraph above no longer
 holds; run `/knowledge harvest` explicitly), and the detached copy consults
 no pending images (52 §7.2) — a note appended from outside the turn would be
 a second writer of the session — so an unobserved image stays a stable marker
-in that one request. The **pre-compaction harvest stays synchronous**:
-compaction blocks by design and needs the frame before the cut.
+in that one request. **As built (2026-10-03, 87 HARVEST-DETACH): the
+pre-compaction harvest is detached too.** `Turn::compact` snapshots the
+pre-fold frame exactly as `spawn_harvest` does and spawns the harvest on the
+copy; the fold, the epoch insert and `Compacted` follow at once (a 640k-token
+`/compact snap` had waited 3 min 17 s on the harvest for a 60 ms fold). It
+differs from the cadence harvest in one rule: a harvest still in flight is
+**chained, never skipped** — the new task takes the running `JoinHandle` out
+of the state, awaits it (an abort or panic is only logged) and then runs its
+own call — because the fold is the last moment the folded span exists whole.
+A cancelled compaction rolls back as before while the harvest it spawned,
+fenced by `closed` only, keeps running: knowledge writes are not session
+mutations.
 
 `depth == 0`: children do not harvest. A child's findings reach the parent
 as `<subagent_result>` text and the parent's harvest sees them; ten children
@@ -610,8 +620,9 @@ trusting the summariser's paraphrase. Harness truth, rendered from
 `state.knowledge_read`, which is then cleared with `hinted` (§4.2).
 
 Order inside `Turn::compact`: harvest (§5.2) → summarise → cut. The harvest
-runs on the frame that is about to be folded — the last time its detail is
-cheap to read.
+reads the frame that is about to be folded — the last time its detail is
+cheap to read — on a detached copy taken before the cut (87 HARVEST-DETACH);
+the summarise and the cut do not wait for it.
 
 ## 8. Surfaces
 

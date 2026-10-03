@@ -683,6 +683,16 @@ impl Fake {
         }
     }
 
+    /// [`fake`] holding both the harvest and the summariser reply for `hold`
+    /// (87 HARVEST-DETACH: a compaction cancelled while its harvest runs).
+    pub(super) fn harvest_and_compact_held(hold: Duration) -> Self {
+        Self {
+            harvest_delay: Some(hold),
+            compact_delay: Some(hold),
+            ..fake()
+        }
+    }
+
     /// [`fake`] refusing every summariser call with a deterministic 400
     /// (compaction-failure scenarios): no retry, no cut fallback.
     pub(super) fn compact_refused() -> Self {

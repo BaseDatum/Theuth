@@ -4443,6 +4443,27 @@ impl Turn {
         {
             return Err("harvest in flight".into());
         }
+        self.detach_harvest(reply, false).await
+    }
+
+    /// 10 §7 as built (87 HARVEST-DETACH): the harvest before a compaction,
+    /// detached like [`Turn::spawn_harvest`] on a copy of the pre-fold frame
+    /// so the compaction completes at once. The fold is the last moment the
+    /// folded span exists whole, so a harvest still in flight is chained,
+    /// never skipped: the new task joins it before its own call.
+    async fn spawn_harvest_chained(&mut self) -> Result<(), String> {
+        self.detach_harvest(None, true).await
+    }
+
+    /// The snapshot-and-spawn body of both harvest entries. `chain`: take the
+    /// running task out of the state and have the new one await it first
+    /// (its abort or panic is only logged); otherwise the caller has ruled
+    /// none is running.
+    async fn detach_harvest(
+        &mut self,
+        reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
+        chain: bool,
+    ) -> Result<(), String> {
         self.knowledge()
             .ok_or(if self.shared.resources.is_private() {
                 "knowledge harvest is disabled in a private session"
@@ -4469,11 +4490,24 @@ impl Turn {
         detached.tools = self.tools.clone();
         detached.cwd = self.cwd.clone();
         let session = self.shared.id;
+        let what = if chain { "harvest before compaction" } else { "harvest" };
+        let previous = chain
+            .then(|| self.state.harvest_task.take())
+            .flatten()
+            .filter(|t| !t.is_finished());
+        if chain {
+            tracing::info!(session = %session, chained = previous.is_some(), "harvest before compaction: detached");
+        }
         self.publish(AgentEvent::Harvesting { session }).await;
         self.state.harvest_task = Some(tokio::spawn(async move {
+            if let Some(previous) = previous
+                && let Err(e) = previous.await
+            {
+                tracing::warn!(session = %session, "{what}: previous harvest {e}");
+            }
             let result = detached.harvest_frame(&current, transport, &images).await;
             if let Err(e) = &result {
-                tracing::warn!(session = %session, "harvest: {e}");
+                tracing::warn!(session = %session, "{what}: {e}");
                 detached
                     .publish(AgentEvent::Harvested {
                         session,
@@ -4579,7 +4613,8 @@ impl Turn {
         // 10 §7: harvest → summarise → cut; the frame's detail is cheapest to read now.
         // Counts this turn's own tool calls too: a session's first long turn compacts
         // with `turns_since_harvest == 0`. `calls` restarts so the turn end only
-        // recounts work done after the cut.
+        // recounts work done after the cut. 87 HARVEST-DETACH: the harvest runs
+        // detached on a copy of the pre-fold frame; nothing below awaits it.
         if given.is_none()
             && self.shared.cfg.knowledge.harvest_every > 0
             && self.shared.depth == 0
@@ -4588,7 +4623,7 @@ impl Turn {
         {
             self.state.turns_since_harvest = 0;
             self.calls = 0;
-            if let Err(e) = self.harvest(current, transport).await {
+            if let Err(e) = self.spawn_harvest_chained().await {
                 tracing::warn!(session = %session, "harvest before compaction: {e}");
             }
         }
@@ -4950,18 +4985,6 @@ impl Turn {
                 Ok(Err(Abort::Model(e))) | Ok(Err(Abort::Partial { err: e, .. })) => return Err(e),
             }
         }
-    }
-
-    /// Harvest (10 §5.4) inline, before a compaction: the frame is about to be
-    /// cut, so pending images are inspected first (52 §7.2) and an overflow is
-    /// an `Err` (no trim). Nothing is persisted to the session.
-    async fn harvest(
-        &mut self,
-        current: &Current,
-        transport: Transport,
-    ) -> Result<HarvestResult, String> {
-        let images = self.prepare_images(current).await?;
-        self.harvest_frame(current, transport, &images).await
     }
 
     /// Harvest (10 §5.4): ask the frame, projected over `images` (52 §4.2),
@@ -5616,6 +5639,10 @@ mod vision_fallback_tests;
 /// 10 §5.2 as built: the detached harvest, against the same fake provider.
 #[cfg(test)]
 mod harvest_tests;
+
+/// 87 HARVEST-DETACH: the pre-compaction harvest runs detached and chained, the compaction completes at once.
+#[cfg(test)]
+mod harvest_compact_tests;
 
 /// 70 COMPACT-QUEUE: input during a compaction queues and never cancels it.
 #[cfg(test)]

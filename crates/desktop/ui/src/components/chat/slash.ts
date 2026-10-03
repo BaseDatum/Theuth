@@ -614,11 +614,22 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
   }
 }
 
-async function compact(api: Api, session: string, s: CompactStyle | null) {
-  const epoch = await api.compact(session, s)
-  // The `Compacted` event wipes the transcript and announces a clear.
-  if (s !== 'clear')
-    toast(s ? `context compacted (epoch ${epoch} · ${s})` : `context compacted (epoch ${epoch})`)
+// A command whose RPC waits on a model call must not be awaited by `submit` (it holds `busy`, locking the
+// composer for the whole compaction): fire, flip `compacting` so a send steers/queues (07 §8.6), settle on failure.
+function compact(api: Api, session: string, s: CompactStyle | null): void {
+  const store = useSessions.getState()
+  store.applyEvents([{ type: 'Compacting', session, turn: null }])
+  api.compact(session, s).then(
+    (epoch) => {
+      // The `Compacted` event wipes the transcript and announces a clear.
+      if (s !== 'clear')
+        toast(s ? `context compacted (epoch ${epoch} · ${s})` : `context compacted (epoch ${epoch})`)
+    },
+    (e: unknown) => {
+      store.settleCompacting(session)
+      toast.error(e instanceof Error ? e.message : String(e))
+    },
+  )
 }
 
 function synced(results: SyncResult[]) {
