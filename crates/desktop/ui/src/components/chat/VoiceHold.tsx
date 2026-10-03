@@ -126,12 +126,14 @@ export function RecordingMeta({ secs, stage }: { secs: number; stage: Stage }) {
   )
 }
 
-/** "‹ slide to cancel" where the placeholder was; `MicButton` moves and fades it with the finger through `ref`. */
+/** "‹ slide to cancel" where the placeholder was; `MicButton` moves and fades the inner span with the finger through `ref`. */
 export function CancelHint({ ref }: { ref: RefObject<HTMLSpanElement | null> }) {
   return (
-    <span ref={ref} className="pointer-events-none absolute inset-y-0 left-3 flex items-center gap-0.5 text-sm text-fg-tertiary select-none" aria-hidden>
-      <ChevronLeft className="size-3.5" />
-      <span className="voice-hint">slide to cancel</span>
+    <span className="pointer-events-none absolute inset-0 overflow-hidden select-none" aria-hidden>
+      <span ref={ref} className="absolute inset-y-0 left-3 flex items-center gap-0.5 text-sm text-fg-tertiary">
+        <ChevronLeft className="size-3.5" />
+        <span className="voice-hint">slide to cancel</span>
+      </span>
     </span>
   )
 }

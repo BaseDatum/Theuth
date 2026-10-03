@@ -195,7 +195,7 @@ export function MicButton({
               // `data-drag-row` (styles.css): no text selection or iOS callout under a held finger.
               data-drag-row
               className={cn(
-                'relative size-9 shrink-0 rounded-full select-none touch-none duration-120 ease-out',
+                'relative size-9 shrink-0 rounded-full select-none touch-none duration-120 ease-out motion-reduce:transition-none',
                 hold.phase === 'pressed' && 'scale-[1.12]',
                 !held && reason !== null && 'opacity-50',
               )}
