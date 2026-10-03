@@ -2360,6 +2360,7 @@ impl Worker {
             | AgentEvent::DefaultModelChanged { .. }
             | AgentEvent::HarnessModelChanged { .. }
             | AgentEvent::EffortChanged { .. }
+            | AgentEvent::DefaultEffortChanged { .. }
             | AgentEvent::Compacting { .. }
             | AgentEvent::Harvesting { .. }
             | AgentEvent::Harvested { .. }

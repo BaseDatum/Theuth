@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { VisualFrame } from '@/lib/audio/types'
-import { analyserSource, levelSource, tapOrLevels } from '@/lib/visual-source'
+import { analyserNodeSource, analyserSource, levelSource, tapOrLevels } from '@/lib/visual-source'
 
 const snap = (f: VisualFrame) => ({ bands: Array.from(f.bands), history: Array.from(f.history), start: f.historyStart, len: f.historyLength, peakDb: f.peakDb })
 
@@ -89,6 +89,21 @@ describe('analyserSource', () => {
     a.dispose()
     expect(node.disconnect).toHaveBeenCalledWith(analyser)
     expect(node.disconnect).toHaveBeenCalledWith()
+  })
+})
+
+describe('analyserNodeSource', () => {
+  it('taps the given node with the wave shape and leaves the node connected on dispose', () => {
+    const { ctx, node, analyser } = fakeContext()
+    const a = analyserNodeSource(ctx, node as unknown as AudioNode)
+    expect(ctx.createMediaStreamSource).not.toHaveBeenCalled()
+    expect(node.connect).toHaveBeenCalledWith(analyser)
+    expect(analyser.fftSize).toBe(1024)
+    expect(analyser.smoothingTimeConstant).toBe(0.5)
+    a.dispose()
+    // Only the analyser edge goes: the node (speech.ts's output gain) keeps its path to `destination`.
+    expect(node.disconnect).toHaveBeenCalledTimes(1)
+    expect(node.disconnect).toHaveBeenCalledWith(analyser)
   })
 })
 

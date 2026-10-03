@@ -15,14 +15,23 @@ export type VisualSource = { source: FrameSource<VisualFrame>; dispose: () => vo
  */
 export function analyserSource(ctx: AudioContext, stream: MediaStream): VisualSource {
   const node = ctx.createMediaStreamSource(stream)
-  const tap = createAnalyserTap(ctx, node, { bands: BANDS, fftSize: 1024, smoothing: 0.5 })
+  const a = analyserNodeSource(ctx, node)
   return {
-    source: tap.visual,
+    source: a.source,
     dispose: () => {
-      tap.dispose()
+      a.dispose()
       node.disconnect()
     },
   }
+}
+
+/**
+ * 83 §1: analyser on an existing `node` (speech.ts's output node — the agent's voice). `dispose` detaches the
+ * analyser only; `node` and its own connections are the caller's.
+ */
+export function analyserNodeSource(ctx: BaseAudioContext, node: AudioNode): VisualSource {
+  const tap = createAnalyserTap(ctx, node, { bands: BANDS, fftSize: 1024, smoothing: 0.5 })
+  return { source: tap.visual, dispose: tap.dispose }
 }
 
 const BANDS = 32

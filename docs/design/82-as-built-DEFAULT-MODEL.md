@@ -143,6 +143,6 @@ may legitimately differ; nothing here replicates them.
 ## §6 Open follow-ups
 
 - `SetEffort` still makes every effort change the default (`agent.effort`),
-  manual or not — same shape of bug, out of this brief.
+  manual or not — same shape of bug, out of this brief. **Done in 83 FX-EFFORT.**
 - The `--config <other>` file is still not written back (pre-existing
   `ponytail:` note at the config write).

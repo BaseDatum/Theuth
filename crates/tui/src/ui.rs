@@ -29,8 +29,10 @@ pub struct Links {
     pub events: Option<UnboundedReceiver<UiEvent>>,
     /// Command sink.
     pub commands: UnboundedSender<Command>,
-    /// `agent.model` from config: what the header shows before the first turn.
+    /// `Info.default_model` (config as fallback): what the header shows before the first turn.
     pub default_model: String,
+    /// `Info.default_effort` (config as fallback, 83 §3): the draft header's effort.
+    pub default_effort: Option<String>,
     /// `tools.approvals` from config.
     pub approvals: bool,
     /// `Info.app_enabled`: offer `/apps`.
@@ -109,6 +111,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut system = hooks.use_context_mut::<SystemContext>();
     let mut links = hooks.use_context_mut::<Links>();
     let default_model = links.default_model.clone();
+    let default_effort = links.default_effort.clone();
     let approvals = links.approvals;
     let app_enabled = links.app_enabled;
     let catalog = links.catalog.clone();
@@ -116,6 +119,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
         let catalog = catalog.clone();
         move || {
             let mut m = Model::new(default_model, approvals);
+            m.effort = default_effort.clone();
+            m.default_effort = default_effort;
             m.app_enabled = app_enabled;
             m.catalog = Some(catalog);
             m.entries.push(Entry::Info(

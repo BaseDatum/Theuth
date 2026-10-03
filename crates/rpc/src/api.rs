@@ -18,18 +18,18 @@ use agent::{
     ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
     BroadcastTargets, Cancel, CommunicationState, Compact, CompactStyle, ContextBreakdown,
     ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession, Delivery,
-    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetDefaultModel,
-    GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
-    GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
-    ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers,
-    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
-    Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage,
-    PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
-    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    SendInput, SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle,
-    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope,
-    SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt,
-    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetDefaultEffort,
+    GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage,
+    GetStreamIdle, GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel,
+    Harvest, ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages,
+    ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession,
+    LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage,
+    PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo,
+    Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo,
+    RenameSession, SendInput, SessionContextBreakdown, SessionSummary, SetCommunication,
+    SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel,
+    SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel,
+    SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
@@ -115,8 +115,12 @@ pub struct Info {
     pub platform: String,
     /// `<data_dir>`: config, sqlite, logs, attachments.
     pub data_dir: String,
-    /// `agent.model`: the model new sessions start on.
+    /// `agent.model`: the model new sessions start on (live, 82 §3).
     pub default_model: String,
+    /// `agent.effort`: the reasoning effort new sessions start on (live, 83 §3);
+    /// `None` = the provider default. Absent from an older harness → `None`.
+    #[serde(default)]
+    pub default_effort: Option<String>,
     /// The global approval switch (`tools.approvals`).
     pub approvals: ApprovalsState,
     /// `agent.compact_style`.
@@ -572,13 +576,18 @@ pub trait Api {
         model: String,
         manual: Option<bool>,
     ) -> RpcResult<ModelInfo>;
-    /// Set (or clear with `None`) the reasoning effort for `session` from its next turn, and as
-    /// the default (`agent.effort`). Values come from the model's catalog entry
-    /// (`ModelInfo.efforts`, or an integer token budget within `budget_min..budget_max`);
-    /// `EffortChanged` follows on the stream.
+    /// Set (or clear with `None`) the reasoning effort for `session` from its next turn. Values
+    /// come from the model's catalog entry (`ModelInfo.efforts`, or an integer token budget within
+    /// `budget_min..budget_max`); `EffortChanged` follows on the stream. `manual` (default `true`):
+    /// a person picked it in an effort picker, so it also becomes the default for new sessions
+    /// (`agent.effort`, 83 §2) and `DefaultEffortChanged` follows; `false` changes the session only.
     #[method(name = "set_effort", with_extensions)]
-    async fn set_effort(&self, session: Option<SessionId>, effort: Option<String>)
-    -> RpcResult<()>;
+    async fn set_effort(
+        &self,
+        session: Option<SessionId>,
+        effort: Option<String>,
+        manual: Option<bool>,
+    ) -> RpcResult<()>;
     /// An ACP child's harness config options (75 §8): model, effort/thinking,
     /// mode … as the harness lists them, with current values. Errors when the
     /// session is not an external harness or its process is gone.
@@ -2315,8 +2324,9 @@ async fn attach_pty(
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
-        // 82 §3: the supervisor's live default, not the config file read at startup.
+        // 82 §3 / 83 §3: the supervisor's live defaults, not the config file read at startup.
         let default_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultModel).await?;
+        let default_effort = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultEffort).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
@@ -2337,6 +2347,7 @@ impl ApiServer for Server {
             platform: std::env::consts::OS.into(),
             data_dir: self.rt.data_dir.display().to_string(),
             default_model,
+            default_effort,
             approvals,
             compact_style,
             subagent_timeout_secs,
@@ -3311,14 +3322,25 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
         effort: Option<String>,
+        manual: Option<bool>,
     ) -> RpcResult<()> {
         self.authorize_opt(ext, session).await?;
+        let manual = manual.unwrap_or(true);
         if let Some(s) = session
-            && let Some(r) = forward::route(ext, s, "set_effort", (session, &effort)).await?
+            && let Some(r) =
+                forward::route(ext, s, "set_effort", (session, &effort, manual)).await?
         {
             return Ok(r);
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, SetEffort { session, effort }).await
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetEffort {
+                session,
+                effort,
+                manual,
+            },
+        )
+        .await
     }
 
     async fn harness_options(

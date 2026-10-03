@@ -33,8 +33,10 @@ class FakeSource {
   onended: (() => void) | null = null
   connected = false
   stopped = false
-  connect() {
+  to: unknown = null
+  connect(node: unknown) {
     this.connected = true
+    this.to = node
   }
   disconnect() {
     this.connected = false
@@ -46,9 +48,19 @@ class FakeSource {
   }
 }
 const sources: FakeSource[] = []
+class FakeGain {
+  gain = { value: 0 }
+  to: unknown = null
+  connect(node: unknown) {
+    this.to = node
+  }
+}
 class FakeContext {
   destination = {}
   currentTime = 0
+  createGain() {
+    return new FakeGain()
+  }
   createBuffer(_ch: number, length: number, rate: number) {
     return { duration: length / rate, copyToChannel: () => undefined }
   }
@@ -72,6 +84,10 @@ vi.stubGlobal('AudioContext', FakeContext)
 vi.stubGlobal('navigator', { audioSession })
 vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: () => undefined, removeEventListener: () => undefined })
 speech.installSpeechListeners()
+// Registered before any `unlock`: the node does not exist yet, so the callback must wait for the first context.
+const outputReady: AudioNode[] = []
+speech.onOutputReady((n) => outputReady.push(n))
+expect(speech.outputNode()).toBeNull()
 
 /** Decode + schedule run behind the decoder's `ready`, `release` sets the type behind its `suspend`: a few microtask turns settle them. */
 async function settle(): Promise<void> {
@@ -199,6 +215,21 @@ test('the last holder out stops leftover sources before suspending', async () =>
   await speech.release('dictate')
   expect(sources[0]!.stopped).toBe(true)
   expect(calls.slice(-2)).toEqual(['stop', 'suspend'])
+})
+
+test('every scheduled source plays through the one output gain (83 §1), announced once the context exists', async () => {
+  await utter('s1', 3)
+  const out = speech.outputNode() as unknown as FakeGain
+  expect(out).toBeInstanceOf(FakeGain)
+  expect(out.gain.value).toBe(1)
+  expect(out.to).toBe((speech.unlock('speak') as unknown as FakeContext).destination)
+  expect(sources.map((s) => s.to)).toEqual([out, out, out])
+  expect(outputReady).toEqual([out])
+  // Late subscribers get it at once; the node is the same for the module's life.
+  const late = vi.fn()
+  speech.onOutputReady(late)()
+  expect(late).toHaveBeenCalledWith(out)
+  await speech.release('speak')
 })
 
 test("a client-sink talk claims its session's utterances and queues them gaplessly; played_seq follows what ended", async () => {

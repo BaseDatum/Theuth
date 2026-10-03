@@ -212,7 +212,6 @@ function PathList({ popup, mobile, onPick }: { popup: PathPopup; mobile: boolean
 export function Composer({
   session,
   pane = session,
-  draftEffort,
   draftCreate,
   pinned,
   sessionTitle,
@@ -223,7 +222,6 @@ export function Composer({
   session: string | null
   /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
   pane?: string | null
-  draftEffort?: string | null
   draftCreate?: DraftCreate
   /** 59 §7.3 chat under a note: this document's marker line leads every message (not removable here). */
   pinned?: AttachRef
@@ -252,6 +250,8 @@ export function Composer({
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
   const defaultModel = useConnection((s) => s.info?.default_model)
+  // 83 §3: a new session starts on the engine's default effort (a draft pick set it via `set_effort(null, …)`).
+  const defaultEffort = useConnection((s) => s.info?.default_effort)
   const { data: models } = useQuery({
     queryKey: queryKeys.models,
     queryFn: () => api.list_models(),
@@ -699,11 +699,10 @@ export function Composer({
         } else id = await api.new_session()
         target = id
         if (sessionTitle) await api.rename_session(id, sessionTitle)
-        if (draftEffort !== undefined) await api.set_effort(id, draftEffort)
         // Seed before sending: a fast failure can finish before the RPC reply.
         loadHistory(
           id,
-          { ...FRESH, model: defaultModel ?? '', effort: draftEffort ?? null },
+          { ...FRESH, model: defaultModel ?? '', effort: defaultEffort ?? null },
           'replace',
         )
         markSent(id, body, files)
