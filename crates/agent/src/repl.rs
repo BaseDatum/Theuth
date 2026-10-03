@@ -351,17 +351,64 @@ pub fn stubs(specs: &[ToolSpec]) -> String {
     out
 }
 
+/// The tools the `## Runtime` index lists (08 §3.2): with `runtime_only` the
+/// non-`direct` ones; without it (every tool direct) none. The loop bridges a
+/// direct call of exactly these names (86 RUNTIME-BRIDGE).
+pub fn indexed(specs: &[ToolSpec], runtime_only: bool) -> impl Iterator<Item = &ToolSpec> {
+    specs.iter().filter(move |s| runtime_only && !s.direct)
+}
+
 /// The system prompt `## Runtime` block (08 §3.2). Lists exactly the tools that
-/// are *not* in the direct array, so every tool is defined once: with
-/// `runtime_only` the non-`direct` ones; without it (every tool direct) none.
+/// are *not* in the direct array, so every tool is defined once ([`indexed`]).
 /// Direct tools stay awaitable in a cell either way - the model knows them
 /// from their definitions.
 pub fn prompt_block(specs: &[ToolSpec], runtime_only: bool) -> String {
     let mut out = String::from(RUNTIME_BLOCK);
-    for spec in specs.iter().filter(|s| runtime_only && !s.direct) {
+    for spec in indexed(specs, runtime_only) {
         out.push_str(&signature(spec));
         out.push('\n');
     }
+    out
+}
+
+/// The cell a guessed direct call of runtime function `name` runs as (86
+/// RUNTIME-BRIDGE): `_`-prefixed names do not persist, so the model's own
+/// variables are never clobbered; the value is the cell's result.
+pub fn bridge_cell(name: &str, args: &Value) -> String {
+    let args = match args {
+        Value::Null => "{}".to_owned(),
+        v => v.to_string(),
+    };
+    format!(
+        "import json as _j\n_v = await {}(**_j.loads({}))\n_v",
+        sanitize_ident(name),
+        py_str_literal(&args)
+    )
+}
+
+/// First line of a bridged call's result: what happened and what to do next time.
+pub fn bridge_note(name: &str) -> String {
+    format!(
+        "note: {name} is a runtime function, not a direct tool; it ran for you as python (await {name}(...)). \
+         Next time call it from python yourself — `r = await {name}(...)` — so the result stays in a variable."
+    )
+}
+
+/// `s` as a Python single-quoted string literal.
+pub fn py_str_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
     out
 }
 
@@ -1830,6 +1877,7 @@ mod tests {
 
     /// A tool is defined for the model exactly once: direct tools are absent
     /// from the runtime index; with `runtime_only: false` the index is empty.
+    /// The bridge set is the same filter.
     #[test]
     fn runtime_index_excludes_direct_tools() {
         let runtime_only = fixture();
@@ -1838,10 +1886,47 @@ mod tests {
             direct: true,
             ..fixture()
         };
-        let block = prompt_block(&[runtime_only, direct.clone()], true);
+        let specs = [runtime_only, direct.clone()];
+        let block = prompt_block(&specs, true);
         assert!(block.contains("async def github__search_repos("));
         assert!(!block.contains("async def ask_user("), "{block}");
+        assert_eq!(
+            indexed(&specs, true)
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["github__search-repos"]
+        );
         assert!(!prompt_block(&[fixture(), direct], false).contains("async def "));
+        assert_eq!(
+            indexed(&specs, false).count(),
+            0,
+            "every tool direct: nothing to bridge"
+        );
+    }
+
+    /// 86 RUNTIME-BRIDGE: the cell a guessed direct call runs as, and the
+    /// literal that carries its arguments through any quoting.
+    #[test]
+    fn bridge_cell_and_py_str_literal() {
+        assert_eq!(py_str_literal(""), "''");
+        assert_eq!(py_str_literal("{}"), "'{}'");
+        assert_eq!(py_str_literal(r#"{"a":"it's"}"#), r#"'{"a":"it\'s"}'"#);
+        assert_eq!(py_str_literal("a\\b"), "'a\\\\b'");
+        assert_eq!(py_str_literal("l1\nl2\r\tx"), "'l1\\nl2\\r\\tx'");
+        assert_eq!(py_str_literal("héllo → 日本"), "'héllo → 日本'");
+
+        assert_eq!(
+            bridge_cell("knowledge_get", &serde_json::json!({"id": "facts/x"})),
+            "import json as _j\n_v = await knowledge_get(**_j.loads('{\"id\":\"facts/x\"}'))\n_v"
+        );
+        assert_eq!(
+            bridge_cell("list_dir", &Value::Null),
+            "import json as _j\n_v = await list_dir(**_j.loads('{}'))\n_v"
+        );
+        assert_eq!(
+            bridge_cell("github__search-repos", &serde_json::json!({})),
+            "import json as _j\n_v = await github__search_repos(**_j.loads('{}'))\n_v"
+        );
     }
 
     #[test]
