@@ -71,6 +71,27 @@ const DETERMINISTIC_NEEDLES: [&str; 8] = [
     "resolver error",
 ];
 
+/// Substrings (lowercase, backticks removed) of a provider error that means a
+/// replayed reasoning block was refused (90 §1.5). Matched by
+/// [`is_reasoning_rejected`] after the same normalisation.
+const REASONING_REJECTED_NEEDLES: [&str; 6] = [
+    // Anthropic: a signature that does not verify (the body reads
+    // "Invalid `signature` in `thinking` block"; backticks are stripped first).
+    "invalid signature in thinking block",
+    // Anthropic: a thinking block edited or reordered between turns.
+    "thinking blocks cannot be modified",
+    // Anthropic: prefix-binding check (accounts created after 2026-08-31).
+    "bound to a different conversation",
+    // OpenAI Responses: `reasoning.encrypted_content` from another key/org/deployment.
+    "invalid_encrypted_content",
+    "encrypted content could not be",
+    "could not be decrypted",
+];
+
+/// Gemini reports a bad `thoughtSignature` without one stable phrase: both
+/// words must appear (90 §1.5).
+const REASONING_REJECTED_PAIR: (&str, &str) = ("thought_signature", "invalid");
+
 /// Flat token charge for one image part in [`est`] (17 §3.4): a ≤1568 px PNG lands near this.
 pub const IMAGE_TOKENS: u32 = 1600;
 /// Token charge per PDF page (20 §2.5): Anthropic bills text plus a rendered
@@ -331,6 +352,14 @@ pub fn est_kept(m: &ChatMessage) -> u32 {
 pub fn is_overflow(err: &str) -> bool {
     let e = err.to_lowercase();
     OVERFLOW_NEEDLES.iter().any(|n| e.contains(n))
+}
+
+/// Whether a provider error message means a replayed reasoning block was
+/// refused (90 §1.5): the request is resent once without reasoning parts.
+pub fn is_reasoning_rejected(err: &str) -> bool {
+    let e: String = err.to_lowercase().replace('`', "");
+    REASONING_REJECTED_NEEDLES.iter().any(|n| e.contains(n))
+        || (e.contains(REASONING_REJECTED_PAIR.0) && e.contains(REASONING_REJECTED_PAIR.1))
 }
 
 /// Why a model call failed, and what the loop does about it (36 §2.1).
@@ -862,6 +891,48 @@ mod tests {
             ),
         ] {
             assert_eq!(classify(err), want, "{err}");
+        }
+    }
+
+    /// 90 §1.5: the provider bodies that mean "replayed reasoning refused",
+    /// and the neighbours that must not.
+    #[test]
+    fn reasoning_rejected_table() {
+        for (err, want) in [
+            (
+                r#"Request failed with status code '400'. Response body:
+{"type":"error","error":{"type":"invalid_request_error","message":"messages.7.content.0: Invalid `signature` in `thinking` block"}}"#,
+                true,
+            ),
+            (
+                "400 messages.3.content.0: Invalid signature in thinking block",
+                true,
+            ),
+            ("400 thinking blocks cannot be modified once sent", true),
+            (
+                "400 the thinking block is bound to a different conversation",
+                true,
+            ),
+            (
+                r#"{"error":{"message":"The encrypted content gAAA...S6Q= could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":null,"code":"invalid_encrypted_content"}}"#,
+                true,
+            ),
+            (
+                "400 INVALID_ARGUMENT: thought_signature is invalid for this model",
+                true,
+            ),
+            // Co-occurrence of the words alone is not a rejection.
+            ("400 thinking block requires a signature field", false),
+            ("400 thought_signature missing on function call part", false),
+            ("prompt is too long", false),
+            ("429 too many requests", false),
+            (
+                "http 422 schema validation failed: messages.0.content",
+                false,
+            ),
+            ("connection reset by peer", false),
+        ] {
+            assert_eq!(is_reasoning_rejected(err), want, "{err}");
         }
     }
 
