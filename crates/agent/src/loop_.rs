@@ -26,7 +26,7 @@
 //! semaphore and wall deadline; every turn reports its own result by
 //! [`TurnId`] through [`PeerTurnFinished`].
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1976,6 +1976,10 @@ struct Turn {
     transport: Option<(String, Transport)>,
     /// This turn's direct tools, fetched once in [`Turn::rebase`] (07 §5, 12 §4).
     tools: Vec<Tool>,
+    /// The names this turn's `## Runtime` index listed (86 RUNTIME-BRIDGE):
+    /// a direct call of one is bridged into a `python` cell; empty without the
+    /// runtime, in `runtime_only: false` mode and under a `toolset`.
+    runtime_names: HashSet<String>,
     /// A rebase or compaction happened since the last call (07 §7).
     reset_this_round: bool,
     /// The overflow retry was used this turn (07 §8.5).
@@ -2543,6 +2547,7 @@ impl Turn {
             usage: Usage::default(),
             transport: None,
             tools: Vec::new(),
+            runtime_names: HashSet::new(),
             reset_this_round: false,
             overflowed: false,
             window_logged: false,
@@ -2836,9 +2841,17 @@ impl Turn {
             subagent_model.as_deref(),
             attended,
         );
+        // The index and the bridge set come from one filter over one `ListTools`:
+        // a name hidden this turn (risk cap, communication off, flapping MCP) is
+        // in neither.
+        self.runtime_names.clear();
         if self.shared.pool.is_some() && toolset.as_ref().is_none_or(|t| t.runtime) {
             baseline.push_str("\n\n");
             baseline.push_str(&repl::prompt_block(&specs, self.shared.cfg.runtime_only));
+            for s in repl::indexed(&specs, self.shared.cfg.runtime_only) {
+                self.runtime_names.insert(repl::sanitize_ident(&s.name));
+                self.runtime_names.insert(s.name.clone());
+            }
         }
         if baseline != self.state.baseline {
             if !self.state.baseline.is_empty() {
@@ -3924,7 +3937,7 @@ impl Turn {
         // 47 §3.3: the display string above defaults; the classification does
         // not. The landing call is excluded whatever it says (36 §5).
         let mut natural = natural_stop(&end) && !self.landing;
-        let calls: Vec<ToolCall> = end
+        let mut calls: Vec<ToolCall> = end
             .captured_tool_calls()
             .map(|v| v.into_iter().cloned().collect())
             .unwrap_or_default();
@@ -3934,8 +3947,10 @@ impl Turn {
             // transcript or the log: the user's message looked swallowed
             // (session 01a0e834, 2026-09-28: ten such turns over 1h50). Say so.
             if end.captured_content.as_ref().is_none_or(|c| c.is_empty()) {
-                self.error(format!("model returned an empty reply (stop_reason={stop})"))
-                    .await;
+                self.error(format!(
+                    "model returned an empty reply (stop_reason={stop})"
+                ))
+                .await;
             }
             if let Some(content) = end.captured_content.filter(|c| !c.is_empty()) {
                 // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
@@ -4026,22 +4041,31 @@ impl Turn {
             .await;
         }
         // Registry batch first (parallel), then the loop-local calls in order.
-        // A name outside this turn's array (a runtime-only tool the model saw
-        // in the `## Runtime` index and guessed as a direct call) is refused
-        // here: the provider does not validate `tool_use` names, and the
-        // registry would run anything registered (08 §1.4 floor).
+        // A name outside this turn's array: the provider does not validate
+        // `tool_use` names and the registry would run anything registered
+        // (08 §1.4 floor). A runtime function the model saw in this turn's
+        // `## Runtime` index and guessed as a direct call is bridged into a
+        // `python` cell under the same call_id - the repl's own policy path
+        // (86 RUNTIME-BRIDGE); anything else is refused.
         let local = |name: &str| name == todo::NAME || name == repl::NAME;
-        let mut outputs: Vec<Option<ToolOutput>> = calls
-            .iter()
-            .map(|c| {
-                (!self.tools.iter().any(|t| t.name.as_str() == c.fn_name)).then(|| {
-                    ToolOutput::err(format!(
-                        "{0} is not a direct tool here; call it from python: `r = await {0}(...)`",
-                        c.fn_name
-                    ))
-                })
-            })
-            .collect();
+        let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
+        let mut outputs: Vec<Option<ToolOutput>> = vec![None; calls.len()];
+        for (i, c) in calls.iter_mut().enumerate() {
+            if self.tools.iter().any(|t| t.name.as_str() == c.fn_name) {
+                continue;
+            }
+            if self.runtime_names.contains(&c.fn_name) {
+                let name = std::mem::replace(&mut c.fn_name, repl::NAME.to_owned());
+                c.fn_arguments =
+                    serde_json::json!({ "code": repl::bridge_cell(&name, &c.fn_arguments) });
+                bridged[i] = Some(name);
+            } else {
+                outputs[i] = Some(ToolOutput::err(format!(
+                    "{} is not available in this session (not a direct tool and not a runtime function you can see)",
+                    c.fn_name
+                )));
+            }
+        }
         let remote: Vec<usize> = (0..calls.len())
             .filter(|&i| outputs[i].is_none() && !local(&calls[i].fn_name))
             .collect();
@@ -4084,10 +4108,14 @@ impl Turn {
             } else {
                 // The cell counts itself ([`CellPermit`]): running while the
                 // interpreter executes, not while it awaits its tool calls.
-                tokio::select! {
+                let mut out = tokio::select! {
                     _ = cancel.cancelled() => { cancelled = true; continue }
                     out = self.python(registry, turn, call) => out,
+                };
+                if let Some(name) = &bridged[i] {
+                    out.content = format!("{}\n{}", repl::bridge_note(name), out.content);
                 }
+                out
             };
             outputs[i] = Some(out);
         }
@@ -5635,6 +5663,10 @@ mod interrupt_tests;
 /// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
 #[cfg(test)]
 mod meeting_diet_tests;
+
+/// 86 RUNTIME-BRIDGE: a guessed direct call of an indexed runtime function runs as python; the rest is refused.
+#[cfg(test)]
+mod runtime_bridge_tests;
 
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]

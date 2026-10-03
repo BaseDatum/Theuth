@@ -21,13 +21,14 @@ use crate::meta::{Binding, DocId, Principal};
 
 /// §5.4: what block ids are, how to edit; the marker convention lives in the `attachments`
 /// block (66 §5.2). Static.
-pub const PROMPT: &str = "**Documents.** Knowledge concepts, notes, meeting notes and markdown artifacts are block documents. \
+pub const PROMPT: &str = "**Documents.** Knowledge concepts, notes, meeting notes and markdown artifacts are block documents; \
+every `doc_*` tool is a python runtime function. \
 `doc_read(doc)` returns an outline, one block per line with its id first; read it before editing, then change \
-the smallest run of blocks with `doc_insert` / `doc_replace` / `doc_delete`, quoting ids from the outline you \
+the smallest run of blocks with `doc_insert()` / `doc_replace()` / `doc_delete()`, quoting ids from the outline you \
 just read (ids stay stable across edits you did not make; a replaced block gets a new id, returned — anchor \
-later inserts on it, or put everything in the one `doc_replace` markdown). `doc_move` reorders blocks without \
+later inserts on it, or put everything in the one `doc_replace()` markdown). `doc_move()` reorders blocks without \
 changing them (ids kept). One tool call per request when possible. Never \
-rewrite text a person typed unless asked to change that text; edit knowledge metadata with `knowledge_put`, \
+rewrite text a person typed unless asked to change that text; edit knowledge metadata with `knowledge_put()`, \
 not the frontmatter block. `doc` is a document id, `knowledge:<concept id>` or `meeting:<meeting id>` (its note). \
 A leading `[attached note|knowledge …]` or `[doc …]` line means that document is attached; see Attachments. \
 A block labelled `[by <name> · doc-member:<id>]` (outline) or `<!-- <id> by <name> · doc-member:… -->` (markdown) \
@@ -45,7 +46,7 @@ and the lines light up together. **When the question is about code in the workin
 \"walk me through this change\", \"what did commit N change\", \"explain this codebase\" — and the answer needs a \
 diagram and more than a paragraph, the reply is a board, not an inline `Graph`/`Sequence` fence**: the Show-first \
 shapes are for everything else. Stay inline when one sentence or one code line does it, or when there is no code \
-to point at (a comparison of options, a general question). `doc_*` are python-only: `await load_skill(\"board\")` \
+to point at (a comparison of options, a general question). `doc_*` are python runtime functions, not direct tools: `await load_skill(\"board\")` \
 first, then `r = await doc_create(title=…, kind=\"board\", root=<absolute repo root>)`, then `await doc_insert(doc=r[\"doc\"], \
 markdown=…)` one block at a time in reading order; the reader watches it draw. Sections, in this order, omitting \
 any that do not apply and never adding a seventh (`###` for clusters): **What and why → Map → How it works → \
@@ -53,10 +54,10 @@ Decisions and trade-offs → Checks → Open questions**. Anchor everything, alw
 a `:` in a path is refused): `[label](code:path#L10-L24)` in prose, `ref` (the bare anchor, no `code:`) on every \
 `Graph` node and `Sequence` step that describes code, `Excerpt(path, text, start, symbol)` for ≤ 3 spots per \
 section that carry the mechanism or an invariant, `text` verbatim from `read_file(path, offset=start, limit=n, \
-numbers=False)`; a `json-render` block that does not validate or quote the tree is refused by `doc_insert`/`doc_replace` \
+numbers=False)`; a `json-render` block that does not validate or quote the tree is refused by `doc_insert()`/`doc_replace()` \
 with the error's path — fix that block and retry. Before you finish, run the read-back (the `board` skill). A message \
 beginning `[board <doc> · …]` quotes a place on a board: `doc_read(doc, blocks=[…], format=\"markdown\")` and \
-`code_symbol(path:line)` first, then edit the board in place (`doc_replace`) and say one line in chat.";
+`code_symbol(path:line)` first, then edit the board in place (`doc_replace()`) and say one line in chat.";
 
 /// The `board` skill (71 §3.2, §4): method, section order, diagram routing, anchor grammar, block shapes,
 /// recipes and the read-back. Written to `<data_dir>/skills/board.md` by `first_run`.

@@ -47,8 +47,9 @@ pub fn instruction(related: &[Meta], cwd: &str) -> String {
 /// `` - `id` — title [type]: description `` line per meta, description
 /// clipped at `HINT_DESCRIPTION_CHARS`.
 pub fn render_hints(metas: &[Meta]) -> String {
-    let mut s =
-        String::from("Concepts that may be relevant; call knowledge_get before relying on one:\n");
+    let mut s = String::from(
+        "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:\n",
+    );
     for m in metas {
         line(&mut s, m);
     }
@@ -191,7 +192,7 @@ mod tests {
         let mut lines = s.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "Concepts that may be relevant; call knowledge_get before relying on one:"
+            "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:"
         );
         let clipped = lines.next().unwrap();
         assert_eq!(

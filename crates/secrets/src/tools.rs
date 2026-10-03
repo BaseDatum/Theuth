@@ -22,14 +22,14 @@ use crate::{Outcome, Request, SecretRequestField, SecretsActor};
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
 pub const PROMPT: &str = "Named secrets (API keys, tokens, passwords — including the harness's own provider keys) live in an \
-encrypted vault you can use but never read. `secret_list` names them with their versions. Write `{{secret:NAME}}` \
+encrypted vault you can use but never read. `secret_list()` names them with their versions. Write `{{secret:NAME}}` \
 inside any tool argument — a shell command, a header, a URL, file content, an MCP tool's field — and the harness \
 swaps in the value when the tool runs; you, the transcript and the user's approval card see only the placeholder, \
 and the value is scrubbed from tool output if it echoes back. `{{secret:NAME:-1}}` is the previous version (a token \
 you just rotated). In Python keep the placeholder in a plain string, not an f-string (`{{` becomes `{`). Need a \
-secret that does not exist? `secret_request` asks the user to type it into a masked field; `secret_capture` runs a \
+secret that does not exist? `secret_request` asks the user to type it into a masked field; `secret_capture()` runs a \
 tool and stores its output (a fresh token from a login command, a key from a file) without showing it to you — \
-`replace: true` to update one that exists; `secret_restore` undoes a bad update. Never ask the user to paste a \
+`replace: true` to update one that exists; `secret_restore()` undoes a bad update. Never ask the user to paste a \
 secret into the chat, and never try to print one.";
 
 /// Register the five tools and the prompt block on `reg`. `timeout` is the

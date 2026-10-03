@@ -39,18 +39,22 @@ now — if you already gave one with the topic, do nothing; otherwise `meeting_b
 `[meeting deeper … — parent: <id>]`: a longer follow-up on that brief (up to three bullets, more \
 specific; pass that id as `parent`). A `[meeting: no brief was produced …]` line means your last turn \
 answered a request in text nobody saw — call `meeting_brief` then. After \
-the meeting, the first line of the conversation is its summary; `meeting_read`, `meeting_search` \
-and `meeting_speakers` reach the full record — use them instead of guessing.\n\n\
+the meeting, the first line of the conversation is its summary; `meeting_read()`, `meeting_search()` \
+and `meeting_speakers()` reach the full record — use them instead of guessing.\n\n\
 Briefs are cached: a `live:` topic marked `(cached …)` already has a brief on the user's screen — \
-do not research or re-register it; if you know it is wrong or out of date, `brief_put` over the \
-same id. For a new subject, call `brief_search` first; a hit → `meeting_topic` with its `brief` id \
+do not research or re-register it; if you know it is wrong or out of date, `brief_put()` over the \
+same id. For a new subject, call `brief_search()` first; a hit → `meeting_topic` with its `brief` id \
 and the label as spoken. Only when nothing is cached, look it up (knowledge first) and \
 `meeting_topic` with title and bullets — it is cached for next time. Outside a meeting: when the \
-user says a meeting is coming up, research each subject and `brief_put` one brief per subject with \
+user says a meeting is coming up, research each subject and `brief_put()` one brief per subject with \
 `aliases` as people will say them (ticket ids, product names, first names) and a `tag` for the \
-meeting; when the user says a brief is stale or wrong, `brief_put` the fix or `brief_delete` it. \
-In a live meeting every tool you see is called directly; there is no python. Order of lookup: \
-`brief_search`, then knowledge, then one web search and one read, then brief.";
+meeting; when the user says a brief is stale or wrong, `brief_put()` the fix or `brief_delete()` it. \
+In a live meeting session (inputs beginning `[meeting …]`) there is no `python` and every tool in \
+your tool list — the meeting's allowlist, by default meeting_topic, meeting_brief, brief_search, \
+brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url — is \
+called directly by name; outside one, `meeting_topic` and `meeting_brief` are direct tools and the \
+others named here are runtime functions. Order of lookup: \
+`brief_search` (live) / `brief_search()` (otherwise), then knowledge, then one web search and one read, then brief.";
 
 /// 02 §4: appended to the compaction instruction for the meeting session — the summariser's
 /// fallback while no plugin head is set (02 §4.1: a supplied head never reaches the summariser).

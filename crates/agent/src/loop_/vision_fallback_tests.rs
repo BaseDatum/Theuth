@@ -92,6 +92,25 @@ fn sse(text: &str, finish: &str, (prompt, completion): (u32, u32)) -> ResponseTe
     ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
 }
 
+/// One OpenAI SSE reply carrying a single tool call, `finish_reason: tool_calls`.
+fn sse_tool_call(name: &str, arguments: &str) -> ResponseTemplate {
+    let chunk = |choices: Value| json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": choices});
+    let body = format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        chunk(
+            json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            {"index": 0, "id": "call_bridge_1", "type": "function",
+             "function": {"name": name, "arguments": arguments}}
+        ]}, "finish_reason": null}])
+        ),
+        chunk(json!([{"index": 0, "delta": {}, "finish_reason": "tool_calls"}])),
+        json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": [],
+            "usage": {"prompt_tokens": MAIN_USAGE.0, "completion_tokens": MAIN_USAGE.1,
+                      "total_tokens": MAIN_USAGE.0 + MAIN_USAGE.1}}),
+    );
+    ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+}
+
 /// The fake provider: routes on the system prompt, so the same server serves
 /// the question call, the vision call, the summariser and the ordinary main call.
 pub(super) struct Fake {
@@ -112,6 +131,9 @@ pub(super) struct Fake {
     compact_delay: Option<Duration>,
     /// Answer the summariser with this HTTP status instead of a summary.
     compact_status: Option<u16>,
+    /// `(name, arguments JSON)`: the first main call of a turn (no `tool`
+    /// message yet) replies with this one tool call (runtime-bridge scenarios).
+    tool_call: Option<(&'static str, String)>,
 }
 
 /// The harvest call's reply: one well-formed concept.
@@ -172,11 +194,21 @@ impl Respond for Fake {
             };
         }
         // The trigger stays in history: only the newest message decides, so the next turn answers.
-        if texts(&b).last().is_some_and(|t| t.contains(EMPTY_REPLY_TRIGGER)) {
+        if texts(&b)
+            .last()
+            .is_some_and(|t| t.contains(EMPTY_REPLY_TRIGGER))
+        {
             return sse("", "content_filter", MAIN_USAGE);
         }
         if self.truncate_until.is_some_and(|t| !text.contains(t)) {
             return sse(TRUNCATED, "length", MAIN_USAGE);
+        }
+        if let Some((name, arguments)) = &self.tool_call
+            && !b["messages"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"))
+        {
+            return sse_tool_call(name, arguments);
         }
         sse(FINAL, "stop", MAIN_USAGE)
     }
@@ -293,6 +325,8 @@ pub(super) struct Harness {
     png_b64: String,
     png2: PathBuf,
     png2_b64: String,
+    /// The python worker pool a turn gets (`None`: no runtime, every tool direct).
+    pub(super) pool: Option<Arc<Pool>>,
 }
 
 impl Harness {
@@ -384,6 +418,7 @@ impl Harness {
             png_b64,
             png2,
             png2_b64,
+            pool: None,
         }
     }
 
@@ -415,7 +450,7 @@ impl Harness {
             Auth::stub(&self.dir),
             self.rt.clone(),
             self.catalog.clone(),
-            None,
+            self.pool.clone(),
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(&self.dir),
         );
@@ -455,7 +490,7 @@ impl Harness {
             Auth::stub(&self.dir),
             self.rt.clone(),
             self.catalog.clone(),
-            None,
+            self.pool.clone(),
             Arc::new(Semaphore::new(1)),
             SessionResources::durable_arc(&self.dir),
         ))
@@ -627,6 +662,7 @@ fn fake() -> Fake {
         harvest_delay: None,
         compact_delay: None,
         compact_status: None,
+        tool_call: None,
     }
 }
 
@@ -662,6 +698,16 @@ impl Fake {
     pub(super) fn compact_refused() -> Self {
         Self {
             compact_status: Some(400),
+            ..fake()
+        }
+    }
+
+    /// [`fake`] whose first main call of a turn replies with one direct tool
+    /// call `name(arguments)` (runtime-bridge scenarios); the follow-up call
+    /// (the one carrying the tool result) answers [`FINAL`].
+    pub(super) fn tool_call(name: &'static str, arguments: &Value) -> Self {
+        Self {
+            tool_call: Some((name, arguments.to_string())),
             ..fake()
         }
     }

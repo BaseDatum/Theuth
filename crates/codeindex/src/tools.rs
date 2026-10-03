@@ -22,7 +22,7 @@ use crate::store::{self, Definition, OutlineRow, RefHit};
 use crate::{root, walk};
 
 /// Plugin prompt block (60 §8): the six `code_*` tools and `project_profile`.
-pub const PROMPT: &str = "code_map, code_find, code_outline, code_refs, code_symbol, code_impact and project_profile are runtime functions over a \
+pub const PROMPT: &str = "`code_map()`, `code_find()`, `code_outline()`, `code_refs()`, `code_symbol()`, `code_impact()` and `project_profile()` are runtime functions (python) over a \
 tree-sitter index of a source tree (default root: the git repo of the cwd; first call indexes). Use them before \
 grep/read_file when the question is structural: where something is defined (code_find(name=\"X\") → rows of {path, \
 line_start, kind, signature}), what a file contains (code_outline(path=\"src/x.rs\") → imports and nested symbols), who \

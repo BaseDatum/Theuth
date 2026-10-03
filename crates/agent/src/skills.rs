@@ -265,8 +265,9 @@ pub fn prompt_index(skills: &[SkillMeta]) -> String {
     if listed.peek().is_none() {
         return String::new();
     }
-    let mut s =
-        String::from("## Skills\nCall `load_skill` with a name to get full instructions.\n");
+    let mut s = String::from(
+        "## Skills\nCall `load_skill()` (python: `await load_skill(name=\"…\")`) to get a skill's full instructions.\n",
+    );
     for skill in listed {
         s.push_str("- ");
         s.push_str(&skill.name);
