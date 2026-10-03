@@ -9444,6 +9444,8 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
 /// several peer messages becomes one card each; anything else is `you`,
 /// stamped with `turn` when the input opened one.
 fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
+    // 74 §3: the model's `<time …/>` line is never a `you` row.
+    let text = agent::clock::strip_owned(text);
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {
