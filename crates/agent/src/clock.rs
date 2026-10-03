@@ -76,6 +76,15 @@ pub fn strip(text: &str) -> &str {
     }
 }
 
+/// [`strip`] in place: `text` minus its leading stamp line, the allocation
+/// kept. For texts handed to frontends (`TurnStarted`, history rows), which
+/// never see the model's stamp (74 §3, §5).
+pub fn strip_owned(mut text: String) -> String {
+    let keep = text.len() - strip(&text).len();
+    text.drain(..keep);
+    text
+}
+
 /// The instant of a leading stamp, for recovering `last_stamp` on resume.
 pub fn parse(text: &str) -> Option<DateTime<Utc>> {
     let rest = text.trim_start().strip_prefix(OPEN)?;
@@ -164,6 +173,8 @@ mod tests {
         let mut text = String::from("<skill name=\"x\">body</skill> words");
         prepend_due(&mut text, t, &mut None);
         assert_eq!(strip(&text), "<skill name=\"x\">body</skill> words");
+        assert_eq!(strip_owned(text.clone()), strip(&text));
+        assert_eq!(strip_owned("  plain".into()), "  plain");
         assert_eq!(parse(&text), Some(t.with_timezone(&Utc)));
         assert_eq!(strip("plain"), "plain");
         assert_eq!(strip("<timer>x</timer>"), "<timer>x</timer>");
