@@ -28,6 +28,7 @@ import {
   recordCall,
   reconcileTodos,
   route,
+  settleCompacting,
 } from "./reduce";
 import type { SecretRequested } from "./approvals";
 import { type Stores, active, scoped } from "./engine-scope";
@@ -286,6 +287,8 @@ type SessionsStore = {
   unmarkSent(id: string, text: string): void;
   /** Drop the turn opened at `turn` and everything after it (before `regenerate`/`edit_turn`); no-op when absent. */
   truncate(id: string, turn: number): void;
+  /** `api.compact` was refused: undo the optimistic `Compacting` unless another activity change already landed (87). */
+  settleCompacting(id: string): void;
   ensure(id: string): void;
   /** Replace the subtree rows from `list_agents`. */
   setChildren(id: string, agents: AgentInfo[]): void;
@@ -466,6 +469,13 @@ export const createSessions = (): SessionsApi =>
             [id]: { ...cur, entries: cur.entries.slice(0, at) },
           },
         }));
+      },
+      settleCompacting(id) {
+        const cur = get().sessions[id];
+        if (!cur) return;
+        const next = settleCompacting(cur);
+        if (next !== cur)
+          set((st) => ({ sessions: { ...st.sessions, [id]: next } }));
       },
       ensure(id) {
         if (!get().sessions[id])

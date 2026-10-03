@@ -86,6 +86,17 @@ export function reconcileTodos(
   };
 }
 
+/**
+ * The optimistic `Compacting` (87 COMPACT-NONBLOCK) when `api.compact` was refused: back to idle only if the
+ * session is still `compacting`; a `Compacted`, `TurnStarted`, `Error`… that landed meanwhile wins. Same
+ * resting state as `Compacted`: `thinking` while a turn runs (`turn in flight`), its next delta relabels it.
+ */
+export function settleCompacting(s: SessionSlice): SessionSlice {
+  return s.activity === "compacting"
+    ? { ...s, activity: s.running ? "thinking" : "idle" }
+    : s;
+}
+
 /** What a streaming `show` call is doing, read off its partial JSON arguments: `name` (else the base name of
  * `path`) and whether a `content` key is present (writing a file vs showing an existing one). `undefined` until it parses. */
 export function partialShow(
@@ -924,7 +935,9 @@ function turn(
       };
     }
     case "Compacting":
-      return { ...s, activity: "compacting" };
+      // Idempotent: the composer dispatches one optimistically before `api.compact` (87 COMPACT-NONBLOCK)
+      // and the engine's own arrives moments later — `undefined` keeps the slice (and `live`) untouched.
+      return s.activity === "compacting" ? undefined : { ...s, activity: "compacting" };
     case "Compacted":
       // `after` is the engine's calibrated whole-frame estimate (70 COMPACT-SIZE):
       // shown as `≈` until the provider's next `ContextUsed`/`TurnFinished` replaces it.
