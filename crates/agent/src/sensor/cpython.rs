@@ -65,10 +65,7 @@ pub(super) async fn run(python: &Path, shim: &Path, call: &Call<'_>) -> Result<V
     // below; `BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW`.
     platform::process::own_session(&mut cmd);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        cmd.creation_flags(0x4000 | 0x0800_0000);
-    }
+    cmd.creation_flags(0x4000 | 0x0800_0000);
     let mut child = cmd
         .spawn()
         .map_err(|e| SensorError::Failed(format!("{}: {e}", python.display())))?;
