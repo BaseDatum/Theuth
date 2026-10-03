@@ -739,7 +739,8 @@ export interface Api {
   set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
-  set_model(session: SessionId | null, model: string): Promise<ModelInfo>
+  /** Switch `session` to `model`; `manual` (a person picked it) also makes it the default for new chats (82 §2). */
+  set_model(session: SessionId | null, model: string, manual: boolean): Promise<ModelInfo>
   /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
   /** Persist `tools.pty_idle_secs` (61): quiet-screen seconds before a PTY job wakes the model with `<job_idle>`; `0` = never. Later `start` calls use it. */

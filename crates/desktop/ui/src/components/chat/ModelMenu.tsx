@@ -114,11 +114,12 @@ function useModel({ session, draftEffort, onDraftEffort }: Props, done: () => vo
     const offs = [on('HarnessModelChanged', refresh), on('TurnFinished', (e) => (refresh(e), setPending({})))]
     return () => offs.forEach((off) => off())
   }, [acp, session, qc])
+  // 82 §2: a pick here is manual — the engine makes it the default too and `DefaultModelChanged`
+  // updates the draft (`dispatch`), on every device attached to this engine.
   const setModel = async (id: string) => {
     done()
     try {
-      const m = await api.set_model(session, id)
-      if (!session && info) useConnection.getState().setInfo({ ...info, default_model: m.id })
+      await api.set_model(session, id, true)
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))

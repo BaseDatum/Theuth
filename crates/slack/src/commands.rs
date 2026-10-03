@@ -432,10 +432,13 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
             panel(ui::models(&models, &current))
         }
         Cmd::Model(Some(model)) => {
+            // 82 §2: in a thread the switch is that thread's; only the thread-less
+            // form has nothing but the default to set.
             let info = agent()?
                 .ask(agent::SetModel {
                     session: cx.session,
                     model,
+                    manual: cx.session.is_none(),
                 })
                 .await
                 .map_err(err)?;

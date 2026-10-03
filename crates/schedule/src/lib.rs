@@ -1429,11 +1429,13 @@ async fn new_session(
     if let Err(e) = agents.ask(agent::RenameSession { session: s, title }).await {
         tracing::warn!(%name, "session title not set: {e}");
     }
+    // 82 §2: the schedule's `model:` is for its own session; it never becomes the default.
     if let Some(model) = model
         && let Err(e) = agents
             .ask(agent::SetModel {
                 session: Some(s),
                 model,
+                manual: false,
             })
             .await
     {

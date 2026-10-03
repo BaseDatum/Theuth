@@ -5,7 +5,7 @@
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`TrimAssistant`], [`Compact`],
 //!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`SetVisionModel`], [`GetVisionModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
-//!   [`ListModels`], [`SetModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
+//!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
@@ -1074,16 +1074,29 @@ impl AgentState {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListModels;
 
-/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1);
-/// switches `session` (if given) for its next model call, makes the id the
-/// default for new sessions and writes it back to `<data_dir>/config.yaml`.
+/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1)
+/// and switches `session` (if given) for its next model call. With `manual`
+/// the id also becomes the default for new sessions (82 §2: a human picked it
+/// in a session's model picker): `agent.model` in `<data_dir>/config.yaml`
+/// is rewritten and [`AgentEvent::DefaultModelChanged`] follows. Programmatic
+/// switches (schedules, bots) pass `manual: false` and never touch the default.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetModel {
-    /// Session to switch; `None` changes only the default.
+    /// Session to switch; `None` changes only the default (needs `manual`).
     pub session: Option<SessionId>,
     /// `provider/model`, or a bare model id resolved against configured providers.
     pub model: String,
+    /// A person chose this in a model picker: make it the default too.
+    /// Defaults to `true` so older frontends keep their behaviour.
+    #[serde(default = "yes")]
+    pub manual: bool,
 }
+
+/// `ask` → `String`: the model new sessions start on (`agent.model` as last
+/// set by a manual [`SetModel`]), the live value rather than the config file
+/// read at startup (82 §3).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetDefaultModel;
 
 /// `ask` → `Result<(), String>`: set (or clear with `None`) the reasoning
 /// effort. Validated against the session's current model via the catalog
@@ -1820,6 +1833,12 @@ pub enum AgentEvent {
         /// Canonical model id.
         model: String,
     },
+    /// The default model for new sessions changed (82 §3): a manual
+    /// [`SetModel`] made `model` the new `agent.model`. Global, no session.
+    DefaultModelChanged {
+        /// Canonical model id.
+        model: String,
+    },
     /// An external harness (ACP child, design doc 06 §8.2) reported the LLM
     /// model its session runs on — at connect, or when it switched
     /// mid-session. `TurnStarted.model` stays the harness name.
@@ -2054,6 +2073,7 @@ impl AgentEvent {
             | Self::ContextUsed { session, .. }
             | Self::SessionClosing { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
+            Self::DefaultModelChanged { .. } => None,
         }
     }
 }
