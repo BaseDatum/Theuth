@@ -94,6 +94,9 @@ export function Loop() {
   const setSubagentTimeout = useAction((seconds: number) =>
     api.set_subagent_timeout(seconds).then(() => refreshInfo(api)),
   )
+  const setScheduleRunTimeout = useAction((seconds: number) =>
+    api.set_schedule_run_timeout(seconds).then(() => refreshInfo(api)),
+  )
   const setMaxToolRounds = useAction((rounds: number) =>
     api.set_max_tool_rounds(rounds).then(() => refreshInfo(api)),
   )
@@ -146,6 +149,14 @@ export function Loop() {
           description="Seconds a PTY job's screen must stay unchanged before the model is woken with <job_idle> and the screen (a REPL at its prompt, a wizard waiting, a stalled build). Applies to later `start` calls; 0 turns it off, and `start … idle_secs` overrides per job."
         >
           <Count value={info?.pty_idle_secs} min={0} action={setPtyIdle} />
+        </Row>
+      </Section>
+      <Section title="Routines">
+        <Row
+          label="Run time limit"
+          description="Seconds a routine run may take before it is cancelled and its history row says timeout. A routine's own run_timeout: overrides it. Applies to runs fired from now on."
+        >
+          <Count value={info?.schedule_run_timeout_secs || undefined} min={30} action={setScheduleRunTimeout} />
         </Row>
       </Section>
       <Section title="Context">
