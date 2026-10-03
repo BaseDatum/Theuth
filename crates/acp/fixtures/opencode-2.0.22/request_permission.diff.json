@@ -1,0 +1,57 @@
+{
+ "jsonrpc": "2.0",
+ "id": 0,
+ "method": "session/request_permission",
+ "params": {
+  "sessionId": "ses_f00418429ffe8gc9EX6IvZHlP6",
+  "toolCall": {
+   "toolCallId": "ses_f00417af0ffewZH4KxaHpEZ653:toolu_0179KkBvErCkm8J5u2hVjtLG",
+   "title": "Create hello.txt file: /tmp/oc2-smoke/work/hello.txt",
+   "kind": "edit",
+   "status": "pending",
+   "locations": [
+    {
+     "path": "/tmp/oc2-smoke/work/hello.txt"
+    }
+   ],
+   "rawInput": {
+    "files": [
+     {
+      "file": "hello.txt",
+      "patch": "Index: hello.txt\n===================================================================\n--- hello.txt\n+++ hello.txt\n@@ -0,0 +1,1 @@\n+hi\n\\ No newline at end of file\n",
+      "status": "added",
+      "additions": 1,
+      "deletions": 0
+     }
+    ],
+    "path": "/tmp/oc2-smoke/work/hello.txt",
+    "content": "hi"
+   },
+   "content": [
+    {
+     "type": "diff",
+     "path": "/tmp/oc2-smoke/work/hello.txt",
+     "oldText": "",
+     "newText": "hi"
+    }
+   ]
+  },
+  "options": [
+   {
+    "optionId": "once",
+    "kind": "allow_once",
+    "name": "Allow once"
+   },
+   {
+    "optionId": "always",
+    "kind": "allow_always",
+    "name": "Always allow"
+   },
+   {
+    "optionId": "reject",
+    "kind": "reject_once",
+    "name": "Reject"
+   }
+  ]
+ }
+}

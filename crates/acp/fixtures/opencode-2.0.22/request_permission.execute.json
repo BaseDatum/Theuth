@@ -1,0 +1,40 @@
+{
+ "jsonrpc": "2.0",
+ "id": 0,
+ "method": "session/request_permission",
+ "params": {
+  "sessionId": "ses_f0042766affezx4TaZ2PyOLYNm",
+  "toolCall": {
+   "toolCallId": "toolu_018z7FFkxgjjPN1mryBDydSm",
+   "title": "ls",
+   "kind": "execute",
+   "status": "pending",
+   "locations": [
+    {
+     "path": "/tmp/oc2-smoke/work"
+    }
+   ],
+   "rawInput": {
+    "command": "ls",
+    "cwd": "/tmp/oc2-smoke/work"
+   }
+  },
+  "options": [
+   {
+    "optionId": "once",
+    "kind": "allow_once",
+    "name": "Allow once"
+   },
+   {
+    "optionId": "always",
+    "kind": "allow_always",
+    "name": "Always allow"
+   },
+   {
+    "optionId": "reject",
+    "kind": "reject_once",
+    "name": "Reject"
+   }
+  ]
+ }
+}

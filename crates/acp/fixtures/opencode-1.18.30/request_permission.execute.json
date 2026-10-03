@@ -1,0 +1,35 @@
+{
+ "jsonrpc": "2.0",
+ "id": 0,
+ "method": "session/request_permission",
+ "params": {
+  "sessionId": "ses_f00421da6ffeZb0nAVQXIZNWrd",
+  "toolCall": {
+   "toolCallId": "toolu_01RKAp3qHeCqTGk4SjZh64Hn",
+   "title": "ls",
+   "kind": "execute",
+   "status": "pending",
+   "locations": [],
+   "rawInput": {
+    "command": "ls"
+   }
+  },
+  "options": [
+   {
+    "optionId": "once",
+    "kind": "allow_once",
+    "name": "Allow once"
+   },
+   {
+    "optionId": "always",
+    "kind": "allow_always",
+    "name": "Always allow"
+   },
+   {
+    "optionId": "reject",
+    "kind": "reject_once",
+    "name": "Reject"
+   }
+  ]
+ }
+}
