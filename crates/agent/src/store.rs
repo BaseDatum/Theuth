@@ -4051,7 +4051,7 @@ mod tests {
                     ContentPart::Binary(img("same.png")),
                 ])),
                 ChatMessage::assistant(MessageContent::from_parts(vec![
-                    ContentPart::ThoughtSignature("sig".into()),
+                    ContentPart::ThoughtSignature(genai::chat::ThoughtSignature::new("sig")),
                     ContentPart::Text("checking".into()),
                     ContentPart::ToolCall(call("c1")),
                     ContentPart::ToolCall(call("c2")),

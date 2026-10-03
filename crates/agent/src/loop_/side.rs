@@ -94,6 +94,7 @@ impl Side {
             head: None,
             history: std::slice::from_ref(&message),
             vision: false,
+            strip_reasoning: false,
         };
         let (req, opts) = frame.request(transport, self.session, None);
         let request_id = Uuid::now_v7().to_string();

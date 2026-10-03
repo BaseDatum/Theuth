@@ -2894,7 +2894,10 @@ impl Turn {
     /// `conversation` is the provider-side conversation/cache id: the session
     /// for the live frame, [`aux_conversation`] for a stateless auxiliary call.
     /// Transient failures before anything streamed are resent with backoff
-    /// (36 §2.2); one that dies mid-reply is `Abort::Partial` (36 §2.4).
+    /// (36 §2.2); one that dies mid-reply is `Abort::Partial` (36 §2.4). A
+    /// provider refusing replayed reasoning gets one immediate resend of the
+    /// frame with `strip_reasoning` set (90 §1.5); a second refusal is the
+    /// deterministic error it is.
     ///
     /// 51 §6.1: one logical request; every resend is an attempt of it, each
     /// reserved and marked dispatched before transport and settled after, as
@@ -2903,7 +2906,7 @@ impl Turn {
     async fn call(
         &self,
         current: &Current,
-        frame: Frame<'_>,
+        mut frame: Frame<'_>,
         transport: Transport,
         live: Option<TurnId>,
         conversation: SessionId,
@@ -2911,6 +2914,7 @@ impl Turn {
     ) -> Result<StreamEnd, Abort> {
         let request_id = Uuid::now_v7().to_string();
         let mut attempt = 0;
+        let mut stripped = false;
         loop {
             let reserved = Reserved::open(
                 &self.shared.store,
@@ -2948,6 +2952,19 @@ impl Turn {
                 Err(Abort::Model(e)) => e,
                 Err(other) => return Err(other),
             };
+            // 90 §1.5: strip reasoning and resend at once — no backoff, the
+            // answer does not change with time. Only before anything streamed.
+            if !stripped && text.is_empty() && !calls && compact::is_reasoning_rejected(&e) {
+                tracing::warn!(
+                    session = %self.shared.id,
+                    "provider rejected replayed reasoning; resending without thinking blocks: {e}"
+                );
+                frame.strip_reasoning = true;
+                stripped = true;
+                self.retries.fetch_add(1, Ordering::Relaxed);
+                attempt += 1;
+                continue;
+            }
             if !matches!(compact::classify(&e), compact::Failure::Transient) {
                 return Err(Abort::Model(e));
             }
@@ -3799,6 +3816,7 @@ impl Turn {
             head: head.as_ref(),
             history: &msgs,
             vision: current.vision(),
+            strip_reasoning: false,
         };
         let end = match self
             .call(
@@ -4948,6 +4966,7 @@ impl Turn {
                 head,
                 history: full.as_slice(),
                 vision: current.vision(),
+                strip_reasoning: false,
             };
             let call = self.call(current, frame, transport, None, self.shared.id, kind);
             match tokio::time::timeout(SUMMARISE_TIMEOUT, call).await {
@@ -5372,6 +5391,7 @@ impl Turn {
             head: None,
             history: std::slice::from_ref(&message),
             vision,
+            strip_reasoning: false,
         };
         let call = self.call(
             current,
@@ -7427,6 +7447,7 @@ mod tests {
             head: None,
             history: &history,
             vision: false,
+            strip_reasoning: false,
         };
         let end = turn
             .call(&current, frame, transport, turn.turn, id, CallKind::Round)
@@ -7492,6 +7513,7 @@ mod tests {
             head: None,
             history: &history,
             vision: false,
+            strip_reasoning: false,
         };
         assert!(
             turn.call(&current, frame, transport, None, id, CallKind::Round)
@@ -7542,6 +7564,7 @@ mod tests {
             head: None,
             history: &history,
             vision: false,
+            strip_reasoning: false,
         };
         let err = match turn
             .call(&current, frame, transport, None, orphan, CallKind::Round)

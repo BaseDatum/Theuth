@@ -977,7 +977,7 @@ mod tests {
         let ims = images(owner(7), &m, &Mask::default());
         let (_, tail) = project_frame(0, None, &[(7, m)], &ims);
         let asst = ChatMessage::assistant(MessageContent::from_parts(vec![
-            ContentPart::ThoughtSignature("sig".into()),
+            ContentPart::ThoughtSignature(genai::chat::ThoughtSignature::new("sig")),
             ContentPart::ToolCall(ToolCall {
                 call_id: "c1".into(),
                 fn_name: "shell".into(),
