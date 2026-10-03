@@ -1124,7 +1124,7 @@ const DEFAULT_AGENTS: &str =
 # opencode:
 #   command: opencode
 #   args: [acp]
-#   description: OpenCode, local install
+#   description: OpenCode, local install (1.18 or 2.x; model/effort set via session/set_config_option, design doc 06 §8.4)
 #   skills: true               # default; false: no theuth skills written into the child's cwd (design doc 75 §4)
 #   skills_dir: .agents/skills # default, relative to the child's cwd; .claude/skills for Claude Code
 #   mcp: true                  # default; false opts out of the theuth MCP shim (list_skills/load_skill/send_message) in session/new (75 §9)

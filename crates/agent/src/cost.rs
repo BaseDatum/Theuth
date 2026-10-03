@@ -276,7 +276,7 @@ pub struct TokenTotals {
 
 /// Tokens of the ACP turns in an owner's subtree for one harness and model
 /// (75 §7): `remote_turns` grouped by `(harness, model)`. Raw as the harness
-/// sent them — omp per turn, opencode the last request only (a lower bound).
+/// sent them; `lower_bound` when they are last-request figures (06 §8.4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct RemoteTokens {
@@ -288,6 +288,9 @@ pub struct RemoteTokens {
     pub turns: u32,
     /// Token sums.
     pub tokens: TokenTotals,
+    /// Some turn in the group reported its last request only (opencode 1.x,
+    /// upstream #1860): the sums understate the spend.
+    pub lower_bound: bool,
 }
 
 /// Aggregated spend (§6.2). Monetary partition per call: returned bucket when

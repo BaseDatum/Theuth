@@ -1,0 +1,44 @@
+{
+ "jsonrpc": "2.0",
+ "method": "opencode/session/child_update",
+ "params": {
+  "rootSessionId": "ses_f00418429ffe8gc9EX6IvZHlP6",
+  "childSessionId": "ses_f00417af0ffewZH4KxaHpEZ653",
+  "parentSessionId": "ses_f00418429ffe8gc9EX6IvZHlP6",
+  "depth": 1,
+  "title": "Create hello.txt file",
+  "type": "update",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "ses_f00417af0ffewZH4KxaHpEZ653:toolu_0179KkBvErCkm8J5u2hVjtLG",
+   "status": "completed",
+   "locations": [
+    {
+     "path": "/tmp/oc2-smoke/work/hello.txt"
+    }
+   ],
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "Created file successfully: hello.txt"
+     }
+    }
+   ],
+   "rawOutput": {
+    "metadata": {
+     "truncated": false
+    }
+   },
+   "_meta": {
+    "opencode/child-session": {
+     "id": "ses_f00417af0ffewZH4KxaHpEZ653",
+     "parentID": "ses_f00418429ffe8gc9EX6IvZHlP6",
+     "depth": 1,
+     "title": "Create hello.txt file"
+    }
+   }
+  }
+ }
+}

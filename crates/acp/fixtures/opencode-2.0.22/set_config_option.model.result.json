@@ -1,0 +1,66 @@
+{
+ "configOptions": [
+  {
+   "id": "model",
+   "name": "Model",
+   "category": "model",
+   "type": "select",
+   "currentValue": "anthropic/claude-haiku-4-5",
+   "options": [
+    {
+     "value": "anthropic/claude-haiku-4-5",
+     "name": "anthropic/Claude Haiku 4.5 (latest)"
+    },
+    {
+     "value": "anthropic/claude-sonnet-5",
+     "name": "anthropic/Claude Sonnet 5"
+    },
+    {
+     "value": "github-copilot/gpt-6.1-sol",
+     "name": "github-copilot/GPT-6.1 Sol"
+    }
+   ]
+  },
+  {
+   "id": "effort",
+   "name": "Effort",
+   "description": "Available effort levels for this model",
+   "category": "thought_level",
+   "type": "select",
+   "currentValue": "default",
+   "options": [
+    {
+     "value": "high",
+     "name": "High"
+    },
+    {
+     "value": "max",
+     "name": "Max"
+    },
+    {
+     "value": "default",
+     "name": "Default"
+    }
+   ]
+  },
+  {
+   "id": "mode",
+   "name": "Session Mode",
+   "category": "mode",
+   "type": "select",
+   "currentValue": "build",
+   "options": [
+    {
+     "value": "build",
+     "name": "Build",
+     "description": "The default agent. Executes tools based on configured permissions."
+    },
+    {
+     "value": "plan",
+     "name": "Plan",
+     "description": "Read-only agent for exploring the codebase and planning work before implementation."
+    }
+   ]
+  }
+ ]
+}

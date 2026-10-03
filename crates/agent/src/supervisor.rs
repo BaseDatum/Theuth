@@ -886,8 +886,10 @@ impl Agents {
                 self.store
                     .create_session(id, &name, parent.map(|p| p.0), parent.map(|p| p.1), None)
                     .await?;
+                // 06 §8.4: the resolved cwd is stored, so a resume passes
+                // the session's own directory (opencode 2 requires it).
                 self.store
-                    .set_acp(id, &name, cwd.as_deref(), &skills)
+                    .set_acp(id, &name, Some(&cwd_path), &skills)
                     .await?;
                 (parent.map(|(p, n)| (p, n.to_string())), None)
             }

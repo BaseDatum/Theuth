@@ -39,8 +39,8 @@ export function k(n: number): string {
 const HARNESS_CAP = 5
 
 /**
- * ACP children's tokens per harness model (75 §7, §13 row 6). Raw as the harness sent them: omp per turn, opencode
- * its last request only (#1860), so those rows are a lower bound and say so.
+ * ACP children's tokens per harness model (75 §7, §13 row 6). Raw as the harness sent them; a `lower_bound` group
+ * (opencode 1.x: last request only, #1860) says so (06 §8.4).
  */
 export function HarnessTokens({ rows }: { rows: RemoteTokens[] }) {
   const [expanded, setExpanded] = useState(false)
@@ -67,7 +67,7 @@ export function HarnessTokens({ rows }: { rows: RemoteTokens[] }) {
               <td className="truncate py-0.5">
                 {r.harness}
                 {r.model && <span className="text-fg-tertiary"> · {r.model}</span>}
-                {r.harness === 'opencode' && <span className="ml-1 text-fg-tertiary">(last request only)</span>}
+                {r.lower_bound && <span className="ml-1 text-fg-tertiary">(last request only)</span>}
               </td>
               <td className="py-0.5 text-right">{r.turns}</td>
               <td className="py-0.5 text-right">{k(r.tokens.input)}</td>

@@ -6,11 +6,12 @@ import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import { Breakdown, HarnessTokens, k } from './CostPill'
 
-const row = (harness: string, model: string | null, turns: number, input: number, output: number): RemoteTokens => ({
+const row = (harness: string, model: string | null, turns: number, input: number, output: number, lower_bound = false): RemoteTokens => ({
   harness,
   model,
   turns,
   tokens: { input, output, cache_read: 1500, cache_write: 0, unknown_calls: 0 },
+  lower_bound,
 })
 
 const rows = (h: string, n: number) => Array.from({ length: n }, (_, i) => row(h, `m${i}`, 1, 10, 10))
@@ -19,10 +20,10 @@ test('k reads like the TUI: 999, 12.3k, 200k, 1.0M', () => {
   expect([k(999), k(12_345), k(199_999), k(1_000_000)]).toEqual(['999', '12.3k', '200k', '1.0M'])
 })
 
-test('Harness tokens: one row per harness model, opencode marked last request only, nothing without rows', () => {
+test('Harness tokens: one row per harness model, lower-bound rows marked last request only, nothing without rows', () => {
   const html = renderToStaticMarkup(
     createElement(HarnessTokens, {
-      rows: [row('omp', 'anthropic/claude-sonnet-4-5', 3, 12_345, 2_000), row('opencode', 'gpt-5', 1, 500, 40), row('omp', null, 1, 1, 1)],
+      rows: [row('omp', 'anthropic/claude-sonnet-4-5', 3, 12_345, 2_000), row('opencode', 'gpt-5', 1, 500, 40, true), row('omp', null, 1, 1, 1)],
     }),
   )
   expect(html).toContain('Harness tokens')
