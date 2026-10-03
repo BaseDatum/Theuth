@@ -898,3 +898,5 @@ found and fixed on the way: `TalkEvent::Level` collided with
 TUI's event mirror (`rpc::client`) swallowed every event after `A2aChanged`
 (a field-less tagged struct) — pre-existing, hit dictation too. Added knob:
 `talk.decide_ms` (§4.4's 900 ms).
+
+**Amended 2026-10-03** (`82-as-built-ELECTRIC-WAVE.md`): the desktop talk view gained a waveform band under the orb (§5.2 render), fed by the relay tap's analyser or the engine's `TalkLevel` packets; `talk.ts` now routes `TalkLevel` to `onLevels` subscribers.

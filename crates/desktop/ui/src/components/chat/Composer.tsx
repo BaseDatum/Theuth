@@ -61,7 +61,9 @@ import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
 import { HeldStrip } from './HeldStrip'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
-import { LevelMeter } from './LevelMeter'
+import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
+import type { FrameSource, VisualFrame } from '@/lib/audio/types'
+import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 
@@ -283,6 +285,14 @@ export function Composer({
   const pendingStop = useRef<boolean | null>(null)
   const [recording, setRecording] = useState(false)
   const [secs, setSecs] = useState(0)
+  /** 82 §C: the recorder stream's analyser on its own context; the wave the box shows while `recording`. */
+  const noteWave = useRef<{ dispose: () => void } | null>(null)
+  const [noteSource, setNoteSource] = useState<FrameSource<VisualFrame> | null>(null)
+  const dropNoteWave = () => {
+    noteWave.current?.dispose()
+    noteWave.current = null
+    setNoteSource(null)
+  }
   // 76 §0.12: one talk per daemon; the Talk button names (and opens) the session that holds it.
   const talking = talk.useTalk()
   const talkElsewhere = talking.phase !== 'off' && talking.session !== null && talking.session !== session
@@ -301,6 +311,8 @@ export function Composer({
   const dictating = owner && dict.active !== null
   const dictReason =
     dictation.reason(dict) ?? (dict.active !== null && !owner ? 'Dictating in another pane' : null)
+  // 82 §B: the pill's wave — the dictation tap's analyser (remote engine) or frames from the engine's level packets.
+  const dictSource = useVoiceSource(dictating && dict.phase === 'dictating', () => tapOrLevels(dictation.tap(), dictation.onLevels))
   /** Caret to place once the textarea is back after a dictation. */
   const [pendingCaret, setPendingCaret] = useState<number | null>(null)
   const { state: comm, exports } = useCommunication(session)
@@ -806,6 +818,7 @@ export function Composer({
       const chunks: Blob[] = []
       rec.ondataavailable = (e) => chunks.push(e.data)
       rec.onstop = () => {
+        dropNoteWave()
         for (const track of stream.getTracks()) track.stop()
         void speech.release('record')
         const discard = recorder.current?.discard ?? true
@@ -813,8 +826,18 @@ export function Composer({
         setRecording(false)
         if (!discard) void sendNote(new Blob(chunks, { type: rec.mimeType }))
       }
+      // 82 §C: a dedicated context for the wave (speech.ts owns the audio session); closed with the recording.
+      const actx = new AudioContext()
+      const wave = analyserSource(actx, stream)
+      noteWave.current = {
+        dispose: () => {
+          wave.dispose()
+          void actx.close()
+        },
+      }
       recorder.current = { rec, discard: false }
       rec.start()
+      setNoteSource(wave.source)
       setRecording(true)
       // The finger already lifted (a hold released before the mic opened): stop with what was said, or discard.
       const early = pendingStop.current
@@ -842,6 +865,8 @@ export function Composer({
     return () => {
       clearInterval(tick)
       window.removeEventListener('keydown', onKey)
+      // Unmounted mid-recording: the recorder's `onstop` may never reach this pane; free the analyser and its context.
+      dropNoteWave()
     }
   }, [recording])
 
@@ -1052,35 +1077,38 @@ export function Composer({
             </PopoverContent>
           </Popover>
           <div className="min-w-0 flex-1">
-            {dictating && dict.active ? (
-              <DictatedText
-                before={dict.active.before}
-                after={dict.active.after}
-                utts={dict.active.utts}
-                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
-              />
-            ) : (
-              <Textarea
-                readOnly={readOnly}
-                dictate={false}
-                ref={ref}
-                value={text}
-                onChange={(e) => {
-                  setText(e.target.value)
-                  setPastes(reconcile(e.target.value, pastes))
-                  setSelected(0)
-                  changed(e.target.value, e.target.selectionStart)
-                  pathChanged(e.target.value, e.target.selectionStart)
-                }}
-                onKeyDown={onKeyDown}
-                onPaste={onPaste}
-                rows={1}
-                // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
-                placeholder={readOnly ? 'Talking — speak, or stop the talk to type' : running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
-                // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
-                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
-              />
-            )}
+            {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
+            <RecordingBox recording={recording} source={noteSource}>
+              {dictating && dict.active ? (
+                <DictatedText
+                  before={dict.active.before}
+                  after={dict.active.after}
+                  utts={dict.active.utts}
+                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                />
+              ) : (
+                <Textarea
+                  readOnly={readOnly}
+                  dictate={false}
+                  ref={ref}
+                  value={text}
+                  onChange={(e) => {
+                    setText(e.target.value)
+                    setPastes(reconcile(e.target.value, pastes))
+                    setSelected(0)
+                    changed(e.target.value, e.target.selectionStart)
+                    pathChanged(e.target.value, e.target.selectionStart)
+                  }}
+                  onKeyDown={onKeyDown}
+                  onPaste={onPaste}
+                  rows={1}
+                  // An exported session's human input never joins a peer task; it steers a human turn or waits behind a task (50 §6.3).
+                  placeholder={readOnly ? 'Talking — speak, or stop the talk to type' : running ? (exports.length ? 'Send privately…' : 'Send to steer…') : skill ? `Words for ${skill} (optional)` : 'Ask anything'}
+                  // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
+                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                />
+              )}
+            </RecordingBox>
           </div>
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
@@ -1136,11 +1164,11 @@ export function Composer({
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
-                    className="h-9 w-24 shrink-0 rounded-full bg-fg-accent/10 p-0"
+                    className="h-9 w-32 shrink-0 overflow-hidden rounded-full bg-fg-accent/10 p-0"
                     aria-label="Stop dictation"
                     onClick={dictate}
                   >
-                    <LevelMeter levels={dict.active.levels} active />
+                    <VoiceWave state="listening" source={dictSource} label="Dictation level" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>

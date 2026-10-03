@@ -91,6 +91,19 @@ const finishers = new Set<(r: Splice) => void>()
 
 /** The browser-side mic graph of a remote-source dictation (54 §4.5); `null` while the daemon owns the mic. */
 let capture: Tap | null = null
+/** 82 §B: raw `DictationLevel` packets of our dictation, for the waveform when there is no `capture` (local engine). */
+const levelSubs = new Set<(levels: number[]) => void>()
+
+/** The mic graph of the running dictation, if this browser captures it (remote engine); else `null`. */
+export const tap = (): Tap | null => capture
+
+/** Each level packet (eight 20 ms RMS values, oldest first) of our dictation. Returns the unsubscribe. */
+export function onLevels(cb: (levels: number[]) => void): () => void {
+  levelSubs.add(cb)
+  return () => {
+    levelSubs.delete(cb)
+  }
+}
 
 /**
  * Release the mic, the tap nodes and speech's `dictate` hold (the session suspends once nothing else holds
@@ -205,6 +218,7 @@ function handle(e: VoiceEvent): void {
   const prev = state
   const next = applyEvent(prev, e)
   set(next)
+  if (e.type === 'DictationLevel' && prev.active?.id === e.id) for (const cb of levelSubs) cb(e.levels)
   if (e.type !== 'DictationFinished' || !prev.active || next.active) return
   teardownCapture()
   const a = prev.active
