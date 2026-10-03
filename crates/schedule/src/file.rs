@@ -332,6 +332,8 @@ pub struct Spec {
     pub timeout: Duration,
     /// `created:` — written by `schedule` / `set_created` (40 §2); what `expires` counts from.
     pub created: Option<DateTime<Local>>,
+    /// `run_timeout:` — time limit of one run; `None` = `schedule.run_timeout_secs` (88).
+    pub run_timeout: Option<Duration>,
 }
 
 #[derive(Deserialize, Default)]
@@ -360,6 +362,7 @@ struct FrontMatter {
     expires: Option<String>,
     timeout: Option<String>,
     created: Option<String>,
+    run_timeout: Option<String>,
 }
 
 /// Parse one file's text. `Err` is the user-facing reason (`cron: …`,
@@ -371,7 +374,8 @@ struct FrontMatter {
 /// one-shot has no cadence to poll on`, `every: below 30s with when:`,
 /// `<key>: needs when:`, `when: needs a stop (until, max_runs or expires)`,
 /// `missed: not allowed with when:`, `expires: below every`, `timeout: above
-/// 60s`, `timeout: must be below every / 2`, `created: expected RFC 3339`).
+/// 60s`, `timeout: must be below every / 2`, `created: expected RFC 3339`;
+/// `run_timeout: below 30s` (88)).
 pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
     let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
     let parsed = matter
@@ -567,6 +571,15 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
                 .map_err(|_| "created: expected RFC 3339".to_string())
         })
         .transpose()?;
+    // 88: the time limit of one run; independent of the loop stops.
+    let run_timeout = fm
+        .run_timeout
+        .as_deref()
+        .map(|s| parse_dur("run_timeout", s))
+        .transpose()?;
+    if run_timeout.is_some_and(|t| t < Duration::from_secs(30)) {
+        return Err("run_timeout: below 30s".into());
+    }
 
     Ok(Spec {
         name: name.to_string(),
@@ -601,6 +614,7 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         expires,
         timeout,
         created,
+        run_timeout,
     })
 }
 
@@ -704,6 +718,8 @@ pub struct FileArgs<'a> {
     pub timeout: Option<&'a str>,
     /// `created:` — RFC 3339; written only when present (`set_created` adds it on load).
     pub created: Option<&'a str>,
+    /// `run_timeout:` — written only when present (88).
+    pub run_timeout: Option<&'a str>,
     /// Body.
     pub prompt: &'a str,
 }
@@ -761,6 +777,8 @@ pub struct ScheduleFile {
     pub timeout: Option<String>,
     /// `created:` as written (RFC 3339).
     pub created: Option<String>,
+    /// `run_timeout:` as written (88).
+    pub run_timeout: Option<String>,
     /// Body, trimmed.
     pub prompt: String,
 }
@@ -797,6 +815,7 @@ impl ScheduleFile {
             expires: fm.expires,
             timeout: fm.timeout,
             created: fm.created,
+            run_timeout: fm.run_timeout,
             prompt: parsed.content.trim().to_string(),
         })
     }
@@ -829,6 +848,7 @@ impl ScheduleFile {
             expires: some(&self.expires),
             timeout: some(&self.timeout),
             created: some(&self.created),
+            run_timeout: some(&self.run_timeout),
             prompt: &self.prompt,
         }
     }
@@ -892,6 +912,9 @@ pub fn render(a: &FileArgs<'_>) -> String {
     }
     if let Some(n) = a.max_runs {
         s.push_str(&format!("max_runs: {n}\n"));
+    }
+    if let Some(v) = a.run_timeout {
+        s.push_str(&format!("run_timeout: {}\n", v.trim()));
     }
     if let Some(c) = a.cwd {
         s.push_str(&format!("cwd: {}\n", yaml_str(c.trim())));
@@ -1111,6 +1134,7 @@ mod tests {
         expires: None,
         timeout: None,
         created: None,
+        run_timeout: None,
         prompt: "p",
     };
 
@@ -1127,6 +1151,7 @@ mod tests {
             approvals: false,
             agent: Some("alice".into()),
             project: Some("web: v2".into()),
+            run_timeout: Some("45m".into()),
             prompt: "do it".into(),
             ..ScheduleFile::default()
         };
@@ -1137,10 +1162,37 @@ mod tests {
         assert_eq!(back.cwd.as_deref(), Some("~/src"));
         assert_eq!(back.agent.as_deref(), Some("alice"));
         assert_eq!(back.project.as_deref(), Some("web: v2"));
+        assert_eq!(back.run_timeout.as_deref(), Some("45m"));
+        assert_eq!(render(&back.args()), text);
         assert_eq!(back.prompt, "do it");
         // Broken semantics (no clause) still read: the editor can repair it.
         let broken = ScheduleFile::read("y", "---\nquiet: true\n---\n").unwrap();
         assert!(broken.cron.is_none() && broken.quiet && broken.prompt.is_empty());
+    }
+
+    #[test]
+    fn run_timeout_key() {
+        // 88: a humantime per-run cap, ≥ 30s, allowed with every kind and with `when:`.
+        let s = parse("x", &md("every: 1h\nrun_timeout: 45m", "p")).unwrap();
+        assert_eq!(s.run_timeout, Some(Duration::from_secs(2700)));
+        assert_eq!(parse("x", &md("every: 1h", "p")).unwrap().run_timeout, None);
+        assert_eq!(
+            parse("x", &md("every: 1h\nrun_timeout: 10s", "p")).unwrap_err(),
+            "run_timeout: below 30s"
+        );
+        assert!(
+            parse("x", &md("every: 1h\nrun_timeout: soon", "p"))
+                .unwrap_err()
+                .starts_with("run_timeout:")
+        );
+        let at = parse("x", &md("at: 2099-01-01T10:00\nrun_timeout: 2h", "p")).unwrap();
+        assert_eq!(at.run_timeout, Some(Duration::from_secs(7200)));
+        let w = parse(
+            "x",
+            &md("every: 60s\nwhen: a.py\nmax_runs: 1\nrun_timeout: 90s", "p"),
+        )
+        .unwrap();
+        assert_eq!(w.run_timeout, Some(Duration::from_secs(90)));
     }
 
     #[test]

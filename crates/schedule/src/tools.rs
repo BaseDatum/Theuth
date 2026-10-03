@@ -30,6 +30,7 @@ the cap is reached, or a run calls `schedule_done()` — use `every: 0s` for \"k
 last output arrives in `<until>`. Draft a loop with `enabled: false` and show the user the file; start it by \
 editing that line when they say so. `approvals: false` lets a run act without permission prompts: propose it \
 only when nobody will be there to answer, and say so. When asked how a loop is going, call `schedule_status()`. \
+`run_timeout:` (e.g. `45m`) caps one run; the default is Settings › Agent loop › Routines. \
 Read `skills/loops.md` before designing one that supervises subagents.";
 
 /// The bundled `loops` skill (33 §5.3): the supervisor pattern, written to
@@ -97,6 +98,8 @@ pub struct ScheduleArgs {
     pub until: Option<String>,
     /// Stop after this many runs; the last history row says `max_runs N reached`.
     pub max_runs: Option<u32>,
+    /// Time limit for one run (`45m`, `2h`; at least `30s`). A run still going is cancelled and its history row says `timeout`. Default: the `schedule.run_timeout_secs` setting (30 min unless changed in Settings › Agent loop › Routines).
+    pub run_timeout: Option<String>,
     /// Directory `until` runs in and the run's session starts in (`~` allowed). Must exist.
     pub cwd: Option<String>,
     /// false: the run never asks permission; say so when you propose it. Default true.
@@ -170,6 +173,7 @@ impl Tool for ScheduleTool {
             prompt: &a.prompt,
             until: a.until.as_deref(),
             max_runs: a.max_runs,
+            run_timeout: a.run_timeout.as_deref(),
             cwd: a.cwd.as_deref(),
             approvals: a.approvals.unwrap_or(true),
             // 40 §1.12: a watcher is always written `enabled: false`.
