@@ -5,7 +5,7 @@
 //! - commands on the `"agent"` actor ([`Agents`]): [`SendInput`], [`Steer`],
 //!   [`Withdraw`], [`ListQueued`], [`Undo`], [`Redo`], [`Cancel`], [`TrimAssistant`], [`Compact`],
 //!   [`SetCompactStyle`], [`SetTitleModel`], [`GetTitleModel`], [`SetVisionModel`], [`GetVisionModel`], [`ListSessions`], [`LoadSession`], [`RenameSession`], [`ListAgents`],
-//!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`ShowPrompt`], [`ListSkills`],
+//!   [`ListModels`], [`SetModel`], [`GetDefaultModel`], [`SetEffort`], [`GetDefaultEffort`], [`ShowPrompt`], [`ListSkills`],
 //!   [`LoadSkill`], [`UseSkill`], [`AddSkill`], [`RemoveSkill`], [`AddSkillRepo`],
 //!   [`RemoveSkillRepo`], [`SyncSkills`], [`ListLogins`], [`Login`], [`Logout`],
 //!   [`ListProviders`], [`AddProvider`], [`RemoveProvider`], [`NewSession`],
@@ -1101,15 +1101,28 @@ pub struct GetDefaultModel;
 /// `ask` → `Result<(), String>`: set (or clear with `None`) the reasoning
 /// effort. Validated against the session's current model via the catalog
 /// (unknown/passthrough models accept any genai keyword or integer budget).
-/// Like [`SetModel`]: switches `session` (from its next turn) and makes the
-/// value the default (`agent.effort` in config.yaml).
+/// Like [`SetModel`]: switches `session` (from its next turn); with `manual`
+/// the value also becomes the default for new sessions (83 §2: a human
+/// picked it in an effort picker): `agent.effort` in `<data_dir>/config.yaml`
+/// is rewritten and [`AgentEvent::DefaultEffortChanged`] follows.
+/// Programmatic changes pass `manual: false` and never touch the default.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetEffort {
-    /// Session to switch; `None` changes only the default.
+    /// Session to switch; `None` changes only the default (needs `manual`).
     pub session: Option<SessionId>,
     /// Effort keyword or token budget; `None` clears.
     pub effort: Option<String>,
+    /// A person chose this in an effort picker: make it the default too.
+    /// Defaults to `true` so older frontends keep their behaviour.
+    #[serde(default = "yes")]
+    pub manual: bool,
 }
+
+/// `ask` → `Option<String>`: the effort new sessions start on (`agent.effort`
+/// as last set by a manual [`SetEffort`]), the live value rather than the
+/// config file read at startup (83 §3).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetDefaultEffort;
 
 /// One selectable model.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1864,6 +1877,12 @@ pub enum AgentEvent {
         /// Effort keyword or budget; `None` = provider default.
         effort: Option<String>,
     },
+    /// The default effort for new sessions changed (83 §3): a manual
+    /// [`SetEffort`] made `effort` the new `agent.effort`. Global, no session.
+    DefaultEffortChanged {
+        /// Effort keyword or budget; `None` = provider default.
+        effort: Option<String>,
+    },
     /// Compaction started: the summariser call is in flight (design doc 07 §8).
     Compacting {
         /// Session.
@@ -2073,7 +2092,7 @@ impl AgentEvent {
             | Self::ContextUsed { session, .. }
             | Self::SessionClosing { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } => Some(*child),
-            Self::DefaultModelChanged { .. } => None,
+            Self::DefaultModelChanged { .. } | Self::DefaultEffortChanged { .. } => None,
         }
     }
 }

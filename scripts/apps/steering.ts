@@ -196,7 +196,8 @@ async function runTurn(
   };
   await rpc.call("rename_session", [session, title]);
   await rpc.call("set_model", [session, model]);
-  if (effort) await rpc.call("set_effort", [session, effort]);
+  // 83 §2: this run's effort is the probe session's alone, never the engine default.
+  if (effort) await rpc.call("set_effort", [session, effort, false]);
   if (hidden.length) await rpc.call("set_mcp_hidden", [session, hidden, true]);
 
   const finished =
