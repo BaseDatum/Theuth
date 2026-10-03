@@ -30,7 +30,7 @@ Where (`clock::prepend_due`):
 
 | input | seam |
 |---|---|
-| user turn, human or harness (`Input.text`, not a `replay`) | `Turn::take_input`, before `user_message` — so `TurnStarted.text` and the title counter see the unstamped text |
+| user turn, human or harness (`Input.text`, not a `replay`) | `Turn::take_input`, before `user_message` — so `TurnStarted.text` and the title counter see the unstamped text. A regenerate (`RestartTurn { input: None }`) replays the stored, stamped row to the model and publishes `clock::strip_owned` of it (82 REGEN-STAMP) |
 | tool batch | first `ToolResponse.content` of the batch, before `ChatMessage::from(responses)` — a long autonomous run still glances at the clock |
 
 A text already opening with `<time ` is left alone. The stamp is part of the message text, so it is persisted and replayed byte-identically (07 rule 8): one append, no cache cost. `SessionState.last_stamp` holds the instant; `resume` recovers it from the newest stamped row in the frame (`loop_::last_stamp`), so a restart neither loses `since_last` nor double-stamps within the gap.
@@ -58,7 +58,7 @@ The builders take `now: DateTime<Local>` so tests pin the clock.
 - UI `Entry.at?: number` (ms): `Date.parse(context.at)` on load; `Date.now()` when a live card is created (own send, `TurnStarted`, `InputInjected`, `TextDelta`, `ToolCallStarted`). Absent → nothing shown.
 - `Stamp`: `14:03` today, `Mon 14:03` this week, `28 Sep 14:03` older (`lib/time.ts formatAt`); full local date-time in `title`. Fine pointer: visible on message hover (`group-hover`); coarse pointer (`usePointerCoarse`): a tap on the message toggles it. It lives in the action row at the right on both user and assistant cards; the row is laid out whether or not the stamp is visible, so it never moves anything.
 - Gap divider: `withGaps` in `Transcript.buildRows` puts a hairline row `1 h 12 min later · 15:15` before any row ≥ 1 h (`GAP_MS`) after the previous timed row. Derived per render, never stored.
-- `stripTime`: `fromHistory` removes a leading `<time …/>` line from user text and tool output before classification and display. Live events carry the unstamped text already.
+- `clock::strip_owned` in `supervisor::render`: `HistoryEntry::User.text` never carries the stamp (82 REGEN-STAMP); the TUI's `user_entries` strips too. UI `splitTime` (`lib/time.ts`): every user text the desktop renders — `fromHistory`, `TurnStarted`, `InputInjected` — is split there; the stamp's instant is the row's `at` when `messages.at` is absent (rows before 0026). Tool output in `fromHistory` is split the same way.
 
 ## 6. 07 amendment
 
