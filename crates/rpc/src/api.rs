@@ -127,6 +127,11 @@ pub struct Info {
     pub compact_style: CompactStyle,
     /// `agent.subagents.max_runtime_secs`.
     pub subagent_timeout_secs: u64,
+    /// `schedule.run_timeout_secs` (88): seconds a routine run may take before it is
+    /// cancelled and its history row says `timeout`; a routine's own `run_timeout:`
+    /// overrides it. `0` from an older harness.
+    #[serde(default)]
+    pub schedule_run_timeout_secs: u64,
     /// `agent.max_tool_rounds`: tool-call rounds a turn may run before the loop lands.
     pub max_tool_rounds: u32,
     /// `agent.stream_idle_secs`: seconds without a stream event before a model call is abandoned.
@@ -367,6 +372,9 @@ pub trait Api {
     /// Persist `agent.subagents.max_runtime_secs` and use it for newly spawned turns.
     #[method(name = "set_subagent_timeout")]
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()>;
+    /// Persist `schedule.run_timeout_secs` (88); runs fired from then on use it.
+    #[method(name = "set_schedule_run_timeout")]
+    async fn set_schedule_run_timeout(&self, seconds: u64) -> RpcResult<()>;
     /// Persist `agent.max_tool_rounds`; new sessions use it.
     #[method(name = "set_max_tool_rounds")]
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()>;
@@ -2340,6 +2348,15 @@ impl ApiServer for Server {
             Ok(c) if !c.name.is_empty() => c.name,
             _ => platform::process::hostname().to_owned(),
         };
+        // 88: the schedule actor's live value; the config file when it is not running.
+        let schedule_run_timeout_secs = match schedule() {
+            Ok(s) => send(&s, schedule::GetRunTimeout).await?,
+            Err(_) => self
+                .rt
+                .section::<schedule::ScheduleConfig>("schedule")
+                .map(|c| c.run_timeout_secs)
+                .unwrap_or(1800),
+        };
         let communication =
             ask::<Agents, _>(agent::AGENT_ACTOR, GetCommunication { session: None }).await?;
         Ok(Info {
@@ -2351,6 +2368,7 @@ impl ApiServer for Server {
             approvals,
             compact_style,
             subagent_timeout_secs,
+            schedule_run_timeout_secs,
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
@@ -2904,6 +2922,10 @@ impl ApiServer for Server {
 
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentTimeout { seconds }).await
+    }
+
+    async fn set_schedule_run_timeout(&self, seconds: u64) -> RpcResult<()> {
+        send(&schedule()?, schedule::SetRunTimeout { seconds }).await
     }
 
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()> {

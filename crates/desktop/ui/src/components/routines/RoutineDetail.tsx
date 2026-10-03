@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft, FlaskConical, PanelLeft, Play } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { useModels } from '@/components/agents/queries'
 import { Field } from '@/components/agents/RuntimeAccessFields'
 import { NativeSelect } from '@/components/routines/NativeSelect'
 import { Pulse } from '@/components/chat/Pulse'
@@ -22,12 +23,14 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { useConnection } from '@/store/connection'
 import type { RunInfo } from '@/rpc/bindings/RunInfo'
 import type { ScheduleFile } from '@/rpc/bindings/ScheduleFile'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
@@ -60,7 +63,19 @@ const NEW: ScheduleFile = {
   expires: null,
   timeout: null,
   created: null,
+  run_timeout: null,
   prompt: '',
+}
+
+// Radix Select refuses '' as a value.
+const NONE = '__none'
+
+/** Seconds as a short humantime: whole hours → `2h`, whole minutes → `30m`, else `90s`; unknown/0 → `30m`. */
+function shortDuration(secs: number | undefined): string {
+  if (!secs) return '30m'
+  if (secs % 3600 === 0) return `${secs / 3600}h`
+  if (secs % 60 === 0) return `${secs / 60}m`
+  return `${secs}s`
 }
 
 const TITLES: Record<Section, string> = { overview: 'Overview', prompt: 'Prompt', history: 'History', danger: 'Danger' }
@@ -239,6 +254,8 @@ function Editor({ initial, info, section, isNew }: { initial: ScheduleFile; info
   const navigate = useNavigate()
   const agents = useAgents().data ?? []
   const projects = useBoardProjects()
+  const models = useModels()
+  const runTimeoutDefault = shortDuration(useConnection((s) => s.info)?.schedule_run_timeout_secs)
   const [f, setF] = useState<ScheduleFile>(initial)
   useEffect(() => setF(initial), [initial])
   const set = <K extends keyof ScheduleFile>(k: K, v: ScheduleFile[K]) => setF((x) => ({ ...x, [k]: v }))
@@ -319,11 +336,27 @@ function Editor({ initial, info, section, isNew }: { initial: ScheduleFile; info
                 ))}
               </datalist>
             </Field>
-            <Field label="Model" id="rt-model" hint="optional">
-              <Input id="rt-model" value={f.model ?? ''} placeholder="provider/model" onChange={(e) => set('model', str(e.target.value))} />
+            <Field label="Model" id="rt-model" hint="the run's session; default = the engine's default model">
+              <Select value={f.model ?? NONE} onValueChange={(v) => set('model', v === NONE ? null : v)}>
+                <SelectTrigger id="rt-model" size="sm" className="w-full">
+                  <SelectValue placeholder="Engine default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>Engine default</SelectItem>
+                  {models.data?.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name} <span className="text-fg-tertiary">{m.provider}</span>
+                    </SelectItem>
+                  ))}
+                  {f.model && !models.data?.some((m) => m.id === f.model) && <SelectItem value={f.model}>{f.model}</SelectItem>}
+                </SelectContent>
+              </Select>
             </Field>
             <Field label="Directory" id="rt-cwd" hint="where until runs and the run starts">
               <Input id="rt-cwd" className="font-mono" value={f.cwd ?? ''} placeholder="~/src/app" onChange={(e) => set('cwd', str(e.target.value))} />
+            </Field>
+            <Field label="Time limit per run" id="rt-run-timeout" hint={`45m, 2h; empty = the Settings default (${runTimeoutDefault})`}>
+              <Input id="rt-run-timeout" className="font-mono" value={f.run_timeout ?? ''} placeholder={runTimeoutDefault} onChange={(e) => set('run_timeout', str(e.target.value))} />
             </Field>
           </div>
           {kind !== 'at' && (

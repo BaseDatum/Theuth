@@ -26,6 +26,8 @@ export type Info = {
   approvals: ApprovalsState
   compact_style: CompactStyle
   subagent_timeout_secs: number
+  /** `schedule.run_timeout_secs` (88): seconds a routine run may take before it is cancelled; a routine's `run_timeout:` overrides it. Absent/0 on an older engine. */
+  schedule_run_timeout_secs?: number
   max_tool_rounds: number
   /** `agent.stream_idle_secs`; absent on an older engine. */
   stream_idle_secs?: number

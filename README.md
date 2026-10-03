@@ -260,7 +260,7 @@ Config (`~/.theuth/`, created on first run; details in
     create_timeout_secs: 900      # `sandbox_create` waits this long for `ready`; step_timeout_secs 600 per bring-up step; health_interval_secs 60
   schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
-    run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`
+    run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`; a file's `run_timeout:` overrides it
   a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.theuth/a2a/peers.yaml
     enabled: false                # false: no actor, no listener, no card fetch, no credential load. Also needs agent.communication: true
     listen: 127.0.0.1:7780        # loopback only; restart to change
