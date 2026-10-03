@@ -49,12 +49,14 @@ sha2 = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }
 
-# Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2).
+# Mobile only: QR scanning for `/link` and the universal-link handoff (31 §8.2); haptics for the
+# voice-note gesture (89 VOICE-HOLD).
 # Direct versions: these have no other consumer, so they are not in the
 # workspace dependency table.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-deep-link = "2"
+tauri-plugin-haptics = "2"
 
 # macOS only: the meetings island (53 decision 8, 03 §1) — `NSPanel` swizzle, notch geometry,
 # screen-change notification. `objc2`/`block2` are the same line the iOS table pins.
