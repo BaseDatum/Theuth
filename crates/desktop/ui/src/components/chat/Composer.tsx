@@ -49,6 +49,7 @@ import { label as chordLabel, matches as chord } from '@/lib/chord'
 import { useShortcuts } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { noteText } from '@/lib/voice-note'
+import { MIN_NOTE_MS } from '@/lib/hold'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -59,6 +60,7 @@ import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
+import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
@@ -293,6 +295,10 @@ export function Composer({
     noteWave.current = null
     setNoteSource(null)
   }
+  /** 89 VOICE-HOLD: what the mic gesture wants the row to show (held: dot + timer + hint; locked: Delete … Send). */
+  const [stage, setStage] = useState<Stage>('idle')
+  /** "‹ slide to cancel" in the text region; `MicButton` moves it with the finger. */
+  const hint = useRef<HTMLSpanElement>(null)
   // 76 §0.12: one talk per daemon; the Talk button names (and opens) the session that holds it.
   const talking = talk.useTalk()
   const talkElsewhere = talking.phase !== 'off' && talking.session !== null && talking.session !== session
@@ -816,6 +822,7 @@ export function Composer({
       })
       const chunks: Blob[] = []
       rec.ondataavailable = (e) => chunks.push(e.data)
+      let startedAt = 0
       rec.onstop = () => {
         dropNoteWave()
         for (const track of stream.getTracks()) track.stop()
@@ -823,7 +830,10 @@ export function Composer({
         const discard = recorder.current?.discard ?? true
         recorder.current = null
         setRecording(false)
-        if (!discard) void sendNote(new Blob(chunks, { type: rec.mimeType }))
+        if (discard) return
+        // 89 VOICE-HOLD: a release within `MIN_NOTE_MS` of the start is a slip, not a message — no upload.
+        if (performance.now() - startedAt < MIN_NOTE_MS) toast('Hold to record, release to send', { duration: 2000 })
+        else void sendNote(new Blob(chunks, { type: rec.mimeType }))
       }
       // 82 §C: a dedicated context for the wave (speech.ts owns the audio session); closed with the recording.
       const actx = new AudioContext()
@@ -835,6 +845,7 @@ export function Composer({
         },
       }
       recorder.current = { rec, discard: false }
+      startedAt = performance.now()
       rec.start()
       setNoteSource(wave.source)
       setRecording(true)
@@ -1016,11 +1027,14 @@ export function Composer({
           }}
         />
         <div className="flex items-end gap-1">
+          {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
+          {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
+          {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
           <Popover open={menu} onOpenChange={setMenu}>
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
-                className="size-9 shrink-0 rounded-full text-fg-secondary"
+                className={cn('size-9 shrink-0 rounded-full text-fg-secondary', stage !== 'idle' && 'hidden')}
                 aria-label="Add"
               >
                 <Plus className="size-5" />
@@ -1075,7 +1089,7 @@ export function Composer({
               </Button>
             </PopoverContent>
           </Popover>
-          <div className="min-w-0 flex-1">
+          <div className="relative min-w-0 flex-1">
             {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
             <RecordingBox recording={recording} source={noteSource}>
               {dictating && dict.active ? (
@@ -1108,6 +1122,7 @@ export function Composer({
                 />
               )}
             </RecordingBox>
+            {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
           </div>
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
@@ -1135,7 +1150,7 @@ export function Composer({
                 <TooltipContent>End talk</TooltipContent>
               </Tooltip>
             </div>
-          ) : canDictate && !dictating && !recording && !text.trim() && (
+          ) : canDictate && !dictating && stage === 'idle' && !text.trim() && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1173,10 +1188,12 @@ export function Composer({
                 <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
               </Tooltip>
             ) : (
-              // Tap → dictation (`dictReason` says why not, via the tooltip); hold → voice note (45 §7.2) while held, swipe up locks.
+              // 89 VOICE-HOLD: tap → dictation (`dictReason` says why not, via the tooltip); hold → voice note, slide up locks, left cancels.
               <MicButton
                 recording={recording}
-                secs={secs}
+                source={noteSource}
+                hint={hint}
+                onStage={setStage}
                 disabled={busy || transcribing}
                 reason={dictReason}
                 onTap={dictate}
@@ -1184,48 +1201,50 @@ export function Composer({
                 onStop={stopRecording}
               />
             ))}
-          {at !== 'idle' && session ? (
-            <>
-              {/* Item 7: a finger's steer. Tap queues the box into the running turn; hold interrupts (with the box,
-                  or the queued steers when it is empty). Not `disabled`: an empty box still takes the hold. */}
-              {(filled || at === 'queued') && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className={cn(
-                        'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
-                        (!filled || busy || dictating || readOnly) && 'opacity-50',
-                      )}
-                      aria-label="Steer"
-                      aria-disabled={!filled || busy || dictating || readOnly}
-                      {...steerPress}
-                    >
-                      <ArrowUp className="size-5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
-                  </TooltipContent>
-                </Tooltip>
-              )}
+          {/* 89 VOICE-HOLD: while a note is held or locked the row is the recording's; these come back on reset. */}
+          {stage === 'idle' &&
+            (at !== 'idle' && session ? (
+              <>
+                {/* Item 7: a finger's steer. Tap queues the box into the running turn; hold interrupts (with the box,
+                    or the queued steers when it is empty). Not `disabled`: an empty box still takes the hold. */}
+                {(filled || at === 'queued') && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        className={cn(
+                          'size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover select-none touch-none',
+                          (!filled || busy || dictating || readOnly) && 'opacity-50',
+                        )}
+                        aria-label="Steer"
+                        aria-disabled={!filled || busy || dictating || readOnly}
+                        {...steerPress}
+                      >
+                        <ArrowUp className="size-5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {touch() ? 'Steer · hold to interrupt' : `Steer (${chordLabel(keys.send)}) · hold or ${chordLabel(keys.interject)} to interrupt`}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                <Button
+                  className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
+                  aria-label="Stop"
+                  onClick={() => void api.cancel(session)}
+                >
+                  <Square className="size-4 fill-current" />
+                </Button>
+              </>
+            ) : (
               <Button
-                className="size-9 shrink-0 rounded-full bg-danger text-primary-foreground hover:bg-danger/90"
-                aria-label="Stop"
-                onClick={() => void api.cancel(session)}
+                className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
+                aria-label="Send"
+                disabled={!filled || busy || dictating || readOnly}
+                onClick={() => gesture('press')}
               >
-                <Square className="size-4 fill-current" />
+                <ArrowUp className="size-5" />
               </Button>
-            </>
-          ) : (
-            <Button
-              className="size-9 shrink-0 rounded-full bg-fg-accent text-primary-foreground hover:bg-fg-accent-hover"
-              aria-label="Send"
-              disabled={!filled || busy || dictating || readOnly}
-              onClick={() => gesture('press')}
-            >
-              <ArrowUp className="size-5" />
-            </Button>
-          )}
+            ))}
         </div>
       </div>
     </div>

@@ -70,6 +70,7 @@ mod mobile {
         builder
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
+            .plugin(tauri_plugin_haptics::init())
             .invoke_handler(tauri::generate_handler![commands::connection])
             .setup(|app| {
                 let builder =
