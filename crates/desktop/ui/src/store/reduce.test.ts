@@ -303,6 +303,34 @@ test('TurnStarted echo: skipped for our own send (once) and engine wrappers, ski
   expect(s.entries[0]).toMatchObject({ kind: 'user', skill: 'k', text: 'words', turn: 3 })
 })
 
+// REGEN-STAMP (74 §3): a regenerated turn's `TurnStarted` replays the stored opener; whatever `<time …/>` line the
+// engine's row carries is never the bubble's text, on the live echo, a steer injection or the history reload — and
+// wrapped openers still classify behind it.
+test('a leading <time …/> line never renders as user text; the row still classifies and keeps its time', () => {
+  const stamp = '<time now="2026-10-03 00:05 +01:00 (Sat)"/>'
+  const live = run([{ type: 'TurnStarted', session: S, turn: T, text: `${stamp}\nhello`, model: 'm', turn_seq: 1 }])
+  expect(live.entries).toHaveLength(1)
+  expect(live.entries[0]).toMatchObject({ kind: 'user', text: 'hello', turn: 1 })
+  // An own send is matched by its bare text even when the echo arrives stamped.
+  const c = ctx()
+  c.sent.add('hello')
+  expect(apply(empty(S), { type: 'TurnStarted', session: S, turn: T, text: `${stamp}\nhello`, model: 'm', turn_seq: 1 }, c).entries).toEqual([])
+  // A stamped wrapper is still the wrapper: no `you` row.
+  const peer = run([{ type: 'TurnStarted', session: S, turn: T, text: `${stamp}\n<message from="p">\nhi\n</message>`, model: 'm', turn_seq: 2 }])
+  expect(peer.entries).toEqual([])
+  const steer = run([
+    { type: 'InputQueued', session: S, id: 'i1', text: `${stamp}\nlater`, defer: false },
+    { type: 'InputInjected', session: S, id: 'i1', turn: 'T2' },
+  ])
+  expect(steer.entries[0]).toMatchObject({ kind: 'user', text: 'later', injected: true })
+  // History: the stamp's instant is the hover time for a row without `messages.at`; the row's own `at` wins.
+  const stampAt = Date.parse('2026-10-03T00:05+01:00')
+  expect(fromHistory({ role: 'user', text: `${stamp}\nhello`, turn: 3 })[0]).toMatchObject({ kind: 'user', text: 'hello', turn: 3, at: stampAt })
+  const rowAt = '2026-10-03T01:00:00Z'
+  expect(fromHistory({ role: 'user', text: `${stamp}\nhello`, turn: 3, context: { ...msg(3), at: rowAt } })[0]).toMatchObject({ text: 'hello', at: Date.parse(rowAt) })
+  expect(fromHistory({ role: 'user', text: 'plain', turn: 3 })[0]).not.toHaveProperty('at')
+})
+
 test('Compacted: clear wipes, other styles add a divider after the closed tail', () => {
   const streaming = run([{ type: 'TextDelta', session: S, turn: T, text: 'a' }])
   const div = apply(streaming, { type: 'Compacted', session: S, turn: T, epoch: 2, before: 1, after: 400, folded: 3, style: 'summary' }, ctx())

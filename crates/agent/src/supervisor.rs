@@ -6767,7 +6767,8 @@ pub(crate) fn render(
             ChatRole::User => out.push((
                 *seq,
                 HistoryEntry::User {
-                    text: text_of(&m.content),
+                    // 74 §3, §5: the stamp is the model's; the row's `at` is the human's clock.
+                    text: clock::strip_owned(text_of(&m.content)),
                     turn: opens.then_some(*seq),
                     context: context.cloned(),
                     peer: None,

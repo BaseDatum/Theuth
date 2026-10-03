@@ -3,7 +3,7 @@ import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
 import { classify, humanSecs, type Injected } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
-import { stripTime } from "@/lib/time";
+import { splitTime } from "@/lib/time";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { PeerOrigin } from "@/rpc/bindings/PeerOrigin";
 import type { TodoSnapshot } from "@/rpc/bindings/TodoSnapshot";
@@ -329,8 +329,9 @@ function historyEntries(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined;
   switch (h.role) {
     case "user": {
-      // 74 §3: the engine's `<time …/>` line is for the model; the row's `at` is what the human sees.
-      const text = stripTime(h.text);
+      // 74 §3: the engine's `<time …/>` line is for the model; the row's `at` — or the stamp's instant for a row
+      // stored before `messages.at` existed — is what the human sees.
+      const { text, at } = splitTime(h.text);
       // 52 §6: the typed metadata, never the `<vision_observation>` prose, makes a row a consultation note.
       const vision = h.vision ?? context?.vision;
       if (vision)
@@ -354,7 +355,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
         undefined,
         h.turn ?? undefined,
         context,
-      );
+      ).map((e) => (at === undefined ? e : { ...e, at }));
     }
     case "assistant":
       return h.text.trim()
@@ -385,7 +386,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
           ...(h.result
             ? {
                 result: {
-                  output: stripTime(h.result[0]),
+                  output: splitTime(h.result[0]).text,
                   isError: h.result[1],
                   files: h.files ?? [],
                 },
@@ -702,15 +703,16 @@ function turn(
     // as a plain `you` row). Own sends and injected steers are already on
     // screen: stamp them with the turn instead.
     case "TurnStarted": {
-      const cls = classify(e.text);
+      const { text } = splitTime(e.text);
+      const cls = classify(text);
       const wrapped = cls !== null && cls[0]?.kind !== "skill";
       const own =
-        !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(e.text));
+        !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(text));
       const entries = own
         ? stampUser(s.entries, e.turn_seq)
         : wrapped
           ? s.entries
-          : [...s.entries, ...userEntries(e.text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
+          : [...s.entries, ...userEntries(text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
       return {
         ...s,
         entries,
@@ -730,10 +732,11 @@ function turn(
       const at = s.queued.findIndex((q) => q.id === e.id);
       const q = s.queued[at];
       if (!q) return s;
+      const { text } = splitTime(q.text);
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...userEntries(q.text, classify(q.text), true).map((x) => ({ ...x, at: Date.now() }))],
+        entries: [...s.entries, ...userEntries(text, classify(text), true).map((x) => ({ ...x, at: Date.now() }))],
         lastInjected: e.turn,
       };
     }
