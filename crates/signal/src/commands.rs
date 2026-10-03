@@ -283,10 +283,13 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             text(out)
         }
         "/model" => {
+            // 82 §2: with a session the switch is that session's; only the
+            // session-less form has nothing but the default to set.
             let info = agent()?
                 .ask(agent::SetModel {
                     session: cx.session,
                     model: arg.to_owned(),
+                    manual: cx.session.is_none(),
                 })
                 .await
                 .map_err(err)?;

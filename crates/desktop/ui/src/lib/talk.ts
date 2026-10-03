@@ -145,6 +145,19 @@ let talk: Talk = OFF
 const subs = new Set<() => void>()
 /** The relay client's mic graph while a `client`-sink talk of ours runs. */
 let tap: Tap | null = null
+/** 82 §D: raw `TalkLevel` packets of the talk, for the waveform when there is no `tap` (local engine). */
+const levelSubs = new Set<(levels: number[]) => void>()
+
+/** The mic graph of the running talk, if this browser captures it (relay client); else `null`. */
+export const currentTap = (): Tap | null => tap
+
+/** Each level packet (eight 20 ms RMS values, oldest first) of the talk. Returns the unsubscribe. */
+export function onLevels(cb: (levels: number[]) => void): () => void {
+  levelSubs.add(cb)
+  return () => {
+    levelSubs.delete(cb)
+  }
+}
 /** A2: `Submitted` seen and the turn has not left `listening` yet — the next `thinking` is the model taking it. */
 let committed = false
 
@@ -199,6 +212,9 @@ export function handle(e: SubEvent): void {
       if (e.state !== 'listening') committed = false
       set({ ...talk, state: e.state, subs: applySubtitles(talk.subs, e) })
       return
+    case 'TalkLevel':
+      for (const cb of levelSubs) cb(e.rms)
+      return
     case 'Degraded':
       set({ ...talk, degraded: NO_AEC })
       return
@@ -227,6 +243,7 @@ export function installTalkListeners(): () => void {
     on('TalkStarted', handle),
     on('TalkState', handle),
     on('Heard', handle),
+    on('TalkLevel', handle),
     on('Saying', handle),
     on('Submitted', handle),
     on('Interrupted', handle),

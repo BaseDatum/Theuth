@@ -3109,9 +3109,12 @@ pub struct Model {
     pub frame: usize,
     /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
-    /// Model of the shown session (`TurnStarted.model`; the config default before that).
+    /// Model of the shown session (`TurnStarted.model`; `default_model` before that).
     /// For an ACP child this is the harness name (`omp`).
     pub model_id: String,
+    /// The engine's default for new sessions (`Info.default_model`, then
+    /// `DefaultModelChanged`, 82 §3): what the header shows after `/new`.
+    pub default_model: String,
     /// The LLM an ACP child's harness reports (06 §8.2); the header shows
     /// `model_id · harness_model`. `None` for native sessions.
     pub harness_model: Option<String>,
@@ -3350,13 +3353,14 @@ impl Model {
     /// Fresh state showing `default_model` in the header.
     pub fn new(default_model: String, approvals: bool) -> Self {
         Self {
-            model_id: default_model,
+            model_id: default_model.clone(),
+            default_model,
             approvals_global: approvals,
             ..Self::default()
         }
     }
 
-    /// `Self::new` keeping the current model, effort, catalog and skill index: `/new` and `/resume`.
+    /// `Self::new` on the engine's default model, keeping effort, catalog and skill index: `/new` and `/resume`.
     fn reset(&mut self) {
         *self = Self {
             effort: self.effort.take(),
@@ -3381,7 +3385,10 @@ impl Model {
             dictation_pending: self.dictation_pending.take(),
             dictation_model: self.dictation_model.clone(),
             attached: self.attached.take(),
-            ..Self::new(std::mem::take(&mut self.model_id), self.approvals_global)
+            ..Self::new(
+                std::mem::take(&mut self.default_model),
+                self.approvals_global,
+            )
         };
     }
 
@@ -5439,6 +5446,14 @@ impl Model {
                 }
                 return;
             }
+            // 82 §3: global; the draft header (no session open) follows it.
+            AgentEvent::DefaultModelChanged { model } => {
+                if self.session.is_none() {
+                    self.model_id = model.clone();
+                }
+                self.default_model = model;
+                return;
+            }
             ev => ev,
         };
         // Roster bookkeeping for the subtree, independent of what is shown.
@@ -5860,7 +5875,8 @@ impl Model {
             | AgentEvent::TitleChanged { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::ContextChanged { .. }
-            | AgentEvent::TodoChanged { .. } => {}
+            | AgentEvent::TodoChanged { .. }
+            | AgentEvent::DefaultModelChanged { .. } => {}
             AgentEvent::Harvesting { .. } => self.harvesting = true,
             AgentEvent::Harvested { added, updated, .. } => {
                 self.harvesting = false;
@@ -9444,6 +9460,8 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
 /// several peer messages becomes one card each; anything else is `you`,
 /// stamped with `turn` when the input opened one.
 fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
+    // 74 §3: the model's `<time …/>` line is never a `you` row.
+    let text = agent::clock::strip_owned(text);
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {

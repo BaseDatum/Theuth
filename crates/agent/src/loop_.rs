@@ -1586,6 +1586,9 @@ impl Message<RestartTurn> for Session {
         let store = &self.shared.store;
         // 48 §4.4 regenerate: replay what the model would see, not the raw row —
         // and refuse before the destructive cut when nothing of it is left.
+        // 74 §3: the stored opener carries the model's `<time …/>` stamp; the
+        // text frontends get (`TurnStarted`, the title) is the human's words,
+        // as on the send path.
         let input = match m.input {
             Some((text, files)) => Input {
                 text,
@@ -1604,7 +1607,7 @@ impl Message<RestartTurn> for Session {
                     .filter(|o| !text_of(&o.content).trim().is_empty())
                     .ok_or("opener was removed from context; edit it instead")?;
                 Input {
-                    text: text_of(&opener.content),
+                    text: clock::strip_owned(text_of(&opener.content)),
                     files: vec![],
                     replay: Some(opener),
                     ticket: m.ticket,
@@ -5605,6 +5608,10 @@ mod interrupt_tests;
 /// 81 MEETING-DIET: `Toolset.hint_limit` and the title pin, at the same fake provider.
 #[cfg(test)]
 mod meeting_diet_tests;
+
+/// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
+#[cfg(test)]
+mod regen_stamp_tests;
 
 #[cfg(test)]
 mod tests {

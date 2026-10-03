@@ -634,7 +634,7 @@ export function on<T extends WireEvent["type"]>(
   };
 }
 
-/** Route one frame's events into `st` (the engine they came from): session slices, approvals, asks, secret requests, then `on` listeners. */
+/** Route one frame's events into `st` (the engine they came from): session slices, approvals, asks, secret requests, Info, then `on` listeners. */
 export function dispatch(events: WireEvent[], st: Stores = active()): void {
   st.sessions.getState().applyEvents(events);
   const approvals = st.approvals.getState();
@@ -654,6 +654,11 @@ export function dispatch(events: WireEvent[], st: Stores = active()): void {
     else if (e.type === "AskResolved") asks.resolve(e.id);
     else if (e.type === "SecretRequested") secrets.add(e);
     else if (e.type === "SecretResolved") secrets.resolve(e.id);
+    // 82 §3: the new-chat draft shows this engine's live default; a reconnect's `info()` agrees.
+    else if (e.type === "DefaultModelChanged") {
+      const conn = st.connection.getState();
+      if (conn.info) conn.setInfo({ ...conn.info, default_model: e.model });
+    }
     if (live) listeners.get(e.type)?.forEach((cb) => cb(e));
   }
 }

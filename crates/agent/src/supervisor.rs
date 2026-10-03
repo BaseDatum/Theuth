@@ -83,19 +83,18 @@ use crate::{
     AgentState, AncestorInfo, Ancestors, ArchiveSession, BroadcastOutcome, BroadcastReceipt,
     BroadcastRequest, BroadcastRow, BroadcastTargets, Cancel, Compact, CompactStyle, ContextItems,
     DeleteSession, Delivery, DeskSession, EditTurn, EscalateModel, ForkSession, GetCompactStyle,
-    GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetStreamIdle, GetSubagentModel,
-    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, HistoryEntry, ListAcp,
-    ListAgents, ListLogins, ListModels, ListProviders, ListQueued, ListRegistry, ListSessions,
-    ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk,
-    ModelInfo, NewRootSession, NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput,
-    ReadSession, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
-    SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
-    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
-    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TrimAssistant, Undo, UseSkill,
-    Withdraw,
-    effort_of,
+    GetDefaultModel, GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetStreamIdle,
+    GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
+    HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels, ListProviders, ListQueued,
+    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginFinished,
+    LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession, NewSession, PinSession, PinTitle,
+    ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate, RemoveAcp, RemoveContext,
+    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SearchRefresh, SearchSessionPage,
+    SendInput, SessionActivity, SessionContextBreakdown, SessionRead, SessionSummary,
+    SetCompactStyle, SetCompaction, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
+    SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset,
+    SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
+    TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{DurableStore, SessionCostQuery, UnloadSession};
@@ -6106,6 +6105,24 @@ impl Message<SetModel> for Agents {
         m: SetModel,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<ModelInfo, String> {
+        self.set_model(m).await
+    }
+}
+
+impl Message<GetDefaultModel> for Agents {
+    type Reply = String;
+
+    async fn handle(&mut self, _: GetDefaultModel, _: &mut Context<Self, Self::Reply>) -> String {
+        self.default_model.clone()
+    }
+}
+
+impl Agents {
+    /// 82 §2: switch `m.session` now; only a manual pick also becomes the
+    /// default for new sessions (`agent.model` in config.yaml, announced as
+    /// `DefaultModelChanged`). A programmatic switch with no session is a
+    /// no-op beyond resolving the id.
+    async fn set_model(&mut self, m: SetModel) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
             let Some(row) = self
@@ -6140,11 +6157,18 @@ impl Message<SetModel> for Agents {
                 self.apply_effort(id, &actor, None).await;
             }
         }
-        self.default_model = resolved.id.clone();
-        // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
-        let path = self.rt.data_dir.join("config.yaml");
-        if let Err(e) = runtime::write_config_value(&path, "agent", "model", &resolved.id) {
-            tracing::warn!("config.yaml: {e}");
+        if m.manual {
+            self.default_model = resolved.id.clone();
+            // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
+            let path = self.rt.data_dir.join("config.yaml");
+            if let Err(e) = runtime::write_config_value(&path, "agent", "model", &resolved.id) {
+                tracing::warn!("config.yaml: {e}");
+            }
+            self.rt
+                .publish(AgentEvent::DefaultModelChanged {
+                    model: resolved.id.clone(),
+                })
+                .await;
         }
         Ok(ModelInfo::from(&resolved))
     }
@@ -6767,7 +6791,8 @@ pub(crate) fn render(
             ChatRole::User => out.push((
                 *seq,
                 HistoryEntry::User {
-                    text: text_of(&m.content),
+                    // 74 §3, §5: the stamp is the model's; the row's `at` is the human's clock.
+                    text: clock::strip_owned(text_of(&m.content)),
                     turn: opens.then_some(*seq),
                     context: context.cloned(),
                     peer: None,
@@ -9184,6 +9209,105 @@ pub(crate) mod tests {
         assert_eq!(back.escalate_model, cfg.escalate_model);
         let cfg: AgentConfig = serde_yaml::from_str("model: x/y\n").unwrap();
         assert_eq!(cfg.escalate_model, None);
+    }
+
+    /// 82 §2: only a manual pick becomes the default (`default_model`,
+    /// `agent.model` in config.yaml, `DefaultModelChanged`); a programmatic
+    /// switch changes the named session alone, and with no session nothing.
+    /// A new session without a model of its own starts on the default; one
+    /// opened with `CreateSessionOptions.model` (a meeting) leaves it alone.
+    #[tokio::test]
+    async fn only_a_manual_pick_becomes_the_default() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let yaml = dir.join("config.yaml");
+        let at_start = a.default_model.clone();
+        let programmatic = |session, model: &str| SetModel {
+            session,
+            model: model.into(),
+            manual: false,
+        };
+
+        // No session, not manual: resolves and nothing else.
+        let info = a.set_model(programmatic(None, "blind")).await.unwrap();
+        assert_eq!(info.id, "testvis/blind");
+        assert_eq!(a.default_model, at_start);
+        assert!(!yaml.exists());
+
+        // A schedule's `model:` on its own session.
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.set_model(programmatic(Some(root), "testvis/blind"))
+            .await
+            .unwrap();
+        let row = a.store.session(root).await.unwrap().unwrap();
+        assert_eq!(row.model, "testvis/blind");
+        assert_eq!(a.default_model, at_start);
+        assert!(!yaml.exists());
+
+        // The picker: the session and the default move together, announced.
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
+        a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        a.set_model(SetModel {
+            session: Some(root),
+            model: "testvis/eyes".into(),
+            manual: true,
+        })
+        .await
+        .unwrap();
+        let row = a.store.session(root).await.unwrap().unwrap();
+        assert_eq!(row.model, "testvis/eyes");
+        assert_eq!(a.default_model, "testvis/eyes");
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(written.contains("  model: testvis/eyes\n"), "{written}");
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: root,
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        assert!(
+            seen.lock().iter().any(|e| matches!(
+                e,
+                AgentEvent::DefaultModelChanged { model } if model == "testvis/eyes"
+            )),
+            "{:?}",
+            seen.lock()
+        );
+
+        // New sessions: the default, unless the create names a model (a meeting);
+        // that one never writes the default back.
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let plain = agents
+            .ask(CreateSession {
+                options: CreateSessionOptions::default(),
+                peer: None,
+            })
+            .await
+            .unwrap();
+        let row = store.session(plain.session).await.unwrap().unwrap();
+        assert_eq!(row.model, "testvis/eyes");
+        let meeting = agents
+            .ask(CreateSession {
+                options: CreateSessionOptions {
+                    model: Some("testvis/blind".into()),
+                    ..Default::default()
+                },
+                peer: None,
+            })
+            .await
+            .unwrap();
+        let row = store.session(meeting.session).await.unwrap().unwrap();
+        assert_eq!(row.model, "testvis/blind");
+        assert_eq!(agents.ask(GetDefaultModel).await.unwrap(), "testvis/eyes");
+        let written = std::fs::read_to_string(&yaml).unwrap();
+        assert!(written.contains("  model: testvis/eyes\n"), "{written}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `ModelInfo.image` is effective input support (52 §3.2): a Cursor id

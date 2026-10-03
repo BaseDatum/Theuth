@@ -14,22 +14,22 @@ use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
 use agent::supervisor::{HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
-    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentConfig, AgentInfo, Agents, AnswerPeerRequest,
+    AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
     ArchiveSession, Broadcast, BroadcastOutcome, BroadcastReceipt, BroadcastRequest,
     BroadcastTargets, Cancel, CommunicationState, Compact, CompactStyle, ContextBreakdown,
     ContextItems, ContextRemoval, ContextSnapshot, ContextTarget, DeleteSession, Delivery,
-    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetEscalateModel,
-    GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle, GetSubagentModel,
-    GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest, ListAcp, ListActivity,
-    ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers, ListProviders, ListQueued,
-    ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill, Loaded, Login, LoginInfo,
-    Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage, PeerReceipt, PeerRecord,
-    PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext,
-    RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
-    SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
-    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
-    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
+    EditTurn, EscalateModel, ForkSession, GetCommunication, GetCompactStyle, GetDefaultModel,
+    GetEscalateModel, GetMaxSalvages, GetMaxToolRounds, GetPeerMessage, GetStreamIdle,
+    GetSubagentModel, GetSubagentTimeout, GetTitleModel, GetTodos, GetVisionModel, Harvest,
+    ListAcp, ListActivity, ListAgents, ListLogins, ListModels, ListPeerMessages, ListPeers,
+    ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
+    Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession, PeerMessagePage, PeerPage,
+    PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo, QueuedInput, Redo, Regenerate,
+    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
+    SendInput, SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle,
+    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope,
+    SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt,
+    SkillBody, SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
     Authorize, Authorized, CloseResult, CreateSession, CreateSessionOptions, LeaveSession,
@@ -562,9 +562,16 @@ pub trait Api {
     /// Select the harness-wide Bedrock inference profile; `None` restores the AWS default chain.
     #[method(name = "set_aws_profile")]
     async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles>;
-    /// Switch `session` (and the default for new sessions) to `model`.
+    /// Switch `session` to `model`. `manual` (default `true`): a person picked it in a model
+    /// picker, so it also becomes the default for new sessions (82 §2) and `DefaultModelChanged`
+    /// follows on the stream; `false` switches the session only.
     #[method(name = "set_model", with_extensions)]
-    async fn set_model(&self, session: Option<SessionId>, model: String) -> RpcResult<ModelInfo>;
+    async fn set_model(
+        &self,
+        session: Option<SessionId>,
+        model: String,
+        manual: Option<bool>,
+    ) -> RpcResult<ModelInfo>;
     /// Set (or clear with `None`) the reasoning effort for `session` from its next turn, and as
     /// the default (`agent.effort`). Values come from the model's catalog entry
     /// (`ModelInfo.efforts`, or an integer token budget within `budget_min..budget_max`);
@@ -2308,11 +2315,8 @@ async fn attach_pty(
 #[async_trait]
 impl ApiServer for Server {
     async fn info(&self) -> RpcResult<Info> {
-        let default_model = self
-            .rt
-            .section::<AgentConfig>("agent")
-            .unwrap_or_default()
-            .model;
+        // 82 §3: the supervisor's live default, not the config file read at startup.
+        let default_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetDefaultModel).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
         let compact_style = ask::<Agents, _>(agent::AGENT_ACTOR, GetCompactStyle).await?;
@@ -3282,14 +3286,24 @@ impl ApiServer for Server {
         ext: &Extensions,
         session: Option<SessionId>,
         model: String,
+        manual: Option<bool>,
     ) -> RpcResult<ModelInfo> {
         self.authorize_opt(ext, session).await?;
+        let manual = manual.unwrap_or(true);
         if let Some(s) = session
-            && let Some(r) = forward::route(ext, s, "set_model", (session, &model)).await?
+            && let Some(r) = forward::route(ext, s, "set_model", (session, &model, manual)).await?
         {
             return Ok(r);
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, SetModel { session, model }).await
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            SetModel {
+                session,
+                model,
+                manual,
+            },
+        )
+        .await
     }
 
     async fn set_effort(
