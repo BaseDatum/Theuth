@@ -47,12 +47,59 @@ Not changed: `~/.theuth/*`, `/opt/homebrew/bin/opencode`, `~/.config/opencode/*`
 | `lower_bound` groups through `session_cost` | `agent::store::turn_usage::tests::remote_turns_sum_per_model_and_cascade` |
 | CostPill marks `lower_bound` rows only | `CostPill.test.ts` |
 
+## Install: both versions side by side (orchestrator steer, 2026-10-03)
+
+The user keeps 1.18.30 and 2.0.22 together. 2.0.22 (`opencode-darwin-arm64.zip` from
+`https://opencode.ai/files/bin/2.0.22/`) is unzipped into `/Users/Sky.Moore/.local/opencode2/`
+(`chmod +x`; `/Users/Sky.Moore/.local/opencode2/opencode --version` → `opencode v2.0.22`) with a symlink
+`/Users/Sky.Moore/.local/bin/opencode2 → /Users/Sky.Moore/.local/opencode2/opencode`
+(`opencode2 --version` → `opencode v2.0.22`). `/opt/homebrew/bin/opencode` is untouched
+(`opencode --version` → `1.18.30`, still the `opencode` command); `opencode-v2` was not brew-installed.
+
+## Registering opencode 2 in theuth
+
+Snippet for `~/.theuth/acp/agents.yaml` (the orchestrator applies it; the live file was not edited here):
+
+```yaml
+opencode2:
+  command: /Users/Sky.Moore/.local/opencode2/opencode
+  args: [acp]
+  env: {}
+  description: OpenCode 2.0.22 (side-by-side with opencode 1.18.30)
+```
+
+`spawn_subagent{agent: "opencode2", model: "provider/model", effort: "high"}` then sets model and effort through
+`session/set_config_option`; `agent: "opencode"` keeps using 1.18.30. The scratch smoke's `opencode2` entry
+points at this permanent path (through the frame-capturing wrapper) and was re-run from it: `acp harness
+OpenCode 2.0.22`, `HarnessModelChanged anthropic/claude-haiku-4-5`, `effort: high`, `ls` permission
+round-trip, `ToolCallFinished "hello.txt\n"`, `TurnFinished end_turn {prompt 22224, completion 152, cached 11041}`.
+
+### `~/.config/opencode/opencode.json` is shared by both versions
+
+2.0.22 reads the same file as 1.18.30 and normalises its V1 fields. Exactly what 2.0.22 printed about it
+on stderr (`OPENCODE_PRINT_LOGS=1`, captured in `logs/acp-opencode2.log`), once per process start and once
+more on the first catalog reload:
+
+- 12 × `level=WARN message="configuration normalization diagnostic" source=/Users/Sky.Moore/.config/opencode/opencode.json
+  path=$.provider.bedrock-mantle.models.<model>.<field> kind=unsupported action="omitted unsupported legacy setting"`
+  for `<model>` ∈ `anthropic.claude-fable-5`, `anthropic.claude-haiku-4-5`, `anthropic.claude-opus-4-8`,
+  `anthropic.claude-sonnet-5` and `<field>` ∈ `attachment`, `reasoning`, `temperature` — the per-model booleans
+  are dropped; the provider itself (`npm`, `options.baseURL/headers/apiKey`, model names) is kept.
+- `level=INFO msg="loading plugin" id=@vectorize-io/opencode-hindsight entrypoint=file:///…/.cache/opencode/npm/@vectorize-io/opencode-hindsight@latest/…/dist/index.js`
+  then `level=WARN message="failed to load plugin" target=@vectorize-io/opencode-hindsight cause="Cause([Fail(PluginModule.LoadError:
+  Plugin must export a default definition with an id and an effect or setup function. (cause: SchemaError(Expected object at ["default"])))])"`
+  — the V1 `plugin` entry does not run under V2, as expected; opencode continues.
+- `level=INFO message="mcp connected" server=theuth tools=3` and `server=qartez tools=43` — the V1 `mcp` block works
+  unchanged (and is why the 2.x child's prose carried qartez's "Code Mode catalog" notice).
+- Nothing about `tools`, `$schema` or the file as a whole; no error, no refusal. 1.18.30 printed no config
+  diagnostics for the same file.
+
 ## Live smoke (scratch, 2026-10-03)
 
 `t` built from this worktree (`cargo build -p theuth`, debug), `t --data-dir /tmp/oc2-smoke --headless`
 with `env -u THEUTH_RPC__LISTEN -u THEUTH_LAUNCH`, `ANTHROPIC_API_KEY` from `~/.zshrc` sourced in the
 launching shell (never printed), root model `anthropic/claude-haiku-4-5`, `acp/agents.yaml` entries
-`opencode2` → `/tmp/opencode2/opencode acp` (downloaded zip, not installed) and `opencode` →
+`opencode2` → `/tmp/opencode2/opencode acp` for runs 1–4 (then `/Users/Sky.Moore/.local/opencode2/opencode`, see above) and `opencode` →
 `/opt/homebrew/bin/opencode acp`, each through a `tee` wrapper capturing raw frames
 (`/tmp/oc2-smoke/frames/run*/oc{1,2}-{in,out}.jsonl`). A root session was prompted to call
 `spawn_subagent{agent, cwd: /tmp/oc2-smoke/work, model: anthropic/claude-haiku-4-5, effort: high, task}`.
