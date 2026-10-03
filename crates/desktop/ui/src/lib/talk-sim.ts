@@ -6,6 +6,7 @@
 // steps light `Working…` above the orb (A2). Tree-shaken out of production: every import site is behind
 // `import.meta.env.DEV`.
 
+import * as speech from '@/lib/speech'
 import { handle, type OrbState, type SubEvent } from '@/lib/talk'
 import { dispatch } from '@/store/sessions'
 
@@ -108,11 +109,41 @@ const clientScript = (session: string): Step[] => [
 
 export type SimFlag = { hold: OrbState | null; client: boolean }
 
+/**
+ * 83 §1: the sim has no Opus leg, so while it says `speaking` a wobbling tone plays through speech.ts's output node
+ * — the same node the band taps — and the band moves as it would with the agent's voice. `unlock('speak')` here is
+ * the sim's stand-in for the `speak` hold an utterance takes.
+ */
+function tone(): () => void {
+  const ctx = speech.unlock('speak')
+  const out = speech.outputNode()
+  if (!out) return () => undefined
+  const osc = ctx.createOscillator()
+  const lfo = ctx.createOscillator()
+  const depth = ctx.createGain()
+  const vol = ctx.createGain()
+  osc.frequency.value = 180
+  lfo.frequency.value = 4
+  depth.gain.value = 0.25
+  vol.gain.value = 0.25
+  lfo.connect(depth).connect(vol.gain)
+  osc.connect(vol).connect(out)
+  osc.start()
+  lfo.start()
+  return () => {
+    osc.stop()
+    lfo.stop()
+    vol.disconnect()
+    void speech.release('speak')
+  }
+}
+
 /** `?sim=` value → run; returns the stop function. `hold` freezes at the first event that shows that state with its subtitle. */
 export function runSim(session: string, { hold, client }: SimFlag): () => void {
   const steps = (client ? clientScript : script)(session)
   let i = 0
   let timer = 0
+  let stopTone: (() => void) | null = null
   const held = (ev: SubEvent) =>
     hold === 'idle'
       ? ev.type === 'Heard' && !ev.final && ev.text.split(' ').length >= 8
@@ -123,13 +154,22 @@ export function runSim(session: string, { hold, client }: SimFlag): () => void {
     const [delay, ev] = steps[i % steps.length]!
     timer = window.setTimeout(() => {
       if (typeof ev === 'function') ev()
-      else handle(ev)
+      else {
+        handle(ev)
+        if (ev.type === 'TalkState') {
+          stopTone?.()
+          stopTone = ev.state === 'speaking' ? tone() : null
+        }
+      }
       i++
       if (typeof ev === 'function' || !held(ev)) tick()
     }, delay)
   }
   tick()
-  return () => clearTimeout(timer)
+  return () => {
+    clearTimeout(timer)
+    stopTone?.()
+  }
 }
 
 /** The `?sim` flag of the current URL: `hold` names the state to freeze in, `null` = loop; `client` = the client-sink script. */
