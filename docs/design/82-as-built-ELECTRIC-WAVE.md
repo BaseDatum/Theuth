@@ -70,6 +70,6 @@ Source repo `github.com/audiocn/ui`, `license.md`: **MIT** (Copyright 2026 OrcDe
 
 ## 6. Open follow-ups
 
-- Swap `SearchDialog`'s `LevelMeter` for `VoiceWave` (needs `useBox` to expose the tap/levels the same way) and then delete `LevelMeter.tsx`.
+- ~~Swap `SearchDialog`'s `LevelMeter` for `VoiceWave` and then delete `LevelMeter.tsx`.~~ Done in 83 (FX-VOICE).
 - `talk-sim.ts` emits no `TalkLevel`; a few scripted packets during `listening` would let the band preview a voice without a mic.
-- Speaking state could show the agent's own audio if `speech.ts` routed packets through one shared `GainNode` (a one-line playback change, out of this brief's seams).
+- ~~Speaking state could show the agent's own audio if `speech.ts` routed packets through one shared `GainNode`.~~ Done in 83 (FX-VOICE): `speech.outputNode()` + `analyserNodeSource`.

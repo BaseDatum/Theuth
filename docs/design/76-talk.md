@@ -900,3 +900,5 @@ TUI's event mirror (`rpc::client`) swallowed every event after `A2aChanged`
 `talk.decide_ms` (§4.4's 900 ms).
 
 **Amended 2026-10-03** (`82-as-built-ELECTRIC-WAVE.md`): the desktop talk view gained a waveform band under the orb (§5.2 render), fed by the relay tap's analyser or the engine's `TalkLevel` packets; `talk.ts` now routes `TalkLevel` to `onLevels` subscribers.
+
+**Amended 2026-10-03** (`83-as-built-FX-VOICE.md`): while the agent speaks, the band shows this client's TTS playback — `speech.ts` routes every scheduled packet through one shared output `GainNode` (`outputNode()`), which the talk view taps with an analyser (§5.3 ownership and scheduling unchanged).
