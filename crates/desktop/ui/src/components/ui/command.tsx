@@ -13,6 +13,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+/** cmdk's item scorer: `(value, search, keywords?) => 0..1`; 0 hides the item. */
+type CommandFilter = NonNullable<React.ComponentProps<typeof CommandPrimitive>["filter"]>
+
 function Command({
   className,
   ...props
@@ -36,6 +39,7 @@ function CommandDialog({
   className,
   showCloseButton = true,
   shouldFilter,
+  filter,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
@@ -43,6 +47,7 @@ function CommandDialog({
   className?: string
   showCloseButton?: boolean
   shouldFilter?: boolean
+  filter?: CommandFilter
 }) {
   return (
     <Dialog {...props}>
@@ -54,7 +59,7 @@ function CommandDialog({
         className={cn("overflow-hidden p-0", className)}
         showCloseButton={showCloseButton}
       >
-        <Command shouldFilter={shouldFilter} className="**:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
+        <Command shouldFilter={shouldFilter} filter={filter} className="**:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
           {children}
         </Command>
       </DialogContent>
@@ -173,6 +178,7 @@ function CommandShortcut({
   )
 }
 
+export type { CommandFilter }
 export {
   Command,
   CommandDialog,

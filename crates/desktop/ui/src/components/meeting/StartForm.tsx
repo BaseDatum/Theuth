@@ -9,7 +9,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, ChevronDown, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ModelItems } from '@/components/chat/ModelMenu'
+import { ModelItems, modelItemValue, pinnedFilter } from '@/components/chat/ModelMenu'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Command, CommandEmpty, CommandInput, CommandList } from '@/components/ui/command'
@@ -44,6 +44,7 @@ export function StartForm() {
   const saved = useMeetingSettings((s) => s.model)
   const model = saved ?? info?.default_model
   const [pickModel, setPickModel] = useState(false)
+  const current = models.data?.find((m) => m.id === model)
 
   const start = useAction(
     (_: void) =>
@@ -104,12 +105,12 @@ export function StartForm() {
           <Popover open={pickModel} onOpenChange={setPickModel}>
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-64 justify-between font-normal">
-                <span className="truncate">{models.data?.find((m) => m.id === model)?.name ?? model ?? 'Model'}</span>
+                <span className="truncate">{current?.name ?? model ?? 'Model'}</span>
                 <ChevronDown className="size-4 opacity-70" />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-80 p-0">
-              <Command>
+              <Command filter={pinnedFilter(current && modelItemValue(current))}>
                 <CommandInput placeholder="Search models" />
                 <CommandList className="max-h-96">
                   <CommandEmpty>No model matches.</CommandEmpty>

@@ -7,12 +7,14 @@ import {
   Command,
   CommandDialog,
   CommandEmpty,
+  type CommandFilter,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
+import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { usePanes } from '@/lib/panes'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -41,12 +43,41 @@ export function harnessCurrent(option: ConfigOption | undefined, pending: string
   return option.options.find((v) => v.value === option.current)?.name ?? option.current
 }
 
-/** The cmdk group every model picker shows: name, provider, a check on the current one. */
+/** The cmdk value of a model row; `pinnedFilter` compares against it, so the two never drift. */
+export function modelItemValue(m: ModelInfo): string {
+  return `${m.name} ${m.id}`
+}
+
+/** The cmdk value of a harness option row (`HarnessGroup`); `pinnedFilter` compares against it. */
+export function harnessItemValue(heading: string, v: { name: string; value: string }): string {
+  return `${heading} ${v.name} ${v.value}`
+}
+
+/** `items` with the one `is` picks first, the rest in their given order; unchanged when none matches. */
+function pinFirst<T>(items: T[], is: (item: T) => boolean): T[] {
+  const i = items.findIndex(is)
+  return i <= 0 ? items : [items[i], ...items.slice(0, i), ...items.slice(i + 1)]
+}
+
+/** The model whose `id === current` first, then the others in their given order; unchanged when `current` is unset or absent. */
+export function orderModels(models: ModelInfo[], current: string | undefined): ModelInfo[] {
+  return current === undefined ? models : pinFirst(models, (m) => m.id === current)
+}
+
+const norm = (s: string) => s.trim().toLowerCase()
+
+/** cmdk's `defaultFilter`, except the row whose value is `pinned` always scores 1: it stays first and no search hides it. */
+export function pinnedFilter(pinned: string | undefined): CommandFilter {
+  const p = pinned === undefined ? undefined : norm(pinned)
+  return (value, search, keywords) => (p !== undefined && norm(value) === p ? 1 : defaultFilter(value, search, keywords))
+}
+
+/** The cmdk group every model picker shows: name, provider, a check on the current one — which is always the first row and never filtered out. */
 export function ModelItems({ models, model, onSelect }: { models: ModelInfo[]; model: string | undefined; onSelect(id: string): void }) {
   return (
     <CommandGroup heading="Models">
-      {models.map((m) => (
-        <CommandItem key={m.id} value={`${m.name} ${m.id}`} onSelect={() => onSelect(m.id)}>
+      {orderModels(models, model).map((m) => (
+        <CommandItem key={m.id} value={modelItemValue(m)} forceMount={m.id === model || undefined} onSelect={() => onSelect(m.id)}>
           <span className="truncate">{m.name}</span>
           <span className="ml-auto truncate text-xs text-fg-tertiary">{m.provider}</span>
           {m.id === model && <Check className="size-4" />}
@@ -174,12 +205,13 @@ function useModel({ session }: Props, done: () => void): Model {
   }
 }
 
-/** One harness option as a cmdk group (75 §8): the harness's values verbatim, the current one checked, a queued one marked. */
-function HarnessGroup({ heading, option, pending, onSelect }: { heading: string; option: ConfigOption; pending: string | undefined; onSelect(value: string): void }) {
+/** One harness option as a cmdk group (75 §8): the harness's values verbatim, the current one checked (first, for the Model group), a queued one marked. */
+function HarnessGroup({ heading, option, pending, pin, onSelect }: { heading: string; option: ConfigOption; pending: string | undefined; pin?: boolean; onSelect(value: string): void }) {
+  const options = pin ? pinFirst(option.options, (v) => v.value === option.current) : option.options
   return (
     <CommandGroup heading={heading}>
-      {option.options.map((v) => (
-        <CommandItem key={v.value} value={`${heading} ${v.name} ${v.value}`} onSelect={() => onSelect(v.value)}>
+      {options.map((v) => (
+        <CommandItem key={v.value} value={harnessItemValue(heading, v)} forceMount={(pin && v.value === option.current) || undefined} onSelect={() => onSelect(v.value)}>
           <span className="truncate">{v.name}</span>
           {v.value !== v.name && <span className="ml-auto truncate text-xs text-fg-tertiary">{v.value}</span>}
           {v.value === pending ? <span className="text-xs text-fg-tertiary">after this turn</span> : v.value === option.current && <Check className="size-4" />}
@@ -197,7 +229,7 @@ function HarnessCommand({ m }: { m: Model }) {
       <CommandInput placeholder="Search harness options" />
       <CommandList className="max-h-96">
         <CommandEmpty>No option matches.</CommandEmpty>
-        {model && <HarnessGroup heading="Model" option={model} pending={m.pending[model.id]} onSelect={(v) => void m.setHarnessOption(model.id, v)} />}
+        {model && <HarnessGroup heading="Model" option={model} pending={m.pending[model.id]} pin onSelect={(v) => void m.setHarnessOption(model.id, v)} />}
         {model && effort && <CommandSeparator />}
         {effort && <HarnessGroup heading="Effort" option={effort} pending={m.pending[effort.id]} onSelect={(v) => void m.setHarnessOption(effort.id, v)} />}
       </CommandList>
@@ -210,6 +242,16 @@ function harnessLabel(m: Model): string {
   const { model } = harnessGroups(m.harness ?? [])
   const current = harnessCurrent(model, model && m.pending[model.id]) ?? m.harnessModel
   return current ? `${m.agent} · ${current}` : (m.agent ?? '')
+}
+
+/** The cmdk value `pinnedFilter` keeps on top: the current harness model option for an ACP child, else the session's/draft's current model. */
+function pinnedValue(m: Model): string | undefined {
+  if (m.agent) {
+    const { model } = harnessGroups(m.harness ?? [])
+    const current = model?.options.find((v) => v.value === model.current)
+    return current && harnessItemValue('Model', current)
+  }
+  return m.current && modelItemValue(m.current)
 }
 
 /** `/model` opens the focused pane's picker (a draft pane counts as focused when it is the route's own). */
@@ -293,7 +335,7 @@ export function ModelMenu(props: Props) {
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-0">
-          <Command>{m.agent ? <HarnessCommand m={m} /> : <ModelCommand m={m} />}</Command>
+          <Command filter={pinnedFilter(pinnedValue(m))}>{m.agent ? <HarnessCommand m={m} /> : <ModelCommand m={m} />}</Command>
         </PopoverContent>
       </Popover>
       {resume}
@@ -319,7 +361,7 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
   useOpenOnSlash(props.session, () => onOpenChange(true))
   if (m.agent && !m.harness) return null
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} title={m.agent ? 'Harness' : 'Model'} description={m.agent ? "Pick from the harness's options" : 'Pick the model and effort'} className="max-w-sm">
+    <CommandDialog open={open} onOpenChange={onOpenChange} filter={pinnedFilter(pinnedValue(m))} title={m.agent ? 'Harness' : 'Model'} description={m.agent ? "Pick from the harness's options" : 'Pick the model and effort'} className="max-w-sm">
       {m.agent ? <HarnessCommand m={m} /> : <ModelCommand m={m} />}
     </CommandDialog>
   )
